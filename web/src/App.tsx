@@ -221,6 +221,20 @@ export function App() {
    *  two deals). The route decides the screen; the screen does not re-decide the
    *  route. */
   const tableOnScreen = useRef<string | null>(null);
+  /** The state the SIGNAL's handler reads, as a ref (ruling R-9.1).
+   *
+   *  The handler can now run a second pass for a frame that arrived under the
+   *  first, and a closure's `state` is whatever it was when that closure was
+   *  built — two events old by then. Written during render, like `signal.ts`'s
+   *  own `src.current`, and written again at the assignment inside the handler
+   *  so a pass that follows one which did not await cannot read a stale count. */
+  const stateNow = useRef<ClientState | null>(null);
+  /** A signal-driven arrival is in flight, and the newest frame that landed
+   *  under it. Refs and not state, for `inFlight`'s reason: they are read by
+   *  the pass that is running, not by a render. */
+  const arriving = useRef(false);
+  const pending = useRef<Events | null>(null);
+  stateNow.current = state;
   /** The table `open` is CURRENTLY fetching, or `null`.
    *
    *  A ref and not a state, for the reason `inFlight` above is one: this is read
@@ -612,55 +626,108 @@ export function App() {
    *  client that let the signal decide would have the lockdown hand it a move
    *  to make.
    *
-   *  `busy` is in there for a second reason: while a request of this browser's
+   *  **`busy` is NOT in there, and taking it out is ruling R-9.1.** It was,
+   *  for a reason that belonged to the poll: while a request of this browser's
    *  own is in flight, the count the server is about to report is one this
-   *  client is itself changing. Polling through that window races a reply
-   *  against a signal for the same events. */
+   *  client is itself changing, and asking through that window races a reply
+   *  against a signal for the same events. Under a HELD connection the same
+   *  term means something else entirely — let go of the stream whenever a
+   *  request is in flight — and the handler below sets `busy` around the frame
+   *  it fetches, so every arrival tore the reader down and opened another.
+   *  **Measured by the browser gate**: a watching browser opened `/stream`
+   *  2,643 times in one game, exactly once per applied move, while
+   *  `signal.ts`'s own "a visible tab holds ONE open request per resource" said
+   *  otherwise.
+   *
+   *  Nothing is raced by removing it, because on this screen a WRITE happens
+   *  only while `your_turn` is true — the answer bar is the only thing that
+   *  posts, and R-P6's undo needs `current_player` to still be the caller — and
+   *  that term already closes the signal. Every other request this screen makes
+   *  is a GET that bumps nothing. `setBusy` stays where it is: `data-busy` has
+   *  to cover the fetch and the walk for the browser harness; only `active`
+   *  stops reading it. */
   const link = useSignal(
     state?.id ?? null,
-    !!state && !state.over && !state.your_turn && !busy,
+    !!state && !state.over && !state.your_turn,
     useCallback(
       async (e: Events) => {
-        if (!state) return;
-        const game = state.id;
-        // The cheap answer, and the one this poll gives nearly every time: the
-        // count has not moved, so nothing is fetched and nothing re-renders.
-        if (e.events === state.events) return;
-        setBusy(true);
+        // **The handler guards its own re-entrancy, and that is reachable only
+        // now that the stream stays open** (ruling R-9.1). The server writes a
+        // frame per move and a room can move twice while one `GET …/{id}` is in
+        // flight; re-entered, this would read the same stale count, fetch the
+        // game again and walk the same range twice — two accounts of one turn,
+        // one drawn over the other. So a frame that lands during a run is
+        // REMEMBERED rather than dropped or run beside it, and the loop below
+        // takes it once the first has landed. (Before the fix above the
+        // question could not arise: the reader was aborted for the whole
+        // window, and those frames reached nobody at all.)
+        if (arriving.current) {
+          pending.current = e;
+          return;
+        }
+        arriving.current = true;
         try {
-          const fresh = await api.get(game);
-          // The same rule every other reply is judged by: a payload for a game
-          // the player has left is dropped, never drawn over the game they are
-          // on.
-          if (gameId.current !== game) return;
-          setState(fresh);
-          // **Grown: walk it. SHRUNK: reload and show nothing.** `events` is
-          // non-monotone because `undo` pops them (R-P5), and at a shared table
-          // the pop can be somebody else's. A run over a backwards range is not
-          // a turn that happened — there are no positions to fetch for it — so
-          // the account goes with the events it described.
-          // **`fresh.seat`, and it is read off the payload the walk will be
-          // drawn against.** `ClientState` is built for ONE seat, and at a
-          // hot-seat table the server builds for the acting seat whenever this
-          // caller holds it — so the seat this browser is watching from is the
-          // fresh payload's, not the one the poll started under. At a SPECTATOR
-          // it is `null`, and the arrival carries that through as a viewer
-          // rather than as "no signal" — see `Arrival`.
-          if (e.events > state.events)
-            await landed(game, state.events, fresh.events, { via: "signal", viewer: fresh.seat });
-          else {
-            setRun(null);
-            setWalk(null);
-            setFresh(false);
+          // **Every read is of `stateNow`, never of the `state` this closure
+          // was built with.** A second pass runs after `setState`, and a
+          // closure's `state` is the one from the render that created it — so
+          // the coalesced frame would be compared against a count two events
+          // old and would walk what the first pass just walked. The ref is
+          // written at the assignment as well as during render, so the ordering
+          // does not depend on when React commits.
+          for (let frame: Events | null = e; frame !== null; frame = pending.current) {
+            pending.current = null;
+            const now = stateNow.current;
+            if (!now) return;
+            const game = now.id;
+            // The cheap answer, and the one this gives nearly every time: the
+            // count has not moved, so nothing is fetched and nothing re-renders.
+            // It is also what makes the coalesced pass a no-op when the read it
+            // waited for already carried the count this frame is announcing.
+            if (frame.events === now.events) continue;
+            setBusy(true);
+            try {
+              const fresh = await api.get(game);
+              // The same rule every other reply is judged by: a payload for a
+              // game the player has left is dropped, never drawn over the game
+              // they are on.
+              if (gameId.current !== game) return;
+              setState(fresh);
+              stateNow.current = fresh;
+              // **Grown: walk it. SHRUNK: reload and show nothing.** `events` is
+              // non-monotone because `undo` pops them (R-P5), and at a shared table
+              // the pop can be somebody else's. A run over a backwards range is not
+              // a turn that happened — there are no positions to fetch for it — so
+              // the account goes with the events it described.
+              // **`fresh.seat`, and it is read off the payload the walk will be
+              // drawn against.** `ClientState` is built for ONE seat, and at a
+              // hot-seat table the server builds for the acting seat whenever this
+              // caller holds it — so the seat this browser is watching from is the
+              // fresh payload's, not the one the poll started under. At a SPECTATOR
+              // it is `null`, and the arrival carries that through as a viewer
+              // rather than as "no signal" — see `Arrival`.
+              if (frame.events > now.events)
+                await landed(game, now.events, fresh.events, {
+                  via: "signal",
+                  viewer: fresh.seat,
+                });
+              else {
+                setRun(null);
+                setWalk(null);
+                setFresh(false);
+              }
+            } catch (err) {
+              if (gameId.current === game)
+                setError(err instanceof ApiError ? err.message : String(err));
+            } finally {
+              setBusy(false);
+            }
           }
-        } catch (err) {
-          if (gameId.current === game)
-            setError(err instanceof ApiError ? err.message : String(err));
         } finally {
-          setBusy(false);
+          arriving.current = false;
+          pending.current = null;
         }
       },
-      [state, landed],
+      [landed],
     ),
     // **A game that is GONE stops being polled, and says so** (spec §5.5). The
     // reachable case is a shared table somebody abandoned while this browser was

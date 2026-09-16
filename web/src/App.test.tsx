@@ -2207,4 +2207,179 @@ describe("the opponent's turn arrives by the signal", () => {
       vi.useRealTimers();
     }
   });
+
+  // **ONE open stream across a whole arrival (ruling R-9.1, spec §9.4).**
+  //
+  // The browser gate MEASURED the opposite: a watching browser opened
+  // `/stream` 2,643 times in one game, exactly once per applied move. The cause
+  // was one term — `active` read `busy`, and the signal's own handler sets
+  // `busy` around the frame it fetches, so every arrival took `active` false
+  // and then true and `usePolled`'s effect tore the reader down and opened
+  // another. That term was written for a POLL, where "do not ask while my own
+  // request is in flight" costs nothing; under a held connection it means
+  // letting go of the stream on every move somebody else makes.
+  //
+  // This is the cell that holds the fix: the reader count must not move across
+  // a frame, its game re-read, its positions and its walk. **Mutation-proven**
+  // — restore `!busy` to `active` and it fails, because the reopen is scheduled
+  // at zero and `settle` advances the clock past it.
+  it("holds ONE open stream across an arrival, its frame fetch and its walk", async () => {
+    let events = wire.watching.events;
+    const signal = () => ({
+      events,
+      to_move: wire.watching.to_move,
+      status: "playing",
+      your_turn: false,
+    });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    /** The arrival's game read, HELD — and it is what makes this cell able to
+     *  see anything at all. Measured while writing it: with the read answering
+     *  instantly, React collapses `busy` true and `busy` false into ONE commit,
+     *  the effect never sees `active` go false, and the cell passed against the
+     *  defect it is named for. A real network read is a macrotask wide; this is
+     *  how a jsdom cell gets the same window. */
+    const holding: Array<() => void> = [];
+    let hold = false;
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`)) {
+        if (!hold) return { ...wire.watching, events };
+        return new Promise<unknown>((resolve) => {
+          holding.push(() => resolve({ ...wire.watching, events }));
+        });
+      }
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]), events);
+      return undefined;
+    });
+    // The hidden/visible round trip, for the reason the two cells above have
+    // one: the first reader was opened under real timers, and the return opens
+    // the next one on the fake clock this cell needs.
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+      const held = stream.opens();
+
+      hold = true;
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => holding.length === 1, "the arrival's game read went out");
+      await settle();
+      // **The window itself**: the read is in flight, and no new reader has
+      // been opened under it. (Before the fix the old one was aborted here and
+      // replaced the moment `busy` cleared, which is what the count below
+      // catches.)
+      expect(stream.opens(), "the reader was not let go while the frame was fetched").toBe(held);
+      hold = false;
+      act(() => holding.forEach((release) => release()));
+      await until(
+        () => document.querySelector("ol.account li.at") !== null,
+        "the arrival was walked",
+      );
+      await settle();
+      // The walk really did run — without this the reader could have stayed put
+      // because nothing ever reached the screen.
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(2);
+      expect(stream.opens(), "the reader was not torn down and reopened").toBe(held);
+      expect(stub.matching("GET", "/events"), "and nothing fell back to polling").toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **A frame that lands while the last one is still being fetched** (ruling
+  // R-9.1). With the stream now HELD across an arrival this is reachable for
+  // the first time: the server writes a frame per move, and a room can move
+  // twice while one `GET …/{id}` is in flight. Re-entered, the handler would
+  // read the same stale `state.events`, fetch the game again and walk the same
+  // range a second time — two accounts of one turn, and one of them drawn over
+  // the other.
+  //
+  // What is asserted is the coalescing: frames are never dropped and never
+  // processed concurrently. Three arrive, two of them under the held read, and
+  // exactly ONE follow-up read answers all three — because by the time the
+  // first has landed, the state it produced already carries the count the other
+  // two were announcing, which is the handler's own no-op.
+  it("coalesces frames that arrive while a run is in flight into one follow-up", async () => {
+    const base = wire.watching.events;
+    let events = base;
+    const signal = () => ({
+      events,
+      to_move: wire.watching.to_move,
+      status: "playing",
+      your_turn: false,
+    });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    /** The held game reads, resolved by hand. Each answers the count as it
+     *  stands at RELEASE, which is what a server would say. */
+    const holding: Array<() => void> = [];
+    let hold = false;
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`)) {
+        if (!hold) return { ...wire.watching, events };
+        return new Promise<unknown>((resolve) => {
+          holding.push(() => resolve({ ...wire.watching, events }));
+        });
+      }
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]), events);
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    expect(reloads()).toHaveLength(1);
+
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+
+      hold = true;
+      events = base + 1;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 2, "the first frame's game read went out");
+      // The two that land underneath it.
+      events = base + 2;
+      stream.push("signal", signal());
+      await settle();
+      events = base + 3;
+      stream.push("signal", signal());
+      await settle();
+      // **And nothing has happened yet**: one read in flight, no second one
+      // beside it, and nothing walked.
+      expect(reloads(), "the frames under the read did not each fetch a game").toHaveLength(2);
+      expect(holding).toHaveLength(1);
+      expect(document.querySelector("ol.account")).toBeNull();
+
+      hold = false;
+      act(() => holding.forEach((release) => release()));
+      await until(
+        () => document.querySelector("ol.account li.at") !== null,
+        "the coalesced run was walked",
+      );
+      await settle();
+
+      // ONE follow-up read answered all three frames, and the newest state is
+      // the one on screen: three events, walked as one run of three steps.
+      expect(reloads(), "one read answered all three frames").toHaveLength(2);
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
+      // Each position fetched ONCE: a second pass over the same range would
+      // repeat them, which is what walking the same run twice looks like.
+      const positions = stub
+        .matching("GET", "/at/")
+        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      expect(positions).toEqual([base, base + 1, base + 2, base + 3]);
+      expect(stream.opens(), "and still one reader").toBe(opened + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
