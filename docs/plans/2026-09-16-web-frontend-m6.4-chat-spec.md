@@ -246,6 +246,18 @@ brainstorm:
   chat — because a `GameRecord` carries the setup seed, which is the whole hidden set. The
   trigger, the prompt, the endpoint and key variables, the HTTP client dependency, cost and
   cadence and the personality's name are all §11's.
+- **R-4.16 — the final verification is HEADED (owner, 2026-09-16, at the spec review).**
+  The suites keep headless Chromium; the LIVE REVIEW of the deployed site runs headed
+  browsers, "as this has a distinctly visual verification component": Playwright HEADED
+  for the three-identity walk (screens read by eye and photographed, both layouts), and
+  Claude in Chrome for the owner's-eye read of one screen in the owner's own Chrome. **The
+  identity mechanics need no change and WARP stays on**: the NAS runs
+  `YOKOHAMA_WEB_IDENTITY=claimed` behind Cloudflare Access (`deploy/RUNBOOK.md:145-162`),
+  so Access is the DOOR and the typed email is the SEAT — three contexts pass the edge as
+  the owner and each types its own email, which is how the M6.3 review drove three people
+  from one workstation. The LAN path stays closed (`claimed` is trustworthy only because
+  cloudflared is the one path to 8080, `RUNBOOK.md:162`), and a service token is a
+  `cf-access`-mode door's instrument, not this deployment's.
 
 ---
 
@@ -717,11 +729,15 @@ suites re-counted at the close HEAD in one sequence.
 - Verification from the shell: `/api/health` carries `lobby_chat`, `chat_keep`, `chat_text`;
   a `POST /api/chat` with the identity header answers 201 and a `GET` reads it back; a
   table's `…/stream` frame carries `chat`.
-- The live review is against the live site in both layouts from THREE browsers as three
-  people: two playing, one watching by link, all three talking at the table and in the
-  lobby; it reads that the mover's panel receives a line during their own turn, that the
-  folded panel's count moves, and that each player's network panel holds ONE stream
-  across a whole turn boundary.
+- The live review is against the live site in both layouts from THREE HEADED browsers as
+  three people (R-4.16): Playwright headed contexts, each signed in at the claimed door
+  under its own email, two playing, one watching by link, all three talking at the table
+  and in the lobby; plus one pass in Claude in Chrome under the owner's own profile. It
+  reads BY EYE that the panel sits at the column's foot folded with its count, that the
+  labels are chips and names, that the mover's panel receives a line during their own
+  turn, that the folded count moves, and — from the network panel — that each player
+  holds ONE stream across a whole turn boundary. The screens are photographed and the
+  photographs are the record, as M6.3's 82 were.
 
 ---
 
