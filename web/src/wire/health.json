@@ -2,5 +2,6 @@
   "identity": "claimed",
   "rules_hash": "d85445c479cb1ead",
   "semantics_rev": 7,
-  "server_version": "0.5.0"
+  "server_version": "0.5.0",
+  "signal": "sse"
 }

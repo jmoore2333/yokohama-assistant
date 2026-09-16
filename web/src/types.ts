@@ -434,6 +434,9 @@ export interface Health {
   rules_hash: string;
   /** Which identity source this deployment reads, by name. */
   identity: string;
+  /** Which change transport `usePolled` reads: the stream, or the held
+   *  request (M6.3). A deployment fact, not a preference. */
+  signal: "sse" | "held";
 }
 
 /** Who the server thinks you are, and which header it reads to decide.

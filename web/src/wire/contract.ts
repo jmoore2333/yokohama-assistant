@@ -428,7 +428,7 @@ const HISTORICAL_FRAME = [
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
-const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as const;
+const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity", "signal"] as const;
 const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",

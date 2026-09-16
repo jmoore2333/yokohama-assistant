@@ -451,6 +451,15 @@ async fn walk() -> Vec<(String, Value)> {
         "a stranger holds no seat here: {table_open}",
     );
 
+    // **The signal at the table's FIRST status** (M6.3 §3.3). A seat holder
+    // watching an open table for its seats to fill reads the same endpoint the
+    // dealing screen and the game read, and gets a reading rather than the 409
+    // captured just below — which is the whole point of the `open` arm, and is
+    // a different fixture from `events_dealing` because `status` is the field
+    // the client branches the screen on.
+    let events_open = api.get("/api/games/wire/events").await;
+    assert_eq!(events_open["status"], "open", "{events_open}");
+
     // The lobby's OTHER list: tables I could sit at, whoever made them. Read by
     // the stranger, because that is who the list is for, and carrying both
     // tables — one locked and one not, which is the only way the lock marker on
@@ -606,6 +615,7 @@ async fn walk() -> Vec<(String, Value)> {
         ("dealing_409".to_string(), dealing_409),
         ("games".to_string(), games_list),
         ("not_seated_403".to_string(), not_seated_403),
+        ("events_open".to_string(), events_open),
         ("events_dealing".to_string(), events_dealing),
         ("health".to_string(), api.get("/api/health").await),
         // **Both sides of `/api/me`, because the client branches on both.**
@@ -1510,6 +1520,99 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
 }
 
 /// **The gate: what the server emits is what the client type-checks against.**
+/// **The stream's first frame IS the `events` route's reply, compared by
+/// VALUE** (M6.3 §3.1, spec §8).
+///
+/// The two transports have to answer the same object or the client's compare
+/// is against two different things — and "the same object" is a claim the
+/// crate's own cells can make only about the function both call. This one makes
+/// it about the WIRE: one router, one table, one frame read out of a
+/// `text/event-stream` body and one JSON reply, parsed and compared as values.
+///
+/// **By value and never by bytes.** The framing differs by construction — the
+/// stream writes `event: signal` and a compact one-line `data:`, the route
+/// writes a pretty-printed body — so a byte compare would be asserting that
+/// two different serializers agree about whitespace. What must agree is the
+/// object.
+///
+/// It also reads the frame's SHAPE off the wire, which is where §3.1's
+/// formatting rules are observable at all: exactly one `data:` line (the JSON
+/// is one line, so a payload that grew a newline would split into two and a
+/// browser would join them with one), and no `id:` or `retry:` line (R-3.14).
+#[tokio::test]
+async fn the_stream_s_first_frame_is_the_events_route_s_reply_by_value() {
+    let api = Api::new();
+    let (status, table) = api
+        .call(
+            "POST",
+            "/api/games",
+            Some(json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": SETUP_SEED,
+                "seats": [{ "user": WALKER }, { "user": WALKER }],
+                "id": "streamed",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{table}");
+    for seat in 0..2 {
+        let (status, kept) = api
+            .call("POST", "/api/games/streamed/keep", Some(json!({ "seat": seat, "card": 1 })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+    }
+
+    let res = api
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/games/streamed/stream")
+                .header("x-yokohama-claimed-user", WALKER)
+                .header("accept", "text/event-stream")
+                .body(Body::empty())
+                .expect("a GET"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("text/event-stream"),
+    );
+
+    // Read only as far as the first frame's terminator, then DROP the body:
+    // this stream is open until the table ends, so a read to completion would
+    // never return.
+    use tokio_stream::StreamExt;
+    let mut body = res.into_body().into_data_stream();
+    let mut text = String::new();
+    while !text.contains("\n\n") {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+            .await
+            .expect("the first frame arrives")
+            .expect("the stream is open")
+            .expect("a chunk");
+        text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    let frame = text.split("\n\n").next().expect("a first frame");
+    drop(body);
+
+    assert!(frame.starts_with("event: signal\n"), "{frame:?}");
+    let data: Vec<&str> = frame.lines().filter_map(|l| l.strip_prefix("data: ")).collect();
+    assert_eq!(data.len(), 1, "the JSON is ONE line: {frame:?}");
+    assert!(
+        !frame.lines().any(|l| l.starts_with("id:") || l.starts_with("retry:")),
+        "R-3.14: {frame:?}",
+    );
+
+    let framed: Value = serde_json::from_str(data[0]).expect("one line of JSON");
+    let polled = api.get("/api/games/streamed/events").await;
+    assert_eq!(framed, polled, "the stream and the route answer the same object");
+}
+
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     let dir = wire_dir();
