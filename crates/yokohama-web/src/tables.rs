@@ -850,8 +850,17 @@ impl Games {
     /// author written once would poison every later read of that document under
     /// the table's own lock. Checking here makes a bad message a refusal to the
     /// caller who sent it instead.
+    ///
+    /// **`key` is a PARAMETER and the document's own `id` is not consulted**,
+    /// which is the whole of the fence: `id` is read out of a file, and the
+    /// shape rule does not bound it (it has no expected key to bound it
+    /// against). Keyed off the document, an append at one table that met a
+    /// document claiming to be another wrote its messages — and its version —
+    /// to the other table's file. Pinned by
+    /// `an_append_writes_at_the_key_it_read_and_not_at_the_documents_own_id`.
     fn write_chat(
         &self,
+        key: &str,
         doc: &ChatDoc,
         players: Option<u8>,
         expected: Option<Version>,
@@ -860,14 +869,49 @@ impl Games {
         let kind = if players.is_some() { Doc::Chat } else { Doc::House };
         let json = serde_json::to_string_pretty(doc)
             .map_err(|e| GameError::Server(format!("the chat document does not serialize: {e}")))?;
-        match self.store.write_if_version(kind, &doc.id, &json, expected) {
+        match self.store.write_if_version(kind, key, &json, expected) {
             Ok(v) => Ok(v),
             Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
-                "{:?}'s chat changed while this message was in flight",
-                doc.id
+                "{key:?}'s chat changed while this message was in flight"
             ))),
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
+    }
+
+    /// The append itself, with the caller's lock ALREADY HELD: read, number,
+    /// push, trim, write.
+    ///
+    /// **One copy of R-6.4.9.** The numbering-and-trim invariant — a number is
+    /// `last + 1`, `last` advances, the trim takes the oldest and leaves `last`
+    /// alone — was written out twice, once per appender, and an invariant
+    /// stated twice is an invariant that can be half-changed. The two public
+    /// appenders differ in three things and only three: which lock they hold,
+    /// the seat bound they pass (a table's player count, or `None` at the
+    /// house), and which channel they bump afterwards.
+    ///
+    /// **The text has already been checked** by the caller, deliberately BEFORE
+    /// it took its lock, so a message that will be refused never makes anyone
+    /// wait for a table. That is why this takes a `String` rather than a `&str`
+    /// and applies no rule of its own.
+    ///
+    /// The document is written under `key` and its `id` is SET to `key`, so a
+    /// document this server writes always names the file it is in — see
+    /// [`Games::write_chat`] for what keying off the stored `id` did.
+    fn append_locked(
+        &self,
+        key: &str,
+        players: Option<u8>,
+        author: Author,
+        text: String,
+    ) -> Result<Message, GameError> {
+        let (mut doc, version) = self.read_chat(key, players)?;
+        doc.id = key.to_string();
+        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
+        doc.last = message.seq;
+        doc.messages.push(message.clone());
+        doc.trim(self.limits.keep);
+        self.write_chat(key, &doc, players, version)?;
+        Ok(message)
     }
 
     /// **The one writer** (R-6.4.15 (b)): the text rule, the table's own lock,
@@ -895,13 +939,10 @@ impl Games {
         let (table, _) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        let (mut doc, version) = self.read_chat(id, Some(table.players))?;
-        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
-        doc.last = message.seq;
-        doc.messages.push(message.clone());
-        doc.trim(self.limits.keep);
-        self.write_chat(&doc, Some(table.players), version)?;
-        self.chat_last.lock().expect("games lock").insert(id.to_string(), doc.last);
+        let message = self.append_locked(id, Some(table.players), author, text)?;
+        // `message.seq` IS the document's `last`: the trim drops the oldest and
+        // leaves the number alone, which is the whole of R-6.4.9.
+        self.chat_last.lock().expect("games lock").insert(id.to_string(), message.seq);
         // AFTER the write, never before (the gated cell).
         self.signals.bump_table(id);
         Ok(message)
@@ -916,12 +957,7 @@ impl Games {
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
         let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
         let _serialized = self.house_lock.lock().expect("house lock");
-        let (mut doc, version) = self.read_chat(HOUSE, None)?;
-        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
-        doc.last = message.seq;
-        doc.messages.push(message.clone());
-        doc.trim(self.limits.keep);
-        self.write_chat(&doc, None, version)?;
+        let message = self.append_locked(HOUSE, None, author, text)?;
         self.signals.bump_house_chat();
         Ok(message)
     }
@@ -3958,6 +3994,49 @@ mod tests {
         assert_eq!(games.chat_last(&id), 1);
         let (delta, _) = games.chat_page(&id, 1).expect("a page");
         assert!(delta.is_empty(), "after=last is empty");
+    }
+
+    /// **The write key is the one the read used, and NEVER the stored `id`.**
+    ///
+    /// `id` is a field read out of a file, which in this lane makes it an INPUT
+    /// — and it is the one field [`crate::chat::check_shape`] does not bound,
+    /// because bounding it there would need the expected key the rule is not
+    /// given. Keyed off the document instead, an append at A that met a
+    /// document claiming to be B read A's chat, wrote it to B's file, and
+    /// carried A's version there as the compare-and-swap expectation: the
+    /// document is planted here exactly as a hand-edit or a half-finished
+    /// restore would leave it.
+    ///
+    /// The planted `last` of 4 is what makes the landing legible — the message
+    /// numbers 5, so the page it lands on is unmistakably the planted document
+    /// advanced and not a fresh one.
+    #[test]
+    fn an_append_writes_at_the_key_it_read_and_not_at_the_documents_own_id() {
+        let store = Arc::new(MemStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let red = who("red@t.test");
+        let a = games.create(&two_people("alpha", CORPUS_SEED), &red).expect("a table").id;
+        let b = games.create(&two_people("beta", CORPUS_SEED), &red).expect("a table").id;
+        let lying = serde_json::json!({ "schema": 1, "id": b, "last": 4, "messages": [] });
+        store
+            .write_if_version(Doc::Chat, &a, &lying.to_string(), None)
+            .expect("the planted document");
+
+        games.chat_append(&a, red_seat(), "here").expect("an append at A");
+
+        let (page, last) = games.chat_page(&a, 0).expect("a page");
+        assert_eq!(
+            (page.len(), last, page[0].seq),
+            (1, 5, 5),
+            "it landed at A, numbered above the planted last",
+        );
+        assert!(
+            store.read(Doc::Chat, &b).expect("a store").is_none(),
+            "and B's chat is untouched — still absent",
+        );
+        let (json, _) = store.read(Doc::Chat, &a).expect("a store").expect("A's chat");
+        let written: serde_json::Value = serde_json::from_str(&json).expect("the document");
+        assert_eq!(written["id"], a, "and the document this server wrote names its own file");
     }
 
     /// **The text rule is the appender's too** (R-plan-3).
