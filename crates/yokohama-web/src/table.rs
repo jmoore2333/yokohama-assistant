@@ -331,16 +331,18 @@ impl TableDoc {
 
 /// The table on the wire.
 ///
-/// **Other seats' EMAILS are here, and since M6.3 they are readable by ANY
-/// signed-in caller at an open, a playing or a finished table.** They reach the
-/// view because the seats were invited by email and a table whose other seats
-/// are anonymous cannot say whose turn it is; since M6.2 a seat may also carry
-/// the display NAME its holder gave, which is what the screen prefers, and the
-/// email stays because a name is chosen, not unique, and two people at one
-/// table may pick the same one.
+/// **Other seats' EMAILS are here, and they are readable by ANY signed-in
+/// caller at an OPEN table since M6.2 (R-2.7) and at a PLAYING or finished one
+/// since M6.3 (R-3.13).** They reach the view because the seats were invited by
+/// email and a table whose other seats are anonymous cannot say whose turn it
+/// is; since M6.2 a seat may also carry the display NAME its holder gave, which
+/// is what the screen prefers, and the email stays because a name is chosen,
+/// not unique, and two people at one table may pick the same one.
 ///
-/// **`dealing` is the only status that withholds the roster**, which is a
-/// narrower fence than M6.1's and the doc used to say otherwise. R-2.7 opened
+/// **The one caller this type is withheld from is a caller with NO SEAT at a
+/// table that is DEALING** — a seat holder reads the roster at every status,
+/// so "dealing withholds it" would be the wrong fence by half. It is narrower
+/// than M6.1's and the doc used to say otherwise. R-2.7 opened
 /// `GET …/{id}/table` at `open` so a person following a join link can see what
 /// they are joining; R-3.13 opened it at `playing` and over so a would-be
 /// watcher can read `locked` and `can_watch` before asking for a password; and

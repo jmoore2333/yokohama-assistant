@@ -495,9 +495,16 @@ fn admitted(
     }
 }
 
-/// The one sentence every route answers a caller with no business at this table
-/// with — written once so a stranger cannot tell the routes apart by their
-/// refusals.
+/// The one sentence a route answers a caller with no business at this table
+/// with, written once so the routes that share it cannot drift apart.
+///
+/// **It is not the only refusal a stranger earns, and the two sets are two BY
+/// DESIGN (R-4.4).** At a locked playing table the WRITES — `deal`, `keep`,
+/// `DELETE` — answer this, while every READ answers "this table is locked —
+/// unlock it first", because a reader can do something about a lock and a
+/// writer cannot. The stranger sweep pins that difference route by route, so a
+/// refusal moving from one set to the other is a failing cell rather than a
+/// silent widening.
 const NOT_SEATED: &str = "you are not seated at this table";
 
 /// The refusal a WRITE route gives an admitted spectator: the same sentence a
@@ -1530,9 +1537,14 @@ const MAX_WAIT_SECONDS: u64 = 25;
 
 /// `GET /api/games/{id}/events` — the change signal, polled form.
 ///
-/// **Seated, like every other game route**, and it resolves a seat for one
-/// reason only: `your_turn`. The stranger's 403 comes from `Games::table`
-/// before any session is touched.
+/// **NOT seated, since M6.3 — and the seat it resolves is resolved for one
+/// reason only: `your_turn`.** The admission is [`events_at`]'s, which is
+/// `table_for_anyone` and then [`admitted`]: any signed-in caller is answered
+/// at an OPEN table (ruling R-4.3, the one row where the two part company),
+/// and at a playing or finished one a caller who holds no seat is answered as
+/// a `Spectator` once the table admits them. `Games::table` is not on this
+/// path at all, so every refusal here comes from one of those two — and
+/// `…/stream` refuses identically because it calls the same function.
 ///
 /// **The OPEN and DEALING arms answer without a session, and must.**
 /// `Games::handle` refuses both with a 409 (neither has a record yet), so a
@@ -1673,14 +1685,18 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
 /// sender after sending, and a `WatchStream` terminates once its sender is
 /// gone.
 ///
-/// **The `Err` arm is not that, and the difference is worth stating rather
-/// than blurring.** It is the other way a table can stop being readable — a
-/// store that stopped answering, or an admission that changed underneath a
-/// live connection — and it writes the same kind of frame because a refusal
-/// body mid-stream is something a client would have to parse as a frame. It
-/// does NOT close anything by itself: if such a table went on bumping, it
-/// would write `gone` again. What closes that connection is the client acting
-/// on `end`, or the delete that is the only ordinary cause.
+/// **The `Err` arm is not that, and it SPLITS** (final review M-5). An
+/// admission that changed underneath a live connection — a 403 or a 404 — is
+/// an answer about this table that will read the same way next time, so it
+/// writes the `gone` frame and the client leaves; the reachable case is the
+/// stranger holding an open table's stream while a join fills the last seat.
+/// Anything else is a server that failed, not a table that went: a store that
+/// stopped answering writes a COMMENT — indistinguishable to the client's
+/// parser from a heartbeat — and the connection stays open, because telling
+/// every watcher a game is "no longer available" over a transient disk error
+/// is a worse answer than saying nothing. Neither arm closes anything by
+/// itself: what closes a connection is the client acting on `end`, or the
+/// delete that is the only ordinary cause.
 async fn stream(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1703,7 +1719,20 @@ async fn stream(
                 .event("signal")
                 .json_data(e)
                 .expect("`Events` is four scalars and serializes")),
-            Err(_) => Ok(Event::default().event("end").data(r#"{"reason":"gone"}"#)),
+            // **A REFUSAL ends the stream; a failure does not** (final review
+            // M-5). A 403 or a 404 is an answer about this table — the join
+            // that filled the open seats without this caller, the delete that
+            // raced the on-connect frame — and it is not going to be different
+            // next time, so the client is told and navigates away. A store
+            // that stopped answering is neither: writing `gone` for it would
+            // send every watcher and every non-acting player to the lobby over
+            // a transient disk error. So that arm writes a COMMENT — which the
+            // client's parser drops exactly as it drops a heartbeat — and the
+            // connection stays open for the next bump to retry.
+            Err(e) if e.status == StatusCode::FORBIDDEN || e.status == StatusCode::NOT_FOUND => {
+                Ok(Event::default().event("end").data(r#"{"reason":"gone"}"#))
+            }
+            Err(_) => Ok(Event::default().comment("the reading failed; the next bump retries")),
         }
     });
     Ok(Sse::new(frames).keep_alive(KeepAlive::new().interval(heartbeat)))
@@ -5905,6 +5934,126 @@ mod tests {
             0,
             "a refused stream subscribed to something",
         );
+    }
+
+    /// **A store that stops answering does NOT tell every watcher the game is
+    /// gone** (final review M-5).
+    ///
+    /// The `Err` arm used to write `{"reason":"gone"}` for every failure alike,
+    /// and the client ACTS on that frame by navigating to the lobby — so one
+    /// transient disk error would have swept every watcher and every non-acting
+    /// player off a game that was still there. A refusal (403 or 404) still
+    /// ends the stream, because it is an answer about this table; anything else
+    /// writes a COMMENT, which the client's parser drops exactly as it drops a
+    /// heartbeat, and the next bump answers.
+    ///
+    /// **The failure is armed for ONE table read and fired by a BUMP rather
+    /// than by a write**, so the window contains the stream closure's own read
+    /// and nothing else; the load-bearing anti-vacuity read is that the arming
+    /// was spent, since a cell whose failure never fired would assert the happy
+    /// path twice. The two bumps are 250 ms apart because `watch` coalesces:
+    /// sent together, the recovery would replace the failure and there would be
+    /// nothing to see.
+    ///
+    /// The heartbeat is the production 25 s, so NO comment in this body is the
+    /// keep-alive's — which is what makes a comment count a reading about the
+    /// failed frame and not about the clock.
+    #[tokio::test]
+    async fn a_failed_reading_writes_a_comment_and_the_stream_stays_open_for_the_next_bump() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A [`MemStore`] whose next `n` TABLE reads fail, and only those: a
+        /// store that failed everything would refuse the `start_as` that makes
+        /// the table in the first place.
+        struct Flaky {
+            inner: MemStore,
+            fail_table_reads: AtomicUsize,
+        }
+        impl Store for Flaky {
+            fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(
+                &self,
+                doc: Doc,
+                id: &str,
+            ) -> Result<Option<(String, crate::store::Version)>, String> {
+                if doc == Doc::Table
+                    && self
+                        .fail_table_reads
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok()
+                {
+                    return Err("the disk went away".to_string());
+                }
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<crate::store::Version>,
+            ) -> Result<crate::store::Version, crate::store::WriteError> {
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store =
+            Arc::new(Flaky { inner: MemStore::default(), fail_table_reads: AtomicUsize::new(0) });
+        let state = Arc::new(AppState::with_store(
+            Arc::clone(&store) as Arc<dyn Store>,
+            identity::IdentityMode::Claimed,
+        ));
+        start_as(&state, "wire", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+
+        let s = Arc::clone(&state);
+        let reader = tokio::spawn(async move {
+            stream_frames(
+                s,
+                "/api/games/wire/stream",
+                "red@wire.test",
+                std::time::Duration::from_millis(900),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        store.fail_table_reads.store(1, Ordering::SeqCst);
+        state.games.signals().bump_table("wire");
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert_eq!(
+            store.fail_table_reads.load(Ordering::SeqCst),
+            0,
+            "the armed failure never fired, so this cell watched the happy path twice",
+        );
+
+        // And the connection is still there to answer it.
+        state.games.signals().bump_table("wire");
+
+        let (status, text, ended) = reader.await.expect("the reader task");
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(!ended, "a store error closed a connection the table outlived: {text:?}");
+        assert!(
+            !text.contains("event: end"),
+            "a store error told the client the game was no longer available: {text}",
+        );
+        assert!(
+            sse_comments(&text) >= 1,
+            "the failed reading wrote nothing at all, so the client learned less than it could: \
+             {text:?}",
+        );
+        let frames = sse_frames(&text);
+        assert_eq!(
+            frames.len(),
+            2,
+            "the connect frame and the bump AFTER the failure, and no frame for the failure \
+             itself: {text}",
+        );
+        assert!(frames.iter().all(|f| f.starts_with("event: signal")), "{text}");
     }
 
     /// **A stream is refused a caller the LOCK shuts out, and refused BEFORE it

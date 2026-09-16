@@ -448,6 +448,16 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         StatusCode::FORBIDDEN,
         "a locked table refuses a stranger's read before the password: {refused}",
     );
+    // **The SENTENCE, because the status alone does not witness the lock**
+    // (final review M-3). An UNLOCKED playing table refuses a stranger with the
+    // same 403 until they are admitted, so a cell that read only the number
+    // would pass against a table that had no password at all — and the `unlock`
+    // below answers 200 at such a table too. This is the one assertion in the
+    // arm that can tell the two apart.
+    assert_eq!(
+        refused["error"], "this table is locked — unlock it first",
+        "the refusal is about the LOCK, not about which seat is asking: {refused}",
+    );
     let (status, unlocked) = api
         .call_as(green, "POST", "/api/games/two/unlock", Some(serde_json::json!({ "password": "sesame" })))
         .await;
