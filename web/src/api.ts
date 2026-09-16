@@ -237,6 +237,15 @@ export interface JoinRequest {
   password?: string;
 }
 
+/** Knocking at a locked table one is not seated at (M6.3).
+ *
+ *  The same password the table's seats were asked for — it gates JOINING and
+ *  WATCHING, and nothing else — sent to be remembered, so the caller does not
+ *  present it again on every poll. */
+export interface UnlockRequest {
+  password: string;
+}
+
 const id = (s: string) => encodeURIComponent(s);
 
 export const api = {
@@ -249,12 +258,17 @@ export const api = {
   art: () => call<ArtManifest>("GET", "/api/art"),
   /** One page of the lobby, newest first.
    *
-   *  Two scopes and not a filter: `mine` is every table you sit at, at every
-   *  status, and `open` is every table still filling its seats, whoever made
-   *  it. `before` is the previous page's `next` cursor, sent back untouched —
-   *  no `limit` from here, because the server's default page is the one this
+   *  Three scopes and not a filter: `mine` is every table you sit at, at every
+   *  status, `open` is every table still filling its seats, whoever made it,
+   *  and `playing` is every game under way or finished, whoever is in it
+   *  (M6.3, R-3.9) — the list a watcher finds a game from without a link. A
+   *  `playing` row does not promise the caller may watch it: a locked table is
+   *  listed with `can_watch: false`, which is the unlock face.
+   *
+   *  `before` is the previous page's `next` cursor, sent back untouched — no
+   *  `limit` from here, because the server's default page is the one this
    *  client asks for. */
-  list: (scope: "mine" | "open" = "mine", before?: string) =>
+  list: (scope: "mine" | "open" | "playing" = "mine", before?: string) =>
     call<GamesList>(
       "GET",
       `/api/games?scope=${scope}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
@@ -274,6 +288,15 @@ export const api = {
    *  LAST open seat flips the table to `dealing` in the same write. */
   join: (game: string, req: JoinRequest) =>
     call<TableView>("POST", `/api/games/${id(game)}/join`, req),
+  /** Knock, and be remembered (M6.3, R-3.5). The reply is the table with
+   *  `can_watch` turned over, so the screen that was drawing the unlock face
+   *  has what it needs to draw the game without a second request.
+   *
+   *  Refused 403 on the wrong password, and 409 carrying the status at a table
+   *  with nothing to watch yet — a table still filling its seats, or still
+   *  dealing. A table with NO lock answers 200 and writes nothing. */
+  unlock: (game: string, password: string) =>
+    call<TableView>("POST", `/api/games/${id(game)}/unlock`, { password }),
   /** The caller's OWN two cards, over the set table. `seat` and `cards` are
    *  null together once every seat this caller holds has chosen. */
   deal: (game: string) => call<DealView>("GET", `/api/games/${id(game)}/deal`),

@@ -325,7 +325,12 @@ export type PromptState =
 export interface ClientState {
   id: string;
   mode: "sim" | "live";
-  seat: PlayerId;
+  /** The seat this payload was built FOR — whose hand is unmasked.
+   *
+   *  **`null` for a spectator (M6.3)**: a watcher holds no seat, every hand on
+   *  the board is hidden from them, and there is no Hand panel in the
+   *  dashboard at all. A seated payload is unchanged. */
+  seat: PlayerId | null;
   to_move: PlayerId;
   your_turn: boolean;
   frame: FrameModel;
@@ -394,8 +399,11 @@ export interface HistoricalFrame {
    *  lowest (R-4.2). It never names a seat somebody else holds, which is what
    *  stops a sweep over every `k` from harvesting another player's whole hand
    *  history in one pass. At a hot seat, where one person holds several, it
-   *  does follow the mover among those. */
-  seat: PlayerId;
+   *  does follow the mover among those.
+   *
+   *  **`null` for a spectator (M6.3)**: a watcher holds no seat, so a sweep
+   *  over every `k` harvests nothing at any stop. */
+  seat: PlayerId | null;
   /** Whose turn it was at `k`. */
   to_move: PlayerId;
   frame: FrameModel;

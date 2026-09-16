@@ -137,6 +137,15 @@ import join403Password from "./join_403_password.json";
 import join409Taken from "./join_409_taken.json";
 import join409NotOpen from "./join_409_not_open.json";
 import notSeated403 from "./not_seated_403.json";
+import eventsOpen from "./events_open.json";
+import spectator from "./spectator.json";
+import spectatorAtK from "./spectator_at_k.json";
+import spectatorOver from "./spectator_over.json";
+import gamesPlaying from "./games_playing.json";
+import tableWatchable from "./table_watchable.json";
+import unlock403 from "./unlock_403.json";
+import unlock409Open from "./unlock_409_open.json";
+import watch403Locked from "./watch_403_locked.json";
 import undoRefused403 from "./undo_refused_403.json";
 import wrongSeat403 from "./wrong_seat_403.json";
 import refused from "./refused.json";
@@ -240,6 +249,33 @@ const _join409Taken: Widen<ApiErrorBody> = join409Taken;
 // `status` cannot tell the two apart on its own.
 const _events: Widen<Events> = events;
 const _eventsDealing: Widen<Events> = eventsDealing;
+// ---- M6.3: the watcher --------------------------------------------------
+//
+// The signal at the table's FIRST status. A third payload rather than a third
+// reading of the same one: `status` is the field the client branches the SCREEN
+// on, and `open` is the only value of it that no other fixture carries.
+const _eventsOpen: Widen<Events> = eventsOpen;
+// **The three payloads whose `seat` is null**, which is the M6.3 shape and the
+// reason that field became a union: a watcher holds no seat, so a type that
+// declared a number here would have been wrong about every one of these while
+// compiling perfectly. The live frame, the finished one and a replay stop.
+const _spectator: Widen<ClientState> = spectator;
+const _spectatorOver: Widen<ClientState> = spectatorOver;
+const _spectatorAtK: Widen<HistoricalFrame> = spectatorAtK;
+// The lobby's third list — every game under way, whoever made it (R-3.9).
+const _gamesPlaying: Widen<GamesList> = gamesPlaying;
+// A LOCKED, playing table read by somebody with no seat at it: the payload the
+// unlock face is drawn from, and the only one in the corpus whose `can_watch`
+// is false while `my_seats` is empty.
+const _tableWatchable: Widen<TableView> = tableWatchable;
+// The two refusals a would-be watcher meets, and the 409 at a table with
+// nothing to watch yet. Committed for the SENTENCES, as the join refusals are:
+// "this table is locked — unlock it first" is a different thing to do next from
+// "wrong password for this table", and both differ from the not-seated 403 that
+// tells a caller there is nothing they can do at all.
+const _watch403Locked: Widen<ApiErrorBody> = watch403Locked;
+const _unlock403: Widen<ApiErrorBody> = unlock403;
+const _unlock409Open: Widen<DealingErrorBody> = unlock409Open;
 const _dealing409: Widen<DealingErrorBody> = dealing409;
 const _notSeated403: Widen<ApiErrorBody> = notSeated403;
 // The two refusals a SEATED caller meets by acting out of turn (spec §8). The
@@ -326,7 +362,13 @@ const _pChoiceChurchSpace: PromptOf<"options"> = choiceChurchSpace.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
+const _pSpectatorOver: PromptOf<"game_over"> = spectatorOver.prompt;
 const _pWatching: PromptOf<"watching"> = watching.prompt;
+// The `watching` prompt again, from the OTHER thing that produces it. The
+// fixture above is a seated caller waiting on a bot; this one is a watcher, who
+// is waiting on everybody. The prompt is the same shape and the payload around
+// it is not.
+const _pSpectator: PromptOf<"watching"> = spectator.prompt;
 const _pLocked: PromptOf<"locked"> = locked.prompt;
 // `reveal` has no fixture — live mode only; see `wire_fixtures.rs`'s exemption.
 
@@ -334,6 +376,7 @@ void [
   _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused,
   _pPick, _pRetreat, _pRetreatAnswered, _pPlaceA, _pPlaceASelected, _pPlaceB,
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
+  _pSpectator, _pSpectatorOver,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
 ];
 
@@ -346,7 +389,9 @@ void [
   _tableOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
   _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
-  _events, _eventsDealing,
+  _events, _eventsDealing, _eventsOpen,
+  _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
+  _watch403Locked, _unlock403, _unlock409Open,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -617,6 +662,15 @@ export const wire = {
   join409Taken: as<ApiErrorBody>(join409Taken),
   events: as<Events>(events),
   eventsDealing: as<Events>(eventsDealing),
+  eventsOpen: as<Events>(eventsOpen),
+  spectator: as<ClientState>(spectator),
+  spectatorOver: as<ClientState>(spectatorOver),
+  spectatorAtK: as<HistoricalFrame>(spectatorAtK),
+  gamesPlaying: as<GamesList>(gamesPlaying),
+  tableWatchable: as<TableView>(tableWatchable),
+  watch403Locked: as<ApiErrorBody>(watch403Locked),
+  unlock403: as<ApiErrorBody>(unlock403),
+  unlock409Open: as<DealingErrorBody>(unlock409Open),
   dealing409: as<DealingErrorBody>(dealing409),
   notSeated403: as<ApiErrorBody>(notSeated403),
   wrongSeat403: as<ApiErrorBody>(wrongSeat403),
@@ -660,11 +714,19 @@ export const wire = {
 export const CHOICE_HEADS_COVERED = ["AssistantMove", "ChurchSpace", "WarehouseTake"] as const;
 
 /** Every `ClientState` in the corpus, for tests that assert something true of
- *  all of them — a leak check, or a render that must not throw. */
+ *  all of them — a leak check, or a render that must not throw.
+ *
+ *  **The two SPECTATOR payloads are in it** (M6.3), which is the list doing its
+ *  job rather than an exception to it: a property asserted over "every payload"
+ *  that quietly skipped the two whose `seat` is null would be silent about
+ *  exactly the shape this cycle added. The mask row in `contract.test.ts`
+ *  branches on `seat === null` instead — a watcher unmasks NO seat, which is
+ *  the same rule read at zero. */
 export const EVERY_STATE: readonly ClientState[] = [
   wire.options, wire.optionsMany, wire.options4p, wire.optionsPriced, wire.pick, wire.retreat,
   wire.retreatAnswered, wire.placeA, wire.placeASelected,
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
   wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
+  wire.spectator, wire.spectatorOver,
 ];

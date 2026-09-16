@@ -325,8 +325,27 @@ async fn as_actor(api: &Api, state: Value) -> Value {
 /// doc on why there is no bot), and since M6.1 a seat belongs to somebody.
 const OTHER: &str = "blue@wire.test";
 
-/// Someone with no seat at this table, for the one fixture that is a 403.
-const STRANGER: &str = "green@wire.test";
+/// **The walk's third identity: nobody's seat, and from M6.3 the one who
+/// knocks.**
+///
+/// It was called `STRANGER` until this cycle, and the rename IS the cycle: a
+/// watcher is exactly a stranger who presented the password (R-3.5), so one
+/// person does the whole arc — reads the open table before anyone has sat at
+/// it, is refused at the deal, is refused at the locked game, gets the password
+/// wrong, then gets it right and watches to the end. Keeping it one person is
+/// also what puts a NAME in the table document's `unlocked` list for
+/// [`no_payload_built_for_someone_else_carries_a_watchers_email`] to search for.
+const GREEN: &str = "green@wire.test";
+
+/// **A FOURTH identity, who never knocks** (M6.3).
+///
+/// `table_watchable` is the payload the client draws the UNLOCK FACE from — a
+/// locked, playing table read by somebody who may see that it exists and may
+/// not watch it (R-3.13) — so it has to be read by a caller whose `can_watch`
+/// stays false. [`GREEN`]'s turns true a few lines later, and a fixture cut
+/// from that caller would describe the other half of the branch while being
+/// named after this one.
+const STRANGER: &str = "grey@wire.test";
 
 /// **An OPEN, LOCKED table with one seat still to fill** (M6.2, §7).
 ///
@@ -439,11 +458,11 @@ async fn walk() -> Vec<(String, Value)> {
     // follow a link to, be refused by, and then join — and each of those is a
     // shape the client draws and nothing else in this corpus carries.
 
-    // A STRANGER reads the open table. The one route R-2.7 widens: a join link
+    // A caller with no seat reads the open table. The one route R-2.7 widens: a join link
     // is an address, so the person following one sees what they are joining —
     // with `my_seats` EMPTY, which is impossible at any other status.
     let (status, table_open) =
-        api.call_as(Some(STRANGER), "GET", "/api/games/wire/table", None).await;
+        api.call_as(Some(GREEN), "GET", "/api/games/wire/table", None).await;
     assert_eq!(status, StatusCode::OK, "an open table reads for a stranger: {table_open}");
     assert_eq!(
         table_open["my_seats"].as_array().map(Vec::len),
@@ -464,7 +483,7 @@ async fn walk() -> Vec<(String, Value)> {
     // the stranger, because that is who the list is for, and carrying both
     // tables — one locked and one not, which is the only way the lock marker on
     // a row is rendered by a payload rather than by nothing.
-    let games_open = api.get_as(STRANGER, "/api/games?scope=open").await;
+    let games_open = api.get_as(GREEN, "/api/games?scope=open").await;
 
     // A SEATED caller's session route, while the table is still open. A 409
     // carrying `status: "open"` — the same shape as the dealing 409 below and a
@@ -573,7 +592,7 @@ async fn walk() -> Vec<(String, Value)> {
     let games_list = api.get("/api/games").await;
     // A caller with no seat here. A 403, and the client draws it as one.
     let (status, not_seated_403) =
-        api.call_as(Some(STRANGER), "GET", "/api/games/wire/deal", None).await;
+        api.call_as(Some(GREEN), "GET", "/api/games/wire/deal", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{not_seated_403}");
 
     let (status, kept) = api
@@ -596,6 +615,98 @@ async fn walk() -> Vec<(String, Value)> {
         "the last keep wrote the record",
     );
 
+    // **The watcher's opening, and every payload it produces** (M6.3 §3.4,
+    // §3.5). The table is playing and LOCKED, so a caller with no seat at it
+    // meets three different answers before being let in — and the client draws
+    // a different face from each.
+
+    // The game itself, to somebody who has presented nothing. A 403 that says
+    // what to do about it, which is the whole difference between this sentence
+    // and the not-seated one: this caller CAN do something next.
+    let (status, watch_403_locked) = api.call_as(Some(GREEN), "GET", "/api/games/wire", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{watch_403_locked}");
+
+    // The TABLE, which R-3.13 opened to anybody at `playing`, so a would-be
+    // watcher can read `locked` and `can_watch` before asking for a password.
+    // **Read by [`STRANGER`] and not by [`GREEN`]**: this is the payload the
+    // unlock face is drawn from, and GREEN's `can_watch` turns true four
+    // requests from here.
+    let (status, table_watchable) =
+        api.call_as(Some(STRANGER), "GET", "/api/games/wire/table", None).await;
+    assert_eq!(status, StatusCode::OK, "{table_watchable}");
+    assert_eq!(table_watchable["can_watch"], false, "seen, not watchable: {table_watchable}");
+    assert_eq!(
+        table_watchable["my_seats"].as_array().map(Vec::len),
+        Some(0),
+        "a watcher holds no seat: {table_watchable}",
+    );
+
+    // The wrong password. The sentence is the point — "403" alone leaves a
+    // person unable to tell a typo from a table that is not theirs — and the
+    // attempt itself is [`WIRE_WRONG_PASSWORD`], so
+    // [`no_payload_of_this_run_carries_the_password_or_its_hash`] searches this
+    // refusal for the string the caller typed as well as for the table's own.
+    let (status, unlock_403) = api
+        .call_as(
+            Some(GREEN),
+            "POST",
+            "/api/games/wire/unlock",
+            Some(json!({ "password": WIRE_WRONG_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{unlock_403}");
+
+    // An unlock at a table with nothing to watch yet. `wire2` is still open —
+    // nobody ever joins it — so this is a 409 carrying the STATUS the client
+    // branches the screen on, the same two-key shape as the dealing and open
+    // 409s above and a different answer from either 403.
+    let (status, unlock_409_open) = api
+        .call_as(
+            Some(GREEN),
+            "POST",
+            "/api/games/wire2/unlock",
+            Some(json!({ "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{unlock_409_open}");
+
+    // And the knock that works. **Not committed as a fixture**: the reply is a
+    // `TableView`, which `table.json` already carries, and what is new about it
+    // is the VALUE of one boolean — so it is asserted here rather than frozen as
+    // a second copy of a shape the corpus has.
+    let (status, unlocked) = api
+        .call_as(
+            Some(GREEN),
+            "POST",
+            "/api/games/wire/unlock",
+            Some(json!({ "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{unlocked}");
+    assert_eq!(unlocked["can_watch"], true, "the knock is what turns this over: {unlocked}");
+    assert_eq!(
+        unlocked["my_seats"].as_array().map(Vec::len),
+        Some(0),
+        "and a watcher is still nobody's seat: {unlocked}",
+    );
+
+    // The lobby's THIRD list: every game under way, whoever made it (R-3.9),
+    // read by the watcher who just got in.
+    //
+    // **ONE row, on purpose.** `wire4` below is a second playing table, and two
+    // tables created in different seconds sort by recency while two created in
+    // the same second sort by id — so a list taken after it exists would swap
+    // its rows between runs. That is the hazard [`second_table_body`]'s doc
+    // records from the other side, and the answer here is to take the list while
+    // there is only one game under way. The `can_watch: false` face the client
+    // renders on a row it may not open is on `table_watchable` instead.
+    let games_playing = api.get_as(GREEN, "/api/games?scope=playing").await;
+    assert_eq!(
+        games_playing["games"].as_array().map(Vec::len),
+        Some(1),
+        "one game is under way: {games_playing}",
+    );
+
     let created = api.get("/api/games/wire").await;
 
     let mut out: Vec<(String, Value)> = vec![
@@ -610,6 +721,12 @@ async fn walk() -> Vec<(String, Value)> {
         ("join_403_password".to_string(), join_403_password),
         ("join_409_taken".to_string(), join_409_taken),
         ("join_409_not_open".to_string(), join_409_not_open),
+        // ---- M6.3: the watcher's four refusals-and-readings ----------------
+        ("watch_403_locked".to_string(), watch_403_locked),
+        ("table_watchable".to_string(), table_watchable),
+        ("unlock_403".to_string(), unlock_403),
+        ("unlock_409_open".to_string(), unlock_409_open),
+        ("games_playing".to_string(), games_playing),
         ("deal".to_string(), deal),
         ("deal_waiting".to_string(), deal_waiting),
         ("dealing_409".to_string(), dealing_409),
@@ -711,6 +828,31 @@ async fn walk() -> Vec<(String, Value)> {
                 let e = api.get_as(OTHER, "/api/games/wire/events").await;
                 capture(&mut out, &mut seen, "events", &e);
             }
+        }
+
+        // **The watcher's LIVE frame** (M6.3, R-3.7), taken at the first
+        // position with an ASSISTANT actually on the board.
+        //
+        // The condition is not decoration. A spectator's payload is a picture
+        // of a table nobody at it is playing, and what it has to show is the
+        // table: taken at the first prompt with three rows — where `suggest`
+        // and `events` are captured — the board still had no assistant and no
+        // President on it, measured, so the fixture the client renders its
+        // watching screen from would have been a picture of nothing. The board
+        // is read off the PAYLOAD rather than counted here, which is the same
+        // rule the placement arm below follows: the engine owns that fact.
+        if !seen.iter().any(|s| s == "spectator")
+            && state["frame"]["board"]["tiles"].as_array().is_some_and(|tiles| {
+                tiles.iter().any(|t| {
+                    t["assistants"]
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|r| r[1].as_u64().unwrap_or(0) > 0))
+                })
+            })
+        {
+            let w = api.get_as(GREEN, "/api/games/wire").await;
+            assert!(w["seat"].is_null(), "a watcher holds no seat: {w}");
+            capture(&mut out, &mut seen, "spectator", &w);
         }
         if kind == "options" && rows.iter().any(|r| r["fee"] != Value::Null) {
             capture(&mut out, &mut seen, "options_priced", &state);
@@ -931,6 +1073,16 @@ async fn walk() -> Vec<(String, Value)> {
 
     capture(&mut out, &mut seen, "game_over", &state);
 
+    // **The same finished game, read by the WATCHER.** A spectator's payload at
+    // game over is the one place the client has to draw a standing for somebody
+    // with no seat in it: `scores` is present, `seat` is null, and the prompt is
+    // `game_over` rather than `watching` — which is a different branch from the
+    // live spectator frame captured in the loop above.
+    let spectator_over = api.get_as(GREEN, "/api/games/wire").await;
+    assert!(spectator_over["seat"].is_null(), "a watcher holds no seat: {spectator_over}");
+    assert!(!spectator_over["scores"].is_null(), "a finished game reports its standing");
+    out.push(("spectator_over".to_string(), spectator_over));
+
     // The corpus's FILE SET is part of the contract — the golden refuses a file
     // nothing emits, and the client imports each one by name — so a shape that
     // is captured opportunistically has to be captured every time or not at
@@ -944,6 +1096,7 @@ async fn walk() -> Vec<(String, Value)> {
         "retreat_answered",
         "wrong_seat_403",
         "undo_refused_403",
+        "spectator",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),
@@ -1008,6 +1161,20 @@ async fn walk() -> Vec<(String, Value)> {
     let total = api.get("/api/games/wire/log").await["total"].as_u64().unwrap_or(0);
     assert!(total > 2, "a finished game's log carries events; got {total}");
     out.push(("at_k".to_string(), api.get(&format!("/api/games/wire/at/{}", total / 2)).await));
+
+    // **The same position, replayed by the WATCHER** (M6.3, R-3.7). The SAME
+    // `k` as the fixture above, deliberately: the pair then differs in exactly
+    // one thing — who asked — so what the second one is missing is the mask and
+    // not the position. A spectator's sweep over `0..=total` harvests nothing at
+    // any stop, and `seat: null` is how the payload says so.
+    let spectator_at_k =
+        api.get_as(GREEN, &format!("/api/games/wire/at/{}", total / 2)).await;
+    assert!(spectator_at_k["seat"].is_null(), "a watcher holds no seat: {spectator_at_k}");
+    assert_eq!(
+        spectator_at_k["index"], total / 2,
+        "the watcher's replay is the same stop as the seat's, or the pair is not a pair",
+    );
+    out.push(("spectator_at_k".to_string(), spectator_at_k));
 
     // **The final score, which only a FINISHED game has.** The walk plays to a
     // winner, so this is the one place in the corpus it can come from — and the
@@ -1516,6 +1683,116 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
          boolean that crosses instead; if a new field genuinely needs more, it needs an owner \
          decision first, not an exemption here.",
         offenders.join(", "),
+    );
+}
+
+/// **No payload names a WATCHER** (M6.3 §8).
+///
+/// The third secret a table document holds, after the seed and the lock, is
+/// `unlocked` — the list of people who have presented this table's password.
+/// It is not a game secret and it is somebody's business all the same: it is
+/// the roster of who is looking over the players' shoulders, and the players
+/// did not invite them. `TableView` carries the one boolean the caller needs
+/// about THEMSELVES (`can_watch`) and the list itself never crosses (R-3.5), so
+/// a watcher is unnamed on every wire this API has.
+///
+/// **The search is the whole corpus, not a subset, and that is stronger than
+/// the property strictly needs.** Neither [`GREEN`] nor [`STRANGER`] holds a
+/// seat at any table in this walk, so no payload has a legitimate reason to
+/// spell either address — not one built for a player, and not one built for
+/// them. A future fixture that genuinely has to (a `GET /api/me` taken as the
+/// watcher would) needs an owner's answer about what else it carries, not an
+/// exemption bolted on here.
+///
+/// **Two needles for two different jobs.** GREEN is the one the server really
+/// does write down, so GREEN is what the anti-vacuity partner below proves the
+/// search can find. STRANGER is never written down anywhere and rides along as
+/// the second realistic leak on these routes: a view or a refusal that echoed
+/// its READER's address back — which is a shape no test above would have seen,
+/// since every other payload is read by somebody who is named in it anyway.
+#[tokio::test]
+async fn no_payload_built_for_someone_else_carries_a_watchers_email() {
+    let mut offenders: Vec<String> = Vec::new();
+    for (name, value) in corpus().await {
+        let text = serde_json::to_string(&value).expect("serializable");
+        for (who, needle) in [("the watcher", GREEN), ("a caller who never knocked", STRANGER)] {
+            if text.contains(needle) {
+                offenders.push(format!("{name} names {who}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a watcher is named on the wire: {}\n\
+         `unlocked` is the roster of everyone looking over these players' shoulders, and \
+         `can_watch` — one boolean, about the reader — is what crosses instead.",
+        offenders.join(", "),
+    );
+
+    // **The anti-vacuity partner: the search cannot pass by searching for
+    // nothing.** The same shape as the seed pin's — the string IS written down,
+    // in the table document, and `contains` really does find it there. Without
+    // this the assertion above passes just as well against an address no route
+    // was ever given.
+    //
+    // A table of two BOUND seats rather than the walk's open one, because what
+    // this needs is a PLAYING table in as few requests as possible: `unlock`
+    // refuses at `open` and at `dealing`, and there is nothing to watch at
+    // either.
+    let api = Api::new();
+    let (status, created) = api
+        .call(
+            "POST",
+            "/api/games",
+            Some(json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": SETUP_SEED,
+                "seats": [{ "user": WALKER }, { "user": OTHER }],
+                "id": "watched",
+                "password": WIRE_PASSWORD,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    for (seat, who) in [(0, WALKER), (1, OTHER)] {
+        let (status, kept) = api
+            .call_as(
+                Some(who),
+                "POST",
+                "/api/games/watched/keep",
+                Some(json!({ "seat": seat, "card": 1 })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+    }
+    let (status, unlocked) = api
+        .call_as(
+            Some(GREEN),
+            "POST",
+            "/api/games/watched/unlock",
+            Some(json!({ "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{unlocked}");
+
+    let (doc, _) = api
+        .state
+        .games
+        .store()
+        .read(yokohama_web::store::Doc::Table, "watched")
+        .expect("a readable store")
+        .expect("the table document the unlock wrote");
+    assert!(
+        doc.contains(GREEN),
+        "the unlock did not write the watcher down — so the search above was looking for a \
+         string nothing in this system records, and would pass however the wire behaved",
+    );
+    // And the unlock's own reply, which IS on the wire, does not name them.
+    assert!(
+        !serde_json::to_string(&unlocked).expect("serializable").contains(GREEN),
+        "the request that added a watcher to the roster answered with the roster in it",
     );
 }
 
