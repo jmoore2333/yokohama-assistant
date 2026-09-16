@@ -35,7 +35,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
-import type { Screen } from "./harness";
+import type { Affordance, Screen } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -234,12 +234,16 @@ test("two people at two browsers play to a winner and neither sees the other's h
     const applied = await appliedEvents();
     if (applied === lastApplied) return;
     lastApplied = applied;
-    watchChecks += 1;
     await expect(
       c.locator(".turn-account li[data-event]").last(),
       `the watcher's account reaches event ${applied - 1}`,
     ).toHaveAttribute("data-event", String(applied - 1), { timeout: 30_000 });
     expect(await ownHand(c), "the watcher still holds no hand").toEqual([]);
+    // **Counted AFTER the assertions, never before** (review I-1): a counter
+    // incremented on the way in counts holds ATTEMPTED, and the anti-vacuity
+    // line at the bottom would then pass on a run in which every one of them
+    // failed.
+    watchChecks += 1;
 
     if (watchChecks % 20 === 0) {
       // **The claim R-3.2 makes, and the two things that would make it hollow.**
@@ -288,17 +292,29 @@ test("two people at two browsers play to a winner and neither sees the other's h
     // `act` finds no affordance at all or the control it resolved is detached
     // under it. Neither is a defect in a product that is behaving correctly —
     // what would be is a screen that still offers a move nobody can take.
+    let acted: Affordance | null = null;
     try {
-      if ((await act(pages[who], screen, pick)) !== null) {
-        // **The watcher is held to THIS move before the walk takes another.**
-        // Asked afterwards, in a batch, it would only ever be held to the last
-        // one — and an account that fell behind for fifty moves and caught up
-        // would read exactly like one that never fell behind at all.
-        await watch(pages[who]);
-        return;
-      }
+      acted = await act(pages[who], screen, pick);
     } catch (e) {
       if (hasMove(await readScreen(pages[who]))) throw e;
+      return;
+    }
+    if (acted !== null) {
+      // **The watcher is held to THIS move before the walk takes another, and
+      // OUTSIDE the catch above** (review I-1).
+      //
+      // Asked afterwards, in a batch, it would only ever be held to the last
+      // move — and an account that fell behind for fifty moves and caught up
+      // would read exactly like one that never fell behind at all. But the
+      // first version of this put the hold INSIDE the click-race `try`, and
+      // that catch forgives anything the acting screen no longer has a move
+      // for: after a move that ENDS A TURN the acting page shows the watching
+      // prompt, `hasMove` is false, and every one of the watcher's assertions —
+      // the account's index, its empty hand, the `/events` count, the stream
+      // count, the tab's visibility — was discarded with a `return`. The catch
+      // is for ONE thing, a click that raced the poll and missed, and it now
+      // wraps only the click.
+      await watch(pages[who]);
       return;
     }
     if (hasMove(await readScreen(pages[who]))) throw await deadEnd(pages[who], { id }, moves);
