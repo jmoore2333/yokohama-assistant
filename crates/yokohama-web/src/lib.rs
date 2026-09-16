@@ -1750,6 +1750,10 @@ async fn stream(
 /// The lobby refetches all its lists on any bump instead, which is table
 /// documents and no session.
 ///
+/// The channel's VALUE carries a second counter since M6.4 ([`signal::House`]),
+/// and this frame still writes `seq` alone: the house chat is not on the wire
+/// until the route that serves it is.
+///
 /// **Nothing on connect**, which is what `from_changes` buys and `new` would
 /// lose: the lobby has just fetched its lists to render at all, and a frame at
 /// connect would make it fetch them again on every navigation.
@@ -1764,9 +1768,9 @@ async fn house_stream(
     use tokio_stream::StreamExt;
 
     let rx = state.games.signals().subscribe_house();
-    let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|seq| {
+    let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
         Ok::<_, std::convert::Infallible>(
-            Event::default().event("house").data(format!("{{\"seq\":{seq}}}")),
+            Event::default().event("house").data(format!("{{\"seq\":{}}}", h.seq)),
         )
     });
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))

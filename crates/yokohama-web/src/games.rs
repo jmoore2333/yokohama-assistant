@@ -24,6 +24,7 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
+use crate::chat::ChatLimits;
 use crate::signal::Signals;
 use crate::store::{Doc, GameId, Store, Version, WriteError};
 use crate::table::{TableStatus, TurnMirror};
@@ -160,6 +161,29 @@ pub struct Games {
     /// it to answer — so a failed or refused write bumps nothing, and every
     /// call below sits on a success path.
     pub(crate) signals: Signals,
+    /// The newest chat number per table this process has seen (M6.4, R-plan-5):
+    /// seeded from the document on a miss, advanced by every append, dropped by
+    /// a delete and by a create.
+    ///
+    /// It exists so the count a signal frame carries costs no document parse
+    /// per bump per connection — a stream's per-bump closure reads it, and with
+    /// twenty watchers on a table the alternative is twenty parses of the same
+    /// file for one message.
+    ///
+    /// **Per PROCESS.** A second process's appends are invisible here until the
+    /// store is a database (M6.5); the DOCUMENT is always the authority and
+    /// every page is served from it.
+    pub(crate) chat_last: Mutex<HashMap<GameId, u64>>,
+    /// Serializes the house's appends against each other.
+    ///
+    /// Its own mutex because the house is not a table: it has no `lock_for`
+    /// entry, and `table_lock` is the id space's, which the house does not
+    /// enter. Two people talking in the lobby are otherwise a lost message —
+    /// both read `last`, both write `last + 1`, and the compare-and-swap saves
+    /// only whichever of them the store sees second.
+    pub(crate) house_lock: Mutex<()>,
+    /// The retention numbers (R-6.4.8), from the launch variables.
+    pub(crate) limits: ChatLimits,
 }
 
 /// How many `Repl`s stay resident.
@@ -181,6 +205,13 @@ const MAX_RESIDENT: usize = 64;
 
 impl Games {
     pub fn new(rules: Arc<Rules>, store: Arc<dyn Store>) -> Self {
+        Self::with_limits(rules, store, ChatLimits::default())
+    }
+
+    /// [`Games::new`] with the chat's retention numbers given rather than
+    /// defaulted — how `main` passes the launch variables, and how a test asks
+    /// for a keep small enough to watch a trim happen.
+    pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
         Self {
             rules,
             store,
@@ -190,11 +221,20 @@ impl Games {
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
             signals: Signals::default(),
+            chat_last: Mutex::new(HashMap::new()),
+            house_lock: Mutex::new(()),
+            limits,
         }
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
+    }
+
+    /// The chat's retention numbers, for the route that has to WORD the text
+    /// cap in a refusal rather than restate it.
+    pub fn limits(&self) -> ChatLimits {
+        self.limits
     }
 
     /// The change signal every write site bumps ([`Games::signals`] the field).

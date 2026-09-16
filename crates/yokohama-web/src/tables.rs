@@ -30,6 +30,10 @@ use yokohama_core::{
     SeedSchedule, StartingOrderChoice,
 };
 
+// `check_shape` under an alias: this module has one of its own, for the TABLE
+// document, and two rules with one name in one file is how the wrong one comes
+// to be called.
+use crate::chat::{check_shape as check_chat_shape, check_text, Author, ChatDoc, Message, HOUSE};
 use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
@@ -756,6 +760,12 @@ impl Games {
         };
         match self.write_table(&doc, None) {
             Ok(_) => {
+                // A name reopened starts its chat at nothing. `delete` drops the
+                // entry too, so in that path this is belt and braces; it is the
+                // one that still holds when the documents left by some other
+                // route, which is the same reason the tombstone set is cleared
+                // a few lines above.
+                self.chat_last.lock().expect("games lock").remove(&doc.id);
                 self.signals.bump(&doc.id);
                 Ok(doc.view(creator))
             }
@@ -794,6 +804,174 @@ impl Games {
         let json = serde_json::to_string_pretty(doc)
             .map_err(|e| WriteError::Io(format!("the table document does not serialize: {e}")))?;
         self.store.write_if_version(Doc::Table, &doc.id, &json, expected)
+    }
+
+    // -----------------------------------------------------------------------
+    // M6.4 — the chat (spec §2.4, R-6.4.7, R-6.4.8, R-6.4.9, R-6.4.15)
+    // -----------------------------------------------------------------------
+
+    /// The stored chat document, parsed AND shape-checked — the table's at
+    /// `id` when `players` is given, the house's when it is not.
+    ///
+    /// **An absent document is an EMPTY one and never a refusal**, unlike
+    /// [`Games::read_table`]: a table nobody has spoken at has no chat file,
+    /// and every route below would otherwise have to tell an empty chat from a
+    /// missing table itself. The version comes back `None` with it, which is
+    /// exactly what the first write wants to create rather than replace.
+    ///
+    /// **A document that will not PARSE is a `Server` failure**, for
+    /// `read_table`'s reason read one document along: answering "no messages"
+    /// for a file that is sitting right there is how the next append overwrites
+    /// it and numbers from 1 again.
+    ///
+    /// `players` is the seat bound the shape rule applies, so the caller's own
+    /// table document is what decides it — see [`crate::chat::check_shape`].
+    pub(crate) fn read_chat(
+        &self,
+        id: &str,
+        players: Option<u8>,
+    ) -> Result<(ChatDoc, Option<Version>), GameError> {
+        let doc = if players.is_some() { Doc::Chat } else { Doc::House };
+        let key = if players.is_some() { id } else { HOUSE };
+        let Some((json, version)) = self.store.read(doc, key).map_err(GameError::Server)? else {
+            return Ok((ChatDoc::empty(key), None));
+        };
+        let parsed: ChatDoc = serde_json::from_str(&json)
+            .map_err(|e| GameError::Server(format!("{key:?}'s chat document does not parse: {e}")))?;
+        check_chat_shape(&parsed, players)
+            .map_err(|why| GameError::Server(format!("{key:?}'s chat document is malformed: {why}")))?;
+        Ok((parsed, Some(version)))
+    }
+
+    /// The compare-and-swap, with the shape rule applied ON THE WAY OUT.
+    ///
+    /// The table document's writer does not do that and does not need to: this
+    /// one appends to what it just read, on every message, so a malformed
+    /// author written once would poison every later read of that document under
+    /// the table's own lock. Checking here makes a bad message a refusal to the
+    /// caller who sent it instead.
+    fn write_chat(
+        &self,
+        doc: &ChatDoc,
+        players: Option<u8>,
+        expected: Option<Version>,
+    ) -> Result<Version, GameError> {
+        check_chat_shape(doc, players).map_err(GameError::Server)?;
+        let kind = if players.is_some() { Doc::Chat } else { Doc::House };
+        let json = serde_json::to_string_pretty(doc)
+            .map_err(|e| GameError::Server(format!("the chat document does not serialize: {e}")))?;
+        match self.store.write_if_version(kind, &doc.id, &json, expected) {
+            Ok(v) => Ok(v),
+            Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
+                "{:?}'s chat changed while this message was in flight",
+                doc.id
+            ))),
+            Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+        }
+    }
+
+    /// **The one writer** (R-6.4.15 (b)): the text rule, the table's own lock,
+    /// the read, the append, the trim, the compare-and-swap, THEN the bump.
+    ///
+    /// The lock is the TABLE's and not a lock of the chat's own, because a
+    /// message is a write at a table and the thing being serialized is
+    /// read-then-write against one document. Two appends that both read `last`
+    /// and both wrote `last + 1` would leave one message on the floor with the
+    /// store's version check as the only witness.
+    ///
+    /// **The bump is last, after the write, and a gated cell proves it** —
+    /// `a_chat_bump_precedes_no_write`. A bump ahead of its write sends every
+    /// browser at the table to fetch a message that has not landed, and the
+    /// message that then lands is announced to nobody.
+    pub fn chat_append(
+        &self,
+        id: &str,
+        author: Author,
+        text: &str,
+    ) -> Result<Message, GameError> {
+        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let lock = self.lock_for(id);
+        let _serialized = lock.lock().expect("table lock");
+        let (table, _) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        let (mut doc, version) = self.read_chat(id, Some(table.players))?;
+        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
+        doc.last = message.seq;
+        doc.messages.push(message.clone());
+        doc.trim(self.limits.keep);
+        self.write_chat(&doc, Some(table.players), version)?;
+        self.chat_last.lock().expect("games lock").insert(id.to_string(), doc.last);
+        // AFTER the write, never before (the gated cell).
+        self.signals.bump_table(id);
+        Ok(message)
+    }
+
+    /// The same for the house, under the house's own lock and bumping the
+    /// house's CHAT counter (R-6.4.7).
+    ///
+    /// `None` for the player count is what makes a seat author a refusal here:
+    /// the house has no seats, and the shape rule says so rather than this
+    /// function restating it.
+    pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
+        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let _serialized = self.house_lock.lock().expect("house lock");
+        let (mut doc, version) = self.read_chat(HOUSE, None)?;
+        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
+        doc.last = message.seq;
+        doc.messages.push(message.clone());
+        doc.trim(self.limits.keep);
+        self.write_chat(&doc, None, version)?;
+        self.signals.bump_house_chat();
+        Ok(message)
+    }
+
+    /// The retained messages numbered above `after`, and `last`.
+    ///
+    /// `last` is the document's and not the page's, so a client that asks from
+    /// a cursor the trim has passed is told what the newest number is rather
+    /// than being left to infer it from an empty page.
+    pub fn chat_page(&self, id: &str, after: u64) -> Result<(Vec<Message>, u64), GameError> {
+        let (table, _) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        let (doc, _) = self.read_chat(id, Some(table.players))?;
+        Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
+    }
+
+    pub fn house_page(&self, after: u64) -> Result<(Vec<Message>, u64), GameError> {
+        let (doc, _) = self.read_chat(HOUSE, None)?;
+        Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
+    }
+
+    /// The count a signal frame carries (R-plan-5), from the cache or from one
+    /// read of the document.
+    ///
+    /// **A store that cannot be read answers 0 and is NOT cached**, so the next
+    /// call retries. Every route beside this one refuses on that failure; this
+    /// one is called from a stream's per-bump closure, which has nowhere to put
+    /// a refusal, and a wrong count sends a client to a route that WILL refuse
+    /// properly.
+    ///
+    /// **An absent document answers 0 and IS cached** — that is not a failure,
+    /// it is a table nobody has spoken at, and `create` and `delete` both drop
+    /// the entry so a reopened name cannot inherit it.
+    pub fn chat_last(&self, id: &str) -> u64 {
+        if let Some(n) = self.chat_last.lock().expect("games lock").get(id) {
+            return *n;
+        }
+        // The player count is not known here and the seat bound is a WRITE-side
+        // and route-side check: passing `None` would refuse every seat author
+        // this server itself wrote. So the document is parsed without the shape
+        // rule and only its `last` is read — and a document that will not parse
+        // reads 0 here while every route that SERVES it says so out loud.
+        let n = match self.store.read(Doc::Chat, id) {
+            Ok(Some((json, _))) => serde_json::from_str::<ChatDoc>(&json).map(|d| d.last).unwrap_or(0),
+            Ok(None) => 0,
+            Err(_) => return 0,
+        };
+        self.chat_last.lock().expect("games lock").insert(id.to_string(), n);
+        n
     }
 
     /// The table as a seated caller may read it, REPAIRED first if it needs it.
@@ -1438,6 +1616,10 @@ impl Games {
         }
         self.written.lock().expect("games lock").remove(id);
         self.live.lock().expect("games lock").remove(id);
+        // The store's own `delete` took the chat document with the record and
+        // the table; the COUNT is this process's cache and goes here, or a name
+        // reopened later numbers from above messages nobody can read.
+        self.chat_last.lock().expect("games lock").remove(id);
         // **`end`, not `bump`**: there is no state left for a woken subscriber
         // to read, so every stream on this table has to close rather than
         // fetch a 404. The house is bumped inside `end`, so a lobby drops the
@@ -1450,6 +1632,7 @@ impl Games {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ChatLimits;
     use crate::games::test_support::*;
     use crate::store::{GameId, MemStore, Store};
     use yokohama_core::GameRecord;
@@ -3738,6 +3921,334 @@ mod tests {
         assert!(house.has_changed().expect("the house channel is open"));
         let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
         assert_eq!(doc.status, TableStatus::Playing, "the state the woken subscriber reads");
+    }
+
+    // ---------------------------------------------------------------------
+    // M6.4 — the append (spec §2.4, §4, R-6.4.7, R-6.4.8, R-6.4.9)
+    // ---------------------------------------------------------------------
+
+    fn red_seat() -> Author {
+        Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) }
+    }
+
+    /// **An append lands, numbers from 1, and bumps the TABLE after its write**
+    /// (spec §2.4).
+    ///
+    /// And not the house: a message at one table is not a change to anybody's
+    /// lobby listing, so a house bump here would send every lobby in the room
+    /// to refetch two lists because two people are talking (R-6.4.7).
+    ///
+    /// The `after = last` tail is the cursor rule the stream depends on: a
+    /// client that has read everything asks again and is told nothing, rather
+    /// than being handed the last message a second time.
+    #[test]
+    fn a_chat_append_writes_then_bumps_the_table_and_not_the_house() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        let mut rx = games.signals().subscribe(&id);
+        let house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        let m = games.chat_append(&id, red_seat(), "  hello ").expect("an append");
+        assert_eq!((m.seq, m.text.as_str()), (1, "hello"));
+        assert!(rx.has_changed().unwrap(), "the table woke");
+        assert!(!house.has_changed().unwrap(), "the house did not (R-6.4.7)");
+        let (page, last) = games.chat_page(&id, 0).expect("a page");
+        assert_eq!((page.len(), last, page[0].seq), (1, 1, 1));
+        assert_eq!(games.chat_last(&id), 1);
+        let (delta, _) = games.chat_page(&id, 1).expect("a page");
+        assert!(delta.is_empty(), "after=last is empty");
+    }
+
+    /// **The text rule is the appender's too** (R-plan-3).
+    ///
+    /// The route applies it to answer 400 with the reason; this end applies it
+    /// because it is the one writer, and a rule enforced only at the door is a
+    /// rule the next caller of this method does not have.
+    #[test]
+    fn an_append_refuses_an_empty_an_over_cap_and_a_control_text() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        for bad in ["   ", "a\tb"] {
+            assert!(
+                matches!(games.chat_append(&id, red_seat(), bad), Err(GameError::BadRequest(_))),
+                "{bad:?}",
+            );
+        }
+        let long = "x".repeat(501);
+        assert!(matches!(
+            games.chat_append(&id, red_seat(), &long),
+            Err(GameError::BadRequest(_))
+        ));
+        assert_eq!(games.chat_last(&id), 0, "nothing landed");
+    }
+
+    /// **The keep trims the OLDEST and `last` keeps counting** (R-6.4.8,
+    /// R-6.4.9).
+    ///
+    /// A number is never reused, so a client holding a cursor taken before the
+    /// trim still means by it what it meant: it asks for everything above 5 and
+    /// is told nothing, rather than being served three messages it has already
+    /// seen under numbers it has already used.
+    #[test]
+    fn the_keep_drops_the_oldest_and_never_reuses_a_number() {
+        let games = Games::with_limits(
+            Arc::new(Rules::standard()),
+            Arc::new(MemStore::default()),
+            ChatLimits { keep: Some(3), text: 500 },
+        );
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        for i in 1..=5 {
+            games.chat_append(&id, red_seat(), &format!("m{i}")).expect("an append");
+        }
+        let (page, last) = games.chat_page(&id, 0).expect("a page");
+        assert_eq!(page.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![3, 4, 5]);
+        assert_eq!(last, 5);
+        assert_eq!(games.chat_last(&id), 5);
+    }
+
+    /// **`all` keeps everything** (R-6.4.8) — the launch variable's other end,
+    /// so the trim is a configured number and not a constant wearing one.
+    #[test]
+    fn keep_all_trims_nothing() {
+        let games = Games::with_limits(
+            Arc::new(Rules::standard()),
+            Arc::new(MemStore::default()),
+            ChatLimits { keep: None, text: 500 },
+        );
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        for i in 1..=600 {
+            games.chat_append(&id, red_seat(), &format!("m{i}")).expect("an append");
+        }
+        assert_eq!(games.chat_page(&id, 0).expect("a page").0.len(), 600);
+    }
+
+    /// **A document longer than the keep is read whole and trimmed on the next
+    /// append, never refused** (R-6.4.8).
+    ///
+    /// Which is what makes lowering the number on a running volume safe: the
+    /// operator restarts with a smaller keep and the tables that were over it
+    /// keep serving, rather than every one of them answering 500 until somebody
+    /// edits a file.
+    #[test]
+    fn an_over_keep_document_is_served_and_trimmed_on_the_next_append() {
+        let store = Arc::new(MemStore::default());
+        let wide = Games::with_limits(
+            Arc::new(Rules::standard()),
+            Arc::clone(&store) as Arc<dyn Store>,
+            ChatLimits { keep: None, text: 500 },
+        );
+        let red = who("red@t.test");
+        let id = wide.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        for i in 1..=10 {
+            wide.chat_append(&id, red_seat(), &format!("m{i}")).expect("an append");
+        }
+        let narrow = Games::with_limits(
+            Arc::new(Rules::standard()),
+            store as Arc<dyn Store>,
+            ChatLimits { keep: Some(4), text: 500 },
+        );
+        assert_eq!(narrow.chat_page(&id, 0).expect("served, not refused").0.len(), 10);
+        narrow.chat_append(&id, red_seat(), "m11").expect("an append");
+        let (page, _) = narrow.chat_page(&id, 0).expect("a page");
+        assert_eq!(page.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![8, 9, 10, 11]);
+    }
+
+    /// **The count is seeded from the document on a cold miss** (R-plan-5).
+    ///
+    /// The second `Games` is this process after a sleep: the stream's per-bump
+    /// closure reads a count it has never written, and a count that started at
+    /// 0 there would tell every reconnecting client that every message it holds
+    /// is newer than the table's.
+    #[test]
+    fn chat_last_is_seeded_from_the_document_when_this_process_has_not_seen_it() {
+        let store = Arc::new(MemStore::default());
+        let first = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let red = who("red@t.test");
+        let id = first.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        first.chat_append(&id, red_seat(), "one").expect("an append");
+        first.chat_append(&id, red_seat(), "two").expect("an append");
+        let second = Games::new(Arc::new(Rules::standard()), store as Arc<dyn Store>);
+        assert_eq!(second.chat_last(&id), 2, "a fresh process reads the document once");
+        assert_eq!(second.chat_last("nothing-here"), 0, "no document, no messages");
+    }
+
+    /// **The house append bumps the house's CHAT counter and no table**, and a
+    /// refused one bumps nothing at all.
+    ///
+    /// The seat author is the refusal worth having here: the house has no
+    /// seats, so a message claiming one would index `colors[seat]` at a table
+    /// that does not exist. It is a `Server` refusal and not a `BadRequest`
+    /// because no route can produce it — the house route builds a `Watcher` —
+    /// so reaching it means this process built a message it should not have.
+    #[test]
+    fn a_house_append_bumps_the_house_chat_counter_only() {
+        let games = games();
+        let mut house = games.signals().subscribe_house();
+        house.borrow_and_update();
+        let m = games
+            .house_append(Author::Watcher { user: "g@t.test".into(), name: Some("G".into()) }, "hi all")
+            .expect("an append");
+        assert_eq!(m.seq, 1);
+        let h = *house.borrow_and_update();
+        assert_eq!((h.seq, h.chat), (0, 1));
+        assert!(
+            matches!(
+                games.house_append(
+                    Author::Seat { seat: 0, user: "r@t.test".into(), name: None },
+                    "x",
+                ),
+                Err(GameError::Server(_)),
+            ),
+            "a seat author is refused at the house by the shape rule",
+        );
+        assert!(!house.has_changed().unwrap(), "a refused append bumps nothing");
+        assert_eq!(house.borrow().chat, 1, "and leaves the counter where it was");
+        let (page, last) = games.house_page(0).expect("a page");
+        assert_eq!((page.len(), last), (1, 1), "and wrote nothing");
+    }
+
+    /// **A delete removes the chat document and forgets the count.**
+    ///
+    /// The document goes with the record and the table inside the store's own
+    /// `delete`; the COUNT is this process's cache and has to be dropped here,
+    /// or a name reopened later starts its numbering above messages nobody can
+    /// read.
+    ///
+    /// The recreate tail is over-determined on purpose and says so: both
+    /// `delete` and `create` drop the entry, so the tail holds if either one
+    /// does. It is here for `create`'s clear, which is the one that still
+    /// stands when a document left by some other route.
+    #[test]
+    fn a_delete_removes_the_chat_and_its_count() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        games.chat_append(&id, red_seat(), "bye").expect("an append");
+        games.delete(&id, &red).expect("a delete");
+        assert!(games.store().read(Doc::Chat, &id).expect("a store").is_none());
+        assert_eq!(games.chat_last(&id), 0);
+
+        games.create(&two_people(&id, CORPUS_SEED), &red).expect("the name is free again");
+        assert_eq!(games.chat_last(&id), 0, "a reopened name starts at nothing");
+        assert!(games.chat_page(&id, 0).expect("a page").0.is_empty());
+    }
+
+    /// A [`MemStore`] that PARKS every chat write and nothing else.
+    ///
+    /// Keyed on the document KIND, which is all the discrimination these two
+    /// cells need: the create that precedes the parked append writes a table,
+    /// and no other chat write is in flight.
+    struct ChatGate {
+        inner: MemStore,
+        at_write: Mutex<std::sync::mpsc::Sender<()>>,
+        go: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Store for ChatGate {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            if doc == Doc::Chat || doc == Doc::House {
+                let _ = self.at_write.lock().expect("the gate").send(());
+                let _ = self.go.lock().expect("the gate").recv();
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A chat bump precedes no write** (spec §2.4): the append's write is
+    /// parked inside the store and the receiver is read QUIET while it sits
+    /// there.
+    ///
+    /// The same property [`a_bump_precedes_no_write`] holds for the flip, and
+    /// unprovable the same way without a gate — in an unparked run the write
+    /// and the bump are one instant apart. A bump sent first sends every
+    /// browser at the table to fetch a message that is not there yet, and the
+    /// message that then lands is announced to nobody.
+    ///
+    /// `has_changed` suffices here where the flip's cell needed a sequence
+    /// comparison: nothing else has bumped this table since the subscribe, so
+    /// a wake mid-park can only be the append's.
+    #[test]
+    fn a_chat_bump_precedes_no_write() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_tx, at_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let store = Arc::new(ChatGate {
+            inner: MemStore::default(),
+            at_write: Mutex::new(at_tx),
+            go: Mutex::new(go_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let red = who("red@t.test");
+        let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
+        let mut rx = games.signals().subscribe(&id);
+        rx.borrow_and_update();
+
+        let writer = {
+            let (games, id) = (Arc::clone(&games), id.clone());
+            std::thread::spawn(move || games.chat_append(&id, red_seat(), "parked"))
+        };
+        at_rx.recv_timeout(Duration::from_secs(10)).expect("the append reaches its write");
+        assert!(!rx.has_changed().unwrap(), "the write is parked and the receiver is QUIET");
+
+        go_tx.send(()).expect("the parked write is listening");
+        writer.join().expect("the thread").expect("the append");
+        assert!(rx.has_changed().unwrap(), "and wakes once it lands");
+    }
+
+    /// The same for the house, whose appender is a different function with a
+    /// different lock and its own bump — so the property has to be shown twice
+    /// or it is shown for one of the two writers.
+    #[test]
+    fn a_house_chat_bump_precedes_no_write() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_tx, at_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let store = Arc::new(ChatGate {
+            inner: MemStore::default(),
+            at_write: Mutex::new(at_tx),
+            go: Mutex::new(go_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let mut house = games.signals().subscribe_house();
+        house.borrow_and_update();
+
+        let writer = {
+            let games = Arc::clone(&games);
+            std::thread::spawn(move || {
+                games.house_append(Author::Watcher { user: "g@t.test".into(), name: None }, "parked")
+            })
+        };
+        at_rx.recv_timeout(Duration::from_secs(10)).expect("the append reaches its write");
+        assert!(!house.has_changed().unwrap(), "quiet while parked");
+
+        go_tx.send(()).expect("listening");
+        writer.join().expect("the thread").expect("the append");
+        assert_eq!(house.borrow_and_update().chat, 1);
     }
 
     // ---------------------------------------------------------------------

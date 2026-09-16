@@ -2,7 +2,14 @@
 //! the house.** A bump is sent AFTER the write it announces lands, never before,
 //! so a subscriber that wakes and reads sees the new state. `watch` coalesces:
 //! a subscriber that missed three bumps sees one — the property wanted per
-//! table, and the reason the house channel carries a bare sequence (R-3.4).
+//! table, and the reason the house channel carries COUNTERS and never a
+//! payload naming a table (R-3.4): two bumps naming two tables inside one wake
+//! would lose one, so a frame that named one would sometimes name the wrong one.
+//!
+//! **Since M6.4 the house carries TWO counters** ([`House`], R-6.4.7): `seq`
+//! for the writes a lobby listing reads and `chat` for a house message. One
+//! channel because a lobby holds one connection; two numbers because a message
+//! must not send every lobby to refetch its lists.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,10 +25,23 @@ pub struct Bump {
     pub end: bool,
 }
 
+/// The house frame's two counters (M6.4, R-6.4.7).
+///
+/// `seq` moves on every write a lobby LISTING reads — a create, a join, a
+/// finalize, a move, a delete — and `chat` moves on a house message and on
+/// nothing else. A lobby woken by a frame compares both against what it holds
+/// and refetches only the half that moved, which is what keeps a room talking
+/// from costing every lobby in it two list fetches per message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct House {
+    pub seq: u64,
+    pub chat: u64,
+}
+
 #[derive(Default)]
 pub struct Signals {
     tables: Mutex<HashMap<GameId, watch::Sender<Bump>>>,
-    house: Mutex<Option<watch::Sender<u64>>>,
+    house: Mutex<Option<watch::Sender<House>>>,
 }
 
 impl Signals {
@@ -33,9 +53,9 @@ impl Signals {
             .clone()
     }
 
-    fn house_sender(&self) -> watch::Sender<u64> {
+    fn house_sender(&self) -> watch::Sender<House> {
         let mut house = self.house.lock().expect("signals lock");
-        house.get_or_insert_with(|| watch::channel(0).0).clone()
+        house.get_or_insert_with(|| watch::channel(House::default()).0).clone()
     }
 
     /// The table's channel only (a keep that does not finalize).
@@ -44,10 +64,16 @@ impl Signals {
         tx.send_modify(|b| b.seq += 1);
     }
 
-    /// The table's channel AND the house.
+    /// The table's channel AND the house's LISTING counter.
     pub fn bump(&self, id: &str) {
         self.bump_table(id);
-        self.house_sender().send_modify(|n| *n += 1);
+        self.house_sender().send_modify(|h| h.seq += 1);
+    }
+
+    /// The house's CHAT counter only — a house message wakes every lobby and
+    /// moves no table listing (M6.4, R-6.4.7).
+    pub fn bump_house_chat(&self) {
+        self.house_sender().send_modify(|h| h.chat += 1);
     }
 
     /// The terminal bump, then the sender is REMOVED so every stream on the
@@ -60,14 +86,14 @@ impl Signals {
                 b.end = true;
             });
         }
-        self.house_sender().send_modify(|n| *n += 1);
+        self.house_sender().send_modify(|h| h.seq += 1);
     }
 
     pub fn subscribe(&self, id: &str) -> watch::Receiver<Bump> {
         self.table_sender(id).subscribe()
     }
 
-    pub fn subscribe_house(&self) -> watch::Receiver<u64> {
+    pub fn subscribe_house(&self) -> watch::Receiver<House> {
         self.house_sender().subscribe()
     }
 
@@ -104,7 +130,30 @@ mod tests {
         assert!(!house.has_changed().unwrap());
         s.bump("t");
         assert!(house.has_changed().unwrap());
-        assert_eq!(*house.borrow_and_update(), 1);
+        assert_eq!(house.borrow_and_update().seq, 1);
+    }
+
+    /// **A house MESSAGE moves the chat counter and leaves the listing counter
+    /// alone** (M6.4, R-6.4.7), and a table write moves the listing counter and
+    /// leaves the chat counter alone.
+    ///
+    /// Two counters on one coalescing channel rather than two channels: a lobby
+    /// holds ONE connection, and the frame has to say which of the two things
+    /// moved, or every house message would send every lobby to refetch its
+    /// lists. The second half of this cell is the half that can fail — a
+    /// `bump_house_chat` that reached for `seq`, or a `bump` that touched
+    /// `chat`, would make the frame's two numbers one number wearing two names.
+    #[test]
+    fn a_house_chat_bump_moves_chat_and_leaves_seq() {
+        let s = Signals::default();
+        let mut house = s.subscribe_house();
+        s.bump_house_chat();
+        assert!(house.has_changed().unwrap());
+        let h = *house.borrow_and_update();
+        assert_eq!((h.seq, h.chat), (0, 1));
+        s.bump("t");
+        let h = *house.borrow_and_update();
+        assert_eq!((h.seq, h.chat), (1, 1), "a table bump leaves the chat counter");
     }
 
     #[test]
