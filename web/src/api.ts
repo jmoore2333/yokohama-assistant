@@ -32,9 +32,20 @@ import type {
  *  exactly the deployment that is hosted. */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** The refusal body as it arrived, parsed — or `null` where the server sent
+   *  nothing, or something that is not JSON.
+   *
+   *  **One caller branches on a FIELD of it, not on the sentence.** A 409 from
+   *  `POST …/join` means two different things: `DealingErrorBody` carries a
+   *  `status`, and that one says the table has moved on and the answer is the
+   *  next screen; a 409 without one says the seat was taken, and the answer is
+   *  to re-read the table. Matching the wording instead would be a client that
+   *  breaks when a sentence is reworded. */
+  readonly body: unknown;
+  constructor(message: string, status: number, body: unknown = null) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -172,7 +183,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     // **Before the throw, so it reaches the door whatever the caller does with
     // the refusal** — including discarding it, which one caller does.
     if (res.status === 401) unauthorized?.(message);
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, parseFailed ? null : parsed);
   }
   if (parseFailed) {
     // A 2xx that is not JSON is this API answering with something it does not
@@ -267,9 +278,19 @@ export const api = {
    *  null together once every seat this caller holds has chosen. */
   deal: (game: string) => call<DealView>("GET", `/api/games/${id(game)}/deal`),
   /** Choose, for one seat the caller holds. The LAST keep at the table starts
-   *  the game, and the reply then reads `status: "playing"`. */
-  keep: (game: string, seat: number, card: 1 | 2) =>
-    call<TableView>("POST", `/api/games/${id(game)}/keep`, { seat, card }),
+   *  the game, and the reply then reads `status: "playing"`.
+   *
+   *  `name` is what THIS seat is called on screen (spec §5.6) — the browser's
+   *  remembered display name, sent with the keep because a person who followed
+   *  a link to a table somebody else opened for them has had no other moment to
+   *  say it. Omitted where there is none: a seat with no name is listed by its
+   *  address, which is the pre-M6.2 shape. */
+  keep: (game: string, seat: number, card: 1 | 2, name?: string) =>
+    call<TableView>("POST", `/api/games/${id(game)}/keep`, {
+      seat,
+      card,
+      ...(name ? { name } : {}),
+    }),
   get: (game: string) => call<ClientState>("GET", `/api/games/${id(game)}`),
   remove: (game: string) => call<null>("DELETE", `/api/games/${id(game)}`),
   /** The one mutation: an option's `number`, or a sub-prompt token. The server

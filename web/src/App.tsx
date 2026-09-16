@@ -11,6 +11,7 @@ import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
 import { NewGame } from "./NewGame";
+import { OpenTable } from "./OpenTable";
 import { navigate, useRoute } from "./route";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { useSignal, type End } from "./signal";
@@ -690,11 +691,34 @@ export function App() {
           who={who}
         />
       );
-    // Task 8 replaces this with `OpenTable`, which is the seat picker a person
-    // following a join link lands on. Until then the lobby is what an open
-    // table draws, which is at least a screen that lists it.
-    if (openTable) return <Lobby who={who} notice={error} />;
-    return <Lobby who={who} notice={error} />;
+    if (openTable)
+      return (
+        <OpenTable
+          game={openTable}
+          me={door.me.user}
+          // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
+          // What the open table knows is that it is no longer open; whether
+          // that is the deal or a game already running is `open`'s own
+          // question, and a table can pass through both while this screen is
+          // up — the last seat fills, both people keep, and the flip this
+          // browser sees is straight to `playing`.
+          //
+          // Safe to call for the id already on screen: the two refs the route
+          // effect reads exist to stop that EFFECT echoing a navigation, and
+          // neither is consulted here.
+          onStarted={() => void open(openTable, true)}
+          onLeave={(sentence) => {
+            // The sentence is the server's — a table deleted under this screen
+            // — and the lobby is where it is shown, for the reason a refused
+            // `#/t/<id>` lands there: a bare screen that answers nothing is the
+            // one place a player cannot act from.
+            setError(sentence ?? null);
+            navigate({ kind: "lobby" });
+          }}
+          who={who}
+        />
+      );
+    return <Lobby me={door.me.user} who={who} notice={error} />;
   }
 
   const players = state.frame.dashboard.find((p) => "Players" in p);

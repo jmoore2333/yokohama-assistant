@@ -1077,7 +1077,8 @@ describe("opening a saved table", () => {
       return undefined;
     });
     render(<App />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "wire" }));
+    // The lobby row is a LINK since M6.2 (R-14).
+    await userEvent.setup().click(await screen.findByRole("link", { name: "wire" }));
     return stub;
   };
 
@@ -1301,7 +1302,7 @@ describe("the route", () => {
     // there says nothing about whether it was cleared — mutation-proven: with
     // the clear removed, this reaches the game and finds the sentence in its
     // deck.
-    await user.click(await screen.findByRole("button", { name: wire.options.id }));
+    await user.click(await screen.findByRole("link", { name: wire.options.id }));
     await screen.findByText(/end triggers:/);
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
   });
@@ -1368,6 +1369,98 @@ describe("the route", () => {
     await screen.findByRole("heading", { name: "Choose your card" });
     expect(stub.matching("GET", "/table")).toHaveLength(1);
     expect(stub.matching("GET", "/deal")).toHaveLength(1);
+  });
+
+  // ---- the open table, and the hand-over BY STATUS (spec §5.4) -------------
+  //
+  // **`#/t/<id>` is whichever of three screens the table's own status makes
+  // it**, and the third one arrived this task. What the open table knows when
+  // it is done is only that the table is not open any more — the last seat
+  // filled — and whether that is the deal or a game already running depends on
+  // whether everyone has kept. So the hand-over RE-OPENS the table and lets
+  // `open` branch, rather than naming a screen it cannot know.
+  it("draws the seat picker for a table that is still filling its seats", async () => {
+    window.location.hash = "#/t/wire";
+    app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
+    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
+    // And NOT the lobby, which is what this branch drew until Task 8.
+    expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
+  });
+
+  it("lands on the DEAL when the table flips to dealing under the screen", async () => {
+    window.location.hash = "#/t/wire";
+    let status: "open" | "dealing" = "open";
+    app((call) => {
+      if (call.path.endsWith("/table"))
+        return status === "open" ? wire.tableOpen : wire.tableDealing;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      return undefined;
+    });
+    // `try`/`finally` is this file's own idiom for a faked clock, and it is not
+    // tidiness: an assertion that throws with fake timers installed hangs every
+    // cell after it in the file.
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+
+      status = "dealing";
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3100);
+      });
+      expect(screen.getByRole("heading", { name: "Choose your card" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **The same tick, the other answer** — and it is the case the brief's
+  // `onDealing` would have got wrong: at a two-seat table the join that fills
+  // the last seat can be followed by both keeps before this browser's next
+  // poll, so the flip this screen sees is straight to `playing`.
+  it("fetches the game when the table flips all the way to playing", async () => {
+    window.location.hash = "#/t/wire";
+    let status: "open" | "playing" = "open";
+    const { stub } = app((call) => {
+      if (call.path.endsWith("/table"))
+        return status === "open" ? wire.tableOpen : wire.table;
+      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
+      if (call.path.endsWith("/events")) return wire.events;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      return undefined;
+    });
+    // **The GAME, by its whole path.** `matching` is a substring test and
+    // `/api/games/wire` is a prefix of `/api/games/wire/table`, so the two
+    // reads this cell is telling apart are indistinguishable to it.
+    const gameReads = () =>
+      stub.calls.filter((c) => c.method === "GET" && c.path === "/api/games/wire");
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      // Anti-vacuity: the game was NOT asked for while the table was open —
+      // that request is a 409 at this status, which is the whole reason `open`
+      // reads the table first.
+      expect(gameReads()).toHaveLength(0);
+
+      status = "playing";
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3100);
+      });
+      expect(screen.getByText(/end triggers:/)).toBeInTheDocument();
+      expect(gameReads()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The other half of the same rule: a game LEFT takes the hash with it, so the

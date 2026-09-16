@@ -882,6 +882,25 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    rather than a control. */
 .lobby .lock { font-size: 11px; }
 .lobby .open-tables li .table-facts { color: var(--fg-dim); }
+/* The row's name is an ANCHOR since M6.2 (R-14) — the row's job is to go to an
+   address, so it carries one — and it wears `button.ghost`'s box, which is
+   styled on the element and so does not reach an `<a>`. Restated here rather
+   than widening `button.ghost` to `.ghost`: every other `.ghost` in this client
+   is a real button, and a selector that stopped naming the element would start
+   styling the `<summary>`s that deliberately do not carry it (see the banner's
+   note above). */
+.lobby .saved li a.row-link {
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
+}
+.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
+
+/* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
+   is the setup screens' own `.setup` box and the rows are their `.field
+   .seat-row`, so the only rule it needs of its own is the list's markers —
+   these are seats, not bullets. */
+.open-table .seats { list-style: none; margin: 0; padding: 0; }
+.open-table .open-table-controls { justify-content: flex-start; }
 
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {

@@ -22,6 +22,11 @@ const lists = (call: ApiCall): Reply | undefined => {
   return undefined;
 };
 
+/** Who this browser is, and who opened every table the corpus carries — so the
+ *  abandon control is on every row, and the cell that wants it absent moves
+ *  `created_by` instead. */
+const ME = "red@wire.test";
+
 function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
   const stub = stubApi((call) => {
     const mine = handler(call);
@@ -30,7 +35,9 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     if (l !== undefined) return l;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
-  render(<Lobby who={<span className="meta who">You are red@wire.test</span>} />);
+  render(
+    <Lobby me={ME} who={<span className="meta who">You are {ME}</span>} />,
+  );
   return { stub, user: userEvent.setup() };
 }
 
@@ -55,14 +62,14 @@ describe("the lobby", () => {
     // table on the server, which here is the same two read from outside.
     expect(within(mine).getAllByRole("listitem")).toHaveLength(wire.games.games.length);
     expect(within(open).getAllByRole("listitem")).toHaveLength(wire.gamesOpen.games.length);
-    expect(within(mine).getByRole("button", { name: "wire" })).toBeInTheDocument();
-    expect(within(open).getByRole("button", { name: "wire2" })).toBeInTheDocument();
+    expect(within(mine).getByRole("link", { name: "wire" })).toBeInTheDocument();
+    expect(within(open).getByRole("link", { name: "wire2" })).toBeInTheDocument();
   });
 
   it("says what each table is doing, and who is at it", async () => {
     show();
     const mine = section("Your games");
-    const dealing = (await within(mine).findByRole("button", { name: "wire" })).closest("li")!;
+    const dealing = (await within(mine).findByRole("link", { name: "wire" })).closest("li")!;
     expect(dealing).toHaveTextContent("2P · dealing");
     // §5.6, on the surface that prints it: the row reads the NAME each seat
     // gave, and the address only where there is none.
@@ -71,7 +78,7 @@ describe("the lobby", () => {
     }
     expect(dealing).toHaveTextContent("Red, Blue");
     // The open row counts the seats rather than guessing a turn.
-    const filling = within(mine).getByRole("button", { name: "wire2" }).closest("li")!;
+    const filling = within(mine).getByRole("link", { name: "wire2" }).closest("li")!;
     expect(filling).toHaveTextContent("2P · open · 1 of 2 seated");
     // And the unnamed seat falls back to the address, on the same screen as the
     // named one above — so the row is reading the field and not a constant.
@@ -90,10 +97,10 @@ describe("the lobby", () => {
       isGamesList(call, "mine") ? { ...wire.games, games: [yours, done] } : undefined,
     );
     const mine = section("Your games");
-    expect((await within(mine).findByRole("button", { name: "yours" })).closest("li")).toHaveTextContent(
+    expect((await within(mine).findByRole("link", { name: "yours" })).closest("li")).toHaveTextContent(
       "your turn",
     );
-    expect(within(mine).getByRole("button", { name: "done" }).closest("li")).toHaveTextContent(
+    expect(within(mine).getByRole("link", { name: "done" }).closest("li")).toHaveTextContent(
       "over · Blue won",
     );
   });
@@ -107,7 +114,7 @@ describe("the lobby", () => {
     // Anti-vacuity: the two rows differ in exactly the field under test.
     expect(locked.locked).toBe(true);
     expect(unlocked.locked).toBe(false);
-    const row = (id: string) => within(open).getByRole("button", { name: id }).closest("li")!;
+    const row = (id: string) => within(open).getByRole("link", { name: id }).closest("li")!;
     expect(
       within(row(locked.id)).getByLabelText("password required"),
     ).toBeInTheDocument();
@@ -125,9 +132,9 @@ describe("the lobby", () => {
         : wire.gamesNext;
     });
     const mine = section("Your games");
-    await within(mine).findByRole("button", { name: "wire" });
+    await within(mine).findByRole("link", { name: "wire" });
     await user.click(within(mine).getByRole("button", { name: "more" }));
-    await within(mine).findByRole("button", { name: "older" });
+    await within(mine).findByRole("link", { name: "older" });
 
     const paged = stub.calls.filter((c) => isGamesList(c, "mine") && c.path.includes("before="));
     expect(paged).toHaveLength(1);
@@ -136,7 +143,7 @@ describe("the lobby", () => {
     // from somewhere else.
     expect(paged[0]!.path).toContain(`before=${encodeURIComponent(wire.gamesNext.next!)}`);
     // The first page is still there, above the one just fetched.
-    expect(within(mine).getByRole("button", { name: "wire" })).toBeInTheDocument();
+    expect(within(mine).getByRole("link", { name: "wire" })).toBeInTheDocument();
     // And the control is gone, because the page it fetched named no successor.
     expect(within(mine).queryByRole("button", { name: "more" })).toBeNull();
   });
@@ -154,15 +161,83 @@ describe("the lobby", () => {
     expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
   });
 
-  // **The row is a LINK, and the hash is what it sets** (spec §5.1). Nothing is
-  // fetched here: which screen a table opens is the route's question, and
-  // `App`'s route effect is what asks the server.
+  // **The row is a LINK, and the hash is what it sets** (spec §5.1, R-14).
+  // Nothing is fetched here: which screen a table opens is the route's
+  // question, and `App`'s route effect is what asks the server.
   it("opens a table by setting the hash, and fetches nothing itself", async () => {
     const { stub, user } = show();
     const mine = section("Your games");
-    await user.click(await within(mine).findByRole("button", { name: "wire" }));
+    const link = await within(mine).findByRole("link", { name: "wire" });
+    // **The address is in the markup, not only in a handler.** That is what
+    // makes the row openable in a new tab and copyable from a context menu —
+    // and it is the half a click assertion alone cannot see, because a button
+    // calling `navigate` reaches the same hash.
+    expect(link).toHaveAttribute("href", "#/t/wire");
+    await user.click(link);
     expect(window.location.hash).toBe("#/t/wire");
     expect(stub.calls.filter((c) => c.path.includes("/api/games/"))).toHaveLength(0);
+  });
+
+  // ---- abandoning a table, from the row (R-13) ------------------------------
+  //
+  // **Re-homed, not new.** This control lived beside each saved game on the
+  // setup screen until the list moved here; M5's own final review is why it
+  // asks twice — the record is gone and there is no undo, and a stray click
+  // beside the table you meant to open would take a different one. The open
+  // table's own screen carries the same control for the table you are looking
+  // at; this is the only way to reach a DEALING or PLAYING one.
+  describe("abandoning a table", () => {
+    it("does not abandon on the first click", async () => {
+      const { stub, user } = show();
+      // Scoped to one section, because a table that is both yours and open is
+      // listed in BOTH — which is the corpus's own shape here.
+      const mine = section("Your games");
+      await user.click(await within(mine).findByRole("button", { name: "abandon wire" }));
+      expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+      expect(
+        within(mine).getByRole("button", { name: "confirm abandon wire" }),
+      ).toBeInTheDocument();
+    });
+
+    it("abandons the table the row names when the second click confirms it", async () => {
+      const { stub, user } = show((call) => (call.method === "DELETE" ? null : undefined));
+      const mine = section("Your games");
+      await user.click(await within(mine).findByRole("button", { name: "abandon wire2" }));
+      await user.click(within(mine).getByRole("button", { name: "confirm abandon wire2" }));
+      // **Matched on the WHOLE path.** `matching` is a substring test and
+      // `/api/games/wire` is a prefix of `/api/games/wire2`, so the two rows
+      // here cannot be told apart by it — which is exactly the confusion this
+      // cell exists to rule out.
+      const deleted = () =>
+        stub.calls.filter((c) => c.method === "DELETE").map((c) => c.path);
+      await waitFor(() => expect(deleted()).toEqual(["/api/games/wire2"]));
+      // And the lists are re-read, so the screen agrees with the store.
+      await waitFor(() =>
+        expect(stub.calls.filter((c) => isGamesList(c, "mine")).length).toBeGreaterThan(1),
+      );
+    });
+
+    it("puts the row back when the second click cancels", async () => {
+      const { stub, user } = show();
+      const mine = section("Your games");
+      await user.click(await within(mine).findByRole("button", { name: "abandon wire" }));
+      await user.click(within(mine).getByRole("button", { name: "cancel abandoning wire" }));
+      expect(within(mine).getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      expect(within(mine).queryByRole("button", { name: "confirm abandon wire" })).toBeNull();
+      expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(0);
+    });
+
+    it("offers nothing to abandon at a table this browser did not open", async () => {
+      const theirs = { ...wire.games.games[0]!, created_by: "someone@else.test" };
+      show((call) =>
+        isGamesList(call, "mine") ? { ...wire.games, games: [theirs] } : undefined,
+      );
+      const mine = section("Your games");
+      // The row is there — this caller sits at the table — and the control is
+      // not, which is the whole claim.
+      expect(await within(mine).findByRole("link", { name: theirs.name! })).toBeInTheDocument();
+      expect(within(mine).queryByRole("button", { name: /abandon/ })).toBeNull();
+    });
   });
 
   it("sends New table to the form", async () => {

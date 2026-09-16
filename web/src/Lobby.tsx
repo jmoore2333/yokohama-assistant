@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "./api";
-import { navigate } from "./route";
+import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
 import type { GamesList, TableView } from "./types";
@@ -43,9 +43,18 @@ function unique(tables: TableView[]): TableView[] {
 }
 
 export function Lobby({
+  me,
   who,
   notice,
 }: {
+  /** Who this browser plays as, from the door.
+   *
+   *  **Only one row control needs it, and it is the destructive one** (R-13):
+   *  a table is abandoned by the person who OPENED it, so the control is drawn
+   *  from `created_by === me` rather than from "you sit here". Passed down
+   *  rather than read from `/api/me` again, because `App` has already asked and
+   *  a second answer is a second thing that can disagree. */
+  me: string;
   who?: ReactNode;
   /** A sentence from OUTSIDE the lobby, shown above its own refusals.
    *
@@ -67,6 +76,15 @@ export function Lobby({
    *  then the polled list's own. */
   const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
   const pageInFlight = useRef(false);
+  /** The table whose Abandon has been clicked ONCE, or `null` (R-13).
+   *
+   *  **By id, so the confirmation cannot be about a different row.** This
+   *  control came back from the setup screen's saved list, where M5's own final
+   *  review found data loss on a single click: the record is gone and there is
+   *  no undo, and the Game menu had just put a running game one click away from
+   *  this list. Both buttons name the table for the same reason. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const removeInFlight = useRef(false);
 
   const take = useCallback((v: Lists) => {
     setLists(v);
@@ -104,19 +122,43 @@ export function Lobby({
     }
   };
 
+  /** Abandon a table, and refresh the lists so the screen agrees with the
+   *  store. The same in-flight guard as the pager above, and for the same
+   *  reason: two clicks in one tick would send two DELETEs. */
+  const remove = async (game: string) => {
+    if (removeInFlight.current) return;
+    removeInFlight.current = true;
+    try {
+      await api.remove(game);
+      setConfirming(null);
+      // **The pager is dropped too.** Its pages were fetched around a table
+      // that no longer exists, and a cursor is `<created_at>,<id>` — the id of
+      // a row that has just gone.
+      setPaged(null);
+      take(await fetchLists());
+    } catch (e) {
+      setError(said(e));
+    } finally {
+      removeInFlight.current = false;
+    }
+  };
+
   /** One row: what the table is CALLED, then what it is. The words are
    *  `tables.ts`'s and the facts are `TableFacts`' — the same line the Game menu
    *  draws, so one table cannot read two ways depending on which list you are
-   *  looking at. */
+   *  looking at.
+   *
+   *  **The name is a LINK and not a button** (spec §5.2, R-14). The row's whole
+   *  job is to go to `#/t/<id>`, which is an address — so it is an anchor with
+   *  that address in its `href`, and the browser does the navigating. That is
+   *  what makes the row openable in a new tab, copyable from the context menu
+   *  and readable as a destination by a screen reader; a button with an
+   *  `onClick` calling `navigate` is the same jump with none of it. */
   const row = (t: TableView) => (
     <li key={t.id}>
-      <button
-        type="button"
-        className="ghost"
-        onClick={() => navigate({ kind: "table", id: t.id })}
-      >
+      <a className="ghost row-link" href={hashOf({ kind: "table", id: t.id })}>
         {t.name ?? t.id}
-      </button>
+      </a>
       <TableFacts table={t} />
       {/* A table you need a password for, said BEFORE you click it. The mark is
           labelled rather than left as an emoji: a lock glyph announces as
@@ -127,6 +169,41 @@ export function Lobby({
           🔒
         </span>
       )}
+      {/* **Abandoning is the CREATOR's, at every status** (R-13). It was the
+          setup screen's saved-list control until this cycle; the list moved
+          here, so the control did. A table that is still OPEN can also be
+          abandoned from its own screen, which is where somebody who has just
+          opened one is standing — this is the way to reach the other two. */}
+      {t.created_by === me &&
+        (confirming === t.id ? (
+          <>
+            <button
+              type="button"
+              className="ghost danger"
+              aria-label={`confirm abandon ${t.name ?? t.id}`}
+              onClick={() => void remove(t.id)}
+            >
+              confirm abandon
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              aria-label={`cancel abandoning ${t.name ?? t.id}`}
+              onClick={() => setConfirming(null)}
+            >
+              cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="ghost danger"
+            aria-label={`abandon ${t.name ?? t.id}`}
+            onClick={() => setConfirming(t.id)}
+          >
+            Abandon
+          </button>
+        ))}
     </li>
   );
 

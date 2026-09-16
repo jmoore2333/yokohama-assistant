@@ -130,12 +130,15 @@ export async function signIn(page: Page, email: string = WALKER, url = "/"): Pro
  * substring by default, and the lobby lists a table in both sections when it is
  * both yours and open.
  *
- * **The click only sets the HASH** (§5.1); what the table then draws is `App`'s
- * route effect asking the server, so the caller waits for the screen it wants.
+ * **The row is a LINK** (§5.2, R-14), so the click only sets the HASH; what the
+ * table then draws is `App`'s route effect asking the server, and the caller
+ * waits for the screen it wants. The row also carries an Abandon button for a
+ * table this browser opened, which is why the query names the role as well as
+ * the text.
  */
 export async function openFromList(page: Page, id: string): Promise<void> {
   await expect(page.getByRole("heading", { name: "Lobby" })).toBeVisible();
-  await page.locator(".lobby .saved").first().getByRole("button", { name: id, exact: true }).click();
+  await page.locator(".lobby .saved").first().getByRole("link", { name: id, exact: true }).click();
 }
 
 /**

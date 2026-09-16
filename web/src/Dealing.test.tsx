@@ -19,7 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
-import { ApiError } from "./api";
+import { ApiError, DISPLAY_NAME_KEY } from "./api";
 import { stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
@@ -311,6 +311,64 @@ describe("the dealing screen", () => {
     await screen.findAllByRole("button", { name: /^keep/ });
     await userEvent.setup().click(screen.getByRole("button", { name: "Games" }));
     expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- the name on the keep (spec §5.6) ------------------------------------
+  //
+  // **The last moment this browser can say what it is called.** The form asks
+  // the creator and the open table's seat picker asks whoever sits down there,
+  // but a seat filled at create time BY EMAIL reaches this screen never having
+  // been asked — and the table would then list that person by their address for
+  // the life of the game. The server writes the name onto a seat that has none,
+  // so a keep can never rename somebody.
+  it("posts the name this browser remembers with the keep", async () => {
+    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
+      return dealThen(wire.deal, wire.dealWaiting)(call);
+    });
+    render(<Host />);
+    const picks = await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    await userEvent.setup().click(picks[0]!);
+    await waitFor(() => expect(stub.matching("POST", "/keep")).toHaveLength(1));
+    expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
+      seat: wire.deal.seat,
+      card: 1,
+      name: "Jeremy",
+    });
+  });
+
+  it("posts no name key at all when this browser has none", async () => {
+    // **The KEY, not the value.** `{name: undefined}` serializes away, so an
+    // assertion on the value would pass for a client that sent the key — and
+    // this API refuses an unknown key rather than defaulting it.
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
+      return dealThen(wire.deal, wire.dealWaiting)(call);
+    });
+    render(<Host />);
+    const picks = await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    await userEvent.setup().click(picks[0]!);
+    await waitFor(() => expect(stub.matching("POST", "/keep")).toHaveLength(1));
+    expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
+      seat: wire.deal.seat,
+      card: 1,
+    });
+  });
+
+  // And the other end of §5.6, on the screen that reads it: the seats this
+  // table is waiting on are NAMED. The corpus's second seat is "Blue" at
+  // `blue@wire.test`, so a client reading the wrong field would say the address.
+  it("names the seats it is waiting on, rather than their addresses", async () => {
+    stubApi(dealThen(wire.dealWaiting));
+    render(<Host />);
+    const waiting = await screen.findByText(/waiting on/);
+    const blue = wire.dealWaiting.table.seats[1]!;
+    expect(blue.kind).toBe("human");
+    expect(seatName(blue)).toBe("Blue");
+    expect(waiting).toHaveTextContent("waiting on Blue");
+    expect(waiting.textContent).not.toMatch(/@/);
   });
 
   it("shows a refusal rather than a blank screen", async () => {

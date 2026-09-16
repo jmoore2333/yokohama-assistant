@@ -21,7 +21,7 @@
 // from the same seed, and the game this screen opens shows them all.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, displayName } from "./api";
 import { backArt } from "./art";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
@@ -209,7 +209,15 @@ export function Dealing({
       // human keep finalizes the table server-side, and a client that went back
       // to `GET …/deal` anyway would earn a 409 and sit on a dealing screen
       // until the poll came round.
-      const table = await api.keep(game, deal.seat, card);
+      // **The name rides with the keep** (spec §5.6). A person who followed a
+      // link to a table somebody else opened has had no other moment to say
+      // what they are called: the form asked the CREATOR, and the open table's
+      // seat picker asked whoever took a seat there — but a seat filled at
+      // create time by email reaches this screen never having been asked. The
+      // server writes it only onto a seat that has none, so this cannot rename
+      // anybody. A browser with nothing stored sends no key at all.
+      const named = displayName()?.trim();
+      const table = await api.keep(game, deal.seat, card, named || undefined);
       if (table.status !== "dealing") {
         await start();
       } else {

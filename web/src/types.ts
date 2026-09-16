@@ -553,6 +553,9 @@ export interface GamesList {
 export interface KeepRequest {
   seat: number;
   card: 1 | 2;
+  /** What this seat is called on screen (spec §5.6). The server writes it onto
+   *  the seat only where it has none yet, so a keep never renames somebody. */
+  name?: string;
 }
 
 /** The 409 a session route answers while its table is still open or dealing:

@@ -241,7 +241,11 @@ export async function renderApp(
   // §5.1).** The row is the same row the saved list used to draw, in the
   // section that is now its home; the id is still what names it, because
   // `gamesNamed` clears the corpus row's own name.
-  const open = await view.findByRole("button", { name: state.id });
+  //
+  // **A LINK since M6.2 (R-14)**: the row's job is to go to `#/t/<id>`, so it
+  // carries that address in an `href` and the browser navigates. A `button`
+  // query here would find the row's Abandon control or nothing at all.
+  const open = await view.findByRole("link", { name: state.id });
   const { default: userEvent } = await import("@testing-library/user-event");
   await userEvent.setup().click(open);
   // The banner only exists once a game is loaded, so finding it is the wait.
