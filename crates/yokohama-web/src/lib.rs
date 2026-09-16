@@ -5004,6 +5004,16 @@ mod tests {
         text.split("\n\n").filter(|f| f.starts_with("event:")).collect()
     }
 
+    /// How many heartbeat comments the body carries.
+    ///
+    /// Counted as LINES rather than as occurrences of `"\n:"`, because the very
+    /// first thing a quiet stream writes is a comment with nothing in front of
+    /// it — a substring search anchored on a newline misses it, and on the
+    /// house stream that is the common case rather than an edge one.
+    fn sse_comments(text: &str) -> usize {
+        text.lines().filter(|l| l.starts_with(':')).count()
+    }
+
     /// **The table stream: the current `Events` on connect, a frame per bump,
     /// an `end` on delete — and the connection closes behind it** (spec §3.1).
     ///
@@ -5020,16 +5030,31 @@ mod tests {
     /// function": a hand-built frame with the same keys and a stale count would
     /// pass a key check and fail this.
     ///
-    /// **The 60 ms pauses are not padding.** The first lets the spawned reader
-    /// reach its subscribe before anything is written; the second lets it OBSERVE
-    /// the move's frame before the delete, because `watch` coalesces and an
+    /// **The pauses are not padding, and the three of them buy different
+    /// things.** The first lets the spawned reader reach its subscribe before
+    /// anything is written. The 60 ms one after the move lets the reader
+    /// OBSERVE that frame before the delete, because `watch` coalesces and an
     /// `end` sent into an unread slot would replace the move's bump rather than
-    /// follow it. Without it this cell would be asserting that a coalescing
-    /// channel does not coalesce.
+    /// follow it — without it this cell would be asserting that a coalescing
+    /// channel does not coalesce. The third is a QUIET window in which the
+    /// server is asked for nothing at all, so the heartbeat has to fire on its
+    /// own more than once.
+    ///
+    /// **The read deadline is not a budget and must not become one.** The loop
+    /// in [`stream_frames`] stops the instant the body closes, which on the
+    /// passing path happens well inside a second — so the deadline is reached
+    /// ONLY when this cell is already failing, and it is set at ten seconds so
+    /// that a loaded machine reports the real failure rather than a timeout
+    /// dressed as one. An earlier draft budgeted 600 ms for a window that had
+    /// to contain two frame builds, a move, a delete and two sleeps; that is a
+    /// cell racing the clock, and this suite runs in CI.
     ///
     /// The heartbeat is read off the WIRE at a 50 ms cadence, which is the only
     /// reason [`AppState::in_memory_with_heartbeat`] exists: nothing on a built
-    /// `Sse` is inspectable (R-3.12).
+    /// `Sse` is inspectable (R-3.12). **TWO of them are required, not one** —
+    /// R-3.12 is a CADENCE, and a keep-alive that fired once and stopped would
+    /// satisfy a count of one while leaving every real connection to be closed
+    /// by the edge at 100 s.
     #[tokio::test]
     async fn the_stream_writes_the_current_events_on_connect_then_one_frame_per_bump_and_an_end_on_delete(
     ) {
@@ -5044,11 +5069,11 @@ mod tests {
                 s,
                 "/api/games/wire/stream",
                 "red@wire.test",
-                std::time::Duration::from_millis(600),
+                std::time::Duration::from_secs(10),
             )
             .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // The comparator, taken while the reader is connected and the table is
         // untouched — see the doc above on why it cannot be taken at the end.
@@ -5072,6 +5097,9 @@ mod tests {
         let played = after_move["events"].as_u64().expect("an event count");
         assert!(played > 0, "the move applied nothing, so there is no bump to watch: {after_move}");
         tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        // The quiet window: nothing is asked of the server here, so every
+        // comment line after this point is the keep-alive's own doing.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
         state
             .games
@@ -5101,7 +5129,12 @@ mod tests {
         assert!(last.contains("deleted"), "{text}");
         assert!(ended, "the end frame arrived but the body stayed open: {text:?}");
 
-        assert!(text.contains("\n:"), "at least one heartbeat comment in 600 ms at 50 ms: {text}");
+        assert!(
+            sse_comments(&text) >= 2,
+            "a cadence, not one comment: {} heartbeats at 50 ms over a run with a 250 ms quiet \
+             window: {text:?}",
+            sse_comments(&text),
+        );
         assert!(!text.contains("\nid:") && !text.contains("\nretry:"), "R-3.14: {text}");
     }
 
@@ -5167,41 +5200,64 @@ mod tests {
     /// lose, and it is asserted by COUNT: exactly one frame for exactly one
     /// create. A stream built the other way would have two and still look
     /// healthy.
+    ///
+    /// **This cell genuinely needs a wall-clock window**, because the house
+    /// stream never ends and "exactly one frame" is a claim about a PERIOD: the
+    /// reader has to sit past the create long enough that a second frame would
+    /// have arrived. So the window is two seconds and the cost is paid every
+    /// run — there is no early exit to have.
+    ///
+    /// **The expensive create is therefore moved OUT of it.** A create builds a
+    /// table, draws a seed, deals and writes, and an earlier draft had to fit
+    /// all of that inside 300 ms or read zero frames and fail. A warm-up create
+    /// runs BEFORE the reader is spawned — its bump is invisible to the reader,
+    /// which is `from_changes`'s whole point and is itself part of what this
+    /// cell says — so the counted create inside the window runs warm.
     #[tokio::test]
     async fn the_house_stream_writes_nothing_on_connect_and_a_seq_per_table_write() {
         let state = Arc::new(AppState::in_memory_with_heartbeat(
             std::time::Duration::from_millis(50),
         ));
-        let s = Arc::clone(&state);
-        let reader = tokio::spawn(async move {
-            stream_frames(s, "/api/stream", WHO, std::time::Duration::from_millis(300)).await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-
-        let (status, table) = post_as(
-            &state,
-            WHO,
-            "/api/games",
+        let table_body = |id: &str| {
             serde_json::json!({
                 "players": 2,
                 "colors": ["Red", "Blue"],
                 "start_seat": 0,
                 "seed": "20260831",
                 "seats": [{ "user": WHO }, { "bot": true }],
-                "id": "housed",
-            }),
-        )
-        .await;
+                "id": id,
+            })
+        };
+        // Before the reader exists: it warms every path the counted create
+        // below takes, and its own bump is one this reader must never see.
+        let (status, warm) = post_as(&state, WHO, "/api/games", table_body("warm")).await;
+        assert_eq!(status, StatusCode::CREATED, "{warm}");
+
+        let s = Arc::clone(&state);
+        let reader = tokio::spawn(async move {
+            stream_frames(s, "/api/stream", WHO, std::time::Duration::from_secs(2)).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let (status, table) = post_as(&state, WHO, "/api/games", table_body("housed")).await;
         assert_eq!(status, StatusCode::CREATED, "{table}");
 
         let (status, text, ended) = reader.await.expect("the reader task");
         assert_eq!(status, StatusCode::OK);
         assert!(!ended, "the house stream has no end and must stay open: {text:?}");
         let frames = sse_frames(&text);
-        assert_eq!(frames.len(), 1, "exactly the create's bump, none on connect: {text}");
+        assert_eq!(
+            frames.len(),
+            1,
+            "exactly the counted create's bump — not the warm-up's, and none on connect: {text:?}",
+        );
         assert!(frames[0].starts_with("event: house"), "{text}");
         assert!(frames[0].contains("\"seq\":"), "{text}");
-        assert!(text.contains("\n:") || text.starts_with(':'), "a heartbeat at 50 ms: {text:?}");
+        assert!(
+            sse_comments(&text) >= 2,
+            "a cadence, not one comment: {} heartbeats at 50 ms over two seconds: {text:?}",
+            sse_comments(&text),
+        );
         assert!(!text.contains("\nid:") && !text.contains("\nretry:"), "R-3.14: {text}");
     }
 

@@ -357,7 +357,10 @@ export interface ClientState {
 export interface Events {
   events: number;
   to_move: PlayerId | null;
-  status: "dealing" | "playing" | "over";
+  /** `open` joined the union in M6.3 (R-3.3): a table whose seats are still
+   *  filling has no record, and the open-table screen watches this endpoint
+   *  for its own start exactly as the setup screen watches for `dealing`. */
+  status: "open" | "dealing" | "playing" | "over";
   your_turn: boolean;
 }
 
