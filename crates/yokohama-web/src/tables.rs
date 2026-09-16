@@ -715,7 +715,10 @@ impl Games {
             lock: req.password.as_deref().map(str::trim).map(Lock::new),
         };
         match self.write_table(&doc, None) {
-            Ok(_) => Ok(doc.view(creator)),
+            Ok(_) => {
+                self.signals.bump(&doc.id);
+                Ok(doc.view(creator))
+            }
             Err(WriteError::Conflict { .. }) => {
                 Err(GameError::BadRequest(format!("a game named {:?} already exists", doc.id)))
             }
@@ -888,7 +891,16 @@ impl Games {
         doc.status = TableStatus::Playing;
         doc.turn = Some(turn);
         match self.write_table(&doc, Some(version)) {
-            Ok(version) => Ok((doc, version)),
+            Ok(version) => {
+                // **This is `finalize`'s bump too**, and there is exactly one
+                // because there is exactly one write: `finalize` ends by
+                // calling this function, so a bump of its own would announce
+                // the same flip twice. A `watch` coalesces, so the second
+                // would be harmless — and it would still be a bump for a write
+                // that did not happen, which is the rule this file keeps.
+                self.signals.bump(id);
+                Ok((doc, version))
+            }
             // Another writer flipped it first. Its answer is as good as ours —
             // the record is the same record — so report what is there.
             Err(WriteError::Conflict { .. }) => self
@@ -1029,7 +1041,13 @@ impl Games {
             doc.status = TableStatus::Dealing;
         }
         match self.write_table(&doc, Some(version)) {
-            Ok(_) => Ok(doc.view(user)),
+            Ok(_) => {
+                // The house too: a seat filled is a row on the open list that
+                // changed, and a join that FILLED the table is a row that left
+                // it — the same write, so the same bump.
+                self.signals.bump(id);
+                Ok(doc.view(user))
+            }
             // Somebody took this seat between the read and here. The stored
             // table is the table — `create`'s rule and `finalize`'s — so the
             // answer is a conflict and not a retry.
@@ -1125,6 +1143,11 @@ impl Games {
             }
             Err(WriteError::Io(e)) => return Err(GameError::Server(e)),
         }
+        // **The TABLE alone** (spec §2): the dealing screen's "waiting on"
+        // line has moved and no lobby row has. If this keep is the last one,
+        // the finalize below reaches the house through `flip_to_playing` —
+        // which is a second write and therefore rightly a second bump.
+        self.signals.bump_table(id);
         if doc.all_humans_kept() {
             let (doc, _) = self.finalize(doc)?;
             return Ok(doc.view(user));
@@ -1304,6 +1327,11 @@ impl Games {
         }
         self.written.lock().expect("games lock").remove(id);
         self.live.lock().expect("games lock").remove(id);
+        // **`end`, not `bump`**: there is no state left for a woken subscriber
+        // to read, so every stream on this table has to close rather than
+        // fetch a 404. The house is bumped inside `end`, so a lobby drops the
+        // row.
+        self.signals.end(id);
         Ok(())
     }
 }
@@ -3285,5 +3313,302 @@ mod tests {
         games.create(&two_people("d", CORPUS_SEED), &who("red@t.test")).unwrap();
         assert!(matches!(games.table_for_anyone("d", &stranger), Err(GameError::Forbidden(_))));
         assert!(matches!(games.table_for_anyone("nope", &stranger), Err(GameError::NotFound(_))));
+    }
+
+    /// **A create bumps the table and the house** (spec §2).
+    ///
+    /// The house because a new table belongs on somebody's lobby; the table's
+    /// own channel because `subscribe` makes a sender for an id nobody has
+    /// written yet, so a client that opened a link before the table existed
+    /// wakes on its first write rather than waiting for its second.
+    #[test]
+    fn a_create_bumps_the_table_and_the_house() {
+        let games = games();
+        let mut rx = games.signals().subscribe("made");
+        let house = games.signals().subscribe_house();
+        assert_eq!(rx.borrow().seq, 0, "nothing has happened at this id yet");
+
+        games.create(&req("made"), &who("red@t.test")).expect("a table");
+
+        assert!(rx.has_changed().expect("the table channel is open"));
+        assert_eq!(rx.borrow_and_update().seq, 1);
+        assert!(house.has_changed().expect("the house channel is open"));
+        // The state a woken subscriber reads is the state after the write.
+        assert!(games.read_table("made").expect("a readable store").is_some());
+    }
+
+    /// **A create that is REFUSED bumps nothing.** The refusal here is the
+    /// occupied name, which is the one `create` raises AFTER it has drawn a
+    /// seed and built a document and BEFORE it writes — the window a bump
+    /// placed anywhere but the success arm falls into.
+    #[test]
+    fn a_refused_create_bumps_nothing() {
+        let games = games();
+        let red = who("red@t.test");
+        games.create(&req("twice"), &red).expect("a table");
+
+        let rx = games.signals().subscribe("twice");
+        let house = games.signals().subscribe_house();
+        games.create(&req("twice"), &red).expect_err("the name is taken");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
+    }
+
+    /// **A join bumps the table and the house**: a seat filled is something
+    /// the open table's own screen shows, and a table that left the open list
+    /// is something the lobby shows.
+    #[test]
+    fn a_join_bumps_the_table_and_the_house() {
+        let games = games();
+        open_two(&games, "j", None);
+        let mut rx = games.signals().subscribe("j");
+        let mut house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        house.borrow_and_update();
+
+        games
+            .join("j", &who("blue@t.test"), PlayerId::new(1), None, None)
+            .expect("the open seat");
+
+        assert!(rx.has_changed().expect("the table channel is open"));
+        assert!(house.has_changed().expect("the house channel is open"));
+        let (doc, _) = games.read_table("j").expect("a readable store").expect("the table");
+        assert_eq!(doc.status, TableStatus::Dealing, "the seat that was filled is on the store");
+    }
+
+    /// **A join that is REFUSED bumps nothing**, driven through the wrong
+    /// password — a refusal that happens after the table has been read and
+    /// the seat found open, so nothing but the write itself separates it from
+    /// the success arm.
+    #[test]
+    fn a_refused_join_bumps_nothing() {
+        let games = games();
+        open_two(&games, "jr", Some("hunter2"));
+        let rx = games.signals().subscribe("jr");
+        let house = games.signals().subscribe_house();
+
+        games
+            .join("jr", &who("blue@t.test"), PlayerId::new(1), None, Some("nope"))
+            .expect_err("the wrong password");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
+    }
+
+    /// **A keep that does not finalize bumps the TABLE and not the house**
+    /// (spec §2).
+    ///
+    /// Nothing a lobby row shows has changed — the table is still dealing,
+    /// still at the same seats — but the dealing screen's "waiting on" line
+    /// has, so the two channels answer differently and this is the one site
+    /// where they do.
+    ///
+    /// **Not the last keep**, deliberately: the finalize that a last keep
+    /// triggers DOES bump the house, so a cell written over a 1-human table
+    /// would assert the opposite of what it claims to and pass.
+    #[test]
+    fn a_keep_that_does_not_finalize_bumps_the_table_and_not_the_house() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        games.create(&two_people("k", CORPUS_SEED), &red).expect("a table");
+        let mut rx = games.signals().subscribe("k");
+        let mut house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        house.borrow_and_update();
+
+        games.keep("k", &red, PlayerId::new(0), 1, None).expect("red's keep");
+
+        assert!(rx.has_changed().expect("the table channel is open"), "the dealing screen moved");
+        assert!(!house.has_changed().expect("the house channel is open"), "the lobby did not");
+        let (doc, _) = games.read_table("k").expect("a readable store").expect("the table");
+        assert_eq!(doc.keeps, vec![Some(1), None], "the keep a woken subscriber reads");
+        // The premise: this keep was NOT the last one.
+        assert_eq!(doc.status, TableStatus::Dealing);
+
+        // And the LAST keep, through `finalize` -> `flip_to_playing`, reaches
+        // the house.
+        games.keep("k", &blue, PlayerId::new(1), 1, None).expect("blue's keep");
+        assert!(house.has_changed().expect("the house channel is open"), "the finalize did");
+        let (doc, _) = games.read_table("k").expect("a readable store").expect("the table");
+        assert_eq!(doc.status, TableStatus::Playing);
+    }
+
+    /// **A keep that is REFUSED bumps nothing**, driven through a second keep
+    /// at a seat that has already chosen.
+    #[test]
+    fn a_refused_keep_bumps_nothing() {
+        let games = games();
+        let red = who("red@t.test");
+        games.create(&two_people("kr", CORPUS_SEED), &red).expect("a table");
+        games.keep("kr", &red, PlayerId::new(0), 1, None).expect("red's keep");
+
+        let rx = games.signals().subscribe("kr");
+        let house = games.signals().subscribe_house();
+        games.keep("kr", &red, PlayerId::new(0), 2, None).expect_err("seat 0 has already chosen");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
+    }
+
+    /// **A delete ENDS the table's channel and bumps the house.**
+    ///
+    /// Two different things, and both are the point: every stream open on the
+    /// table has to close (there is no table left to serve), and every lobby
+    /// has to drop the row. The terminal bump carries `end: true`, which is
+    /// the only way a subscriber can tell "go and read it again" from "there
+    /// is nothing to read".
+    ///
+    /// **The channel then CLOSES, and the order of the two assertions below
+    /// is what says so.** `end` drops the sender after modifying the value, so
+    /// the terminal bump is readable — a `watch` receiver keeps the last value
+    /// past its sender — while `has_changed` answers `Err`. A cell that asked
+    /// `has_changed` FIRST would read that `Err` and never see the `end` flag
+    /// at all, which is how this one was written and what it failed on.
+    #[test]
+    fn a_delete_ends_the_table_and_bumps_the_house() {
+        let games = games();
+        let red = who("red@t.test");
+        games.create(&req("gone"), &red).expect("a table");
+        let mut rx = games.signals().subscribe("gone");
+        let mut house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        house.borrow_and_update();
+
+        games.delete("gone", &red).expect("a delete");
+
+        assert!(rx.borrow_and_update().end, "the end a stream closes on");
+        assert!(rx.has_changed().is_err(), "and then the channel closes under every stream");
+        assert!(house.has_changed().expect("the house channel is open"));
+        assert!(games.read_table("gone").expect("a readable store").is_none());
+    }
+
+    /// **A delete that is REFUSED ends nothing**, driven through a caller who
+    /// is seated but is not the creator: a stream on a live table must not
+    /// close because somebody who could not delete it tried.
+    #[test]
+    fn a_refused_delete_ends_nothing() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        games.create(&two_people("dr", CORPUS_SEED), &red).expect("a table");
+        let mut rx = games.signals().subscribe("dr");
+        rx.borrow_and_update();
+
+        games.delete("dr", &blue).expect_err("delete is the creator's");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no unlink, no end");
+        assert!(!rx.borrow().end);
+    }
+
+    /// A [`MemStore`] that PARKS the table write which flips a table to
+    /// `playing`, and nothing else.
+    ///
+    /// Keyed on the document's own `status` rather than on a write COUNT,
+    /// because the write to park is the one write of the finalize sequence
+    /// whose bump is under test: the keep's own table write and the record
+    /// write both go past it untouched, and a counter would have to be
+    /// re-derived every time that sequence gained a write. Parsed rather than
+    /// string-matched, so a table whose free-text NAME spells the field does
+    /// not park a write nobody was asking about.
+    struct FlipGate {
+        inner: MemStore,
+        at_flip: Mutex<std::sync::mpsc::Sender<()>>,
+        go_flip: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Store for FlipGate {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            let flipping = doc == Doc::Table
+                && serde_json::from_str::<TableDoc>(json)
+                    .is_ok_and(|d| d.status == TableStatus::Playing);
+            if flipping {
+                let _ = self.at_flip.lock().expect("the gate").send(());
+                let _ = self.go_flip.lock().expect("the gate").recv();
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A BUMP PRECEDES NO WRITE** — the property every cell above assumes
+    /// and none of them can see, because in an unparked run the write and the
+    /// bump are one instant apart.
+    ///
+    /// A bump means "the state moved, go and read it". Sent BEFORE its write,
+    /// it sends every subscriber to fetch the state it already has, and the
+    /// write that follows is then announced to nobody — a table that a client
+    /// stops hearing about until something else happens at it. So the flip's
+    /// table write is parked inside the store and the channel is read while it
+    /// sits there.
+    ///
+    /// **The comparison is a SEQUENCE and not `has_changed`, and that is the
+    /// whole design of this cell.** The keep that triggers the finalize has
+    /// ALREADY bumped the table, correctly, on its own write — so a receiver
+    /// asked "have you changed?" mid-park says yes and says nothing about the
+    /// finalize. The assertion is that the seq is EXACTLY the keep's while the
+    /// flip is parked, and higher once it lands.
+    ///
+    /// A bump moved in front of `flip_to_playing`'s write, or up to the top of
+    /// `finalize`, fires while the gate holds and the mid-park equality fails.
+    #[test]
+    fn a_bump_precedes_no_write() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_flip_tx, at_flip_rx) = channel();
+        let (go_flip_tx, go_flip_rx) = channel();
+        let store = Arc::new(FlipGate {
+            inner: MemStore::default(),
+            at_flip: Mutex::new(at_flip_tx),
+            go_flip: Mutex::new(go_flip_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
+        games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
+
+        let mut rx = games.signals().subscribe(&id);
+        let house = games.signals().subscribe_house();
+        let before = rx.borrow_and_update().seq;
+
+        let keeper = {
+            let (games, id, blue) = (Arc::clone(&games), id.clone(), blue.clone());
+            std::thread::spawn(move || games.keep(&id, &blue, PlayerId::new(1), 1, None))
+        };
+        at_flip_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the finalize reaches the flip with its table write pending");
+
+        // The keep's OWN write has landed and is announced; the flip's has not
+        // and is not.
+        let parked = rx.borrow_and_update().seq;
+        assert_eq!(parked, before + 1, "the keep's bump, and only the keep's");
+        let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
+        assert_eq!(doc.status, TableStatus::Dealing, "the premise: the flip has NOT landed");
+        assert_eq!(doc.keeps, vec![Some(1), Some(1)], "and the keep's write HAS");
+
+        go_flip_tx.send(()).expect("the parked flip is still listening");
+        keeper.join().expect("the keep thread").expect("the keep");
+
+        assert!(rx.has_changed().expect("the table channel is open"), "the flip, once it lands");
+        assert!(rx.borrow_and_update().seq > parked);
+        assert!(house.has_changed().expect("the house channel is open"));
+        let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
+        assert_eq!(doc.status, TableStatus::Playing, "the state the woken subscriber reads");
     }
 }

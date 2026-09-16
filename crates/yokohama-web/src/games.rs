@@ -24,6 +24,7 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
+use crate::signal::Signals;
 use crate::store::{Doc, GameId, Store, Version, WriteError};
 use crate::table::{TableStatus, TurnMirror};
 
@@ -149,6 +150,16 @@ pub struct Games {
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
     pub(crate) deleted: Mutex<std::collections::HashSet<GameId>>,
+    /// The change signal (M6.3, spec §2): one `watch` channel per table and
+    /// one for the house, bumped AFTER each of this type's writes lands.
+    ///
+    /// It lives here because every write site does, and only because of that:
+    /// [`crate::signal`] knows nothing about a game, a table or a seat, and
+    /// nothing in this module reads a bump back. It is a notification that
+    /// something this process wrote has changed, for the streams in front of
+    /// it to answer — so a failed or refused write bumps nothing, and every
+    /// call below sits on a success path.
+    pub(crate) signals: Signals,
 }
 
 /// How many `Repl`s stay resident.
@@ -178,11 +189,19 @@ impl Games {
             table_lock: Mutex::new(()),
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
+            signals: Signals::default(),
         }
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
+    }
+
+    /// The change signal every write site bumps ([`Games::signals`] the field).
+    /// The routes in front of this type subscribe through it; nothing here
+    /// reads one back.
+    pub fn signals(&self) -> &Signals {
+        &self.signals
     }
 
     /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
@@ -477,6 +496,11 @@ impl Games {
         written.insert(id.to_string(), version);
         drop(written);
         self.mirror_turn(id, repl);
+        // **After the mirror, not before it** (spec §2): the lobby's
+        // whose-turn and over lines are read off the mirror, so a bump sent
+        // between the record write and the refresh wakes a lobby that then
+        // reads the previous turn and hears nothing more.
+        self.signals.bump(id);
         Ok(())
     }
 
@@ -1112,6 +1136,141 @@ mod tests {
             "an I/O failure must not evict — and a rebuild is impossible here, because the \
              store is still refusing to be read",
         );
+    }
+
+    /// **A move that lands bumps the table AND the house** (spec §2).
+    ///
+    /// The house too, and not only the table, because the lobby's whose-turn
+    /// and over lines are read off the table document's turn mirror — which is
+    /// exactly what `persist` refreshes on its way out, so a move is a change
+    /// the house has to hear about.
+    ///
+    /// The receiver is taken BEFORE the move, which is the whole point of a
+    /// `watch` sender that exists before anyone has written to it: a subscriber
+    /// of a table that has never been bumped must still wake on its first bump.
+    /// And the wake is not asserted on its own — reading the store after it
+    /// shows the move, which is what "the bump follows the write" means for a
+    /// caller.
+    #[test]
+    fn a_persisted_move_bumps_the_table_and_the_house() {
+        let store = Arc::new(MemStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "bumped".to_string();
+        let handle = playing(&games, &req("bumped"), &["red@t.test"]);
+
+        let mut rx = games.signals().subscribe(&id);
+        let mut house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        house.borrow_and_update();
+        let before = stored_events(&store, &id);
+
+        {
+            let mut repl = handle.lock().expect("the handle");
+            repl.step("1");
+            games.persist(&id, &repl).expect("a persist");
+        }
+
+        assert!(rx.has_changed().expect("the table channel is open"), "the move woke the table");
+        assert!(!rx.borrow_and_update().end, "a move is not the end of the table");
+        assert!(house.has_changed().expect("the house channel is open"), "and the house");
+        assert!(
+            stored_events(&store, &id) > before,
+            "the state a woken subscriber reads is the state AFTER the move",
+        );
+    }
+
+    /// **A write that is REFUSED bumps nothing.** A bump means "go and read
+    /// the new state", so sending one for a write that never landed sends
+    /// every subscriber to fetch the state it already has — and, worse, says a
+    /// move happened at a table where the store rejected it.
+    ///
+    /// Driven through the tombstone, because it is the one refusal a cell can
+    /// arrange without a second process: `persist` returns before it reaches
+    /// the store at all, which is the earliest of the three refusal arms and
+    /// the one a bump placed at the TOP of the function would sail past.
+    #[test]
+    fn a_refused_write_bumps_nothing() {
+        let games = games();
+        let id = "refused".to_string();
+        let handle = playing(&games, &req("refused"), &["red@t.test"]);
+        let red = who("red@t.test");
+        let repl = handle.lock().expect("the handle");
+
+        games.delete(&id, &red).expect("a delete");
+        // `delete` itself ENDS the table's channel, so the subscription for
+        // this assertion is taken after it — a fresh sender that has seen
+        // nothing, exactly as `signal.rs`'s own end cell describes.
+        let rx = games.signals().subscribe(&id);
+        let house = games.signals().subscribe_house();
+
+        games.persist(&id, &repl).expect_err("the in-flight write is refused");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
+    }
+
+    /// **A write the STORE refuses bumps nothing either** — the last inch, and
+    /// the one the tombstone cell above cannot reach.
+    ///
+    /// `a_refused_write_bumps_nothing` drives the FIRST of `persist`'s refusal
+    /// arms, which returns before the store is touched at all; this drives the
+    /// store itself, so the only thing between the bump and the write is the
+    /// write. Measured: a bump moved to the line immediately above
+    /// `write_if_version` passes every other cell in this crate, this one
+    /// included until it existed.
+    ///
+    /// An I/O failure and not a conflict, because a conflict EVICTS the handle
+    /// and this cell wants the ordinary refusal path — and because `persist`'s
+    /// own doc says no cell here can drive the conflict arm.
+    #[test]
+    fn a_write_the_store_refuses_bumps_nothing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Default)]
+        struct FailingWrites {
+            inner: MemStore,
+            failing: AtomicBool,
+        }
+        impl Store for FailingWrites {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                if doc == Doc::Record && self.failing.load(Ordering::SeqCst) {
+                    return Err(WriteError::Io("the disk went away".to_string()));
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store = Arc::new(FailingWrites::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "wfail".to_string();
+        let handle = playing(&games, &req("wfail"), &["red@t.test"]);
+
+        let rx = games.signals().subscribe(&id);
+        let house = games.signals().subscribe_house();
+        store.failing.store(true, Ordering::SeqCst);
+
+        let mut repl = handle.lock().expect("the handle");
+        repl.step("1");
+        let err = games.persist(&id, &repl).expect_err("the store refused the write");
+        assert!(err.contains("the disk went away"), "the store's own reason: {err}");
+
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
     }
 }
 

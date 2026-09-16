@@ -40,6 +40,7 @@ pub mod games;
 pub mod grammar;
 pub mod identity;
 pub mod outcome;
+pub mod signal;
 pub mod store;
 pub mod table;
 pub mod tables;

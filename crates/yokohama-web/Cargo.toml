@@ -63,7 +63,7 @@ serde_json.workspace = true
 # The blast radius is one leaf crate: `yokohama-core` gains nothing, and no
 # other crate in the workspace depends on this one.
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 
 # M6.2 (owner-ruled 2026-09-15, spec R-2.8): the table password. The workspace
 # has no hash crate — `fnv1a_64` in yokohama-core is a digest, not a password
@@ -71,6 +71,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 # a salted SHA-256 is the whole of it: no argon2, no constant-time crate (the
 # compare is a fold of XORs in table.rs).
 sha2 = "0.10"
+
+# M6.3 (owner-ruled 2026-09-15, spec R-3.11): the change signal. `tokio::sync::watch`
+# is the in-process channel one bump per table rides on (it coalesces, which is the
+# property a "something changed" signal wants), and `tokio-stream`'s `sync` feature
+# turns a receiver into the `Stream` axum's SSE response consumes.
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 # Route tests drive the router through `ServiceExt::oneshot` -- no socket, no
