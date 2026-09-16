@@ -258,9 +258,11 @@ export function usePolled<T>(
           schedule(HELD_REASK_MS);
           return;
         }
-        setLink("live");
         const frames = src.current.frames ?? "wake";
-        const outcome = await readStream(src.current.stream, mine.signal, (f) => {
+        const outcome = await readStream(
+          src.current.stream,
+          mine.signal,
+          (f) => {
           if (stopped) return;
           if (f.event === "end") {
             // The server's own reason rides the frame: `deleted` for a table
@@ -271,10 +273,31 @@ export function usePolled<T>(
             return;
           }
           if (f.event !== "signal" && f.event !== "house") return;
-          failures.current = 0;
           if (frames === "value") latest.current(JSON.parse(f.data) as T);
           else void reread();
-        });
+          },
+          // **The CONNECTION, and it is what both of these hang on.**
+          //
+          // The word first: a `fetch` that has been issued is not a link, so
+          // saying "live" above this call said it when the request went out.
+          // During an outage that made the word blink off at every rung of the
+          // ladder, and against a server that accepts a connection and then
+          // hangs it read "live" for ever while nothing was connected. Spec
+          // §5.1 ties the word to Connected, and this is that moment.
+          //
+          // The failure count for the same reason, and the house channel is
+          // why it cannot be reset on a frame instead: `/api/stream` writes
+          // NOTHING on connect (R-3.4), so a lobby reconnecting to a quiet
+          // server would climb 2 s, 4 s, 8 s to the ceiling while every one of
+          // those connections was made perfectly well. A 200 with a stream body
+          // IS the connection — and a server that accepts and closes at once is
+          // still bounded, by the first rung.
+          () => {
+            if (stopped) return;
+            failures.current = 0;
+            setLink("live");
+          },
+        );
         if (stopped || outcome === "ended") return;
         // The body ended with nothing said: a dropped connection, and the
         // ladder is what that is for.
@@ -300,6 +323,16 @@ export function usePolled<T>(
         const wait = nextDelay(failures.current);
         failures.current += 1;
         schedule(wait);
+      } finally {
+        // **One reader per hook instance, on every way out of this function.**
+        // A throw out of `onFrame` — a consumer's own callback — rejects
+        // `readStream` and ABANDONS the body without letting it go, so the
+        // ladder would open a second reader while the first still held its
+        // connection, once per failure. Aborting here is a no-op on the paths
+        // that already ended (the stream said `end`, the tab hid, the effect
+        // was torn down) and runs after the catch's own `mine.signal.aborted`
+        // test, which is what tells "I was aborted" from "I failed".
+        mine.abort();
       }
     };
 

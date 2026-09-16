@@ -85,11 +85,19 @@ export function parseSse(): (chunk: string) => Frame[] {
  *
  * The `end` frame is handed to `onFrame` BEFORE this resolves: its body carries
  * the reason, and the caller needs it.
+ *
+ * `onOpen` fires ONCE, after the response is known to be a readable 200 and
+ * before any frame. **A request that has gone out is not a connection**, and
+ * this is the only moment at which the difference is visible from outside: the
+ * caller's "live" word hangs on it, and a source that receives no frame on
+ * connect — the house channel writes nothing (R-3.4) — has nothing else to
+ * learn it from. A refused open never fires it.
  */
 export async function readStream(
   url: string,
   signal: AbortSignal,
   onFrame: (f: Frame) => void,
+  onOpen?: () => void,
 ): Promise<"ended" | "closed"> {
   const res = await fetch(url, {
     headers: { ...identityHeaders(), accept: "text/event-stream" },
@@ -105,6 +113,7 @@ export async function readStream(
     }
     throw new ApiError(message, res.status);
   }
+  onOpen?.();
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const parse = parseSse();

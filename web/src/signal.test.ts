@@ -26,7 +26,7 @@ import {
   type Source,
 } from "./signal";
 import { api, setSignalKind } from "./api";
-import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, gate, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events, TableView } from "./types";
 
@@ -249,6 +249,145 @@ describe("the signal, over the stream", () => {
     stream.push("signal", at(7));
     await settle();
     expect(seen).toHaveLength(0);
+  });
+});
+
+describe("what the link word rests on (review I-1, M-2, M-3)", () => {
+  it("stays reconnecting while the reopen's request is in flight, and says live when the 200 lands", async () => {
+    // **A request that has gone out is not a connection.** Saying `"live"` when
+    // the `fetch` is ISSUED rather than when it is answered has two costs, and
+    // both are on screen: during an outage the word blinks off at every rung of
+    // the ladder — open, "live", reject, "reconnecting" — and against a server
+    // that accepts a connection and then hangs, the banner reads "live"
+    // indefinitely while nothing at all is connected. §5.1 ties the word to
+    // CONNECTED.
+    const held = gate<Reply>();
+    let opens = 0;
+    const stub = stubApi(() => {
+      opens += 1;
+      return opens === 1 ? { status: 502, body: { error: "gone" } } : held.promise;
+    });
+    const { result } = renderHook(() => useSignal("wire", true, () => {}));
+    await until(() => result.current === "reconnecting", "the first open failed");
+
+    // The ladder's first rung opens again, and the answer is withheld.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 10);
+    });
+    await until(() => opens === 2, "the reopen went out");
+    expect(stub.matching("GET", "/stream")).toHaveLength(2);
+    // **The request is out and the word has NOT moved.** This is the assertion
+    // the old line could not pass.
+    expect(result.current).toBe("reconnecting");
+
+    held.resolve(openStream());
+    await until(() => result.current === "live", "the connection was made");
+    expect(result.current).toBe("live");
+  });
+
+  it("holds refreshing until the 200, and then says live with no frame at all", async () => {
+    // The other half, and the one the surrounding doc claims: "refreshing" is
+    // true until the tab is CONNECTED again, not until its request went out.
+    // **And the answer is a 200 with an empty, hanging body** — which is what
+    // the house channel is, since it writes nothing on connect (R-3.4). So the
+    // word cannot be cleared by a frame here; only the connection can clear it.
+    const held = gate<Reply>();
+    let opens = 0;
+    stubApi(() => {
+      opens += 1;
+      return opens === 1 ? openStream() : held.promise;
+    });
+    const { result } = renderHook(() => useSignal("wire", true, () => {}));
+    // **Waited for by the CONNECTION and not by the word**, because `"live"` is
+    // also this hook's resting state before it has opened anything: a wait on
+    // the word alone returns at once, having given the effect no turn at all,
+    // and every assertion after it is about a hook that never connected.
+    // Measured — that is how the first draft of this cell failed.
+    await until(() => opens === 1, "the first connection was made");
+    expect(result.current).toBe("live");
+
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    expect(result.current).toBe("refreshing");
+    await until(() => opens === 2, "the reopen went out");
+    expect(result.current).toBe("refreshing");
+
+    held.resolve(openStream());
+    await until(() => result.current === "live", "the connection was made again");
+    expect(result.current).toBe("live");
+  });
+
+  it("aborts its reader when a frame handler throws, so one hook holds one reader", async () => {
+    // **A throw out of `onFrame` abandons the body.** `readStream` rejects, the
+    // ladder opens another — and without this the first reader is still holding
+    // its connection, so a consumer that threw once leaves a reader behind per
+    // failure.
+    let thrown = 0;
+    const { stream, stub } = streamed(() => [["signal", at(1)]]);
+    renderHook(() =>
+      useSignal("wire", true, () => {
+        thrown += 1;
+        throw new Error("the consumer threw");
+      }),
+    );
+    await until(() => thrown > 0, "the consumer was handed a frame");
+    await until(
+      () => stub.matching("GET", "/stream")[0]!.signal!.aborted,
+      "the abandoned reader was let go",
+    );
+    expect(stub.matching("GET", "/stream")[0]!.signal!.aborted).toBe(true);
+    // And a frame written to it now reaches nobody, which is what "let go"
+    // means rather than merely "not read from".
+    const before = thrown;
+    stream.push("signal", at(2));
+    await settle();
+    expect(thrown).toBe(before);
+  });
+
+  it("resets the ladder on the CONNECTION, so a stream that says nothing on connect does not climb it", async () => {
+    // **The house channel writes nothing on connect** (R-3.4), so a client that
+    // reset its failure count only on a FRAME would have the lobby's ladder
+    // climb monotonically through every reconnect of a quiet server — 2 s, 4 s,
+    // 8 s and on to the ceiling — while each of those connections was made
+    // perfectly well. A 200 with a stream body IS the connection.
+    let opens = 0;
+    const stream = fakeStream();
+    const stub = stubApi((call) => {
+      opens += 1;
+      return opens === 1 ? { status: 502, body: { error: "gone" } } : stream.reply(call);
+    });
+    const { result } = renderHook(() =>
+      usePolled<number>(
+        { key: "lobby", once: () => Promise.resolve(0), stream: "/api/stream" },
+        true,
+        () => {},
+      ),
+    );
+    await until(() => result.current === "reconnecting", "the first open failed");
+
+    // The first rung connects, and says nothing.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 10);
+    });
+    await until(() => result.current === "live", "the second open connected");
+    expect(stub.matching("GET", "/api/stream")).toHaveLength(2);
+
+    // That connection drops. The next wait is the FIRST rung again — not the
+    // second, which is what a count reset only by frames would have produced.
+    stream.close();
+    await until(() => result.current === "reconnecting", "the connection dropped");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! - 200);
+    });
+    expect(stub.matching("GET", "/api/stream")).toHaveLength(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    await until(
+      () => stub.matching("GET", "/api/stream").length === 3,
+      "the ladder's first rung came round again",
+    );
+    expect(stub.matching("GET", "/api/stream")).toHaveLength(3);
   });
 });
 

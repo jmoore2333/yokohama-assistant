@@ -110,6 +110,40 @@ describe("the reader", () => {
     expect((err as ApiError).message).toContain("502");
   });
 
+  it("reports the OPEN once, after the 200 and before any frame", async () => {
+    // **What the caller needs and could not otherwise know.** A `fetch` that
+    // has been issued is not a connection: the reader's own `"live"` word hangs
+    // on the 200 arriving, and a source that receives no frame on connect (the
+    // house channel) has nothing else to learn it from.
+    const stream = fakeStream(() => [["signal", { events: 1 }]]);
+    stubApi((call) => stream.reply(call));
+    const order: string[] = [];
+    const reading = readStream(
+      "/api/stream",
+      new AbortController().signal,
+      () => order.push("frame"),
+      () => order.push("open"),
+    );
+    stream.close();
+    await expect(reading).resolves.toBe("closed");
+    // Once, and FIRST: a frame cannot arrive before the body it rides on.
+    expect(order).toEqual(["open", "frame"]);
+  });
+
+  it("does not report an open the server refused", async () => {
+    // Anti-vacuity for the cell above, and the property the link word rests on:
+    // a refusal is not a connection, so nothing may clear "reconnecting…".
+    stubApi(() => ({ status: 403, body: { error: "not yours" } }));
+    const opens: number[] = [];
+    await readStream(
+      "/api/stream",
+      new AbortController().signal,
+      () => {},
+      () => opens.push(1),
+    ).catch(() => {});
+    expect(opens).toEqual([]);
+  });
+
   it("signs the request and asks for an event stream", async () => {
     // **The whole reason this is a `fetch` and not an `EventSource`**: the
     // `claimed` door is a header, and `EventSource` cannot carry one.
