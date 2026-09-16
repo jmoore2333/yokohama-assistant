@@ -34,6 +34,7 @@
 
 pub mod art;
 pub mod assets;
+pub mod chat;
 pub mod client;
 pub mod explain;
 pub mod games;
