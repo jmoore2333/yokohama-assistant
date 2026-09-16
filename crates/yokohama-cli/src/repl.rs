@@ -1727,10 +1727,10 @@ impl Repl {
     /// the seat it is answering, or the fence above becomes a fence around a
     /// seat that is not the reader's.
     pub fn index_placements(&self) -> Vec<(CardRef, CardLocation)> {
-        self.index_placements_for(self.session.state().current_player)
+        self.index_placements_for(Some(self.session.state().current_player))
     }
 
-    /// [`Self::index_placements`] for a NAMED seat.
+    /// [`Self::index_placements`] for a NAMED seat, or for NOBODY's.
     ///
     /// **It exists so a per-seat API can ask for the VIEWER's placements**
     /// (M6.1): `yokohama-web` builds every payload for the caller's own seat,
@@ -1740,9 +1740,16 @@ impl Repl {
     /// operator whose seat IS the mover's, so it keeps the delegating path
     /// above and nothing about it changes.
     ///
+    /// **`None` is the SPECTATOR's index** (M6.3, R-3.8): a signed-in caller
+    /// watching a game holds no seat, so there is no hand that is theirs to be
+    /// told about, and the `Option` is what says that in the type rather than
+    /// by handing this function a seat the reader does not hold. It marks no
+    /// hand at all; every other location here is face-up at the table and is
+    /// unaffected.
+    ///
     /// The `me` in the body is the only difference. Every fence is the one
     /// stated above, applied to `me` rather than to the mover.
-    pub fn index_placements_for(&self, me: PlayerId) -> Vec<(CardRef, CardLocation)> {
+    pub fn index_placements_for(&self, me: Option<PlayerId>) -> Vec<(CardRef, CardLocation)> {
         let state = self.session.state();
         let mut placed = Vec::new();
         for (board_b, board) in
@@ -1755,10 +1762,12 @@ impl Repl {
                 }
             }
         }
-        if !self.seat_display().hides_hand(me) {
-            if let Some(p) = state.players.iter().find(|p| p.id == me) {
-                for &id in &p.order_cards_in_hand {
-                    placed.push((CardRef::Order(id), CardLocation::OwnHand));
+        if let Some(me) = me {
+            if !self.seat_display().hides_hand(me) {
+                if let Some(p) = state.players.iter().find(|p| p.id == me) {
+                    for &id in &p.order_cards_in_hand {
+                        placed.push((CardRef::Order(id), CardLocation::OwnHand));
+                    }
                 }
             }
         }
@@ -9118,6 +9127,29 @@ mod tests {
         let by_menu = r.step(&crate::screen_model::menu_number(row).to_string());
         assert!(by_menu.text.is_empty() || r.full_screen_surface(), "the row opened a surface");
         assert!(r.overlay_text().contains("AREAS — full view"), "{}", r.overlay_text());
+    }
+
+    /// `index_placements_for(None)` is the SPECTATOR's index (M6.3, R-3.8):
+    /// nobody's hand is this reader's, so no row says `OwnHand`.
+    ///
+    /// **And nothing else moves**, which is the second assertion and the one
+    /// that would catch a `None` arm that returned early: the count is the
+    /// seated index's minus exactly its own-hand rows.
+    #[test]
+    fn a_spectators_index_carries_no_own_hand_row() {
+        let repl = repl_2p(4);
+        let with = repl.index_placements();
+        assert!(
+            with.iter().any(|(_, l)| matches!(l, CardLocation::OwnHand)),
+            "the fixture holds cards",
+        );
+        let without = repl.index_placements_for(None);
+        assert!(without.iter().all(|(_, l)| !matches!(l, CardLocation::OwnHand)));
+        assert_eq!(
+            without.len(),
+            with.iter().filter(|(_, l)| !matches!(l, CardLocation::OwnHand)).count(),
+            "None removes exactly the OwnHand rows and nothing else",
+        );
     }
 
     /// `help` documents the word, which is also what `guide_sync` reads it

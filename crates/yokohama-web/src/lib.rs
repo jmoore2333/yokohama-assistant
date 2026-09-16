@@ -1281,7 +1281,7 @@ async fn card_index(
     Ok(Json(yokohama_cli::screen_model::build_index(
         kind,
         repl.session.rules(),
-        &repl.index_placements_for(viewer),
+        &repl.index_placements_for(Some(viewer)),
         &yokohama_cli::screen_model::build_achievements(repl.session.state()).cards,
         None,
         filter,
