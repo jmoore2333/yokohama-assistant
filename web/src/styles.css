@@ -919,6 +919,18 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .field.link-field { flex-wrap: wrap; }
 .field.link-field input { flex: 1 1 auto; min-width: 0; }
 
+/* The unlock face (M6.3 §5.3): one password box and two buttons. It is the
+   setup screens' own `.setup` box and its row is their `.field`, so the only
+   rule it needs of its own is the controls row — `.field` lays its children out
+   in a line and centres them, and two buttons on their own read as a pair
+   floating in the middle of an empty row. The same rule the open table's own
+   controls take, and for the same reason.
+
+   The lede holds `TableFacts`' `<span>` INLINE, so it wraps like prose at 390px
+   rather than being a flex item with a minimum size of its own content — which
+   is the defect the link row above records. */
+.unlock .unlock-controls { justify-content: flex-start; }
+
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {
   background: none; border: 1px solid transparent; border-radius: 6px;

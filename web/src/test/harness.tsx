@@ -46,7 +46,7 @@ export const gamesNamed = (...ids: string[]): GamesList => ({
  *  `?scope=open` walks straight through such a check: a cell stubbing the open
  *  list would silently be handed the `mine` reply and pass while asserting the
  *  wrong thing. A 28th restatement of the path test is how that happens twice. */
-export const isGamesList = (call: ApiCall, scope?: "mine" | "open"): boolean => {
+export const isGamesList = (call: ApiCall, scope?: "mine" | "open" | "playing"): boolean => {
   const [path, query] = call.path.split("?");
   if (call.method !== "GET" || !path!.endsWith("/api/games")) return false;
   return scope === undefined || new URLSearchParams(query ?? "").get("scope") === scope;
@@ -414,6 +414,11 @@ export async function renderApp(
     // once under Your games and once under Open tables — and the click below
     // would fail on an ambiguity that has nothing to do with the cell.
     if (isGamesList(call, "open")) return gamesNamed();
+    // **And the third scope answers EMPTY, for the reason the open one does.**
+    // The lobby asks all three since M6.3; a stub answering this game to
+    // `playing` too would list it THREE times and the click below would fail on
+    // an ambiguity that has nothing to do with the cell.
+    if (isGamesList(call, "playing")) return gamesNamed();
     if (isGamesList(call)) return gamesNamed(state.id);
     if (call.method === "GET" && call.path.endsWith(`/api/games/${state.id}`)) return state;
     throw new Error(`unexpected ${call.method} ${call.path}`);

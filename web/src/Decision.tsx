@@ -89,6 +89,7 @@ export function Decision({
   colors,
   busy,
   outcome,
+  spectating = false,
   onSend,
 }: {
   state: ClientState;
@@ -97,6 +98,25 @@ export function Decision({
   busy: boolean;
   /** The ranked breakdown from `/result`, once the game is over. */
   outcome?: Outcome | null;
+  /** The caller holds NO SEAT at this table — a watcher (spec §5.2).
+   *
+   *  **It is not "it is not your turn", and that is why it is a prop rather
+   *  than a read of `prompt.kind`.** A player waiting on somebody else gets a
+   *  turn back; a watcher never does, so nothing on this screen is ever theirs
+   *  to answer and every control here would be a 403 the server has already
+   *  written down (R-4.3). `App` derives it from `state.seat === null`, which
+   *  is the server's own statement of it.
+   *
+   *  **What it suppresses is the ANSWER BAR, not the account of the position.**
+   *  The chain, the asking line, the `watching` and `locked` blocks and the
+   *  finished game's standing all stay: they are what a watcher came for, and
+   *  §5.2 says the result works for them as it does for a player. Suppressing
+   *  everything would leave a spectator at a game that had ended reading "The
+   *  game is over." over an empty deck.
+   *
+   *  **A default of `false`, so the fence is opt-in and no existing caller
+   *  changes meaning.** */
+  spectating?: boolean;
   onSend: (line: string) => void;
 }) {
   const d = state.frame.decision;
@@ -155,7 +175,7 @@ export function Decision({
           browser specs. The answer rows are the only thing that may be
           off-screen inside the deck, because they are the only thing you can
           reach by scrolling to it. */}
-      {(prompt.kind === "options" || prompt.kind === "pick") && (
+      {!spectating && (prompt.kind === "options" || prompt.kind === "pick") && (
         <div className="options scrolls">
           {prompt.rows.length === 0 && <div className="messages">Nothing to answer here.</div>}
           {prompt.rows.map((row) => (
@@ -182,7 +202,7 @@ export function Decision({
         </div>
       )}
 
-      {prompt.kind === "retreat" && (
+      {!spectating && prompt.kind === "retreat" && (
         <div className="options">
           <div className="messages">
             <div>
@@ -217,7 +237,7 @@ export function Decision({
         </div>
       )}
 
-      {prompt.kind === "place_a" && (
+      {!spectating && prompt.kind === "place_a" && (
         <div className="messages">
           <div>
             Option A &mdash; click up to {prompt.max_areas} areas on the board to toggle them, then
@@ -237,7 +257,7 @@ export function Decision({
         </div>
       )}
 
-      {prompt.kind === "place_b" && (
+      {!spectating && prompt.kind === "place_b" && (
         <div className="messages">
           <div>
             Option B &mdash; click one area on the board for two assistants, then confirm.
@@ -288,7 +308,9 @@ export function Decision({
           )
         ))}
 
-      {(d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
+      {/* The near-miss rows say why an area is NOT on the list a watcher was
+          never offered, so they go with it. */}
+      {!spectating && (d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
         <div className="near-miss">
           {/* The area's NAME, not only its id. `decision_render.rs:352`
               resolves `area_name(board, row.area)` and prints the name; this
@@ -317,10 +339,11 @@ export function Decision({
           ever refuse. `step_retreat` gates it too: `confirming` is
           `collected_len >= areas_len` (`:2334`), so confirming with areas still
           to answer is refused the same way. Cancel is always live. */}
-      {(prompt.kind === "place_a" ||
-        prompt.kind === "place_b" ||
-        prompt.kind === "pick" ||
-        prompt.kind === "retreat") && (
+      {!spectating &&
+        (prompt.kind === "place_a" ||
+          prompt.kind === "place_b" ||
+          prompt.kind === "pick" ||
+          prompt.kind === "retreat") && (
         <div className="controls">
           {(prompt.kind === "place_a" ||
             prompt.kind === "place_b" ||
@@ -340,7 +363,10 @@ export function Decision({
         </div>
       )}
 
-      {prompt.kind === "options" && (
+      {/* Undo lives here, so a watcher loses it with the rest of the bar
+          (spec §5.2). The server refuses one from a caller holding no seat
+          either way — this is the screen not offering what cannot work. */}
+      {!spectating && prompt.kind === "options" && (
         <div className="controls">
           {prompt.rows.length === 1 && (
             <button type="button" className="primary" disabled={busy} onClick={() => onSend("")}>

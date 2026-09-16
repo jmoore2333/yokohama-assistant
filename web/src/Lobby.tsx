@@ -29,15 +29,23 @@ import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
 import type { GamesList, TableView } from "./types";
 
-/** Both lists, as one answer. */
-type Lists = { mine: GamesList; open: GamesList };
+/** All three lists, as one answer. */
+type Lists = { mine: GamesList; open: GamesList; playing: GamesList };
 
 /** Outside the component because it closes over nothing: `api` is a module, so
  *  a definition inside would be a new function on every render and the poll's
- *  own doc explains why that matters. */
+ *  own doc explains why that matters.
+ *
+ *  **Three scopes in ONE `Promise.all`**, for the reason two were: a player
+ *  reads the lobby as one screen, and three hooks would be three connections
+ *  and a screen where one third of it is older than the rest. */
 const fetchLists = async (): Promise<Lists> => {
-  const [mine, open] = await Promise.all([api.list("mine"), api.list("open")]);
-  return { mine, open };
+  const [mine, open, playing] = await Promise.all([
+    api.list("mine"),
+    api.list("open"),
+    api.list("playing"),
+  ]);
+  return { mine, open, playing };
 };
 
 /** The rows, with a table listed once however many pages it arrived on.
@@ -208,7 +216,12 @@ export function Lobby({
         New table
       </button>
 
-      <section className="saved">
+      {/* **`your-games` is a NAME and not decoration.** Until M6.3 this was the
+          one section that was not `.open-tables`, and a browser cell scoped its
+          reads that way — which a third section silently made ambiguous
+          (measured: the join-by-link walk resolved two rows for one table).
+          Every section on this screen now says which one it is. */}
+      <section className="saved your-games">
         <h3>Your games</h3>
         {lists === null ? (
           <p className="muted">loading&hellip;</p>
@@ -233,6 +246,26 @@ export function Lobby({
           <p className="muted">no table is waiting for players.</p>
         ) : (
           <ul>{lists.open.games.map((t) => row(t, false))}</ul>
+        )}
+      </section>
+
+      {/* **Every game still being played, so a watcher can find one without a
+          link** (R-3.9). A row here opens `#/t/<id>` exactly as the other two
+          do, and what that lands on is the spectator screen — or, at a locked
+          table, the face that asks for its password, which is what the lock
+          marker on the row is warning about.
+
+          **No Abandon control, and that is the section rather than the test**
+          (M6.2 ruling #13): abandoning is the creator's, on the Your-games
+          rows, and a table of yours that is playing is listed in BOTH — two
+          buttons with one accessible name on one screen. `row(t, false)` is how
+          Open tables withholds it too. */}
+      <section className="saved playing-tables">
+        <h3>Games in progress</h3>
+        {lists === null ? null : lists.playing.games.length === 0 ? (
+          <p className="muted">nothing is being played right now.</p>
+        ) : (
+          <ul>{lists.playing.games.map((t) => row(t, false))}</ul>
         )}
       </section>
 

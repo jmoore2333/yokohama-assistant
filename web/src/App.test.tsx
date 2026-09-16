@@ -1063,8 +1063,10 @@ describe("opening a saved table", () => {
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       if (isGamesList(call, "mine")) return gamesNamed("wire");
-      // The lobby asks for both scopes (spec §5.2); nothing here is open.
+      // The lobby asks for all THREE scopes (spec §5.2, R-3.9); nothing here is
+      // open and nothing is being watched.
       if (isGamesList(call, "open")) return gamesNamed();
+      if (isGamesList(call, "playing")) return gamesNamed();
       if (call.path.endsWith("/api/games/wire/table")) return table;
       if (call.path.endsWith("/deal")) return wire.deal;
       if (call.path.endsWith("/events")) return wire.eventsDealing;
@@ -1170,7 +1172,7 @@ describe("the boards a player switches during setup", () => {
     let dealt = false;
     const stub = stubApi((call) => {
       if (call.path.endsWith("/api/me")) return wire.me;
-      if (isGamesList(call, "mine") || isGamesList(call, "open")) return gamesNamed();
+      if (isGamesList(call)) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
@@ -1253,6 +1255,7 @@ describe("the route", () => {
       // own above, and this is the resting answer for the rest.
       if (call.path.endsWith("/stream")) return openStream();
       if (isGamesList(call, "open")) return gamesNamed();
+      if (isGamesList(call, "playing")) return gamesNamed();
       if (isGamesList(call, "mine")) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -1426,6 +1429,119 @@ describe("the route", () => {
     expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
     // And NOT the lobby, which is what this branch drew until Task 8.
     expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
+  });
+
+  // ---- arriving as a WATCHER (spec §5.3) ----------------------------------
+  //
+  // `#/t/<id>` for a caller with no seat at a playing table: `GET …/table`
+  // answers and `can_watch` picks the face. `table_watchable.json` is that
+  // document — a locked, playing table read by a stranger.
+  it("asks for the password when a locked table is not yet watchable", async () => {
+    window.location.hash = `#/t/${wire.tableWatchable.id}`;
+    const { stub } = app((call) =>
+      call.path.endsWith("/table") ? wire.tableWatchable : undefined,
+    );
+    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+    // **And the GAME was never asked for.** A caller who cannot read this table
+    // would be refused, and a 403 in the error strip is not the screen the spec
+    // asks for — the face is.
+    expect(
+      stub.calls.filter((c) => /\/api\/games\/[^/]+$/.test(c.path) && c.method === "GET"),
+    ).toHaveLength(0);
+  });
+
+  // **Carried from Task 4's review (M-7): `can_watch` says nothing about
+  // status.** An OPEN locked table answers `can_watch: false` by the
+  // predicate — correctly, there is nothing to watch yet — and the other two
+  // conditions are equally true of it, so a face gated on `can_watch` alone
+  // would meet somebody following a JOIN link with a password box for watching
+  // in place of the seat they came to take. `wire.tableOpen` is that exact
+  // document, and this is the PROPERTY the review asked for.
+  //
+  // **Read at its real size: it is not a witness to the `status` arm.**
+  // Measured — dropping `doc.status === "playing"` from the condition leaves
+  // every cell in this file green, because `open`'s own arm is read FIRST and
+  // an open table never reaches the unlock arm at all. The arm is written
+  // anyway, so the rule is stated where the reader is rather than implied by
+  // the order of two branches thirty lines apart; what this cell holds is the
+  // behaviour, which is what a player meets either way.
+  it("draws the seat picker, not the unlock face, for an OPEN locked table", async () => {
+    expect(wire.tableOpen.locked).toBe(true);
+    expect(wire.tableOpen.can_watch).toBe(false);
+    expect(wire.tableOpen.my_seats).toHaveLength(0);
+    window.location.hash = "#/t/wire";
+    app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
+    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+  });
+
+  // **A SEATED caller never meets a password box, whatever `can_watch` says.**
+  // The document is a corpus override rather than a fixture, because the server
+  // does not produce one: a caller who holds a seat may always read their own
+  // table, so `can_watch` is true for them. The arm is a fence against a
+  // document this client is HANDED, and this is its witness — without
+  // `my_seats` in the condition a player at a locked table would be asked for a
+  // password to watch a game they are playing.
+  it("opens the game for a seated caller even at a table that says it cannot be watched", async () => {
+    const seated = { ...wire.table, can_watch: false };
+    expect(seated.my_seats.length).toBeGreaterThan(0);
+    window.location.hash = `#/t/${wire.options.id}`;
+    app((call) => {
+      if (call.path.endsWith("/table")) return seated;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return wire.options;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      return undefined;
+    });
+    await screen.findByText(/end triggers:/);
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+  });
+
+  // The password is taken, the table is re-read, and what comes back is the
+  // spectator's own frame — which is the hand-over the face makes rather than
+  // assuming the next screen is a game.
+  it("opens the game to watch once the password is taken", async () => {
+    window.location.hash = `#/t/${wire.tableWatchable.id}`;
+    let unlocked = false;
+    const { user } = app((call) => {
+      if (call.path.endsWith("/unlock")) {
+        unlocked = true;
+        return { ...wire.tableWatchable, can_watch: true };
+      }
+      if (call.path.endsWith("/table"))
+        return unlocked ? { ...wire.tableWatchable, can_watch: true } : wire.tableWatchable;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.spectator.id}`))
+        return wire.spectator;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      return undefined;
+    });
+    await user.type(await screen.findByLabelText("Password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Watch" }));
+    await screen.findByText(/end triggers:/);
+    expect(screen.getByText("You are watching")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Password")).toBeNull();
+  });
+
+  it("leaves the unlock face for the lobby", async () => {
+    window.location.hash = `#/t/${wire.tableWatchable.id}`;
+    const { user } = app((call) =>
+      call.path.endsWith("/table") ? wire.tableWatchable : undefined,
+    );
+    await screen.findByLabelText("Password");
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    // The face went with the screen — a leftover would draw over the next table
+    // opened.
+    expect(screen.queryByLabelText("Password")).toBeNull();
   });
 
   it("lands on the DEAL when the table flips to dealing under the screen", async () => {
@@ -1771,7 +1887,7 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (isGamesList(call, "mine") || isGamesList(call, "open")) return gamesNamed();
+      if (isGamesList(call)) return gamesNamed();
       if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
       // The table crosses from dealing to playing at the keep, which is what
@@ -1817,6 +1933,43 @@ describe("the door", () => {
 // about is the CONSUMER (R-P9): the one function M6.3 replaces the transport
 // under, and the only thing in the client that turns "the count moved" into a
 // board the player can see.
+// The game screen with the viewer ABSENT (spec §5.2). What a watcher is handed
+// is a `ClientState` with `seat: null`, and that one field selects the whole
+// screen: no answer bar, no Undo, no Suggest, and a strip that says what you
+// are rather than who.
+describe("the spectator screen", () => {
+  it("says you are watching, offers no answer and no Suggest", async () => {
+    await renderApp(wire.spectator);
+    expect(wire.spectator.seat).toBeNull();
+    // The strip, which is the one line that says which of the two you are here.
+    expect(screen.getByText("You are watching")).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`You are ${wire.me.user}`))).toBeNull();
+    // The deck: the `watching` arm's own words, and nothing to press.
+    expect(screen.getByText(/Seat \d+ is deciding\./)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing here is yours to answer/)).toBeInTheDocument();
+    expect(document.querySelector("button.option")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    // Suggest ranks the moves on YOUR seat; a watcher has none, so the banner
+    // does not offer it. Why is still there — it is an account of a move that
+    // was played, and a watcher is here to read it.
+    expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Why" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log" })).toBeInTheDocument();
+  });
+
+  // The anti-vacuity, and it is the whole reason the cell above means anything:
+  // the SAME shell over a SEATED payload draws both controls and the address.
+  // Without this, a banner that had lost its Suggest button entirely, or a
+  // strip that said "You are watching" to everyone, would pass.
+  it("offers Suggest and names the player at a table this caller sits at", async () => {
+    await renderApp(wire.options);
+    expect(wire.options.seat).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Suggest" })).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(`You are ${wire.me.user}`))).toBeInTheDocument();
+    expect(screen.queryByText("You are watching")).toBeNull();
+  });
+});
+
 describe("the opponent's turn arrives by the signal", () => {
   /** A position for the run to be walked over: the corpus's `at_k`, moved to
    *  the position and the mover this cell is about, and NOT marked as a bot.
@@ -1967,6 +2120,89 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
       expect(document.querySelector("ol.account")).toBeNull();
       expect(document.querySelector(".decision.walking")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **A WATCHER's run walks too, and this is the cell for spec §9.5 mutation
+  // 10** (spec §5.2). A spectator holds no seat: `wire.spectator` carries
+  // `seat: null`, so the arrival's viewer is absent and every step of every run
+  // the server hands them is somebody else's by construction.
+  //
+  // **What it catches is the CALL SITE, not the predicate.** `hasOpponentStep`
+  // cannot see the difference — `0 !== null` is already true, and `walk.test.ts`
+  // says so — but `landed`'s gate can: under the old encoding a `null` fourth
+  // parameter meant "the reply to my own move" and selected `hasBotStep`, and
+  // this fixture's table is two people with no bot in it. So the mutation is
+  // exactly "the spectator's served run takes the `hasBotStep` branch", and
+  // what it looks like on screen is the opponent's turn SNAPPING onto the
+  // table: no lit row, no strip, no account at all.
+  //
+  // The fixture's mover is a HUMAN (`spectator_at_k.json` marks no bot), which
+  // is what makes the two branches answer differently here.
+  it("walks a run served to a watcher, who holds no seat at all", async () => {
+    const live = wire.spectator;
+    let events = live.events;
+    const signal = () => ({ events, to_move: live.to_move, status: "playing", your_turn: false });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    /** A position for the run, from the SPECTATOR's own corpus frame — which
+     *  carries `seat: null` and every hand hidden, exactly as the server builds
+     *  one for a watcher. */
+    const at = (k: number) => {
+      const f = JSON.parse(JSON.stringify(wire.spectatorAtK)) as typeof wire.spectatorAtK;
+      f.index = k;
+      f.total = events;
+      f.to_move = live.to_move;
+      return f;
+    };
+    const stub = await renderApp(live, (call) => {
+      if (call.path.endsWith(`/api/games/${live.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${live.id}`))
+        return { ...live, events };
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]));
+      return undefined;
+    });
+    // Nothing has been walked yet: the account holds the reply's prose, which
+    // for this fixture is nothing at all.
+    expect(document.querySelector("ol.account")).toBeNull();
+
+    // The hidden/visible round trip, for `the opponent's turn arrives by the
+    // signal`'s reason: the first reader was opened under real timers, and the
+    // return opens the next one on the fake clock this cell needs.
+    const opened = stream.opens();
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await flush();
+
+      events = live.events + 1;
+      stream.push("signal", signal());
+      await until(
+        () => document.querySelector("ol.account li.at") !== null,
+        "the watcher's run was walked",
+      );
+      // One event arrived, so the run is one step — and it is LIT, which is
+      // what says a step is on the table rather than the whole run at once.
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(1);
+      expect(document.querySelector("ol.account li.at")).toBe(
+        document.querySelector("ol.account li"),
+      );
+      expect(document.querySelector(".decision.walking")).not.toBeNull();
+      expect(screen.getByText(/is playing · step 1 of 1/)).toBeInTheDocument();
+      // `prev` is fetched with `next`, because a step's highlight is a diff.
+      expect(
+        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
+      ).toEqual([live.events, live.events + 1]);
     } finally {
       vi.useRealTimers();
     }
