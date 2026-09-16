@@ -538,6 +538,82 @@ is the first build that reads an identity header at all.
 
 ---
 
+### 3.8 M6.2 is live — the fifth deployment, 2026-09-16 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2) from
+the workstation, driven by the orchestrating session under the owner's
+standing authorization for this cycle. Nothing in the recipe changed: the
+create body is §3.7's, `YOKOHAMA_WEB_IDENTITY=claimed` included.
+
+- **Build:** `web-room-m6.2` at `a214a19` (the whole-branch review's fix wave;
+  the server half of that wave is `ad29715`, the commit the binary was built
+  at — `a214a19` is client-only). The musl binary: `ELF 64-bit LSB pie
+  executable, x86-64, static-pie linked`, **6,496,616 bytes** (was 6,400,224:
+  the table lifecycle split out, the open status and seat kind, the lock,
+  `join`, the two-scope cursor listing, the per-table locks); `web/dist` carries
+  the M6.2 client, bundle `index-C_4DrD7x.js`. Context tarball **14,026,580 B**
+  (sha256 prefix `e1b1a16a369ba1b5`), holding `yokohama-web`, `dist/`, `art/`
+  and `Dockerfile` (a copy of `deploy/Dockerfile.runtime`), served by
+  `python3 -m http.server 8899` on the workstation at **192.168.1.16** (read
+  from `ifconfig`, as §3.7 says to) and fetched by the NAS in one GET; the
+  tarball was cut at **02:06:41Z** and the image existed at 02:06:59Z. The file
+  server was stopped after the fetch.
+- **Image:** `yokohama-web:0.5.0-m6.2`, Id
+  `sha256:2435328a9967a349df589dbf68d41a746365e1aa7ba69f1428199c42df460fac`,
+  **26,407,067 B** (was 26,300,095), created **02:06:59Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.2&dockerfile=Dockerfile&rm=true`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.1` container
+  (`4e1996e6571e…`, created 2026-09-15 06:59:32Z) → `DELETE /containers/yokohama-web`
+  → `POST /containers/create?name=yokohama-web` with §3's body (Image, `Env`
+  `YOKOHAMA_WEB_IDENTITY=claimed`, the two labels `maintainer`/`purpose`,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named
+  volume `yokohama-web-data` → `/data`) → new container Id
+  `faffca0411d469d2f11b27ed72d04063b1c5df2abb90b7a3c12d254569d17e45`, created
+  **02:07:23Z**, started **02:07:26Z**. Same address on `cf-internal`
+  (**172.21.0.4**) — and the ingress names the container (`yokohama-web:8080`,
+  `deploy/cloudflared-config.yml`) — so cloudflared was not restarted. The
+  named volume rode across untouched.
+- **Verified through the tunnel at 02:07:46Z** (WARP signed in — the owner
+  refreshed the Access authorization earlier in the session, after a first
+  read had returned "Please authenticate via the warp client"; §3.2's lesson
+  again), twenty seconds after the start:
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed"}`.
+  - `GET /api/games` with no header → **401**.
+  - `GET /api/games?scope=open` and `GET /api/games` with
+    `X-Yokohama-Claimed-User: jamoore@gmail.com` → **`{"games":[],"next":null}`**
+    — `next` is the M6.2 shape; the owner's list is empty for R-P7's reason.
+  - `GET /` serves `index-C_4DrD7x.js`, which exists only in this build.
+- **The schema-1 document on the volume read unchanged — measured, not
+  assumed (spec §9).** `m6.1-live-review.table.json` was the one table document
+  the NAS held (schema 1, by `reviewer-a@m61.test`). Read through the NEW server
+  as its creator BEFORE deleting it: `GET /api/games` listed it and
+  `GET …/m6.1-live-review/table` opened it, `status: "playing"`, `to_move: 1`,
+  both seats `"name": null`, `"locked": false`, `"winner": null` — every M6.2
+  field at its default. Then, as the M6.1 close asked, `DELETE
+  /api/games/m6.1-live-review` as its creator → **204**; its list is empty and
+  the table reads 404. The eight pre-M6 `sim-*.json` records beside it have no
+  table document and stay unlisted by design.
+- **The milestone's own verification (spec §9), at 02:08:08Z:**
+  `POST /api/games` as `deploy-verify-a@m62.test` with one open seat, the label
+  "deploy verify m6.2", `display_name` "Verifier A" and the password `sesame`
+  → **201**, `status: "open"`, `locked: true`, seat 0 named "Verifier A", seat 1
+  `{"kind":"open"}`; `GET /api/games?scope=open` as `deploy-verify-b@m62.test`
+  lists it; `POST …/join {"seat":1,"name":"Verifier B","password":"open"}` →
+  **403** `{"error":"wrong password for this table"}`; the same with `sesame`
+  → **200**, `status: "dealing"`, seat 1 `"name": "Verifier B"`,
+  `my_seats: [1]`. The table was then deleted by its creator (**204**) so the
+  live review starts from an empty house.
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+- **Rollback:** `yokohama-web:0.5.0-m6.1` stays on the NAS; recreate the
+  container from that tag with §3's body INCLUDING the `Env` line (both builds
+  read the mode). A whole-image rollback again: the M6.2 client knows `join`
+  and the lobby, the M6.1 server does not, and the table documents this build
+  writes are schema 2 — an M6.1 server reads `schema` nowhere, so a schema-2
+  document with an `open` seat would reach its `check_shape` and be refused at
+  the seat kind, which is the typed refusal and not a crash. **Ten tags now sit
+  on the NAS** — the nine of §3.7 plus `0.5.0-m6.2`.
+
 ## 4. Modal — the upgrade path, not yet deployed
 
 `deploy/modal_app.py` runs the same image with a Volume for the store,
