@@ -35,7 +35,7 @@ spectator, and the same three can talk in the lobby.
   `bump`, `end`, `subscribe`, `subscribe_house` (`:42-74`). Six bump sites, every one after
   its write (M6.3 close §1.1): `create` (`tables.rs:759`), `flip_to_playing` (`:1011`),
   `join` (`:1158`), `keep` (`:1260`, table only), `persist` (`games.rs:503`), `delete`
-  (`:1441`, `end`). `unlock` bumps nothing (R-pre-3, `tables.rs:870`).
+  (`:1445`, `end`). `unlock` bumps nothing (R-pre-3, `tables.rs:870`).
 - **The frame is four fields** — `Events { events, to_move, status, your_turn }`
   (`lib.rs:1492`), built by `events_of` (`:1602`) at `playing`/over and by literal arms at
   `open` and `dealing` inside `events_at` (`:1638-1666`); the stream handler maps every
@@ -48,8 +48,11 @@ spectator, and the same three can talk in the lobby.
   every status, a `Spectator` at `playing`/over once `TableDoc::can_watch`
   (`table.rs:256`) says so, a stranger 403 at `open`/`dealing` with `NOT_SEATED`
   (`lib.rs:511`) and 403 "this table is locked — unlock it first" at a locked playing table.
-  `spectators_write_nothing` (`lib.rs:515`) refuses a `Spectator` on every write route
-  before the handle is touched (R-3.6); the sweep behind a record-refusing store pins it.
+  `spectators_write_nothing` (`lib.rs:515`) refuses a `Spectator` at `input` and `suggest`,
+  the two writes that were behind `seated`; the other writes refuse inside `Games` (M6.3
+  close §5, its R-4.4), and the SWEEP `a_spectator_is_refused_every_write_before_the_record_
+  is_ever_read` (`lib.rs:4145`), walking `admission_routes()`'s `Kind::Write` rows behind a
+  record-refusing store, is what covers every write route (R-3.6).
 - **A person is an email and, per SEAT, an optional name.** `identity::User::parse`
   (`identity.rs:92`) normalizes once; `SeatDoc::Human { user, name: Option<String> }`
   (`table.rs:38-47`, R-2.3: the name beside the email, never a replacement);
@@ -97,7 +100,7 @@ spectator, and the same three can talk in the lobby.
   semantics_rev, rules_hash, identity, signal }` (`lib.rs:310`); the client reads it once
   at boot and keeps `signal` module-level (`api.ts:179`, `signalKind`/`setSignalKind`).
   Startup reads `YOKOHAMA_WEB_IDENTITY` with no default and exits 1 on an absent or
-  unknown value (`identity.rs:55-80`, `main.rs:94-99`); `YOKOHAMA_WEB_PORT`,
+  unknown value (`identity.rs:55-80`, `main.rs:93-99`); `YOKOHAMA_WEB_PORT`,
   `YOKOHAMA_WEB_HOST`, `YOKOHAMA_WEB_DIR`, `YOKOHAMA_WEB_ART`, `YOKOHAMA_WEB_DIST` have
   defaults. `AppState` is `rules`, `games`, `identity`, `heartbeat` (`lib.rs:254`).
 - **The instruments**: the corpus is 71 files under `web/src/wire/`, regenerated with
@@ -111,39 +114,42 @@ spectator, and the same three can talk in the lobby.
 
 ### 0.2 The approach
 
-**A count on the signal, a fetch for the text** (R-4.7). Messages live in a third document
+**A count on the signal, a fetch for the text** (R-6.4.7). Messages live in a third document
 per table and one for the house; `Events` gains a fifth field, the table's last message
 number; the house frame gains a second counter. A client compares the number it holds and
 asks `GET …/chat?after=N` for the delta, exactly as it compares `events` today, so R-P9 is
 kept, every transport arm and the M6.5 poke carry the field by construction, and the
 content never rides the coalescing channel. **One component, four hosts**: a single `Chat`
 panel that owns its list, its fetch and its post, told by its host only where it is and
-when to look. **The stream is held at every status while the tab is visible** (R-4.4),
+when to look. **The stream is held at every status while the tab is visible** (R-6.4.4),
 because the person deciding their move is exactly the person being talked to, and "gg"
 after the game is the commonest message in the world.
 
 ### 0.3 The consequence worth stating first
 
 A watcher may WRITE one thing. R-3.6's "a spectator reads everything and writes nothing"
-gains one named exception (R-4.11), and the fence that proves it changes shape rather than
+gains one named exception (R-6.4.11), and the fence that proves it changes shape rather than
 disappearing: the write sweep keeps every route and names chat; the email pin narrows from
 "a watcher is named nowhere" to "a SILENT watcher is named nowhere, and a posting one only
-as the author of what they posted" (R-4.12). Both are stated at their real size in §7.
+as the author of what they posted" (R-6.4.12). Both are stated at their real size in §7.
 
 ---
 
 ## 1. Rulings specific to this cycle (2026-09-16)
 
 Beyond the plan's R-P1–R-P11, M6.2's R-2.x and M6.3's R-3.x, the owner ruled in the
-brainstorm:
+brainstorm. **Numbered `R-6.4.n`, not `R-4.n`**: `R-4.1`–`R-4.4` already name M6.1's and
+M6.3's execution rulings in twenty-one code comments (`R-4.3` alone means the M6.1
+acting-seat fence AND M6.3's open-table signal widening), and a third meaning would be a
+third. The plan's own execution rulings keep the `R-<task>.<n>` shape of the closes.
 
-- **R-4.1 — who posts.** Seat holders AND admitted watchers. A bot seat never posts in
-  this cycle, because no HTTP identity is a bot (§1's R-4.15 is where a bot's message would
+- **R-6.4.1 — who posts.** Seat holders AND admitted watchers. A bot seat never posts in
+  this cycle, because no HTTP identity is a bot (§1's R-6.4.15 is where a bot's message would
   come from later). The write route admits exactly as a read does (`admitted`): a seat
   holder at `open`, `dealing`, `playing` and over; a watcher at `playing` and over, at a
   table with no lock or once they have presented its password. A stranger at an open table
   reads and writes nothing here (the seat picker is not a chat).
-- **R-4.2 — one identity, the lobby's label rule.** The signed-in email is the key for
+- **R-6.4.2 — one identity, the lobby's label rule.** The signed-in email is the key for
   every message, players and watchers alike ("that same identity that players use would be
   the same that spectators use, they are just taking a lobby action"). What other readers
   SEE follows the lobby's own rule for a seat, `name ?? email`, for everyone: a seat's
@@ -153,9 +159,9 @@ brainstorm:
   carries a `name` is a 400, so nobody can post as another seat; a watcher's post may carry
   one. A message therefore serves its author's email on the wire, which is the same fact
   `GET …/{id}/table` already answers every reader about every seat; the M6.3 pin narrows
-  accordingly (R-4.12). **This settles the M6.3 close's owner item 1 (the email roster) as
+  accordingly (R-6.4.12). **This settles the M6.3 close's owner item 1 (the email roster) as
   "leave as is."**
-- **R-4.3 — the name is offered at the door, and it is the browser's.** The lobby's
+- **R-6.4.3 — the name is offered at the door, and it is the browser's.** The lobby's
   who-strip, the first screen in every identity mode, gains a "Your name" field beside
   "You are <email>", and the `claimed` door gains the same field as optional under the
   email. Both read and write the ONE key the table forms already use
@@ -164,7 +170,7 @@ brainstorm:
   provider or it's what we're collecting … that should be the path of least resistance."
   When an identity provider supplies a name, `/api/me` carries it and the client prefers it
   (R-P2's "drop in the identifier later"); that is a later cycle's line.
-- **R-4.4 — the stream is held at every status while the tab is visible.** The game
+- **R-6.4.4 — the stream is held at every status while the tab is visible.** The game
   screen's `active` becomes "there is a game on screen"; R-P8's hidden-tab rule is the
   hook's and stands. **The cost is one guard**: the post handler marks itself in flight and
   the arrival handler parks any frame that lands meanwhile, re-comparing it after the reply
@@ -175,26 +181,30 @@ brainstorm:
   always is fewer connections; on the hosted path the notifier is poked once per bump, so a
   message costs one Worker request against a free tier of ~100k a day, and the delay is the
   poke's. "Some delay would be acceptable but not too long": under the dark held arm a
-  message waits at most `HELD_REASK_MS` plus the residual written at that constant.
-- **R-4.5 — where chat exists.** The game screen (playing and over, seats and watchers),
+  message waits at most `HELD_REASK_MS` plus the residual written at that constant — and
+  under that arm a browser now holds its 25 s request THROUGH the player's own turn, one
+  more in-flight request per thinking player at the origin, where at HEAD it holds none.
+- **R-6.4.5 — where chat exists.** The game screen (playing and over, seats and watchers),
   the dealing screen, the open-table screen for SEATED callers, and the lobby. The route
   answers at every status for a seat holder at no extra cost, which is what lets the open
   table and the dealing screen carry the same panel.
-- **R-4.6 — the lobby chat is a switch.** `YOKOHAMA_WEB_LOBBY_CHAT` reads `on` (the
+- **R-6.4.6 — the lobby chat is a switch.** `YOKOHAMA_WEB_LOBBY_CHAT` reads `on` (the
   default) or `off`; any other value exits 1 at start naming the variable. Unlike the
   identity variable it HAS a default, because a missing switch is not a missing door. Off:
   the two house routes answer 404 `{"error":"the lobby chat is off"}`, the house counter
   never moves, `Health.lobby_chat` is false and the client draws no lobby panel. Table chat
   has no switch.
-- **R-4.7 — delivery is a count on the signal.** `Events.chat` (the table's last message
+- **R-6.4.7 — delivery is a count on the signal.** `Events.chat` (the table's last message
   number, 0 with no document) on every arm including `open` and `dealing`; the house frame
   `{seq, chat}`, two counters bumped independently. R-3.4 is amended from "a sequence only"
   to "counters only, never a per-table payload". The alternative — an `event: chat` frame
   carrying the text — was rejected: a `watch` channel loses one of two messages between
   reads, the held arm and the notifier would need a second message shape, and history on
   connect needs a fetch anyway. A second connection per tab was rejected on R-3.2 and the
-  R-9.1 lesson.
-- **R-4.8 — retention is a launch variable.** `YOKOHAMA_WEB_CHAT_KEEP` (messages retained
+  R-9.1 lesson. **One M6.3 §7 decision is amended by this**: the notifier's house poke
+  `{"seq": N}` becomes `{"seq": N, "chat": M}`; the table poke keeps its shape and gains
+  the field with `Events`.
+- **R-6.4.8 — retention is a launch variable.** `YOKOHAMA_WEB_CHAT_KEEP` (messages retained
   per document; a positive integer, default 500; `all` for indefinite) and
   `YOKOHAMA_WEB_CHAT_TEXT` (characters per message; a positive integer, default 500), both
   reported on `/api/health` so the client sizes its input from the server's rule and never
@@ -203,7 +213,7 @@ brainstorm:
   as stored, so lowering either number on a running volume cannot take a table out. The
   owner's reason is recorded: "people who end up using this strictly internally may want it
   to hold indefinitely or otherwise."
-- **R-4.9 — the document.** `<id>.chat.json` beside the record and the table, under a
+- **R-6.4.9 — the document.** `<id>.chat.json` beside the record and the table, under a
   second reserved suffix `.chat`; the house's at the fixed file `_house.chat.json`, which a
   leading underscore makes unspellable as a game id under the allowlist (`is_safe_id`'s
   first-character rule), so it collides with nothing and needs no reservation. Message
@@ -211,27 +221,34 @@ brainstorm:
   counting, so a client's `after` cursor stays valid across a trim. Never undone, never in
   the record, a table's chat removed with the table (`delete`), the house's trimmed and
   otherwise kept.
-- **R-4.10 — the panel is a bonus, not the main attraction.** LAST in the side column and
+- **R-6.4.10 — the panel is a bonus, not the main attraction.** LAST in the side column and
   FOLDED by default at every host ("the key focus is for the user trying to play the game
-  as it is"), the fold remembered per browser per scope; folded, the header carries a
-  "new" count, the panel opens no connection of its own, and on a screen whose frame
-  carries the count it fetches nothing until unfolded (§6.1 states the wake-driven
-  screens' cost); the lobby's opt-in ("enter the lobby chat") IS the unfold.
-- **R-4.11 — a watcher's one write.** `POST …/{id}/chat` admits a `Spectator`; every other
+  as it is"), the fold remembered per browser per scope. **The fetch rule, stated once**: the panel
+  reads everything retained ONCE at mount, folded or not; after that a screen whose frame
+  carries the count fetches only while unfolded (folded, its header shows the count minus
+  what it holds), and a screen whose hook drops the frame asks the delta on every tick,
+  folded or not. The panel opens no connection of its own. The lobby's opt-in ("enter the
+  lobby chat") IS the unfold.
+- **R-6.4.11 — a watcher's one write.** `POST …/{id}/chat` admits a `Spectator`; every other
   write route keeps R-3.6's refusal. The sweep names the exemption; a locked table's
   password gates the post exactly as it gates the read (`admitted`'s row).
-- **R-4.12 — the email pin narrows to its true statement.** A silent watcher (on
+- **R-6.4.12 — the email pin narrows to its true statement.** A silent watcher (on
   `unlocked`, never posted) and a caller who never knocked appear in NO payload; a posting
-  watcher's address appears only as the `user` of a message they posted. The anti-vacuity
-  partner stays.
-- **R-4.13 — colours are the table's.** The corpus walk is 2P by its own construction
-  (red, blue, a watcher), and a seat's chip is `colors[seat]` from the table document, so
-  yellow and green are covered by construction; the seat-bound and label cells run at 2P,
+  watcher's address appears only as the `user` of a message they posted. **The corpus gains
+  a FOURTH identity to make the first clause real**: `quiet@wire.test` unlocks the locked
+  table and never posts, so the silent-watcher search has a person to miss — without it the
+  clause is a search for nobody (the read that found this: at an unlocked table a watcher
+  never calls `unlock`, so the only knocker was green, who now posts). The anti-vacuity
+  partners: the table document holds both addresses, and `chat.json` holds green's.
+- **R-6.4.13 — colours are the table's.** The corpus walk is 2P by its own construction
+  (red, blue, a watcher), and a seat's chip is `colors[seat]` — the table document's on the deal and open-table
+  screens, the Players panel's on the game screen (`App.tsx:944-946`), one config built
+  from the other (`tables.rs:463`) — so yellow and green are covered by construction; the seat-bound and label cells run at 2P,
   3P and 4P rather than assuming two, following the spectator-projection precedent.
-- **R-4.14 — out.** No edit or delete of a message, no moderation, no rate limit on the
+- **R-6.4.14 — out.** No edit or delete of a message, no moderation, no rate limit on the
   NAS, no kick, no notification beyond the folded panel's count, no read state beyond the
   browser session.
-- **R-4.15 — a talking bot is possible later, and three choices now keep it cheap.**
+- **R-6.4.15 — a talking bot is possible later, and three choices now keep it cheap.**
   The owner: "at some point in the future I could imagine a world where we hook in an LLM
   to allow the computer/bot player to 'chat' as well … feed the game play json and some
   instructions over a call that can originate on the container over an openai compatible
@@ -246,7 +263,7 @@ brainstorm:
   chat — because a `GameRecord` carries the setup seed, which is the whole hidden set. The
   trigger, the prompt, the endpoint and key variables, the HTTP client dependency, cost and
   cadence and the personality's name are all §11's.
-- **R-4.16 — the final verification is HEADED (owner, 2026-09-16, at the spec review).**
+- **R-6.4.16 — the final verification is HEADED (owner, 2026-09-16, at the spec review).**
   The suites keep headless Chromium; the LIVE REVIEW of the deployed site runs headed
   browsers, "as this has a distinctly visual verification component": Playwright HEADED
   for the three-identity walk (screens read by eye and photographed, both layouts), and
@@ -275,10 +292,12 @@ pub enum Doc { Record, Table, Chat, House }   // .json · .table.json · .chat.j
   (`a.b.json`, `a.b.table.json`, `a.b.chat.json`, both stores). `FsStore::list` needs no new
   branch — `<id>.chat` fails `is_safe_id` the way `<id>.table` does — and the redundant
   defence line gains the second suffix anyway, as the second of two.
-- `Doc::House` is the ONE file `_house.chat.json`, whatever id is passed; callers pass
-  `chat::HOUSE` (`"house"`), `FsStore::path` returns the fixed path for that id and refuses
-  any other, `MemStore` keys `(Doc::House, "house")`. `delete(id)` walks
-  `[Record, Table, Chat]` and never `House`; `list(Doc::House)` answers `["house"]` or `[]`.
+- `Doc::House` is the ONE file `_house.chat.json`: `Doc::House.suffix()` is `.chat.json`
+  like `Chat`'s, and `FsStore::path(Doc::House, id)` prepends the underscore, answers only
+  for `id == chat::HOUSE` (`"house"`) and refuses any other id; `MemStore` keys
+  `(Doc::House, "house")`. `delete(id)` walks `[Record, Table, Chat]` and never `House`;
+  `list(Doc::House)` branches BEFORE the directory scan — a metadata read of the fixed path —
+  and answers `["house"]` or `[]`.
 - **Why a leading underscore and not a reserved NAME**: `FsStore::path` calls `is_safe_id`
   on every read and write, so reserving the id `house` would refuse the house document's
   own reads; a file no game can spell needs no reservation, and `list(Doc::Record)`
@@ -292,40 +311,50 @@ pub const HOUSE: &str = "house";
 
 pub struct ChatDoc { pub schema: u32, pub id: String, pub last: u64, pub messages: Vec<Message> }
 
-pub struct Message { pub seq: u64, pub at: u64, pub author: Author, pub text: String }
+pub struct Message { pub seq: u64, pub created_at: u64, pub author: Author, pub text: String }
 
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Author {
     Seat { seat: u8, user: String, name: Option<String> },
     Watcher { user: String, name: Option<String> },
-    /// R-4.15. Serialized and read; PRODUCED BY NO ROUTE in this cycle.
+    /// R-6.4.15. Serialized and read; PRODUCED BY NO ROUTE in this cycle.
     Bot { seat: u8, name: Option<String> },
 }
 
 pub struct ChatLimits { pub keep: Option<usize>, pub text: usize }   // None = all
 ```
 
-`at` is Unix seconds, the `created_at` idiom (`table.rs:177`). `seq` is assigned as
+`created_at` is Unix seconds, the table document's idiom (`table.rs:179`) — and the NAME is
+load-bearing: the corpus freezer `freeze_clock` (`tests/wire_fixtures.rs:256-293`) pins a
+clock by KEY NAME (`created_at`, `next`), so a message field spelled `at` would be walked
+straight past and six fixtures would churn on every regeneration. `seq` is assigned as
 `last + 1` under the lock and `last` is written with it. **The wire shape IS the stored
-shape** for a message (`Message` serializes as is; the author's `user` rides, R-4.2), and
+shape** for a message (`Message` serializes as is; the author's `user` rides, R-6.4.2), and
 the read route's reply is `ChatPage { messages: Vec<Message>, last: u64 }`.
 
 ### 2.3 `check_shape(doc, players: Option<u8>)`
 
-Run on read AND on write (the table document's rule, `tables.rs:358`): `schema <=
-CHAT_SCHEMA`; `seq` strictly increasing and `last >= ` the newest `seq`; every `user`
+Run on READ, as the table document's shape is (`tables.rs:353-356`: checked where a
+document enters the process, in `read_table` and `list_for`), **and on WRITE too**, which the
+table's is not — because a chat document is appended to by this process on every message,
+and a write that stored a malformed author would poison the next read under the table's
+lock: `schema <= CHAT_SCHEMA`; `seq` strictly increasing and `last >= ` the newest `seq`; every `user`
 parses as `User`; every `name` passes `check_name`; every `text` non-empty with no control
-character; a `Seat` or `Bot` author's `seat < players` at a table (it reaches
-`PlayerId::new`, which panics — the M6.1 lesson) and NO seat author at the house (`players`
-is `None` there). **Not checked on read, deliberately (R-4.8)**: the message count against
+character; a `Seat` or `Bot` author's `seat < players` at a table — not because anything here hands it
+to `PlayerId::new` (nothing does; the message is served as stored), but because the client
+indexes `colors[seat]` with it and an out-of-range seat draws an unlabelled chip, and a
+stored field is an INPUT bounded where it enters, as the table's are — and NO seat-bearing
+author at the house, `Seat` or `Bot` alike (`players` is `None` there). **Not checked on read, deliberately (R-6.4.8)**: the message count against
 `keep` (trimmed on the next append) and the text length against `text` (served as stored).
 A document that fails is the typed `Server` error every other malformed document is, never
 a panic under a lock.
 
 ### 2.4 The append
 
-`Games::chat_append(&self, id: &str, author: Author, text: String) -> Result<Message,
-GameError>` (R-4.15 (b)): `chat::check_text(&text, &limits)` first (trimmed, non-empty,
+`Games` holds `limits: ChatLimits` (constructed `Games::with_limits(rules, store, limits)`;
+`Games::new` keeps its signature and takes the defaults), because `Games` has no path to
+`AppState`. `Games::chat_append(&self, id: &str, author: Author, text: &str) -> Result<Message,
+GameError>` (R-6.4.15 (b)): `chat::check_text(text, &self.limits)` first (trimmed, non-empty,
 at most `limits.text` characters, no control character — a 400 with the sentence; the
 ROUTE has already run the same function before building the author, so the order in
 §3.2 holds, and the append re-runs it so a second caller is bounded too), then under
@@ -340,9 +369,13 @@ gated cell (§9.1).
 
 `Games::chat_last(id) -> u64` is what `Events.chat` reads: an in-process cache
 `chat_last: Mutex<HashMap<GameId, u64>>` seeded from the document on a miss, written by
-`chat_append` under the table lock, cleared by `delete`. The stream closure therefore reads
-NO document for the count (it is called once per bump per connection, and a 500-message
-document is a parse this closure must not pay). **Its limit, stated**: a second PROCESS's
+`chat_append` under the table lock, cleared by `delete` AND by `create` (a name deleted and
+reopened must start at 0). The stream closure therefore reads AT MOST ONE document for the
+count — once per table per process, on the first miss, which may be its own first frame —
+and never per bump (a 500-message document is a parse this closure must not pay per
+connection). **A seeding read that FAILS answers 0 and caches nothing**, so the next call
+retries; a store that cannot be read is refusing every route beside this one, and a count
+of 0 is the same answer an absent document gives. **Its limit, stated**: a second PROCESS's
 appends are invisible to this one's count, which is true of the record's live handle today
 and is M6.5's to change when the store is a database and the count is a query (§11).
 
@@ -352,7 +385,7 @@ and is M6.5's to change when the store is a database and the count is a query (�
 
 ### 3.1 `GET /api/games/{id}/chat?after=N`
 
-`admitted` first (R-4.1's rows). Answers `ChatPage` with every retained message whose
+`admitted` first (R-6.4.1's rows). Answers `ChatPage` with every retained message whose
 `seq > after` (`after` defaults to 0), and `last`. `after` beyond `last` answers an empty
 list and `last`. A table with no document answers `{ messages: [], last: 0 }`. No lock is
 held (a read of one document); the body is a projection and serves a locked session (the
@@ -366,8 +399,13 @@ sentence); (2) a `Seat` caller carrying `name` → 400 "a seated caller is named
 seat"; (3) a `Watcher`'s `name` through `check_name` → 400 with its sentence; (4) the
 append (a 409 on a store conflict). Answers **201** with the `Message`. The author: a
 `Viewer::Seat(s)` → `Author::Seat { seat: s, user, name: the seat's stored name }`, where
-`s` is the viewer seat (`client::viewer_seat`, the acting seat when the caller holds it,
-else the caller's lowest — the same seat every other payload is built for); a
+`s` is the seat `admitted` produced: at `playing` and over the viewer seat
+(`client::viewer_seat`, the acting seat when the caller holds it, else the caller's lowest —
+the same seat every other payload is built for), and at `open` and `dealing` the caller's
+LOWEST seat (`lib.rs:474`). **That stand-in becomes load-bearing here**: `admitted`'s doc
+says it "stands in for a value those routes never read" (`lib.rs:455-457`), and this is the
+first route that reads it, so the sentence is corrected in the same commit — a multi-seat
+caller posts as their lowest seat before the deal and as the acting seat after it. A
 `Viewer::Spectator` → `Author::Watcher { user, name: body }`.
 
 ### 3.3 `GET /api/chat?after=N` and `POST /api/chat`
@@ -389,8 +427,11 @@ no seats — and the post's order is (1) the switch, (2) the text rule, (3) the 
 | no seat; locked, not unlocked | `playing` / over | 403 "locked — unlock it first" | 403 same | 403 not seated |
 
 The M6.3 grid cell (six tables × three identities × eighteen routes) gains the two routes
-as its nineteenth and twentieth and asserts the POST column equals the GET column at every
-cell. The house pair is a separate two-row table: signed in → 200/201; the switch off →
+as its nineteenth and twentieth under two NEW kinds — `Kind::Chat` (200 to a seat holder at
+EVERY status and to a watcher, 403 otherwise with the lock sentence where the lock shuts
+them out; not `Read`, which expects a 409 before the game exists) and `Kind::ChatPost` (the
+same admission and a 201; not `Write`, which the sweep refuses blanket) — and asserts the
+POST column equals the GET column at every cell. The house pair is a separate two-row table: signed in → 200/201; the switch off →
 404/404.
 
 ### 3.5 The bodies and the query
@@ -408,9 +449,11 @@ Extracted through `JsonBody`/`QueryArgs` (`lib.rs:189`, `:211`), so an unknown k
 
 ## 4. The signal — `signal.rs`, `lib.rs`
 
-- `Events` gains `pub chat: u64` as its FIFTH field, on every arm: the `open` literal, the
-  `dealing` literal and `events_of` all read `games.chat_last(id)`. At `open` the arm
-  answers before `admitted` (the M6.3 execution ruling the close's §5 numbers R-4.3 — not this cycle's R-4.3), so a stranger on the seat picker reads the
+- `Events` gains `pub chat: u64` as its FIFTH field, on every arm: `events_at` reads
+  `games.chat_last(id)` ONCE at its top and passes it to the `open` literal, the `dealing`
+  literal and `events_of`, whose signature gains a `chat: u64` (it has neither an id nor the
+  `Games`, and its "one function, two transports" doc stays true). At `open` the arm
+  answers before `admitted` (the M6.3 execution ruling the close's §5 numbers R-4.3), so a stranger on the seat picker reads the
   count; a count leaks nothing and the same caller's `chat` GET is 403.
 - The house channel becomes `watch::Sender<House>` with `pub struct House { pub seq: u64,
   pub chat: u64 }`; `bump` increments `seq` as today; `bump_house_chat` increments `chat`
@@ -457,50 +500,60 @@ module-level (`lobbyChat()`, `chatText()` in `api.ts`).
 ### 6.1 `web/src/Chat.tsx` — one component
 
 ```ts
-<Chat scope={{ kind: "table", id }} | {{ kind: "house" }}
-      count?: number      // the server's last message number, where the host holds it
-      tick?: number       // "something may have changed", where the host's hook drops the frame
-      colors?: PlayerColor[]   // a table's; absent at the house
-      sendName: boolean />     // true for a watcher and at the house: the browser's name rides the post
+export interface ChatProps {
+  scope: { kind: "table"; id: string } | { kind: "house" };
+  count?: number;          // the server's last message number, where the host holds it
+  tick?: number;           // "something may have changed", where the host's hook drops the frame
+  colors?: PlayerColor[];  // a table's; absent at the house
+  sendName: boolean;       // true for a watcher and at the house: the browser's name rides the post
+  heading?: "h2" | "h3";   // the panel's heading level; h2 in the side column, h3 in the lobby
+}
 ```
 
 It OWNS: the list (`messages`, `last` = the highest `seq` held), the fold (`folded`, read
-from and written to `localStorage` under `yokohama.chat.folded.<table id | house>`, the
-`sections.ts` idiom, DEFAULT TRUE everywhere per R-4.10), the unread count (messages that
-arrived while folded; reset to 0 on unfold; never persisted), the draft, the in-flight
-guard and the error line.
+from and written to ONE `localStorage` key `yokohama.chat.open` holding the set of scopes a
+person has OPENED, newest 64 kept — the `sections.ts` single-key idiom rather than a key per
+table; DEFAULT FOLDED everywhere per R-6.4.10), the unread count (messages that arrived while
+folded on a wake-driven host; reset to 0 on unfold; never persisted), the draft, the
+in-flight guard and the error line.
 
-- **Fetching.** On mount, `api.chat(scope, 0)` — everything retained. When `count` rises
-  above `last`, `api.chat(scope, last)`; when `count` is at or below `last`, NOTHING (the
-  cell that catches a panel fetching on every move). When `tick` changes, `api.chat(scope,
-  last)`. Results are appended after filtering `seq > last`, so a message this browser
-  already holds is never drawn twice. **Folded, the two kinds of host differ, and the
-  difference is stated rather than hidden**: on a COUNT-driven host (the game, the deal)
-  the header's number is `count - last` and nothing is fetched until the unfold, which
-  fetches once; on a WAKE-driven host (the open table, the lobby) the frame is dropped by
-  the hook, so the panel asks the delta (`after=last`, a few bytes, usually empty) on each
-  tick whether or not it is folded, holds what came back, and the header's number is what
-  it holds unread. The delta IS the badge's only source there; the lists the same wake
-  refetches cost more than it does.
+- **Fetching, the one rule (R-6.4.10).** On mount, `api.chat(scope, 0)` — everything
+  retained — folded or not, at every host. After that: on a COUNT-driven host (the game, the
+  deal) a `count` above `last` fetches `api.chat(scope, last)` only while UNFOLDED, and the
+  unfold itself fetches once if the count has moved; a `count` at or below `last` fetches
+  NOTHING (the cell that catches a panel fetching on every move); folded, the header's
+  number is `count - last`. On a WAKE-driven host (the open table, the lobby) the frame is
+  dropped by the hook, so the panel asks the delta (`after=last`, a few bytes, usually
+  empty) on each `tick` whether or not it is folded, and the header's number is what it
+  holds unread. Results are appended after filtering `seq > last`, so a message this browser
+  already holds is never drawn twice. The panel opens NO connection of its own (a cell).
 - **Posting.** A `form` with one `input` (`maxLength` = `chatText()`), Enter or the button
   sends; `api.postChat(scope, { text, name? })` where `name` is sent ONLY when `sendName` is
-  true — a watcher, and anyone at the house; a seated caller sends none (R-4.2) — and
+  true — a watcher, and anyone at the house; a seated caller sends none (R-6.4.2) — and
   only when the browser holds one; the
   201's message is appended locally and `last` advanced, so the frame it causes is a
   no-op compare. A refusal renders in the panel's own error line, in the server's words.
   The input is disabled while a post is in flight, never the stream.
-- **Rendering.** `section.panel.chat`, an `h2` with the title ("Chat" at a table, "Lobby
-  chat" at the house), the unread count when folded and non-zero, and the `ghost fold`
-  button (`aria-expanded`, `aria-controls`); a `.messages` body that is `max-height: 0`
-  folded and a capped scroller open (the turn account's numbers, `styles.css:1313`),
-  newest LAST, kept at the bottom on append unless the reader has scrolled up (the turn
-  account's `scrollTop` rule, never `scrollIntoView`); one `li` per message with the
-  label, a time (`HH:MM` local; the date before it when not today, R-P3's night away) and
-  the text. **The label is R-4.2's**: `Seat` → a chip in `colors[seat]`'s class and `name
+- **Rendering.** `section.panel.chat` at every host, with a heading at the level the host
+  names (`h2` in the side column; `h3` in the lobby, whose three siblings are `h3` under the
+  screen's one `h2`), carrying the title ("Chat" at a table, "Lobby chat" at the house),
+  the unread count when folded and non-zero, and the `ghost fold` button (`aria-expanded`,
+  `aria-controls`); a `.messages` body that folds the turn account's way — clipped to
+  `max-height: 0`, never unmounted, its controls at `tabIndex -1` (R-T8-1) — and open holds a
+  list that is a CAPPED scroller at every width, **deliberately unlike the turn account,
+  whose cap lifts above 1201 px** (`styles.css:1315-1322`): a chat's history is long and the
+  input under it must stay in reach, so the three rules are the panel's own (`.chat
+  .messages`, `.chat .messages.folded`, `.chat-lines`), none inherited from
+  `.turn-account`. Newest LAST, kept at the bottom on append unless the reader has scrolled
+  up (the turn account's `scrollTop` rule, never `scrollIntoView`); one `li` per message
+  with the label, a time (`HH:MM` local; the date before it when not today, R-P3's night
+  away; `when(created_at, now, locale)` so a cell can freeze both) and the text. **The label is R-6.4.2's**: `Seat` → a chip in `colors[seat]`'s class and `name
   ?? user`; `Watcher` → `name ?? user` and a `watching` marker; `Bot` (never received this
   cycle, rendered defensively) → the chip and `name ?? "bot"`. The whole panel takes
   `margin-top: auto` in the side column's flex so it sits at the column's foot when there
-  is slack, and at the end of the scroll when there is not.
+  is slack, and at the end of the scroll when there is not. **Below 1201 px** the side
+  column is the stack's middle block between the table and the sticky deck, so "the foot of
+  the column" is the foot of that block, mid-page; folded, it is one header line there.
 
 ### 6.2 The four hosts
 
@@ -511,14 +564,15 @@ guard and the error line.
   LAST inside `aside.side`, after the dashboard, for players and watchers alike.
 - **The dealing screen** (`Dealing.tsx:200`): the same, from its `useSignal` handler,
   which today acts only when the status leaves `dealing` and now also sets the count;
-  the panel LAST inside its `aside.side` (`:330`).
+  the panel LAST inside its `aside.side` (`:330`), `sendName={false}` (a seat holder).
 - **The open table** (`OpenTable.tsx`): its hook is `"wake"` and drops the frame, so
-  `take` (`:91`) increments a `tick`; `<Chat tick>` under the link field, rendered ONLY
+  `take` (`:91`) increments a `tick`; `<Chat tick sendName={false}>` under the link field, rendered ONLY
   when `seated` (`:243`) — a stranger on the seat picker is 403 and must not be shown a
   panel that refuses.
 - **The lobby** (`Lobby.tsx`): `take` (`:105`) increments a `tick`; a fourth
-  `section.saved.lobby-chat` after Games in progress (`:263`), rendered ONLY when
-  `lobbyChat()` is true. Folded by default (R-4.10). **The cost, stated**: a house message
+  `section.saved.lobby-chat` after Games in progress (`:263`) WRAPPING the panel (the
+  panel's own root stays `section.panel.chat`, rendered with `heading="h3"` and
+  `sendName`), rendered ONLY when `lobbyChat()` is true. Folded by default (R-6.4.10). **The cost, stated**: a house message
   is one more house wake, and every visible lobby refetches its three listings on ANY
   house frame (R-3.4's rule) plus the chat delta; a `"value"` consumer of the house frame
   that refetched lists only when `seq` moved is the LEAVE item this creates (§11).
@@ -526,7 +580,7 @@ guard and the error line.
   fetches the delta every 3 s; a `"value"` host's count rides the held reply. Recorded,
   not gated.
 
-### 6.3 The name field (R-4.3)
+### 6.3 The name field (R-6.4.3)
 
 `Lobby.tsx`'s who-strip gains `<label>Your name <input …/></label>`, prefilled from
 `displayName()`, written through `setDisplayName` on change (trimmed; an emptied field
@@ -534,15 +588,21 @@ removes the key). `SignIn.tsx` gains the same field as optional under the email,
 on submit when non-empty. The New table form and the open table's picker keep theirs; all
 four read one key.
 
-### 6.4 The stream, held (R-4.4)
+### 6.4 The stream, held (R-6.4.4)
 
 `active` becomes `!!state` (`App.tsx:653`). `send` (`:533`) sets `posting.current = true`
 before `api.input` and, in its `finally`, clears it and — if `pending.current` holds a
 frame — runs the arrival loop over it. The arrival handler's parking check becomes `if
-(arriving.current || posting.current)`. **Why this is sufficient**: when the reply lands,
-`stateNow` carries the new count, so the parked self-bump compares equal and is a no-op;
-if an opponent moved during the round trip the parked frame's count is higher and it
-walks, which is right. The hot-seat re-read is untouched. The doc block on `active` is
+(arriving.current || posting.current)`. **And `send` WRITES `stateNow.current = replied`
+beside its `setState(replied)`, and again after the hot-seat re-read's `setState(mine)`**
+— the precedent is the arrival loop's own assignment (`App.tsx:703`), and without it the
+sufficiency argument is false: `stateNow` is written during render and by the arrival loop
+only, React's commit is scheduled and not synchronous, and the parked frame would be
+compared against the PRE-move count and walked as an arrival, which is the defect the guard
+exists for. **Why this is then sufficient**: when the reply lands, `stateNow` carries the
+new count by assignment, so the parked self-bump compares equal and is a no-op; if an
+opponent moved during the round trip the parked frame's count is higher and it walks,
+which is right. The hot-seat re-read is untouched. The doc block on `active` is
 rewritten: R-9.1's sentence "on this screen a write happens only while `your_turn`" was
 the reason `busy` could leave `active`; it is now the reason the POSTING guard exists.
 `Dealing`, `OpenTable` and `Lobby` already pass `true`.
@@ -552,8 +612,14 @@ the reason `busy` could leave `active`; it is now the reason the POSTING guard e
 `types.ts`: `ChatAuthor` (the tagged union, three arms), `ChatMessage { seq, at, author,
 text }`, `ChatPage { messages, last }`, `ChatPost { text, name? }`; `Events.chat: number`;
 `Health.lobby_chat: boolean`, `Health.chat_keep: number | null`, `Health.chat_text:
-number`. `contract.ts`: `EVENTS` gains `chat`; `HEALTH` gains the three; new `CHAT_PAGE`,
-`CHAT_MESSAGE` rows and a per-arm row for the author union (the `SeatDoc` precedent).
+number`. `contract.ts`: `EVENTS` gains `chat`; `HEALTH` gains the three; new `CHAT_PAGE` and
+`CHAT_MESSAGE` key rows; and **the author union gets the contract's own §1b treatment**
+(`contract.ts:339-344`) — it is `#[serde(tag = "kind")]`, internally tagged, the one shape
+widening RUINS (`Widen<{kind:"seat"}>` and `Widen<{kind:"watcher"}>` both collapse to
+`{kind: string}`), so each fixture author is asserted against ITS OWN member picked out
+with `Extract`, per message, and `contract.test.ts` pins each arm's key list at runtime by
+its `kind`. There is no `SeatDoc` per-arm precedent to follow; `TABLE` names `seats` as one
+key. The `bot` arm has no fixture and is declared only.
 `api.ts`: `chat(scope, after)`, `postChat(scope, body)` over the two paths; `lobbyChat()`,
 `chatText()` with their setters, read at boot beside `setSignalKind` (`App.tsx:530`).
 
@@ -576,15 +642,20 @@ all of it.
 - **A locked table's chat is behind its password both ways**: the grid cell (§3.4) asserts
   POST ≡ GET at every cell.
 - **A seat's name cannot be forged**: a seated caller's post carrying `name` is 400
-  (mutation 4); the author's `name` on the 201 is the SEAT's, asserted by value against a
-  seat whose stored name differs from the body's.
-- **A bump follows its write**: the two new sites' gated cells (§9.1), the M6.3 shape.
-- **The email pin narrows (R-4.12)**: `no_payload_names_a_silent_watcher_and_a_posting_one_
-  only_as_an_author` walks every corpus payload as a JSON tree; `grey@wire.test` may appear
-  nowhere; `green@wire.test` may appear only as the `user` of an `author` object inside a
-  `Message` (a `messages[]` element or a 201 body). The anti-vacuity partner is unchanged
-  (the address IS in the table document). A second partner is added: the address IS in
-  `chat.json`, so the allowance is exercised and not vacuous.
+  (mutation 4); and the author's `name` on a 201 whose body carried NO name is the SEAT's
+  stored name, asserted by value at a seat created with a display name (mutation 19: the
+  seat author's name served as `null`).
+- **A bump follows its write**: the two new sites' gated cells (§9.1), the M6.3 shape —
+  and **a table message wakes its TABLE and not the house** (mutation 21: `chat_append`
+  calling `bump` would put three listing reads per message on every visible lobby; the
+  append cell reads the house receiver quiet).
+- **The email pin narrows (R-6.4.12)**: `a_silent_watcher_is_named_nowhere_and_a_posting_one_
+  only_as_an_author` walks every corpus payload as a JSON tree; `grey@wire.test` (never
+  knocked) and `quiet@wire.test` (knocked, never posted — the fourth identity) may appear
+  nowhere; `green@wire.test` may appear only as the `user` of an `author` object whose
+  `kind` is `watcher`. The anti-vacuity partners: both silent addresses ARE in the table
+  document (quiet's on `unlocked`), and green's IS in `chat.json`, so the allowance is
+  exercised and not vacuous.
 - **The seed, the password, the salt and the hash** stay under their existing pins, which
   search the whole corpus and therefore the new files.
 - **`stream` ≡ `events`** by value, unchanged and now over five fields.
@@ -600,9 +671,10 @@ all of it.
 Routes: M6.3's twenty-four plus `GET`/`POST …/{id}/chat` and `GET`/`POST /api/chat`. New
 fixtures (eleven), captured in the walk at the points named:
 
-- `chat.json` — `GET …/wire/chat` as red at `playing`, after red, blue and green (the
-  unlocked watcher, with a name) have each posted once: three messages, three author arms
-  exercised (two `seat`, one `watcher`).
+- `chat.json` — `GET …/{id}/chat` as red at `playing`, after red, blue and green (the
+  unlocked watcher, with a name) have each posted once: three messages, two author arms
+  exercised (`seat` twice, `watcher` once; `bot` has no producer). Before them, the walk's
+  FOURTH identity `quiet@wire.test` unlocks the locked table and never speaks (R-6.4.12).
 - `chat_after.json` — the same as `?after=2`: one message, `last: 3`.
 - `chat_post.json` — red's 201; `chat_post_watcher.json` — green's 201 (`author.kind:
   "watcher"`, the body's name).
@@ -616,9 +688,11 @@ fixtures (eleven), captured in the walk at the points named:
 
 Changed: every `events*.json` gains `chat` (0 at `events_open`/`events_dealing`, 3 at
 `events.json` since the posts precede it in the walk — the walk's order is what the plan
-fixes); `health.json` gains the three keys. **Every `ClientState`, `HistoricalFrame`,
-`TableView` and `DealView` fixture is byte-identical**, which is what proves the panel is
-fed by the frame and the table carries no chat field. Regenerated, run without the
+fixes); `health.json` gains the three keys. Every message's `created_at` is frozen by the
+existing `freeze_clock`, by its name. **Every `ClientState`, `HistoricalFrame`, `TableView`
+and `DealView` fixture is byte-identical**, which is what proves no chat field entered those
+payloads (that the panel is fed by the frame is §9.3's `count` cells and `events.json`'s
+own key). Regenerated, run without the
 variable, the diff read and reported in the close.
 
 ---
@@ -629,18 +703,22 @@ variable, the diff read and reported in the close.
 
 - **Store**: three kinds under a dotted id on both stores; `.chat` refused as an id suffix
   case-insensitively; `_house.chat.json` absent from `list(Doc::Record)`; `delete` removes
-  the chat file and leaves the house's; `Doc::House` refuses an id other than `HOUSE`.
-- **Document**: `check_shape`'s rules one by one, the seat bound at 2P/3P/4P (R-4.13), the
+  the chat file and leaves the house's; `Doc::House` refuses an id other than `HOUSE`; **the
+  derivation assert (`store.rs:619-627`) becomes a loop over the pair**, each reserved
+  suffix derived from its own `Doc` arm, so `Doc::Chat.suffix()` drifting leaves no cell
+  green — the assert CLAUDE.md warned would not notice a third kind.
+- **Document**: `check_shape`'s rules one by one, the seat bound at 2P/3P/4P (R-6.4.13), the
   house's no-seat rule, the not-refused-on-read pair (a 501-character stored text is
   served; a 600-message document is served and trimmed to 500 on the next append); `seq`
   never reused across a trim (append 501 at keep 500, read `after=0`, the oldest is gone
   and the newest is 501); `keep: None` never trims.
 - **Append**: the text rule's three sentences; the seat/name 400; a watcher's name through
-  `check_name`; the author by value for a `Viewer::Seat` at a seat with a stored name
-  differing from the body's; the two-seat hot-seat caller posts as the viewer seat; a
+  `check_name`; the author by value for a `Viewer::Seat` posting with NO body name at a seat created
+  with a display name; the two-seat hot-seat caller posts as the viewer seat; a
   store `Conflict` is 409; the two gated bump cells (the write parked behind a gate, the
-  receiver quiet until it opens); `chat_last` seeded from a document on a cold miss and
-  advanced by an append.
+  receiver quiet until it opens); the house receiver QUIET after a table append; `chat_last`
+  seeded from a document on a cold miss, advanced by an append, cleared by `create` and by
+  `delete`, and 0 uncached on a failed read.
 - **Routes**: the §3.4 grid extended by two routes with POST ≡ GET; the refusal order by
   adjacent-pair probes; `after` beyond `last`; the house pair signed in and switched off;
   the M6.3 stranger sweep extended.
@@ -662,7 +740,9 @@ makes ZERO calls; a `tick` fetches; the dedupe (a delta carrying a held `seq` dr
 the post appends the 201 and advances `last`; a seated scope sends no `name`; the 400
 sentence renders; the three labels (chip + name, chip + email, watching marker); the date
 before yesterday's time; folded by default, the unread count, the reset on unfold, the
-remembered fold under a storage that throws; the input's `maxLength` from health.
+remembered fold under a storage that throws; the input's `maxLength` from health; **no request of the panel's own to any `/stream` and
+no `Accept: text/event-stream`** (mutation 22); the time cell over a frozen `now` and a
+pinned locale.
 `App.test.tsx`: `active` true during `your_turn` and at `over` (the hook's cell reads
 `useSignal`'s second argument through a spy); the parked frame during a post (a frame
 landing between `api.input`'s call and its resolution is compared AFTER the reply and
@@ -670,7 +750,8 @@ fetches nothing); the panel last in the side column. `Lobby.test.tsx`: the secti
 under `lobby_chat: false`, present and folded under true, the name field writing the key.
 `SignIn.test.tsx`: the optional field. `Dealing.test.tsx`, `OpenTable.test.tsx`: the panel
 present (and the open table's absent for a stranger). `contract.test.ts`: the new root-key
-rows, `health.json`'s three keys, `events.json`'s fifth.
+rows, `health.json`'s three keys, `events.json`'s fifth, and each fixture author's key list
+by its `kind` (mutation 20).
 
 ### 9.4 The gates that play
 
@@ -708,8 +789,13 @@ rows, `health.json`'s three keys, `events.json`'s fifth.
 14. A control character or an over-cap text accepted on POST (the text-rule cells).
 15. The lobby section rendered under `lobby_chat: false` (the Lobby cell).
 16. `check_shape` letting `seat: 7` through at a 2P table (the input cell).
-17. A stored over-cap text or over-keep document REFUSED on read (the R-4.8 pair).
+17. A stored over-cap text or over-keep document REFUSED on read (the R-6.4.8 pair).
 18. The fold not read from storage, or the unread count not reset on unfold.
+19. A seat author's stored name served as `null` on the 201 (the by-value author cell).
+20. An author arm's non-discriminant fields checked by nothing (the §1b `Extract` rows and
+    the runtime per-`kind` key lists).
+21. `chat_append` calling `bump` instead of `bump_table` (the append cell's quiet house).
+22. The panel opening a connection of its own (the no-`/stream` cell).
 
 ### 9.6 Byte-identical
 
@@ -721,16 +807,16 @@ suites re-counted at the close HEAD in one sequence.
 
 ## 10. Deployment
 
-- The image tag is `0.5.0-m6.4`; the recipe is `deploy/RUNBOOK.md` §3.5 by reference, the
-  record a §3.10 addendum. **No new variable is REQUIRED on the NAS**: the three have
+- The image tag is `0.5.0-m6.4`; the recipe is `deploy/RUNBOOK.md` §1–§3 by reference, as
+  M6.3 cited it, with §3.9 the nearest worked example; the record a §3.10 addendum. **No new variable is REQUIRED on the NAS**: the three have
   defaults; the runbook's create-body paragraph records them as optional with their values,
-  and the Dockerfiles' comment blocks beside `YOKOHAMA_WEB_IDENTITY` (`deploy/Dockerfile:81`,
-  `Dockerfile.runtime:46`) gain one sentence each.
+  and the Dockerfiles' `YOKOHAMA_WEB_IDENTITY` sentences (`deploy/Dockerfile:90`,
+  `Dockerfile.runtime:54`) gain one sentence each.
 - Verification from the shell: `/api/health` carries `lobby_chat`, `chat_keep`, `chat_text`;
   a `POST /api/chat` with the identity header answers 201 and a `GET` reads it back; a
   table's `…/stream` frame carries `chat`.
 - The live review is against the live site in both layouts from THREE HEADED browsers as
-  three people (R-4.16): Playwright headed contexts, each signed in at the claimed door
+  three people (R-6.4.16): Playwright headed contexts, each signed in at the claimed door
   under its own email, two playing, one watching by link, all three talking at the table
   and in the lobby; plus one pass in Claude in Chrome under the owner's own profile. It
   reads BY EYE that the panel sits at the column's foot folded with its count, that the
@@ -743,11 +829,11 @@ suites re-counted at the close HEAD in one sequence.
 
 ## 11. What this spec does NOT claim
 
-- **No edit, no delete, no moderation, no rate limit, no kick** (R-4.14). `unlock` and
+- **No edit, no delete, no moderation, no rate limit, no kick** (R-6.4.14). `unlock` and
   `join` remain password oracles without a rate limit, as the M6.3 close records.
 - **No read state beyond the browser session**: the unread count is a session number;
   nothing records what a person has read.
-- **The name is per BROWSER, not per person**, and there is no profile (R-4.3); a person
+- **The name is per BROWSER, not per person**, and there is no profile (R-6.4.3); a person
   on two devices types it twice; a provider-supplied name is a later line on `/api/me`.
 - **The count is per PROCESS** (`chat_last`); a second process's appends are invisible to
   this one's frames until the store is a database and the count a query (M6.5).
@@ -756,7 +842,11 @@ suites re-counted at the close HEAD in one sequence.
   LEAVE item §6.2 names, with its fix.
 - **The held arm's chat latency is the held arm's**: `HELD_REASK_MS` for a wake-driven
   host and the residual written at that constant for a value-driven one; the arm is dark.
-- **The talking bot is a shape, not a feature** (R-4.15): the `Bot` author arm is produced
+- **No page size on the read**: a cold `after=0` answers every retained message, which at
+  the defaults is at most 500 messages of 500 characters (≈250 KB, worst case) once per
+  mount per host; the keep IS the page size, and a person who sets `all` pays for it. A
+  `limit` is the fix when it is wanted.
+- **The talking bot is a shape, not a feature** (R-6.4.15): the `Bot` author arm is produced
   by no route; no trigger, prompt, endpoint, key, HTTP client, cost rule or name is
   decided.
 - **Nothing is measured with more than three browsers**, and the live review is minutes,
