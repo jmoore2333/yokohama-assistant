@@ -150,7 +150,7 @@ describe("the dealing screen", () => {
   // is running server-side by then (the last keep started it), so a 500 or a
   // dropped connection on the read that opens it would strand this browser on a
   // dealing screen for a table that is not dealing, with no way forward but the
-  // "Games" button. The latch is released on failure and taken again on the next
+  // "Lobby" button. The latch is released on failure and taken again on the next
   // attempt, so its purpose — one hand-over per SUCCESS — is unchanged.
   it("retries the hand-over when it fails, and stops asking once it succeeds", async () => {
     vi.useFakeTimers();
@@ -304,12 +304,14 @@ describe("the dealing screen", () => {
   // persisted now, so leaving abandons nothing — the row is in the lobby and
   // opens straight back here. Without this the only way out of a table that is
   // waiting on somebody else is a page reload.
-  it("has a way back to the games list", async () => {
+  it("has a way back to the lobby", async () => {
     const onLeave = vi.fn();
     stubApi(dealThen(wire.deal));
     render(<Host onLeave={onLeave} />);
     await screen.findAllByRole("button", { name: /^keep/ });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Games" }));
+    // The word itself is the assertion (live review M-3): every other screen's
+    // control back to this destination says "Lobby", and this one said "Games".
+    await userEvent.setup().click(screen.getByRole("button", { name: "Lobby" }));
     expect(onLeave).toHaveBeenCalledTimes(1);
   });
 

@@ -26,7 +26,7 @@
 
 import { expect, test } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
-import { act, deadEnd, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Screen } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
@@ -101,6 +101,54 @@ test("a person holding only a link joins a locked open table and plays", async (
   // is "abandon Link test" — and a substring match is case-insensitive, so a
   // bare `getByLabel("Link")` resolved to both.
   await expect(a.getByLabel("Link", { exact: true })).toHaveValue(new RegExp(`/#/t/${id}$`));
+
+  // **And it fits a phone** (live review I-1). This screen is the one place in
+  // the client where a `.field` holds a whole URL, and at 390px it pushed the
+  // page sideways by 32px: the row would not wrap, the input would not shrink,
+  // and the Copy button's right edge sat off the window at 422. The lane's
+  // recorded property is 0px of page overflow from 320 to 2560, and the width
+  // gate in `the_screen_itself.spec.ts` cannot carry this one — its anti-vacuity
+  // read is the board's widest row, and an open table has no board.
+  {
+    const desktop = a.viewportSize()!;
+    await a.setViewportSize({ width: 390, height: 844 });
+    // The layout has to be DONE before it is read: a resize and a measurement in
+    // the same tick can be answered from the pre-resize box (the width gate's
+    // own note).
+    await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+
+    // Anti-vacuity FIRST, and it is the whole reason this is not a bare
+    // `scrollWidth` compare: a screen that drew no link row has no overflow
+    // either, which is exactly the failure a width assertion cannot feel.
+    const copy = a.getByRole("button", { name: "copy" });
+    const box = await copy.boundingBox();
+    expect(box, "the Copy button must be on the screen to be measured").not.toBeNull();
+    const fieldWidth = await a
+      .getByLabel("Link", { exact: true })
+      .evaluate((el) => el.getBoundingClientRect().width);
+    expect(fieldWidth, "the link input must have a box to have been squeezed into").toBeGreaterThan(0);
+
+    const read = await readOverflow(a);
+    expect(
+      read.docScrollWidth - read.docClientWidth,
+      `the seated open table scrolls sideways at 390px: ${blame(read)}`,
+    ).toBeLessThanOrEqual(0);
+    // The page not scrolling is not on its own the claim: a control clipped by
+    // an ancestor's own scroller would satisfy it. The button's right edge is
+    // read against the window directly.
+    expect(
+      Math.round(box!.x + box!.width),
+      "the Copy button's right edge is past the window",
+    ).toBeLessThanOrEqual(read.docClientWidth);
+    // eslint-disable-next-line no-console
+    console.log(
+      `open table at 390px: page overflow ${read.docScrollWidth - read.docClientWidth}px (gated) · ` +
+        `link input ${Math.round(fieldWidth)}px · copy right edge ${Math.round(box!.x + box!.width)}`,
+    );
+
+    await a.setViewportSize(desktop);
+    await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+  }
 
   /** Every navigation A's main frame makes from here on. See the file's own
    *  note: on a real origin this catches a reload, a `pushState` and a hash

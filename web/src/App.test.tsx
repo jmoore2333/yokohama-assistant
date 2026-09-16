@@ -1314,7 +1314,22 @@ describe("the route", () => {
         ? { status: 403, body: { error: "you are not seated at this table" } }
         : undefined,
     );
-    expect(await screen.findByText("you are not seated at this table")).toBeInTheDocument();
+    const notice = await screen.findByText("you are not seated at this table");
+    expect(notice).toBeInTheDocument();
+    // **ABOVE the lobby, which is the spec's word and was not what the screen
+    // did** (live review M-6: the sentence rendered under both lists, so on a
+    // phone the explanation for a dead link sat a scroll below the fold).
+    //
+    // Read as DOCUMENT ORDER, and that is the honest size of this assertion:
+    // jsdom has no layout engine, so nothing here can measure a pixel. The tree
+    // is what the fix moved, and the tree is what this pins — between the
+    // lobby's own heading and the first list's. `DOCUMENT_POSITION_FOLLOWING`
+    // is set when the argument comes AFTER the node asked.
+    const after = (el: Element) =>
+      Boolean(notice.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(after(screen.getByRole("heading", { name: "Your games" }))).toBe(true);
+    expect(after(screen.getByRole("heading", { name: "Open tables" }))).toBe(true);
+    expect(after(screen.getByRole("heading", { name: "Lobby" }))).toBe(false);
     // **The lobby, and the hash with it.** A screen left at `#/t/<id>` for a
     // table that answers nothing is the one place a player cannot act from —
     // and a reload would earn the same refusal again.

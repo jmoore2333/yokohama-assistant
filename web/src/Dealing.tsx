@@ -87,7 +87,7 @@ export function Dealing({
   onToggleSection: (k: SectionKey) => void;
   /** The table has started. `App` opens the game; this screen is replaced. */
   onPlaying: () => void | Promise<void>;
-  /** Back to the games list.
+  /** Back to the lobby.
    *
    *  **A screen you cannot leave is a screen you are stuck on.** The M5.5 set
    *  table had "Re-deal" for this; a table is PERSISTED now, so leaving is not
@@ -292,8 +292,11 @@ export function Dealing({
             choosing. */}
         <nav className="views">
           <BoardsMenu enabled={sections} onToggle={onToggleSection} />
+          {/* "Lobby", the word the Game menu and the open table both use for
+              this destination (live review M-3). It read "Games" while the
+              other three screens named the same place differently. */}
           <button type="button" className="ghost" onClick={() => onLeave()}>
-            Games
+            Lobby
           </button>
         </nav>
       </header>

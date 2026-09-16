@@ -235,7 +235,7 @@ export function OpenTable({
         ))}
       </ul>
       {seated && (
-        <div className="field">
+        <div className="field link-field">
           <label htmlFor="join-link">Link</label>
           {/* Read-only rather than a sentence, so it can be selected and copied
               by hand where the clipboard is refused — which it is in every

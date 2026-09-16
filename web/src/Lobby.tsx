@@ -57,13 +57,21 @@ export function Lobby({
    *  a second answer is a second thing that can disagree. */
   me: string;
   who?: ReactNode;
-  /** A sentence from OUTSIDE the lobby, shown above its own refusals.
+  /** A sentence from OUTSIDE the lobby, drawn ABOVE the lobby's two lists.
    *
    *  **The lobby is where a refused table lands** (spec §5.1): a `#/t/<id>` the
    *  caller cannot see is a 403, and the screen it goes back to has to carry the
    *  sentence — a player returned to a bare lobby learns only that their link
    *  did nothing. The game screen's error strip is inside the game, so it could
-   *  not have said this. */
+   *  not have said this.
+   *
+   *  **Above the lists, and not under them** (live review M-6). The spec's word
+   *  is "shows the sentence above the lobby", and this was rendered last: a
+   *  player who followed a dead link on a phone landed on a lobby whose
+   *  explanation sat a scroll below two lists, so the screen read as a link
+   *  that had simply done nothing. It goes under the heading, which is where
+   *  `SignIn` puts the door's own notice — the lobby's OWN refusals stay at the
+   *  foot, beside the lists they are about. */
   notice?: string | null;
 }) {
   const [lists, setLists] = useState<Lists | null>(null);
@@ -187,6 +195,7 @@ export function Lobby({
         </div>
       )}
       <h2>Lobby</h2>
+      {notice && <div className="error">{notice}</div>}
       <button type="button" className="primary" onClick={() => navigate({ kind: "new" })}>
         New table
       </button>
@@ -219,7 +228,6 @@ export function Lobby({
         )}
       </section>
 
-      {notice && <div className="error">{notice}</div>}
       {error && <div className="error">{error}</div>}
     </div>
   );
