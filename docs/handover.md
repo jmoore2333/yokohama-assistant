@@ -215,11 +215,14 @@ everywhere; a tagged author with a `bot` arm no route produces, so an LLM-driven
 against HEAD (8 HIGH, 10 MEDIUM, 9 MINOR, 10 OPEN, all folded; 80 claims verified true; its report
 is under the gitignored `.superpowers/sdd/2026-09-16-web-frontend-m6.4-spec/`). **The plan is
 `docs/plans/2026-09-16-web-frontend-m6.4-plan.md`**: ten tasks, the store's third kind first and the
-headed live review last, seven plan-level rulings. **What waits on you: the go to execute** — under
-R-P11 (Opus implementers and reviewers, Fable orchestrating; every agent's report to a file; never
-a follow-up without reading HEAD), then the release and the headed three-browser review, which needs
-nothing changed on the NAS (WARP stays on; the claimed door makes three contexts three people). The
-whole-game gate stays out of CI.
+headed live review last, seven plan-level rulings. **You ruled (2026-09-16, at the plan's handoff): execute in a FRESH session.** That session
+starts at the plan's Task 0 (re-read every citation, re-count, open the ledger at
+`.superpowers/sdd/2026-09-16-web-frontend-m6.4-plan/progress.md`) under R-P11 — Opus implementers
+and per-task reviewers, Fable orchestrating, every agent's report to a file, never a follow-up
+without reading HEAD — through Task 8; then it stops for your authorization at the release (Task 9,
+`0.5.0-m6.4`) and runs the HEADED three-browser review (Task 10), which needs nothing changed on the
+NAS (WARP stays on; the claimed door makes three contexts three people). The whole-game gate stays
+out of CI. Fresh-session read order: this board → the spec's §12 → the plan.
 
 **Live operations.** The deployment record and recipe are `deploy/RUNBOOK.md` (§3.5 the recipe,
 §3.9 the M6.3 deployment with the R-3.1 readings, §5 rollback — and note that rolling back behind
