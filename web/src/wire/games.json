@@ -1,6 +1,7 @@
 {
   "games": [
     {
+      "can_watch": true,
       "chosen": [
         true,
         false
@@ -37,6 +38,7 @@
       "winner": null
     },
     {
+      "can_watch": true,
       "chosen": [
         false,
         false

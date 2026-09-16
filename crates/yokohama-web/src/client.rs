@@ -137,7 +137,12 @@ pub struct ClientState {
     pub mode: &'static str,
     /// The seat this payload was built FOR — whose hand is unmasked and whose
     /// decision zone carries options. Not necessarily the seat to move.
-    pub seat: PlayerId,
+    ///
+    /// **`null` for a SPECTATOR** (M6.3, R-3.7): a watcher holds no seat, and
+    /// answering with the seat the frame happened to be built for would name a
+    /// seat the reader has no claim on. A seated payload is byte-identical to
+    /// what it was — `Some(n)` serializes as `n`.
+    pub seat: Option<PlayerId>,
     /// Whose turn it is.
     pub to_move: PlayerId,
     /// True when `seat` is the seat to move.
@@ -229,9 +234,38 @@ pub fn viewer_seat(table: &TableDoc, user: &User, state: &GameState) -> Option<P
     mine.first().copied()
 }
 
+/// WHO a payload is built for: a person in a seat, or somebody watching.
+///
+/// **The `Option<PlayerId>` this replaces would have been the same two cases
+/// with no name on either**, and every builder downstream would have had to
+/// decide for itself what `None` meant. Named, the spectator's rules live in
+/// one place: every hand hidden, no options, `seat: null` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Viewer {
+    Seat(PlayerId),
+    /// A signed-in caller with no seat, admitted at a playing or finished table
+    /// (M6.3, R-3.5). Every hand hidden, no options, `seat: null` on the wire.
+    Spectator,
+}
+
+/// The seat a spectator's frame is BUILT for (spec §4): any seat that is not
+/// the acting one — at two, three and four players there is always one.
+///
+/// **Nothing leaks through the choice, and that is why `build_frame` is not
+/// widened** (R-3.8). `build_dashboard` reads `seat` for exactly one thing, its
+/// own hand panel, which [`facts_for`] hides and [`drop_hand_for`] then removes
+/// entirely; and `build_decision_for` returns `viewer_is_deciding: false` over
+/// an empty option list for any seat that is not acting. So the choice decides
+/// nothing a spectator can see — which is what makes it a definition rather
+/// than a stand-in with a secret.
+pub fn stand_in(state: &GameState) -> PlayerId {
+    PlayerId::new((state.current_player.0 + 1) % state.players.len() as u8)
+}
+
 /// R-1.7: a hand is shown to its own seat only, bots included, hot-seat
 /// included. The other seats show as counts, which is what `hand_hidden` means
-/// to every panel builder downstream.
+/// to every panel builder downstream. **A spectator's payload hides every one
+/// of them** (M6.3, R-3.7): a watcher holds no seat, so no hand is theirs.
 ///
 /// **This is the SERVER's answer to `build_frame`'s `seats`, and it replaces
 /// `Repl::seat_facts()` in this crate.** That method folds the REPL's `privacy`
@@ -240,13 +274,42 @@ pub fn viewer_seat(table: &TableDoc, user: &User, state: &GameState) -> Option<P
 /// it: each seat already sees only its own, always, and there is nobody to hand
 /// the screen to. `is_bot` is still the REPL's own reconciled answer
 /// ([`Repl::bots`]), never re-derived here.
-pub fn facts_for(repl: &Repl, viewer: PlayerId) -> Vec<SeatFacts> {
+pub fn facts_for(repl: &Repl, viewer: Viewer) -> Vec<SeatFacts> {
     repl.session
         .state()
         .players
         .iter()
-        .map(|p| SeatFacts { is_bot: repl.bots().is_bot(p.id), hand_hidden: p.id != viewer })
+        .map(|p| SeatFacts {
+            is_bot: repl.bots().is_bot(p.id),
+            hand_hidden: match viewer {
+                Viewer::Seat(s) => p.id != s,
+                Viewer::Spectator => true,
+            },
+        })
         .collect()
+}
+
+/// The `PlayerId` the CLI's builders are handed for this viewer.
+fn built_for(state: &GameState, viewer: Viewer) -> PlayerId {
+    match viewer {
+        Viewer::Seat(s) => s,
+        Viewer::Spectator => stand_in(state),
+    }
+}
+
+/// **A spectator's dashboard carries no `Hand` panel at all.**
+///
+/// The facts hide every hand, but hiding is not removing: `build_hand` returns
+/// `Some(HandPanel { hidden: true, cards: [], card_count })` for the seat the
+/// frame was built for, so a spectator's screen would draw one seat's masked
+/// hand under the caption every other payload puts the READER's hand under —
+/// singling out a seat as "yours" that is nobody's. The other panels are
+/// untouched, because the Players panel already carries every seat's masked
+/// count and that is the honest picture.
+fn drop_hand_for(viewer: Viewer, frame: &mut FrameModel) {
+    if matches!(viewer, Viewer::Spectator) {
+        frame.dashboard.retain(|p| !matches!(p, screen_model::Panel::Hand(_)));
+    }
 }
 
 fn rows_from(
@@ -281,6 +344,25 @@ fn prompt_of_seat(repl: &Repl, seat: PlayerId) -> PromptState {
         return PromptState::Watching { to_move: acting };
     }
     prompt_of(repl)
+}
+
+/// [`prompt_of_seat`] for a viewer that may hold no seat.
+///
+/// A spectator is ALWAYS watching while the game is live — the one thing a
+/// watcher is never asked is a question — and hears whatever the game itself
+/// has to say once it is over or locked, which is what every caller hears
+/// there.
+fn prompt_of_viewer(repl: &Repl, viewer: Viewer) -> PromptState {
+    match viewer {
+        Viewer::Seat(s) => prompt_of_seat(repl, s),
+        Viewer::Spectator => {
+            if repl.session.record().lockdown.is_none() && !repl.session.is_over() {
+                PromptState::Watching { to_move: repl.session.state().current_player }
+            } else {
+                prompt_of(repl)
+            }
+        }
+    }
 }
 
 fn prompt_of(repl: &Repl) -> PromptState {
@@ -346,18 +428,19 @@ impl ClientState {
     /// from whatever produced this state (an applied move's deltas, or a
     /// refusal).
     ///
-    /// `viewer` is [`viewer_seat`]'s answer, resolved by the ROUTE before the
-    /// lock is taken — a caller with no seat never reaches here.
-    pub fn of(id: &str, repl: &Repl, viewer: PlayerId, messages: Vec<String>) -> Self {
-        let seat = viewer;
+    /// `viewer` is the route's admission answer — [`viewer_seat`]'s for a seat
+    /// holder, [`Viewer::Spectator`] for an admitted watcher — resolved before
+    /// the lock is taken. A caller with neither never reaches here.
+    pub fn of(id: &str, repl: &Repl, viewer: Viewer, messages: Vec<String>) -> Self {
         let session = &repl.session;
         let state = session.state();
         let over = session.is_over();
+        let seat = built_for(state, viewer);
 
-        let frame = screen_model::build_frame(
+        let mut frame = screen_model::build_frame(
             state,
             session.rules(),
-            &facts_for(repl, seat),
+            &facts_for(repl, viewer),
             seat,
             &session.legal(),
             TitleModel {
@@ -384,6 +467,7 @@ impl ClientState {
                 autosaved: true,
             },
         );
+        drop_hand_for(viewer, &mut frame);
 
         Self {
             id: id.to_string(),
@@ -391,11 +475,14 @@ impl ClientState {
                 TrackingMode::Simulation => "sim",
                 TrackingMode::Live => "live",
             },
-            seat,
+            seat: match viewer {
+                Viewer::Seat(s) => Some(s),
+                Viewer::Spectator => None,
+            },
             to_move: state.current_player,
-            your_turn: !over && state.current_player == seat,
+            your_turn: !over && matches!(viewer, Viewer::Seat(s) if s == state.current_player),
             frame,
-            prompt: prompt_of_seat(repl, seat),
+            prompt: prompt_of_viewer(repl, viewer),
             messages,
             over,
             end_triggers: yokohama_cli::render::end_trigger_line(state),
@@ -470,7 +557,11 @@ pub struct HistoricalFrame {
     /// an UNAUTHENTICATED route had no better pin available. An authenticated
     /// route does: the caller's own, which is stable for the same reason and is
     /// additionally the seat the caller is entitled to.
-    pub seat: PlayerId,
+    ///
+    /// **`null` for a SPECTATOR** (M6.3, R-3.7), exactly as on the live
+    /// payload: a watcher's replay sweep returns no seat's hands at any `k`,
+    /// so there is no seat to name.
+    pub seat: Option<PlayerId>,
     /// Whose turn it was at `k`.
     pub to_move: PlayerId,
     pub frame: FrameModel,
@@ -507,13 +598,13 @@ impl HistoricalFrame {
     /// divergent authority on record validity. Checking is
     /// `Session::from_record`'s job, on the path where a record enters from
     /// disk.
-    pub fn at(repl: &Repl, k: usize, viewer: PlayerId) -> Result<Self, yokohama_core::ReplayError> {
+    pub fn at(repl: &Repl, k: usize, viewer: Viewer) -> Result<Self, yokohama_core::ReplayError> {
         let session = &repl.session;
         let record = session.record();
         let total = record.events.len();
         let rules = session.rules();
         let state = yokohama_core::state_at(record, k, rules)?;
-        let seat = viewer;
+        let seat = built_for(&state, viewer);
 
         // **Paid deliberately, not defensively.** `build_board` derives
         // `tile.reachable` from the legal list, so a historical board built with
@@ -524,10 +615,10 @@ impl HistoricalFrame {
         let legal = yokohama_core::get_legal_moves(&state, rules);
         let over = yokohama_core::is_game_over(&state);
 
-        let frame = screen_model::build_frame(
+        let mut frame = screen_model::build_frame(
             &state,
             rules,
-            &facts_for(repl, seat),
+            &facts_for(repl, viewer),
             seat,
             &legal,
             TitleModel {
@@ -546,11 +637,15 @@ impl HistoricalFrame {
                 autosaved: true,
             },
         );
+        drop_hand_for(viewer, &mut frame);
 
         Ok(Self {
             index: k,
             total,
-            seat,
+            seat: match viewer {
+                Viewer::Seat(s) => Some(s),
+                Viewer::Spectator => None,
+            },
             to_move: state.current_player,
             frame,
             over,
@@ -602,6 +697,7 @@ mod tests {
             status: TableStatus::Playing,
             turn: None,
             lock: None,
+            unlocked: Vec::new(),
         }
     }
 
@@ -669,12 +765,12 @@ mod tests {
     #[test]
     fn the_facts_hide_every_hand_but_the_viewers_bots_included() {
         let repl = two_human_repl();
-        let f = facts_for(&repl, PlayerId::new(1));
+        let f = facts_for(&repl, Viewer::Seat(PlayerId::new(1)));
         assert_eq!(f.iter().map(|s| s.hand_hidden).collect::<Vec<_>>(), vec![true, false]);
         assert!(f.iter().all(|s| !s.is_bot), "this fixture seats no bot");
 
-        let payload = ClientState::of("t", &repl, PlayerId::new(1), Vec::new());
-        assert_eq!(payload.seat, PlayerId::new(1));
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(1)), Vec::new());
+        assert_eq!(payload.seat, Some(PlayerId::new(1)));
         let hands: Vec<(u8, bool, usize)> = payload
             .frame
             .dashboard
@@ -709,5 +805,200 @@ mod tests {
         // seat 0 is to move, so seat 1 is watching and it is not its turn.
         assert!(!payload.your_turn);
         assert_eq!(payload.prompt.kind(), "watching");
+    }
+
+    // ---------------------------------------------------------------------
+    // M6.3 — the spectator's projection (spec §4, R-3.7)
+    // ---------------------------------------------------------------------
+
+    /// An `n`-player game with every seat a person, at the corpus seed.
+    ///
+    /// [`two_human_repl`] with the player count opened up: §4's claim is made
+    /// at 2P, 3P and 4P because [`stand_in`] is arithmetic over the player
+    /// count, and "there is always a seat that is not acting" is a sentence
+    /// about all three.
+    fn human_repl(n: u8) -> Repl {
+        let rules = Rules::standard();
+        let mut config = GameConfig::for_player_count(n);
+        config.player_colors =
+            [PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green]
+                [..usize::from(n)]
+                .to_vec();
+        config.start_player = PlayerId::new(0);
+        let choices = vec![StartingOrderChoice::Keep(0); usize::from(n)];
+        let mut session =
+            Session::new_sim(config, 20_260_831, choices, rules).expect("a fixture game");
+        let bots = BotSeats::new(vec![None; usize::from(n)], 0x4649_5854_5552_4553);
+        session.set_run_seats(bots.seat_provenance());
+        Repl::new(session)
+    }
+
+    /// Every hand in the frame, as `(seat, hidden, cards)` — the reading both
+    /// cells below are about.
+    fn hand_panels(frame: &FrameModel) -> Vec<(u8, bool, usize)> {
+        frame
+            .dashboard
+            .iter()
+            .filter_map(|p| match p {
+                screen_model::Panel::Hand(h) => Some((h.seat.0, h.hidden, h.cards.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **The mechanism the drop removes is real, at every player count** — so
+    /// the cell below is removing something rather than asserting an absence
+    /// that was already there.
+    ///
+    /// `build_hand` answers `Some(HandPanel { hidden: true, cards: [], … })`
+    /// for a hidden seat, not `None`, so a spectator's dashboard would carry
+    /// one masked hand under the caption every other payload puts the READER's
+    /// hand under — singling out a seat as "yours" that is nobody's.
+    #[test]
+    fn the_builder_hands_a_spectator_a_masked_hand_panel_before_the_projection_drops_it() {
+        for n in [2u8, 3, 4] {
+            let repl = human_repl(n);
+            let state = repl.session.state();
+            let seat = stand_in(state);
+            assert_ne!(seat, state.current_player, "{n}P: the stand-in is never the actor");
+            let frame = screen_model::build_frame(
+                state,
+                repl.session.rules(),
+                &facts_for(&repl, Viewer::Spectator),
+                seat,
+                &repl.session.legal(),
+                TitleModel { mode: TitleMode::Sim, seed: None, autosaved: true },
+            );
+            assert_eq!(
+                hand_panels(&frame),
+                vec![(seat.0, true, 0)],
+                "{n}P: the builder draws the stand-in's hand, hidden and empty",
+            );
+        }
+    }
+
+    /// **A spectator's live payload, by value, at 2P, 3P and 4P** (R-3.7).
+    ///
+    /// One cell over the six consequences rather than six cells over one,
+    /// because what is claimed is that they hold TOGETHER: an implementation
+    /// that nulls the seat and leaves the options on it satisfies the first
+    /// and is the defect.
+    #[test]
+    fn a_spectators_payload_names_no_seat_hides_every_hand_and_is_asked_nothing() {
+        for n in [2u8, 3, 4] {
+            let repl = human_repl(n);
+            let acting = repl.session.state().current_player;
+            let payload = ClientState::of("t", &repl, Viewer::Spectator, Vec::new());
+
+            assert_eq!(payload.seat, None, "{n}P: a watcher holds no seat");
+            assert!(!payload.your_turn, "{n}P");
+            assert_eq!(payload.prompt.kind(), "watching", "{n}P");
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == acting),
+                "{n}P: and it names who IS to move",
+            );
+            assert!(hand_panels(&payload.frame).is_empty(), "{n}P: no Hand panel at all");
+            assert!(!payload.frame.decision.viewer_is_deciding, "{n}P");
+            assert!(payload.frame.decision.options.is_empty(), "{n}P: no options");
+            assert_eq!(
+                payload.frame.decision.seat, acting,
+                "{n}P: the DECIDING seat is still named — it is public",
+            );
+
+            // Every seat masked, on the panel that carries the counts. The
+            // absence of a Hand panel above would read the same if the model
+            // had simply stopped masking.
+            let rows: Vec<(u8, bool)> = payload
+                .frame
+                .dashboard
+                .iter()
+                .filter_map(|p| match p {
+                    screen_model::Panel::Players(pp) => Some(pp),
+                    _ => None,
+                })
+                .flat_map(|pp| pp.players.iter().map(|p| (p.seat.0, p.hand_hidden)))
+                .collect();
+            assert_eq!(rows.len(), usize::from(n), "{n}P: one row per seat");
+            assert!(rows.iter().all(|(_, hidden)| *hidden), "{n}P: every hand hidden: {rows:?}");
+
+            // And `seat: null` is what reaches the WIRE, not a zero.
+            let json = serde_json::to_value(&payload).expect("a payload");
+            assert_eq!(json["seat"], serde_json::Value::Null, "{n}P: {json}");
+        }
+    }
+
+    /// The same claim on the REPLAY payload, at both ends of the track.
+    ///
+    /// `k = total` is the live position and `k = 0` is the board before any
+    /// move — the two stops M4's own cells use, because at `total` the frame
+    /// would prove nothing if it were merely the live one, and at `0` the
+    /// position is empty enough that a leak would be conspicuous.
+    #[test]
+    fn a_spectators_replay_frame_names_no_seat_at_either_end_of_the_track() {
+        let repl = human_repl(3);
+        let total = repl.session.record().events.len();
+        for k in [0, total] {
+            let frame = HistoricalFrame::at(&repl, k, Viewer::Spectator).expect("a position");
+            assert_eq!(frame.seat, None, "at {k}");
+            assert!(hand_panels(&frame.frame).is_empty(), "at {k}: no Hand panel");
+            assert!(!frame.frame.decision.viewer_is_deciding, "at {k}");
+            assert!(frame.frame.decision.options.is_empty(), "at {k}");
+            let json = serde_json::to_value(&frame).expect("a payload");
+            assert_eq!(json["seat"], serde_json::Value::Null, "at {k}: {json}");
+        }
+
+        // The anti-vacuity half: a SEATED replay frame at the same stops still
+        // names its seat and still carries that seat's own hand.
+        let seated = HistoricalFrame::at(&repl, 0, Viewer::Seat(PlayerId::new(1)))
+            .expect("a position");
+        assert_eq!(seated.seat, Some(PlayerId::new(1)));
+        assert_eq!(hand_panels(&seated.frame), vec![(1, false, 1)]);
+    }
+
+    /// **Once the game is over a spectator hears what the GAME has to say**,
+    /// which is what every caller hears there: the prompt is `game_over` and
+    /// the final scores are on the payload.
+    ///
+    /// The finish is a both-bot pump of the very game the fixture describes —
+    /// the `a_finished_two_person_game` mechanism, at the `Repl` level, because
+    /// the subject here is the projection and not a route.
+    #[test]
+    fn a_spectator_at_a_finished_game_is_told_it_is_over_and_reads_the_scores() {
+        use yokohama_cli::bot::PROVISIONAL_DEFAULT_BOT;
+        let rules = Rules::standard();
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            20_260_831,
+            vec![StartingOrderChoice::Keep(0); 2],
+            rules,
+        )
+        .expect("a game");
+        let bots = BotSeats::new(
+            vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)],
+            20_260_831,
+        );
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the premise: a finished game");
+
+        let payload = ClientState::of("t", &repl, Viewer::Spectator, Vec::new());
+        assert_eq!(payload.seat, None);
+        assert!(!payload.your_turn);
+        assert_eq!(payload.prompt.kind(), "game_over", "not `watching` — there is nothing to watch");
+        assert_eq!(
+            payload.scores.as_ref().map(Vec::len),
+            Some(2),
+            "the final standings are public",
+        );
+        assert!(hand_panels(&payload.frame).is_empty(), "and still no hand");
     }
 }

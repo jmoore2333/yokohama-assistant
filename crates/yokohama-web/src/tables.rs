@@ -30,7 +30,7 @@ use yokohama_core::{
     SeedSchedule, StartingOrderChoice,
 };
 
-use crate::client::HistoricalFrame;
+use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
@@ -377,6 +377,21 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
             return Err("the lock's hash is not 64 hex characters".to_string());
         }
     }
+    // **M6.3's list, bounded on the same reasoning as the four numbers below
+    // it.** Nothing here is handed to a panicking constructor, so the ceiling
+    // is about SIZE rather than about a panic: `Games::unlock` refuses the
+    // 257th entry, and a hand-written file carrying ten thousand is a document
+    // this server would go on reading, writing and re-serializing on every
+    // join at that table. Each entry must parse as a `User` for the plainer
+    // reason that `can_watch` compares it against one — an entry that never
+    // normalizes is an entry no caller can ever match, written as though it
+    // admitted somebody.
+    if doc.unlocked.len() > UNLOCKED_CAP {
+        return Err(format!("{} watchers — a table remembers {UNLOCKED_CAP}", doc.unlocked.len()));
+    }
+    if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
+        return Err(format!("{bad:?} on the watcher list is not an address this server writes"));
+    }
     for (i, seat) in doc.seats.iter().enumerate() {
         if let SeatDoc::Human { name: Some(name), .. } = seat {
             if let Err(why) = check_name(name) {
@@ -597,7 +612,7 @@ fn set_table(
     // finalize runs, and the reason no second attachment step is needed here.
     session.set_run_seats(BotSeats::new(contestants_of(seats), THROWAWAY_BOT_SEED).seat_provenance());
     let repl = Repl::new(session);
-    let mut table = HistoricalFrame::at(&repl, 0, viewer)
+    let mut table = HistoricalFrame::at(&repl, 0, Viewer::Seat(viewer))
         .map_err(|e| format!("the setup position did not build: {}", e.message))?;
     withhold_until_the_choice(&mut table);
     Ok(table)
@@ -605,16 +620,31 @@ fn set_table(
 
 /// Which question `GET /api/games` is asking (§3.3).
 ///
-/// Two scopes and not a filter grammar: a lobby has exactly two lists on it —
-/// the tables I sit at and the tables I could sit at — and a general predicate
-/// over table documents would be a query language nobody asked for, with a
-/// cost per row that grows without anything bounding it.
+/// Three scopes and not a filter grammar: a lobby has exactly three lists on it
+/// — the tables I sit at, the tables I could sit at, and (M6.3) the games I
+/// could watch — and a general predicate over table documents would be a query
+/// language nobody asked for, with a cost per row that grows without anything
+/// bounding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Every table this caller holds a seat at, at every status.
     Mine,
     /// Every table still filling its seats, whoever made it (R-2.7).
     Open,
+    /// Every game under way or finished, whoever made it (M6.3, R-3.9) — drawn
+    /// as "Games in progress", so a watcher can find one without a link.
+    ///
+    /// **"Over" is in it, and that is the status rule and not a choice made
+    /// here**: over is not a `TableStatus` (`table.rs`), it is a `Playing`
+    /// table whose session says so, so `status == Playing` IS "playing or
+    /// over". A row's `over` and `winner` come off the turn mirror, which is
+    /// what lets the lobby say "over · <name> won" without rebuilding a
+    /// session.
+    ///
+    /// The row does NOT promise the caller may watch: a locked table is listed
+    /// (seeing that a game exists was never what the lock gated, R-3.5) and its
+    /// `can_watch` reads false, which is the unlock face.
+    Playing,
 }
 
 impl std::str::FromStr for Scope {
@@ -623,10 +653,19 @@ impl std::str::FromStr for Scope {
         match s {
             "mine" => Ok(Self::Mine),
             "open" => Ok(Self::Open),
-            other => Err(format!("no scope named {other:?} — the two are mine and open")),
+            "playing" => Ok(Self::Playing),
+            other => Err(format!(
+                "no scope named {other:?} — the three are mine, open and playing"
+            )),
         }
     }
 }
+
+/// How many watchers one table remembers (M6.3, §3.4). The 257th unlock is a
+/// 409 rather than a silent eviction: a list that forgot its oldest entry would
+/// quietly re-lock a watcher mid-game, and a table with 256 people watching it
+/// is a state whose owner should hear about it.
+pub const UNLOCKED_CAP: usize = 256;
 
 pub const LIST_LIMIT_DEFAULT: usize = 20;
 pub const LIST_LIMIT_MAX: usize = 100;
@@ -713,6 +752,7 @@ impl Games {
             // unguarded by design, so the rule that an empty password is
             // refused lives there and the trim must agree with it here.
             lock: req.password.as_deref().map(str::trim).map(Lock::new),
+            unlocked: Vec::new(),
         };
         match self.write_table(&doc, None) {
             Ok(_) => {
@@ -758,9 +798,10 @@ impl Games {
 
     /// The table as a seated caller may read it, REPAIRED first if it needs it.
     ///
-    /// **This is still the fence every session route reads through** (R-1.5,
-    /// via `seated`): the ONE widening M6.2 makes lives in
-    /// [`Games::table_for_anyone`] and is reached only by `GET …/{id}/table`.
+    /// **This is the fence `deal`, `keep` and `delete` still read through**
+    /// (R-1.5). Since M6.3 the session ROUTES read through `lib::admitted`
+    /// instead, which goes via [`Games::table_for_anyone`] and applies its own,
+    /// stricter status arms on top.
     pub fn table(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
         let (doc, _) = self
             .settle(id)?
@@ -780,19 +821,88 @@ impl Games {
     /// seat at it. What an open table discloses is exactly what the `open`
     /// listing already hands to everybody.
     ///
-    /// **Nothing else widens, and the status is checked FIRST so nothing
-    /// leaks.** A stranger at a table that is not open gets `table`'s own
-    /// sentence and learns only that the table is not theirs: not its status,
-    /// not who is at it. Every other session route keeps reading through
-    /// [`Games::table`].
+    /// **M6.3 widens it again, at `playing` and over** (R-3.13, superseding
+    /// M6.2's "and `table` at every other status keeps R-1.5's 403"): a
+    /// would-be watcher has to read `locked` and `can_watch` to know whether to
+    /// ask for a password, and the view carries exactly the public facts the
+    /// `playing` listing already hands to everybody. A LOCKED table is read the
+    /// same way and answers `can_watch: false` — the lock gates watching, never
+    /// seeing that the game exists.
+    ///
+    /// **`Dealing` is the one status a stranger is still refused at, and it is
+    /// now the whole of the fence.** Nobody watches a deal (R-3.5), and a deal
+    /// is the moment the OTHER seats' cards are in flight. So the predicate is
+    /// "not dealing, or seated" rather than a list of admitted statuses: a
+    /// fourth status added to `TableStatus` would be open to a stranger by
+    /// default, which is why `check_shape` and this sentence are both here.
+    /// Every other session route reads through the crate root's `admitted`, whose own
+    /// status arms are stricter than this one.
     pub fn table_for_anyone(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
         let (doc, _) = self
             .settle(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        if doc.status == TableStatus::Open || !doc.seats_of(user).is_empty() {
+        if doc.status != TableStatus::Dealing || !doc.seats_of(user).is_empty() {
             return Ok(doc);
         }
         Err(GameError::Forbidden("you are not seated at this table".to_string()))
+    }
+
+    /// **Present the password once, and this caller may watch from now on**
+    /// (M6.3, §3.4, R-3.5).
+    ///
+    /// The email is written onto the table document rather than handed back as
+    /// a token, for the reason every other seam here is a document: a token
+    /// would be a second credential this server would have to mint, carry and
+    /// expire, and the thing being gated is one table in one room. The list is
+    /// the table's memory of who has knocked.
+    ///
+    /// **A no-op is a 200 and writes nothing** — an unlocked table, or a caller
+    /// who already watches — because the client posts this before it knows
+    /// which case it is in, and a write per page load would be a write per page
+    /// load. The seat holder's arm is the same 200: asking a player for their
+    /// own table's password is the one answer that is always wrong.
+    ///
+    /// Held under this table's own lock ([`Games::lock_for`], R-2.9) across the
+    /// read and the write, so two unlocks in flight cannot each append over the
+    /// other's version — and a conflict is reported rather than retried, since
+    /// the caller knows their password and re-posting is free.
+    ///
+    /// **It bumps no signal** (controller ruling R-pre-3): it changes nothing
+    /// any other screen shows. The unlocking caller is answered with the view
+    /// in this very reply.
+    pub fn unlock(&self, id: &str, user: &User, password: &str) -> Result<TableView, GameError> {
+        let lock = self.lock_for(id);
+        let _serialized = lock.lock().expect("table lock");
+        let (mut doc, version) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        // There is nothing to watch yet at either of these, and a joiner sends
+        // the password to `join`. Typed, so the client branches on the status
+        // rather than on the sentence.
+        match doc.status {
+            TableStatus::Open => return Err(GameError::Open),
+            TableStatus::Dealing => return Err(GameError::Dealing),
+            TableStatus::Playing => {}
+        }
+        if doc.lock.is_none() || doc.can_watch(user) {
+            return Ok(doc.view(user));
+        }
+        if !doc.check_password(password.trim()) {
+            return Err(GameError::Forbidden("wrong password for this table".to_string()));
+        }
+        if doc.unlocked.len() >= UNLOCKED_CAP {
+            return Err(GameError::Conflict(
+                "this table has as many watchers as it can remember".to_string(),
+            ));
+        }
+        doc.unlocked.push(user.as_str().to_string());
+        match self.write_table(&doc, Some(version)) {
+            Ok(_) => Ok(doc.view(user)),
+            Err(WriteError::Conflict { .. }) => {
+                Err(GameError::Conflict(format!("{id:?} changed while this unlock was in flight")))
+            }
+            Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+        }
     }
 
     /// **Self-repair, on the way past.** A table stuck at `dealing` with every
@@ -1236,6 +1346,7 @@ impl Games {
             let keep = match scope {
                 Scope::Mine => !doc.seats_of(user).is_empty(),
                 Scope::Open => doc.status == TableStatus::Open,
+                Scope::Playing => doc.status == TableStatus::Playing,
             };
             if keep {
                 rows.push(doc);
@@ -1437,7 +1548,9 @@ mod tests {
 
         // What the SAME seed puts on a real table, read from the game itself.
         let handle = playing(&g, &req_seeded("withheld-started", ARGMAX_IS_CARD_2), &["red@t.test"]);
-        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0, PlayerId::new(0)).unwrap();
+        let started =
+            HistoricalFrame::at(&handle.lock().unwrap(), 0, Viewer::Seat(PlayerId::new(0)))
+                .unwrap();
         let titles: Vec<String> = started
             .labs
             .boards
@@ -2059,6 +2172,7 @@ mod tests {
             status: TableStatus::Dealing,
             turn: None,
             lock: None,
+            unlocked: Vec::new(),
         };
         assert_eq!(check_shape(&valid()), Ok(()), "the fixture itself is well formed");
 
@@ -2113,7 +2227,19 @@ mod tests {
             d
         };
 
-        let cases: [(&str, TableDoc); 8] = [
+        // M6.3's list: too long, and an entry `can_watch` could never match.
+        let too_many_watchers = || {
+            let mut d = valid();
+            d.unlocked = (0..=UNLOCKED_CAP).map(|i| format!("w{i}@t.test")).collect();
+            d
+        };
+        let unparsable_watcher = || {
+            let mut d = valid();
+            d.unlocked = vec!["Not An Address".to_string()];
+            d
+        };
+
+        let cases: [(&str, TableDoc); 10] = [
             ("newer server", newer()),
             ("open seat", open_seat_while_dealing()),
             ("no open seat", open_with_no_open_seat()),
@@ -2122,6 +2248,8 @@ mod tests {
             ("control", control_name()),
             ("winner 2", winner_off_the_table()),
             ("to_move 9", to_move_off_the_table()),
+            ("257 watchers", too_many_watchers()),
+            ("watcher list", unparsable_watcher()),
         ];
         for (fragment, doc) in cases {
             let why = check_shape(&doc).expect_err(&format!("{fragment}: must refuse"));
@@ -3610,5 +3738,217 @@ mod tests {
         assert!(house.has_changed().expect("the house channel is open"));
         let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
         assert_eq!(doc.status, TableStatus::Playing, "the state the woken subscriber reads");
+    }
+
+    // ---------------------------------------------------------------------
+    // M6.3 — the watcher's door (§3.4, R-3.5, R-3.9, R-3.13)
+    // ---------------------------------------------------------------------
+
+    /// A two-person request with a password on it.
+    fn two_people_locked(id: &str, password: &str) -> NewGame {
+        let mut r = two_people(id, CORPUS_SEED);
+        r.password = Some(password.to_string());
+        r
+    }
+
+    /// A LOCKED table played into `playing`, and the games that hold it.
+    fn a_locked_game(id: &str) -> Games {
+        let games = games();
+        playing(&games, &two_people_locked(id, "sesame"), &["red@t.test", "blue@t.test"]);
+        games
+    }
+
+    /// **The seven answers of `POST …/{id}/unlock`** (§3.4), in one cell,
+    /// because what is being pinned is the LADDER: each arm on its own is
+    /// satisfied by an implementation that answers it first and the rest
+    /// wrongly.
+    ///
+    /// The two status arms are typed (`Open`, `Dealing`) rather than sentences,
+    /// so the client branches on the status exactly as it does everywhere else.
+    #[test]
+    fn unlock_answers_a_missing_table_the_two_early_statuses_a_wrong_password_and_the_success() {
+        let open = games();
+        let dealing = games();
+        let playing = a_locked_game("locked");
+        let grey = who("grey@t.test");
+        let red = who("red@t.test");
+
+        assert!(
+            matches!(playing.unlock("nosuch", &grey, "sesame"), Err(GameError::NotFound(_))),
+            "a table that is not there",
+        );
+
+        // There is nothing to watch at either of the two early statuses, and a
+        // joiner sends the password to `join` instead.
+        let mut req = two_people_locked("stillopen", "sesame");
+        req.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        open.create(&req, &red).expect("an open table");
+        assert!(matches!(open.unlock("stillopen", &grey, "sesame"), Err(GameError::Open)));
+        dealing.create(&two_people_locked("stilldealing", "sesame"), &red).expect("a table");
+        assert!(matches!(dealing.unlock("stilldealing", &grey, "sesame"), Err(GameError::Dealing)));
+
+        // The wrong password, and the RIGHT one.
+        let refused = playing.unlock("locked", &grey, "open").expect_err("the wrong password");
+        assert!(
+            matches!(&refused, GameError::Forbidden(m) if m == "wrong password for this table"),
+            "{refused:?}",
+        );
+        assert!(
+            !playing.read_table("locked").unwrap().unwrap().0.unlocked.contains(&"grey@t.test".to_string()),
+            "a refused unlock writes nobody onto the document",
+        );
+
+        let view = playing.unlock("locked", &grey, "sesame").expect("the password");
+        assert!(view.can_watch, "the view this caller is handed says so");
+        assert!(view.locked, "and the table is still locked to everyone else");
+        let (doc, _) = playing.read_table("locked").unwrap().unwrap();
+        assert_eq!(doc.unlocked, vec!["grey@t.test".to_string()], "the email is on the document");
+        assert!(doc.can_watch(&grey));
+
+        // **Padding is trimmed**, the same way `create` trimmed the password it
+        // hashed — otherwise a password typed with a trailing space is a
+        // password this server hashed one way and compares another.
+        let green = who("green@t.test");
+        assert!(playing.unlock("locked", &green, "  sesame ").expect("trimmed").can_watch);
+    }
+
+    /// A seat holder never needs the password, and an unlocked table never
+    /// needs one either — and NEITHER writes.
+    ///
+    /// The write count and not the version: `Version` is a hash of the bytes,
+    /// so an idempotent re-write of the same document reports the same version
+    /// and a version compare cannot see it. [`CountingStore`] can.
+    #[test]
+    fn an_unlock_with_nothing_to_unlock_is_a_two_hundred_that_writes_nothing() {
+        let free = games();
+        let store = Arc::new(CountingStore::default());
+        let locked = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        playing(&locked, &two_people_locked("locked", "sesame"), &["red@t.test", "blue@t.test"]);
+        let red = who("red@t.test");
+        let grey = who("grey@t.test");
+
+        let before = store.writes();
+        let mine = locked.unlock("locked", &red, "").expect("my own table");
+        assert!(mine.can_watch, "a seat holder watches without presenting anything");
+        assert_eq!(store.writes(), before, "and nothing was written");
+
+        // The same claim at a table with NO lock — the other no-op arm.
+        playing(&free, &two_people("free", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let view = free.unlock("free", &grey, "").expect("no lock, nothing to unlock");
+        assert!(view.can_watch);
+        assert!(!view.locked);
+        assert!(free.read_table("free").unwrap().unwrap().0.unlocked.is_empty());
+    }
+
+    /// **One unlock admits ONE caller, and a second unlock by the same caller
+    /// adds no second entry.**
+    ///
+    /// The two halves are one cell because they are the same list read twice:
+    /// a `push` with no membership test passes the two-watcher half and fails
+    /// the dedup half, and a `push` guarded by "the list is empty" passes dedup
+    /// and fails the other.
+    #[test]
+    fn one_unlock_admits_one_caller_and_unlocking_twice_leaves_one_entry() {
+        let games = a_locked_game("locked");
+        let grey = who("grey@t.test");
+        let green = who("green@t.test");
+
+        games.unlock("locked", &grey, "sesame").expect("the password");
+        games.unlock("locked", &grey, "sesame").expect("again");
+        let (doc, _) = games.read_table("locked").unwrap().unwrap();
+        assert_eq!(doc.unlocked, vec!["grey@t.test".to_string()], "one entry, not two");
+        assert!(!doc.can_watch(&green), "and the other watcher is still outside");
+    }
+
+    /// The 257th watcher is a typed 409 rather than a silent eviction of the
+    /// oldest — which would re-lock somebody mid-game.
+    #[test]
+    fn the_two_hundred_and_fifty_seventh_watcher_is_refused() {
+        let games = a_locked_game("locked");
+        let (mut doc, version) = games.read_table("locked").unwrap().unwrap();
+        doc.unlocked = (0..UNLOCKED_CAP).map(|i| format!("w{i}@t.test")).collect();
+        games.write_table(&doc, Some(version)).expect("a full list");
+
+        let refused = games
+            .unlock("locked", &who("grey@t.test"), "sesame")
+            .expect_err("the list is full");
+        assert!(
+            matches!(&refused, GameError::Conflict(m)
+                if m == "this table has as many watchers as it can remember"),
+            "{refused:?}",
+        );
+        // And the document is exactly as full as it was — the refusal is not a
+        // write that also failed.
+        assert_eq!(games.read_table("locked").unwrap().unwrap().0.unlocked.len(), UNLOCKED_CAP);
+    }
+
+    /// **R-3.13: a playing table reads for a stranger, and says whether they
+    /// may watch it.**
+    ///
+    /// The anti-vacuity half is the DEALING row: a widening written as "anybody
+    /// may read any table" passes the first two reads and fails the third.
+    #[test]
+    fn a_playing_table_reads_for_a_stranger_and_a_dealing_one_does_not() {
+        let free = games();
+        let dealing = games();
+        let locked = a_locked_game("locked");
+        let grey = who("grey@t.test");
+        let view = locked.table_for_anyone("locked", &grey).expect("a playing table reads");
+        assert!(view.lock.is_some());
+        assert!(!view.can_watch(&grey), "locked, and nothing has been presented");
+
+        playing(&free, &two_people("free", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        assert!(
+            free.table_for_anyone("free", &grey).expect("a playing table").can_watch(&grey),
+            "no lock: a stranger may watch",
+        );
+
+        dealing.create(&two_people("dealt", CORPUS_SEED), &who("red@t.test")).expect("a table");
+        assert!(
+            matches!(dealing.table_for_anyone("dealt", &grey), Err(GameError::Forbidden(_))),
+            "nobody watches a deal",
+        );
+    }
+
+    /// **The `playing` scope lists games under way AND finished ones**, and
+    /// neither of the other two statuses.
+    ///
+    /// "Over" is not a `TableStatus` — it is a `Playing` table whose mirror
+    /// says so — so the finished row is made by writing the mirror rather than
+    /// by playing a game out: what is under test is the LISTING's predicate,
+    /// and a session would only make the cell slower.
+    #[test]
+    fn the_playing_scope_lists_games_under_way_and_finished_ones_and_nothing_else() {
+        let games = games();
+        let red = who("red@t.test");
+        let grey = who("grey@t.test");
+
+        let mut open = two_people("opent", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealt", CORPUS_SEED), &red).expect("a dealing table");
+        playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        playing(&games, &two_people("overt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let (mut doc, version) = games.read_table("overt").unwrap().unwrap();
+        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1) });
+        games.write_table(&doc, Some(version)).expect("a finished mirror");
+
+        let (rows, next) = games
+            .list(&grey, Scope::Playing, LIST_LIMIT_DEFAULT, None)
+            .expect("the listing");
+        let mut ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["overt", "playt"], "the two games, and neither of the others");
+        assert_eq!(next, None);
+        let over = rows.iter().find(|r| r.id == "overt").expect("the finished row");
+        assert_eq!(over.over, Some(true));
+        assert_eq!(over.winner, Some(PlayerId::new(1)), "the lobby says who won");
+        assert!(rows.iter().all(|r| r.my_seats.is_empty()), "built for a caller with no seat");
+
+        // And the scope parses off the wire by that name, with the refusal
+        // naming all three.
+        assert_eq!("playing".parse::<Scope>(), Ok(Scope::Playing));
+        let why = "watching".parse::<Scope>().expect_err("not a scope");
+        assert!(why.contains("mine, open and playing"), "{why}");
     }
 }

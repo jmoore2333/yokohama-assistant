@@ -196,6 +196,19 @@ pub struct TableDoc {
     /// boolean `locked` in its place.
     #[serde(default)]
     pub lock: Option<Lock>,
+    /// Everyone who has presented this table's password to `POST …/{id}/unlock`
+    /// and may therefore WATCH it (M6.3, R-3.5). Normalized emails, as every
+    /// other binding here is.
+    ///
+    /// **Never on the wire**, like `seed`, `keeps` and `lock` — it is the list
+    /// of other people at this table who are not playing, which is nobody
+    /// else's business; [`TableView::can_watch`] carries the one boolean the
+    /// caller needs about themselves. Additive with a default, so `TABLE_SCHEMA`
+    /// stays 2 and a document written before this cycle reads with an empty
+    /// list; `tables::check_shape` bounds it at
+    /// [`crate::tables::UNLOCKED_CAP`] and requires each entry to parse.
+    #[serde(default)]
+    pub unlocked: Vec<String>,
 }
 
 impl TableDoc {
@@ -228,6 +241,22 @@ impl TableDoc {
     /// True when the table has no lock, or the lock matches.
     pub fn check_password(&self, given: &str) -> bool {
         self.lock.as_ref().is_none_or(|l| l.matches(given))
+    }
+
+    /// May this caller WATCH? A seat holder always; anyone at a table with no
+    /// lock; a caller on the `unlocked` list (M6.3, R-3.5).
+    ///
+    /// **It says nothing about the STATUS**, and that is deliberate: watching a
+    /// deal is refused by the crate root's `admitted`, not here, so this one
+    /// predicate answers the same question for the view (which the lobby reads
+    /// at every status) and for the admission (which reads it at `playing`
+    /// alone). A seat holder is included because `can_watch` is what the client
+    /// draws the unlock face from, and asking a player for their own table's
+    /// password is the one answer that is always wrong.
+    pub fn can_watch(&self, user: &User) -> bool {
+        !self.seats_of(user).is_empty()
+            || self.lock.is_none()
+            || self.unlocked.iter().any(|u| u == user.as_str())
     }
 
     /// How many DIFFERENT people hold a seat here.
@@ -295,6 +324,7 @@ impl TableDoc {
             over: self.turn.map(|t| t.over),
             locked: self.lock.is_some(),
             winner: self.turn.and_then(|t| t.winner).map(PlayerId::new),
+            can_watch: self.can_watch(user),
         }
     }
 }
@@ -330,6 +360,13 @@ pub struct TableView {
     /// Who won, once `over`. `null` at every other moment, including a table
     /// that is still dealing.
     pub winner: Option<PlayerId>,
+    /// Whether THIS caller may watch: a seat holder, anyone at an unlocked
+    /// table, or someone who has presented the password (M6.3, R-3.5). The
+    /// client draws the game or the unlock face from it, so it is a fact about
+    /// the reader and not about the table — two people reading one table get
+    /// two different answers, which is why the `unlocked` list itself never
+    /// crosses.
+    pub can_watch: bool,
 }
 
 /// What `GET /api/games/{id}/deal` serves: the set table, and the caller's OWN
@@ -392,6 +429,7 @@ mod tests {
             status: TableStatus::Dealing,
             turn: None,
             lock: None,
+            unlocked: Vec::new(),
         }
     }
 
@@ -466,6 +504,7 @@ mod tests {
             status: TableStatus::Open,
             turn: None,
             lock: None,
+            unlocked: Vec::new(),
         }
     }
 
@@ -477,6 +516,7 @@ mod tests {
             "keeps":[1,2],"seed":7,"status":"playing","turn":{"to_move":0,"over":false}}"#;
         let doc: TableDoc = serde_json::from_str(json).expect("a schema-1 document parses");
         assert!(doc.lock.is_none());
+        assert!(doc.unlocked.is_empty(), "M6.3's list defaults empty on a document written before it");
         assert!(doc.seats.iter().all(|s| matches!(s, SeatDoc::Human { name: None, .. })));
         assert_eq!(doc.turn.expect("a mirror").winner, None);
         assert!(!doc.is_full() || doc.open_seats().is_empty());
@@ -534,5 +574,49 @@ mod tests {
         assert!(!text.contains(&hash), "the hash reached the view under some key: {text}");
         assert_eq!(v["seats"][1]["kind"], "open");
         assert_eq!(v["seats"][0]["name"], "Red");
+    }
+
+    /// [`TableDoc::can_watch`]'s three arms and its refusal, in one cell —
+    /// because the claim is the DISJUNCTION, and each arm alone is satisfied by
+    /// an implementation that ignores the other two.
+    #[test]
+    fn a_seat_holder_watches_always_a_stranger_only_unlocked_or_listed() {
+        let red = User::parse("red@t.test").expect("an email");
+        let green = User::parse("green@t.test").expect("an email");
+        let grey = User::parse("grey@t.test").expect("an email");
+
+        let mut d = open_doc();
+        assert!(d.can_watch(&red), "a seat holder, at a table with no lock");
+        assert!(d.can_watch(&green), "no lock: anyone watches");
+
+        d.lock = Some(Lock::new("sesame"));
+        assert!(d.can_watch(&red), "a seat holder needs no password at their own table");
+        assert!(!d.can_watch(&green), "locked, and this caller has presented nothing");
+
+        d.unlocked.push("grey@t.test".to_string());
+        assert!(d.can_watch(&grey), "on the list");
+        assert!(!d.can_watch(&green), "and one unlock admits ONE caller");
+    }
+
+    /// The view carries the BOOLEAN and never the list: who else is watching is
+    /// nobody's business, and the answer is per reader.
+    #[test]
+    fn the_view_carries_can_watch_per_reader_and_never_the_unlocked_list() {
+        let mut d = open_doc();
+        d.lock = Some(Lock::new("sesame"));
+        d.unlocked = vec!["grey@t.test".to_string()];
+        let green = User::parse("green@t.test").expect("an email");
+        let grey = User::parse("grey@t.test").expect("an email");
+
+        let refused = serde_json::to_value(d.view(&green)).expect("a view");
+        assert_eq!(refused["can_watch"], false);
+        let admitted = serde_json::to_value(d.view(&grey)).expect("a view");
+        assert_eq!(admitted["can_watch"], true, "two readers, two answers, one table");
+
+        // By KEY and by VALUE, the pair the M6.2 password cell above uses: a
+        // list re-served under another name passes the key search alone.
+        let text = refused.to_string();
+        assert!(!text.contains("unlocked"), "the list must not reach the view: {text}");
+        assert!(!text.contains("grey@t.test"), "nor a watcher's email: {text}");
     }
 }

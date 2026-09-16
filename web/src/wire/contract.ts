@@ -433,6 +433,7 @@ const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
+  "can_watch",
 ] as const;
 const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
 const GAMES_LIST = ["games", "next"] as const;

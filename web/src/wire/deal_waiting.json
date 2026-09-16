@@ -1344,6 +1344,7 @@
   "keep_note": "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   economics alone — hand-set, unmeasured, and no substitute for your own read)\n",
   "seat": null,
   "table": {
+    "can_watch": true,
     "chosen": [
       true,
       false

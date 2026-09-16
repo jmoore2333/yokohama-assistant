@@ -1073,7 +1073,7 @@ fn constructed() -> Vec<(String, Value)> {
     use yokohama_cli::repl::Repl;
     use yokohama_cli::session::Session;
     use yokohama_core::{GameConfig, PlayerColor, PlayerId, Rules, StartingOrderChoice};
-    use yokohama_web::client::ClientState;
+    use yokohama_web::client::{ClientState, Viewer};
 
     let build = |bot_seats: Vec<Option<yokohama_core::Contestant>>| {
         let rules = Rules::standard();
@@ -1100,7 +1100,7 @@ fn constructed() -> Vec<(String, Value)> {
     // is no table document in process.
     let watching = build(vec![Some(PROVISIONAL_DEFAULT_BOT), None]);
     let watching =
-        serde_json::to_value(ClientState::of("wire", &watching, PlayerId::new(1), Vec::new()))
+        serde_json::to_value(ClientState::of("wire", &watching, Viewer::Seat(PlayerId::new(1)), Vec::new()))
             .expect("a serializable payload");
 
     let mut locked = build(vec![None, None]);
@@ -1108,7 +1108,7 @@ fn constructed() -> Vec<(String, Value)> {
         .session
         .lock_down("the engine reported an invariant violation applying that move".to_string());
     let locked =
-        serde_json::to_value(ClientState::of("wire", &locked, PlayerId::new(0), Vec::new()))
+        serde_json::to_value(ClientState::of("wire", &locked, Viewer::Seat(PlayerId::new(0)), Vec::new()))
             .expect("a serializable payload");
 
     // ---- M3: the explanation surface ----------------------------------------

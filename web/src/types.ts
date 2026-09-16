@@ -526,6 +526,12 @@ export interface TableView {
   /** Who won, once `over`. `null` at every other moment, a table that is still
    *  open or dealing included. */
   winner: PlayerId | null;
+  /** Whether THIS caller may watch: true for a seat holder, for anyone at an
+   *  unlocked table, or for a caller on the table's unlocked list — someone
+   *  who has presented the password through `POST …/{id}/unlock`
+   *  (M6.3, R-3.5). A fact about the reader, so two people reading one table
+   *  get two different answers. */
+  can_watch: boolean;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.

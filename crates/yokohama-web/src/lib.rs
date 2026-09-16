@@ -429,53 +429,96 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 // Eighteen handlers over sixteen bodies — `ports`, `labs` and `areas` are three
 // handlers from the one `surface!` macro below.
 
-/// Resolve the caller to a seated table and a live handle.
+/// **Who is asking, and may they read this table at all** (M6.3, spec §3.5).
 ///
-/// 404 for no table, 403 for a stranger (R-1.5), 409 while dealing. **Every
-/// session route starts here except `events`**, which is what makes those three
-/// answers one sentence each rather than eleven. `events` calls `Games::table`
-/// and `Games::handle` itself, in that order and with the same meanings,
-/// because it has to ANSWER a dealing table rather than refuse it — see its own
-/// doc.
+/// Every session route starts here, and it is M6.1's `seated` widened by
+/// exactly one case: a signed-in caller with no seat, at a table that is PLAYING or
+/// finished, whose lock they have presented (or which has none), is admitted as
+/// a [`client::Viewer::Spectator`]. Nothing else moves — a stranger at a
+/// `dealing` table is refused exactly as before, because nobody watches a deal,
+/// and that is the moment the other seats' cards are in flight.
 ///
-/// The TABLE is read first and deliberately: a stranger holding an id learns
-/// that it is not theirs, and learns nothing about whether it is dealing.
-fn seated(
+/// **It returns NO handle**, which is the second difference and the reason
+/// `events` and `stream` can share it: a table that is open or dealing has no
+/// record, and a function that fetched one would have to refuse those two
+/// before the routes that must answer them got a look. A route that needs a
+/// session asks [`games::Games::handle`] afterwards and gets the same 409 it
+/// always did.
+///
+/// **The table is read FIRST, as `seated` read it**, so a stranger holding an
+/// id learns that it is not theirs before learning anything about what is
+/// happening at it.
+///
+/// **The seat holder's arm takes the handle and drops it**, because
+/// [`client::viewer_seat`] needs the acting seat to answer "the acting seat
+/// when the caller holds it" — which is what `seated` and `viewer_of`, the two
+/// functions this replaces, did between them. At `open` and `dealing` there is no session to ask, and every
+/// route that reaches a handle from there refuses with the status first, so the
+/// caller's lowest seat stands in for a value those routes never read.
+fn admitted(
     state: &AppState,
     id: &str,
     user: &identity::User,
-) -> Result<(Arc<std::sync::Mutex<yokohama_cli::repl::Repl>>, crate::table::TableDoc), ApiError> {
-    let table = state.games.table(id, user)?;
-    let handle = state.games.handle(id)?;
-    Ok((handle, table))
+) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
+    use crate::table::TableStatus as S;
+    let table = state.games.table_for_anyone(id, user)?;
+    if !table.seats_of(user).is_empty() {
+        let seat = match table.status {
+            S::Playing => {
+                let handle = state.games.handle(id)?;
+                let repl = handle.lock().expect("a game");
+                client::viewer_seat(&table, user, repl.session.state())
+                    .expect("a seat holder has a viewer seat")
+            }
+            S::Open | S::Dealing => table.seats_of(user)[0],
+        };
+        return Ok((table, client::Viewer::Seat(seat)));
+    }
+    match table.status {
+        // `table_for_anyone` already refuses a stranger at `dealing`; `open`
+        // reaches here because `GET …/{id}/table` is allowed to answer it
+        // (R-2.7) and every other route is not.
+        S::Open | S::Dealing => Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: NOT_SEATED.to_string(),
+            table_status: None,
+        }),
+        S::Playing if table.can_watch(user) => Ok((table, client::Viewer::Spectator)),
+        // **The lock gates watching and says so**, rather than reusing the
+        // not-seated sentence: this caller CAN do something about it, and the
+        // client draws the unlock face from exactly this answer.
+        S::Playing => Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "this table is locked — unlock it first".to_string(),
+            table_status: None,
+        }),
+    }
 }
 
-/// The seat this caller's payload is built for.
-///
-/// **The `None` arm is unreachable behind [`seated`], and is written anyway.**
-/// `viewer_seat` answers `None` exactly when `TableDoc::seats_of` is empty,
-/// which is the same condition `Games::table` already refused — so this is the
-/// TYPE being total rather than a second fence, and it is what lets every
-/// builder downstream take a `PlayerId` instead of an `Option`. The sentence
-/// matches the one `Games::table` raises, so a caller cannot tell which of the
-/// two spoke.
-fn viewer_of(
-    repl: &yokohama_cli::repl::Repl,
-    table: &crate::table::TableDoc,
-    user: &identity::User,
-) -> Result<yokohama_core::PlayerId, ApiError> {
-    client::viewer_seat(table, user, repl.session.state()).ok_or_else(|| ApiError {
-        status: StatusCode::FORBIDDEN,
-        message: "you are not seated at this table".to_string(),
-        table_status: None,
-    })
+/// The one sentence every route answers a caller with no business at this table
+/// with — written once so a stranger cannot tell the routes apart by their
+/// refusals.
+const NOT_SEATED: &str = "you are not seated at this table";
+
+/// The refusal a WRITE route gives an admitted spectator: the same sentence a
+/// caller with no seat has always heard, because that is what they are.
+fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
+    match viewer {
+        client::Viewer::Seat(_) => Ok(()),
+        client::Viewer::Spectator => Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: NOT_SEATED.to_string(),
+            table_status: None,
+        }),
+    }
 }
 
 /// Who holds `seat` at this table, for a refusal that names them.
 ///
 /// A bot has no email and is named as what it is. The `None` arm is the same
-/// unreachable-by-construction shape as [`viewer_of`]'s: `Games::read_table`
-/// refuses a document whose `seats` disagrees with its `players`.
+/// unreachable-by-construction shape as [`admitted`]'s viewer seat:
+/// `Games::read_table` refuses a document whose `seats` disagrees with its
+/// `players`.
 fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
     match table.seats.get(usize::from(seat.0)) {
         Some(crate::table::SeatDoc::Human { user, .. }) => user,
@@ -730,6 +773,33 @@ async fn join(
     Ok(Json(state.games.join(&id, &user, seat, req.name.as_deref(), req.password.as_deref())?))
 }
 
+/// The table's password, presented once so this caller may WATCH (M6.3, §3.4).
+///
+/// **The table's and not the caller's** — the same sentence [`Join`] carries,
+/// and for the same reason: it gates a shared game behind a door Cloudflare
+/// Access has already opened, and nobody's identity rests on it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unlock {
+    pub password: String,
+}
+
+/// `POST /api/games/{id}/unlock` — knock, and be remembered.
+///
+/// The whole of the ladder is [`games::Games::unlock`]'s, held under the
+/// table's own lock; this handler carries no rule of its own. It answers the
+/// `TableView`, whose `can_watch` now reads true, so a client that was
+/// drawing the unlock face has the payload it needs to draw the game instead
+/// without a second request.
+async fn unlock(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<Unlock>,
+) -> ApiResult<crate::table::TableView> {
+    Ok(Json(state.games.unlock(&id, &user, &req.password)?))
+}
+
 async fn keep(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -750,12 +820,13 @@ async fn get_game(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<ClientState> {
-    // Seated first, so a stranger holding an id is a 403 rather than a frame;
-    // then the frame is built for the CALLER's seat, so the hand on it is the
-    // caller's own and every other seat's is a count (R-1.7).
-    let (handle, table) = seated(&state, &id, &user)?;
+    // Admitted first, so a caller with no business here is a 403 rather than a
+    // frame; then the frame is built for that caller — the hand on it is their
+    // own and every other seat's is a count (R-1.7), or, for a watcher, every
+    // seat's is (M6.3, R-3.7).
+    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
-    let viewer = viewer_of(&repl, &table, &user)?;
     Ok(Json(ClientState::of(&id, &repl, viewer, Vec::new())))
 }
 
@@ -822,9 +893,21 @@ async fn input(
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
-    let (handle, table) = seated(&state, &id, &user)?;
+    let (table, viewer) = admitted(&state, &id, &user)?;
+    // **A watcher writes nothing, and hears it before the handle is touched**
+    // (M6.3, R-3.6). Above the undo rule and the acting-seat fence because both
+    // of those are about a SEAT, and this caller has none: R-P6 would read the
+    // trailing event's mover against a seat that does not exist.
+    spectators_write_nothing(viewer)?;
+    // The seat the rules below compare against. Total by the refusal one line
+    // up, and written as a `match` rather than an `unwrap` so a third `Viewer`
+    // variant is a compile error here instead of a panic in production.
+    let seat = match viewer {
+        client::Viewer::Seat(s) => s,
+        client::Viewer::Spectator => return Err(spectators_write_nothing(viewer).unwrap_err()),
+    };
+    let handle = state.games.handle(&id)?;
     let mut repl = handle.lock().expect("a game");
-    let viewer = viewer_of(&repl, &table, &user)?;
 
     // **An undo reaches back into your own turn and no further** (R-P6).
     //
@@ -842,7 +925,7 @@ async fn input(
     // pressed; "it is seat 1's turn" answers a question they did not ask. The
     // fence is untouched and still runs, for this line and every other.
     if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, viewer).map_err(|message| ApiError {
+        undo_allowed(&repl, &table, seat).map_err(|message| ApiError {
             status: StatusCode::FORBIDDEN,
             message,
             table_status: None,
@@ -887,7 +970,7 @@ async fn input(
     // ONE person at it — this comparison is what guards, exactly as it did
     // before. Neither check is the other's fallback; both run.
     let acting = repl.session.state().current_player;
-    if acting != viewer {
+    if acting != seat {
         let message = status_refusal(&repl).unwrap_or_else(|| {
             format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
         });
@@ -1033,7 +1116,8 @@ macro_rules! surface {
             State(state): State<Arc<AppState>>,
             Path(id): Path<String>,
         ) -> ApiResult<$model> {
-            let (handle, _table) = seated(&state, &id, &user)?;
+            let _admitted = admitted(&state, &id, &user)?;
+            let handle = state.games.handle(&id)?;
             let repl = handle.lock().expect("a game");
             let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
             Ok(Json(f(repl.session.state(), repl.session.rules())))
@@ -1090,7 +1174,12 @@ async fn suggest(
     Path(id): Path<String>,
 ) -> ApiResult<explain::SuggestResponse> {
     use explain::SuggestRefusal as R;
-    let (handle, table) = seated(&state, &id, &user)?;
+    let (table, viewer) = admitted(&state, &id, &user)?;
+    // **A watcher gets the not-seated sentence, not the advisor's panel**
+    // (M6.3, R-3.6). The R-1.8 refusal below is for a non-acting HOLDER — "it
+    // is not your turn" is a true thing to tell somebody who has a turn coming.
+    spectators_write_nothing(viewer)?;
+    let handle = state.games.handle(&id)?;
 
     // **R-1.8: the acting seat's holder only, and this is a 403 rather than a
     // typed refusal.** The four refusals in the ladder are ANSWERS about the
@@ -1188,7 +1277,8 @@ async fn why(
     // as "from hand" and names no card, at every seat. What this fence adds is
     // the seat one — an account of a search at a table the caller has no place
     // at is not theirs to read.
-    let (handle, _table) = seated(&state, &id, &user)?;
+    let _admitted = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let (mode, record, bots) = {
         let repl = handle.lock().expect("a game");
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
@@ -1275,13 +1365,21 @@ async fn card_index(
     // REPL is asked for the placements of the seat this payload is FOR, which
     // is what keeps `OwnHand`'s own contract ("the index never says more than
     // the dashboard") true of a dashboard that is now the caller's.
-    let (handle, table) = seated(&state, &id, &user)?;
+    //
+    // **And a SPECTATOR is asked for nobody's** (M6.3, R-3.8): `None` marks no
+    // `OwnHand` row at all, which is the same sentence one step further —
+    // there is no hand here that is this reader's.
+    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
-    let viewer = viewer_of(&repl, &table, &user)?;
+    let me = match viewer {
+        client::Viewer::Seat(s) => Some(s),
+        client::Viewer::Spectator => None,
+    };
     Ok(Json(yokohama_cli::screen_model::build_index(
         kind,
         repl.session.rules(),
-        &repl.index_placements_for(Some(viewer)),
+        &repl.index_placements_for(me),
         &yokohama_cli::screen_model::build_achievements(repl.session.state()).cards,
         None,
         filter,
@@ -1308,7 +1406,8 @@ async fn result(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<outcome::Outcome> {
-    let (handle, _table) = seated(&state, &id, &user)?;
+    let _admitted = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     if !repl.session.is_over() {
         return Err(ApiError {
@@ -1348,7 +1447,8 @@ async fn log(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<LogQuery>,
 ) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
-    let (handle, _table) = seated(&state, &id, &user)?;
+    let _admitted = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     let first = q.tail.map_or(0, |n| total.saturating_sub(n));
@@ -1484,14 +1584,17 @@ async fn events(
 /// stream's own cell asserts the first frame equals an `events` read BY VALUE,
 /// which is the property this function makes true by construction rather than
 /// by agreement between two bodies.
-fn events_of(repl: &yokohama_cli::repl::Repl, viewer: yokohama_core::PlayerId) -> Events {
+fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer) -> Events {
     let s = repl.session.state();
     let over = repl.session.is_over();
     Events {
         events: repl.session.record().events.len(),
         to_move: Some(s.current_player),
         status: if over { "over" } else { "playing" },
-        your_turn: !over && s.current_player == viewer,
+        // **False for a spectator by construction** (M6.3): a watcher is never
+        // the one the game is waiting for, and a poll consumer branching on
+        // this boolean must never draw them a decision zone.
+        your_turn: !over && matches!(viewer, client::Viewer::Seat(x) if s.current_player == x),
     }
 }
 
@@ -1507,7 +1610,7 @@ fn events_of(repl: &yokohama_cli::repl::Repl, viewer: yokohama_core::PlayerId) -
 /// open-table screen and the setup screen a 409 instead of the reading each is
 /// watching for.
 fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events, ApiError> {
-    let table = state.games.table(id, user)?;
+    let (table, viewer) = admitted(state, id, user)?;
     match table.status {
         crate::table::TableStatus::Open => {
             Ok(Events { events: 0, to_move: None, status: "open", your_turn: false })
@@ -1518,7 +1621,6 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
         crate::table::TableStatus::Playing => {
             let handle = state.games.handle(id)?;
             let repl = handle.lock().expect("a game");
-            let viewer = viewer_of(&repl, &table, user)?;
             Ok(events_of(&repl, viewer))
         }
     }
@@ -1661,7 +1763,8 @@ async fn at_k(
     State(state): State<Arc<AppState>>,
     Path((id, k)): Path<(String, usize)>,
 ) -> ApiResult<client::HistoricalFrame> {
-    let (handle, table) = seated(&state, &id, &user)?;
+    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
     if k > total {
@@ -1675,7 +1778,9 @@ async fn at_k(
     // reason AND is the seat the caller is entitled to. So a sweep over
     // `0..=total` still harvests exactly one seat's hands — and now it is the
     // sweeper's own.
-    let viewer = viewer_of(&repl, &table, &user)?;
+    //
+    // **And a SPECTATOR's sweep harvests nothing at all** (M6.3, R-3.7): every
+    // hand is hidden at every `k` and `seat` is null.
     client::HistoricalFrame::at(&repl, k, viewer).map(Json).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
@@ -1731,6 +1836,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/deal", get(deal))
         .route("/api/games/{id}/keep", post(keep))
         .route("/api/games/{id}/join", post(join))
+        .route("/api/games/{id}/unlock", post(unlock))
         .route("/api/games/{id}/input", post(input))
         .route("/api/games/{id}/ports", get(ports))
         .route("/api/games/{id}/labs", get(labs))
@@ -2275,6 +2381,46 @@ mod tests {
         }
     }
 
+    /// [`start_as`] with a PASSWORD on the table (M6.3): the shape that refuses
+    /// a watcher until they have knocked.
+    async fn start_locked_as(
+        state: &Arc<AppState>,
+        name: &str,
+        seed: u64,
+        seats: &[&str],
+        password: &str,
+    ) {
+        let colors = ["Red", "Blue", "Yellow", "Green"];
+        let players = seats.len();
+        let (status, table) = post_as(
+            state,
+            seats[0],
+            "/api/games",
+            serde_json::json!({
+                "players": players,
+                "colors": colors[..players],
+                "start_seat": 0,
+                "seed": seed.to_string(),
+                "seats": seats.iter().map(|u| serde_json::json!({ "user": u })).collect::<Vec<_>>(),
+                "name": name,
+                "id": name,
+                "password": password,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        for (seat, who) in seats.iter().enumerate() {
+            let (status, kept) = post_as(
+                state,
+                who,
+                &format!("/api/games/{name}/keep"),
+                serde_json::json!({ "seat": seat, "card": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seat {seat} as {who}: {kept}");
+        }
+    }
+
     /// Play `user`'s whole turn, so a cell that needs a turn BOUNDARY has one.
     ///
     /// The last option row each time — the one that ends a phase — which is the
@@ -2414,9 +2560,26 @@ mod tests {
         ]
     }
 
-    /// **Every route that needs a session refuses a signed-in stranger, at
-    /// every status, with exactly two exceptions — `table` and `join`, and only
-    /// while the table is OPEN** (R-1.5 with R-2.7, spec §3.4).
+    /// **Every route that needs a session refuses a signed-in stranger at an
+    /// open, a dealing and a LOCKED playing table, with exactly two exceptions
+    /// — `join` at open, and `table` everywhere it is asked here** (R-1.5 with
+    /// R-2.7 and M6.3's R-3.13).
+    ///
+    /// **M6.3 changed the playing column, and the change is the cycle**
+    /// (R-3.5): a stranger at an UNLOCKED playing table is now admitted as a
+    /// watcher, so this cell's third table is a LOCKED one — the status where a
+    /// caller with no seat is still refused everything. The unlocked rows, and
+    /// the 200s a spectator gets, belong to
+    /// `the_whole_admission_table_is_answered_route_by_route`, which runs
+    /// §3.5's grid in full. Split that way because the two cells prove
+    /// different things: this one is about COVERAGE of `session_routes()`, and
+    /// that one is about the grid.
+    ///
+    /// **Four routes do not read through `admitted` and keep their own
+    /// answers**, which is why the expected sentence is a table and not a
+    /// constant: `deal`, `keep` and `DELETE` resolve the seat inside `Games`
+    /// (so a lock is not their answer — the seat is), and `join` is
+    /// deliberately left on M6.2's refusal order.
     ///
     /// One cell over the whole table rather than seventeen, because a fence
     /// applied to sixteen routes and forgotten on the seventeenth is exactly the
@@ -2455,6 +2618,7 @@ mod tests {
     {
         const STRANGER: &str = "green@wire.test";
         const NOT_SEATED: &str = "you are not seated at this table";
+        const LOCKED: &str = "this table is locked — unlock it first";
         let state = Arc::new(AppState::in_memory());
         let open_table = serde_json::json!({
             "players": 2,
@@ -2488,13 +2652,14 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["status"], "dealing", "{body}");
-        start_as(&state, "playt", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        start_locked_as(&state, "lockt", 20260831, &["red@wire.test", "blue@wire.test"], "sesame")
+            .await;
 
         // 1. THE STRANGER, at all three tables, on every route but `table` and
         //    `join` — which are asked afterwards, `join` last of all. 403 on
         //    every one of them, at every status, and NO route says which status
         //    it was (ruling #8 closed the one that did).
-        for table in ["opent", "dealt", "playt"] {
+        for table in ["opent", "dealt", "lockt"] {
             for (method, suffix, body) in session_routes() {
                 if suffix == "/table" || suffix == "/join" {
                     continue;
@@ -2502,29 +2667,45 @@ mod tests {
                 let uri = format!("/api/games/{table}{suffix}");
                 let (status, got) = request_as(&state, STRANGER, method, &uri, body).await;
                 assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
-                // `keep`'s own sentence is older than this cycle and stays: a
-                // seat nobody holds and a seat somebody else holds are one
-                // refusal. What matters here is that it names a SEAT and never
-                // a status, so it tells a stranger nothing the others do not.
-                let expected =
-                    if suffix == "/keep" { "seat 1 is not yours" } else { NOT_SEATED };
+                let expected = match (table, method, suffix) {
+                    // `keep`'s own sentence is older than this cycle and stays:
+                    // a seat nobody holds and a seat somebody else holds are one
+                    // refusal. What matters here is that it names a SEAT and
+                    // never a status, so it tells a stranger nothing the others
+                    // do not.
+                    (_, _, "/keep") => "seat 1 is not yours",
+                    // The three that resolve the seat inside `Games` rather
+                    // than through `admitted`: the lock is not their answer.
+                    ("lockt", "DELETE", "") | ("lockt", _, "/deal") => NOT_SEATED,
+                    // Everything that reads through `admitted` says what this
+                    // caller can DO about it (M6.3) — which is the difference
+                    // between a watcher and a stranger.
+                    ("lockt", _, _) => LOCKED,
+                    _ => NOT_SEATED,
+                };
                 assert_eq!(got["error"], expected, "{method} {uri}: {got}");
                 assert!(got.get("status").is_none(), "no status leaks: {method} {uri}: {got}");
             }
         }
 
-        // 2. `table` is the widening, and ONLY at open (R-2.7). The other two
-        //    statuses are the anti-vacuity half: a widening written as "anybody
-        //    may read a table" passes the open line and fails these.
+        // 2. `table` is the widening: at open since R-2.7, and at playing and
+        //    over since R-3.13 — a would-be watcher has to read `locked` and
+        //    `can_watch` to know whether to ask for a password. DEALING is the
+        //    anti-vacuity half and the whole of the remaining fence: a widening
+        //    written as "anybody may read a table" passes the first two lines
+        //    and fails the third.
         let (status, view) = get_as(&state, STRANGER, "/api/games/opent/table").await;
         assert_eq!(status, StatusCode::OK, "{view}");
         assert_eq!(view["my_seats"], serde_json::json!([]), "a caller with no seat here: {view}");
         assert_eq!(view["status"], "open", "{view}");
-        for table in ["dealt", "playt"] {
-            let (status, got) = get_as(&state, STRANGER, &format!("/api/games/{table}/table")).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{table}: {got}");
-            assert_eq!(got["error"], NOT_SEATED, "{table}: {got}");
-        }
+        let (status, view) = get_as(&state, STRANGER, "/api/games/lockt/table").await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["my_seats"], serde_json::json!([]), "{view}");
+        assert_eq!(view["locked"], true, "{view}");
+        assert_eq!(view["can_watch"], false, "seen, and not watchable yet: {view}");
+        let (status, got) = get_as(&state, STRANGER, "/api/games/dealt/table").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{got}");
+        assert_eq!(got["error"], NOT_SEATED, "{got}");
 
         // 3. THE SEAT HOLDER at the open table hears the status instead (§3.4),
         //    on every route but `table`, `join`, `events` and DELETE. Before
@@ -2565,7 +2746,7 @@ mod tests {
         // 4. `join` is admitted at OPEN and refused by STATUS elsewhere (§3.2:
         //    "you are not seated at this table" is explicitly not an arm there —
         //    a stranger is exactly who joins).
-        for (table, status_word) in [("dealt", "dealing"), ("playt", "playing")] {
+        for (table, status_word) in [("dealt", "dealing"), ("lockt", "playing")] {
             let (status, got) = post_as(
                 &state,
                 STRANGER,
@@ -2594,13 +2775,13 @@ mod tests {
         // Anti-vacuity: a seated caller gets the routes this cell refused.
         // Without it a server that refused everything to everybody would pass.
         for uri in [
-            "/api/games/playt",
-            "/api/games/playt/table",
-            "/api/games/playt/log",
-            "/api/games/playt/at/0",
-            "/api/games/playt/index/orders",
-            "/api/games/playt/events",
-            "/api/games/playt/ports",
+            "/api/games/lockt",
+            "/api/games/lockt/table",
+            "/api/games/lockt/log",
+            "/api/games/lockt/at/0",
+            "/api/games/lockt/index/orders",
+            "/api/games/lockt/events",
+            "/api/games/lockt/ports",
         ] {
             let (status, body) = get_as(&state, "blue@wire.test", uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
@@ -2791,8 +2972,16 @@ mod tests {
             let (status, err) = get_as(&state, "blue@wire.test", &uri).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {err}");
         }
-        let (status, _) = get_as(&state, "green@wire.test", "/api/games/sig/events").await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        // **M6.3 turned this line over** (R-3.5): a signed-in caller with no
+        // seat, at an UNLOCKED playing table, is admitted as a watcher and
+        // reads the same four fields — never as the one to move. The 403 this
+        // line used to assert is now the LOCKED table's, and lives in the
+        // whole-table admission cell with the rest of §3.5.
+        let (status, watched) =
+            get_as(&state, "green@wire.test", "/api/games/sig/events").await;
+        assert_eq!(status, StatusCode::OK, "{watched}");
+        assert_eq!(watched["your_turn"], false, "a watcher is never to move: {watched}");
+        assert_eq!(watched["status"], "playing", "{watched}");
 
         // A real move, and the reading the poll exists to deliver.
         play_turn(&state, "sig", "red@wire.test").await;
@@ -3519,6 +3708,514 @@ mod tests {
             red_hand.iter().copied().collect(),
             "the acting seat's own index still marks its own hand",
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // M6.3 — the spectator (spec §3.5, §4, R-3.5–R-3.7)
+    // ---------------------------------------------------------------------
+
+    /// What kind of answer a route owes, in §3.5's terms.
+    ///
+    /// The grid below is a function of this and the caller's row, and a route
+    /// added to [`session_routes`] without a kind here fails the coverage
+    /// assertion at the top of the cell — the same shape that list already
+    /// enforces one layer up.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Kind {
+        /// A projection: 200 to anyone admitted, 409 to a seat holder before
+        /// the game exists.
+        Read,
+        /// `GET …/table` — R-2.7's widening plus R-3.13's.
+        Table,
+        /// `GET …/events`. `…/stream` is asserted to answer the same status in
+        /// every cell, which is §3.5's last sentence.
+        Signal,
+        /// [`Kind::Read`] plus its own 409 until the game is over.
+        Result,
+        /// Refused to a caller with no seat, spectator or not, before the
+        /// handle is touched.
+        Write,
+        /// `join` and `unlock`, which keep their own status ladders (R-4.2 and
+        /// §3.4) and are asserted by hand below.
+        OwnLadder,
+    }
+
+    /// Every session route with the answer it owes. The bodies are
+    /// [`session_routes`]', and the coverage of that list is asserted rather
+    /// than assumed.
+    fn admission_routes() -> Vec<(&'static str, &'static str, Option<serde_json::Value>, Kind)> {
+        vec![
+            ("GET", "", None, Kind::Read),
+            ("GET", "/table", None, Kind::Table),
+            ("GET", "/deal", None, Kind::Write),
+            ("POST", "/keep", Some(serde_json::json!({ "seat": 1, "card": 1 })), Kind::Write),
+            ("POST", "/join", Some(serde_json::json!({ "seat": 1 })), Kind::OwnLadder),
+            ("POST", "/unlock", Some(serde_json::json!({ "password": "x" })), Kind::OwnLadder),
+            ("POST", "/input", Some(serde_json::json!({ "line": "1" })), Kind::Write),
+            ("GET", "/ports", None, Kind::Read),
+            ("GET", "/labs", None, Kind::Read),
+            ("GET", "/areas", None, Kind::Read),
+            ("GET", "/log", None, Kind::Read),
+            ("GET", "/events", None, Kind::Signal),
+            ("GET", "/at/0", None, Kind::Read),
+            ("GET", "/suggest", None, Kind::Write),
+            ("GET", "/why", None, Kind::Read),
+            ("GET", "/index/orders", None, Kind::Read),
+            ("GET", "/result", None, Kind::Result),
+            ("DELETE", "", None, Kind::Write),
+        ]
+    }
+
+    /// The status of `GET …/stream` WITHOUT reading its body.
+    ///
+    /// The router answers before the body streams, so the status is available
+    /// at once — and reading an admitted stream's body here would hang, since
+    /// it stays open until the table ends. That is why this is a separate
+    /// helper from [`stream_frames`] and not a zero-duration call to it.
+    async fn stream_status(state: &Arc<AppState>, uri: &str, who: &str) -> StatusCode {
+        let res = app(Arc::clone(state))
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(identity::CLAIMED_HEADER, who)
+                    .header("accept", "text/event-stream")
+                    .body(Body::empty())
+                    .expect("a GET"),
+            )
+            .await
+            .expect("the router answers");
+        res.status()
+    }
+
+    /// The corpus-seed 2P game PLAYED OUT by both seats as bots, as a record.
+    ///
+    /// [`a_finished_two_person_game`]'s mechanism, lifted so several tables in
+    /// ONE cell can be finished: a 2P game driven to a winner over the route
+    /// costs a whole game, and this cell needs two finished tables.
+    fn a_finished_record() -> String {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots = BotSeats::new(
+            vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)],
+            ENDED_SEED,
+        );
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.to_record_json().expect("a record")
+    }
+
+    /// **Spec §3.5's whole grid, route by route** — five caller rows against
+    /// four statuses, with `stream` asserted to answer exactly what `events`
+    /// answers in every one of them.
+    ///
+    /// One cell and not twenty, for the reason the M6.2 sweep beside it gives:
+    /// an admission applied to sixteen routes and forgotten on the
+    /// seventeenth is the shape that ships. The five rows are
+    ///
+    /// | caller | status | what they are |
+    /// |---|---|---|
+    /// | red | any | holds a seat |
+    /// | green | open | signed in, no seat |
+    /// | green | dealing | signed in, no seat |
+    /// | grey | playing / over, unlocked or presented | a WATCHER |
+    /// | green | playing / over, locked | shut out until they knock |
+    ///
+    /// and they are covered by three identities against six tables, because
+    /// "playing" and "over" are two readings of one status and a locked table
+    /// is a different document from an unlocked one.
+    ///
+    /// **The seat holder's WRITE column is not asserted here** and says so:
+    /// those answers are M6.2's, unchanged by this cycle and pinned by its own
+    /// cells — and one of them is a DELETE that would take a table out from
+    /// under the rest of the grid. What this cell claims about the writes is
+    /// the row that IS new: a caller with no seat is refused every one of them,
+    /// watcher or not.
+    ///
+    /// **One row of §3.5 is NOT what this server does, and the difference is
+    /// recorded rather than papered over**: the spec's table answers `events`
+    /// and `stream` 200 to a caller with no seat at an OPEN table, and
+    /// `admitted` refuses them 403 with every other route. Task 4's brief
+    /// specifies `admitted` as the code above, and `events_at` reads it; the
+    /// open-table poll a client actually makes is a SEAT HOLDER's, which is
+    /// asserted 200 by the sweep beside this one. Reported as a finding.
+    #[tokio::test]
+    async fn the_whole_admission_table_is_answered_route_by_route() {
+        const NOT_SEATED: &str = "you are not seated at this table";
+        const LOCKED: &str = "this table is locked — unlock it first";
+        let (red, green, grey) = ("red@wire.test", "green@wire.test", "grey@wire.test");
+
+        // Coverage: every route the stranger sweep knows has a kind here.
+        let kinds = admission_routes();
+        for (method, suffix, _) in session_routes() {
+            assert!(
+                kinds.iter().any(|(m, s, _, _)| *m == method && *s == suffix),
+                "{method} {suffix} has no admission kind",
+            );
+        }
+
+        let store = Arc::new(MemStore::default());
+        let warm = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Claimed));
+        let open_body = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+            "seats": [{ "user": red }, { "open": true }], "id": "opent", "name": "opent",
+        });
+        let (status, body) = post_as(&warm, red, "/api/games", open_body).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = post_as(
+            &warm,
+            red,
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": red }, { "user": "blue@wire.test" }],
+                "id": "dealt", "name": "dealt",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        start_as(&warm, "playt", ENDED_SEED, &[red, "blue@wire.test"]).await;
+        start_locked_as(&warm, "lockt", ENDED_SEED, &[red, "blue@wire.test"], "sesame").await;
+        start_as(&warm, "overt", ENDED_SEED, &[red, "blue@wire.test"]).await;
+        start_locked_as(&warm, "overlk", ENDED_SEED, &[red, "blue@wire.test"], "sesame").await;
+
+        // The two finished tables, by installing the played-out record under
+        // the id `start_as` just created — the same game, at the same seed.
+        let finished = a_finished_record();
+        for id in ["overt", "overlk"] {
+            let (_, version) = store.read(Doc::Record, id).expect("a store").expect("a record");
+            store
+                .write_if_version(Doc::Record, id, &finished, Some(version))
+                .expect("the finished record");
+        }
+        // A fresh state over the same store, so the two finished records are
+        // rebuilt from disk rather than served from `warm`'s resident handles.
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        for id in ["overt", "overlk"] {
+            let (status, game) = get_as(&state, red, &format!("/api/games/{id}")).await;
+            assert_eq!(status, StatusCode::OK, "{game}");
+            assert_eq!(game["over"], true, "the premise: {id} is finished");
+        }
+
+        // Grey knocks at both locked tables, which is the fourth row.
+        for id in ["lockt", "overlk"] {
+            let (status, view) = post_as(
+                &state,
+                grey,
+                &format!("/api/games/{id}/unlock"),
+                serde_json::json!({ "password": "sesame" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{id}: {view}");
+            assert_eq!(view["can_watch"], true, "{id}: {view}");
+        }
+
+        // (table, status word, whether a lock is on it)
+        let tables = [
+            ("opent", "open", false),
+            ("dealt", "dealing", false),
+            ("playt", "playing", false),
+            ("lockt", "playing", true),
+            ("overt", "over", false),
+            ("overlk", "over", true),
+        ];
+        // (who, holds a seat, has presented the password)
+        let callers = [(red, true, false), (green, false, false), (grey, false, true)];
+
+        for (table, word, locked) in tables {
+            let playing = word == "playing" || word == "over";
+            for (who, seated, knocked) in callers {
+                // The fourth row's condition, which is `TableDoc::can_watch`'s
+                // in the caller's own terms: no seat, playing, and either the
+                // table has no lock or this caller has knocked.
+                let watches = !seated && playing && (!locked || knocked);
+                let shut_out = !seated && playing && locked && !knocked;
+
+                for (method, suffix, body, kind) in admission_routes() {
+                    if kind == Kind::OwnLadder {
+                        continue;
+                    }
+                    if seated && kind == Kind::Write {
+                        continue; // M6.2's, and a DELETE would end the grid.
+                    }
+                    let uri = format!("/api/games/{table}{suffix}");
+                    let (got, answer) = request_as(&state, who, method, &uri, body).await;
+                    let want = match kind {
+                        Kind::Table => {
+                            if seated || playing || word == "open" {
+                                StatusCode::OK
+                            } else {
+                                StatusCode::FORBIDDEN
+                            }
+                        }
+                        Kind::Write if !seated => StatusCode::FORBIDDEN,
+                        Kind::Write => unreachable!("the seated write column is skipped"),
+                        // **The signal answers at EVERY status** (R-3.3): the
+                        // open-table screen and the setup screen poll the same
+                        // endpoint the game does, and a 409 there would make
+                        // each of them branch on an error.
+                        Kind::Signal if seated || watches => StatusCode::OK,
+                        Kind::Signal => StatusCode::FORBIDDEN,
+                        _ if !seated && !watches => StatusCode::FORBIDDEN,
+                        // A projection needs a session, and there is none
+                        // before the last keep. Only a seat holder reaches
+                        // here at those two statuses.
+                        _ if !playing => StatusCode::CONFLICT,
+                        Kind::Result if word != "over" => StatusCode::CONFLICT,
+                        _ => StatusCode::OK,
+                    };
+                    assert_eq!(
+                        got, want,
+                        "{who} at {table} ({word}): {method} {uri} answered {answer}",
+                    );
+                    if got == StatusCode::FORBIDDEN && kind != Kind::Write {
+                        // The SENTENCE discriminates the two refused rows: a
+                        // caller who can do something about it is told what.
+                        let expected = if shut_out { LOCKED } else { NOT_SEATED };
+                        assert_eq!(answer["error"], expected, "{who} at {table}: {method} {uri}");
+                    }
+                    if kind == Kind::Signal {
+                        let streamed = stream_status(
+                            &state,
+                            &format!("/api/games/{table}/stream"),
+                            who,
+                        )
+                        .await;
+                        assert_eq!(
+                            streamed, got,
+                            "{who} at {table}: stream and events must be admitted alike",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Anti-vacuity: the watcher's 200s really carry a watcher's payload,
+        // and the seat holder's really carry a seat's — a grid of matching
+        // status codes could otherwise be a server that served one thing.
+        let (_, watched) = get_as(&state, grey, "/api/games/playt").await;
+        assert_eq!(watched["seat"], serde_json::Value::Null, "{watched}");
+        assert_eq!(watched["your_turn"], false, "{watched}");
+        assert_eq!(watched["prompt"]["kind"], "watching", "{watched}");
+        let (_, mine) = get_as(&state, red, "/api/games/playt").await;
+        assert_eq!(mine["seat"], 0, "{mine}");
+        assert_eq!(mine["your_turn"], true, "{mine}");
+
+        // And `join` and `unlock`'s own ladders at the two rows this cell is
+        // about, which is all §3.5 says of them (R-4.2, §3.4).
+        for (table, word) in [("dealt", "dealing"), ("playt", "playing")] {
+            let (status, got) = post_as(
+                &state,
+                green,
+                &format!("/api/games/{table}/join"),
+                serde_json::json!({ "seat": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{table}: {got}");
+            assert_eq!(got["status"], word, "{table}: {got}");
+        }
+        let (status, got) = post_as(
+            &state,
+            green,
+            "/api/games/lockt/unlock",
+            serde_json::json!({ "password": "open" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{got}");
+        assert_eq!(got["error"], "wrong password for this table", "{got}");
+        let (status, got) = post_as(
+            &state,
+            green,
+            "/api/games/opent/unlock",
+            serde_json::json!({ "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{got}");
+        assert_eq!(got["status"], "open", "nothing to watch yet: {got}");
+    }
+
+    /// **A watcher writes nothing, and is refused BEFORE the handle is
+    /// touched** (R-3.6).
+    ///
+    /// The instrument is a store that PANICS on any record read: the state is
+    /// built fresh over it, so no handle is resident, and any write route that
+    /// reached `Games::handle` would take the test down with a named message
+    /// rather than quietly refusing one line later. A 403 that arrives after
+    /// the record has been read and the bot pump has run is not the refusal
+    /// R-3.6 asks for.
+    ///
+    /// At a PLAYING and at a FINISHED table, because `input`'s fence chooses
+    /// its sentence by status and a spectator must never reach the choosing.
+    #[tokio::test]
+    async fn a_spectator_is_refused_every_write_before_the_record_is_ever_read() {
+        /// A [`MemStore`] that refuses to be asked for a record.
+        struct NoRecords(MemStore);
+        impl Store for NoRecords {
+            fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+                self.0.list(doc)
+            }
+            fn read(
+                &self,
+                doc: Doc,
+                id: &str,
+            ) -> Result<Option<(String, crate::store::Version)>, String> {
+                assert_ne!(
+                    doc,
+                    Doc::Record,
+                    "a spectator's write reached the record of {id:?} before refusing",
+                );
+                self.0.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<crate::store::Version>,
+            ) -> Result<crate::store::Version, crate::store::WriteError> {
+                self.0.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.0.delete(id)
+            }
+        }
+
+        let plain = Arc::new(MemStore::default());
+        let warm = Arc::new(AppState::with_store(
+            Arc::clone(&plain) as Arc<dyn Store>,
+            identity::IdentityMode::Claimed,
+        ));
+        start_as(&warm, "playt", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        start_as(&warm, "overt", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let finished = a_finished_record();
+        let (_, version) = plain.read(Doc::Record, "overt").expect("a store").expect("a record");
+        plain
+            .write_if_version(Doc::Record, "overt", &finished, Some(version))
+            .expect("the finished record");
+
+        // The SAME bytes, behind a store that will not hand out a record — and
+        // a fresh state, so nothing is resident to answer from memory.
+        let guarded = NoRecords(MemStore::default());
+        for doc in [Doc::Table, Doc::Record] {
+            for id in plain.list(doc).expect("a store") {
+                let (json, _) = plain.read(doc, &id).expect("a store").expect("a document");
+                guarded.0.write_if_version(doc, &id, &json, None).expect("a copy");
+            }
+        }
+        let state = Arc::new(AppState::with_store(
+            Arc::new(guarded) as Arc<dyn Store>,
+            identity::IdentityMode::Claimed,
+        ));
+
+        // Grey watches both — an unlocked table admits without a knock — and
+        // is still refused every write.
+        for table in ["playt", "overt"] {
+            let (status, view) = get_as(&state, "grey@wire.test", &format!("/api/games/{table}/table")).await;
+            assert_eq!(status, StatusCode::OK, "{view}");
+            assert_eq!(view["can_watch"], true, "the premise: grey may watch {table}");
+
+            for (method, suffix, body, kind) in admission_routes() {
+                if kind != Kind::Write {
+                    continue;
+                }
+                let uri = format!("/api/games/{table}{suffix}");
+                let (status, got) =
+                    request_as(&state, "grey@wire.test", method, &uri, body).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
+            }
+            // And the table is untouched: still there, still playing.
+            let (status, view) =
+                get_as(&state, "red@wire.test", &format!("/api/games/{table}/table")).await;
+            assert_eq!(status, StatusCode::OK, "the refused DELETE deleted nothing: {view}");
+        }
+    }
+
+    /// **A spectator's card index marks no hand at all** (R-3.8), by value over
+    /// a game where both seats hold cards.
+    ///
+    /// The anti-vacuity half is the seated read beside it: an index that had
+    /// simply stopped marking anything would pass the first assertion.
+    #[tokio::test]
+    async fn a_spectators_card_index_marks_nobodys_hand() {
+        /// The order ids an index marks as the reader's own hand.
+        fn own_hand(index: &serde_json::Value) -> std::collections::BTreeSet<u64> {
+            index["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .flat_map(|g| g["cards"].as_array().expect("cards"))
+                .filter(|c| c["location"] == serde_json::json!("OwnHand"))
+                .map(|c| c["face"]["Order"]["id"].as_u64().expect("an order card id"))
+                .collect()
+        }
+
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "indexed", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+
+        let (status, seated) =
+            get_as(&state, "red@wire.test", "/api/games/indexed/index/orders").await;
+        assert_eq!(status, StatusCode::OK, "{seated}");
+        assert!(!own_hand(&seated).is_empty(), "the premise: the acting seat holds cards");
+
+        let (status, watched) =
+            get_as(&state, "grey@wire.test", "/api/games/indexed/index/orders").await;
+        assert_eq!(status, StatusCode::OK, "{watched}");
+        assert!(own_hand(&watched).is_empty(), "a watcher's index names no hand: {watched}");
+
+        // The rest of the index is the SAME public reading — the port slots,
+        // the laboratory slots, the sites. Dropping the hand must not drop
+        // those, which a `None` arm returning early would.
+        let public = |index: &serde_json::Value| -> usize {
+            index["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .flat_map(|g| g["cards"].as_array().expect("cards"))
+                .filter(|c| c["location"] != serde_json::json!("OwnHand"))
+                .filter(|c| c["location"] != serde_json::Value::Null)
+                .count()
+        };
+        assert_eq!(public(&watched), public(&seated), "the public rows are unchanged");
+        assert!(public(&watched) > 0, "and there are some");
+    }
+
+    /// **`why` reads the same to a watcher as to a seated caller.**
+    ///
+    /// The route already masks the roads not taken for EVERY caller
+    /// (`HandVisibility::Masked`), so admitting a spectator to it adds no
+    /// visibility — and the claim is exactly that: equal JSON, not merely two
+    /// 200s. A vs-bot table, because `why` accounts for a BOT move and a table
+    /// of two people has none.
+    #[tokio::test]
+    async fn why_reads_the_same_to_a_watcher_as_to_a_seated_caller() {
+        let state = Arc::new(AppState::in_memory());
+        start_vs_bot(&state, "whywatch", 20260831, "red@wire.test").await;
+        play_turn_vs_bot(&state, "whywatch", "red@wire.test", "Blue").await;
+
+        let (status, seated) = get_as(&state, "red@wire.test", "/api/games/whywatch/why").await;
+        assert_eq!(status, StatusCode::OK, "{seated}");
+        assert!(seated["refusal"].is_null(), "the premise: a bot move to account for: {seated}");
+        let (status, watched) = get_as(&state, "grey@wire.test", "/api/games/whywatch/why").await;
+        assert_eq!(status, StatusCode::OK, "{watched}");
+        assert_eq!(watched, seated, "the account is the same one");
     }
 
     /// **`suggest` answers the acting seat's holder only** (R-1.8), so the
@@ -5165,32 +5862,57 @@ mod tests {
         );
     }
 
-    /// **A stream is refused a stranger, and refused BEFORE it subscribes.**
+    /// **A stream is refused a caller the LOCK shuts out, and refused BEFORE it
+    /// subscribes.**
     ///
     /// The stream is a session route and the sweep above cannot carry it: a
     /// route that answers 200 with an open body would hang a helper that reads
-    /// the whole reply. So the refusal is asserted here instead, at the status
-    /// where a stranger has no business at all today — spectating is a later
-    /// task of this cycle and will widen [`events_at`], which is the one place
-    /// this admission lives.
+    /// the whole reply. So the refusal is asserted here instead.
+    ///
+    /// **Re-pointed by M6.3 at a LOCKED table, and it had to be**: a stranger
+    /// at an unlocked playing table is now admitted as a `Spectator` (R-3.5),
+    /// so the table this cell used to refuse at now answers 200. Both truths
+    /// are read here rather than one traded for the other — the unlocked arm
+    /// is the anti-vacuity half, and without it a server that refused every
+    /// stream would still pass.
     ///
     /// The sender count is the second half: the refusal must land before the
-    /// subscribe, or a stranger could grow the map one entry per attempt.
+    /// subscribe, or a caller could grow the map one entry per attempt.
     #[tokio::test]
     async fn the_stream_refuses_a_stranger_before_it_subscribes() {
         let state = Arc::new(AppState::in_memory());
-        start_as(&state, "mine", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        start_as(&state, "open", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        start_locked_as(
+            &state,
+            "shut",
+            20260831,
+            &["red@wire.test", "blue@wire.test"],
+            "sesame",
+        )
+        .await;
         let before = state.games.signals().senders();
         let (status, text, _) = stream_frames(
             Arc::clone(&state),
-            "/api/games/mine/stream",
+            "/api/games/shut/stream",
             "green@wire.test",
             std::time::Duration::from_millis(100),
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-        assert!(text.contains("you are not seated at this table"), "{text}");
+        assert!(text.contains("this table is locked — unlock it first"), "{text}");
         assert_eq!(state.games.signals().senders(), before, "a refused stream subscribed");
+
+        // The widening, at the same wall cost: an UNLOCKED playing table
+        // streams to a watcher, whose frame says it is not their turn.
+        let (status, text, _) = stream_frames(
+            Arc::clone(&state),
+            "/api/games/open/stream",
+            "green@wire.test",
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains(r#""your_turn":false"#), "a watcher is never to move: {text}");
     }
 
     /// **The house stream says nothing on connect and one frame per house
