@@ -168,12 +168,18 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // stream the lobby held while C was signing in is not: it belongs to a screen
   // that is already gone, and counting it would make this a reading about a
   // different page.
+  //
+  // **Counted by THIS TABLE's whole path** (review T9 #4). A suffix test also
+  // matches `/api/stream`, the lobby's own house channel — excluded here only
+  // by the timing above, and a reading that rests on when a listener was
+  // installed is a reading one navigation away from being about two pages.
   const eventsAsked: string[] = [];
+  const streamPath = `/api/games/${id}/stream`;
   let streams = 0;
   c.on("request", (r) => {
     const path = new URL(r.url()).pathname;
     if (path.endsWith("/events")) eventsAsked.push(path);
-    if (path.endsWith("/stream")) streams += 1;
+    if (path === streamPath) streams += 1;
   });
 
   await c.getByLabel("Password").fill(WATCH_PASSWORD);
