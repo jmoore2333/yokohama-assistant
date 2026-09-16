@@ -514,7 +514,9 @@ mod tests {
     #[test]
     fn the_view_carries_locked_and_winner_and_never_the_salt_or_the_hash() {
         let mut d = open_doc();
-        d.lock = Some(Lock::new("sesame"));
+        let lock = Lock::new("sesame");
+        let (salt, hash) = (lock.salt.clone(), lock.hash.clone());
+        d.lock = Some(lock);
         d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2) });
         let v = serde_json::to_value(d.view(&User::parse("red@t.test").unwrap())).unwrap();
         assert_eq!(v["locked"], true);
@@ -523,6 +525,13 @@ mod tests {
         for key in ["salt", "hash", "\"lock\""] {
             assert!(!text.contains(key), "{key} must not reach the view: {text}");
         }
+        // And the VALUES, under whatever key: the key search above is blind to
+        // a salt re-served as `nonce` — measured, that mutation left this cell
+        // green and only `wire_fixtures`' run-wide value search saw it. With
+        // these two lines the `--lib` binary carries a value catcher too, which
+        // is what spec §8.4's mutation 4 claims of this cell.
+        assert!(!text.contains(&salt), "the salt reached the view under some key: {text}");
+        assert!(!text.contains(&hash), "the hash reached the view under some key: {text}");
         assert_eq!(v["seats"][1]["kind"], "open");
         assert_eq!(v["seats"][0]["name"], "Red");
     }

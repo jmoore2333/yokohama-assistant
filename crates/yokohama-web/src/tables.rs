@@ -312,17 +312,20 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// Is this a document every consumer may INDEX BY SEAT and BUILD A CONFIG FROM?
 ///
 /// **The BOUNDS are the load-bearing half, and the length checks alone do not
-/// give them.** Three fields carry a number this module then hands to something
+/// give them.** Four fields carry a number this module then hands to something
 /// that panics on a value it does not accept, and every one of them is reached
 /// on a path that holds a TABLE LOCK across the read — where a panic is not a
 /// dropped connection but a POISONED mutex, after which every later `keep`,
 /// `join`, `delete` and repairing `settle` AT THAT TABLE dies with it.
 ///
-/// **The blast radius narrowed with M6.2 and the reason did not.** The lock is
-/// now per table ([`Games::lock_for`]), so one hand-edited document poisons one
-/// game rather than the whole process, and `create` — still on the global
-/// `table_lock` — is not touched at all. A game that can never again be opened,
-/// joined or deleted by anyone is reason enough for the bounds below.
+/// **One of the four is wider than one table, so "one dead game" is not the
+/// ceiling.** [`Games::list_for`] calls [`TableDoc::view`] on every row it
+/// keeps, and `view` hands the turn mirror to `PlayerId::new` — so an
+/// out-of-range `to_move` on ONE file drops `GET /api/games` for every player,
+/// which the lobby polls every 3 s, with no `CatchPanicLayer` in the crate to
+/// turn it into a 500. The per-table lock M6.2 brought narrowed the OTHER
+/// three (`create`, still on the global `table_lock`, is not touched at all);
+/// it did not narrow this one.
 ///
 /// - `players`: `TableDoc::seats_of` maps each seat's position through
 ///   `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4`,
@@ -335,6 +338,9 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// - `keeps[i]`: [`choices_of`] does `Keep(keep - 1)` on a `u8`, so a stored
 ///   `0` is `attempt to subtract with overflow` in a debug build — measured, on
 ///   the same call.
+/// - `turn`: [`TableDoc::view`] does `PlayerId::new` on BOTH `to_move` and
+///   `winner`. Measured on a `Playing` document with `to_move: 9` before the
+///   arm existed: `check_shape=Ok(())` and then `PlayerId must be 0-3, got 9`.
 ///
 /// The keep bound is `{None, Some(1), Some(2)}` and not merely non-zero,
 /// because `1` and `2` are the only numbers `Games::keep` ever writes: the wire
@@ -378,9 +384,20 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
             }
         }
     }
-    if let Some(TurnMirror { winner: Some(w), .. }) = doc.turn {
-        if usize::from(w) >= usize::from(doc.players) {
-            return Err(format!("winner {w} at a {}-seat table", doc.players));
+    // BOTH mirror fields, because both are handed to `PlayerId::new` by
+    // `TableDoc::view` (`table.rs`), which asserts `id < 4` and PANICS — and
+    // `view` runs under the per-table lock in `join` and `keep` (poisoning that
+    // table's mutex) and inside `Games::list_for`, which builds a row for every
+    // table on the volume. One hand-edited `to_move` there drops the lobby poll
+    // for every player, not one game.
+    if let Some(TurnMirror { to_move, winner, .. }) = doc.turn {
+        if usize::from(to_move) >= usize::from(doc.players) {
+            return Err(format!("to_move {to_move} at a {}-seat table", doc.players));
+        }
+        if let Some(w) = winner {
+            if usize::from(w) >= usize::from(doc.players) {
+                return Err(format!("winner {w} at a {}-seat table", doc.players));
+            }
         }
     }
     if !(2..=4).contains(&doc.players) {
@@ -1986,7 +2003,7 @@ mod tests {
 
     /// Every M6.2 shape arm, read as the SENTENCE it answers with.
     ///
-    /// Built in Rust rather than as JSON, and that is the point: the six arms
+    /// Built in Rust rather than as JSON, and that is the point: the arms
     /// below guard against a document some future write path produces, and a
     /// JSON literal would only prove that serde can be handed a bad string. A
     /// `TableDoc` that type-checks and is still refused is the case that
@@ -2056,8 +2073,19 @@ mod tests {
             d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2) });
             d
         };
+        // The other half of the mirror, and the one with the wider blast
+        // radius: `TableDoc::view` hands `to_move` to `PlayerId::new`, which
+        // panics above 3, and `Games::list_for` calls `view` on every row it
+        // keeps. Without this arm the probe reads `check_shape=Ok(())` and
+        // `view` panics `PlayerId must be 0-3, got 9`.
+        let to_move_off_the_table = || {
+            let mut d = valid();
+            d.status = TableStatus::Playing;
+            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None });
+            d
+        };
 
-        let cases: [(&str, TableDoc); 7] = [
+        let cases: [(&str, TableDoc); 8] = [
             ("newer server", newer()),
             ("open seat", open_seat_while_dealing()),
             ("no open seat", open_with_no_open_seat()),
@@ -2065,6 +2093,7 @@ mod tests {
             ("1 to 64", long_name()),
             ("control", control_name()),
             ("winner 2", winner_off_the_table()),
+            ("to_move 9", to_move_off_the_table()),
         ];
         for (fragment, doc) in cases {
             let why = check_shape(&doc).expect_err(&format!("{fragment}: must refuse"));
