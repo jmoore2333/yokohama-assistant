@@ -21,7 +21,7 @@ import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
 import { ApiError, DISPLAY_NAME_KEY } from "./api";
 import { BACKOFF_MS } from "./signal";
-import { fakeStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 import type { DealView } from "./types";
@@ -81,15 +81,10 @@ const signalling = (onOpen?: (open: number) => Array<[string, unknown]>) => {
   };
 };
 
-/** Let a reply chain settle without moving the clock: a frame arrives over a
- *  handful of microtask turns and NOT after an interval. */
-const settle = async (rounds = 20) => {
-  for (let i = 0; i < rounds; i += 1) {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-};
+/** Let a reply chain settle without moving the clock — the harness's own
+ *  [`flush`]: a frame arrives over turns that are not all microtasks, and NOT
+ *  after an interval. */
+const settle = flush;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -146,9 +141,9 @@ describe("the dealing screen", () => {
       return at(call);
     });
     render(<Host onPlaying={onPlaying} />);
-    // **Connected first**: a frame written to a body nobody is reading yet
-    // reaches nobody, which is as true of this helper as it is of the server.
-    await settle();
+    // **Connected first**, gated on the fact: a frame written to a body nobody
+    // has opened reaches nobody, and nothing re-delivers it.
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
     stream.push("signal", wire.eventsDealing);
     await settle();
@@ -191,7 +186,7 @@ describe("the dealing screen", () => {
       return at(call);
     });
     render(<Host onPlaying={onPlaying} />);
-    await settle();
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
     stream.push("signal", { ...wire.eventsDealing, status: "playing" });
     await settle();
@@ -362,7 +357,7 @@ describe("the dealing screen", () => {
       return at(call);
     });
     render(<Host onLeave={onLeave} />);
-    await settle();
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
     stream.push("signal", wire.eventsDealing);
     await settle();

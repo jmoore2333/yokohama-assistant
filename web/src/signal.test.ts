@@ -26,7 +26,7 @@ import {
   type Source,
 } from "./signal";
 import { api, setSignalKind } from "./api";
-import { fakeStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events, TableView } from "./types";
 
@@ -42,16 +42,11 @@ function visibility(state: "visible" | "hidden") {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-/** Let the reply chain settle without moving the clock: an open, a header, a
- *  first chunk and a `setState` are four microtask turns, and a cell that
- *  advanced time instead would be asserting about the ladder. */
-const settle = async (rounds = 6) => {
-  for (let i = 0; i < rounds; i += 1) {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-};
+/** Let the reply chain settle without moving the clock — the harness's own
+ *  [`flush`]. An open, a header, a first chunk and a `setState` are a chain of
+ *  turns and not all of them microtasks, and a cell that advanced TIME instead
+ *  would be asserting about the ladder. */
+const settle = flush;
 
 /** An `Events` at a count, from the corpus's own payload. */
 const at = (events: number): Events => ({ ...wire.events, events });
@@ -101,6 +96,10 @@ describe("the signal, over the stream", () => {
     const seen: Events[] = [];
     const { stream, stub } = streamed(() => [["signal", at(3)]]);
     renderHook(() => useSignal("wire", true, (e) => seen.push(e)));
+    // **Connected before a frame is written**, gated on the fact rather than on
+    // a number of turns: a frame written to a body nobody has opened reaches
+    // nobody, and nothing re-delivers it.
+    await until(() => stream.opens() > 0, "the stream was opened");
     await settle();
     expect(seen.map((e) => e.events)).toEqual([3]);
     expect(vi.getTimerCount()).toBe(0);
@@ -135,6 +134,7 @@ describe("the signal, over the stream", () => {
     const seen: Events[] = [];
     const { stream, stub } = streamed((open) => [["signal", at(open)]]);
     const { result } = renderHook(() => useSignal("wire", true, (e) => seen.push(e)));
+    await until(() => stream.opens() > 0, "the stream was opened");
     await settle();
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
     expect(result.current).toBe("live");
@@ -154,6 +154,7 @@ describe("the signal, over the stream", () => {
     // client cannot make yet.
     act(() => visibility("visible"));
     expect(result.current).toBe("refreshing");
+    await until(() => stream.opens() > 1, "the stream was opened again");
     await settle();
     expect(stub.matching("GET", "/stream")).toHaveLength(2);
     expect(result.current).toBe("live");
@@ -165,6 +166,7 @@ describe("the signal, over the stream", () => {
   it("says reconnecting and climbs the ladder when the body ends without an end frame", async () => {
     const { stream, stub } = streamed((open) => [["signal", at(open)]]);
     const { result } = renderHook(() => useSignal("wire", true, () => {}));
+    await until(() => stream.opens() > 0, "the stream was opened");
     await settle();
     expect(result.current).toBe("live");
 
@@ -198,7 +200,7 @@ describe("the signal, over the stream", () => {
     const ends: End[] = [];
     const { stream, stub } = streamed();
     renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     stream.push("end", { reason: "deleted" });
     await settle();
     expect(ends).toEqual([{ reason: "deleted" }]);
@@ -242,7 +244,7 @@ describe("the signal, over the stream", () => {
     const { rerender } = renderHook(({ active }) => useSignal("wire", active, (e) => seen.push(e)), {
       initialProps: { active: true },
     });
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     rerender({ active: false });
     stream.push("signal", at(7));
     await settle();
@@ -282,7 +284,7 @@ describe("the two frame modes (R-7.1)", () => {
         (t) => seen.push(t),
       ),
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     // Nothing on connect here — this cell's stream says nothing until told —
     // so the re-read count is exactly the frame count.
     expect(stub.matching("GET", "/table")).toHaveLength(0);
@@ -318,7 +320,7 @@ describe("the two frame modes (R-7.1)", () => {
         () => {},
       ),
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     stream.push("house", { seq: 1 });
     await settle();
     expect(asks).toBe(1);
@@ -355,7 +357,7 @@ describe("the two frame modes (R-7.1)", () => {
         (e) => ends.push(e),
       ),
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     stream.push("signal", at(1));
     await settle();
     expect(ends).toEqual([{ reason: "gone", sentence: "no such game" }]);
@@ -387,7 +389,7 @@ describe("the two frame modes (R-7.1)", () => {
         () => {},
       ),
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     stream.push("signal", at(1));
     await settle();
     expect(result.current).toBe("reconnecting");
@@ -466,7 +468,7 @@ describe("the hook's own rules, whatever the transport", () => {
         ),
       { initialProps: { n: 0 } },
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the stream was opened");
     for (let n = 1; n <= 5; n += 1) rerender({ n });
     await settle();
     expect(stub.matching("GET", "/api/stream")).toHaveLength(1);

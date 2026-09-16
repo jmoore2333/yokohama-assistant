@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
-import { fakeStream, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 
@@ -303,16 +303,10 @@ describe("the open table, to somebody sitting at it", () => {
 });
 
 describe("the open table's watch", () => {
-  /** Let a reply chain settle without moving the clock: this screen is woken by
-   *  a frame and answers with a read, which is microtask turns and not an
-   *  interval. */
-  const settle = async (rounds = 20) => {
-    for (let i = 0; i < rounds; i += 1) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    }
-  };
+  /** Let a reply chain settle without moving the clock — the harness's own
+   *  [`flush`]: this screen is woken by a frame and answers with a read, which
+   *  is a chain of turns and not an interval. */
+  const settle = flush;
 
   it("hands over when a frame wakes a read of a table that is no longer open", async () => {
     // **A `"wake"` consumer** (M6.3 R-7.1): the frame off `…/{id}/stream` is an
@@ -334,7 +328,7 @@ describe("the open table's watch", () => {
     render(
       <OpenTable game="wire" me="red@wire.test" onStarted={onStarted} onLeave={() => {}} />,
     );
-    await settle();
+    await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onStarted).not.toHaveBeenCalled();
     // The opening read is this screen's own, and the frame below is what buys
     // the second one.
@@ -364,7 +358,7 @@ describe("the open table's watch", () => {
         : { status: 404, body: { error: "no such game" } };
     });
     render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
-    await settle();
+    await until(() => stream.opens() > 0, "the table's stream was opened");
     stream.push("signal", wire.eventsDealing);
     await settle();
     // Asserted straight after, not through `waitFor`: under fake timers

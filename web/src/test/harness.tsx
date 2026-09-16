@@ -12,7 +12,7 @@
 // defects M2 found by clicking was a second request going out while the first
 // was in flight, and a stub that resolves immediately cannot see it.
 
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import { vi } from "vitest";
 import { App } from "../App";
 import { CLAIMED_USER_KEY } from "../api";
@@ -152,6 +152,68 @@ export function stubApi(handler: (call: ApiCall) => Reply | Promise<Reply>): Api
       calls.filter((c) => c.method === method && c.path.includes(contains)),
   };
 }
+
+/** The REAL `setTimeout`, captured before any cell fakes the clock — modules
+ *  are evaluated before the first `beforeEach`, so this is the platform's. */
+const realSetTimeout = globalThis.setTimeout;
+
+/**
+ * Let a reply chain settle without waiting out an interval.
+ *
+ * **Two yields per round, and each one is here because the other cannot do its
+ * job.** The real `setTimeout(0)` gives the event loop a GENUINE turn, which no
+ * faked clock can: reading a stream body goes through the platform's own
+ * machinery and not every step of it is a microtask, so a settle built from
+ * fake-timer advances alone failed about one run in three on a loaded machine.
+ * The fake advance fires the hook's own zero-delay open, which the real yield
+ * never reaches because that timer is faked.
+ *
+ * **And the fake advance is ONE MILLISECOND, not zero, which is the whole bug
+ * this helper was rewritten for.** A `setTimeout(fn, 0)` armed DURING a
+ * zero-length tick is scheduled at exactly the clock's current instant, and
+ * `advanceTimersByTimeAsync(0)` does not reach it however many times it is
+ * called — the clock never moves, so the deadline is never passed. Measured
+ * directly: at a failure with one timer pending, eighty advances of 0 left it
+ * pending and a single advance of 1 fired it at once. The screen under test
+ * simply never opened its stream, and the cell failed as a screen that had not
+ * moved.
+ *
+ * A millisecond a round is not waiting anything out: the shortest real delay in
+ * this client is the ladder's two seconds, so a cell asserting that nothing was
+ * scheduled still means it.
+ */
+export const flush = async (rounds = 12): Promise<void> => {
+  for (let i = 0; i < rounds; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await new Promise((r) => realSetTimeout(r, 0));
+    });
+  }
+};
+
+/**
+ * Turn the loop until `ok()` is true, and THROW, naming `what`, if it never is.
+ *
+ * **The instrument a round count was standing in for.** A frame written to a
+ * body that has not been opened yet reaches nobody — `fakeStream.push` has no
+ * controller to write to — and no later settle re-delivers it, so a cell that
+ * connected with a fixed number of rounds pushed into the void whenever the
+ * machine was loaded enough to need one more. It failed as a screen that had
+ * simply not moved, which is the least informative shape a failure can take.
+ * Gate on the fact instead (`stream.opens() > 0`), and a genuine hang is named
+ * rather than dumped as a DOM tree.
+ */
+export const until = async (
+  ok: () => boolean,
+  what = "the condition",
+  rounds = 80,
+): Promise<void> => {
+  for (let i = 0; i < rounds; i += 1) {
+    if (ok()) return;
+    await flush(1);
+  }
+  if (!ok()) throw new Error(`${what} never became true after ${rounds} turns`);
+};
 
 /** The bytes of one `text/event-stream` frame, in this server's own shape:
  *  an `event:` line, a one-line `data:` line, and the blank line that ends it. */

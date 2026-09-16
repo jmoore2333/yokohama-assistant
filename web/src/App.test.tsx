@@ -7,7 +7,7 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import { fakeStream, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -1260,24 +1260,6 @@ describe("the route", () => {
     return { stub, user: userEvent.setup() };
   };
 
-  /** Let a reply chain settle without moving the clock. The signal is a stream
-   *  now, so a frame is delivered over a handful of turns and NOT after an
-   *  interval — a cell that advanced time instead would be asserting about the
-   *  ladder.
-   *
-   *  **The round count is generous on purpose.** Reading a body goes through
-   *  the platform's own stream machinery, whose turns are not all microtasks,
-   *  and a count tuned to one quiet run failed roughly one run in three on a
-   *  loaded machine. Every round is instantaneous, so there is nothing to buy
-   *  by being exact and a flaky cell to lose. */
-  const settle = async (rounds = 25) => {
-    for (let i = 0; i < rounds; i += 1) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    }
-  };
-
   it("lands on the lobby, and #/new draws the form", async () => {
     const { user } = app();
     // The first screen after the door is the LOBBY, not the form — which is the
@@ -1462,7 +1444,13 @@ describe("the route", () => {
     vi.useFakeTimers();
     try {
       app((call) => {
-        if (call.path.endsWith("/stream")) return stream.reply(call);
+        // **The TABLE's stream, by its whole path.** `App` draws the lobby
+        // first and the lobby opens the HOUSE stream (`/api/stream`), so a
+        // handler matching `/stream` answers that one too — and the wait below
+        // would then be satisfied by a reader this cell is not about, with the
+        // frame written to the house channel and the table screen waiting for
+        // ever. Measured: that is exactly how this cell failed.
+        if (call.path.endsWith("/api/games/wire/stream")) return stream.reply(call);
         if (call.path.endsWith("/table"))
           return status === "open" ? wire.tableOpen : wire.tableDealing;
         if (call.path.endsWith("/deal")) return wire.deal;
@@ -1471,12 +1459,22 @@ describe("the route", () => {
         if (call.path.endsWith("/areas")) return wire.areas;
         return undefined;
       });
-      await settle();
+      // **Connected BEFORE a frame is written**, and gated on the fact rather
+      // than on a number of turns: a frame written to a body nobody has opened
+      // reaches nobody, and nothing re-delivers it.
+      await until(() => stream.opens() > 0, "the table's own stream was opened");
       expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
 
       status = "dealing";
       stream.push("signal", wire.eventsDealing);
-      await settle();
+      // **Waited for as a FACT, not for a number of turns.** The frame wakes a
+      // read of the table, whose answer hands the screen over, which fetches
+      // again — a chain whose length in event-loop turns is not a constant, and
+      // a fixed settle under it failed as a screen that had simply not moved.
+      await until(
+        () => screen.queryByRole("heading", { name: "Choose your card" }) !== null,
+        "the deal screen was drawn",
+      );
       expect(screen.getByRole("heading", { name: "Choose your card" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -1494,7 +1492,9 @@ describe("the route", () => {
     vi.useFakeTimers();
     try {
       const { stub } = app((call) => {
-        if (call.path.endsWith("/stream")) return stream.reply(call);
+        // The TABLE's stream by its whole path, not the lobby's — see the cell
+        // above.
+        if (call.path.endsWith("/api/games/wire/stream")) return stream.reply(call);
         if (call.path.endsWith("/table"))
           return status === "open" ? wire.tableOpen : wire.table;
         if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
@@ -1508,7 +1508,7 @@ describe("the route", () => {
       // reads this cell is telling apart are indistinguishable to it.
       const gameReads = () =>
         stub.calls.filter((c) => c.method === "GET" && c.path === "/api/games/wire");
-      await settle();
+      await until(() => stream.opens() > 0, "the table's own stream was opened");
       // Anti-vacuity: the game was NOT asked for while the table was open —
       // that request is a 409 at this status, which is the whole reason `open`
       // reads the table first.
@@ -1516,7 +1516,7 @@ describe("the route", () => {
 
       status = "playing";
       stream.push("signal", wire.events);
-      await settle();
+      await until(() => screen.queryByText(/end triggers:/) !== null, "the game was drawn");
       expect(screen.getByText(/end triggers:/)).toBeInTheDocument();
       expect(gameReads()).toHaveLength(1);
     } finally {
@@ -1548,7 +1548,8 @@ describe("the route", () => {
     vi.useFakeTimers();
     try {
       app((call) => {
-        if (call.path.endsWith("/stream")) return stream.reply(call);
+        // The TABLE's stream by its whole path, not the lobby's.
+        if (call.path.endsWith("/api/games/wire/stream")) return stream.reply(call);
         if (!call.path.endsWith("/table")) return undefined;
         if (!flipped) return wire.tableOpen;
         afterFlip += 1;
@@ -1558,12 +1559,15 @@ describe("the route", () => {
           ? wire.tableDealing
           : { status: 403, body: { error: "you are not seated at this table" } };
       });
-      await settle();
+      await until(() => stream.opens() > 0, "the table's own stream was opened");
       expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
 
       flipped = true;
       stream.push("signal", wire.eventsDealing);
-      await settle();
+      await until(
+        () => screen.queryByRole("heading", { name: "Lobby" }) !== null,
+        "the lobby was drawn",
+      );
       expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
       expect(screen.getByText("you are not seated at this table")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
@@ -1832,18 +1836,13 @@ describe("the opponent's turn arrives by the signal", () => {
     return f;
   };
 
-  /** The reply chain settles without the clock moving — `the turn playback`'s
-   *  helper, and for the reason written out in full there: `waitFor` takes its
-   *  real-timer branch under vitest's fake clock and never polls. The count is
-   *  generous since M6.3 for the reason `the route`'s own helper gives: a frame
-   *  read off a body is not a fixed number of microtasks. */
-  const settle = async (rounds = 25) => {
-    for (let i = 0; i < rounds; i++) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    }
-  };
+  /** The reply chain settles without the clock moving — the harness's own
+   *  [`flush`], for the reason written out in full there and the one written
+   *  out in `the turn playback`: `waitFor` takes its real-timer branch under
+   *  vitest's fake clock and never polls. Every POSITIVE outcome this cell
+   *  waits for is gated with `until` instead; this is what the anti-vacuity
+   *  reads — "and nothing has happened yet" — are given. */
+  const settle = flush;
 
   /** Put the tab in a state and tell the document, the way `signal.test.ts`
    *  does: jsdom has no page lifecycle, so both halves are set by hand. */
@@ -1868,7 +1867,10 @@ describe("the opponent's turn arrives by the signal", () => {
     // makes the return from a hidden tab an ask with no request of its own.
     const stream = fakeStream(() => [["signal", signal()]]);
     const stub = await renderApp(wire.watching, (call) => {
-      if (call.path.endsWith("/stream")) return stream.reply(call);
+      // The GAME's stream by its whole path: `renderApp` goes in through the
+      // lobby, which opens the house stream, and a handler matching `/stream`
+      // would hand this cell's frames to that one.
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
         return { ...wire.watching, events };
       const m = /\/at\/(\d+)$/.exec(call.path);
@@ -1890,6 +1892,9 @@ describe("the opponent's turn arrives by the signal", () => {
     // that reader go (R-P8) and the return opens the next one on whichever
     // clock is installed by then, so the cell gets the signal on the fake clock
     // and the R-P8 round trip is exercised on the way.
+    // How many readers had been opened before the tab went away, so the return
+    // can be waited for as a FACT rather than as a number of turns.
+    const opened = stream.opens();
     await visibility("hidden");
     vi.useFakeTimers();
     try {
@@ -1899,9 +1904,11 @@ describe("the opponent's turn arrives by the signal", () => {
       // the reader is connected — and it is the only assertion anywhere that
       // `App` renders the hook's state at all.
       expect(screen.getByText(/refreshing/)).toBeInTheDocument();
-      // Connected, and the ON-CONNECT frame answered: the count has NOT moved,
-      // so the strip goes and nothing at all is fetched. That frame is the whole
-      // of the ask — there is no request to `/events` to make it with.
+      // Connected again, and the ON-CONNECT frame answered: the count has NOT
+      // moved, so the strip goes and nothing at all is fetched. That frame is
+      // the whole of the ask — there is no request to `/events` to make it
+      // with.
+      await until(() => stream.opens() > opened, "the reader was opened again");
       await settle();
       expect(screen.queryByText(/refreshing/)).toBeNull();
       expect(reloads()).toHaveLength(1);
@@ -1910,6 +1917,7 @@ describe("the opponent's turn arrives by the signal", () => {
 
       events = wire.watching.events + 2;
       stream.push("signal", signal());
+      await until(() => reloads().length === 2, "the game was re-read");
       await settle();
       // The count moved, so the game was re-read ONCE and the run's positions
       // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
@@ -1953,6 +1961,7 @@ describe("the opponent's turn arrives by the signal", () => {
       const atCalls = stub.matching("GET", "/at/").length;
       events = wire.watching.events;
       stream.push("signal", signal());
+      await until(() => reloads().length === 3, "the game was re-read again");
       await settle();
       expect(reloads()).toHaveLength(3);
       expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
