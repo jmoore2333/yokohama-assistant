@@ -1609,9 +1609,29 @@ fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer) -> Events 
 /// has a record, so a handler that reached `Games::handle` first would hand the
 /// open-table screen and the setup screen a 409 instead of the reading each is
 /// watching for.
+///
+/// **At OPEN the admission is the TABLE's own and not [`admitted`]'s** (spec
+/// §3.5 row 2, controller ruling R-4.3): any signed-in caller is answered,
+/// which is the same widening `GET …/{id}/table` has had since R-2.7 and is
+/// there for the same person. Someone who followed a join link is sitting on
+/// the open-table screen waiting for the seats to fill; a 403 would end their
+/// stream and bounce them to the lobby, which is the one thing the screen must
+/// not do. It is the ONLY row where the two part company — every other read at
+/// an open table is still `admitted`'s 403 — and it stops at `open`: `dealing`
+/// and `playing` fall straight through, so a stranger at a deal is refused and
+/// a locked game still asks for its password.
 fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events, ApiError> {
+    // The table is read FIRST, exactly as `admitted` reads it, so the open arm
+    // and the fall-through see one document and one `settle`.
+    let table = state.games.table_for_anyone(id, user)?;
+    if table.status == crate::table::TableStatus::Open {
+        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false });
+    }
     let (table, viewer) = admitted(state, id, user)?;
     match table.status {
+        // Unreachable behind the return above, and written rather than
+        // collapsed into the fall-through: a status this function answers by
+        // name is a status a reader can find.
         crate::table::TableStatus::Open => {
             Ok(Events { events: 0, to_move: None, status: "open", your_turn: false })
         }
@@ -2664,6 +2684,15 @@ mod tests {
                 if suffix == "/table" || suffix == "/join" {
                     continue;
                 }
+                // **The third exception, and it is at OPEN only** (§3.5 row 2,
+                // R-4.3): the signal answers any signed-in caller there, so the
+                // joiner's open-table screen learns when the seats fill. It is
+                // asserted just below rather than quietly skipped, and the
+                // `dealt` and `lockt` rows of this very loop are what keep the
+                // widening from having spread.
+                if suffix == "/events" && table == "opent" {
+                    continue;
+                }
                 let uri = format!("/api/games/{table}{suffix}");
                 let (status, got) = request_as(&state, STRANGER, method, &uri, body).await;
                 assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
@@ -2687,6 +2716,12 @@ mod tests {
                 assert!(got.get("status").is_none(), "no status leaks: {method} {uri}: {got}");
             }
         }
+
+        // The widened signal, asserted where the loop above skipped it.
+        let (status, at_open) = get_as(&state, STRANGER, "/api/games/opent/events").await;
+        assert_eq!(status, StatusCode::OK, "{at_open}");
+        assert_eq!(at_open["status"], "open", "{at_open}");
+        assert_eq!(at_open["your_turn"], false, "{at_open}");
 
         // 2. `table` is the widening: at open since R-2.7, and at playing and
         //    over since R-3.13 — a would-be watcher has to read `locked` and
@@ -3850,13 +3885,14 @@ mod tests {
     /// the row that IS new: a caller with no seat is refused every one of them,
     /// watcher or not.
     ///
-    /// **One row of §3.5 is NOT what this server does, and the difference is
-    /// recorded rather than papered over**: the spec's table answers `events`
-    /// and `stream` 200 to a caller with no seat at an OPEN table, and
-    /// `admitted` refuses them 403 with every other route. Task 4's brief
-    /// specifies `admitted` as the code above, and `events_at` reads it; the
-    /// open-table poll a client actually makes is a SEAT HOLDER's, which is
-    /// asserted 200 by the sweep beside this one. Reported as a finding.
+    /// **Row 2's signal column is the one place `events` and `admitted` part
+    /// company, and it is deliberate** (§3.5 row 2, controller ruling R-4.3):
+    /// `events` and `stream` answer ANY signed-in caller at an OPEN table,
+    /// while every other read there is `admitted`'s 403. The joiner who
+    /// arrived by `#/t/<id>` is on the open-table screen watching for the seats
+    /// to fill, and a refusal would end that stream and bounce them to the
+    /// lobby — so [`events_at`] reads the table itself at `open` and falls
+    /// through to `admitted` at the other two statuses.
     #[tokio::test]
     async fn the_whole_admission_table_is_answered_route_by_route() {
         const NOT_SEATED: &str = "you are not seated at this table";
@@ -3972,7 +4008,16 @@ mod tests {
                         // open-table screen and the setup screen poll the same
                         // endpoint the game does, and a 409 there would make
                         // each of them branch on an error.
-                        Kind::Signal if seated || watches => StatusCode::OK,
+                        //
+                        // **And at OPEN it answers ANY signed-in caller**
+                        // (§3.5 row 2, controller ruling R-4.3) — the same
+                        // widening `table` has there since R-2.7, and for the
+                        // same reason: the person who followed a join link is
+                        // exactly who needs to learn when the seats fill, and a
+                        // 403 would end their stream and bounce them to the
+                        // lobby. It stops at `open`: a stranger at `dealing` is
+                        // still refused, because nobody watches a deal.
+                        Kind::Signal if seated || watches || word == "open" => StatusCode::OK,
                         Kind::Signal => StatusCode::FORBIDDEN,
                         _ if !seated && !watches => StatusCode::FORBIDDEN,
                         // A projection needs a session, and there is none
@@ -5869,18 +5914,29 @@ mod tests {
     /// route that answers 200 with an open body would hang a helper that reads
     /// the whole reply. So the refusal is asserted here instead.
     ///
-    /// **Re-pointed by M6.3 at a LOCKED table, and it had to be**: a stranger
-    /// at an unlocked playing table is now admitted as a `Spectator` (R-3.5),
-    /// so the table this cell used to refuse at now answers 200. Both truths
-    /// are read here rather than one traded for the other — the unlocked arm
-    /// is the anti-vacuity half, and without it a server that refused every
-    /// stream would still pass.
+    /// **Re-pointed by M6.3 at the two statuses where a caller with no seat is
+    /// still refused, and it had to be**: a stranger at an unlocked playing
+    /// table is now admitted as a `Spectator` (R-3.5), and at an OPEN table the
+    /// signal answers anybody signed in (§3.5 row 2, R-4.3). So the refusals
+    /// are read at a LOCKED playing table and at a DEALING one — nobody
+    /// watches a deal — and the two widenings are read beside them rather than
+    /// traded for them. Without the positive halves a server that refused every
+    /// stream would still pass this cell.
     ///
-    /// The sender count is the second half: the refusal must land before the
-    /// subscribe, or a caller could grow the map one entry per attempt.
+    /// The sender count is the second half of the refusal claim: it must land
+    /// before the subscribe, or a caller could grow the map one entry per
+    /// attempt.
+    ///
+    /// **The open arm goes further than a status code**, because that is the
+    /// behaviour R-4.3 exists for: the joiner is held on the stream while
+    /// somebody takes the last open seat, and the bump has to reach them. A
+    /// 200 that never wrote a second frame would leave that screen exactly as
+    /// stuck as the 403 did.
     #[tokio::test]
     async fn the_stream_refuses_a_stranger_before_it_subscribes() {
-        let state = Arc::new(AppState::in_memory());
+        let state = Arc::new(AppState::in_memory_with_heartbeat(
+            std::time::Duration::from_millis(50),
+        ));
         start_as(&state, "open", 20260831, &["red@wire.test", "blue@wire.test"]).await;
         start_locked_as(
             &state,
@@ -5890,20 +5946,56 @@ mod tests {
             "sesame",
         )
         .await;
-        let before = state.games.signals().senders();
-        let (status, text, _) = stream_frames(
-            Arc::clone(&state),
-            "/api/games/shut/stream",
-            "green@wire.test",
-            std::time::Duration::from_millis(100),
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "open": true }],
+                "id": "lobbyt", "name": "lobbyt",
+            }),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-        assert!(text.contains("this table is locked — unlock it first"), "{text}");
-        assert_eq!(state.games.signals().senders(), before, "a refused stream subscribed");
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+                "id": "dealt", "name": "dealt",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["status"], "dealing", "{body}");
 
-        // The widening, at the same wall cost: an UNLOCKED playing table
-        // streams to a watcher, whose frame says it is not their turn.
+        // The two refusals, and the count that says each landed before the
+        // subscribe.
+        for (table, sentence) in
+            [("shut", "this table is locked — unlock it first"), ("dealt", NOT_SEATED)]
+        {
+            let before = state.games.signals().senders();
+            let (status, text, _) = stream_frames(
+                Arc::clone(&state),
+                &format!("/api/games/{table}/stream"),
+                "green@wire.test",
+                std::time::Duration::from_millis(100),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{table}: {text}");
+            assert!(text.contains(sentence), "{table}: {text}");
+            assert_eq!(
+                state.games.signals().senders(),
+                before,
+                "{table}: a refused stream subscribed",
+            );
+        }
+
+        // Widening one: an UNLOCKED playing table streams to a watcher, whose
+        // frame says it is not their turn.
         let (status, text, _) = stream_frames(
             Arc::clone(&state),
             "/api/games/open/stream",
@@ -5913,6 +6005,51 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{text}");
         assert!(text.contains(r#""your_turn":false"#), "a watcher is never to move: {text}");
+
+        // Widening two (R-4.3): the joiner holds the OPEN table's stream and
+        // the join that fills the last seat reaches them — the on-connect frame
+        // says `open`, and a later frame says `dealing`.
+        let s = Arc::clone(&state);
+        let reader = tokio::spawn(async move {
+            stream_frames(
+                s,
+                "/api/games/lobbyt/stream",
+                "green@wire.test",
+                std::time::Duration::from_secs(10),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let (status, joined) = post_as(
+            &state,
+            "green@wire.test",
+            "/api/games/lobbyt/join",
+            serde_json::json!({ "seat": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        assert_eq!(joined["status"], "dealing", "the filling join flips it: {joined}");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        state
+            .games
+            .delete("lobbyt", &identity::User::parse("red@wire.test").expect("an email"))
+            .expect("the creator ends the stream");
+        let (status, text, _) = reader.await.expect("the reader task");
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let data: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str(d).ok())
+            .collect();
+        assert_eq!(
+            data.first().and_then(|f| f["status"].as_str()),
+            Some("open"),
+            "the on-connect frame is the open table's own reading: {text}",
+        );
+        assert!(
+            data.iter().any(|f| f["status"] == "dealing"),
+            "the join never reached the stranger's stream: {text}",
+        );
     }
 
     /// **The house stream says nothing on connect and one frame per house
