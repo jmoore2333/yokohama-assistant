@@ -614,6 +614,29 @@ create body is §3.7's, `YOKOHAMA_WEB_IDENTITY=claimed` included.
   the seat kind, which is the typed refusal and not a crash. **Ten tags now sit
   on the NAS** — the nine of §3.7 plus `0.5.0-m6.2`.
 
+**Point release `0.5.0-m6.2.1`, 02:47Z the same morning.** The clean live review
+(the close's §4.2) returned SHIP WITH FIXES on one Important — the seated
+open-table screen scrolled sideways 32 px at 390 px because the link row's Copy
+button stuck out — and the fix (`8dc6316`: the link input shrinks and the row
+wraps, the dealing screen's leave control reads "Lobby", a refused link's
+sentence sits above the lobby's lists) is CLIENT-ONLY, so the musl binary is
+the same 6,496,616-byte file and only `web/dist` changed (bundle
+`index-_UNINWWV.js`). Context tarball **14,026,761 B** (sha256 prefix
+`42a0d1b221dbcc02`), cut 02:43:53Z, served from 192.168.1.16:8899 → image
+`yokohama-web:0.5.0-m6.2.1`, Id
+`sha256:7544c69bfec36a12d72f33a8cb5fa6238a956782cd11fcd1b8f531901c032bb8`,
+**26,407,161 B**, created **02:47:10Z**. Swap as above: the `0.5.0-m6.2`
+container (`faffca0411d4…`) stopped and deleted → new container
+`584b2f96fc22a917b0c34f42f9ad32d3e7b486bcdc497bfe66343606c6c6def0` created
+**02:47:39Z**, started **02:47:43Z**, same address 172.21.0.4, no cloudflared
+restart. Verified through the tunnel at **02:47:54Z**: `/api/health` the same
+payload, bare `/api/games` **401**, `?scope=open` with the owner's header
+`{"games":[],"next":null}`, `/` serving `index-_UNINWWV.js`. The 390 px property
+itself is a browser matter and is witnessed by the new assertion in
+`web/e2e/joins_by_link.spec.ts` (0 px page overflow on the seated open-table
+screen), not by a shell read. **Eleven tags now sit on the NAS.** Rollback to
+`0.5.0-m6.2` is the same recipe with the earlier tag.
+
 ## 4. Modal — the upgrade path, not yet deployed
 
 `deploy/modal_app.py` runs the same image with a Volume for the store,
