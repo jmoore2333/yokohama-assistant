@@ -3763,6 +3763,19 @@ mod tests {
     /// satisfied by an implementation that answers it first and the rest
     /// wrongly.
     ///
+    /// **A single-defect probe pins nothing about ORDER**, so every adjacent
+    /// link carries a TWO-defect one — a request that would trip both rungs,
+    /// asserted against the one that must speak first:
+    ///
+    /// - (status, password): an open table AND the wrong password answers
+    ///   `Open`. There is nothing to watch yet, whatever was typed.
+    /// - (can_watch, password): a SEAT HOLDER sending the empty string is a
+    ///   200 no-op — asserted in the write-free cell below, which is where the
+    ///   `CountingStore` that gives it its second half lives.
+    /// - (password, cap): a full watcher list AND the wrong password answers
+    ///   `Forbidden`. A caller who cannot open the door is never told how
+    ///   crowded the room is.
+    ///
     /// The two status arms are typed (`Open`, `Dealing`) rather than sentences,
     /// so the client branches on the status exactly as it does everywhere else.
     #[test]
@@ -3783,7 +3796,11 @@ mod tests {
         let mut req = two_people_locked("stillopen", "sesame");
         req.seats[1] = SeatSpec { user: None, bot: false, open: true };
         open.create(&req, &red).expect("an open table");
-        assert!(matches!(open.unlock("stillopen", &grey, "sesame"), Err(GameError::Open)));
+        // TWO defects — still open AND the wrong password — and the STATUS is
+        // what answers. A ladder that checked the password first would say
+        // `Forbidden` here and every single-defect probe in this cell would
+        // still pass.
+        assert!(matches!(open.unlock("stillopen", &grey, "wrong"), Err(GameError::Open)));
         dealing.create(&two_people_locked("stilldealing", "sesame"), &red).expect("a table");
         assert!(matches!(dealing.unlock("stilldealing", &grey, "sesame"), Err(GameError::Dealing)));
 
@@ -3815,28 +3832,42 @@ mod tests {
     /// A seat holder never needs the password, and an unlocked table never
     /// needs one either — and NEITHER writes.
     ///
-    /// The write count and not the version: `Version` is a hash of the bytes,
-    /// so an idempotent re-write of the same document reports the same version
-    /// and a version compare cannot see it. [`CountingStore`] can.
+    /// **The write COUNT, on both arms, and not the document's contents or its
+    /// version.** `Version` is a hash of the bytes, so an idempotent re-write
+    /// of the same document reports the same version and a version compare
+    /// cannot see it; and reading `unlocked` back empty says the same nothing,
+    /// since an unconditional `write_table` of the unchanged document satisfies
+    /// it exactly. Only [`CountingStore`] can tell a no-op from a write that
+    /// happened to change nothing, so BOTH arms are built over one — an earlier
+    /// draft instrumented the seat holder's and left the no-lock arm reading
+    /// its own document back.
+    ///
+    /// **The seat holder's arm is also this cycle's (can_watch, password)
+    /// two-defect probe** (see the ladder cell above): a caller who may already
+    /// watch AND presents nothing is answered by `can_watch`, not by the
+    /// password check, which would refuse an empty string.
     #[test]
     fn an_unlock_with_nothing_to_unlock_is_a_two_hundred_that_writes_nothing() {
-        let free = games();
-        let store = Arc::new(CountingStore::default());
-        let locked = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
-        playing(&locked, &two_people_locked("locked", "sesame"), &["red@t.test", "blue@t.test"]);
         let red = who("red@t.test");
         let grey = who("grey@t.test");
 
+        let store = Arc::new(CountingStore::default());
+        let locked = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        playing(&locked, &two_people_locked("locked", "sesame"), &["red@t.test", "blue@t.test"]);
         let before = store.writes();
         let mine = locked.unlock("locked", &red, "").expect("my own table");
         assert!(mine.can_watch, "a seat holder watches without presenting anything");
         assert_eq!(store.writes(), before, "and nothing was written");
 
-        // The same claim at a table with NO lock — the other no-op arm.
+        // The same claim, and the same instrument, at a table with NO lock.
+        let counted = Arc::new(CountingStore::default());
+        let free = Games::new(Arc::new(Rules::standard()), Arc::clone(&counted) as Arc<dyn Store>);
         playing(&free, &two_people("free", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let before = counted.writes();
         let view = free.unlock("free", &grey, "").expect("no lock, nothing to unlock");
         assert!(view.can_watch);
         assert!(!view.locked);
+        assert_eq!(counted.writes(), before, "an unlocked table is unlocked without a write");
         assert!(free.read_table("free").unwrap().unwrap().0.unlocked.is_empty());
     }
 
@@ -3875,6 +3906,18 @@ mod tests {
         assert!(
             matches!(&refused, GameError::Conflict(m)
                 if m == "this table has as many watchers as it can remember"),
+            "{refused:?}",
+        );
+
+        // TWO defects — a full list AND the wrong password — and the PASSWORD
+        // is what answers. A caller who cannot open the door is never told how
+        // crowded the room is, and a ladder that checked the cap first would
+        // tell them; every single-defect probe in this file would still pass.
+        let refused = games
+            .unlock("locked", &who("green@t.test"), "wrong")
+            .expect_err("the wrong password, at a full table");
+        assert!(
+            matches!(&refused, GameError::Forbidden(m) if m == "wrong password for this table"),
             "{refused:?}",
         );
         // And the document is exactly as full as it was — the refusal is not a

@@ -331,11 +331,27 @@ impl TableDoc {
 
 /// The table on the wire.
 ///
-/// Other seats' EMAILS are here, to seated players only: they were invited by
-/// email, and a table whose other seats are anonymous cannot say whose turn it
-/// is. Since M6.2 a seat may also carry the display NAME its holder gave, which
-/// is what the screen prefers; the email stays because a name is chosen, not
-/// unique, and two people at one table may pick the same one.
+/// **Other seats' EMAILS are here, and since M6.3 they are readable by ANY
+/// signed-in caller at an open, a playing or a finished table.** They reach the
+/// view because the seats were invited by email and a table whose other seats
+/// are anonymous cannot say whose turn it is; since M6.2 a seat may also carry
+/// the display NAME its holder gave, which is what the screen prefers, and the
+/// email stays because a name is chosen, not unique, and two people at one
+/// table may pick the same one.
+///
+/// **`dealing` is the only status that withholds the roster**, which is a
+/// narrower fence than M6.1's and the doc used to say otherwise. R-2.7 opened
+/// `GET …/{id}/table` at `open` so a person following a join link can see what
+/// they are joining; R-3.13 opened it at `playing` and over so a would-be
+/// watcher can read `locked` and `can_watch` before asking for a password; and
+/// R-3.9's `?scope=playing` lists every game under way to anybody, each row a
+/// full `TableView`. A LOCKED table is no exception — the lock gates joining
+/// and watching, never seeing that the game exists — so a stranger reads a
+/// locked table's seats with `my_seats: []` and `can_watch: false`.
+///
+/// What is still withheld from this type at every status is the module doc's
+/// three-and-now-four: the `seed`, the `keeps`, the `lock`, and M6.3's
+/// `unlocked` list.
 #[derive(Debug, Clone, Serialize)]
 pub struct TableView {
     pub id: String,
