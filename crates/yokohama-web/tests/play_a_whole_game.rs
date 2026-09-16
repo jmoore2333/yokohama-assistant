@@ -267,6 +267,13 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
 async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     let api = Api::new();
     let (red, blue) = ("red@wire.test", "blue@wire.test");
+    // **Blue ARRIVES rather than being named** (M6.2 §8.3). The table is opened
+    // with seat 1 OPEN and a password on it, so the path this arm walks in is
+    // the lobby's: a person nobody named at create time finds the table under
+    // `scope=open`, is refused by the lock, and is seated by the join that
+    // fills the last seat — which is what flips the table to `dealing`. Nothing
+    // after the keeps moves, and it is still the whole subject of this arm:
+    // two identities, each served the seat it holds and no other.
     let (status, table) = api
         .call_as(
             red,
@@ -275,11 +282,46 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
                 "seed": 20260914u64, "name": "two", "id": "two",
-                "seats": [{ "user": red }, { "user": blue }],
+                "seats": [{ "user": red }, { "open": true }],
+                "password": "sesame",
             })),
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{table}");
+    assert_eq!(table["status"], "open", "a table with an open seat opens OPEN: {table}");
+
+    // Blue was told nothing about this table. The open scope is every table
+    // waiting for players and not only the ones you were sent a link to
+    // (R-2.7), so this is the arrival that needs no invitation.
+    let (status, listed) = api.call_as(blue, "GET", "/api/games?scope=open", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        listed["games"].as_array().expect("a page of tables").iter().any(|t| t["id"] == "two"),
+        "blue finds the open table without having been named at it: {listed}",
+    );
+
+    // The lock from the OUTSIDE: a join carrying no password is refused, and
+    // the refusal is about the table rather than about who is asking.
+    let (status, refused) = api
+        .call_as(blue, "POST", "/api/games/two/join", Some(serde_json::json!({ "seat": 1 })))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a locked table refuses a join with no password: {refused}",
+    );
+    let (status, joined) = api
+        .call_as(
+            blue,
+            "POST",
+            "/api/games/two/join",
+            Some(serde_json::json!({ "seat": 1, "name": "Blue", "password": "sesame" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["status"], "dealing", "the join that fills the last seat flips it: {joined}");
+    assert_eq!(joined["seats"][1]["name"], "Blue", "the name rides with the join: {joined}");
+
     // Each seat chooses for ITSELF, over a deal it fetched on its own. The last
     // keep is what starts the game.
     for (user, seat) in [(red, 0), (blue, 1)] {
