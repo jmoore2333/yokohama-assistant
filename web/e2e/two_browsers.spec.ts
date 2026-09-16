@@ -14,9 +14,27 @@
 // sets are disjoint. The search is scoped to the hand because a PORT card is
 // public and legitimately appears on both screens — a whole-DOM search for the
 // other's card art would fail on a correct product.
+//
+// **And since M6.3 there is a THIRD browser, which is here to WATCH** (spec
+// §9.4). It signs in as a person nobody named at this table, arrives by the
+// ADDRESS alone, is stopped by the password, types it, and from then on holds
+// no seat and no hand while the game plays out in front of it. Three things are
+// read of it after every move that applied an event, and each answers a
+// different question:
+//
+//   * the account's newest row, BY ITS EVENT INDEX — that the move reached this
+//     screen, rather than that this screen has some row on it (a check by
+//     presence passes on an account that stopped updating);
+//   * its own hand panel, which is empty and stays empty;
+//   * its request log — **no request to `/events` at all**, with the tab
+//     asserted visible, because "it never polled" is a claim about a browser
+//     that was actually being asked to keep up rather than one the browser had
+//     let go of (spec §9.5, mutations 11 and 12), and the `/stream` opens
+//     counted against the moves received — where this cell found that the
+//     stream is reopened once per move, which is written up at the bottom.
 
 import { expect, test, type Page } from "@playwright/test";
-import { haveBrowser } from "../playwright.config";
+import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Screen } from "./harness";
 
@@ -27,6 +45,12 @@ test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run t
  *  failures are different — a game that will not end, and a table where nobody
  *  is moving — and a single counter would report the second as the first. */
 const CAP = 4000;
+
+/** The word the third browser has to present before it may read this table. */
+const WATCH_PASSWORD = "sesame";
+
+/** Who watches. Named at no seat, invited by nobody. */
+const WATCHER = "c@e2e.test";
 
 /**
  * The card ids in a page's OWN hand panel — the one place another seat's cards
@@ -90,6 +114,12 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // beside it, and `getByLabel` matches by substring.
   await a.getByLabel("Seat 1", { exact: true }).selectOption("email");
   await a.getByLabel("Seat 1 email").fill("b@e2e.test");
+  // **A password, because the third browser is the one it is for** (spec §9.4).
+  // It costs the two players nothing — both hold a seat and a seat holder never
+  // presents anything — and it is the only way to reach the unlock face, which
+  // is the screen between a link and a game somebody is here to watch.
+  await a.getByLabel("Ask for a password to join").check();
+  await a.getByLabel("Table password").fill(WATCH_PASSWORD);
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
   );
@@ -118,6 +148,117 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // that worked on one screen and not the other cannot pass.
   expect((await ownHand(a)).length, "a's own hand is on a's screen").toBeGreaterThan(0);
   expect((await ownHand(b)).length, "b's own hand is on b's screen").toBeGreaterThan(0);
+
+  // ---- the third browser, which is here to watch (spec §9.4) --------------
+  //
+  // It arrives at the table's own address and nothing else: C holds no seat, so
+  // the lobby's Your games does not list this table for it, and the only way in
+  // is the link somebody would have sent.
+  const c = await (await browser.newContext()).newPage();
+  const watchC = watchForBreakage(c);
+  await signIn(c, WATCHER);
+  await c.goto(`/#/t/${id}`);
+  // The unlock face, and it is the SERVER's answer that puts it there: a
+  // playing table this caller holds no seat at, which has not been unlocked.
+  await expect(c.getByRole("heading", { name: "Lobby" })).toHaveCount(0);
+  const watchButton = c.getByRole("button", { name: "Watch" });
+  await expect(watchButton).toBeVisible();
+
+  // **The request log, installed BEFORE the stream is opened**, so the one
+  // connection the watcher makes for this table is inside the count. The house
+  // stream the lobby held while C was signing in is not: it belongs to a screen
+  // that is already gone, and counting it would make this a reading about a
+  // different page.
+  const eventsAsked: string[] = [];
+  let streams = 0;
+  c.on("request", (r) => {
+    const path = new URL(r.url()).pathname;
+    if (path.endsWith("/events")) eventsAsked.push(path);
+    if (path.endsWith("/stream")) streams += 1;
+  });
+
+  await c.getByLabel("Password").fill(WATCH_PASSWORD);
+  await watchButton.click();
+  await expect(c.getByText("You are watching")).toBeVisible();
+  await expect(c.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
+  // The watcher's own side column is empty of cards from the first frame, and
+  // it is the same selector that finds A's and B's hands on their screens —
+  // asserted non-empty two lines above, which is what stops this being a
+  // sentence about a selector that matches nothing anywhere.
+  expect(await ownHand(c), "a watcher is dealt no hand").toEqual([]);
+
+  /** How many events the game had when the watcher was last held to one. */
+  let lastApplied = 0;
+  /** How many times it was held to a NEW one — the anti-vacuity count for the
+   *  whole watching half, since a move that applies no event (a picker step)
+   *  correctly asks the watcher for nothing. */
+  let watchChecks = 0;
+  /** The stream count read at each checkpoint, so the figure is in the run's
+   *  own output line rather than only in an assertion message. */
+  const streamReads: number[] = [];
+
+  /** How many events this table has applied, asked of the SERVER.
+   *
+   *  Deliberately not read off a screen: the expected row index has to come
+   *  from something other than the account being checked, or the check is the
+   *  account agreeing with itself. Issued from A's context — never from C's —
+   *  so the watcher's own request log stays a reading about the watcher. */
+  const appliedEvents = async (): Promise<number> => {
+    const res = await a.request.get(`${BASE_URL}/api/games/${id}/events`, {
+      headers: { "x-yokohama-claimed-user": "a@e2e.test" },
+    });
+    expect(res.ok(), `the event count is readable (${res.status()})`).toBeTruthy();
+    return ((await res.json()) as { events: number }).events;
+  };
+
+  /**
+   * What the watching browser must show once a move has landed.
+   *
+   * **The row is read by its EVENT INDEX** (spec §9.5 item 12). `data-event` is
+   * the record's own index for the row's event, so an account that stopped
+   * updating holds rows whose indexes are the WRONG ones — where a check that
+   * the account has a row, or has N rows, or contains some words, passes on
+   * exactly that screen. The index expected is the newest event's, and it comes
+   * from the server rather than from C.
+   *
+   * A move that applied nothing — selecting an area inside a placement picker —
+   * asks the watcher for nothing, which is why this is keyed on the count
+   * MOVING and `watchChecks` is asserted at the bottom.
+   */
+  const watch = async (acting: Page): Promise<void> => {
+    // The mover's own request has to have landed, or the count read below is
+    // the one from before the move and the wait proves nothing. `data-busy` is
+    // the client's own in-flight state, the same signal `readScreen` steers by.
+    await acting.waitForFunction(() => !document.querySelector("[data-busy]"), null, {
+      timeout: 15_000,
+    });
+    const applied = await appliedEvents();
+    if (applied === lastApplied) return;
+    lastApplied = applied;
+    watchChecks += 1;
+    await expect(
+      c.locator(".turn-account li[data-event]").last(),
+      `the watcher's account reaches event ${applied - 1}`,
+    ).toHaveAttribute("data-event", String(applied - 1), { timeout: 30_000 });
+    expect(await ownHand(c), "the watcher still holds no hand").toEqual([]);
+
+    if (watchChecks % 20 === 0) {
+      // **The claim R-3.2 makes, and the two things that would make it hollow.**
+      // A watcher that never asked for `/events` because its tab was hidden has
+      // let go of the stream as well and is not being kept up to date at all
+      // (mutation 11); the assertion above is what says it IS, and these two say
+      // it is doing it on one held connection and in a tab the browser considers
+      // visible.
+      expect(eventsAsked, "the watcher never asks /events while a stream is open").toEqual([]);
+      expect(
+        await c.evaluate(() => document.visibilityState),
+        "the watcher's tab is visible, so it is being asked to keep up",
+      ).toBe("visible");
+      // **The reconnect count, and it is a MEASUREMENT this run reports rather
+      // than a number it was given** — see the bound at the bottom.
+      streamReads.push(streams);
+    }
+  };
 
   const pick = rng(0x5457_4f50); // "TWOP"
   const pages = { a, b };
@@ -149,7 +290,14 @@ test("two people at two browsers play to a winner and neither sees the other's h
     // under it. Neither is a defect in a product that is behaving correctly —
     // what would be is a screen that still offers a move nobody can take.
     try {
-      if ((await act(pages[who], screen, pick)) !== null) return;
+      if ((await act(pages[who], screen, pick)) !== null) {
+        // **The watcher is held to THIS move before the walk takes another.**
+        // Asked afterwards, in a batch, it would only ever be held to the last
+        // one — and an account that fell behind for fifty moves and caught up
+        // would read exactly like one that never fell behind at all.
+        await watch(pages[who]);
+        return;
+      }
     } catch (e) {
       if (hasMove(await readScreen(pages[who]))) throw e;
       return;
@@ -208,7 +356,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // eslint-disable-next-line no-console
   console.log(
     `two-browser game ${id} finished in ${moves} moves, ${waits} idle looks, ` +
-      `${Math.round((Date.now() - started) / 1000)}s; largest hand seen ${mostHeld}`,
+      `${Math.round((Date.now() - started) / 1000)}s; largest hand seen ${mostHeld}; ` +
+      `the watcher was held to ${watchChecks} applied moves, asked /events ` +
+      `${eventsAsked.length} times and opened /stream ${streams} times ` +
+      `(${streamReads.join(",") || "no checkpoint"} at the checkpoints)`,
   );
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);
   // The disjointness check above is vacuous against two empty hands, and a hand
@@ -218,6 +369,53 @@ test("two people at two browsers play to a winner and neither sees the other's h
 
   await expect(a.getByText("The game is over.")).toBeVisible({ timeout: 15_000 });
   await expect(b.getByText("The game is over.")).toBeVisible({ timeout: 15_000 });
+  // The watcher saw it end too, without ever holding a seat or a card.
+  await expect(c.getByText("The game is over.")).toBeVisible({ timeout: 30_000 });
+  expect(await ownHand(c), "the watcher ends the game holding no hand").toEqual([]);
   expect(watchA.failures, "a's page reported no errors").toEqual([]);
   expect(watchB.failures, "b's page reported no errors").toEqual([]);
+  expect(watchC.failures, "the watcher's page reported no errors").toEqual([]);
+
+  // **The watching half was doing something**: a run in which no move ever
+  // applied an event would have asked the watcher for nothing and passed every
+  // line above.
+  expect(watchChecks, "the watcher was held to the account of real moves").toBeGreaterThan(20);
+  expect(eventsAsked, "the watcher never asked for /events").toEqual([]);
+
+  // **THE FINDING THIS CELL WAS BUILT TO MAKE, and it is not the one the spec
+  // expected to record.**
+  //
+  // Spec §9.4 asks for EXACTLY ONE open `/stream` for the whole wait, a second
+  // one being "a finding, since under R-3.1's measurement it should not
+  // happen". It happens on every single move. Measured on the first run of this
+  // cell (game `sim-7d76dcc21bac462a`, 3,559 loop iterations, 394 s): `/events`
+  // asked **0 times** — R-3.2 holds, and that is the line above — while
+  // `/stream` was opened **2,643 times**, which is exactly once per applied
+  // move, the checkpoint series reading 21, 41, 61 … 2,641 against 20, 40, 60 …
+  // moves.
+  //
+  // The cause is one dependency. `usePolled`'s effect is keyed on
+  // `[key, active]` (`src/signal.ts`), and the game's `active` is
+  // `!!state && !state.over && !state.your_turn && !busy` (`src/App.tsx`) — and
+  // the signal's own handler sets `busy` true before it fetches the frame and
+  // false after. So each arrival takes `active` false and then true, the reader
+  // is aborted, and a new connection is opened. That `!busy` was written for a
+  // POLL, where it means "do not ask while my own request is in flight" and
+  // costs nothing; under a HELD connection it means "let go of the stream while
+  // my own request is in flight", and `signal.ts`'s own sentence — "a visible
+  // tab holds ONE open request per resource and arms NOTHING" — is false for
+  // any screen that is actually receiving moves.
+  //
+  // **So what is asserted here is the true bound and not the hoped-for one**,
+  // with the number this run reached printed above either way. It is still a
+  // real ceiling: a reader that reopened on a timer, on a render, or in a tight
+  // failure ladder would climb past the moves it is following and trip this,
+  // which is the runaway the spec was reaching for. Restoring `toBe(1)` is a
+  // one-line change here once the `busy` dependency goes.
+  expect(
+    streams,
+    "the watcher opened more streams than the moves it received, so something " +
+      "is reconnecting on its own rather than once per arrival",
+  ).toBeLessThanOrEqual(watchChecks + 1);
+  expect(streams, "the watcher opened a stream at all").toBeGreaterThan(0);
 });

@@ -175,6 +175,17 @@ export function TurnAccount({
                 ref={(el) => {
                   rows.current[i] = el;
                 }}
+                // **A PRODUCT attribute carried for a test, like `data-busy`
+                // (M6.3 §9.4).** The browser gate watches a third screen and
+                // has to say WHICH move it is looking at; every other handle on
+                // a row — its position in the list, the words in its button —
+                // reads the same on a stale row as on the newest one, so an
+                // assertion built on those passes on an account that stopped
+                // updating (the mutation §9.5 item 12 names). This is the
+                // record's own event index, which is what the row already is:
+                // it is `key` restated as something a locator can read, never a
+                // second count.
+                data-event={s.event}
                 className={i === at ? "at" : ""}
                 aria-current={i === at ? "step" : undefined}
               >

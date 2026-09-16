@@ -97,6 +97,19 @@ describe("the turn account with a run", () => {
     expect(rows[1]!.querySelector(".mover")?.className).toMatch(/seat-blue/);
   });
 
+  // **The row's own event index, and the fixture is what makes the cell say
+  // something.** `botRun` starts at event 20, so a component numbering its rows
+  // from the list's position would write 0 and 1 here and pass every other
+  // assertion in this file. The browser gate reads this attribute to tell the
+  // newest move from a stale account (M6.3 §9.4).
+  it("names each row by its event index in the record, not by its place in the list", () => {
+    const run = botRun();
+    show({ run });
+    const rows = screen.getAllByRole("listitem");
+    expect(rows.map((r) => r.getAttribute("data-event"))).toEqual(["20", "21"]);
+    expect(run.steps.map((s) => String(s.event))).toEqual(["20", "21"]);
+  });
+
   it("lights the step on the table and offers the walk's controls while it runs", async () => {
     const run = botRun();
     const onPause = vi.fn();
