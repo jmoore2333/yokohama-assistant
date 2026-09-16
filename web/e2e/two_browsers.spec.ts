@@ -26,12 +26,13 @@
 //     screen, rather than that this screen has some row on it (a check by
 //     presence passes on an account that stopped updating);
 //   * its own hand panel, which is empty and stays empty;
-//   * its request log — **no request to `/events` at all**, with the tab
-//     asserted visible, because "it never polled" is a claim about a browser
-//     that was actually being asked to keep up rather than one the browser had
-//     let go of (spec §9.5, mutations 11 and 12), and the `/stream` opens
-//     counted against the moves received — where this cell found that the
-//     stream is reopened once per move, which is written up at the bottom.
+//   * its request log — **no request to `/events` at all, on ONE open
+//     `/stream`**, with the tab asserted visible, because "it never polled" is
+//     a claim about a browser that was actually being asked to keep up rather
+//     than one the browser had let go of (spec §9.5, mutations 11 and 12). That
+//     count is what FOUND the reopen this cycle fixed: it read 2,643 opens in
+//     one game, one per applied move, and `App`'s `active` no longer reads
+//     `busy` (ruling R-9.1).
 
 import { expect, test, type Page } from "@playwright/test";
 import { BASE_URL, haveBrowser } from "../playwright.config";
@@ -254,8 +255,11 @@ test("two people at two browsers play to a winner and neither sees the other's h
         await c.evaluate(() => document.visibilityState),
         "the watcher's tab is visible, so it is being asked to keep up",
       ).toBe("visible");
-      // **The reconnect count, and it is a MEASUREMENT this run reports rather
-      // than a number it was given** — see the bound at the bottom.
+      // **ONE connection, checked here rather than only at the end**, so a
+      // reconnect is reported at the move it happened on rather than as a
+      // total. It is also the reading that found the defect ruling R-9.1
+      // fixed — see the note at the bottom.
+      expect(streams, "the watcher is watching on ONE open stream").toBe(1);
       streamReads.push(streams);
     }
   };
@@ -382,40 +386,17 @@ test("two people at two browsers play to a winner and neither sees the other's h
   expect(watchChecks, "the watcher was held to the account of real moves").toBeGreaterThan(20);
   expect(eventsAsked, "the watcher never asked for /events").toEqual([]);
 
-  // **THE FINDING THIS CELL WAS BUILT TO MAKE, and it is not the one the spec
-  // expected to record.**
+  // **ONE open stream for the whole game, which is spec §9.4's number — and
+  // this cell is why the client can now meet it.**
   //
-  // Spec §9.4 asks for EXACTLY ONE open `/stream` for the whole wait, a second
-  // one being "a finding, since under R-3.1's measurement it should not
-  // happen". It happens on every single move. Measured on the first run of this
-  // cell (game `sim-7d76dcc21bac462a`, 3,559 loop iterations, 394 s): `/events`
-  // asked **0 times** — R-3.2 holds, and that is the line above — while
-  // `/stream` was opened **2,643 times**, which is exactly once per applied
-  // move, the checkpoint series reading 21, 41, 61 … 2,641 against 20, 40, 60 …
-  // moves.
-  //
-  // The cause is one dependency. `usePolled`'s effect is keyed on
-  // `[key, active]` (`src/signal.ts`), and the game's `active` is
-  // `!!state && !state.over && !state.your_turn && !busy` (`src/App.tsx`) — and
-  // the signal's own handler sets `busy` true before it fetches the frame and
-  // false after. So each arrival takes `active` false and then true, the reader
-  // is aborted, and a new connection is opened. That `!busy` was written for a
-  // POLL, where it means "do not ask while my own request is in flight" and
-  // costs nothing; under a HELD connection it means "let go of the stream while
-  // my own request is in flight", and `signal.ts`'s own sentence — "a visible
-  // tab holds ONE open request per resource and arms NOTHING" — is false for
-  // any screen that is actually receiving moves.
-  //
-  // **So what is asserted here is the true bound and not the hoped-for one**,
-  // with the number this run reached printed above either way. It is still a
-  // real ceiling: a reader that reopened on a timer, on a render, or in a tight
-  // failure ladder would climb past the moves it is following and trip this,
-  // which is the runaway the spec was reaching for. Restoring `toBe(1)` is a
-  // one-line change here once the `busy` dependency goes.
-  expect(
-    streams,
-    "the watcher opened more streams than the moves it received, so something " +
-      "is reconnecting on its own rather than once per arrival",
-  ).toBeLessThanOrEqual(watchChecks + 1);
-  expect(streams, "the watcher opened a stream at all").toBeGreaterThan(0);
+  // Written first as `toBe(1)`, it read 2,643 against 2,643 applied moves in
+  // one game and 2,676 against 2,676 in another: the stream was reopened once
+  // per move, because `usePolled`'s effect is keyed on `active` and the game's
+  // `active` read `busy`, which the signal's own handler sets around the frame
+  // it fetches. `App.tsx` no longer reads it (ruling R-9.1), and the number
+  // this asserts is the one the spec asked for rather than the one the product
+  // happened to produce. A second open is a FINDING and not a tolerance: it
+  // means something is reconnecting on its own, and the checkpoint above names
+  // the move it started on.
+  expect(streams, "the watcher held ONE open stream for the whole game").toBe(1);
 });
