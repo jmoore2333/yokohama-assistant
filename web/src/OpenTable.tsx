@@ -10,14 +10,17 @@
 // link to send to whoever is still missing, plus — if they opened the table —
 // the way to abandon it.
 //
-// **The table is fetched here as well as polled**, which is the lobby's own
-// shape and for the lobby's own reason: `usePolled` deliberately does not ask
-// on arm, because every OTHER consumer already holds the thing it is watching.
-// This screen holds an id. Without the opening read it would say "loading…" for
-// a full poll interval on every visit.
+// **The table is fetched here as well as watched**, which is the lobby's own
+// shape and for the lobby's own reason: this screen holds an id and nothing
+// else, and the opening read is what keeps it from saying "loading…" until
+// somebody else acts. The watch is `usePolled` in its default `"wake"` mode
+// (M6.3 R-7.1): a frame off `…/{id}/stream` is an `Events` and this screen's
+// value is a `TableView`, so the frame is the wake-up and `GET …/table` is the
+// answer. The stream's ON-CONNECT frame is therefore a second read of the table
+// at connect, which is one request and buys the reconnect its compare.
 //
 // **Leaving this screen is a re-OPEN, not a jump to the dealing screen.** The
-// three ways a table stops being open — the poll, the join's own reply, and a
+// three ways a table stops being open — the signal, the join's own reply, and a
 // 409 that carries a status — all say only "not open any more", and which of
 // the two remaining screens that is depends on whether the last seat has kept.
 // So the hand-over asks `App` to open the table again by its status rather than

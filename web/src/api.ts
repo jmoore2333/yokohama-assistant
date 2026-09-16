@@ -5,6 +5,7 @@ import type {
   DealView,
   Events,
   GamesList,
+  Health,
   Labels,
   LabsPanel,
   HistoricalFrame,
@@ -146,11 +147,44 @@ export function setDisplayName(name: string): void {
   }
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (body !== undefined) headers["content-type"] = "application/json";
+/** The identity header this browser sends, as a plain object — `{}` where
+ *  there is nothing to send.
+ *
+ *  **Exported because the change stream is a `fetch` this module does not
+ *  make** (M6.3 §5.1). `readStream` in `sse.ts` opens `…/stream` itself, since
+ *  `call` reads a whole body and a stream has no end to read to; the header has
+ *  to come from HERE rather than be restated there, because a second statement
+ *  of it is a second thing to forget when the door changes. It is also why the
+ *  reader is a `fetch` and not an `EventSource`: `EventSource` cannot carry a
+ *  header at all, so the `claimed` door could not sign a stream. */
+export function identityHeaders(): Record<string, string> {
   const who = claimedUser();
-  if (who) headers["x-yokohama-claimed-user"] = who;
+  return who ? { "x-yokohama-claimed-user": who } : {};
+}
+
+/** Which change transport this DEPLOYMENT serves, read once from
+ *  `GET /api/health` at boot and then read by `usePolled` on every open.
+ *
+ *  **A deployment fact and never a preference** (spec R-3.1): the edge in front
+ *  of this server may not hold a stream open, and the held request is the same
+ *  server's answer to that. The default is the stream, so a health that does
+ *  not answer leaves the client reading the transport the server prefers —
+ *  a wrong guess here costs a failed open and one trip round the ladder, not a
+ *  screen that never updates.
+ *
+ *  Module-level rather than context: it is one value for the life of the page,
+ *  read by a hook that must not re-run when it is set. */
+let kind: "sse" | "held" = "sse";
+
+export const signalKind = (): "sse" | "held" => kind;
+
+export const setSignalKind = (k: "sse" | "held"): void => {
+  kind = k;
+};
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { ...identityHeaders() };
+  if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
     method,
     headers,
@@ -248,10 +282,23 @@ export interface UnlockRequest {
 
 const id = (s: string) => encodeURIComponent(s);
 
+/** `?a=1&b=2` for the arguments that were given, and `""` for none. Written for
+ *  `events`, which since M6.3 takes two optional numbers and would otherwise
+ *  need four spellings of its own path. */
+const query = (args: Record<string, number | undefined>): string => {
+  const parts = Object.entries(args)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${v}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+};
+
 export const api = {
   /** Who the server thinks we are, and which header it reads. Never refuses:
    *  `user: null` is the answer, not an error. */
   me: () => call<Me>("GET", "/api/me"),
+  /** The engine's compatibility keys, the identity mode, and — since M6.3 —
+   *  which change transport to read. Fetched once at boot. */
+  health: () => call<Health>("GET", "/api/health"),
   labels: () => call<Labels>("GET", "/api/labels"),
   /** 404s when the server has no cropped art. That is a supported state, not an
    *  error: callers treat the rejection as "no art" and draw without it. */
@@ -391,9 +438,9 @@ export const api = {
    *  is sent anyway, because M6.3's held request and stream answer this same
    *  shape with this same cursor, and a caller written against it keeps working
    *  when the transport underneath is replaced. */
-  events: (game: string, after?: number) =>
+  events: (game: string, after?: number, wait?: number) =>
     call<Events>(
       "GET",
-      `/api/games/${id(game)}/events${after === undefined ? "" : `?after=${after}`}`,
+      `/api/games/${id(game)}/events${query({ after, wait })}`,
     ),
 };

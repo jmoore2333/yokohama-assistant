@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isSignedOut, onUnauthorized } from "./api";
+import { api, ApiError, isSignedOut, onUnauthorized, setSignalKind } from "./api";
 import { SignIn } from "./SignIn";
 import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
@@ -451,6 +451,13 @@ export function App() {
     // state, not a failure: every card falls back to its typed values, which is
     // exactly the surface that existed before there was any art.
     api.art().then(setArt).catch(() => setArt(null));
+    // **Which change transport this deployment serves** (M6.3 §5.1), read ONCE
+    // and kept in `api.ts` rather than in state: it is read by a hook that must
+    // not re-run when it is set, and it does not change for the life of the
+    // page. A health that does not answer leaves the default (the stream) — the
+    // cost of guessing wrong is one failed open and one trip round the ladder,
+    // which is the ladder doing its job rather than a screen that never moves.
+    api.health().then((h) => setSignalKind(h.signal)).catch(() => {});
   }, []);
 
   const send = useCallback(

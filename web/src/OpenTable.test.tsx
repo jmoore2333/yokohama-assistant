@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 
@@ -45,6 +45,10 @@ function show(
   const stub = stubApi((call) => {
     const mine = handler(call);
     if (mine !== undefined) return mine;
+    // This screen watches the table's stream (M6.3). A cell about the watch
+    // scripts its own; the rest get one that opens and says nothing, which is
+    // what a reachable server with nothing to report does.
+    if (call.path.endsWith("/stream")) return openStream();
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -298,30 +302,48 @@ describe("the open table, to somebody sitting at it", () => {
   });
 });
 
-describe("the open table's poll", () => {
-  it("hands over when a tick reads a table that is no longer open", async () => {
+describe("the open table's watch", () => {
+  /** Let a reply chain settle without moving the clock: this screen is woken by
+   *  a frame and answers with a read, which is microtask turns and not an
+   *  interval. */
+  const settle = async (rounds = 20) => {
+    for (let i = 0; i < rounds; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  };
+
+  it("hands over when a frame wakes a read of a table that is no longer open", async () => {
+    // **A `"wake"` consumer** (M6.3 R-7.1): the frame off `…/{id}/stream` is an
+    // `Events` and this screen's value is a `TableView`, so what a frame buys is
+    // one `GET …/table` — and the hand-over is decided on THAT, exactly as it
+    // was decided on a tick's read before.
     vi.useFakeTimers();
     let status: "open" | "dealing" = "open";
     const onStarted = vi.fn();
-    stubApi((call) =>
-      call.path.endsWith("/table")
+    const stream = fakeStream();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      return call.path.endsWith("/table")
         ? status === "open"
           ? wire.tableOpen
           : wire.tableDealing
-        : undefined,
-    );
+        : undefined;
+    });
     render(
       <OpenTable game="wire" me="red@wire.test" onStarted={onStarted} onLeave={() => {}} />,
     );
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    await settle();
     expect(onStarted).not.toHaveBeenCalled();
+    // The opening read is this screen's own, and the frame below is what buys
+    // the second one.
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
 
     status = "dealing";
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    expect(stub.matching("GET", "/table")).toHaveLength(2);
     expect(onStarted).toHaveBeenCalled();
   });
 
@@ -329,28 +351,33 @@ describe("the open table's poll", () => {
     vi.useFakeTimers();
     const onLeave = vi.fn();
     let tables = 0;
+    const stream = fakeStream();
     stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
       if (!call.path.endsWith("/table")) return undefined;
       tables += 1;
-      // The opening read succeeds and the poll then finds it deleted, which is
-      // the reachable case: somebody abandoned it while this screen was open.
+      // The opening read succeeds and the woken read then finds it deleted,
+      // which is the reachable case: somebody abandoned it while this screen
+      // was open.
       return tables === 1
         ? wire.tableOpen
         : { status: 404, body: { error: "no such game" } };
     });
     render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
-    // Asserted straight after the advance, not through `waitFor`: under fake
-    // timers `waitFor` polls on a timer nothing is advancing, and would wait
-    // out the whole test budget on a screen that is already right.
+    await settle();
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    // Asserted straight after, not through `waitFor`: under fake timers
+    // `waitFor` polls on a timer nothing is advancing, and would wait out the
+    // whole test budget on a screen that is already right.
     expect(onLeave).toHaveBeenCalledTimes(1);
     expect(onLeave.mock.calls[0]![0]).toBe("no such game");
-    // And it STOPS. A 404 is permanent; a poll that went on asking would leave
+    // And it STOPS. A 404 is permanent; a watch that went on asking would leave
     // the lobby being navigated to over and over.
+    stream.push("signal", wire.eventsDealing);
+    await settle();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000);
+      await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(onLeave).toHaveBeenCalledTimes(1);
   });

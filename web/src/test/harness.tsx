@@ -71,6 +71,16 @@ export interface ApiCall {
   path: string;
   /** The parsed JSON body, or `undefined` for a GET. */
   body: unknown;
+  /** Every header sent, keyed in lower case.
+   *
+   *  **Here since M6.3, because one header is now load-bearing at a URL this
+   *  module does not build**: the change stream is opened by `sse.ts`'s own
+   *  `fetch`, and the cell that says it is signed has nothing else to read. */
+  headers: Record<string, string>;
+  /** The reader's abort, where the caller passed one. `fakeStream` listens to
+   *  it, which is what makes "the hidden tab stops reading" an observable fact
+   *  rather than an unobserved intention. */
+  signal?: AbortSignal;
 }
 
 /** What a handler may answer with: a body, or a status and a body. */
@@ -102,13 +112,32 @@ export function stubApi(handler: (call: ApiCall) => Reply | Promise<Reply>): Api
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((v, k) => {
+        headers[k] = v;
+      });
       const call: ApiCall = {
         method: init?.method ?? "GET",
         path: String(input),
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        headers,
+        signal: init?.signal ?? undefined,
       };
       calls.push(call);
       const reply = await handler(call);
+      // **A `Response` is passed through untouched**, which is how a handler
+      // answers with something that is not one JSON object: the change stream
+      // is a body that arrives in pieces and stays open, and `JSON.stringify`
+      // of it would be a string.
+      if (reply instanceof Response) return reply;
+      // **A stream nobody scripted stays OPEN and says nothing**, which is what
+      // a reachable server with nothing to report does. Without this rule every
+      // cell in this suite that is not about the signal would have its reader
+      // read an empty body to the end, call that a dropped connection, and put
+      // "reconnecting…" on a screen the cell is asserting about. Scoped to the
+      // stream's own `Accept`, and only where the handler DECLINED — a cell
+      // that wants to see an open refused answers it itself.
+      if (reply === undefined && headers.accept === "text/event-stream") return openStream();
       const status = isStatused(reply) ? reply.status : 200;
       const body = isStatused(reply) ? reply.body : reply;
       return new Response(body === undefined ? "" : JSON.stringify(body), {
@@ -121,6 +150,99 @@ export function stubApi(handler: (call: ApiCall) => Reply | Promise<Reply>): Api
     calls,
     matching: (method, contains) =>
       calls.filter((c) => c.method === method && c.path.includes(contains)),
+  };
+}
+
+/** The bytes of one `text/event-stream` frame, in this server's own shape:
+ *  an `event:` line, a one-line `data:` line, and the blank line that ends it. */
+const frameBytes = (event: string, data: unknown): Uint8Array =>
+  new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+const SSE_HEADERS = { "content-type": "text/event-stream" };
+
+/** A stream that opens and then says nothing, for ever. The default answer to
+ *  a `/stream` request in a cell that is not about the signal — see `stubApi`. */
+export const openStream = (): Response =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start() {
+        /* nothing to say, and nothing to close: a connected server at rest */
+      },
+    }),
+    { status: 200, headers: SSE_HEADERS },
+  );
+
+/** A change stream a cell drives by hand.
+ *
+ *  **A fresh body per OPEN, because the hook reopens.** A `Response` body can
+ *  be read once, and `usePolled` opens a new reader after every hidden tab and
+ *  every trip round the ladder — a helper that handed the same body back twice
+ *  would have the second read fail for a reason that is the helper's.
+ *
+ *  `onOpen` is the server's ON-CONNECT frame (spec §3.1), which is the whole of
+ *  the R-P8 ask: it is given the open's 1-based number so a cell can answer the
+ *  reconnect differently from the first connection.
+ *
+ *  The ABORT is honoured, and that is not decoration: without it a reader torn
+ *  down by a hidden tab goes on holding the body, and the next `push` would be
+ *  delivered twice — once to the live reader and once to a dead one — which is
+ *  a double `onValue` no browser would produce. */
+export function fakeStream(onOpen?: (open: number) => Array<[string, unknown]>) {
+  const live: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+  let opens = 0;
+  const drop = (c: ReadableStreamDefaultController<Uint8Array>) => {
+    const i = live.indexOf(c);
+    if (i >= 0) live.splice(i, 1);
+  };
+  return {
+    /** How many times the stream has been opened. */
+    opens: () => opens,
+    /** The handler's reply. Pass the call so the abort can be heard. */
+    reply(call?: ApiCall): Response {
+      opens += 1;
+      const n = opens;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          live.push(c);
+          for (const [event, data] of onOpen?.(n) ?? []) c.enqueue(frameBytes(event, data));
+          call?.signal?.addEventListener(
+            "abort",
+            () => {
+              drop(c);
+              try {
+                c.error(new DOMException("The operation was aborted.", "AbortError"));
+              } catch {
+                /* already closed */
+              }
+            },
+            { once: true },
+          );
+        },
+      });
+      return new Response(body, { status: 200, headers: SSE_HEADERS });
+    },
+    /** One frame, to every reader currently holding the body. */
+    push(event: string, data: unknown) {
+      for (const c of [...live]) {
+        try {
+          c.enqueue(frameBytes(event, data));
+        } catch {
+          drop(c);
+        }
+      }
+    },
+    /** The body ENDS, with no `end` frame — a dropped connection, which is what
+     *  the ladder is for. */
+    close() {
+      for (const c of [...live]) {
+        try {
+          c.close();
+        } catch {
+          /* already closed */
+        }
+        drop(c);
+      }
+    },
   };
 }
 
@@ -173,6 +295,13 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
   if (call.path.endsWith("/api/me"))
     return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
   if (call.path.endsWith("/api/labels")) return wire.labels;
+  // **Boot reads the transport it should use** (M6.3 §5.1). The corpus's own
+  // health says `sse`, which is the default and therefore the arm every cell in
+  // this suite runs.
+  if (call.path.endsWith("/api/health")) return wire.health;
+  // Every screen with a signal opens one. A cell about the signal scripts its
+  // own; this is the resting answer for the rest.
+  if (call.path.endsWith("/stream")) return openStream();
   if (call.path.endsWith("/api/art")) return wire.artManifest;
   // **`GET …/table` is now on the way into every game (M6.1 §7.4)**: `App`'s
   // `open` asks what a table IS before it fetches the game, because a table

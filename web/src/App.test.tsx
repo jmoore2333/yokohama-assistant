@@ -7,8 +7,7 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import { gameMenu, gamesNamed, gate, isGamesList, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
-import { VISIBLE_MS } from "./signal";
+import { fakeStream, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
@@ -1249,12 +1248,34 @@ describe("the route", () => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      // A screen with a signal opens one; a cell about the signal scripts its
+      // own above, and this is the resting answer for the rest.
+      if (call.path.endsWith("/stream")) return openStream();
       if (isGamesList(call, "open")) return gamesNamed();
       if (isGamesList(call, "mine")) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     render(<App />);
     return { stub, user: userEvent.setup() };
+  };
+
+  /** Let a reply chain settle without moving the clock. The signal is a stream
+   *  now, so a frame is delivered over a handful of turns and NOT after an
+   *  interval — a cell that advanced time instead would be asserting about the
+   *  ladder.
+   *
+   *  **The round count is generous on purpose.** Reading a body goes through
+   *  the platform's own stream machinery, whose turns are not all microtasks,
+   *  and a count tuned to one quiet run failed roughly one run in three on a
+   *  loaded machine. Every round is instantaneous, so there is nothing to buy
+   *  by being exact and a flaky cell to lose. */
+  const settle = async (rounds = 25) => {
+    for (let i = 0; i < rounds; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
   };
 
   it("lands on the lobby, and #/new draws the form", async () => {
@@ -1428,30 +1449,34 @@ describe("the route", () => {
   it("lands on the DEAL when the table flips to dealing under the screen", async () => {
     window.location.hash = "#/t/wire";
     let status: "open" | "dealing" = "open";
-    app((call) => {
-      if (call.path.endsWith("/table"))
-        return status === "open" ? wire.tableOpen : wire.tableDealing;
-      if (call.path.endsWith("/deal")) return wire.deal;
-      if (call.path.endsWith("/events")) return wire.eventsDealing;
-      if (call.path.endsWith("/ports")) return wire.ports;
-      if (call.path.endsWith("/labs")) return wire.labs;
-      if (call.path.endsWith("/areas")) return wire.areas;
-      return undefined;
-    });
+    // **The table's own stream, driven by hand** (M6.3). The open table is a
+    // `"wake"` consumer: a frame is not its value, so what a frame buys is one
+    // `GET …/table` — which is exactly what used to be bought by waiting out an
+    // interval, and the flip below is the same flip.
+    const stream = fakeStream();
     // `try`/`finally` is this file's own idiom for a faked clock, and it is not
     // tidiness: an assertion that throws with fake timers installed hangs every
-    // cell after it in the file.
+    // cell after it in the file. **Installed BEFORE the render** since the
+    // signal opens from a zero-delay timer of its own, which a clock swapped
+    // afterwards would leave on the real one.
     vi.useFakeTimers();
     try {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
+      app((call) => {
+        if (call.path.endsWith("/stream")) return stream.reply(call);
+        if (call.path.endsWith("/table"))
+          return status === "open" ? wire.tableOpen : wire.tableDealing;
+        if (call.path.endsWith("/deal")) return wire.deal;
+        if (call.path.endsWith("/ports")) return wire.ports;
+        if (call.path.endsWith("/labs")) return wire.labs;
+        if (call.path.endsWith("/areas")) return wire.areas;
+        return undefined;
       });
+      await settle();
       expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
 
       status = "dealing";
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3100);
-      });
+      stream.push("signal", wire.eventsDealing);
+      await settle();
       expect(screen.getByRole("heading", { name: "Choose your card" })).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -1465,35 +1490,33 @@ describe("the route", () => {
   it("fetches the game when the table flips all the way to playing", async () => {
     window.location.hash = "#/t/wire";
     let status: "open" | "playing" = "open";
-    const { stub } = app((call) => {
-      if (call.path.endsWith("/table"))
-        return status === "open" ? wire.tableOpen : wire.table;
-      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
-      if (call.path.endsWith("/events")) return wire.events;
-      if (call.path.endsWith("/ports")) return wire.ports;
-      if (call.path.endsWith("/labs")) return wire.labs;
-      if (call.path.endsWith("/areas")) return wire.areas;
-      return undefined;
-    });
-    // **The GAME, by its whole path.** `matching` is a substring test and
-    // `/api/games/wire` is a prefix of `/api/games/wire/table`, so the two
-    // reads this cell is telling apart are indistinguishable to it.
-    const gameReads = () =>
-      stub.calls.filter((c) => c.method === "GET" && c.path === "/api/games/wire");
+    const stream = fakeStream();
     vi.useFakeTimers();
     try {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
+      const { stub } = app((call) => {
+        if (call.path.endsWith("/stream")) return stream.reply(call);
+        if (call.path.endsWith("/table"))
+          return status === "open" ? wire.tableOpen : wire.table;
+        if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
+        if (call.path.endsWith("/ports")) return wire.ports;
+        if (call.path.endsWith("/labs")) return wire.labs;
+        if (call.path.endsWith("/areas")) return wire.areas;
+        return undefined;
       });
+      // **The GAME, by its whole path.** `matching` is a substring test and
+      // `/api/games/wire` is a prefix of `/api/games/wire/table`, so the two
+      // reads this cell is telling apart are indistinguishable to it.
+      const gameReads = () =>
+        stub.calls.filter((c) => c.method === "GET" && c.path === "/api/games/wire");
+      await settle();
       // Anti-vacuity: the game was NOT asked for while the table was open —
       // that request is a 409 at this status, which is the whole reason `open`
       // reads the table first.
       expect(gameReads()).toHaveLength(0);
 
       status = "playing";
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3100);
-      });
+      stream.push("signal", wire.events);
+      await settle();
       expect(screen.getByText(/end triggers:/)).toBeInTheDocument();
       expect(gameReads()).toHaveLength(1);
     } finally {
@@ -1518,30 +1541,29 @@ describe("the route", () => {
     // them would hand over before the seat picker was ever drawn.
     let flipped = false;
     let afterFlip = 0;
-    app((call) => {
-      if (!call.path.endsWith("/table")) return undefined;
-      if (!flipped) return wire.tableOpen;
-      afterFlip += 1;
-      // The tick that reads a table no longer open is what hands over; the
-      // read the hand-over itself makes is the one that refuses.
-      return afterFlip === 1
-        ? wire.tableDealing
-        : { status: 403, body: { error: "you are not seated at this table" } };
-    });
+    const stream = fakeStream();
     const rejected: unknown[] = [];
     const note = (e: unknown) => rejected.push(e);
     process.on("unhandledRejection", note);
     vi.useFakeTimers();
     try {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
+      app((call) => {
+        if (call.path.endsWith("/stream")) return stream.reply(call);
+        if (!call.path.endsWith("/table")) return undefined;
+        if (!flipped) return wire.tableOpen;
+        afterFlip += 1;
+        // The re-read that finds a table no longer open is what hands over; the
+        // read the hand-over itself makes is the one that refuses.
+        return afterFlip === 1
+          ? wire.tableDealing
+          : { status: 403, body: { error: "you are not seated at this table" } };
       });
+      await settle();
       expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
 
       flipped = true;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3100);
-      });
+      stream.push("signal", wire.eventsDealing);
+      await settle();
       expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
       expect(screen.getByText("you are not seated at this table")).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
@@ -1812,8 +1834,10 @@ describe("the opponent's turn arrives by the signal", () => {
 
   /** The reply chain settles without the clock moving — `the turn playback`'s
    *  helper, and for the reason written out in full there: `waitFor` takes its
-   *  real-timer branch under vitest's fake clock and never polls. */
-  const settle = async (rounds = 10) => {
+   *  real-timer branch under vitest's fake clock and never polls. The count is
+   *  generous since M6.3 for the reason `the route`'s own helper gives: a frame
+   *  read off a body is not a fixed number of microtasks. */
+  const settle = async (rounds = 25) => {
     for (let i = 0; i < rounds; i++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -1831,9 +1855,20 @@ describe("the opponent's turn arrives by the signal", () => {
 
   it("walks the new events when the count grows, and reloads without a walk when it shrinks", async () => {
     let events = wire.watching.events;
+    /** The signal this game is watching, as the server writes it: an `Events`
+     *  on the `signal` frame, which the game declares `frames: "value"` for and
+     *  therefore reads WITHOUT a second request (R-7.1, R-3.2). */
+    const signal = () => ({
+      events,
+      to_move: wire.watching.to_move,
+      status: "playing",
+      your_turn: false,
+    });
+    // The server writes the current count ON CONNECT (spec §3.1), which is what
+    // makes the return from a hidden tab an ask with no request of its own.
+    const stream = fakeStream(() => [["signal", signal()]]);
     const stub = await renderApp(wire.watching, (call) => {
-      if (call.path.endsWith("/events"))
-        return { events, to_move: wire.watching.to_move, status: "playing", your_turn: false };
+      if (call.path.endsWith("/stream")) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
         return { ...wire.watching, events };
       const m = /\/at\/(\d+)$/.exec(call.path);
@@ -1849,38 +1884,32 @@ describe("the opponent's turn arrives by the signal", () => {
     expect(reloads()).toHaveLength(1);
 
     // **The tab is hidden and then shown again, and that is not decoration.**
-    // The poll's first timer was armed while `renderApp` drove `userEvent`
-    // under REAL timers — `renderApp` has to, because user-event awaits a
-    // `setTimeout(0)` between interactions and a faked one never fires — so
-    // advancing a fake clock would never reach a timer scheduled before it was
-    // installed. Hiding the tab under the real clock genuinely cancels that
-    // timer (R-P8) and the return arms the next one on whichever clock is
-    // installed by then. The cell gets the poll on the fake clock, and the
-    // R-P8 round trip is exercised on the way.
+    // The reader was opened while `renderApp` drove `userEvent` under REAL
+    // timers — `renderApp` has to, because user-event awaits a `setTimeout(0)`
+    // between interactions and a faked one never fires. Hiding the tab lets
+    // that reader go (R-P8) and the return opens the next one on whichever
+    // clock is installed by then, so the cell gets the signal on the fake clock
+    // and the R-P8 round trip is exercised on the way.
     await visibility("hidden");
     vi.useFakeTimers();
     try {
       await visibility("visible");
       // **The strip, on the banner, before the answer.** The board on screen is
-      // as old as the tab was hidden, so this is the one true thing to say for
-      // the length of one round trip — and it is the only assertion anywhere
-      // that `App` renders the hook's state at all.
+      // as old as the tab was hidden, so this is the one true thing to say until
+      // the reader is connected — and it is the only assertion anywhere that
+      // `App` renders the hook's state at all.
       expect(screen.getByText(/refreshing/)).toBeInTheDocument();
-      // That one ask, answered: the count has NOT moved, so the strip goes and
-      // nothing at all is fetched. It is the answer this poll gives nearly
-      // every time it runs, and the cheapest thing it can do with it.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10);
-      });
+      // Connected, and the ON-CONNECT frame answered: the count has NOT moved,
+      // so the strip goes and nothing at all is fetched. That frame is the whole
+      // of the ask — there is no request to `/events` to make it with.
       await settle();
       expect(screen.queryByText(/refreshing/)).toBeNull();
       expect(reloads()).toHaveLength(1);
       expect(stub.matching("GET", "/at/")).toHaveLength(0);
+      expect(stub.matching("GET", "/events")).toHaveLength(0);
 
       events = wire.watching.events + 2;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
-      });
+      stream.push("signal", signal());
       await settle();
       // The count moved, so the game was re-read ONCE and the run's positions
       // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
@@ -1916,18 +1945,14 @@ describe("the opponent's turn arrives by the signal", () => {
       // backwards — `/at/-1` is not a position and the account it would build
       // describes nothing.
       //
-      // **One ask per advance, deliberately.** React's `act` flushes its work
-      // queue when the async scope ends, so a single advance long enough for
-      // three ticks runs all three against a tree that has not re-rendered —
-      // and the callback, read through its ref, is still closed over the count
-      // from before the first of them. Measured: one 9 s advance issued three
-      // re-reads where a browser issues one. That is the harness, not the
-      // client; a real commit lands between two timer callbacks.
+      // **One FRAME per step, which is what a server writes.** Until M6.3 this
+      // was one advance of a fake clock long enough for several ticks, and the
+      // note here recorded that three of them ran against a tree that had not
+      // re-rendered. A frame is pushed by hand instead, so the harness no
+      // longer has a cadence of its own to be wrong about.
       const atCalls = stub.matching("GET", "/at/").length;
       events = wire.watching.events;
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
-      });
+      stream.push("signal", signal());
       await settle();
       expect(reloads()).toHaveLength(3);
       expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);

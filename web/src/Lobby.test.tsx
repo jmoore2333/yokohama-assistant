@@ -11,7 +11,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Lobby } from "./Lobby";
-import { isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 
@@ -33,6 +33,11 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     if (mine !== undefined) return mine;
     const l = lists(call);
     if (l !== undefined) return l;
+    // The lobby listens to the HOUSE stream (M6.3 R-3.4). A cell about that
+    // scripts its own; this is the resting answer for the rest, and without it
+    // every cell in this file would have the lobby's open refused and its link
+    // reading "reconnecting…" while the cell asserted about something else.
+    if (call.path.endsWith("/api/stream")) return openStream();
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
