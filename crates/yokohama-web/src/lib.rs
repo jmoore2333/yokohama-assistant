@@ -4943,14 +4943,17 @@ mod tests {
     /// timer, a stream that ends itself, and frames that a `watch` channel is
     /// free to coalesce. Counting to N would stop the read at the first N
     /// interesting bytes and could never see the comment lines between them.
-    /// The loop also exits early when the body ENDS, which is how the `end`
-    /// frame's "and closes" half is observed at all.
+    /// **The third element is why the read stopped**, and it is the whole of
+    /// the `end` frame's "and closes" half: `true` means the BODY ended, and
+    /// `false` means the deadline cut a stream that was still open. Inferring
+    /// it from the text would not do — a body cut mid-stream ends on a frame
+    /// terminator exactly as a closed one does.
     async fn stream_frames(
         state: Arc<AppState>,
         uri: &str,
         who: &str,
         read_for: std::time::Duration,
-    ) -> (StatusCode, String) {
+    ) -> (StatusCode, String, bool) {
         let res = app(state)
             .oneshot(
                 Request::builder()
@@ -4978,11 +4981,21 @@ mod tests {
         let mut body = res.into_body().into_data_stream();
         let mut text = String::new();
         let deadline = tokio::time::Instant::now() + read_for;
+        let mut ended = false;
         use tokio_stream::StreamExt;
-        while let Ok(Some(Ok(chunk))) = tokio::time::timeout_at(deadline, body.next()).await {
-            text.push_str(&String::from_utf8_lossy(&chunk));
+        loop {
+            match tokio::time::timeout_at(deadline, body.next()).await {
+                Ok(Some(Ok(chunk))) => text.push_str(&String::from_utf8_lossy(&chunk)),
+                // The body is over — the sender was dropped behind it.
+                Ok(None) => {
+                    ended = true;
+                    break;
+                }
+                // A transport error, or the deadline. Neither is an end.
+                Ok(Some(Err(_))) | Err(_) => break,
+            }
         }
-        (status, text)
+        (status, text, ended)
     }
 
     /// The `event: …` frames of an SSE body, in order. Comment lines are not
@@ -5065,7 +5078,7 @@ mod tests {
             .delete("wire", &identity::User::parse("red@wire.test").expect("an email"))
             .expect("the creator deletes it");
 
-        let (status, text) = reader.await.expect("the reader task");
+        let (status, text, ended) = reader.await.expect("the reader task");
         assert_eq!(status, StatusCode::OK);
         let frames = sse_frames(&text);
         assert!(frames.len() >= 3, "connect, the move, the end: {text}");
@@ -5086,10 +5099,7 @@ mod tests {
         let last = frames.last().expect("a last frame");
         assert!(last.starts_with("event: end"), "{text}");
         assert!(last.contains("deleted"), "{text}");
-        assert!(
-            !text.ends_with(|c: char| c.is_ascii_digit()) && text.ends_with("\n\n"),
-            "the body ended rather than being cut off by the deadline: {text:?}",
-        );
+        assert!(ended, "the end frame arrived but the body stayed open: {text:?}");
 
         assert!(text.contains("\n:"), "at least one heartbeat comment in 600 ms at 50 ms: {text}");
         assert!(!text.contains("\nid:") && !text.contains("\nretry:"), "R-3.14: {text}");
@@ -5107,7 +5117,7 @@ mod tests {
     async fn the_stream_refuses_an_id_that_is_not_there_without_making_a_sender() {
         let state = Arc::new(AppState::in_memory());
         assert_eq!(state.games.signals().senders(), 0);
-        let (status, text) = stream_frames(
+        let (status, text, _) = stream_frames(
             Arc::clone(&state),
             "/api/games/nope/stream",
             "red@wire.test",
@@ -5138,7 +5148,7 @@ mod tests {
         let state = Arc::new(AppState::in_memory());
         start_as(&state, "mine", 20260831, &["red@wire.test", "blue@wire.test"]).await;
         let before = state.games.signals().senders();
-        let (status, text) = stream_frames(
+        let (status, text, _) = stream_frames(
             Arc::clone(&state),
             "/api/games/mine/stream",
             "green@wire.test",
@@ -5184,8 +5194,9 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{table}");
 
-        let (status, text) = reader.await.expect("the reader task");
+        let (status, text, ended) = reader.await.expect("the reader task");
         assert_eq!(status, StatusCode::OK);
+        assert!(!ended, "the house stream has no end and must stay open: {text:?}");
         let frames = sse_frames(&text);
         assert_eq!(frames.len(), 1, "exactly the create's bump, none on connect: {text}");
         assert!(frames[0].starts_with("event: house"), "{text}");
