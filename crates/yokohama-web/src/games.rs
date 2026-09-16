@@ -1272,6 +1272,136 @@ mod tests {
         assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
         assert!(!house.has_changed().expect("the house channel is open"));
     }
+
+    /// **`persist`'s bump follows the MIRROR write, not merely the record
+    /// write** (spec §2: "`persist`, after the record write and `mirror_turn`
+    /// → `bump`").
+    ///
+    /// This is the one site the spec spells out in two sequenced steps, and
+    /// the reason is the lobby: its whose-turn and over lines are read off the
+    /// table document's [`TurnMirror`], so a bump sent between the record
+    /// write and the refresh wakes a lobby that reads the PREVIOUS turn — and
+    /// then hears nothing more, because the refresh that follows is announced
+    /// to nobody. A stale row until the next move at that table.
+    ///
+    /// **The park sits strictly between the two writes**, which is what makes
+    /// the cell discriminating rather than a second copy of
+    /// `a_write_the_store_refuses_bumps_nothing`: that one closes the gap
+    /// BEFORE the record write, and a bump hoisted one line above
+    /// `mirror_turn` passes it and every other cell in this crate. The
+    /// anti-vacuity assertion is the record event count read AT the gate — it
+    /// proves the record write is already past, so the quiet receiver is quiet
+    /// at the one instant the defect would be loud.
+    ///
+    /// **The stored mirror is cleared on purpose before the move.**
+    /// `mirror_turn` returns early when the document already holds the turn it
+    /// would write, and after a move that pumps the bot back to the same seat
+    /// it does — so without this the table write never happens and the gate
+    /// never fires. `None` is the shape a table carries before its first
+    /// flip, so it is a document this server can read back.
+    #[test]
+    fn persists_bump_follows_the_mirror_write() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{channel, Receiver, Sender};
+        use std::time::Duration;
+
+        /// Parks the FIRST `Doc::Table` write after it is armed — inside
+        /// `persist`, that is `mirror_turn`'s and there is no other.
+        ///
+        /// Armed by hand rather than keyed on the document, because the flip's
+        /// write and this one both carry `status: playing` and nothing in the
+        /// bytes tells them apart. Arming after the setup is what does.
+        struct MirrorGate {
+            inner: MemStore,
+            armed: AtomicBool,
+            at: Mutex<Sender<()>>,
+            go: Mutex<Receiver<()>>,
+        }
+        impl Store for MirrorGate {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                if doc == Doc::Table && self.armed.swap(false, Ordering::SeqCst) {
+                    let _ = self.at.lock().expect("the gate").send(());
+                    let _ = self.go.lock().expect("the gate").recv();
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let (at_tx, at_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let store = Arc::new(MirrorGate {
+            inner: MemStore::default(),
+            armed: AtomicBool::new(false),
+            at: Mutex::new(at_tx),
+            go: Mutex::new(go_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let id = "mirror".to_string();
+        let handle = playing(&games, &req("mirror"), &["red@t.test"]);
+
+        let events = || {
+            let (json, _) = store
+                .read(Doc::Record, &id)
+                .expect("a readable store")
+                .expect("a stored record");
+            serde_json::from_str::<GameRecord>(&json).expect("a record").events.len()
+        };
+        let before = events();
+
+        let (mut doc, version) =
+            games.read_table(&id).expect("a readable store").expect("the table");
+        doc.turn = None;
+        games.write_table(&doc, Some(version)).expect("the mirror is cleared");
+
+        let mut rx = games.signals().subscribe(&id);
+        let mut house = games.signals().subscribe_house();
+        rx.borrow_and_update();
+        house.borrow_and_update();
+        store.armed.store(true, Ordering::SeqCst);
+
+        let mover = {
+            let (games, handle, id) = (Arc::clone(&games), Arc::clone(&handle), id.clone());
+            std::thread::spawn(move || {
+                let mut repl = handle.lock().expect("the handle");
+                repl.step("1");
+                games.persist(&id, &repl)
+            })
+        };
+        at_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("persist reaches mirror_turn's table write");
+
+        assert!(events() > before, "the premise: the record write is already past the gate");
+        assert!(
+            !rx.has_changed().expect("the table channel is open"),
+            "the bump was sent before the mirror the woken lobby reads had been refreshed",
+        );
+        assert!(!house.has_changed().expect("the house channel is open"));
+
+        go_tx.send(()).expect("the parked write is still listening");
+        mover.join().expect("the move thread").expect("the persist");
+
+        assert!(rx.has_changed().expect("the table channel is open"), "the bump, once both land");
+        assert!(house.has_changed().expect("the house channel is open"));
+        let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
+        assert!(doc.turn.is_some(), "the refreshed mirror a woken lobby reads");
+    }
 }
 
 /// The helpers both halves of this crate's game tests share.
