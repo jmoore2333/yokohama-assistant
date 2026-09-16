@@ -30,9 +30,7 @@
 //     `/stream`**, with the tab asserted visible, because "it never polled" is
 //     a claim about a browser that was actually being asked to keep up rather
 //     than one the browser had let go of (spec §9.5, mutations 11 and 12). That
-//     count is what FOUND the reopen this cycle fixed: it read 2,643 opens in
-//     one game, one per applied move, and `App`'s `active` no longer reads
-//     `busy` (ruling R-9.1).
+//     count is what found the reopen ruling R-9.1 fixed.
 
 import { expect, test, type Page } from "@playwright/test";
 import { BASE_URL, haveBrowser } from "../playwright.config";
@@ -255,10 +253,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
         await c.evaluate(() => document.visibilityState),
         "the watcher's tab is visible, so it is being asked to keep up",
       ).toBe("visible");
-      // **ONE connection, checked here rather than only at the end**, so a
-      // reconnect is reported at the move it happened on rather than as a
-      // total. It is also the reading that found the defect ruling R-9.1
-      // fixed — see the note at the bottom.
+      // ONE connection, checked at the move rather than only as a total.
       expect(streams, "the watcher is watching on ONE open stream").toBe(1);
       streamReads.push(streams);
     }
@@ -386,17 +381,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   expect(watchChecks, "the watcher was held to the account of real moves").toBeGreaterThan(20);
   expect(eventsAsked, "the watcher never asked for /events").toEqual([]);
 
-  // **ONE open stream for the whole game, which is spec §9.4's number — and
-  // this cell is why the client can now meet it.**
-  //
-  // Written first as `toBe(1)`, it read 2,643 against 2,643 applied moves in
-  // one game and 2,676 against 2,676 in another: the stream was reopened once
-  // per move, because `usePolled`'s effect is keyed on `active` and the game's
-  // `active` read `busy`, which the signal's own handler sets around the frame
-  // it fetches. `App.tsx` no longer reads it (ruling R-9.1), and the number
-  // this asserts is the one the spec asked for rather than the one the product
-  // happened to produce. A second open is a FINDING and not a tolerance: it
-  // means something is reconnecting on its own, and the checkpoint above names
-  // the move it started on.
+  // A second open is a FINDING and not a tolerance — something reconnected on
+  // its own — and the checkpoint above names the move it started on.
   expect(streams, "the watcher held ONE open stream for the whole game").toBe(1);
 });
