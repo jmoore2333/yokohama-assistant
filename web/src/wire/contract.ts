@@ -488,7 +488,7 @@ const GAMES_LIST = ["games", "next"] as const;
 // The open and dealing 409s are the ONLY refusals that carry a second key, and
 // the only ones this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
-const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;

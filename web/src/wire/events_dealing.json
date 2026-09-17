@@ -1,4 +1,5 @@
 {
+  "chat": 0,
   "events": 0,
   "status": "dealing",
   "to_move": null,

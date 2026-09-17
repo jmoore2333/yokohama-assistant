@@ -367,6 +367,11 @@ export interface Events {
    *  for its own start exactly as the setup screen watches for `dealing`. */
   status: "open" | "dealing" | "playing" | "over";
   your_turn: boolean;
+  /** The table's newest message number, 0 with none (M6.4, R-6.4.7) — the
+   *  fifth field, and the one that makes a message a count on the signal and a
+   *  fetch for the text. It is the document's own `last`, so a trim never walks
+   *  it backwards past a cursor the client is holding. */
+  chat: number;
 }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
