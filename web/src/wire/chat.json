@@ -1,0 +1,37 @@
+{
+  "last": 3,
+  "messages": [
+    {
+      "author": {
+        "kind": "seat",
+        "name": "Red",
+        "seat": 0,
+        "user": "red@wire.test"
+      },
+      "created_at": 1789000000,
+      "seq": 1,
+      "text": "good luck"
+    },
+    {
+      "author": {
+        "kind": "seat",
+        "name": "Blue",
+        "seat": 1,
+        "user": "blue@wire.test"
+      },
+      "created_at": 1789000000,
+      "seq": 2,
+      "text": "you too"
+    },
+    {
+      "author": {
+        "kind": "watcher",
+        "name": "Green",
+        "user": "green@wire.test"
+      },
+      "created_at": 1789000000,
+      "seq": 3,
+      "text": "watching from the rail"
+    }
+  ]
+}

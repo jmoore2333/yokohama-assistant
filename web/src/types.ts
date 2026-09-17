@@ -944,3 +944,39 @@ export interface Outcome {
   standings: Placing[];
   winner: PlayerId;
 }
+
+// ---- M6.4: the chat ------------------------------------------------------
+
+/** Who said it (M6.4, R-6.4.2, R-6.4.15). Tagged like `SeatDoc`, so an arm can be
+ *  added on both sides of the wire; `bot` is read and rendered and produced by
+ *  no route yet. */
+export type ChatAuthor =
+  | { kind: "seat"; seat: PlayerId; user: string; name: string | null }
+  | { kind: "watcher"; user: string; name: string | null }
+  | { kind: "bot"; seat: PlayerId; name: string | null };
+
+export interface ChatMessage {
+  seq: number;
+  /** Unix SECONDS; named as the table's clock is, because the corpus freezer
+   *  pins a clock by key name. */
+  created_at: number;
+  author: ChatAuthor;
+  text: string;
+}
+
+/** `GET …/chat?after=N`: the retained messages above N, and the newest number
+ *  ever assigned — the next cursor, which survives a trim. */
+export interface ChatPage {
+  messages: ChatMessage[];
+  last: number;
+}
+
+export interface ChatPost {
+  text: string;
+  /** A watcher's name, and anyone's at the house. A seated caller sends none:
+   *  a seat's name is the seat's, and the server refuses one with a 400. */
+  name?: string;
+}
+
+/** Where a chat panel is: one table, or the house. A client-side type. */
+export type ChatScope = { kind: "table"; id: string } | { kind: "house" };

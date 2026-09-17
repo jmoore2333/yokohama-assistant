@@ -118,6 +118,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     // shape — what these files are for is the two SENTENCES, asserted below.
     ["wrong_seat_403", wire.wrongSeat403, KEYS.apiError],
     ["undo_refused_403", wire.undoRefused403, KEYS.apiError],
+    // M6.4's five refusal bodies. One root key each, as every refusal on this
+    // API has — they are here for the same reason the six above were added
+    // after a review: a compile-time list without a runtime half cannot see a
+    // key the SERVER adds, and a refusal that grew one would be the one payload
+    // in the corpus nothing was comparing.
+    ["chat_400_long", wire.chat400Long, KEYS.apiError],
+    ["chat_400_seated_name", wire.chat400SeatedName, KEYS.apiError],
+    ["chat_403_not_seated", wire.chat403NotSeated, KEYS.apiError],
+    ["chat_403_locked", wire.chat403Locked, KEYS.apiError],
+    ["house_chat_off_404", wire.houseChatOff404, KEYS.apiError],
     // The signal at both statuses. Two rows rather than one because the fields
     // are the same four at each, and a corpus carrying only the playing shape
     // would let a `dealing` reply grow or lose a key unnoticed.
@@ -154,6 +164,28 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["result.breakdown", wire.result.standings[0]!.breakdown, KEYS.breakdown],
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
+  });
+
+  // **The chat, and the one root in this corpus whose key set depends on a
+  // field's VALUE** (M6.4). A seat author carries a seat and a watcher does not,
+  // so a single list checked against both would accept either shape at either
+  // arm — the author's own `kind` picks the list instead, and an author kind the
+  // client has no list for fails loudly rather than being skipped. That is what
+  // keeps `bot`, which is declared and has no fixture, from arriving unnoticed.
+  it("ChatPage, ChatMessage and each author by its kind", () => {
+    const byKind = { seat: KEYS.chatAuthorSeat, watcher: KEYS.chatAuthorWatcher } as const;
+    for (const page of [wire.chat, wire.chatAfter, wire.houseChat]) {
+      expect(keys(page)).toEqual(listed(KEYS.chatPage));
+      for (const m of page.messages) {
+        expect(keys(m)).toEqual(listed(KEYS.chatMessage));
+        const kind = m.author.kind as keyof typeof byKind;
+        expect(byKind[kind], `an author kind the client knows: ${m.author.kind}`).toBeDefined();
+        expect(keys(m.author)).toEqual(listed(byKind[kind]));
+      }
+    }
+    for (const m of [wire.chatPost, wire.chatPostWatcher]) {
+      expect(keys(m)).toEqual(listed(KEYS.chatMessage));
+    }
   });
 
   // Anti-vacuity for the widened replay frame: the position the corpus
