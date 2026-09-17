@@ -245,12 +245,15 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await reads(c, "hello from a");
   await reads(c, "and b");
   await say(c, "watching you both");
-  // The watcher is MARKED as one, on its own screen and on the players' (the
-  // row is the same component reading the same author), which is the label
-  // rule R-6.4.2 asks of a table.
+  // The watcher is MARKED as one, which is the label rule R-6.4.2 asks of a
+  // table. **The separator is in the needle, and that is the whole assertion:**
+  // the row is selected by a text that already contains the word, so a check
+  // for "watching" alone is implied by its own filter and could never fail —
+  // only the marker's own " · watching" distinguishes a labelled watcher from
+  // one who happened to say the word.
   await expect(
     chatOf(c).getByRole("listitem").filter({ hasText: "watching you both" }),
-  ).toContainText("watching");
+  ).toContainText("· watching");
   // **The mover reads it during their OWN turn** — the cell that must fail
   // under the old `active` (R-6.4.4): whichever page shows a move, that page's
   // panel receives the watcher's line while its prompt is on screen. The
