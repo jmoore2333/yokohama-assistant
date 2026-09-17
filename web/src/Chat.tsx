@@ -15,7 +15,7 @@
 // (not in the house, where everyone is one); a bot's chip and its name — an
 // arm no route produces yet, drawn defensively (R-6.4.15).
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, ApiError, chatText, displayName } from "./api";
 import { seatClass } from "./Cards";
 import { loadFolded, saveFolded } from "./chatFold";
@@ -79,24 +79,51 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   /** A read is out; and what a trigger that arrived while it was out asked for. */
   const reading = useRef(false);
   const wanted = useRef<Exclude<Why, "mount"> | null>(null);
+  /** The scope these reads are for. An answer from an older one is DROPPED —
+   *  see `read`. */
+  const generation = useRef(0);
+  /** The reader was at the foot of the box when an answer landed, so the rows
+   *  it appends should keep them there (see the layout effect below). */
+  const follow = useRef(false);
 
   /** One answer, from wherever it came: a mount read, a delta, a 201. Filters
-   *  what is already held, so a message is never drawn twice; keeps the box
-   *  at its bottom unless the reader has scrolled up. */
+   *  what is already held, so a message is never drawn twice; and records
+   *  whether the reader was at the foot of the box, which only a read taken
+   *  BEFORE the append can tell. */
   const take = useCallback((page: ChatPage) => {
     const fresh = page.messages.filter((m) => m.seq > last.current);
     last.current = Math.max(last.current, page.last, ...fresh.map((m) => m.seq));
     if (fresh.length === 0) return;
     const el = box.current;
-    const atBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    follow.current = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 8;
     setMessages((old) => [...old, ...fresh]);
     if (foldedNow.current) setUnread((n) => n + fresh.length);
-    if (atBottom)
-      queueMicrotask(() => {
-        const b = box.current;
-        if (b) b.scrollTop = b.scrollHeight;
-      });
   }, []);
+
+  /**
+   * Keep the newest message in view — **read before the append, applied after
+   * the commit** (ruling R-6-1).
+   *
+   * The two halves cannot share an instant. "Was the reader at the bottom?" is
+   * only true of the box BEFORE the rows arrive, and `scrollTop =
+   * scrollHeight` is only the bottom AFTER they are in the DOM — so `take`
+   * records the answer and this applies it. A `queueMicrotask` from inside
+   * `take` reads the pre-append height and sets a value the box already has: a
+   * default-lane update commits on the scheduler's own macrotask, which the
+   * microtask beats.
+   *
+   * One `scrollTop` and nothing else, which is the turn account's rule
+   * (R-F11): `scrollIntoView` scrolls every scrollable ancestor, and the page
+   * is the player's to scroll. A reader who has scrolled up is left where they
+   * are — the flag is simply false — and `useLayoutEffect` is what keeps the
+   * corrected position from being painted after the wrong one.
+   */
+  useLayoutEffect(() => {
+    if (!follow.current) return;
+    follow.current = false;
+    const b = box.current;
+    if (b) b.scrollTop = b.scrollHeight;
+  }, [messages]);
 
   /** Does the COUNT rule want a read at this instant? Refs, because it is asked
    *  again AFTER an await, when the effect's own closure is stale. */
@@ -117,22 +144,41 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
    * is. A tick's re-ask is unconditional (the delta is that host's only
    * source); a count's is the count rule read again against the cursor the
    * answer just moved.
+   *
+   * **A MOUNT read is never coalesced away, and an answer for a scope this
+   * panel has left is DROPPED.** Those are one finding from two sides: the
+   * mount effect runs when the scope CHANGES as well as at the start, so
+   * deferring its read behind a read that is already out would leave the new
+   * table's panel empty until something else happened — and letting the old
+   * table's answer land would fill the list it had just cleared with another
+   * room's messages, and move the cursor to another room's numbers. So the
+   * generation is captured when a read starts and compared when it resolves;
+   * a stale answer touches nothing, not the list, not the error line, not the
+   * in-flight flag (the newer read owns it), and asks for nothing more.
    */
   const read = useCallback(
     async function read(why: Why): Promise<void> {
-      if (reading.current) {
-        if (why !== "mount") wanted.current = why;
+      const mine = generation.current;
+      // A mount read falls through a read that is already out, and the two
+      // answers are told apart by the generation rather than by arrival order.
+      if (reading.current && why !== "mount") {
+        wanted.current = why;
         return;
       }
       reading.current = true;
+      let page: ChatPage | null = null;
+      let refused: string | null = null;
       try {
-        take(await api.chat(scopeRef.current, last.current));
-        setError(null);
+        page = await api.chat(scopeRef.current, last.current);
       } catch (e) {
-        setError(e instanceof ApiError ? e.message : String(e));
-      } finally {
-        reading.current = false;
+        refused = e instanceof ApiError ? e.message : String(e);
       }
+      if (mine !== generation.current) return;
+      reading.current = false;
+      if (page) {
+        take(page);
+        setError(null);
+      } else setError(refused);
       const again = wanted.current;
       wanted.current = null;
       if (again === "tick" || (again === "count" && countWants())) await read(again);
@@ -141,7 +187,11 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   );
 
   // The mount read — everything retained — and a reset when the scope changes.
+  // The generation moves FIRST, so a read still out for the scope just left has
+  // already been disowned by the time its answer arrives.
   useEffect(() => {
+    generation.current += 1;
+    wanted.current = null;
     last.current = 0;
     setMessages([]);
     setUnread(0);

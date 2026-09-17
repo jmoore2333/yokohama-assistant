@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Chat, when } from "./Chat";
 import { DISPLAY_NAME_KEY, setChatText } from "./api";
 import { OPEN_KEY } from "./chatFold";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import type { ChatPage } from "./types";
 
 const TABLE = { kind: "table", id: "wire" } as const;
 const colors = wire.table.colors;
@@ -30,6 +31,12 @@ const chatStub = (extra?: (c: ApiCall) => Reply | undefined) =>
   });
 
 const open = () => localStorage.setItem(OPEN_KEY, JSON.stringify(["wire"]));
+
+/** The corpus's page with nothing in it: an empty room, whose cursor is at
+ *  nothing. **Derived, never hand-authored** — the `gamesNamed` idiom — and it
+ *  is what makes a post's own `seq` 1 land ABOVE what the panel holds, which
+ *  the corpus's three-message page does not. */
+const emptyRoom: ChatPage = { ...wire.chat, messages: [], last: 0 };
 
 /** Let the panel's fetch chain finish — including the re-check a trigger that
  *  arrived mid-flight defers (ruling R-pre-4).
@@ -154,13 +161,17 @@ describe("the chat panel", () => {
   it("posts on Enter, appends the reply, sends no name for a seat, and advances its cursor", async () => {
     open();
     localStorage.setItem(DISPLAY_NAME_KEY, "Red");
+    // **The room starts EMPTY**, so the 201 is the only thing that can put a
+    // row on the screen and the only thing that can move the cursor. Against
+    // the corpus's own three-message page the post's `seq` 1 is already held,
+    // the filter drops it, and every assertion below passes whether or not the
+    // reply was taken at all.
     const stub = chatStub((call) =>
-      call.method === "POST" && call.path.endsWith("/chat") ? wire.chatPost : undefined,
+      call.method === "POST" ? wire.chatPost : call.method === "GET" ? emptyRoom : undefined,
     );
-    const { rerender } = render(
-      <Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />,
-    );
-    await screen.findAllByRole("listitem");
+    const { rerender } = render(<Chat scope={TABLE} count={0} colors={colors} sendName={false} />);
+    await settle();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Say something" }), "good luck{Enter}");
     const posts = await waitFor(() => {
@@ -170,14 +181,19 @@ describe("the chat panel", () => {
     });
     expect(posts[0]!.body).toEqual({ text: "good luck" });
     expect(screen.getByRole("textbox", { name: "Say something" })).toHaveValue("");
-    // The 201 advanced the cursor, so the frame it causes is a no-op compare.
-    // (The corpus's post is `seq` 1, at or below the three the panel already
-    // holds, so it is FILTERED rather than appended — the append is the cell
-    // above, from the other side. What this half pins is the compare.)
+    // The 201 itself is what is drawn — the room has nothing else in it.
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!).toHaveTextContent(wire.chatPost.text);
+    // And the cursor it advanced: the frame it causes is a no-op compare,
     const before = stub.matching("GET", "/chat").length;
     rerender(<Chat scope={TABLE} count={wire.chatPost.seq} colors={colors} sendName={false} />);
     await settle();
     expect(stub.matching("GET", "/chat")).toHaveLength(before);
+    // and the next frame above it asks from the number the 201 left behind.
+    rerender(<Chat scope={TABLE} count={wire.chatPost.seq + 1} colors={colors} sendName={false} />);
+    await waitFor(() => expect(stub.matching("GET", "/chat")).toHaveLength(before + 1));
+    expect(stub.matching("GET", "/chat").at(-1)!.path).toContain(`after=${wire.chatPost.seq}`);
   });
 
   it("sends the browser's name for a watcher and at the house", async () => {
@@ -235,6 +251,79 @@ describe("the chat panel", () => {
       (c) => c.path.endsWith("/stream") || c.headers["accept"] === "text/event-stream",
     );
     expect(streams).toEqual([]);
+  });
+
+  it("keeps the newest message in view, and leaves a reader who has scrolled up alone", async () => {
+    // **jsdom has no layout engine**: `scrollHeight`, `clientHeight` and
+    // `scrollTop` are all 0 and a write to the last is ignored, so the rule is
+    // unobservable until the box is given a height of its own. These getters
+    // are the smallest geometry that can tell the two instants apart — the
+    // height GROWS with the rows, so a follow computed before the append lands
+    // on a different number from one applied after it. The real geometry is the
+    // browser walk's to check.
+    const ROW = 100;
+    let answer: ChatPage = emptyRoom;
+    chatStub((call) => (call.method === "GET" ? answer : undefined));
+    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+    await settle();
+    const box = document.querySelector<HTMLOListElement>("ol.chat-lines")!;
+    let top = 0;
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => ROW });
+    Object.defineProperty(box, "scrollHeight", {
+      configurable: true,
+      get: () => box.querySelectorAll("li").length * ROW,
+    });
+    Object.defineProperty(box, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => {
+        top = v;
+      },
+    });
+    // An empty box IS at its bottom, so the three that arrive are followed —
+    // to the height AFTER they are in the DOM, which is the whole of R-6-1.
+    answer = wire.chat;
+    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length),
+    );
+    await settle();
+    expect(top).toBe(wire.chat.messages.length * ROW);
+    // Now the reader scrolls back up, and the next message does not yank them
+    // down. The fourth is the corpus's own first, renumbered above the page.
+    top = 0;
+    answer = { messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }], last: wire.chat.last + 1 };
+    rerender(<Chat scope={TABLE} tick={2} colors={colors} sendName={false} />);
+    await waitFor(() =>
+      expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length + 1),
+    );
+    await settle();
+    expect(top).toBe(0);
+  });
+
+  it("issues the new scope's read at once and drops the answer for the one it left", async () => {
+    const held = gate<Reply>();
+    const stub = stubApi((call) => {
+      if (call.path.includes("/api/games/wire/chat")) return held.promise;
+      if (call.path.includes("/api/games/other/chat")) return emptyRoom;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const { rerender } = render(<Chat scope={TABLE} count={0} colors={colors} sendName={false} />);
+    await settle();
+    // The first table's answer is still out when the panel is moved. The new
+    // scope's mount read is NOT deferred behind it: a panel that waited would
+    // show the new table nothing at all until something else happened.
+    rerender(
+      <Chat scope={{ kind: "table", id: "other" }} count={0} colors={colors} sendName={false} />,
+    );
+    await waitFor(() => expect(stub.matching("GET", "/api/games/other/chat")).toHaveLength(1));
+    expect(stub.matching("GET", "/api/games/other/chat")[0]!.path).toContain("after=0");
+    await settle();
+    // And when the table it LEFT finally answers, that answer is another
+    // room's: three messages, numbered from a cursor this panel has reset.
+    held.resolve(wire.chat);
+    await settle();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
   });
 
   it("keeps a folded panel's controls out of the tab order", async () => {
