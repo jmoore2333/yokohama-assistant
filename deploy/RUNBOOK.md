@@ -799,6 +799,84 @@ holds a release, and **no point release was cut**.
   **Twelve tags now sit on the NAS** — the eleven of §3.8 plus `0.5.0-m6.3`
   (`-rc2` was removed from the NAS after reading B).
 
+### 3.10 M6.4 is live — the seventh deployment, 2026-09-17 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2) from the
+workstation, driven by the orchestrating session under the owner's in-session
+authorization given before the task was reached ("just note you've got
+authorization to build and deliver"), and — because API usage was about to run
+out — taken the moment the whole-branch review's fix wave came back green, BEFORE
+the mutation battery, the counts sequence and the close, which the resumed
+session owes (the SDD ledger's RESUME MAP carries the order). **The create body
+is unchanged and carries NO new variable**: M6.4's three chat variables each have
+a default, so an image started without them runs the lobby chat ON with a keep of
+500 messages and a cap of 500 characters — `YOKOHAMA_WEB_LOBBY_CHAT=on|off`,
+`YOKOHAMA_WEB_CHAT_KEEP=<n>|all`, `YOKOHAMA_WEB_CHAT_TEXT=<n>` are OPTIONAL on the
+container and `/api/health` reports what is in force (`lobby_chat`, `chat_keep`
+— `null` for `all` — and `chat_text`). Setting `off` makes the two house routes
+404 and the client draws no lobby panel; `all` keeps every message.
+
+- **Build:** `web-room-m6.4` at `571c446` (the fix wave's HEAD: sixteen execution
+  commits over `f53f6d7`, the branch pushed to origin as a backup with no PR yet).
+  The musl cross-compile per §1: `Finished release in 6.75s`; the binary is `ELF
+  64-bit LSB pie executable, x86-64, static-pie linked`, **6,796,984 bytes**
+  (M6.3's was 6,637,080: the chat documents, the four routes, the fifth `Events`
+  field and the two-counter house frame); `web/dist` carries the M6.4 client,
+  bundle `index-DbxlTsgc.js` (M6.3's was `index-BhDpWEFw.js`). Context tarball
+  **14,112,276 B** (sha256 prefix `74b2c61857fc0a02`), cut at **03:52:59Z** and
+  served by `python3 -m http.server 8899 --bind 0.0.0.0` on the workstation at
+  **192.168.1.16**; the NAS (192.168.1.173) fetched it in one GET at 23:53:12 local
+  and the file server was stopped at 03:53:35Z.
+- **Image:** `yokohama-web:0.5.0-m6.4`, Id
+  `sha256:51db5d1e0829d55e1afb67e1b934b334f170aae7d64c43b543f3cf81f8b69f27`,
+  **26,722,785 B** (was 26,553,575), created **03:53:23Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.4&dockerfile=Dockerfile&rm=true`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.3` container
+  (`f0c371c7…`, created 2026-09-16 19:20:47Z) → `DELETE /containers/yokohama-web`
+  → `POST /containers/create?name=yokohama-web` with §3's body (Image, `Env`
+  `YOKOHAMA_WEB_IDENTITY=claimed` alone, the two labels `maintainer`/`purpose`,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data`) → container Id
+  `f5db3dfead7a2a5a590adde0a50c220a21a16560552a3b3b51b136489fd9b474`, created
+  **03:53:42Z**, started **03:53:45Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so cloudflared was not restarted. The named volume rode across
+  untouched.
+- **Verified through the tunnel at 03:53:56Z** (WARP signed in; no re-auth):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","lobby_chat":true,"chat_keep":500,"chat_text":500}`
+    — the three chat keys are M6.4's.
+  - `GET /` serves `index-DbxlTsgc.js`, which exists only in this build.
+  - `POST /api/chat` as `deploy-verify-a@m64.test` with
+    `{"text":"release check 0.5.0-m6.4","name":"Deploy"}` → **201**
+    `{"seq":1,"created_at":1789617236,"author":{"kind":"watcher","user":"deploy-verify-a@m64.test","name":"Deploy"},"text":"release check 0.5.0-m6.4"}`;
+    `GET /api/chat` as `deploy-verify-b@m64.test` → that one message, `last: 1`;
+    `GET /api/chat` with no identity header → **401**. That release-check line
+    stays in the house chat — there is no delete (R-6.4.14).
+  - **A table's stream carries the count, and a held stream receives a message
+    (03:54Z):** table `sim-2a7e5dbb21cef3c2` (2P, both seats named, a password)
+    created 201; the on-connect `…/stream` frame at `dealing` read
+    `{"events":0,"to_move":null,"status":"dealing","your_turn":false,"chat":0}`;
+    the two keeps were refused 400 (a wrong body on the operator's side, not
+    re-tried), so the table stayed at `dealing`; seat A then held `…/stream` for
+    9 s while seat B posted at +3 s → B's post **201**, and A's held stream
+    received the frame with `"chat":1` **three seconds later** (03:54:24 →
+    03:54:27); A's `GET …/chat` read the line with `author.kind: "seat", seat: 1`.
+    Read at its real size: a HELD stream receiving a chat frame through the
+    tunnel at `dealing` (the game screen holds its stream at every status since
+    M6.4), not the acting seat during its own playing turn — that variant, and
+    every visual claim (the panel folded at the column's foot with its count, the
+    chips and names, the watching marker), is the owner's headed pass (spec
+    R-6.4.16, amended by the owner to be their own), noted for M6.5's entry. The
+    table was deleted by its creator (204).
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+- **Rollback:** `yokohama-web:0.5.0-m6.3` stays on the NAS; recreate the
+  container from that tag with §3's body INCLUDING the `Env` line. **Both halves
+  roll or neither does:** the M6.4 client reads `Events.chat` and the `/api/chat`
+  routes, which the M6.3 server lacks; the chat documents this build writes
+  (`<id>.chat.json`, `_house.chat.json`) are files an M6.3 server never lists and
+  never deletes with a game, so a rollback leaves them inert on the volume.
+  **Thirteen tags now sit on the NAS** — the twelve of §3.9 plus `0.5.0-m6.4`.
+
 ## 4. Modal — the upgrade path, not yet deployed
 
 `deploy/modal_app.py` runs the same image with a Volume for the store,

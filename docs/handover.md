@@ -130,7 +130,22 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.3 SHIPPED AND LIVE; M6.4 "chat" SPECIFIED AND PLANNED, waiting on your go (web lane)
+## Track 3 — The web client: M6.4 "chat" BUILT, REVIEWED AND LIVE (`0.5.0-m6.4`, 2026-09-17); its close is OWED by the resumed session (web lane)
+
+**M6.4 "chat" is LIVE** as `yokohama-web:0.5.0-m6.4` (container `f5db3dfe…` since 03:53:45Z on
+2026-09-17; `deploy/RUNBOOK.md` §3.10 is the record) — executed 2026-09-17 under subagent-driven
+development from `docs/plans/2026-09-16-web-frontend-m6.4-plan.md` (eight Opus implementer
+dispatches, eight Opus task reviews with five fix rounds, one Fable whole-branch review 0C/5I/14m
+and its single two-commit fix wave), landing sixteen execution commits on `web-room-m6.4` at
+**`571c446`**, pushed to origin as a backup with **NO PR yet** (your call: "we can PR later after
+the rest of the work"). **The session was cut short by API usage after the release.** What remains,
+in order, is the SDD ledger's RESUME MAP (`.superpowers/sdd/2026-09-16-web-frontend-m6.4-plan/progress.md`,
+gitignored on this workstation): the scoped re-review of the fix wave, the mutation battery (spec
+§9.5), the counts in one sequence, the close in the M6.3 close's shape with the M6.5 handover beside
+it, the CLAUDE.md/guidingpath/README pass, then the PR against `web-room-m6.3`. **Two rulings you made
+in-session:** the release was authorized in advance, and the HEADED live review (spec R-6.4.16) is
+YOURS to run rather than a subagent's — the close will carry it as "consider before M6.5".
+
 
 **M6.3 "transport and spectating" is SHIPPED AND LIVE** as `yokohama-web:0.5.0-m6.3` (container
 `f0c371c7…` since 19:20:51Z on 2026-09-16) — planned 2026-09-15, executed
