@@ -96,6 +96,89 @@ impl Default for ChatLimits {
     }
 }
 
+/// The variable that turns the house chat off (R-6.4.6).
+pub const LOBBY_VAR: &str = "YOKOHAMA_WEB_LOBBY_CHAT";
+/// The variable that sets how many messages a document retains (R-6.4.8).
+pub const KEEP_VAR: &str = "YOKOHAMA_WEB_CHAT_KEEP";
+/// The variable that sets how long one message may be (R-6.4.8).
+pub const TEXT_VAR: &str = "YOKOHAMA_WEB_CHAT_TEXT";
+
+/// The three launch variables (R-6.4.6, R-6.4.8). **Each HAS a default**, unlike
+/// the identity mode: a missing switch is not a missing door.
+///
+/// Which is the whole of why this does not copy `IdentityMode::from_env`'s
+/// refusal on absence. An identity source is a decision about who may act, so a
+/// server that was not told refuses to start; a retention number is a decision
+/// about how much is kept, and there is a sane answer nobody has to write down.
+/// A BAD value is refused either way, and by the variable's own name — a server
+/// that started with `YOKOHAMA_WEB_CHAT_KEEP=lots` silently meaning 500 would
+/// be a server whose operator believes a number that is not in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatConfig {
+    pub lobby: bool,
+    pub limits: ChatLimits,
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self { lobby: true, limits: ChatLimits::default() }
+    }
+}
+
+impl ChatConfig {
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_env_values(
+            std::env::var(LOBBY_VAR).ok().as_deref(),
+            std::env::var(KEEP_VAR).ok().as_deref(),
+            std::env::var(TEXT_VAR).ok().as_deref(),
+        )
+    }
+
+    /// The read split from the parse, the identity extractor's shape, so the
+    /// unset case is testable without touching the process environment.
+    ///
+    /// **`0` is refused for both numbers, and that is a rule rather than
+    /// tidiness**: `ChatDoc::trim(Some(0))` would drop every message the
+    /// instant it was appended, and a text cap of zero would refuse every
+    /// message ever typed. Both are chats that work and say nothing, which is
+    /// worse than a server that will not start.
+    pub fn from_env_values(
+        lobby: Option<&str>,
+        keep: Option<&str>,
+        text: Option<&str>,
+    ) -> Result<Self, String> {
+        let lobby = match lobby.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("on") => true,
+            Some("off") => false,
+            Some(other) => return Err(format!("{LOBBY_VAR} must be on or off — got {other:?}")),
+        };
+        let keep = match keep.map(str::trim) {
+            None => Some(500),
+            Some("all") => None,
+            Some(s) => match s.parse::<usize>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => {
+                    return Err(format!(
+                        "{KEEP_VAR} must be a positive number of messages or `all` — got {s:?}",
+                    ))
+                }
+            },
+        };
+        let text = match text.map(str::trim) {
+            None => 500,
+            Some(s) => match s.parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Err(format!(
+                        "{TEXT_VAR} must be a positive number of characters — got {s:?}",
+                    ))
+                }
+            },
+        };
+        Ok(Self { lobby, limits: ChatLimits { keep, text } })
+    }
+}
+
 impl ChatDoc {
     pub fn empty(id: &str) -> Self {
         Self { schema: CHAT_SCHEMA, id: id.to_string(), last: 0, messages: Vec::new() }
@@ -311,5 +394,42 @@ mod tests {
             matches!(b.author, Author::Bot { seat: 1, .. }),
             "the arm no route produces still reads (R-6.4.15)",
         );
+    }
+
+    /// **Each of the three variables HAS a default, and a bad value is refused
+    /// BY NAME** (R-6.4.6, R-6.4.8).
+    ///
+    /// The read is split from the parse, the identity extractor's shape, so the
+    /// unset case is tested without mutating the process environment under a
+    /// threaded runner. `0` is refused for both numbers rather than accepted:
+    /// a keep of zero would discard every message the moment it was appended,
+    /// and a text cap of zero would refuse every message ever typed — two ways
+    /// to configure a chat that silently does nothing.
+    #[test]
+    fn the_three_variables_parse_with_their_defaults_and_refuse_by_name() {
+        let d = ChatConfig::from_env_values(None, None, None).unwrap();
+        assert_eq!((d.lobby, d.limits.keep, d.limits.text), (true, Some(500), 500));
+        assert!(ChatConfig::from_env_values(Some("on"), None, None).unwrap().lobby);
+        assert!(!ChatConfig::from_env_values(Some("off"), None, None).unwrap().lobby);
+        assert!(
+            !ChatConfig::from_env_values(Some(" OFF "), None, None).unwrap().lobby,
+            "trimmed, case-insensitive",
+        );
+        let e = ChatConfig::from_env_values(Some("maybe"), None, None).unwrap_err();
+        assert!(e.contains(LOBBY_VAR) && e.contains("maybe"), "{e}");
+        assert_eq!(ChatConfig::from_env_values(None, Some("all"), None).unwrap().limits.keep, None);
+        assert_eq!(
+            ChatConfig::from_env_values(None, Some("20"), None).unwrap().limits.keep,
+            Some(20),
+        );
+        for bad in ["0", "-1", "lots", ""] {
+            let e = ChatConfig::from_env_values(None, Some(bad), None).unwrap_err();
+            assert!(e.contains(KEEP_VAR), "{bad:?}: {e}");
+        }
+        assert_eq!(ChatConfig::from_env_values(None, None, Some("140")).unwrap().limits.text, 140);
+        for bad in ["0", "x", "all"] {
+            let e = ChatConfig::from_env_values(None, None, Some(bad)).unwrap_err();
+            assert!(e.contains(TEXT_VAR), "{bad:?}: {e}");
+        }
     }
 }

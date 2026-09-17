@@ -448,6 +448,14 @@ export interface Health {
   /** Which change transport `usePolled` reads: the stream, or the held
    *  request (M6.3). A deployment fact, not a preference. */
   signal: "sse" | "held";
+  /** Whether the house chat answers (M6.4). Off, this client draws no lobby
+   *  panel and asks for nothing. */
+  lobby_chat: boolean;
+  /** Messages retained per chat document; `null` when nothing is trimmed. */
+  chat_keep: number | null;
+  /** Characters per message. The input is sized from THIS and never from a
+   *  copy here, which would drift the day the server's number changed. */
+  chat_text: number;
 }
 
 /** Who the server thinks you are, and which header it reads to decide.

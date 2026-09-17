@@ -99,7 +99,21 @@ async fn main() {
         }
     };
 
-    let state = Arc::new(AppState::new(identity));
+    // **Every chat variable HAS a default (R-6.4.6, R-6.4.8)**, which is the
+    // one way this differs from the identity mode above: a missing switch is
+    // not a missing door. A BAD value still stops the process, and names the
+    // variable — a server that started with an unreadable retention number
+    // silently meaning 500 would be a server whose operator believes a number
+    // that is not in force.
+    let chat = match yokohama_web::chat::ChatConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let state = Arc::new(AppState::new(identity, chat));
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {

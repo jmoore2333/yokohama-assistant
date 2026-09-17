@@ -265,12 +265,15 @@ pub struct AppState {
     /// the wire at all is to build a state whose cadence is 50 ms and read two
     /// of them off a body. Every production constructor sets [`HEARTBEAT`].
     pub heartbeat: std::time::Duration,
+    /// The lobby switch and the two retention caps (M6.4, R-6.4.6, R-6.4.8),
+    /// read once at start; each has a default.
+    pub chat: chat::ChatConfig,
 }
 
 impl AppState {
     /// Backed by a directory on disk.
-    pub fn new(identity: identity::IdentityMode) -> Self {
-        Self::with_store(Arc::new(FsStore::new(store::default_dir())), identity)
+    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Self {
+        Self::with_store_and_chat(Arc::new(FsStore::new(store::default_dir())), identity, chat)
     }
 
     /// Backed by memory, in `claimed` mode — the mode every test drives with a
@@ -288,13 +291,38 @@ impl AppState {
         Self { heartbeat, ..Self::in_memory() }
     }
 
+    /// In memory, with the chat configured rather than defaulted — how a cell
+    /// asks for the lobby off, or for a keep small enough to watch a trim.
+    pub fn in_memory_with_chat(chat: chat::ChatConfig) -> Self {
+        Self::with_store_and_chat(
+            Arc::new(MemStore::default()),
+            identity::IdentityMode::Claimed,
+            chat,
+        )
+    }
+
     pub fn with_store(store: Arc<dyn Store>, identity: identity::IdentityMode) -> Self {
+        Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
+    }
+
+    /// The one constructor that builds anything; every constructor above is
+    /// this one with a store, an identity or a chat chosen for it.
+    ///
+    /// The limits reach [`Games`] as well as this state, and the two are not a
+    /// duplicate: the appender enforces them and `/api/health` reports them,
+    /// and neither half can read the other's.
+    pub fn with_store_and_chat(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+    ) -> Self {
         let rules = Arc::new(Rules::standard());
         Self {
             rules: Arc::clone(&rules),
-            games: Games::new(rules, store),
+            games: Games::with_limits(rules, store, chat.limits),
             identity,
             heartbeat: HEARTBEAT,
+            chat,
         }
     }
 }
@@ -322,6 +350,14 @@ pub struct Health {
     /// hold a request against `…/events?wait=25`, and it cannot tell from a
     /// successful call to anything else.
     pub signal: &'static str,
+    /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
+    /// draws no lobby panel and asks nothing.
+    pub lobby_chat: bool,
+    /// Messages retained per chat document; `null` for `all` (R-6.4.8).
+    pub chat_keep: Option<u64>,
+    /// Characters per message, so the client sizes its input from the
+    /// server's rule and never from a copy (R-6.4.8).
+    pub chat_text: u64,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -331,6 +367,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         rules_hash: state.rules.content_hash(),
         identity: state.identity.name(),
         signal: SIGNAL_KIND,
+        lobby_chat: state.chat.lobby,
+        chat_keep: state.chat.limits.keep.map(|n| n as u64),
+        chat_text: state.chat.limits.text as u64,
     })
 }
 
@@ -6324,6 +6363,40 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["signal"], SIGNAL_KIND);
         assert_eq!(v["signal"], "sse");
+    }
+
+    /// **`/api/health` carries the lobby switch and the two caps** (M6.4,
+    /// R-6.4.6, R-6.4.8).
+    ///
+    /// The third and fourth deployment facts a client cannot infer from a
+    /// successful call, and the reason is the same as the signal's: with the
+    /// lobby chat off the client must draw no panel rather than ask and read a
+    /// 404, and it must size its input box from the SERVER's character rule
+    /// rather than from a copy that drifts the day the variable changes.
+    /// `chat_keep` is `null` for `all`, because a number would be a lie about a
+    /// document that is never trimmed.
+    #[tokio::test]
+    async fn health_carries_the_lobby_switch_and_the_two_caps() {
+        let (status, v) = get_json("/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["lobby_chat"], true);
+        assert_eq!(v["chat_keep"], 500);
+        assert_eq!(v["chat_text"], 500);
+
+        let configured = chat::ChatConfig { lobby: false, limits: chat::ChatLimits { keep: None, text: 140 } };
+        let off = Arc::new(AppState::in_memory_with_chat(configured));
+        assert_eq!(
+            off.games.limits(),
+            configured.limits,
+            "the numbers health reports are the ones the APPENDER holds — reported \
+             from this state and enforced from a defaulted `Games` would be a server \
+             truthfully naming a cap nothing applies",
+        );
+        let (status, v) = get_as(&off, WHO, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["lobby_chat"], false);
+        assert_eq!(v["chat_keep"], serde_json::Value::Null, "`all` is null on the wire");
+        assert_eq!(v["chat_text"], 140);
     }
 
     /// **`?wait` is accepted, bounded, and answers on a bump** (R-plan-5).
