@@ -762,9 +762,9 @@ impl Games {
             Ok(_) => {
                 // A name reopened starts its chat at nothing. `delete` drops the
                 // entry too, so in that path this is belt and braces; it is the
-                // one that still holds when the documents left by some other
-                // route, which is the same reason the tombstone set is cleared
-                // a few lines above.
+                // one that still holds when a document was left behind by some
+                // other route, which is the same reason the tombstone set is
+                // cleared a few lines above.
                 self.chat_last.lock().expect("games lock").remove(&doc.id);
                 self.signals.bump(&doc.id);
                 Ok(doc.view(creator))
@@ -992,6 +992,17 @@ impl Games {
     /// **An absent document answers 0 and IS cached** — that is not a failure,
     /// it is a table nobody has spoken at, and `create` and `delete` both drop
     /// the entry so a reopened name cannot inherit it.
+    ///
+    /// **The seed only ever FILLS an empty slot and never replaces one**
+    /// (`or_insert`, final review minor 6). The read above is deliberately
+    /// under no lock of this table's — this is called from a stream's per-bump
+    /// closure and must not queue behind a message — so an append can land
+    /// between it and this insert, and a plain `insert` would put the older
+    /// number back. The entry never arrives from anywhere but an append, which
+    /// knows a number no read of this kind can have missed, so taking what is
+    /// already there is always the newer answer. Pinned, with the window held
+    /// open by a gate, by
+    /// `a_cold_count_read_never_overwrites_a_newer_one_from_an_append`.
     pub fn chat_last(&self, id: &str) -> u64 {
         if let Some(n) = self.chat_last.lock().expect("games lock").get(id) {
             return *n;
@@ -1006,8 +1017,7 @@ impl Games {
             Ok(None) => 0,
             Err(_) => return 0,
         };
-        self.chat_last.lock().expect("games lock").insert(id.to_string(), n);
-        n
+        *self.chat_last.lock().expect("games lock").entry(id.to_string()).or_insert(n)
     }
 
     /// The table as a seated caller may read it, REPAIRED first if it needs it.
@@ -4010,6 +4020,19 @@ mod tests {
     /// The planted `last` of 4 is what makes the landing legible — the message
     /// numbers 5, so the page it lands on is unmistakably the planted document
     /// advanced and not a fresh one.
+    ///
+    /// **B gets a document of its own before the append, with the SAME BYTES,
+    /// and that is what makes the second half a reading** (final review, minor
+    /// 16). An earlier draft asserted B's chat was "still absent"; nothing had
+    /// ever written one, so a `None` there was equally consistent with a store
+    /// nobody had touched, and the assertion held whatever the append did.
+    ///
+    /// The bytes have to be identical because [`crate::store::version_of`] is a
+    /// digest of them: planted DIFFERENTLY, B's version would not match the one
+    /// A's read handed the writer and the misdirected compare-and-swap would be
+    /// refused — the cell would go red one line earlier, at the append, and
+    /// still say nothing about B. Identical, the swap SUCCEEDS, A's message
+    /// lands in B's file, and this is the assertion that sees it.
     #[test]
     fn an_append_writes_at_the_key_it_read_and_not_at_the_documents_own_id() {
         let store = Arc::new(MemStore::default());
@@ -4021,18 +4044,29 @@ mod tests {
         store
             .write_if_version(Doc::Chat, &a, &lying.to_string(), None)
             .expect("the planted document");
+        // B's own chat, planted with the SAME BYTES so that a write misdirected
+        // there would be ACCEPTED rather than refused on its version — see the
+        // doc above.
+        let bs_version = store
+            .write_if_version(Doc::Chat, &b, &lying.to_string(), None)
+            .expect("B's own document");
 
         games.chat_append(&a, red_seat(), "here").expect("an append at A");
 
+        // **B FIRST**, so the cell reports the misdirection where it happened
+        // rather than as a message missing from A — which is the same failure
+        // read from the far end and one line later.
+        let (bs_json, bs_now) = store.read(Doc::Chat, &b).expect("a store").expect("B's chat");
+        assert_eq!(
+            (bs_json.as_str(), bs_now),
+            (lying.to_string().as_str(), bs_version),
+            "B's chat is untouched — the same bytes at the same version",
+        );
         let (page, last) = games.chat_page(&a, 0).expect("a page");
         assert_eq!(
             (page.len(), last, page[0].seq),
             (1, 5, 5),
-            "it landed at A, numbered above the planted last",
-        );
-        assert!(
-            store.read(Doc::Chat, &b).expect("a store").is_none(),
-            "and B's chat is untouched — still absent",
+            "and it landed at A, numbered above the planted last",
         );
         let (json, _) = store.read(Doc::Chat, &a).expect("a store").expect("A's chat");
         let written: serde_json::Value = serde_json::from_str(&json).expect("the document");
@@ -4200,7 +4234,7 @@ mod tests {
     /// The recreate tail is over-determined on purpose and says so: both
     /// `delete` and `create` drop the entry, so the tail holds if either one
     /// does. It is here for `create`'s clear, which is the one that still
-    /// stands when a document left by some other route.
+    /// stands when a document was left behind by some other route.
     #[test]
     fn a_delete_removes_the_chat_and_its_count() {
         let games = games();
@@ -4294,6 +4328,214 @@ mod tests {
         go_tx.send(()).expect("the parked write is listening");
         writer.join().expect("the thread").expect("the append");
         assert!(rx.has_changed().unwrap(), "and wakes once it lands");
+    }
+
+    /// Drop this process's remembered count for one table, so the next
+    /// `chat_last` takes the MISS path a fresh process would take.
+    ///
+    /// The cache is what the two cells below are about, and both need it empty
+    /// over a table that has already been written to — which no public call
+    /// arranges (`create` and `delete` clear it, and both also clear the
+    /// document).
+    fn forget_chat_count(games: &Games, id: &str) {
+        games.chat_last.lock().expect("games lock").remove(id);
+    }
+
+    /// A [`MemStore`] that PARKS the FIRST `Doc::Chat` read and nothing else,
+    /// once armed.
+    ///
+    /// Once, and only the first, because the racing append reads the same
+    /// document on its way to writing it: a gate that parked every chat read
+    /// would park the append too and there would be no race to watch.
+    struct ChatReadGate {
+        inner: MemStore,
+        armed: std::sync::atomic::AtomicBool,
+        at_read: Mutex<std::sync::mpsc::Sender<()>>,
+        go: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Store for ChatReadGate {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            let answer = self.inner.read(doc, id);
+            // AFTER the answer is computed, which is the whole of the window:
+            // the caller now holds a number, and the append is free to make it
+            // stale before the caller writes it down.
+            if doc == Doc::Chat && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let _ = self.at_read.lock().expect("the gate").send(());
+                let _ = self.go.lock().expect("the gate").recv();
+            }
+            answer
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A cold `chat_last` seeds the cache and never moves it BACKWARDS**
+    /// (final review, minor 6).
+    ///
+    /// The miss path reads the document under no lock of its own — deliberately,
+    /// because it is called from a stream's per-bump closure and must not queue
+    /// behind a table — so an append can land between that read and the moment
+    /// the number is written down. With a plain `insert` the older number wins
+    /// and every count-driven browser at the table under-reports until the NEXT
+    /// message: holding N-1, it does not fetch message N.
+    ///
+    /// `or_insert` is the whole of the fix and it is safe in the one direction
+    /// that matters: the entry only ever arrives from an append, which knows a
+    /// number this read cannot have missed.
+    ///
+    /// The gate is what makes the window real rather than argued — in an
+    /// unparked run the read and the insert are one instant apart.
+    #[test]
+    fn a_cold_count_read_never_overwrites_a_newer_one_from_an_append() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_tx, at_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let store = Arc::new(ChatReadGate {
+            inner: MemStore::default(),
+            armed: std::sync::atomic::AtomicBool::new(false),
+            at_read: Mutex::new(at_tx),
+            go: Mutex::new(go_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let red = who("red@t.test");
+        let id = games.create(&two_people("cold", CORPUS_SEED), &red).expect("a table").id;
+
+        // A stream's closure asks for the count of a table nobody has spoken
+        // at, and is parked holding "0".
+        store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let reader = {
+            let (games, id) = (Arc::clone(&games), id.clone());
+            std::thread::spawn(move || games.chat_last(&id))
+        };
+        at_rx.recv_timeout(Duration::from_secs(10)).expect("the cold read answers");
+
+        // And a message lands while it sits there: the append writes the
+        // document and records 1.
+        games.chat_append(&id, red_seat(), "first").expect("an append");
+        assert_eq!(games.chat_last(&id), 1, "the append's own number is what is cached");
+
+        go_tx.send(()).expect("the parked read is listening");
+        let seen = reader.join().expect("the thread");
+        assert_eq!(seen, 1, "the parked read takes the newer number rather than its own stale 0");
+        assert_eq!(
+            games.chat_last(&id),
+            1,
+            "and the cache was not moved BACKWARDS, which would leave every browser \
+             at this table one message behind until the next one",
+        );
+    }
+
+    /// **A store that cannot be read answers 0 and CACHES NOTHING** (spec §9.1;
+    /// `chat_last`'s own doc rests on it).
+    ///
+    /// The one route with nowhere to put a refusal: it is called from a
+    /// stream's per-bump closure, and a wrong count sends a client to a route
+    /// that refuses properly. What it must not do is REMEMBER the wrong number
+    /// — a cached 0 would outlive the disk trouble and the table would go quiet
+    /// for the life of the process.
+    ///
+    /// The anti-vacuity is the second half: once the failure is spent, the same
+    /// call reads the document and answers its real number.
+    #[test]
+    fn a_failed_count_read_answers_zero_and_caches_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A [`MemStore`] whose next `n` `Doc::Chat` reads fail, and only those.
+        struct FlakyChat {
+            inner: MemStore,
+            fail_chat_reads: AtomicUsize,
+        }
+        impl Store for FlakyChat {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if doc == Doc::Chat
+                    && self
+                        .fail_chat_reads
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok()
+                {
+                    return Err("the disk went away".to_string());
+                }
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store =
+            Arc::new(FlakyChat { inner: MemStore::default(), fail_chat_reads: AtomicUsize::new(0) });
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let red = who("red@t.test");
+        let id = games.create(&two_people("flaky", CORPUS_SEED), &red).expect("a table").id;
+        games.chat_append(&id, red_seat(), "said").expect("an append");
+        // The append cached 1; the cache is what a miss has to be arranged
+        // around, so it is cleared exactly as a fresh process would find it.
+        forget_chat_count(&games, &id);
+
+        store.fail_chat_reads.store(1, Ordering::SeqCst);
+        assert_eq!(games.chat_last(&id), 0, "a failed read answers 0");
+        assert_eq!(
+            store.fail_chat_reads.load(Ordering::SeqCst),
+            0,
+            "the armed failure never fired, so this cell watched the happy path twice",
+        );
+        assert_eq!(games.chat_last(&id), 1, "and cached nothing, so the next call gets it right");
+    }
+
+    /// **A chat document that will not PARSE is a `Server` failure on the route
+    /// that serves it, and a 0 on the count** (spec §9.1).
+    ///
+    /// The two answers differ on purpose and both are `read_chat`'s and
+    /// `chat_last`'s own doc sentences: a route that answered "no messages" for
+    /// a file sitting right there would let the next append overwrite it and
+    /// number from 1 again, while the count has nowhere to put a refusal and a
+    /// wrong number sends the client to the route that refuses properly.
+    #[test]
+    fn a_chat_document_that_will_not_parse_refuses_the_page_and_reads_zero() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("broken", CORPUS_SEED), &red).expect("a table").id;
+        games
+            .store()
+            .write_if_version(Doc::Chat, &id, "{", None)
+            .expect("the planted half-written document");
+        forget_chat_count(&games, &id);
+
+        let e = games.chat_page(&id, 0).expect_err("a page over a broken document");
+        assert!(
+            matches!(&e, GameError::Server(why) if why.contains("does not parse")),
+            "{e:?}",
+        );
+        assert_eq!(games.chat_last(&id), 0, "and the count says 0 rather than inventing one");
     }
 
     /// The same for the house, whose appender is a different function with a

@@ -9,7 +9,10 @@
 //! malformed author written once would poison the next read under the table's
 //! lock. A seat is bounded by the table's player count not because anything
 //! here hands it to `PlayerId::new` (nothing does) but because the client
-//! indexes `colors[seat]` with it, and an input is bounded where it enters.
+//! indexes `colors[seat]` with it, and an input is bounded where it enters. The
+//! CLOCK is bounded for the same reason and the same way ([`MAX_CREATED_AT`]):
+//! the client builds a `Date` from it, and a `Date` out of range throws out of
+//! the panel's render rather than drawing a wrong time.
 //!
 //! Two things are deliberately NOT refused on read (R-6.4.8): a text longer than
 //! the configured cap (served as stored) and a document longer than the
@@ -23,6 +26,17 @@ use crate::tables::check_name;
 
 /// This document's own shape version, unrelated to `SEMANTICS_REV`.
 pub const CHAT_SCHEMA: u32 = 1;
+
+/// The newest clock this server will store or serve: 9999-12-31T23:59:59Z.
+///
+/// **A ceiling, not a calendar.** `created_at` is a stored field and therefore
+/// an INPUT, and it is the one the client hands straight to
+/// `new Date(created_at * 1000).toISOString()` — which THROWS above 8.64e15 ms
+/// and takes the panel's whole render down with it, for every browser at that
+/// table. The number here is far under that limit on purpose: a value past the
+/// year 9999 is a hand-edit or a half-finished restore, never a clock, and
+/// refusing it costs a message nobody typed.
+pub const MAX_CREATED_AT: u64 = 253_402_300_799;
 
 /// The one id the house document answers to.
 ///
@@ -154,15 +168,20 @@ impl ChatConfig {
         };
         // **The absent arms take their values from `ChatLimits::default()` and
         // never restate one.** A second copy of a default is a number that can
-        // move in one place: a changed `ChatLimits::default()` would leave this
-        // parse behind, and a production server launched with no variables set
-        // would then run a retention no test could see — the cells build their
-        // limits from `Default`, so the suite would stay green while the two
-        // disagreed.
+        // move in one place, and the way it would have gone unnoticed is worth
+        // stating exactly: moving `ChatLimits::default()` turns the health
+        // cell's hardcoded 500 red at once, the developer fixes THAT number,
+        // the suite returns to green — and this parse arm, restating the old
+        // one, survives unremarked, so a server launched with no variables set
+        // runs a retention nothing in the suite is looking at. The pin below
+        // (`setting nothing IS Default`) is what now catches that second step.
         let defaults = ChatLimits::default();
         let keep = match keep.map(str::trim) {
             None => defaults.keep,
-            Some("all") => None,
+            // `all` is read the way `on`/`off` are — the three variables are
+            // one operator's `docker run` line, and a rule that held for two of
+            // them and not the third would be a rule nobody could remember.
+            Some(s) if s.eq_ignore_ascii_case("all") => None,
             Some(s) => match s.parse::<usize>() {
                 Ok(n) if n > 0 => Some(n),
                 _ => {
@@ -226,7 +245,8 @@ pub fn check_text(raw: &str, limits: &ChatLimits) -> Result<String, String> {
 ///
 /// `players` is the table's count, or `None` at the house, where no author
 /// holds a seat. Length is deliberately not a refusal here — see the module
-/// doc.
+/// doc. The CLOCK is, and for the reason the seat bound is: the client renders
+/// it, and an input is bounded where it enters ([`MAX_CREATED_AT`]).
 pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
     if doc.schema > CHAT_SCHEMA {
         return Err(format!(
@@ -245,6 +265,14 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
         prev = m.seq;
         if m.text.is_empty() || m.text.chars().any(char::is_control) {
             return Err(format!("message {i}'s text is empty or carries a control character"));
+        }
+        // The clock, bounded here because the client renders it: see
+        // [`MAX_CREATED_AT`].
+        if m.created_at > MAX_CREATED_AT {
+            return Err(format!(
+                "message {i}'s clock {} is past the year 9999",
+                m.created_at,
+            ));
         }
         let (user, name, seat) = match &m.author {
             Author::Seat { seat, user, name } => (Some(user), name.as_deref(), Some(*seat)),
@@ -347,6 +375,39 @@ mod tests {
         assert!(check_shape(&d, Some(2)).is_err(), "last behind the newest");
     }
 
+    /// **The clock is bounded too, and the reason is the client's render**
+    /// (final review, Important 1).
+    ///
+    /// `created_at` is the last stored field the shape rule left alone, and it
+    /// is handed straight to `new Date(created_at * 1000).toISOString()` in the
+    /// panel — which THROWS `RangeError` above 8.64e15 ms, out of React's
+    /// render, taking the whole game screen down for every browser at that
+    /// table. So a hand-edited or half-restored document is refused here
+    /// instead, at a ceiling far under that: the end of year 9999, which no
+    /// clock this server reads will ever reach and no reader has to translate.
+    ///
+    /// The seconds beside it are the anti-vacuity: a rule that refused
+    /// everything would pass the first half of this cell on its own.
+    #[test]
+    fn a_clock_after_year_9999_is_refused_and_an_ordinary_one_is_not() {
+        let mut d = doc(vec![seat(1, 0, "hi")]);
+        d.messages[0].created_at = MAX_CREATED_AT;
+        assert!(check_shape(&d, Some(2)).is_ok(), "the last second this server will store");
+        d.messages[0].created_at = MAX_CREATED_AT + 1;
+        let e = check_shape(&d, Some(2)).unwrap_err();
+        assert!(e.contains("clock"), "{e}");
+        d.messages[0].created_at = u64::MAX;
+        assert!(check_shape(&d, Some(2)).is_err(), "and the value that crashes the panel");
+        d.messages[0].created_at = now_unix_ish();
+        assert!(check_shape(&d, Some(2)).is_ok(), "an ordinary message still reads");
+    }
+
+    /// Roughly 2026 in Unix seconds — a value this server really could write,
+    /// so the cell above is not satisfied by a rule that refuses everything.
+    fn now_unix_ish() -> u64 {
+        1_789_000_000
+    }
+
     #[test]
     fn malformed_fields_are_refused_but_length_is_not() {
         let long = "x".repeat(600);
@@ -429,6 +490,11 @@ mod tests {
         let e = ChatConfig::from_env_values(Some("maybe"), None, None).unwrap_err();
         assert!(e.contains(LOBBY_VAR) && e.contains("maybe"), "{e}");
         assert_eq!(ChatConfig::from_env_values(None, Some("all"), None).unwrap().limits.keep, None);
+        assert_eq!(
+            ChatConfig::from_env_values(None, Some(" ALL "), None).unwrap().limits.keep,
+            None,
+            "`all` is read the way `on` and `off` are: trimmed, case-insensitive",
+        );
         assert_eq!(
             ChatConfig::from_env_values(None, Some("20"), None).unwrap().limits.keep,
             Some(20),

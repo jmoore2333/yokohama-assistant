@@ -8,8 +8,12 @@
 //!
 //! **Since M6.4 the house carries TWO counters** ([`House`], R-6.4.7): `seq`
 //! for the writes a lobby listing reads and `chat` for a house message. One
-//! channel because a lobby holds one connection; two numbers because a message
-//! must not send every lobby to refetch its lists.
+//! channel because a lobby holds one connection; two numbers so that a frame
+//! SAYS which of the two moved — which is a capability and not yet a saving.
+//! At HEAD the lobby is a `"wake"` consumer and drops the frame, so a house
+//! message costs every visible lobby its three listing reads (recorded in the
+//! M6.4 close as a LEAVE item); the second counter is what a `"value"` consumer
+//! would need to tell them apart.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -29,9 +33,11 @@ pub struct Bump {
 ///
 /// `seq` moves on every write a lobby LISTING reads — a create, a join, a
 /// finalize, a move, a delete — and `chat` moves on a house message and on
-/// nothing else. A lobby woken by a frame compares both against what it holds
-/// and refetches only the half that moved, which is what keeps a room talking
-/// from costing every lobby in it two list fetches per message.
+/// nothing else. The two are separate so that a consumer CAN tell them apart
+/// and refetch only the half that moved. **No consumer does today**: the lobby
+/// reads this channel in `"wake"` mode and refetches all three listings on any
+/// frame, chat included, which is the M6.4 close's own LEAVE item. Read this as
+/// the shape a later `"value"` consumer needs, not as a saving already taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct House {
     pub seq: u64,
@@ -138,11 +144,12 @@ mod tests {
     /// leaves the chat counter alone.
     ///
     /// Two counters on one coalescing channel rather than two channels: a lobby
-    /// holds ONE connection, and the frame has to say which of the two things
-    /// moved, or every house message would send every lobby to refetch its
-    /// lists. The second half of this cell is the half that can fail — a
-    /// `bump_house_chat` that reached for `seq`, or a `bump` that touched
-    /// `chat`, would make the frame's two numbers one number wearing two names.
+    /// holds ONE connection, and the frame is what a consumer would read to
+    /// tell a message from a listing write. (None does at HEAD — the lobby
+    /// wakes on either; see [`House`].) The second half of this cell is the
+    /// half that can fail — a `bump_house_chat` that reached for `seq`, or a
+    /// `bump` that touched `chat`, would make the frame's two numbers one
+    /// number wearing two names.
     #[test]
     fn a_house_chat_bump_moves_chat_and_leaves_seq() {
         let s = Signals::default();

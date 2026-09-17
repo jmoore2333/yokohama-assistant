@@ -499,8 +499,10 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// functions this replaces, did between them. At `open` and `dealing` there is no session to ask, and every
 /// route that reaches a handle from there refuses with the status first, so the
 /// caller's lowest seat stands in — and since M6.4 the chat post READS it:
-/// before the deal a multi-seat caller posts as their lowest seat, after it as
-/// the acting seat (spec §3.2).
+/// before the deal a multi-seat caller posts as their lowest seat, and once the
+/// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
+/// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
+/// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
 fn admitted(
     state: &AppState,
     id: &str,
@@ -921,8 +923,11 @@ async fn chat_read(
 /// The order is the spec's §3.2 and is pinned by adjacent-pair probes:
 /// admission, the text, the seat/name rule, the watcher's name, the append.
 /// Every step before the append is a refusal this caller can fix, and the text
-/// is checked BEFORE any lock is taken, so a message that will be refused never
-/// makes anyone wait for a table.
+/// is checked before the APPEND takes the table's lock, so a message that will
+/// be refused never makes anyone wait behind another message. (Not "before any
+/// lock": `admitted` runs first, and on a dealing table where every human has
+/// kept it goes through `settle`, which takes that table's lock to finish the
+/// deal.)
 async fn chat_post(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1854,9 +1859,13 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
     let table = state.games.table_for_anyone(id, user)?;
     // **Read ONCE, above all three arms**, because every one of them answers
     // it: an open table where the seats are still filling is exactly where the
-    // people at it are talking. It sits AFTER the table read so a caller who
-    // may not read this table — or an id that is not there — never reaches the
-    // chat document at all.
+    // people at it are talking. It sits AFTER the table read, which is as far
+    // as the guard goes and no further: an id that is not there, or a stranger
+    // at a DEAL, is refused by `table_for_anyone` above and never reaches the
+    // chat document. A stranger at a locked PLAYING table passes that read and
+    // does reach it — one read and, on a miss, a cache seed — and is then
+    // refused by `admitted` below. Nothing of it crosses the wire: the 403
+    // carries no count.
     let chat = state.games.chat_last(id);
     if table.status == crate::table::TableStatus::Open {
         return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
@@ -1968,10 +1977,12 @@ async fn stream(
 /// therefore be a payload that is sometimes wrong. The lobby refetches all its
 /// lists on any bump instead, which is table documents and no session.
 ///
-/// A `chat` bump moves the second counter and the lobby, in `wake` mode,
-/// refetches on either — which is why there are two numbers on one channel
-/// rather than one: a house message must not send every lobby in the room to
-/// refetch its lists.
+/// A `chat` bump moves the second counter, and the lobby — a `wake` consumer —
+/// refetches all three of its listings on EITHER number moving. **That cost is
+/// real and is recorded rather than avoided** (spec §6.2, §11): a house message
+/// is one more house wake per visible lobby. The two numbers ride one channel
+/// so that a consumer reading the frame's VALUE could tell them apart; none
+/// does yet.
 ///
 /// **Nothing on connect**, which is what `from_changes` buys and `new` would
 /// lose: the lobby has just fetched its lists to render at all, and a frame at
@@ -6977,6 +6988,256 @@ mod tests {
             assert_eq!(got["error"], "the lobby chat is off");
         }
         assert!(!house.has_changed().unwrap(), "nothing moved the house counter");
+    }
+
+    /// **A caller holding TWO seats posts as their LOWEST before the deal and
+    /// as the ACTING seat after it** (spec §3.2, §9.1).
+    ///
+    /// The hot seat is the shape this rule was written for and nothing pinned
+    /// it: one person at both seats, which `start_as` cannot express and the
+    /// corrected `admitted` doc describes in two clauses nothing tried. The
+    /// table starts at seat ONE deliberately — at seat zero the lowest seat and
+    /// the acting seat are the same number and the cell would read the same
+    /// under either rule.
+    ///
+    /// The acting seat is READ off `events` rather than assumed, so the second
+    /// half is a comparison between two things the server said and not between
+    /// the server and this cell's arithmetic.
+    #[tokio::test]
+    async fn a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after() {
+        let state = Arc::new(AppState::in_memory());
+        let both = "red@wire.test";
+        let (status, t) = post_as(
+            &state,
+            both,
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
+                "seed": ENDED_SEED.to_string(),
+                "seats": [{ "user": both }, { "user": both }],
+                "id": "hotseat", "name": "hotseat",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        assert_eq!(t["status"], "dealing");
+
+        let (status, m) = post_as(
+            &state,
+            both,
+            "/api/games/hotseat/chat",
+            serde_json::json!({ "text": "before" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["seat"], 0, "at a deal there is no acting seat: the lowest stands in");
+
+        for seat in [0, 1] {
+            let (status, kept) = post_as(
+                &state,
+                both,
+                "/api/games/hotseat/keep",
+                serde_json::json!({ "seat": seat, "card": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+        }
+        let (status, e) = get_as(&state, both, "/api/games/hotseat/events").await;
+        assert_eq!((status, e["status"].as_str()), (StatusCode::OK, Some("playing")), "{e}");
+        let acting = e["to_move"].as_u64().expect("a playing table names its mover");
+        assert_eq!(acting, 1, "the table was started at seat one, which is what makes this a reading");
+
+        let (status, m) = post_as(
+            &state,
+            both,
+            "/api/games/hotseat/chat",
+            serde_json::json!({ "text": "after" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["seat"].as_u64(), Some(acting), "and once it is playing, the acting seat");
+    }
+
+    /// **A store conflict on the chat write is a 409, in this API's own error
+    /// shape** (spec §9.1).
+    ///
+    /// The one refusal on this route that is not the caller's fault: another
+    /// writer landed a message between this append's read and its swap. It has
+    /// to be a 409 and not a 500, because a 409 is a request worth sending
+    /// again and a 500 is not.
+    ///
+    /// The failure is armed for ONE chat write, and the spent arming is the
+    /// anti-vacuity: without it a cell whose conflict never fired would assert
+    /// the happy path and call it a refusal.
+    #[tokio::test]
+    async fn a_conflicting_chat_write_is_a_409() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A [`MemStore`] whose next `n` `Doc::Chat` writes come back
+        /// `Conflict`, and only those: a store that conflicted on everything
+        /// would refuse the `start_as` that makes the table.
+        struct Contended {
+            inner: MemStore,
+            conflict_chat_writes: AtomicUsize,
+        }
+        impl Store for Contended {
+            fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(
+                &self,
+                doc: Doc,
+                id: &str,
+            ) -> Result<Option<(String, crate::store::Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<crate::store::Version>,
+            ) -> Result<crate::store::Version, crate::store::WriteError> {
+                if doc == Doc::Chat
+                    && self
+                        .conflict_chat_writes
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok()
+                {
+                    return Err(crate::store::WriteError::Conflict { current: None });
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store = Arc::new(Contended {
+            inner: MemStore::default(),
+            conflict_chat_writes: AtomicUsize::new(0),
+        });
+        let state = Arc::new(AppState::with_store(
+            Arc::clone(&store) as Arc<dyn Store>,
+            identity::IdentityMode::Claimed,
+        ));
+        start_as(&state, "wire", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+
+        store.conflict_chat_writes.store(1, Ordering::SeqCst);
+        let (status, got) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/wire/chat",
+            serde_json::json!({ "text": "raced" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{got}");
+        assert!(
+            got["error"].as_str().is_some_and(|e| e.contains("in flight")),
+            "and says what happened: {got}",
+        );
+        assert_eq!(
+            store.conflict_chat_writes.load(Ordering::SeqCst),
+            0,
+            "the armed conflict never fired, so this cell watched the happy path",
+        );
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/wire/chat",
+            serde_json::json!({ "text": "again" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "a 409 is worth sending again: {m}");
+    }
+
+    /// **The chat's query struct is fenced like every other one** (spec §7):
+    /// `after` is the only key, and a misspelling is a 400 in this API's shape
+    /// rather than a silent read from zero.
+    ///
+    /// Which is the whole of why it matters here: an unfenced `?afer=0` would
+    /// answer 200 with the WHOLE retained page, and a client that had renamed
+    /// its cursor would redraw every message it already held on every tick,
+    /// with nothing in the reply saying so.
+    ///
+    /// Both routes, because they parse the same struct through the same
+    /// extractor and a fence shown on one of two is a fence shown on one.
+    #[tokio::test]
+    async fn an_unknown_key_on_a_chat_query_is_a_400_on_both_routes() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "wire", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        for uri in ["/api/games/wire/chat?afer=0", "/api/chat?afer=0"] {
+            let (status, got) = get_as(&state, "red@wire.test", uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {got}");
+            assert!(got["error"].is_string(), "{uri}: in this API's own shape — {got}");
+        }
+        // The anti-vacuity: the spelled key is answered, so the 400 above is
+        // about the NAME and not about the route.
+        for uri in ["/api/games/wire/chat?after=0", "/api/chat?after=0"] {
+            let (status, got) = get_as(&state, "red@wire.test", uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {got}");
+        }
+    }
+
+    /// **The house applies the name rule at the route, and the SWITCH runs
+    /// before the text** (spec §3.3, §9.1).
+    ///
+    /// Two things nothing pinned. The name: `POST /api/chat` is the one route
+    /// where a name is always the caller's own claim, so `check_name` has to
+    /// run on it — the house cell above posts a VALID name and would pass
+    /// against a route that never checked.
+    ///
+    /// And the ORDER, by a two-defect probe: a request that is BOTH sent to a
+    /// switched-off house AND carries an empty text is answered 404, not 400.
+    /// A single-defect probe pins nothing about order, which is the lesson
+    /// three M6.2 tasks relearned — and the order matters here because the 400
+    /// would tell a caller their message was the problem at a deployment that
+    /// has no house chat at all.
+    #[tokio::test]
+    async fn the_house_checks_the_name_and_reads_its_switch_before_the_text() {
+        let on = Arc::new(AppState::in_memory());
+        let (status, got) = post_as(
+            &on,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "hi", "name": "y".repeat(65) }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a name is 1 to 64 characters")),
+            "{got}",
+        );
+        let (status, got) = post_as(
+            &on,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "hi", "name": "ok\u{7}" }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a name has no control characters")),
+            "{got}",
+        );
+        assert_eq!(on.games.house_page(0).expect("a page").1, 0, "and nothing was appended");
+
+        let off = Arc::new(AppState::in_memory_with_chat(chat::ChatConfig {
+            lobby: false,
+            ..chat::ChatConfig::default()
+        }));
+        let (status, got) = post_as(
+            &off,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "  " }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::NOT_FOUND, Some("the lobby chat is off")),
+            "the switch is read before the text: {got}",
+        );
     }
 
     /// **`Events.chat` on all three arms, and the stream after a chat bump

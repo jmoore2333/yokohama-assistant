@@ -692,6 +692,20 @@ mod tests {
             );
             assert!(store.list(Doc::Table).expect(name).is_empty(), "{name}: and no table");
             assert!(store.read(Doc::House, "house2").is_err(), "{name}: the house has one id");
+            // **And the WRITE site, which is the one that could leave a file
+            // behind** (final review, minor 15). A refusal pinned through
+            // `read` alone would go on passing against a store that wrote
+            // `house2` happily and then declined to read it back — the exact
+            // shape `MemStore` had before this rule was hoisted above both
+            // implementations, since `is_safe_id("house2")` is perfectly true.
+            assert!(
+                store.write_if_version(Doc::House, "house2", "{}", None).is_err(),
+                "{name}: and a second house is never WRITTEN",
+            );
+            assert!(
+                store.list(Doc::House).expect(name).len() == 1,
+                "{name}: the refused write left nothing behind",
+            );
             store.write_if_version(Doc::Record, "g", "{\"r\":1}", None).expect(name);
             store.delete("g").expect(name);
             assert!(
