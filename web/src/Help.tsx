@@ -175,6 +175,9 @@ export function Help() {
         land on is the <strong>lobby</strong>. It has two lists &mdash; <em>Your games</em>, the
         tables you already sit at, and <em>Open tables</em>, every table on the server still
         waiting for players, whoever opened it &mdash; and <em>New table</em>, which is the form.
+        Beside <strong>You are</strong> at the top of it is a <strong>Your name</strong> field: it
+        is optional, this browser remembers it, and it is the name the seats you take and the
+        messages you send are labelled with &mdash; leave it blank and your address is used.
       </p>
       <p>
         The form is <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s

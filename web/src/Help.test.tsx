@@ -128,6 +128,24 @@ describe("the help panel and the lobby", () => {
     expect(text).not.toContain("the list on the start screen");
     expect(text).not.toContain("back to the start screen");
   });
+
+  // **The name field, in the paragraph that describes the LOBBY** (spec §6.6's
+  // third edit, ruling R-7-1). The same fact is stated again in the Talking
+  // section, deliberately — a player setting up a table and a player about to
+  // say something both need it, and neither reads the other's section first.
+  //
+  // So this cell is SCOPED, and that is the whole of its value: read over the
+  // whole panel it would be satisfied by the Talking section's copy and would
+  // go on passing with the lobby's own sentence gone.
+  it("says in the lobby's own paragraph what the name field is for", () => {
+    render(<Help />);
+    const text = section("Starting a game");
+    expect(text).toContain("Your name");
+    // Named by where it sits, because that is how a reader finds it.
+    expect(text).toContain("You are");
+    expect(text).toContain("this browser remembers it");
+    expect(text).toContain("leave it blank and your address is used");
+  });
 });
 
 describe("the help panel and watching (R-8.1)", () => {
