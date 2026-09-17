@@ -894,8 +894,17 @@ pub struct ChatPage {
 /// **The same [`admitted`] every projection takes, and deliberately not a rule
 /// of its own** (spec §3.2): a seat holder at every status, a watcher once the
 /// table admits them, and the lock's own sentence for the caller who has not
-/// knocked. A room is readable by exactly the people who can see the table it
-/// is at.
+/// knocked.
+///
+/// **Which is NARROWER than seeing the table, and the gap is the point.**
+/// `GET …/table` and `…/events` answer any signed-in caller at an OPEN table
+/// (R-2.7, R-4.3) so that someone who followed a join link can read the seat
+/// picker and watch for the seats to fill; the chat takes no such widening. A
+/// stranger on that screen reads the table and the message COUNT off the
+/// signal, and is 403 on the messages themselves — pinned by
+/// `events_carries_the_chat_count_at_open_dealing_and_playing`, which asserts
+/// both halves of that one caller in two adjacent lines. A room is readable by
+/// the people `admitted` admits, not by everyone who can see the door.
 async fn chat_read(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
