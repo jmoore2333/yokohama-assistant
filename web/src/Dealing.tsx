@@ -26,6 +26,7 @@ import { backArt } from "./art";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
 import { OrderCardView, seatClass } from "./Cards";
+import { Chat } from "./Chat";
 import { TableSections } from "./TableSections";
 import { useSignal } from "./signal";
 import { holder, seatName } from "./tables";
@@ -109,6 +110,10 @@ export function Dealing({
   const [deal, setDeal] = useState<DealView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The table's newest message number, off the signal's own frame — the chat
+   *  panel's `count` (spec §6.2). The table exists before the game does, and so
+   *  do the people waiting at it. */
+  const [chatCount, setChatCount] = useState(0);
 
   // The same guard, and the same reasoning, as `App`'s `inFlight`: React
   // batches, so two clicks in the same tick both read a `busy` STATE of false
@@ -201,6 +206,9 @@ export function Dealing({
     game,
     true,
     (e) => {
+      // The table's newest message number, off the frame this screen already
+      // reads for its own hand-over (spec §6.2) — the panel's `count`.
+      setChatCount(e.chat);
       if (e.status !== "dealing") void start();
     },
     // **A table that is GONE stops being polled, and says so**, which the deal
@@ -353,6 +361,11 @@ export function Dealing({
             </section>
           ),
         )}
+        {/* LAST in the column and folded (R-6.4.10), the game screen's own rule.
+            `sendName={false}`: everyone here holds a seat, and a seat is named
+            by its seat — sending a name for one is a 400 rather than a quiet
+            override (R-6.4.2). */}
+        <Chat scope={{ kind: "table", id: game }} count={chatCount} colors={colors} sendName={false} />
       </aside>
       <div className="deck">
         <div className="decision">

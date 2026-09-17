@@ -106,7 +106,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // row's "another email" arm.
   await signIn(a, "a@e2e.test");
   // The lobby is the first screen since M6.2; the form is one click on.
-  await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
   await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
   // `exact: true`: switching this row to an email puts a "Seat 1 email" field
@@ -159,7 +159,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await c.goto(`/#/t/${id}`);
   // The unlock face, and it is the SERVER's answer that puts it there: a
   // playing table this caller holds no seat at, which has not been unlocked.
-  await expect(c.getByRole("heading", { name: "Lobby" })).toHaveCount(0);
+  // Exact, for the reason `harness.ts` gives: the lobby's own heading, not
+  // the chat panel's, which carries the word too.
+  await expect(c.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
   const watchButton = c.getByRole("button", { name: "Watch" });
   await expect(watchButton).toBeVisible();
 

@@ -7,11 +7,11 @@
 // `api.ts` rather than restating it, which is what makes that a join and not
 // two strings that happen to match today.
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SignIn } from "./SignIn";
-import { CLAIMED_USER_KEY } from "./api";
+import { CLAIMED_USER_KEY, DISPLAY_NAME_KEY } from "./api";
 
 describe("the sign-in screen", () => {
   it("stores the typed email under the key api.ts reads and hands it up", async () => {
@@ -59,6 +59,31 @@ describe("the sign-in screen", () => {
   it("says nothing of its own when there is no notice", () => {
     render(<SignIn onSignedIn={vi.fn()} />);
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  // **The name at the door (R-6.4.3), and it is OPTIONAL.** One key, read by
+  // the lobby, the New table form, the seat picker and the chat's own post — so
+  // a person who types it here is named from their first message onwards
+  // without visiting any of the four screens that also offer it.
+  //
+  // The second half is what makes it optional rather than merely defaulted: a
+  // blank field leaves whatever was there ALONE. Clearing is the lobby's field,
+  // which has a value to clear; a door that wrote an empty string here would
+  // sign a returning player in under no name at all.
+  it("remembers an optional name typed at the door, and leaves the key alone when it is blank", async () => {
+    render(<SignIn onSignedIn={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Email"), "red@wire.test");
+    // Padded, as a person types it: the name is trimmed the way the address is.
+    await user.type(screen.getByLabelText("Your name (optional)"), "  Captain Red  ");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Captain Red");
+
+    cleanup();
+    render(<SignIn onSignedIn={vi.fn()} />);
+    await user.type(screen.getByLabelText("Email"), "blue@wire.test");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Captain Red");
   });
 
   // Not in the plan's two cells, and here because the plan's own message reads

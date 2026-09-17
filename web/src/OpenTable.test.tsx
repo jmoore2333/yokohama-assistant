@@ -11,7 +11,7 @@
 // lobby's second row is the same shape from the seat — a listing row and a
 // `GET …/table` reply are one `TableView`, so neither face is built here.
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenTable } from "./OpenTable";
@@ -50,6 +50,15 @@ function show(
     // scripts its own; the rest get one that opens and says nothing, which is
     // what a reachable server with nothing to report does.
     if (call.path.endsWith("/stream")) return openStream();
+    // **A seated caller's screen draws a chat panel since M6.4** (spec §6.2),
+    // and it asks on mount whatever its fold state — so every `showSeated` cell
+    // now makes that request whether or not it is about the chat. A table where
+    // nothing has been said, derived from the corpus's own page rather than
+    // typed out here, so a cell that is not about the chat has none of it in
+    // its DOM. A STRANGER's screen draws no panel and asks for nothing, which
+    // is the half the cell below pins.
+    if (call.method === "GET" && call.path.includes("/chat"))
+      return { ...wire.chat, messages: [], last: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -412,5 +421,33 @@ describe("the open table's watch", () => {
     // without this caller, which the server reads as a 403 and reports as
     // `gone` — has words of its own rather than none.
     expect(endSentence("gone")).toMatch(/no longer available/);
+  });
+});
+// ---- M6.4: the chat, for a seated caller only -----------------------------
+
+describe("the open table's chat", () => {
+  // **A stranger on the seat picker is 403 at this route and must not be shown
+  // a panel that refuses** (spec §6.2). The table read is the one route widened
+  // to somebody who is not seated (R-2.7); the chat is NOT — so the panel is
+  // rendered under the link field, which only a seated caller has, and the
+  // stranger's screen asks for nothing at all.
+  it("draws the chat panel for a seated caller under the link, and not for a stranger", async () => {
+    const { stub } = showSeated(tableIs(seated()));
+    const link = await screen.findByLabelText("Link");
+    const panel = document.querySelector("section.panel.chat")!;
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveClass("folded");
+    // UNDER the link field, in document order — the place the spec names.
+    expect(link.closest(".link-field")!.compareDocumentPosition(panel)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(stub.matching("GET", "/chat").length).toBeGreaterThan(0);
+    cleanup();
+
+    const stranger = show(tableIs(wire.tableOpen));
+    await screen.findByRole("button", { name: "sit here" });
+    expect(screen.queryByText("Chat")).toBeNull();
+    expect(document.querySelector("section.panel.chat")).toBeNull();
+    expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);
   });
 });

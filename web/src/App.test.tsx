@@ -1,11 +1,11 @@
 // The app shell: what it sends, when it sends it, and what it will not send twice.
 
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
-import { CLAIMED_USER_KEY } from "./api";
+import { CLAIMED_USER_KEY, chatText, lobbyChat, setChatText, setLobbyChat } from "./api";
 import { loadSections } from "./sections";
 import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -2483,6 +2483,155 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+// ---- M6.4: the chat, and the stream that is now held at every status -------
+//
+// Four cells, and each is about ONE sentence this milestone wrote about the
+// game screen: the stream is held whatever the prompt says (R-6.4.4), a frame
+// that lands during this browser's own post is PARKED rather than walked, the
+// panel is last in the side column and folded (R-6.4.10), and the two health
+// switches are read at boot.
+
+describe("the game screen's chat", () => {
+  // **`active` is now "there is a game on screen" (R-6.4.4), and these are the
+  // two statuses the old rule excluded.** A chat message is a change like any
+  // other, and a table where the only person who could hear it is the one whose
+  // turn it is not would be a chat that arrives when you stop playing. The two
+  // Minors the M6.3 close left (M-1 and M-3 — no stream during your own turn,
+  // none after the game is over) close with this.
+  //
+  // **Read at its real size**: what it asserts is that the reader is OPENED at
+  // all under each state, which is the whole of what changed. Under the old
+  // rule `until` never returns and the cell fails naming the wait.
+  it("holds the table's stream during the player's own turn and after the game is over", async () => {
+    for (const state of [wire.options, wire.gameOver]) {
+      const stream = fakeStream();
+      await renderApp(state, (call) => {
+        if (call.path.endsWith(`/api/games/${state.id}/stream`)) return stream.reply(call);
+        if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+        return undefined;
+      });
+      await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
+      // ONE reader, not one per render: the same property every other cell in
+      // this file holds the transport to.
+      expect(stream.opens(), `one reader at ${state.prompt.kind}`).toBe(1);
+      cleanup();
+      // **The hash outlives the unmount**, and `renderApp` goes in through the
+      // lobby: left at `#/t/wire` the second render mounts straight into the
+      // game and there is no row to click. The suite's own `beforeEach` does
+      // this between cells; a loop has to do it between turns.
+      window.location.hash = "";
+    }
+  });
+
+  // **The guard the held stream makes necessary (spec §6.4, mutation 12).**
+  // With `active` no longer falling to false during the player's own turn, the
+  // server's own bump for the move being posted now reaches this browser WHILE
+  // the reply is in flight — and the arrival handler would read the game again,
+  // against a count the reply is about to change, and walk this browser's own
+  // move as somebody else's turn.
+  //
+  // So the frame is parked and compared once the reply has landed. The half
+  // that makes the comparison true is `send` writing `stateNow.current` beside
+  // its `setState`: React's commit is scheduled and not synchronous, so without
+  // it the parked frame is compared against the PRE-move count and walks.
+  it("parks a frame that lands while its own move is in flight, and does not walk it", async () => {
+    const stream = fakeStream();
+    const reply = gate<Reply>();
+    const stub = await renderApp(wire.options, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.options.id}/stream`)) return stream.reply(call);
+      if (call.method === "POST" && call.path.endsWith("/input")) return reply.promise;
+      if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+      return undefined;
+    });
+    await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
+    /** The game RE-READ, anchored on purpose — the idiom the arrival cells
+     *  above already carry. `matching("GET", "/api/games/wire")` is a substring
+     *  test that also counts `/at/0`, `/log`, `/table`, `/stream` and `/chat`,
+     *  so it would read as "something was fetched" whatever happened. */
+    const frames = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    const walked = () => stub.matching("GET", "/at/").length;
+
+    const user = userEvent.setup();
+    await user.click(firstOptionButton());
+    const framesBefore = frames().length;
+    const walkedBefore = walked();
+
+    vi.useFakeTimers();
+    try {
+      // The server's own bump for THIS move reaches the stream before the reply
+      // does, which is the ordering the guard exists for.
+      stream.push("signal", {
+        ...wire.events,
+        events: wire.options.events + 1,
+        chat: wire.chat.last,
+      });
+      await flush();
+      expect(frames(), "nothing was re-read while posting").toHaveLength(framesBefore);
+      expect(walked(), "and nothing was walked").toBe(walkedBefore);
+
+      reply.resolve({ ...wire.watching, events: wire.options.events + 1 });
+      await flush();
+      // Compared NOW, against the state the reply produced: the counts are
+      // equal, so the parked frame is a no-op and the game is not read a second
+      // time for a move this browser made. (The `/at/` positions that follow
+      // are the REPLY's own run, fetched by `send` — not the parked frame's.)
+      expect(frames(), "the parked frame cost no read of its own").toHaveLength(framesBefore);
+
+      // **And the guard was RELEASED.** Without this the cell passes just as
+      // well against a client that drops every frame arriving during a post,
+      // which is a screen that stops learning after its first move.
+      stream.push("signal", {
+        ...wire.events,
+        events: wire.options.events + 2,
+        chat: wire.chat.last,
+      });
+      await until(() => frames().length === framesBefore + 1, "the next frame was read");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // LAST in the side column and FOLDED (R-6.4.10) — a bonus under the account
+  // and the players, not the main attraction — and drawn for a WATCHER as well
+  // as a player, which is the one route a spectator may write to (R-6.4.1).
+  it("draws the chat panel last in the side column, folded, for a player and for a watcher", async () => {
+    for (const state of [wire.options, wire.spectator]) {
+      await renderApp(state, (call) =>
+        call.method === "GET" && call.path.includes("/chat") ? wire.chat : undefined,
+      );
+      const side = document.querySelector("aside.side")!;
+      await waitFor(() => expect(side.lastElementChild).toHaveClass("chat"));
+      expect(side.lastElementChild).toHaveClass("folded");
+      expect(within(side as HTMLElement).getByRole("button", { name: "show" })).toBeInTheDocument();
+      cleanup();
+      // See the cell above: the hash outlives the unmount and `renderApp` goes
+      // in through the lobby.
+      window.location.hash = "";
+    }
+  });
+
+  // The two launch variables, read at boot beside the transport (R-6.4.6,
+  // R-6.4.8). They live in `api.ts` rather than in state for `signalKind`'s own
+  // reason: one value for the life of the page, read by components that must
+  // not re-render when it is set.
+  it("reads the lobby switch and the text cap from health at boot", async () => {
+    try {
+      await renderApp(wire.options, (call) =>
+        call.path.endsWith("/api/health")
+          ? { ...wire.health, lobby_chat: false, chat_text: 77 }
+          : undefined,
+      );
+      await waitFor(() => expect(lobbyChat()).toBe(false));
+      expect(chatText()).toBe(77);
+    } finally {
+      // Module state, not component state: left as this cell found it, or every
+      // cell after it in this file runs against a server it never described.
+      setLobbyChat(true);
+      setChatText(500);
     }
   });
 });

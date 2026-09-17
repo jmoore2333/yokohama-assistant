@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
+import { Chat } from "./Chat";
 import { api, ApiError, displayName, setDisplayName } from "./api";
 import { seatClass } from "./Cards";
 import { hashOf } from "./route";
@@ -68,6 +69,14 @@ export function OpenTable({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** "Something about this table may have changed" (spec §6.2), counted.
+   *
+   *  This screen's hook is a `"wake"` consumer — a frame is not its value, so
+   *  the frame's own `chat` number never reaches here — and `take` is where
+   *  every answer about the table lands, from the opening read, the stream and
+   *  a join's reply alike. So the panel is told to ask for its delta off the
+   *  same wake this screen already acts on, which is the only source it has. */
+  const [tick, setTick] = useState(0);
   // The guard against a SECOND join going out while the first is in flight —
   // a ref and not the state, for the reason `App`'s own `inFlight` is one:
   // React batches, so two clicks in one tick both read a state flag as false
@@ -89,6 +98,10 @@ export function OpenTable({
    *  longer open is handed back rather than drawn: there is nothing on this
    *  screen to say about it. */
   const take = useCallback((t: TableView) => {
+    // FIRST, and before the status branch: a table that has just stopped being
+    // open is handed back, and a tick that rode behind that branch would be the
+    // one wake this screen never passed on.
+    setTick((n) => n + 1);
     if (t.status !== "open") {
       started.current();
       return;
@@ -265,6 +278,13 @@ export function OpenTable({
             {copied ? "copied" : "copy"}
           </button>
         </div>
+      )}
+      {/* ONLY for a seated caller (spec §6.2). The table read is the one route
+          widened to somebody who is not seated (R-2.7); the chat is NOT — a
+          stranger on the seat picker is 403 here — so showing them a panel
+          would be showing them a box that refuses everything typed into it. */}
+      {seated && (
+        <Chat scope={{ kind: "table", id: game }} tick={tick} colors={colors} sendName={false} />
       )}
       <div className="field open-table-controls">
         {/* The shared control (R-13), so this screen and the lobby's rows cannot

@@ -18,24 +18,31 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Help } from "./Help";
 
-/** The whole "Starting a game" SECTION — every paragraph from that heading to
- *  the next one.
+/** The whole SECTION under one heading — every paragraph from it to the next
+ *  heading.
  *
- *  **The section, not its first paragraph.** M6.1 split it in three (the door
- *  and the form, the set table, the choice), and a helper that took the first
- *  `<p>` would have pointed at the form and gone on passing for whatever it
- *  happened to find there. Bounded by the next heading rather than by a count,
- *  so a fourth paragraph joins the reading instead of escaping it. */
-function startingSection(): string {
-  const heading = screen.getByRole("heading", { name: "Starting a game" });
+ *  **The section, not its first paragraph.** M6.1 split "Starting a game" in
+ *  three (the door and the form, the set table, the choice), and a helper that
+ *  took the first `<p>` would have pointed at the form and gone on passing for
+ *  whatever it happened to find there. Bounded by the next heading rather than
+ *  by a count, so a fourth paragraph joins the reading instead of escaping it.
+ *
+ *  **Parameterized since M6.4**, which is its third reader: two copies of this
+ *  loop had already been written out, and a third would have been the cycle
+ *  where one of them drifted. */
+function section(name: string): string {
+  const heading = screen.getByRole("heading", { name });
   let text = "";
   for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
     if (/^H[1-6]$/.test(el.tagName)) break;
     text += ` ${el.textContent ?? ""}`;
   }
-  if (!text.trim()) throw new Error("nothing follows the 'Starting a game' heading");
+  if (!text.trim()) throw new Error(`nothing follows the '${name}' heading`);
   return text;
 }
+
+/** The section every set-table cell below reads. */
+const startingSection = () => section("Starting a game");
 
 describe("the help panel's set-table section", () => {
   // **R-C5, the sentence itself.** The bot's cards are face down and the record
@@ -124,20 +131,9 @@ describe("the help panel and the lobby", () => {
 });
 
 describe("the help panel and watching (R-8.1)", () => {
-  /** The whole "Watching a game" SECTION, bounded by the next heading — the
-   *  same reading `startingSection` takes, and for the same reason: a helper
-   *  that took the first paragraph would go on passing for whatever it found
-   *  there after the section grew. */
-  function watchingSection(): string {
-    const heading = screen.getByRole("heading", { name: "Watching a game" });
-    let text = "";
-    for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
-      if (/^H[1-6]$/.test(el.tagName)) break;
-      text += ` ${el.textContent ?? ""}`;
-    }
-    if (!text.trim()) throw new Error("nothing follows the 'Watching a game' heading");
-    return text;
-  }
+  /** The whole "Watching a game" SECTION — the shared reader, named here so
+   *  every cell below says which section it is about. */
+  const watchingSection = () => section("Watching a game");
 
   // **The two ways in.** A player who wonders how to watch somebody else's
   // game should find both here: the lobby's third list, and a link somebody
@@ -162,6 +158,16 @@ describe("the help panel and watching (R-8.1)", () => {
   // **What the screen is, and what it is not.** The three facts a watcher would
   // otherwise have to discover by trying: the strip, the hidden hands, and that
   // there is nothing to press.
+  // **And a watcher can TALK (M6.4, R-6.4.1).** The one write a spectator is
+  // allowed, so a page that listed everything they cannot do and stopped there
+  // would be describing the screen they had before this cycle.
+  it("says a watcher can talk, and that what they say is marked", () => {
+    render(<Help />);
+    const text = watchingSection();
+    expect(text).toContain("You can talk");
+    expect(text).toContain("watcher");
+  });
+
   it("says what watching looks like and what it does not offer", () => {
     render(<Help />);
     const text = watchingSection();
@@ -208,5 +214,58 @@ describe("the help panel's prose", () => {
     const { container } = render(<Help />);
     expect(container.querySelectorAll("strong, em").length).toBeGreaterThan(10);
     expect(within(container).getAllByRole("heading").length).toBeGreaterThan(3);
+  });
+});
+describe("the help panel and talking (M6.4)", () => {
+  // **Where it is and that it is SHUT.** A panel folded by default is a panel a
+  // player may never find, so the page has to say where it sits and that the
+  // number on its header is what arrived while it was closed.
+  it("names the panel, its fold and the foot of the column", () => {
+    render(<Help />);
+    const text = section("Talking");
+    expect(text).toContain("foot of the side column");
+    expect(text).toContain("Chat");
+    expect(text).toContain("folded until you open it");
+    expect(text).toContain("count of what has arrived");
+  });
+
+  // **Who is labelled how (R-6.4.2), which is the one thing a reader cannot
+  // work out from the screen**: a seat is named by its seat and a watcher is
+  // marked, so a name typed into the lobby is not what a seated player's line
+  // carries.
+  it("says how a seat and a watcher are labelled", () => {
+    render(<Help />);
+    const text = section("Talking");
+    expect(text).toContain("seat");
+    expect(text).toContain("colour");
+    expect(text).toContain("watching");
+  });
+
+  // **What a message is NOT (R-6.4.9, R-6.4.13).** Not undone, not in the
+  // record, not kept for ever, and gone with the table — the four facts that
+  // decide whether a player treats the panel as a place to agree a rule.
+  it("says a message is never undone and never part of the record", () => {
+    render(<Help />);
+    const text = section("Talking");
+    expect(text).toContain("never undone");
+    expect(text).toContain("never part of the game");
+    expect(text).toContain("drops the oldest");
+    expect(text).toContain("abandoned");
+  });
+
+  // **The lobby's own chat and its switch (R-6.4.6), and the name that feeds
+  // both.** An operator can turn the house chat off, and then the section is
+  // simply not there — which a player who had read about it would otherwise
+  // report as a bug.
+  it("names the lobby chat, its switch and the name field", () => {
+    render(<Help />);
+    const text = section("Talking");
+    expect(text).toContain("Lobby chat");
+    expect(text).toContain("switch it off");
+    // The field the name comes from, named by where it sits rather than by its
+    // label — the label is the lobby's own cell, and this is the sentence that
+    // tells a reader which of the four fields feeds their messages.
+    expect(text).toContain("The name you type beside");
+    expect(text).toContain("your address is used");
   });
 });

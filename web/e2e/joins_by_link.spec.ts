@@ -72,7 +72,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   // "Open table" rather than "Deal", which is the form telling the truth about
   // what it is about to do.
   await signIn(a, "a@e2e.test");
-  await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
   await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
   // **`exact: true` on all three, and each for its own collision.**
@@ -228,7 +228,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   // whose turn it is — the words `tables.ts` gives every list.
   await a.locator("details.game-menu > summary").click();
   await a.getByRole("button", { name: "Lobby" }).click();
-  await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   // **Scoped to YOUR GAMES by NAME, and it used to be by exclusion.** A table
   // can be listed in more than one section — in Open tables while it is still
   // filling, and since M6.3 in Games in progress once it is not — so

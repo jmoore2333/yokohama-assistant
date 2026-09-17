@@ -235,7 +235,26 @@ export function Help() {
         cannot play, you cannot undo, and Suggest is not offered, because it runs on a
         seat and you have none. Everything you can read still reads: the log and its
         replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
-        played, and the final score once there is one.
+        played, and the final score once there is one. You can talk, too: the chat panel is at
+        the foot of the column, and what you say is marked as coming from a watcher.
+      </p>
+
+      <h3>Talking</h3>
+      <p>
+        At the foot of the side column &mdash; under the account of the last turn and the players
+        &mdash; is a <strong>Chat</strong> panel, folded until you open it, with a count of what has
+        arrived while it was closed. Everyone at the table can talk: each seat&rsquo;s line carries
+        the seat&rsquo;s colour and the name it joined under, or its address, and a watcher&rsquo;s
+        line says <em>watching</em>. A message is never undone and never part of the game&rsquo;s
+        record; the server keeps a few hundred per table and drops the oldest, and the table&rsquo;s
+        chat goes with the table when it is abandoned.
+      </p>
+      <p>
+        The lobby has a chat of its own, <strong>Lobby chat</strong>, under the three lists, folded
+        the same way &mdash; open it to join in. Whoever runs the server can switch it off, and then
+        the section is simply not there. The name you type beside <em>You are</em> on the lobby is
+        the name your messages carry, and the name a seat you take is labelled with; leave it blank
+        and your address is used.
       </p>
 
       <h3>Saving, and coming back</h3>
