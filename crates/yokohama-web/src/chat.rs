@@ -152,8 +152,16 @@ impl ChatConfig {
             Some("off") => false,
             Some(other) => return Err(format!("{LOBBY_VAR} must be on or off — got {other:?}")),
         };
+        // **The absent arms take their values from `ChatLimits::default()` and
+        // never restate one.** A second copy of a default is a number that can
+        // move in one place: a changed `ChatLimits::default()` would leave this
+        // parse behind, and a production server launched with no variables set
+        // would then run a retention no test could see — the cells build their
+        // limits from `Default`, so the suite would stay green while the two
+        // disagreed.
+        let defaults = ChatLimits::default();
         let keep = match keep.map(str::trim) {
-            None => Some(500),
+            None => defaults.keep,
             Some("all") => None,
             Some(s) => match s.parse::<usize>() {
                 Ok(n) if n > 0 => Some(n),
@@ -165,7 +173,7 @@ impl ChatConfig {
             },
         };
         let text = match text.map(str::trim) {
-            None => 500,
+            None => defaults.text,
             Some(s) => match s.parse::<usize>() {
                 Ok(n) if n > 0 => n,
                 _ => {
@@ -409,6 +417,9 @@ mod tests {
     fn the_three_variables_parse_with_their_defaults_and_refuse_by_name() {
         let d = ChatConfig::from_env_values(None, None, None).unwrap();
         assert_eq!((d.lobby, d.limits.keep, d.limits.text), (true, Some(500), 500));
+        // The two statements of the default are BOUND, and the tuple above is
+        // what keeps this from being satisfied by both drifting together.
+        assert_eq!(d, ChatConfig::default(), "setting nothing IS `Default`");
         assert!(ChatConfig::from_env_values(Some("on"), None, None).unwrap().lobby);
         assert!(!ChatConfig::from_env_values(Some("off"), None, None).unwrap().lobby);
         assert!(
