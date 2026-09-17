@@ -95,10 +95,31 @@ describe("the chat panel", () => {
     if (green.author.kind !== "watcher") throw new Error("the third corpus message is the watcher's");
     expect(rows[2]!.querySelector(".chat-who.watching")).not.toBeNull();
     expect(rows[2]!).toHaveTextContent(green.author.name!);
-    expect(rows[2]!).toHaveTextContent("watching");
+    // **The SEPARATOR is in the needle** — the corpus text this row carries is
+    // "watching from the rail", so a bare `"watching"` is satisfied by the
+    // message itself and says nothing about the marker.
+    expect(rows[2]!).toHaveTextContent("· watching");
     // The text, and a time on every row.
     expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
     for (const r of rows) expect(r.querySelector("time")).not.toBeNull();
+  });
+
+  it("falls back to a seat's address when the seat has no name", async () => {
+    open();
+    // **DERIVED from the corpus, never hand-authored** — both corpus seats
+    // carry names, so `name ?? user` had a branch no fixture reached. One row
+    // with its name taken away is the smallest thing that reaches it.
+    const red = wire.chat.messages[0]!;
+    if (red.author.kind !== "seat") throw new Error("the first corpus message is red's");
+    const nameless: ChatPage = {
+      ...wire.chat,
+      messages: [{ ...red, author: { ...red.author, name: null } }],
+    };
+    chatStub((call) => (call.method === "GET" ? nameless : undefined));
+    render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows[0]!).toHaveTextContent(red.author.user);
+    expect(rows[0]!).not.toHaveTextContent(red.author.name!);
   });
 
   it("fetches the delta when the count rises above what it holds, and NOTHING when it does not", async () => {
@@ -158,6 +179,79 @@ describe("the chat panel", () => {
     expect(screen.queryByLabelText(/new$/)).toBeNull();
   });
 
+  /** **The badge on a WAKE host, which is where `unread` is the badge at all**
+   *  (final review, Importants 2 and 3).
+   *
+   *  The cell above drives a COUNT host, where the badge is `count - last` and
+   *  `unread` is never read — so the unfold's reset was pinned by nothing, and
+   *  removing it left every suite green. Here the panel is told only "look
+   *  again", `unread` IS the number on the header, and the three claims can
+   *  each fail on their own:
+   *
+   *  - the mount read does not count (Important 3): the retained history was
+   *    already there, and a wake host that counted it said "3 new" on every
+   *    visit to a room nobody had spoken in since;
+   *  - a message arriving while folded does count;
+   *  - the unfold clears it, which a RE-FOLD is what shows — folded again with
+   *    nothing further arrived, the header carries no badge at all. */
+  it("counts nothing at mount on a wake host, counts what arrives, and the unfold clears it", async () => {
+    let answer: ChatPage = wire.chat;
+    chatStub((call) => (call.method === "GET" ? answer : undefined));
+    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+    await settle();
+    expect(
+      screen.queryByLabelText(/new$/),
+      "the history retained at this table did not ARRIVE while folded",
+    ).toBeNull();
+
+    // One more message, on the next wake.
+    answer = {
+      messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }],
+      last: wire.chat.last + 1,
+    };
+    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    expect(await screen.findByLabelText("1 new")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "show" }));
+    expect(screen.queryByLabelText(/new$/)).toBeNull();
+    // **Re-folded is the assertion the reset can fail** — an unfold that did
+    // not clear the number puts it straight back on the header.
+    await userEvent.click(screen.getByRole("button", { name: "hide" }));
+    await settle();
+    expect(
+      screen.queryByLabelText(/new$/),
+      "nothing arrived while the panel was open, so folding it shows no badge",
+    ).toBeNull();
+  });
+
+  /** **A stored clock is DATA** (final review, Important 1): the panel draws a
+   *  number it cannot turn into a date rather than throwing out of its render.
+   *
+   *  `toISOString()` on an out-of-range `Date` throws `RangeError`, and there is
+   *  no error boundary over this panel — so one hand-edited or half-restored
+   *  document took the whole game screen down for every browser at that table.
+   *  The server refuses such a value now; this is the other end of the same
+   *  rule, and it has to hold on its own, because a client is not the thing
+   *  that decides what is in a document. */
+  it("draws a message whose stored clock is not a date, instead of throwing", async () => {
+    open();
+    const wrong: ChatPage = {
+      ...wire.chat,
+      messages: [{ ...wire.chat.messages[0]!, created_at: 1e19 }],
+    };
+    chatStub((call) => (call.method === "GET" ? wrong : undefined));
+    render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!).toHaveTextContent(wire.chat.messages[0]!.text);
+    // No `datetime` at all, which is what the HTML spec asks for when there is
+    // no parseable value — and the string form of the number on screen.
+    expect(rows[0]!.querySelector("time")).not.toHaveAttribute("datetime");
+    expect(rows[0]!.querySelector("time")!.textContent).toBe(String(1e19));
+    // And `when` itself, which the panel is only one caller of.
+    expect(when(1e19)).toBe(String(1e19));
+  });
+
   it("posts on Enter, appends the reply, sends no name for a seat, and advances its cursor", async () => {
     open();
     localStorage.setItem(DISPLAY_NAME_KEY, "Red");
@@ -210,6 +304,11 @@ describe("the chat panel", () => {
     await user.type(await screen.findByRole("textbox", { name: "Say something" }), "hi all{Enter}");
     await waitFor(() => expect(stub.matching("POST", "/api/chat")).toHaveLength(1));
     expect(stub.matching("POST", "/api/chat")[0]!.body).toEqual({ text: "hi all", name: "Green" });
+    // **And nobody is "watching" in the house**, where everyone is (R-6.4.2).
+    // The label cell above exercises the marker's PRESENCE at a table; this is
+    // the other half, and without it a component that marked every watcher
+    // everywhere would pass both.
+    expect(screen.queryByText("· watching")).toBeNull();
   });
 
   it("renders the server's refusal in its own line and keeps the draft", async () => {
@@ -324,6 +423,58 @@ describe("the chat panel", () => {
     held.resolve(wire.chat);
     await settle();
     expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  /** **A 201 that lands after the panel has changed rooms is DROPPED** (final
+   *  review, Important 4).
+   *
+   *  The post was the one resolution outside the generation guard, and it is
+   *  the one that moves the cursor: `take` would draw the old room's message
+   *  in the new room and set `last` to the old room's number — after which
+   *  every new-room message numbered below it is filtered out, silently, until
+   *  that room's numbering passes it. The corpus's own post is numbered well
+   *  above the empty room it would land in, which is what makes the second
+   *  half of this cell able to fail.
+   *
+   *  The input is asserted usable again, because the early return runs through
+   *  the same `finally`: a panel left disabled for ever would be the other way
+   *  to pass the first assertion. */
+  it("drops a post's reply when the panel has moved rooms, and leaves the new room's cursor alone", async () => {
+    const posted = gate<Reply>();
+    const stub = stubApi((call) => {
+      if (call.method === "POST") return posted.promise;
+      if (call.path.includes("/api/games/wire/chat")) return emptyRoom;
+      if (call.path.includes("/api/games/other/chat")) return emptyRoom;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    // Both rooms remembered OPEN, because the count rule only fires on an open
+    // panel and the second half of this cell is about the cursor the count rule
+    // reads.
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["wire", "other"]));
+    const { rerender } = render(<Chat scope={TABLE} count={0} colors={colors} sendName={false} />);
+    await settle();
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Say something" }), "for wire{Enter}");
+    await waitFor(() => expect(stub.matching("POST", "/chat")).toHaveLength(1));
+
+    rerender(
+      <Chat scope={{ kind: "table", id: "other" }} count={0} colors={colors} sendName={false} />,
+    );
+    await settle();
+    posted.resolve(wire.chatPost);
+    await settle();
+    expect(screen.queryAllByRole("listitem"), "the old room's message is not in this one").toHaveLength(0);
+    expect(screen.getByRole("textbox", { name: "Say something" })).toBeEnabled();
+
+    // And the cursor is still this room's: a count of 1 asks from 0.
+    const before = stub.matching("GET", "/api/games/other/chat").length;
+    rerender(
+      <Chat scope={{ kind: "table", id: "other" }} count={1} colors={colors} sendName={false} />,
+    );
+    await waitFor(() =>
+      expect(stub.matching("GET", "/api/games/other/chat")).toHaveLength(before + 1),
+    );
+    expect(stub.matching("GET", "/api/games/other/chat").at(-1)!.path).toContain("after=0");
   });
 
   it("keeps a folded panel's controls out of the tab order", async () => {

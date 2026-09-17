@@ -141,10 +141,30 @@ describe("the help panel and the lobby", () => {
     render(<Help />);
     const text = section("Starting a game");
     expect(text).toContain("Your name");
-    // Named by where it sits, because that is how a reader finds it.
-    expect(text).toContain("You are");
+    // Named by where it sits, because that is how a reader finds it — and bound
+    // to THIS sentence rather than to the two words. The same section already
+    // carries "You are shown your own two cards", so a bare `"You are"` went on
+    // passing with the new sentence gone (final review, minor 13's sibling).
+    expect(text).toContain("Beside You are at the top of the lobby");
     expect(text).toContain("this browser remembers it");
     expect(text).toContain("leave it blank and your address is used");
+    // And it is not the form's own display name, which the next paragraph
+    // offers a reader could take for the same control.
+    expect(text).toContain("not the display name on the form below");
+  });
+
+  // **The lobby has THREE lists since M6.3** (final review, minor 8): this
+  // paragraph said two while the Talking section three paragraphs down said
+  // three, on the same page. The needle is the count AND the section that was
+  // missing, so a page that fixed the number without naming the list fails.
+  it("names all three of the lobby's lists", () => {
+    render(<Help />);
+    const text = section("Starting a game");
+    expect(text).toContain("three lists");
+    expect(text).toContain("Your games");
+    expect(text).toContain("Open tables");
+    expect(text).toContain("Games in progress");
+    expect(text).not.toContain("two lists");
   });
 });
 
@@ -269,6 +289,11 @@ describe("the help panel and talking (M6.4)", () => {
     expect(text).toContain("never part of the game");
     expect(text).toContain("drops the oldest");
     expect(text).toContain("abandoned");
+    // **Whose number it is, not what it is** (final review, minor 8). The
+    // retention is a launch variable and may be `all` or twenty, so the page
+    // says who sets it rather than naming a figure it cannot know.
+    expect(text).toContain("whoever runs it sets how many");
+    expect(text).not.toContain("a few hundred");
   });
 
   // **The lobby's own chat and its switch (R-6.4.6), and the name that feeds

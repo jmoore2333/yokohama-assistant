@@ -341,6 +341,14 @@ export function App() {
       setRun(null);
       setWalk(null);
       setFresh(false);
+      // **The message count goes with the game too** (final review, minor 7).
+      // It is the TABLE's newest number and the panel is re-keyed per game, so
+      // a count carried across a switch is the old room's number read against
+      // the new room's empty list: a folded panel flashes it as "N new", and if
+      // it is above the new room's own `last` the count rule asks one empty
+      // delta for it. The new game's first frame puts the real number back
+      // milliseconds later; this is what the screen says in between.
+      setChatCount(0);
       if (opening && s && s.events > 0) {
         // The busy window is opened by hand here, because this run has no
         // request of its own to ride inside. It is what the browser harness

@@ -2533,10 +2533,14 @@ describe("the game screen's chat", () => {
   // against a count the reply is about to change, and walk this browser's own
   // move as somebody else's turn.
   //
-  // So the frame is parked and compared once the reply has landed. The half
-  // that makes the comparison true is `send` writing `stateNow.current` beside
-  // its `setState`: React's commit is scheduled and not synchronous, so without
-  // it the parked frame is compared against the PRE-move count and walks.
+  // So the frame is parked and compared once the reply has landed, and that is
+  // what this cell pins. `send` also writes `stateNow.current` beside its
+  // `setState` — belt and braces for the microtask-only case, since React's
+  // default lane commits on a scheduler macrotask — but this cell does NOT
+  // demonstrate it: `flush()` is twelve `act` rounds and React commits at every
+  // one of them, so the render itself writes the ref long before the `finally`
+  // reads it. A cell for that write wants a `landed` that resolves without
+  // crossing a macrotask.
   it("parks a frame that lands while its own move is in flight, and does not walk it", async () => {
     const stream = fakeStream();
     const reply = gate<Reply>();
@@ -2612,6 +2616,52 @@ describe("the game screen's chat", () => {
       // in through the lobby.
       window.location.hash = "";
     }
+  });
+
+  /** **The message count belongs to the game on screen, and is dropped when the
+   *  screen leaves it** (final review, minor 7).
+   *
+   *  The panel is re-keyed per game, so a switched table starts from an empty
+   *  list and a cursor of nothing — but the COUNT it is handed was the previous
+   *  table's until that table's own first frame landed. A folded panel read the
+   *  old number as "N new" about a room it had just opened, and, where the old
+   *  number was above the new room's `last`, asked one empty delta for it.
+   *
+   *  Leaving for the lobby and coming back is the cheapest switch that is a
+   *  real one: `show` is the single place a game changes identity, and it runs
+   *  on both halves of that trip.
+   *
+   *  The frame carries the SAME `events` as the state on screen, so nothing is
+   *  re-read or walked and the only thing this cell moves is the chat count. */
+  it("drops the table's message count when the screen leaves the game", async () => {
+    const stream = fakeStream();
+    const ahead = wire.chat.last + 5;
+    await renderApp(wire.options, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.options.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+      return undefined;
+    });
+    await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
+    stream.push("signal", { ...wire.events, events: wire.options.events, chat: ahead });
+    expect(await screen.findByLabelText("5 new")).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(gameMenu());
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await screen.findByRole("heading", { name: "Lobby" });
+    await user.click(await screen.findByRole("link", { name: wire.options.id }));
+    await screen.findByText(/end triggers:/);
+    await waitFor(() => expect(screen.getByRole("button", { name: "show" })).toBeInTheDocument());
+    // Real turns, so the remounted panel's own mount read has landed and the
+    // badge is read against a cursor rather than against nothing.
+    for (let i = 0; i < 4; i += 1)
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    expect(
+      screen.queryByLabelText(/new$/),
+      "the count on screen is the one this table's own frame brought, not the last table's",
+    ).toBeNull();
   });
 
   // The two launch variables, read at boot beside the transport (R-6.4.6,

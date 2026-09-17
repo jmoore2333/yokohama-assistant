@@ -8,12 +8,12 @@
 // shows — a screen where half the lobby is older than the other half.
 //
 // **The stream it listens to is the HOUSE channel**, `/api/stream`, and a frame
-// off it is a bare sequence number (M6.3 R-3.4): a `watch` channel coalesces,
-// so two bumps naming two different tables inside one wake would lose one, and
-// a frame naming a table would therefore sometimes name the wrong one. The
-// lobby re-reads ALL its lists on any bump instead, which is what `Source`'s
-// default `frames: "wake"` mode does — `once` is the answer and the frame is
-// only the wake-up.
+// off it is two counters and never a table (M6.3 R-3.4, M6.4 R-6.4.7): a
+// `watch` channel coalesces, so two bumps naming two different tables inside
+// one wake would lose one, and a frame naming a table would therefore sometimes
+// name the wrong one. The lobby re-reads ALL its lists on any bump instead,
+// which is what `Source`'s default `frames: "wake"` mode does — `once` is the
+// answer and the frame is only the wake-up, so neither counter is READ here.
 //
 // **The first load is this component's, not the hook's.** The house stream says
 // NOTHING on connect (deliberately: the lobby has just fetched its lists to
@@ -104,12 +104,15 @@ export function Lobby({
   const pageInFlight = useRef(false);
   /** "Something on the server may have changed" (spec §6.2), counted.
    *
-   *  The house frame is a bare sequence number and names no table (M6.3 R-3.4),
-   *  so this screen is a `"wake"` consumer and the frame's own `chat` number
-   *  never reaches here. The panel is told to ask for its delta off the same
-   *  wake the three listings are refetched on, which is the only source it has.
-   *  **The cost, stated** (spec §6.2): a house message is one more house wake,
-   *  and every visible lobby refetches its three listings on it. */
+   *  The house frame carries two counters and names no table (M6.3 R-3.4, M6.4
+   *  R-6.4.7), and this screen is a `"wake"` consumer, so neither number
+   *  reaches here — the frame is dropped and the wake is the whole of it. The
+   *  panel is told to ask for its delta off the same wake the three listings
+   *  are refetched on, which is the only source it has. **The cost, stated**
+   *  (spec §6.2, §11): a house message is one more house wake, and every
+   *  visible lobby refetches its three listings on it. The second counter
+   *  exists so that a later `"value"` consumer could tell the two apart; this
+   *  one does not. */
   const [tick, setTick] = useState(0);
   /** The name this browser plays under, on ONE key with the door, the New table
    *  form and the seat picker (R-6.4.3). Written as TYPED rather than on a

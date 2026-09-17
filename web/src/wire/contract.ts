@@ -416,8 +416,10 @@ const _pLocked: PromptOf<"locked"> = locked.prompt;
 // ## §1c. The chat author, per member
 //
 // `ChatAuthor` is `#[serde(tag = "kind")]` like `PromptState`, so
-// `Widen<ChatAuthor>` would accept `{kind: "nonsense"}` and the assignments
-// above would check nothing about `seat`, `user` or `name`. Each fixture author
+// `Widen<ChatAuthor>` would accept `{kind: "nonsense"}`. What it genuinely
+// cannot do is tie a field set to its `kind`: `Widen` distributes over the
+// union, so an author only has to match SOME widened arm, and a `seat` author
+// that lost `user` passes by matching the widened `bot` one. Each fixture author
 // against its OWN member, where the non-discriminant fields are required again.
 //
 // **Which fixtures can carry that check is decided by the JSON, not by choice.**

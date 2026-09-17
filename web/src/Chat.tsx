@@ -40,14 +40,34 @@ export interface ChatProps {
 }
 
 /** `HH:MM` today; the date before it otherwise (R-P3's night away). `now` and
- *  `locale` are parameters so a cell can freeze both. */
+ *  `locale` are parameters so a cell can freeze both.
+ *
+ *  **A stored clock is DATA and this render never throws on it** (final review,
+ *  Important 1). `created_at` comes off a document, and a value out of `Date`'s
+ *  range makes `toISOString()` throw `RangeError` — out of React's render,
+ *  taking the whole game screen down for everyone at the table, since there is
+ *  no error boundary. The server refuses such a value on read and on write now
+ *  (`chat::MAX_CREATED_AT`), and this is the other end of the same rule: a
+ *  number that is not a date is DRAWN AS THE NUMBER rather than allowed to
+ *  crash the panel. Two guards and not one, because either half alone leaves
+ *  the other end of the pipe able to take the screen out. */
 export function when(at: number, now: number = Date.now(), locale?: string): string {
   const d = new Date(at * 1000);
+  if (!Number.isFinite(d.getTime())) return String(at);
   const n = new Date(now);
   const hm = d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   return d.toDateString() === n.toDateString()
     ? hm
     : `${d.toLocaleDateString(locale, { month: "short", day: "numeric" })} ${hm}`;
+}
+
+/** The machine-readable stamp for `<time datetime>`, or `undefined` when the
+ *  stored clock is not a date — see [`when`]. An absent attribute is what the
+ *  HTML spec asks for when there is no parseable value; `toISOString()` on the
+ *  same input throws. */
+export function isoStamp(at: number): string | undefined {
+  const d = new Date(at * 1000);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : undefined;
 }
 
 const scopeKey = (scope: ChatScope): string => (scope.kind === "house" ? "house" : scope.id);
@@ -89,15 +109,23 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   /** One answer, from wherever it came: a mount read, a delta, a 201. Filters
    *  what is already held, so a message is never drawn twice; and records
    *  whether the reader was at the foot of the box, which only a read taken
-   *  BEFORE the append can tell. */
-  const take = useCallback((page: ChatPage) => {
+   *  BEFORE the append can tell.
+   *
+   *  **`counts` is false for the MOUNT read, and that is a rule about what
+   *  "new" means** (final review, Important 3). Spec §6.1 defines the badge as
+   *  what arrived WHILE FOLDED; the retained history did not arrive, it was
+   *  already there. On a count-driven host the badge is `count - last` and
+   *  history has always read 0 — so a wake host that counted its mount read
+   *  made the same folded panel say "N new" on every visit, up to the whole
+   *  retention, and the two kinds of host disagreed about the first screen. */
+  const take = useCallback((page: ChatPage, counts = true) => {
     const fresh = page.messages.filter((m) => m.seq > last.current);
     last.current = Math.max(last.current, page.last, ...fresh.map((m) => m.seq));
     if (fresh.length === 0) return;
     const el = box.current;
     follow.current = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 8;
     setMessages((old) => [...old, ...fresh]);
-    if (foldedNow.current) setUnread((n) => n + fresh.length);
+    if (counts && foldedNow.current) setUnread((n) => n + fresh.length);
   }, []);
 
   /**
@@ -176,7 +204,7 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
       if (mine !== generation.current) return;
       reading.current = false;
       if (page) {
-        take(page);
+        take(page, why !== "mount");
         setError(null);
       } else setError(refused);
       const again = wanted.current;
@@ -226,18 +254,35 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     if (!next) setUnread(0);
   };
 
+  /** Post, and **drop the reply if the panel has moved rooms while it was in
+   *  flight** (final review, Important 4).
+   *
+   *  The 201 was `read`'s one sibling resolution outside the generation guard,
+   *  and it is the one that moves the cursor: `take` would draw the old room's
+   *  message in the new room and set `last` to the old room's number — after
+   *  which every new-room message numbered below it is filtered out, silently,
+   *  until that room's numbering passes it. Narrow (the two unkeyed hosts,
+   *  inside one round trip) and a real loss of messages when it happens.
+   *
+   *  The DRAFT is deliberately left alone on that path: the text did go to the
+   *  other room, and clearing the box in this one would take the words away
+   *  from someone who may want to say them here too. `sending` is cleared by
+   *  the `finally`, which runs on the early return as well. */
   const send = async () => {
     const text = draft.trim();
     if (!text || inFlight.current) return;
+    const mine = generation.current;
     inFlight.current = true;
     setSending(true);
     setError(null);
     try {
       const name = sendName ? displayName()?.trim() : undefined;
       const m = await api.postChat(scopeRef.current, { text, ...(name ? { name } : {}) });
+      if (mine !== generation.current) return;
       take({ messages: [m], last: m.seq });
       setDraft("");
     } catch (e) {
+      if (mine !== generation.current) return;
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
       inFlight.current = false;
@@ -280,12 +325,22 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
           {folded ? "show" : "hide"}
         </button>
       </Heading>
-      <div id={`chat-${key}`} className={`messages${folded ? " folded" : ""}`}>
-        <ol className="chat-lines" ref={box} role="log" aria-live="polite">
+      {/* The live region is the WRAPPER's and not the list's: `role="log"` on
+          an `<ol>` replaces the implicit `list` role, so the messages stopped
+          being a list to anything reading the page by structure (final review,
+          minor 18). Announcing is what the region is for; being a list is what
+          the element is for. */}
+      <div
+        id={`chat-${key}`}
+        className={`messages${folded ? " folded" : ""}`}
+        role="log"
+        aria-live="polite"
+      >
+        <ol className="chat-lines" ref={box}>
           {messages.map((m) => (
             <li key={m.seq}>
               {label(m)}
-              <time dateTime={new Date(m.created_at * 1000).toISOString()}>{when(m.created_at)}</time>
+              <time dateTime={isoStamp(m.created_at)}>{when(m.created_at)}</time>
               <span className="chat-text">{m.text}</span>
             </li>
           ))}
