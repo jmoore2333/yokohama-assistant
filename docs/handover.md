@@ -162,10 +162,17 @@ Docker stays exactly as it is as the self-host path. Your thirteen rulings are t
 file store's own layout with **abandon-and-save** (once per game id, never versions; a directory on
 the NAS so saves are collected during development); single-player entirely local with a strict-
 replay-verified "Send to the archive"; the order a → b → c; **test in the live setup during
-development**, not only under `wrangler dev`. **Next:** the adversarial read of the spec against HEAD
-and its fix wave, then the M6.5a spec and plan (the table layer behind a `server` cargo feature, a
-clock seam, the archive trait, `GET …/record` fenced to finished games, the wasm CI check line).
-The spec's §6 is what it does NOT claim; nothing hosted is verified yet.
+development**, not only under `wrangler dev`. **The adversarial read of the spec against HEAD is DONE
+and its fix wave landed** (4 HIGH / 11 MEDIUM / 12 MINOR / 10 OPEN, 71 claims verified true; the
+report and the cut-surface survey sit in the gitignored `.superpowers/sdd/2026-09-19-web-frontend-m6.5-hosting/`):
+the four HIGHs were real — the wasm check line cannot see a `SystemTime` call (the clock gets its own
+scanning fence), "82 payloads on all three hosts" contradicted the browser host (the ruling now
+reads "every payload a host SERVES"), Worker-level Access does not support WebSockets (the door is a
+HOSTNAME-based Access application and `ctx.access` is recorded unavailable), and an open sub-picker
+dies at every hibernation (named, with M6.5c to choose the fix) — and the survey found the layering
+inverted (the cut runs THROUGH `Games`, §2.1 rewritten). **Next: you read the spec** — you said you
+had found issues that may impact it — then the M6.5a spec and plan. The spec's §6 is what it does
+NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since
 00:38:01Z on 2026-09-20; `deploy/RUNBOOK.md` §3.10 is the `0.5.0-m6.4` record and §3.11 the point
