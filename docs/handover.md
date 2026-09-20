@@ -170,8 +170,16 @@ scanning fence), "82 payloads on all three hosts" contradicted the browser host 
 reads "every payload a host SERVES"), Worker-level Access does not support WebSockets (the door is a
 HOSTNAME-based Access application and `ctx.access` is recorded unavailable), and an open sub-picker
 dies at every hibernation (named, with M6.5c to choose the fix) — and the survey found the layering
-inverted (the cut runs THROUGH `Games`, §2.1 rewritten). **Next: you read the spec** — you said you
-had found issues that may impact it — then the M6.5a spec and plan. The spec's §6 is what it does
+inverted (the cut runs THROUGH `Games`, §2.1 rewritten). **A second wave landed from the merged
+standing review you brought (16 items), each proven or refuted against the mechanism first**: the
+placement reservoir's `usize` draw really is width-dependent (reproduced: the same stream draws
+206 native / 281 wasm) and really is unreached at 2P (the code's own pin), so it is O-11, owed
+only if 3–4P bots come in scope; seventeen worlds / 7,826 moves played natively and under Node's
+WASI came out byte-identical (§0.3, support for M6.5b's pin); `replay_strict` skips the digest
+when absent (a fourth check); input gates open during a house push or R2 put (revisions, a
+pending-deliveries list, delete ordering); the SQLite row cap is 2 MB (~20,000 events of
+headroom); the DO CPU limit reads 30 s unqualified; `workers.dev` off. **Next: you read the
+spec** — then the M6.5a spec and plan. The spec's §6 is what it does
 NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since

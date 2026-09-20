@@ -4,7 +4,11 @@
 brainstorm held the same day between the owner and the orchestrating session; landed on branch
 `web-room-m6.5` (stacked on `web-room-m6.4`) at `2f5381a`, and corrected once by the adversarial
 read of that commit (4 HIGH, 11 MEDIUM, 12 MINOR, 10 OPEN, 71 claims verified true) together with
-the cut-surface survey — the fix-wave commit that follows `4051b18`.** M6.5 is the fifth and last
+the cut-surface survey — the fix-wave commit that follows `4051b18` — and a second time after
+a merged standing review of sixteen items the owner brought, each PROVEN or refuted against
+the mechanism before it entered (the reservoir draw's width dependence reproduced; seventeen
+worlds played natively and under a wasm runtime; the input-gate, row-size and CPU figures
+re-fetched; the strict replay's digest condition read).** M6.5 is the fifth and last
 cycle of the room plan (`docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §2) and its entry
 artifact is `docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md`. **This document
 supersedes the handover's charter** (§0.5 says exactly where) and is the authority for the ORDER
@@ -115,6 +119,30 @@ a table id reaches the same object. Row by row, all twelve:
   `tables::draw_seed` (`tables.rs:213`) goes through `SeedSchedule::from_os_entropy`, which
   `getrandom`'s `js` feature serves from `crypto.getRandomValues` in a browser (proven by the
   spike) and, unproven until §6.1 O-7's spike, in a Worker.
+- **Determinism, measured (2026-09-19, the same throwaway crate, a `wasm32-wasip1` build of
+  the arena's own `world` replay run under Node 26's built-in WASI beside the native build).**
+  Seventeen 2P worlds with the production contestant on both seats — seeds 1–8 in both
+  arrangements plus `20260919` — **7,826 applied moves, every rendered line byte-identical on
+  native and wasm** (the same SHA-256 per world, `diff` empty), at about 1.7× the native wall
+  for the whole program (0.59 s native, 1.0 s under Node for a 379-move game including rules
+  construction). This is SUPPORT for §2.5's pin, not a substitute for it: the pin runs on the
+  browser build and reconstructs under the native `why`. Two facts bound what the support
+  means. **(i) The decide path is integer and IEEE-arithmetic only**: no `ln`, `exp`, `powf`
+  or `sqrt` in `greedy.rs`, `lookahead.rs`, `eval.rs` or `belief.rs` outside tests; the one
+  `sqrt` in `policy.rs:483-486` is a uniformity-test threshold and the three in `mcts.rs` are
+  the seat the room refuses — an eligible mcts seat would have to re-earn the pin. **(ii) One
+  draw on the decide path IS platform-width-dependent, and it is unreached at 2P.** The
+  placement reservoir (`greedy.rs:349-368`) draws `rng.gen_range(0..=seen)` with `seen: usize`
+  once a placement family exceeds `PLACEMENT_CANDIDATE_CAP = 512` (`:201`, `:285`); rand
+  0.8.5 samples `usize` at the platform's width (`uniform_int_impl! { usize, usize, usize }`),
+  and the probe shows the same ChaCha8 stream giving DIFFERENT draws at 32 and 64 bits from
+  the very first (`seen=511`: 206 native, 281 wasm) while a `u64`-typed draw is identical on
+  both. The cap does not bind at 2P — 0 binds in 48,458 decisions with a maximum realized
+  family of 396 (`greedy.rs:197`), pinned at `:2019-2029` — and binds on 9.19% of organic 4P
+  decisions (`lookahead.rs:288`), which R-P10 keeps out of every hosted and browser seat.
+  So §2.5's pin reads `placement_cap_binds == 0` (`lookahead.rs:800`, the counter that
+  already exists) as its scope partner, and a width-typed draw in core is §6.1 O-11: an owner
+  ruling on a fenced crate, owed only if a 3–4P bot ever comes in scope.
 - The web crate itself: of its 19,463 lines, only `lib.rs` (the routes), `identity.rs`,
   `art.rs`, `assets.rs` and `main.rs` mention axum. `games.rs`, `tables.rs`, `chat.rs`,
   `table.rs`, `store.rs`, `signal.rs`, `client.rs`, `explain.rs`, `outcome.rs` and `grammar.rs`
@@ -148,16 +176,25 @@ a table id reaches the same object. Row by row, all twelve:
   `/durable-objects/best-practices/websockets/`, `/durable-objects/api/state/`)
 - **Output gates** hold "outgoing network messages (responses, fetch requests)" until pending
   storage writes complete — a reply is durable by construction; a WebSocket `send()` to a third
-  party's socket is not named by the gate. (`/durable-objects/best-practices/rules-of-durable-objects/`)
+  party's socket is not named by the gate. **Input gates protect a request only while it awaits
+  STORAGE**: verbatim, "Non-storage I/O like `fetch()` or writing to R2 allows other requests
+  to interleave, which can cause race conditions" — so a bump site that awaits a house push or
+  an R2 put after its write is an interleave window, and §2.3 carries the rule that closes it.
+  (`/durable-objects/best-practices/rules-of-durable-objects/`)
 - **Limits**: 128 MB per isolate; Worker bundle 64 MiB UNCOMPRESSED on both plans since
   2026-09-04 (the 3 MB / 10 MB compressed limits are gone); **Worker startup time 1 second**
   ("parse and execute its global scope within 1 second; larger bundles … increase startup
-  time" — the one limit a 1.31 MB module is plausibly near, §6.1 O-2); CPU per request 30 s
-  default on Paid, raisable to 5 min; the plain-Workers Free row reads 10 ms and neither the
-  limits page nor the DO pricing page carries a Durable-Object-specific Free figure. Free plan:
+  time" — the one limit a 1.31 MB module is plausibly near, §6.1 O-2). **The Durable Object
+  limits table reads "CPU per request: 30 seconds (default) / configurable to 5 minutes"
+  with no plan qualifier**, which is the figure the owner had; the plain-Workers Free row
+  reads 10 ms, and which of the two a Free-plan object is held to was not tested. Free plan:
   100,000 DO requests/day, 13,000 GB-s/day; Paid: 1 M requests and 400,000 GB-s a month
-  included. WebSocket messages count as requests at a 20:1 inbound discount.
-  (`/workers/platform/limits/`, `/durable-objects/platform/pricing/`)
+  included. WebSocket messages count as requests at a 20:1 inbound discount. **SQLite-backed
+  object storage limits that bind a design here**: maximum string/BLOB/ROW size 2 MB (and key
+  plus value 2 MB on the KV API of a SQLite-backed object — the 128 KiB value cap belongs to
+  the LEGACY KV backend only), SQL statement 100 KB, 100 columns, 32 MiB per received
+  WebSocket message, 6 simultaneous outgoing connections, 500 classes per account on Paid.
+  (`/workers/platform/limits/`, `/durable-objects/platform/limits/`, `/durable-objects/platform/pricing/`)
 - **Access, two kinds, and the difference is load-bearing (H-3).** Worker-level Access
   (2026-08-14) gives `ctx.access.getIdentity()` with no JWT parsing and an `access.dev` block
   for `wrangler dev` — but its own limitations section says Worker-level policies "do not
@@ -257,17 +294,26 @@ M6.4's, so the namespace is checked, as the M6.4 close asked.
   the archive and is REFUSED, with a sentence naming the archive, when the put fails** — the
   save is the point of the control, and on an object a `deleteAll()` racing an in-flight put
   would lose it silently along with the alarm that would have retried it (§6.1 O-4); the
-  creator retries. During development this is how saves are collected without playing to
-  completion.
+  creator retries. A table already archived at game over is DELETED at abandon and not
+  re-archived, which is what "at most once" means when both rulings apply. During development
+  this is how saves are collected without playing to completion.
 - **R-6.5.6 — single-player is entirely local.** The record lives in the browser (IndexedDB);
   a local game never appears under "your games" on the server and needs no sign-in beyond the
-  door. "Save game file" is a plain download at game over on BOTH channels. When the archive
-  is on, "Send to the archive" posts the record to the Worker, which does not trust it: it
-  applies THREE separate checks — `Session::from_record`'s own `semantics_rev` gate, then
-  `yokohama_core::replay_strict` (the rules hash, every event through the checked boundary,
-  the terminal digest; `pub` at `game/record.rs:478`, reachable from the web crate and called
-  by nothing in it today), then a game-over check that neither of the first two makes — and
-  only then writes it under a `browser/<user>/` prefix.
+  door. **The record crosses every browser-side seam as OPAQUE TEXT** — IndexedDB, "Save game
+  file", "Send to the archive" — and is never parsed and re-serialized by the client, because
+  `GameRecord.seed` is a `u64` (`game/record.rs:168`) that serde writes at full precision and
+  `JSON.parse` would round to a double, so a round-tripped record would carry a DIFFERENT seed
+  silently. "Save game file" is a plain download at game over on BOTH channels. When the
+  archive is on, "Send to the archive" posts the record to the server, which does not trust
+  it: it applies FOUR separate checks — `Session::from_record`'s own `semantics_rev` gate;
+  **the terminal digest must be PRESENT**, because `yokohama_core::replay_strict` verifies a
+  digest only `if let Some` (`game/record.rs:508-516`) and a record with the field stripped
+  would otherwise pass its strongest check by omission; `replay_strict` itself (the rules
+  hash, every event through the checked boundary and the invariants, the digest; `pub` at
+  `game/record.rs:478`, reachable from the web crate and called by nothing in it today); then
+  a game-over check that none of the first three makes — and only then writes it under a
+  `browser/<user>/` prefix. The route is `POST /api/archive`; it is the SAME engine on every
+  host, native on the NAS (M6.5b's build) and WebAssembly in the Worker (M6.5c's).
 - **R-6.5.7 — the order.** M6.5a the seam, M6.5b single-player in the browser, M6.5c the room
   on Durable Objects. Each its own brainstorm → spec → plan → execution under R-P11. The
   alternative (c before b) reaches "online" sooner but stacks the transport work on wasm risks
@@ -289,7 +335,11 @@ M6.4's, so the namespace is checked, as the M6.4 close asked.
   single-player subset, which the M6.5b spec names — a quarter of today's corpus (the lobby,
   join, unlock, spectator and house-chat payloads) has no meaning where there is one tab and
   one game. A host that cannot reproduce the payloads it serves is not done. No count rides in
-  this ruling; the corpus grows in M6.5a.
+  this ruling; the corpus grows in M6.5a. **The contract has a SECOND class**: a
+  host-parameterized payload — `/api/health` is one, since its `signal`, `archive` and
+  identity facts are deployment facts that differ by host — is byte-identical to the committed
+  file EXCEPT in the fields its host's spec names, and every such payload and field is listed
+  there rather than exempted silently.
 - **R-6.5.10 — the export route.** `GET /api/games/{id}/record` serves the record's bytes to a
   seat holder ONLY once the game is over, because the record carries the setup seed, hidden-set
   member #1, until the last move. Before game over it is a 409 in this API's error shape.
@@ -396,10 +446,15 @@ garbage.
 - **Storage**: three rows or tables in its SQLite — the record (the same JSON
   `Session::to_record_json` writes, digest-stamped), the table document, the chat messages
   (`(seq, created_at, author_kind, author_user, author_name, text)` with `last` kept as a
-  counter that survives a trim, R-6.4.9), plus `unlocked`, `archived_at`. `Version` and the
-  compare-and-swap are not needed inside the object; the layer keeps `check_shape` on read and
-  write because every stored field is still an input, and every bound it checks returns `Err`
-  rather than reaching a constructor that panics (§6.1 O-1).
+  counter that survives a trim, R-6.4.9), plus `unlocked`, `archived_at`, the table's bump
+  sequence (the revision the house is told, below) and a pending-deliveries list. `Version`
+  and the compare-and-swap are not needed inside the object; the layer keeps `check_shape` on
+  read and write because every stored field is still an input, and every bound it checks
+  returns `Err` rather than reaching a constructor that panics (§6.1 O-1). **The record is ONE
+  row, and a SQLite row is capped at 2 MB** (§0.4): the owner's finished games read 25 KB for
+  247 and 252 events, about 100 bytes an event, so the cap sits near 20,000 events against an
+  e2e record of 1,704 — headroom, and §6.1 O-3's measurement records record BYTES beside its
+  replay wall so the margin is a number.
 - **Memory**: the `Repl`, rebuilt from the record through `Session::from_record` on every wake
   — the same cold-miss path `Games::handle` (`games.rs:269`) takes today, at a DIFFERENT
   FREQUENCY: at HEAD the cache is warm for the life of the process, and an object hibernates
@@ -424,7 +479,16 @@ garbage.
   storage write is confirmed. The opponent's frame not overtaking the write is held BY
   DISCIPLINE — the write is awaited before the send — and that is exactly what the four M6.3
   and M6.4 gated cells police today, so §4's M6.5c battery carries the same cell shape over
-  the object's storage rather than claiming the problem away.
+  the object's storage rather than claiming the problem away. **The discipline has a second
+  half, because input gates open during non-storage I/O (§0.4):** a request's read → write
+  stretch contains NO non-storage await, and every side channel — the socket sends, the house
+  push, the R2 put — follows every storage write of that request; a house push carries the
+  table's bump sequence as a REVISION and the house ignores a push at or below the revision it
+  holds, so two pushes that interleave cannot regress a lobby row; and the three deliveries
+  that have no "next bump" to heal them — the create-time registration, the final move's
+  push, the row removal at delete — are written to the object's pending-deliveries list
+  before they are attempted and retried by alarm until acknowledged, with delete removing the
+  house row BEFORE `deleteAll()` since nothing survives it.
 - **Lifecycle**: ten seconds after the last event the object hibernates between moves; two
   minutes after the last socket closes it is evicted; days later the next request re-runs the
   constructor over the same storage. The lobby says "waiting on <name>" from the row the table
@@ -442,8 +506,10 @@ name, and under this door the email, which is how `scope=mine` is answered), `to
 `over`, `winner`, a `locked` BOOLEAN, `created_at`, `updated_at` — the house chat, and the
 lobby's sockets. **It is a projection, never an authority**, in exactly the role
 `TurnMirror` (`table.rs`) plays today: a table object pushes its row at each bump site (one
-object-to-object call), a failed push leaves the row stale until the next bump heals it, and
-every click resolves against the table object. **The password never reaches the house**: the
+object-to-object call) carrying the table's bump sequence as a revision the house compares
+before it writes; a failed push leaves the row stale until the next bump heals it, and the
+three pushes that have no next bump are retried from the table's pending-deliveries list
+(§2.3); every click resolves against the table object. **The password never reaches the house**: the
 salt and hash live only in the table document; `join` and `unlock` are requests to the table
 object, which checks them itself and writes its own roster. Delete runs `deleteAll()` on the
 table, then removes the house row.
@@ -475,13 +541,30 @@ at `App.tsx:561-563`, so the local dispatch must answer `/api/health` too or the
 keeps the server's values; and `identityHeaders()` (`api.ts:176`) is read by `call` and by
 `readStream`, so under the local arm `call` skips it rather than each caller knowing. The
 record is persisted to IndexedDB after every applied move, the same "nothing exists only in
-memory" rule; a reload rebuilds the `Repl` from it. There is no signal: one tab, one game, and
-the bot's trailing run returns in the same call. The lobby gains "Play the bot here" beside
-"New table". **The load-bearing pin**: a record played by the wasm bot must reconstruct
-byte-identically under the NATIVE `why` (`record::state_at` + the same `decide` at the same
-`(bot_seed, events.len())` key), which is the determinism claim WebAssembly has to earn before
-anything hosted depends on it — and the same run measures the replay cost in wasm that §6.1
-O-3 asks for.
+memory" rule; a reload rebuilds the `Repl` from it. **The record leaves the wasm boundary as
+a SIDE CHANNEL of opaque bytes, never through the `…/record` route**: the local dispatch
+still answers that route exactly as the corpus pins it (a 409 until game over, R-6.5.10),
+while persistence, "Save game file" and "Send to the archive" read the bytes directly —
+R-6.5.10's reason (the seed crossing a wire to other parties) does not apply where there is
+no wire, and R-6.5.6's opaque-text rule (a `u64` seed does not survive `JSON.parse`) applies
+everywhere. **"Send to the archive" is the local arm's ONE named `fetch`** — `POST
+/api/archive`, plus the SERVER's `/api/health` read for the archive switch — and `/api/health`
+served locally is the host-parameterized payload R-6.5.9's second class names. There is no
+signal: one tab, one game, and the bot's trailing run returns in the same call. **Two
+decisions the M6.5b spec takes at its start, because retrofitting either reshapes the
+dispatch**: whether the wasm runs in a dedicated Web Worker with async request/response
+messages (the lean: yes — the per-decision cost is fine on the main thread, but the
+replay-on-load cost is §6.1 O-3's unmeasured quantity and grows with the record, and
+`suggest`/`why` run the same machinery); and how two tabs on one IndexedDB record are kept
+from writing over each other (the Web Locks API, or a revision check with a defined
+second-tab screen — §6.1 O-12) together with how the lobby re-finds local games after a
+reload. The lobby gains "Play the bot here" beside "New table". **The load-bearing pin**: a
+record played by the wasm bot must reconstruct byte-identically under the NATIVE `why`
+(`record::state_at` + the same `decide` at the same `(bot_seed, events.len())` key), with
+`placement_cap_binds == 0` read from the counter as its scope partner (§0.3), which is the
+determinism claim WebAssembly has to earn before anything hosted depends on it — and the same
+run measures the replay cost in wasm that §6.1 O-3 asks for. §0.3's seventeen identical
+worlds are the evidence the pin is expected to pass; they are not the pin.
 
 ### 2.6 The client's transport seam (M6.5c)
 
@@ -495,7 +578,11 @@ under a hostname-based Access application the identity is the Access cookie on t
 development door passes its email as a query parameter that the Worker refuses whenever
 Access identified the caller (R-6.5.11). On reconnect the object writes the current `Events`
 frame and the client's on-connect compare (M6.3 §5.1) is the recovery, since the count is
-cumulative (R-3.14).
+cumulative (R-3.14). **The reconnect policy is the ladder the client already has, not a new
+one**: `BACKOFF_MS` (`signal.ts:47`, 2–30 s), `nextDelay` (`:86`) and the `Link` state
+(`:82`, "live" / "refreshing" / "reconnecting") were written for a `fetch`-driven stream that
+never had `EventSource`'s automatic retry either, so the `ws` arm rides them unchanged and
+the M6.5c spec says so rather than specifying retry twice.
 
 ---
 
@@ -511,7 +598,11 @@ and `input` moved down, the `server` feature with its optional dependencies and 
 the clock seam with its source-scanning fence; the archive as a trait with the directory
 implementation (R-6.5.4) and abandon-and-save's semantics in `delete` (R-6.5.5, awaiting and
 refusing); `GET …/record` (R-6.5.10); "Save game file" on the finished-game screen; the CI
-line for the dependency fence.
+line for the dependency fence — which needs `getrandom = { version = "0.2", features =
+["js"] }` under `[target.'cfg(target_arch = "wasm32")'.dependencies]` in `yokohama-web`'s
+`Cargo.toml`, target-gated so it is inert on native, because the check line fails on
+exactly the §0.3 blocker without it (verified: reproduced); version-pinned, since 0.3
+renames the feature.
 **Exit:** the axum server redeployed on the NAS with **every EXISTING corpus payload
 byte-identical except `health.json`, which gains exactly one key (`archive`)** — regenerate,
 run without the variable, read the diff, report it: the proof that nothing moved on the wire.
@@ -527,9 +618,13 @@ the CLI untouched; core byte-identical.
 ### 3.2 M6.5b — single-player in the browser
 
 **Builds:** `yokohama-wasm` (§2.5); the local arm in `api.ts` AND in `usePolled`, with
-`/api/health` answered locally; IndexedDB persistence; "Play the bot here"; "Send to the
-archive" (R-6.5.6) on the finished-game screen, dark until a host reports an archive; the
-determinism pin; the corpus subset the browser host serves, named and regenerated against it.
+`/api/health` answered locally; the Web Worker and two-tab decisions (§2.5); IndexedDB
+persistence with the opaque-bytes rule; "Play the bot here"; "Send to the archive" (R-6.5.6)
+on the finished-game screen, dark until a host reports an archive, AND its receiving route
+`POST /api/archive` on the axum host with the four checks, native; the determinism pin; the
+corpus subset the browser host serves, named and regenerated against it. The whole-game exit
+below IS the executable wasm smoke of the layer's operations (create, deal, input, save and
+reload, undo, explanations); no parallel instrument is added for it.
 **Exit:** a whole game against the bot played in the browser with the network tab showing
 ZERO `/api/games` calls after load (counted off the page's own request log, the way the M6.3
 e2e counts `/events`); every payload the local arm serves byte-identical to the committed one;
@@ -574,20 +669,31 @@ diff is the expected outcome of the work and the reading of it is the check.
   archive failure refuses nothing; the two archive implementations write the same relative
   paths (O-9).
 - **M6.5b**: the local arm makes no `fetch` (a `fetch` spy at zero across a whole game,
-  including the stream reader); a record with one event edited is REFUSED by "Send to the
-  archive" (strict replay), as is a record not over and a record at another `semantics_rev`,
-  by three different sentences; the wasm bot's moves reconstruct under native `why` (a
-  mutation that perturbs the decision stream key must fail it); the seed never leaves the
-  browser except inside a finished record; every payload the local arm serves is
-  byte-identical to the committed one.
+  including the stream reader, with `POST /api/archive` and the server's health read as its
+  ONLY named exemptions); a record with one event edited is REFUSED by "Send to the archive"
+  (strict replay), as is a record not over, a record at another `semantics_rev` and a record
+  with its terminal digest STRIPPED, by four different sentences; a record round-tripped
+  through `JSON.parse` is refused (its seed moved) — the cell that proves the opaque-bytes
+  rule is load-bearing; the wasm bot's moves reconstruct under native `why` (a mutation that
+  perturbs the decision stream key must fail it) with `placement_cap_binds` read and asserted
+  zero; the seed never leaves the browser except inside a finished record; every payload the
+  local arm serves is byte-identical to the committed one except `/api/health`'s named
+  fields.
 - **M6.5c**: a spectator's socket message that is a move is refused before the record is
   touched (the M6.3 sweep, over WebSockets); a client-supplied `X-Yokohama-Claimed-User` OR
   `X-Yokohama-User` header, or the `claimed` query parameter, is ignored whenever Access
   identified the caller; the house never holds a hash (a value pin over the house's rows for
   this run's salt and hash, the M6.2 shape); a frame never overtakes its write (the M6.3
-  gated-cell shape, over the object's storage); the whole corpus byte-identical against the
-  Worker; the object hibernates (a wake counter that MUST increase across a ten-second pause);
-  an abandon whose put fails leaves the object and its storage in place.
+  gated-cell shape, over the object's storage); a chat post arriving inside a slow house push
+  or R2 put lands, and the house row never regresses when two pushes interleave (a push at a
+  lower revision after a higher one leaves the row at the higher); a failed create-time
+  registration, final-move push or delete-time row removal is retried from the pending list
+  until the house has it; the whole corpus byte-identical against the Worker; the object
+  hibernates (a wake counter that MUST increase across a pause, with a deadline tolerant of
+  the docs' "currently 10 s"); a move started inside a partially completed picker, paused
+  across an observed wake, finishes as the move the player intended (H-4's acceptance test,
+  whichever mechanism M6.5c chooses); an abandon whose put fails leaves the object and its
+  storage in place.
 
 ---
 
@@ -599,6 +705,10 @@ diff is the expected outcome of the work and the reading of it is the check.
   allow-list; `cf-access` identity.
 - The hostname takeover is the step that takes the ttyd tunnel's route away: give ttyd its new
   hostname first and verify it (`wrangler.jsonc`'s own note).
+- **The `workers.dev` route and preview URLs are OFF** (`"workers_dev": false`,
+  `"preview_urls": false`): they would serve the same Worker outside the hostname-based
+  Access application, and R-6.5.8's first deploy verifies the `workers.dev` name answers
+  nothing.
 - Early and repeated deploys (R-6.5.8); the runbook records each with the container-era
   numbering continued.
 - The NAS keeps serving the axum host throughout; nothing here retires it.
@@ -612,7 +722,9 @@ diff is the expected outcome of the work and the reading of it is the check.
 - Nothing hosted is verified: every platform fact in §0.4 is a docs reading of 2026-09-19 and
   every wasm figure in §0.3 is a throwaway crate outside the tree. The determinism of the wasm
   bot (§2.5) is a CLAIM until M6.5b's pin holds.
-- The Free-plan CPU figure for a Durable Object was not found (§0.4); R-6.5.12 sizes for Paid.
+- The Durable Object limits table gives 30 s of CPU per request without a plan qualifier
+  (§0.4); whether a Free-plan object is instead held to the plain-Workers 10 ms was not
+  tested. R-6.5.12 sizes for Paid either way.
 - The email roster, the password oracles, house-chat moderation and rate limits are LEAVE items
   on this door (R-6.5.3), with the handover's owner items 1–7 carried unchanged: the vs-bot gate
   livelock, the e2e `CAP = 4000`, the disk/trace item, the house chat's lack of delete (which
@@ -647,11 +759,21 @@ diff is the expected outcome of the work and the reading of it is the check.
   workers-rs generates, and version-pinned (0.2.16 in the lock; 0.3 renames the feature). What
   settles it: a `worker`-crate spike calling `SeedSchedule::from_os_entropy()` under
   `wrangler dev`, before M6.5c's plan is written — `create` depends on it.
-- **O-8 — the three checks behind "Send to the archive"** — NAMED here, R-6.5.6; the strict
-  replay's cost in the Worker is O-3's quantity.
+- **O-8 — the checks behind "Send to the archive"** — NAMED here, R-6.5.6, and there are four
+  (the digest's PRESENCE joined them, since `replay_strict` verifies one only when it is
+  there); the strict replay's cost in the Worker is O-3's quantity.
 - **O-9 — two archive implementations, one layout** — RULED here, R-6.5.4: one shared layout
   function and a cell over both.
 - **O-10 — `FsStore` under `--no-default-features`** — RULED here, §2.1: behind `server`.
+- **O-11 — the placement reservoir's width-dependent draw** (§0.3): unreached at 2P, reached
+  on 9.19% of 4P decisions, and R-P10 keeps 3–4P bots out of scope. A width-typed draw in
+  `greedy.rs` (the module's own `uniform_index` shows the shape) would leave native behaviour
+  provably unchanged — `usize` IS `u64` there — but it touches a fenced crate and R-6.5.9's
+  letter, so it is an OWNER RULING owed only if a 3–4P bot ever comes in scope, never a
+  drive-by. Until then the pin's `placement_cap_binds == 0` is the scope's evidence.
+- **O-12 — two tabs on one IndexedDB record** (§2.5): decided in the M6.5b spec — the Web
+  Locks API, or a revision check with a defined second-tab screen — together with how the
+  lobby re-finds local games after a reload.
 
 ---
 
