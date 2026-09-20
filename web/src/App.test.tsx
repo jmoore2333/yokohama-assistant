@@ -431,7 +431,7 @@ describe("the finished game", () => {
       expect(blob.type).toBe("application/json");
       expect(await readBlob(blob)).toBe(record);
       expect(parse.mock.calls.some(([s]) => s === record), "the record text went through JSON.parse").toBe(false);
-      expect(revoke).toHaveBeenCalledWith("blob:record");
+      await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:record"));
     } finally {
       click.mockRestore();
       parse.mockRestore();

@@ -83,8 +83,13 @@ async function saveGameFile(game: string): Promise<void> {
   const a = document.createElement("a");
   a.href = url;
   a.download = `${game}.json`;
+  // Attached for the click and revoked on the next tick: a detached anchor and
+  // a synchronous revoke both work in Chromium and have both cancelled the
+  // download in other engines.
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function App() {

@@ -40,12 +40,14 @@
 //! fence (no axum, no mio), and `platform_calls_stay_behind_the_server_feature`
 //! below proves the PLATFORM-CALL fence by reading this crate's own source,
 //! because a `SystemTime::now()` compiles for the target and only panics there.
-//! The cell reads a convention rather than the compiler: a `server`-only region
-//! inside a mixed file begins with a line `#[cfg(feature = "server")]` (one per
-//! item — an attribute gates ONE item) and ends with a comment line
-//! `// ---- end server ----` at column 0; a whole-`server` file begins with
-//! `#![cfg(feature = "server")]`. A platform call outside such a region is named
-//! by file and line.
+//! The cell ENFORCES a convention rather than trusting the compiler: a
+//! `server`-only item carries its own `#[cfg(feature = "server")]` (an attribute
+//! gates ONE item), a run of them is marked as a region that ends with a comment
+//! line `// ---- end server ----` at column 0 — the marker is a reading aid; an
+//! item inside a region WITHOUT its own attribute is named by the cell — and a
+//! whole-`server` file begins with `#![cfg(feature = "server")]`. A platform call
+//! on an ungated item is named by file and line, wherever in the file it sits
+//! (the top-level test module is the one span the cell does not read).
 
 #[cfg(feature = "server")]
 pub mod art;
@@ -65,6 +67,14 @@ pub mod signal;
 pub mod store;
 pub mod table;
 pub mod tables;
+
+/// The payload and request types live in the layer (M6.5a, R-6.5a.3); their
+/// paths are kept here for the cells, the corpus and the client contract that
+/// name them.
+pub use api::{
+    ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList, Health, IndexQuery, Input, Join,
+    Keep, Labels, ListQuery, LogQuery, Me, Unlock, WhyQuery,
+};
 
 use http::StatusCode;
 
@@ -339,8 +349,9 @@ impl AppState {
         Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
     }
 
-    /// The one constructor that builds anything; every constructor above is
-    /// this one with a store, an identity or a chat chosen for it.
+    /// Every constructor above is this one with a store, an identity or a chat
+    /// chosen for it, and this one is [`Self::with_store_chat_and_archive`] with
+    /// no archive — since M6.5a THAT is the one constructor that builds anything.
     ///
     /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
     /// appender enforces them and `/api/health` reports them off the same
@@ -380,14 +391,6 @@ impl AppState {
         }
     }
 }
-
-/// The payload and request types live in the layer (M6.5a, R-6.5a.3); their
-/// paths are kept here for the cells, the corpus and the client contract that
-/// name them.
-pub use api::{
-    ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList, Health, IndexQuery, Input, Join,
-    Keep, Labels, ListQuery, LogQuery, Me, Unlock, WhyQuery,
-};
 
 // ---------------------------------------------------------------------------
 // The read-only surfaces
@@ -1999,7 +2002,8 @@ mod tests {
     ///
     /// Four refusals and then the one that answers, because the refusals are
     /// what a client meets when it gets a parameter wrong and a silent default
-    /// is the failure mode `QueryArgs` exists to stop: `?scoped=open` would
+    /// is the failure mode the layer's `parse_query` exists to stop (as `QueryArgs`
+    /// did): `?scoped=open` would
     /// otherwise return the caller's OWN tables with a 200 on it.
     #[tokio::test]
     async fn list_games_validates_its_query() {
@@ -6168,12 +6172,16 @@ mod tests {
 
     /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles
     /// for the target and panics there), so the crate's own source is read at run
-    /// time, cut at each file's first top-level `#[cfg(test)]`, and any platform
-    /// call outside the `server`-gated files or a `#[cfg(feature = "server")]`
-    /// region is named. Two anti-vacuity partners: the gated files must exist, and
-    /// at least one gated site must match, so a pattern that matches nothing is
-    /// caught as loudly as a call that escaped. The region convention this reads
-    /// is written into the crate's module doc.
+    /// time with each file's top-level test module cut OUT (the code below it is
+    /// scanned too), and any platform call outside the `server`-gated files or a
+    /// `#[cfg(feature = "server")]`-gated item is named. **The convention is
+    /// ENFORCED, not followed** (the whole-branch review's IMP-2): inside a region
+    /// every column-0 item must carry its own attribute, or the cell names it as
+    /// ungated — so a region's end marker is documentation for the reader and an
+    /// item slipped in between two gated ones cannot hide behind them. Two
+    /// anti-vacuity partners: the gated files must exist, and at least one gated
+    /// site must match, so a pattern that matches nothing is caught as loudly as
+    /// a call that escaped.
     #[test]
     fn platform_calls_stay_behind_the_server_feature() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -6200,29 +6208,70 @@ mod tests {
             }
             let name = path.file_name().unwrap().to_str().unwrap().to_string();
             let text = std::fs::read_to_string(&path).expect("readable");
-            // A TOP-LEVEL `#[cfg(test)]` — at column 0, so an inner one on a
-            // test-only item (`signal.rs`'s `senders`, `games.rs`'s
-            // `evict_for_test`) does not end the scan early and leave the code
-            // below it unread. Measured: the old `split("#[cfg(test)]")` left
-            // `games.rs:675-706` and `signal.rs:128-169` unscanned.
-            let non_test = text.split("\n#[cfg(test)]").next().unwrap_or("");
+            // The TOP-LEVEL test module is cut OUT and everything else is scanned —
+            // the code above it and the code below it. Top-level means column 0,
+            // so an inner `#[cfg(test)]` on a test-only item (`signal.rs`'s
+            // `senders`, `games.rs`'s `evict_for_test`) does not end the scan
+            // early (the mid-point review measured `games.rs:675-706` and
+            // `signal.rs:128-169` unscanned under the old rule), and a platform
+            // call written below `mod tests` is read (the battery's residual).
+            let lines: Vec<&str> = text.lines().collect();
+            let test_start = lines.iter().position(|l| *l == "#[cfg(test)]");
+            let test_end = test_start.map(|start| {
+                lines[start..].iter().position(|l| *l == "}").map_or(lines.len(), |k| start + k + 1)
+            });
+            let in_test_module = |i: usize| test_start.is_some_and(|s| i >= s && i < test_end.unwrap());
+            let first_code = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
             let whole_file_gated = gated_files.contains(&name.as_str())
-                || non_test.trim_start().starts_with("#![cfg(feature = \"server\")]");
-            // A block-gated region starts at a line reading `#[cfg(feature = "server")]`
-            // and ends at the next line that starts at column 0 with
-            // `// ---- end server ----`; the source keeps those regions contiguous
-            // by convention (the crate's module doc).
-            let mut depth_gate = false;
-            for (n, line) in non_test.lines().enumerate() {
+                || lines[first_code].starts_with("#![cfg(feature = \"server\")]");
+            // A region starts at a line reading `#[cfg(feature = "server")]` and
+            // ends at a line starting at column 0 with `// ---- end server ----`.
+            // Inside a region, EVERY item that starts at column 0 must carry its
+            // own attribute (an attribute gates one item — the compiler's rule),
+            // else it is named as an ungated item inside a region: the region is a
+            // reading aid, not a gate. An item runs from its first column-0 line to
+            // the next column-0 `}` unless that first line ends in `;`.
+            let starts_item = |l: &str| {
+                let item = [
+                    "pub ", "fn ", "async fn ", "struct ", "enum ", "impl", "const ", "static ", "type ", "use ",
+                    "mod ", "trait ", "macro_rules!",
+                ];
+                item.iter().any(|k| l.starts_with(k))
+                    || (l.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && l.contains("!("))
+            };
+            let mut in_region = false;
+            let mut armed = false; // a `#[cfg(feature = "server")]` seen, its item not yet reached
+            let mut item_gated = false; // the current item carries the attribute
+            let mut item_open = false; // inside an item that runs to a column-0 `}`
+            for (n, line) in lines.iter().enumerate() {
+                if in_test_module(n) {
+                    continue;
+                }
                 if line.trim_start().starts_with("#[cfg(feature = \"server\")]") {
-                    depth_gate = true;
+                    in_region = true;
+                    armed = true;
                     continue;
                 }
-                if depth_gate && line.starts_with("// ---- end server ----") {
-                    depth_gate = false;
+                if line.starts_with("// ---- end server ----") {
+                    in_region = false;
+                    armed = false;
                     continue;
                 }
-                let in_gate = whole_file_gated || depth_gate;
+                if !item_open && starts_item(line) {
+                    if in_region && !armed {
+                        escaped.push(format!(
+                            "{name}:{}: ungated item inside a server region: {}",
+                            n + 1,
+                            line.trim()
+                        ));
+                    }
+                    item_gated = armed;
+                    armed = false;
+                    item_open = !line.trim_end().ends_with(';');
+                } else if item_open && line.starts_with('}') {
+                    item_open = false;
+                }
+                let in_gate = whole_file_gated || item_gated;
                 for p in patterns {
                     if line.contains(p) && !line.trim_start().starts_with("//") {
                         if in_gate {

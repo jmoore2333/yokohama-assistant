@@ -669,16 +669,28 @@ impl Games {
         let table_json = crate::archive::strip_for_archive(&doc);
         match self.archive.put(crate::archive::Why::Over, id, record_json, &table_json) {
             Ok(()) => {
-                // The stamp, retried once on a version conflict: an `unlock` or
-                // a `join` writing the document in the same instant is the only
-                // writer left at game over, and a stamp that never landed after a
-                // put that did would make the next abandon's put a refusal.
-                if let Err(WriteError::Conflict { .. }) = self.write_table(&doc, Some(version)) {
-                    if let Ok(Some((mut again, v2))) = self.read_table(id) {
-                        again.archived_at = doc.archived_at;
-                        if let Err(e) = self.write_table(&again, Some(v2)) {
-                            eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}");
+                // The stamp is what keeps this game to ONE archive copy: the next
+                // abandon puts under `abandoned/`, a DIFFERENT path, so a put that
+                // landed without its stamp would be archived a second time there
+                // rather than refused (`archive::paths` is per reason). Retried
+                // once on a version conflict — an `unlock` or a `join` writing the
+                // document in the same instant is the only other writer left at
+                // game over — and every other outcome is logged, because a landed
+                // copy with no stamp is the case an operator most needs to hear.
+                match self.write_table(&doc, Some(version)) {
+                    Ok(_) => {}
+                    Err(WriteError::Conflict { .. }) => match self.read_table(id) {
+                        Ok(Some((mut again, v2))) => {
+                            again.archived_at = doc.archived_at;
+                            if let Err(e) = self.write_table(&again, Some(v2)) {
+                                eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}");
+                            }
                         }
+                        Ok(None) => eprintln!("archive of {id:?} at game over landed, but its table is gone"),
+                        Err(e) => eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}"),
+                    },
+                    Err(WriteError::Io(e)) => {
+                        eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}")
                     }
                 }
             }
@@ -1677,8 +1689,9 @@ pub(crate) mod test_support {
     /// defaults to it (M6.5a, R-6.5a.8). That is a premise
     /// `every_bump_site_answers_under_no_signal` rests on and cannot assert —
     /// a `dyn Signal` does not say which one it is — so a change to the
-    /// default belongs with a re-read of that cell. Every cell that watches a
-    /// bump uses [`watched_games`] instead.
+    /// default belongs with a re-read of that cell. Every cell in THIS module that watches a
+    /// bump uses [`watched_games`] instead (the route cells watch through
+    /// `AppState`'s own `signals`).
     pub(crate) fn games() -> Games {
         Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
     }

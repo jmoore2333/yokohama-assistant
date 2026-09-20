@@ -146,6 +146,7 @@ import spectatorAtK from "./spectator_at_k.json";
 import spectatorOver from "./spectator_over.json";
 import gamesPlaying from "./games_playing.json";
 import tableWatchable from "./table_watchable.json";
+import record409 from "./record_409.json";
 import unlock403 from "./unlock_403.json";
 import unlock409Open from "./unlock_409_open.json";
 import watch403Locked from "./watch_403_locked.json";
@@ -289,6 +290,8 @@ const _tableWatchable: Widen<TableView> = tableWatchable;
 // tells a caller there is nothing they can do at all.
 const _watch403Locked: Widen<ApiErrorBody> = watch403Locked;
 const _unlock403: Widen<ApiErrorBody> = unlock403;
+// M6.5a: the record route while the game runs — a sentence, like the others.
+const _record409: Widen<ApiErrorBody> = record409;
 const _unlock409Open: Widen<DealingErrorBody> = unlock409Open;
 const _dealing409: Widen<DealingErrorBody> = dealing409;
 const _notSeated403: Widen<ApiErrorBody> = notSeated403;
@@ -459,7 +462,7 @@ void [
   _wrongSeat403, _undoRefused403,
   _events, _eventsDealing, _eventsOpen,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
-  _watch403Locked, _unlock403, _unlock409Open,
+  _watch403Locked, _unlock403, _unlock409Open, _record409,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,

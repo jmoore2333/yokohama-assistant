@@ -355,11 +355,6 @@ const query = (args: Record<string, number | undefined>): string => {
   return parts.length ? `?${parts.join("&")}` : "";
 };
 
-/** Where a chat panel reads and writes: one table, or the house.
- *
- *  **One path function and not two calls**, because the two scopes differ only
- *  in their address and a client that branched at each call site would have the
- *  branch in as many places as it has panels. */
 /** The finished game's record as TEXT, never parsed (M6.5a, R-6.5a.13; umbrella
  *  R-6.5.6): `GameRecord.seed` is a u64 that serde writes at full precision and
  *  `JSON.parse` would round to a double, so a record that went through this
@@ -386,6 +381,12 @@ export async function recordText(game: string): Promise<string> {
   }
   return text;
 }
+
+/** Where a chat panel reads and writes: one table, or the house.
+ *
+ *  **One path function and not two calls**, because the two scopes differ only
+ *  in their address and a client that branched at each call site would have the
+ *  branch in as many places as it has panels. */
 
 const chatPath = (scope: ChatScope, after?: number): string =>
   (scope.kind === "house" ? "/api/chat" : `/api/games/${id(scope.id)}/chat`) + query({ after });

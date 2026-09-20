@@ -1754,10 +1754,16 @@ pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiReq
             return error_response(ApiError::not_found(format!("no such endpoint: {}", req.path)))
         }
     };
-    match answer(games, host, identity, req, pattern, &bound) {
-        Ok(r) if req.method == "HEAD" => ApiResponse { status: r.status, body: String::new() },
+    let out = match answer(games, host, identity, req, pattern, &bound) {
         Ok(r) => r,
         Err(e) => error_response(e),
+    };
+    // HEAD leaves with an empty body on BOTH arms — a refused HEAD too — so a
+    // non-HTTP host never emits a body a HEAD did not ask for.
+    if req.method == "HEAD" {
+        ApiResponse { status: out.status, body: String::new() }
+    } else {
+        out
     }
 }
 

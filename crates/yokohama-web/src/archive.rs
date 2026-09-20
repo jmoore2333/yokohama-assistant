@@ -32,9 +32,14 @@ impl Why {
 }
 
 /// The archive seam. `put` is handed the record bytes the store holds and the
-/// STRIPPED table document ([`strip_for_archive`]) — a game id is archived at
-/// most once, and an implementation refuses a second put rather than
-/// versioning (umbrella R-6.5.4).
+/// STRIPPED table document ([`strip_for_archive`]). **"At most once" is per
+/// `(id, reason)` here, and per game id only through the callers**: [`paths`]
+/// puts `over/` and `abandoned/` under different leaves, an implementation
+/// refuses a second put at the SAME path rather than versioning, and the two
+/// sites of R-6.5a.11 — the `archived_at` stamp they read and write — are what
+/// keep one game to one reason (umbrella R-6.5.4). A stamp lost after a landed
+/// put is therefore a DUPLICATE under the other leaf at the next abandon, not a
+/// refusal; the M6.5a close records that edge.
 pub trait Archive: Send + Sync {
     fn put(&self, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<(), String>;
     /// What `/api/health` reports: `"off"`, `"dir"`, or M6.5c's `"r2"`.
