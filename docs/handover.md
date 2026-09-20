@@ -192,9 +192,11 @@ M6.5a PLAN is WRITTEN** — `docs/plans/2026-09-19-web-frontend-m6.5a-plan.md`, 
 dependency order (signal trait → clock → chat on `Games` → the `server` feature + scanning fence →
 `api.rs` + the four public routes → every route through the adapter → the archive module → the two
 archive sites → the record route → the client → the deploy note), six plan-level rulings, the close
-checklist. **Next: execution under R-P11** (Opus implementers, per-task Opus reviewers, the
-whole-branch review before the release), then the deploy as `0.5.0-m6.5a` and the close; the M6.5b
-and M6.5c specs are written at their cycles' starts from M6.5a's close. The spec's §6 is what it does
+checklist. **Next: execution under R-P11 in a FRESH session, subagent-driven, from
+`docs/plans/2026-09-19-web-frontend-m6.5a-execution-handover.md`** (its §4 is the resume point:
+the SDD workspace, Task 1 to an Opus implementer, the close checklist), then the deploy as
+`0.5.0-m6.5a` and the close; the M6.5b and M6.5c specs are written at their cycles' starts from
+M6.5a's close. Nothing of the plan is executed yet — every commit on the branch is a document. The spec's §6 is what it does
 NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since
