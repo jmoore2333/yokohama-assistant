@@ -462,3 +462,19 @@ export async function renderApp(
   await view.findByText(/end triggers:/);
   return stub;
 }
+
+/** The positions a `GET …/at?from=&to=` call asks for — `[from, to)` — or
+ *  `null` for any other path. Since M6.5b (R-6.5b.10) the walk fetches its run
+ *  in ONE call, so a handler answers the whole range from this. */
+export function runRange(path: string): number[] | null {
+  const m = /\/at\?from=(\d+)&to=(\d+)$/.exec(path);
+  if (!m) return null;
+  const from = Number(m[1]);
+  const to = Number(m[2]);
+  return Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i);
+}
+
+/** Every position the client has fetched through the run route, in order —
+ *  what the list of `/at/{k}` requests used to be, read off the run calls. */
+export const positionsWalked = (stub: ApiStub): number[] =>
+  stub.matching("GET", "/at?").flatMap((c) => runRange(c.path) ?? []);

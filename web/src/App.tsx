@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isSignedOut, onUnauthorized, setArchiveKind, setChatText, setLobbyChat, setSignalKind } from "./api";
+import { api, ApiError, isSignedOut, onUnauthorized, RUN_CAP, setArchiveKind, setChatText, setLobbyChat, setSignalKind } from "./api";
 import { SignIn } from "./SignIn";
 import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
@@ -43,21 +43,30 @@ import type {
   TableView,
 } from "./types";
 
-/** The positions `prev..=next` and the log's tail, in parallel.
+/** The positions `prev..=next` and the log's tail.
  *
  *  **`prev` is fetched too**, and that is the whole reason this takes a range
  *  rather than the reply's own count: a step's highlight is a DIFF, so the
  *  first step needs a full position on the side the reply came from, and the
  *  live payload is not one — it carries no port and no laboratory.
  *
+ *  **ONE call to the run route, since M6.5b (R-6.5b.10)**: the route is
+ *  half-open and the run ends on the LIVE frame, so `to` is `next + 1`; the
+ *  server replays the record once for the whole run where one `at/{k}` per
+ *  position replayed it from the start `next - prev + 1` times. A run longer
+ *  than the cap is PAGED in cap-sized calls (a spectator reconnecting after a
+ *  long absence — one call is the common case); the server refuses a longer
+ *  ask with a 400 rather than clamping it, so a page is never silently short.
+ *
  *  Outside the component because it closes over nothing: `api` is a module and
  *  `buildRun` is pure, so a hook would only make its identity churn. */
 async function fetchRun(game: string, prev: number, next: number): Promise<Run> {
-  const ks = Array.from({ length: next - prev + 1 }, (_, i) => prev + i);
-  const [frames, log] = await Promise.all([
-    Promise.all(ks.map((k) => api.at(game, k))),
-    api.log(game, next - prev),
-  ]);
+  const frames: HistoricalFrame[] = [];
+  for (let from = prev; from <= next; from += RUN_CAP) {
+    const to = Math.min(next + 1, from + RUN_CAP);
+    frames.push(...(await api.run(game, from, to)).frames);
+  }
+  const log = await api.log(game, next - prev);
   return buildRun(prev, frames, log);
 }
 

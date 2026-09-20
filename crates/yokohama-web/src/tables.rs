@@ -1673,7 +1673,8 @@ impl Games {
         // point of the control and the creator can simply try again. A table
         // already stamped (at game over, or by an earlier failed delete whose
         // put landed) is deleted without a second put; an open or dealing
-        // table, or a playing one with no events, deletes as before.
+        // table, or a playing one with no events, deletes as before. Since
+        // M6.5b (R-6.5b.13) a FINISHED game with no stamp lands under `over/`.
         if crate::archive::is_on(&self.archive)
             && doc.status == TableStatus::Playing
             && doc.archived_at.is_none()
@@ -1684,11 +1685,21 @@ impl Games {
                     .map(|r| r.events.len())
                     .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
                 if events > 0 {
+                    // R-6.5b.13: the leaf follows the MIRROR's truth. `turn` is a
+                    // cache `mirror_turn` may leave one move stale when its write
+                    // conflicts, so in exactly that race the leaf can still lie;
+                    // `Games::handle(id).is_over` would not, at the cost of a
+                    // rebuild and a replay under this lock, and was declined.
+                    let why = if doc.turn.as_ref().is_some_and(|t| t.over) {
+                        crate::archive::Why::Over
+                    } else {
+                        crate::archive::Why::Abandoned
+                    };
                     let mut stamped = doc.clone();
                     stamped.archived_at = Some((self.clock)());
                     let table_json = crate::archive::strip_for_archive(&stamped);
                     self.archive
-                        .put(crate::archive::Why::Abandoned, id, &record_json, &table_json)
+                        .put(why, id, &record_json, &table_json)
                         .map_err(|why| {
                             GameError::Server(format!(
                                 "the archive could not be written ({why}) — the table was not deleted"
@@ -2525,6 +2536,35 @@ mod tests {
         assert!(!record.events.is_empty(), "anti-vacuity: the archived record has the move");
         assert!(games.read_table("quit").unwrap().is_none(), "deleted after the put");
         assert!(games.store().read(Doc::Record, "quit").unwrap().is_none());
+    }
+
+    /// R-6.5b.13: a FINISHED game with no stamp deleted by its creator lands
+    /// under `over/`, because the MIRROR says over — a game finished before the
+    /// archive was switched on, or one whose game-over put failed. **The
+    /// residual, named:** `turn` is a cache `mirror_turn` may leave one move
+    /// stale when its write conflicts, so in exactly that race the leaf can
+    /// still lie; `Games::handle(id).is_over` would not, at the cost of a
+    /// rebuild and a replay under the table lock, and was declined. The cell
+    /// claims what is true: the leaf follows the mirror.
+    #[test]
+    fn a_finished_unstamped_game_deleted_lands_under_over() {
+        let games = games(); // archive OFF, so no stamp lands
+        let (_, repl) = play_to_the_end(&games, "late");
+        assert!(repl.session.is_over(), "premise: the game is over");
+        let (doc, _) = games.read_table("late").unwrap().unwrap();
+        assert_eq!(doc.archived_at, None, "premise: nothing stamped it");
+        assert!(doc.turn.as_ref().is_some_and(|t| t.over), "premise: the mirror says over");
+        let archive = RecordingArchive::recording();
+        let games = games.with_archive(archive.clone());
+        games.delete("late", &who("red@t.test")).expect("the creator's delete");
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(
+            puts[0].0,
+            crate::archive::Why::Over,
+            "a finished game is archived as OVER at its delete, not as abandoned"
+        );
+        assert_eq!(puts[0].1, "late");
     }
 
     /// Nothing to save, nothing put: an open table, a dealing table, a playing

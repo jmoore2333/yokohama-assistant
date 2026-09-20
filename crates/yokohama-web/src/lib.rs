@@ -73,7 +73,7 @@ pub mod tables;
 /// name them.
 pub use api::{
     ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList, Health, IndexQuery, Input, Join,
-    Keep, Labels, ListQuery, LogQuery, Me, Unlock, WhyQuery,
+    Keep, Labels, ListQuery, LogQuery, Me, RunFrames, RunQuery, Unlock, WhyQuery, RUN_CAP,
 };
 
 use http::StatusCode;
@@ -2893,6 +2893,8 @@ mod tests {
             ("GET", "/log", None, Kind::Read),
             ("GET", "/events", None, Kind::Signal),
             ("GET", "/at/0", None, Kind::Read),
+            // R-6.5b.10: the run route is admitted exactly as `at/{k}` is.
+            ("GET", "/at?from=0&to=1", None, Kind::Read),
             ("GET", "/suggest", None, Kind::Write),
             ("GET", "/why", None, Kind::Read),
             ("GET", "/index/orders", None, Kind::Read),
@@ -4393,6 +4395,99 @@ mod tests {
     async fn total_events(router: &Router, name: &str) -> usize {
         let (_, log) = call(router, "GET", &format!("/api/games/{name}/log"), None).await;
         log["total"].as_u64().expect("a log total") as usize
+    }
+
+    /// R-6.5b.10: a run is the positions one by one, BY VALUE, over a run
+    /// whose three frames all differ from one another (a run of identical
+    /// frames would pass a builder that returned the first frame `to - from`
+    /// times, and `index` sits OUTSIDE `frame`, so the comparison is on the
+    /// projection and not on the counter).
+    #[tokio::test]
+    async fn a_run_is_the_positions_one_by_one() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "run", &[]).await;
+        play(&router, "run", 6).await;
+        let total = total_events(&router, "run").await;
+        assert!(total >= 3, "the walk applied {total} events; a run of three needs three");
+        let (status, run) = call(
+            &router,
+            "GET",
+            &format!("/api/games/run/at?from={}&to={}", total - 3, total),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{run}");
+        let frames = run["frames"].as_array().expect("frames");
+        assert_eq!(frames.len(), 3);
+        for (i, k) in (total - 3..total).enumerate() {
+            let (_, one) = call(&router, "GET", &format!("/api/games/run/at/{k}"), None).await;
+            assert_eq!(frames[i], one, "frame {k} of the run is at/{k}, by value");
+        }
+        assert_ne!(frames[0]["frame"], frames[1]["frame"], "anti-vacuity: the middle frame differs from the first");
+        assert_ne!(frames[1]["frame"], frames[2]["frame"], "… and from the last");
+    }
+
+    /// The boundary in numbers (spec §2.4): `to = total + 1` is ADMITTED and
+    /// its last frame is the live frame `at/{total}`; `to = total + 2` answers
+    /// what `at/{total + 1}` answers; `from > to` is the same 404 and never a
+    /// third answer.
+    #[tokio::test]
+    async fn a_run_admits_the_live_frame_and_refuses_the_one_past_it() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "edge", &[]).await;
+        play(&router, "edge", 2).await;
+        let total = total_events(&router, "edge").await;
+        let (status, run) = call(
+            &router,
+            "GET",
+            &format!("/api/games/edge/at?from={total}&to={}", total + 1),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{run}");
+        let (_, live) = call(&router, "GET", &format!("/api/games/edge/at/{total}"), None).await;
+        assert_eq!(run["frames"].as_array().map(Vec::len), Some(1));
+        assert_eq!(run["frames"][0], live, "the run's last frame is the live frame");
+        let (status, past) = call(
+            &router,
+            "GET",
+            &format!("/api/games/edge/at?from={total}&to={}", total + 2),
+            None,
+        )
+        .await;
+        let (one_status, one) =
+            call(&router, "GET", &format!("/api/games/edge/at/{}", total + 1), None).await;
+        assert_eq!(status, one_status, "{past} vs {one}");
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            past["error"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("this game has {total} events, so its last position is {total}")),
+            "{past}"
+        );
+        let (status, bad) = call(&router, "GET", "/api/games/edge/at?from=2&to=1", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "from > to is the same 404: {bad}");
+    }
+
+    /// A run over the cap is a 400 naming it — checked BEFORE the range, so a
+    /// fresh game asked for `to=65` reads the cap's sentence and not the
+    /// range's — and a non-numeric bound is a 400 in axum's words.
+    #[tokio::test]
+    async fn a_run_over_the_cap_is_a_400_naming_it() {
+        let router = app(Arc::new(AppState::in_memory()));
+        a_game(&router, "capped", &[]).await;
+        let (status, v) = call(&router, "GET", "/api/games/capped/at?from=0&to=65", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(v["error"], "a run is at most 64 positions — ask for from=0&to=64 and page");
+        let (status, v) = call(&router, "GET", "/api/games/capped/at?from=x&to=1", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            v["error"].as_str().unwrap().starts_with("Failed to deserialize query string"),
+            "axum's words: {v}"
+        );
+        let (status, v) = call(&router, "GET", "/api/games/capped/at?from=0&to=1&k=2", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown field is a 400, not a run: {v}");
     }
 
     /// **The historical path and the live path agree at the top of the record.**

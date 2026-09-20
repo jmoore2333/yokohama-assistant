@@ -761,3 +761,16 @@ describe("every why refusal the client can be shown has a payload", () => {
     expect(wire.whyRefused.refusal!.kind).toBe("no_bot_move_yet");
   });
 });
+
+describe("the run payload (M6.5b, R-6.5b.10)", () => {
+  it("is a list of HistoricalFrames and nothing else, three of them at consecutive stops", () => {
+    expect(keys(wire.run)).toEqual(listed(KEYS.run));
+    expect(wire.run.frames).toHaveLength(3);
+    for (const frame of wire.run.frames) expect(keys(frame)).toEqual(listed(KEYS.historicalFrame));
+    const indexes = wire.run.frames.map((f) => f.index);
+    expect(indexes).toEqual([indexes[0], indexes[0]! + 1, indexes[0]! + 2]);
+    // The run ends where `at_k` stands: its last frame is the stop BEFORE the
+    // committed `at_k` position, so the two fixtures are one walk's neighbours.
+    expect(indexes[2]).toBe(wire.atK.index - 1);
+  });
+});

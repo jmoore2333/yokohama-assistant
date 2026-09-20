@@ -7,7 +7,7 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY, chatText, lobbyChat, setChatText, setLobbyChat } from "./api";
 import { loadSections } from "./sections";
-import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events } from "./types";
 
@@ -727,12 +727,49 @@ describe("the turn playback", () => {
     });
   };
 
+  /** R-6.5b.10's client half: a run longer than the server's cap is PAGED in
+   *  cap-sized calls — `from=40&to=104` (sixty-four positions) and then
+   *  `from=104&to=111` (the last seven, ending on the live frame) — with ONE
+   *  log call for the whole tail. A client that sent the whole range would be
+   *  refused (the server never clamps), and one that stopped at the cap would
+   *  walk a run seven steps short. */
+  it("pages a run longer than the cap in cap-sized run calls and reads the log once", async () => {
+    const { before, at } = botReply();
+    const replied = { ...before, events: 110 };
+    const log = {
+      total: 110,
+      entries: Array.from({ length: 70 }, (_, i) => ({ index: 40 + i, text: `Blue: step ${i}` })),
+    };
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => ({ ...at(k), total: 110 })) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    vi.useFakeTimers();
+    try {
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      click(firstRow());
+      await settle();
+      expect(stub.matching("GET", "/at?").map((c) => c.path.replace(/^.*\/at\?/, ""))).toEqual([
+        "from=40&to=104",
+        "from=104&to=111",
+      ]);
+      expect(positionsWalked(stub)).toHaveLength(71);
+      expect(stub.matching("GET", "/log")).toHaveLength(1);
+      expect(stub.matching("GET", "/log")[0]!.path).toMatch(/tail=70$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fetches the run's positions, walks it when a bot moved, and skip lands live", async () => {
     const { before, replied, at, log } = botReply();
     const stub = await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -749,9 +786,11 @@ describe("the turn playback", () => {
       const click = (el: Element) => act(() => void fireEvent.click(el));
       click(firstRow());
       await settle();
-      // Positions 40..=43, in ascending order, and the log's tail of three.
-      expect(stub.matching("GET", "/at/")).toHaveLength(4);
-      expect(stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]))).toEqual([40, 41, 42, 43]);
+      // Positions 40..=43, in ascending order, from ONE run call (M6.5b:
+      // `to` is `next + 1`, the route being half-open), and the log's tail of three.
+      expect(stub.matching("GET", "/at?")).toHaveLength(1);
+      expect(stub.matching("GET", "/at?")[0]!.path).toMatch(/\/at\?from=40&to=44$/);
+      expect(positionsWalked(stub)).toEqual([40, 41, 42, 43]);
       expect(stub.matching("GET", "/log")[0]!.path).toMatch(/tail=3$/);
       // The walk is on: the deck says who is playing, the table is outlined,
       // the account lights step 1 of 3. The mover of step ONE is the player's
@@ -928,8 +967,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReplyEndingEmpty();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -965,8 +1004,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReplyEndingEmpty();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -997,8 +1036,8 @@ describe("the turn playback", () => {
         return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -1040,14 +1079,14 @@ describe("the turn playback", () => {
     let reply: unknown = replied;
     const stub = await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return reply;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return ownOnly(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => ownOnly(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
     const user = userEvent.setup();
     await user.click(firstRow());
-    await waitFor(() => expect(stub.matching("GET", "/at/")).toHaveLength(4));
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
     expect(screen.queryByText(/is playing/)).toBeNull();
     expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
     // A reply with the SAME count (a picker step) shows its prose instead.
@@ -1072,7 +1111,7 @@ describe("the turn playback", () => {
     const heldAt = gate<unknown>();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      if (/\/at\/\d+$/.test(call.path)) return heldAt.promise;
+      if (runRange(call.path)) return heldAt.promise;
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -1083,7 +1122,7 @@ describe("the turn playback", () => {
     // what says this answer is not finished with.
     await waitFor(() => expect(document.querySelectorAll("[data-busy]")).toHaveLength(1));
     expect(document.querySelector(".app[data-busy]")).not.toBeNull();
-    heldAt.resolve(at(40));
+    heldAt.resolve({ frames: [40, 41, 42, 43].map((k) => at(k)) });
     await waitFor(() => expect(document.querySelector("[data-busy]")).toBeNull());
   });
 
@@ -1135,7 +1174,8 @@ describe("opening a saved table", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1255,7 +1295,8 @@ describe("the boards a player switches during setup", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -1360,7 +1401,8 @@ describe("the route", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1556,7 +1598,8 @@ describe("the route", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1878,6 +1921,8 @@ describe("the door", () => {
   // one catch site that is an effect rather than a click handler.
   it("a 401 from the replay scrubber returns to sign-in", async () => {
     await renderApp(wire.options, (call) =>
+      // The SCRUBBER still asks `/at/{k}` one position at a time (R-6.5b.10
+      // keeps that route); the walk is the run route, the cell below.
       /\/at\/\d+$/.test(call.path) ? signedOutReply() : undefined,
     );
     const user = userEvent.setup();
@@ -1968,7 +2013,7 @@ describe("the door", () => {
       // the finished game would fetch.
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
         return { ...wire.options, events: 2 };
-      if (/\/at\/\d+$/.test(call.path)) return signedOutReply();
+      if (runRange(call.path)) return signedOutReply();
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
@@ -2092,8 +2137,8 @@ describe("the opponent's turn arrives by the signal", () => {
       if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
         return { ...wire.watching, events };
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     /** The RE-READS of the game, and the match is anchored on purpose:
@@ -2131,7 +2176,7 @@ describe("the opponent's turn arrives by the signal", () => {
       await settle();
       expect(screen.queryByText(/refreshing/)).toBeNull();
       expect(reloads()).toHaveLength(1);
-      expect(stub.matching("GET", "/at/")).toHaveLength(0);
+      expect(positionsWalked(stub)).toHaveLength(0);
       expect(stub.matching("GET", "/events")).toHaveLength(0);
 
       events = wire.watching.events + 2;
@@ -2142,9 +2187,7 @@ describe("the opponent's turn arrives by the signal", () => {
       // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
       // highlight is a diff and the live payload is not a position.
       expect(reloads()).toHaveLength(2);
-      expect(
-        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
-      ).toEqual([0, 1, 2]);
+      expect(positionsWalked(stub)).toEqual([0, 1, 2]);
       // And the walk is on the table: the deck is the strip rather than the
       // prompt, and the account has one row per event.
       //
@@ -2177,13 +2220,13 @@ describe("the opponent's turn arrives by the signal", () => {
       // note here recorded that three of them ran against a tree that had not
       // re-rendered. A frame is pushed by hand instead, so the harness no
       // longer has a cadence of its own to be wrong about.
-      const atCalls = stub.matching("GET", "/at/").length;
+      const atCalls = positionsWalked(stub).length;
       events = wire.watching.events;
       stream.push("signal", signal());
       await until(() => reloads().length === 3, "the game was re-read again");
       await settle();
       expect(reloads()).toHaveLength(3);
-      expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
+      expect(positionsWalked(stub)).toHaveLength(atCalls);
       expect(document.querySelector("ol.account")).toBeNull();
       expect(document.querySelector(".decision.walking")).toBeNull();
     } finally {
@@ -2236,8 +2279,8 @@ describe("the opponent's turn arrives by the signal", () => {
       if (call.path.endsWith(`/api/games/${live.id}/stream`)) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${live.id}`))
         return { ...live, events };
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       return undefined;
     });
     // Nothing has been walked yet: the account holds the reply's prose, which
@@ -2276,9 +2319,7 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(document.querySelector(".decision.walking")).not.toBeNull();
       expect(screen.getByText(/is playing · step 1 of 1/)).toBeInTheDocument();
       // `prev` is fetched with `next`, because a step's highlight is a diff.
-      expect(
-        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
-      ).toEqual([live.events, live.events + 1]);
+      expect(positionsWalked(stub)).toEqual([live.events, live.events + 1]);
     } finally {
       vi.useRealTimers();
     }
@@ -2319,8 +2360,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     // The hidden/visible round trip, for the reason the two cells above have
@@ -2398,8 +2439,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     const reloads = () =>
@@ -2447,9 +2488,7 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
       // Each position fetched ONCE: a second pass over the same range would
       // repeat them, which is what walking the same run twice looks like.
-      const positions = stub
-        .matching("GET", "/at/")
-        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      const positions = positionsWalked(stub);
       expect(positions).toEqual([base, base + 1, base + 2, base + 3]);
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
@@ -2490,8 +2529,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events: answered }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     const reloads = () =>
@@ -2537,9 +2576,7 @@ describe("the opponent's turn arrives by the signal", () => {
       // base→base+1 for the first pass, base+1→base+3 for the second: every
       // position fetched once, no range walked twice, and the three events
       // accounted for end to end.
-      const positions = stub
-        .matching("GET", "/at/")
-        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      const positions = positionsWalked(stub);
       expect(positions).toEqual([base, base + 1, base + 1, base + 2, base + 3]);
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
@@ -2609,6 +2646,11 @@ describe("the game screen's chat", () => {
       if (call.path.endsWith(`/api/games/${wire.options.id}/stream`)) return stream.reply(call);
       if (call.method === "POST" && call.path.endsWith("/input")) return reply.promise;
       if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+      // The reply's own run and its log, served: the walk this cell counts is
+      // a real one, not an error path.
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
+      if (call.method === "GET" && call.path.includes("/log")) return wire.log;
       return undefined;
     });
     await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
@@ -2618,7 +2660,7 @@ describe("the game screen's chat", () => {
      *  so it would read as "something was fetched" whatever happened. */
     const frames = () =>
       stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
-    const walked = () => stub.matching("GET", "/at/").length;
+    const walked = () => positionsWalked(stub).length;
 
     const user = userEvent.setup();
     await user.click(firstOptionButton());

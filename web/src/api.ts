@@ -14,6 +14,7 @@ import type {
   LabsPanel,
   HistoricalFrame,
   LogPanel,
+  RunFrames,
   Me,
   PortsPanel,
   IndexModel,
@@ -345,6 +346,10 @@ export interface UnlockRequest {
 
 const id = (s: string) => encodeURIComponent(s);
 
+/** The most positions one run call answers — the server's `RUN_CAP` (M6.5b).
+ *  Above it the run is paged in cap-sized calls; the server never clamps. */
+export const RUN_CAP = 64;
+
 /** `?a=1&b=2` for the arguments that were given, and `""` for none. Written for
  *  `events`, which since M6.3 takes two optional numbers and would otherwise
  *  need four spellings of its own path. */
@@ -496,6 +501,13 @@ export const api = {
    *  caller's own hands and nobody else's. */
   at: (game: string, k: number) =>
     call<HistoricalFrame>("GET", `/api/games/${id(game)}/at/${k}`),
+
+  /** The frames of `[from, to)` — ONE forward replay on the server instead of
+   *  one `at/{k}` per position (M6.5b, R-6.5b.10). `to` may be `events + 1`:
+   *  the run then ends on the live frame. Above `RUN_CAP` positions the server
+   *  answers a 400 naming the cap, so `fetchRun` pages. */
+  run: (game: string, from: number, to: number) =>
+    call<RunFrames>("GET", `/api/games/${id(game)}/at?from=${from}&to=${to}`),
 
   /** What the production bot would play on this seat's own view.
    *

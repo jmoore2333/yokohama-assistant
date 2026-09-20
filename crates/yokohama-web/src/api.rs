@@ -150,6 +150,7 @@ pub fn routes() -> Vec<Route> {
         ("GET", "/api/games/{id}/log"),
         ("GET", "/api/chat"),
         ("POST", "/api/chat"),
+        ("GET", "/api/games/{id}/at"),
         ("GET", "/api/games/{id}/at/{k}"),
         ("GET", "/api/games/{id}/suggest"),
         ("GET", "/api/games/{id}/why"),
@@ -1618,6 +1619,69 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
     }
 }
 
+/// The batch of positions `[from, to)` (M6.5b, R-6.5b.10). Both required — a
+/// run has two ends — and `deny_unknown_fields` through `parse_query`, so a
+/// misspelled bound is a 400 in axum's words rather than a run from zero.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunQuery {
+    pub from: usize,
+    pub to: usize,
+}
+
+/// The most positions one run call answers. Above it the client pages; a clamp
+/// would read as "the run ended" (the M6.3 `wait` rule: never a silent clamp).
+pub const RUN_CAP: usize = 64;
+
+/// The frames of `[from, to)`, in order.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunFrames {
+    pub frames: Vec<client::HistoricalFrame>,
+}
+
+/// `GET /api/games/{id}/at?from=&to=` — the frames of `[from, to)` in one reply,
+/// computed by ONE forward replay (`HistoricalFrame::run`), each frame
+/// byte-equal to `/at/{k}`'s.
+///
+/// **The boundary in numbers** (spec §2.4): a game with `total` events has
+/// `total + 1` positions, `0..=total`, so the largest admitted `to` is
+/// `total + 1` — the client's every call sends exactly that, so the run ends on
+/// the live frame — and the 404 begins at `to = total + 2`, with `at/{k}`'s own
+/// sentence extended to name the range, so the two routes refuse one condition
+/// one way. `from > to` is DELIBERATELY the same 404 rather than a third answer.
+/// **The cap is checked FIRST**: a run longer than the cap is a malformed ask
+/// whatever `total` is, so a fresh game asked for `to=65` reads the cap's
+/// sentence and not the range's.
+///
+/// Admitted as `at_k` is, serves a locked session as `at_k` does, and holds the
+/// lock across the body for the same reason `at_k` holds it.
+pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFrames, ApiError> {
+    let (_table, viewer) = admitted(games, id, user)?;
+    let handle = games.handle(id)?;
+    let repl = handle.lock().expect("a game");
+    let total = repl.session.record().events.len();
+    if q.to > q.from && q.to - q.from > RUN_CAP {
+        return Err(ApiError::bad_request(format!(
+            "a run is at most {RUN_CAP} positions — ask for from={}&to={} and page",
+            q.from,
+            q.from + RUN_CAP
+        )));
+    }
+    if q.from > q.to || q.to > total + 1 {
+        return Err(ApiError::not_found(format!(
+            "this game has {total} events, so its last position is {total} — there is no run from {} to {}",
+            q.from, q.to
+        )));
+    }
+    let frames = client::HistoricalFrame::run(&repl, q.from, q.to, viewer).map_err(|e| {
+        ApiError::server_error(format!(
+            "replaying this game failed at event {}: {}",
+            e.event_index, e.message
+        ))
+    })?;
+    Ok(RunFrames { frames })
+}
+
 /// `GET /api/games/{id}/at/{k}` — the position as it stood after `k` events.
 ///
 /// **A projection, and therefore it SERVES A LOCKED SESSION.** The rule is the
@@ -1835,6 +1899,9 @@ fn answer(
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
+                "/api/games/{id}/at" => {
+                    run(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
+                }
                 "/api/games/{id}/at/{k}" => {
                     let k = parse_path_usize(1, b[1])?;
                     at_k(games, u, b[0], k).map(|v| ok_json(200, &v))
@@ -1929,6 +1996,7 @@ mod tests {
             ("GET", "/api/games/{id}/log"),
             ("GET", "/api/chat"),
             ("POST", "/api/chat"),
+            ("GET", "/api/games/{id}/at"),
             ("GET", "/api/games/{id}/at/{k}"),
             ("GET", "/api/games/{id}/suggest"),
             ("GET", "/api/games/{id}/why"),
@@ -1953,6 +2021,15 @@ mod tests {
         assert!(matches!(find("HEAD", "/api/health"), Matched::Route("/api/health", _)), "HEAD reaches GET");
         assert!(matches!(find("DELETE", "/api/health"), Matched::WrongMethod));
         assert!(matches!(find("GET", "/api/nothing"), Matched::NoRoute));
-        assert!(matches!(find("GET", "/api/games/sim-1/at"), Matched::NoRoute), "a short path binds nothing");
+        // Since M6.5b the five-segment `…/at` is the RUN route (R-6.5b.10), and
+        // the six-segment `…/at/{k}` beside it: the matcher is segment-wise.
+        match find("GET", "/api/games/sim-1/at") {
+            Matched::Route(p, b) => {
+                assert_eq!(p, "/api/games/{id}/at");
+                assert_eq!(b, vec!["sim-1"]);
+            }
+            _ => panic!("the run route"),
+        }
+        assert!(matches!(find("GET", "/api/games/sim-1/index"), Matched::NoRoute), "a short path binds nothing");
     }
 }

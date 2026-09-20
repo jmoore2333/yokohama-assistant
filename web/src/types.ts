@@ -984,3 +984,12 @@ export interface ChatPost {
 
 /** Where a chat panel is: one table, or the house. A client-side type. */
 export type ChatScope = { kind: "table"; id: string } | { kind: "house" };
+
+/** The frames of `[from, to)` in ONE reply — `GET …/at?from=&to=`, one forward
+ *  replay on the server instead of one `at/{k}` per position (M6.5b,
+ *  R-6.5b.10). Each frame is byte-equal to `/at/{k}`'s. `to` may be
+ *  `events + 1`: the run then ends on the live frame. A run longer than the
+ *  server's cap (64) is a 400 naming it, never a clamp — the client pages. */
+export interface RunFrames {
+  frames: HistoricalFrame[];
+}

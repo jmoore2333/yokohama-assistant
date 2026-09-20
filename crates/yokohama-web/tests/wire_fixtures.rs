@@ -1431,6 +1431,26 @@ async fn walk_with(api: &Api) -> Vec<(String, Value)> {
     assert!(total > 2, "a finished game's log carries events; got {total}");
     out.push(("at_k".to_string(), api.get(&format!("/api/games/wire/at/{}", total / 2)).await));
 
+    // **The same stop as `at_k`, as a RUN of three ending there** (M6.5b,
+    // R-6.5b.10): `[k-3, k)`, so the run's last frame is the position BEFORE
+    // `at_k`'s and the three are real positions this game left behind. And the
+    // two refusals the client renders — the cap as a 400 (never a clamp), the
+    // range as `at/{k}`'s own 404 extended to name the run. The range probe
+    // starts at `total - 1`: the cap is checked FIRST, so a span from zero over
+    // this game's whole record would read the cap's sentence instead.
+    out.push((
+        "run".to_string(),
+        api.get(&format!("/api/games/wire/at?from={}&to={}", total / 2 - 3, total / 2)).await,
+    ));
+    let (status, cap) = api.call("GET", "/api/games/wire/at?from=0&to=65", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{cap}");
+    out.push(("run_400_cap".to_string(), cap));
+    let (status, range) = api
+        .call("GET", &format!("/api/games/wire/at?from={}&to={}", total - 1, total + 2), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{range}");
+    out.push(("run_404_range".to_string(), range));
+
     // **The same position, replayed by the WATCHER** (M6.3, R-3.7). The SAME
     // `k` as the fixture above, deliberately: the pair then differs in exactly
     // one thing — who asked — so what the second one is missing is the mask and
