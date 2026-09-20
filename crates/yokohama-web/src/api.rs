@@ -150,6 +150,7 @@ pub fn routes() -> Vec<Route> {
         ("GET", "/api/games/{id}/log"),
         ("GET", "/api/chat"),
         ("POST", "/api/chat"),
+        ("POST", "/api/archive"),
         ("GET", "/api/games/{id}/at"),
         ("GET", "/api/games/{id}/at/{k}"),
         ("GET", "/api/games/{id}/suggest"),
@@ -1807,6 +1808,116 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     Ok(json)
 }
 
+/// What a browser sends to the archive (M6.5b, R-6.5b.6): the record and the
+/// local table document as TWO STRINGS, parsed HERE and never by the client.
+///
+/// Strings rather than objects because the record's bytes are what its terminal
+/// digest is over — a client that parsed and re-serialized it would hand this
+/// route a record that no longer verifies — and because the client has no
+/// business knowing either shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchivePost {
+    pub record: String,
+    pub table: String,
+}
+
+/// Where a sent game landed.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveReply {
+    /// `"over"` or `"abandoned"` — chosen from the REPLAYED state, never from
+    /// what the body said.
+    pub leaf: &'static str,
+    pub path: String,
+    /// The record at that path already held these very bytes (a retry after a
+    /// lost reply): the reply is a 200 rather than a 201, and the client
+    /// proceeds exactly as it would on a 201.
+    pub identical: bool,
+}
+
+/// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
+/// what a strict replay shows it to be.
+///
+/// **The four checks, in spec §2.4's order** (five REFUSALS, because a rev that
+/// disagrees and a rev that is absent are different sentences): a
+/// `semantics_rev` present and equal to this build's; a terminal digest
+/// present; `replay_strict` clean; and the table document parsing, passing
+/// [`tables::check_shape`] and AGREEING with the record. A fifth guard follows
+/// them — the document's id is `is_safe_id`'s, because it becomes a path
+/// component. Then **the leaf IS the `Why`** — `Over` iff the
+/// replayed state is over, else `Abandoned` — and one put under
+/// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
+/// table RE-STRIPPED server-side from the parsed document, as `delete` does, so
+/// a crafted body carrying a lock or a watcher roster never lands verbatim. The
+/// record string is put exactly as sent, because its bytes are the digest's.
+///
+/// 404 where this host keeps no archive — which under `NoArchive`, the
+/// browser's own host, is the answer by construction.
+pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<ArchiveReply, ApiError> {
+    use crate::archive::{caller_segment, is_on, paths, strip_for_archive, PutError, PutOutcome, Why};
+    if !is_on(&games.archive) {
+        return Err(ApiError::not_found("this server keeps no archive"));
+    }
+    let record: yokohama_core::GameRecord = serde_json::from_str(&req.record)
+        .map_err(|e| ApiError::bad_request(format!("the record does not parse: {e}")))?;
+    match record.semantics_rev {
+        Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
+        Some(rev) => {
+            return Err(ApiError::bad_request(format!(
+                "this record is at semantics rev {rev}; this server archives rev {}",
+                yokohama_core::SEMANTICS_REV
+            )))
+        }
+        // `replay_strict`'s own sentence for unknown provenance, carried
+        // verbatim rather than reworded: the engine is the authority on what a
+        // record with no rev is, and it says so in one place.
+        None => {
+            let e = yokohama_core::replay_strict(&record, games.rules())
+                .expect_err("a record with no semantics_rev is refused by strict replay");
+            return Err(ApiError::bad_request(e.message));
+        }
+    }
+    if record.terminal_digest.is_none() {
+        return Err(ApiError::bad_request("the record carries no terminal digest"));
+    }
+    let state = yokohama_core::replay_strict(&record, games.rules()).map_err(|e| {
+        ApiError::bad_request(format!(
+            "the record does not replay: at event {}, {}",
+            e.event_index, e.message
+        ))
+    })?;
+    let doc: crate::table::TableDoc = serde_json::from_str(&req.table)
+        .map_err(|e| ApiError::bad_request(format!("the table document does not parse: {e}")))?;
+    tables::check_shape(&doc)
+        .map_err(|why| ApiError::bad_request(format!("the table document is malformed: {why}")))?;
+    doc.agrees_with(&record).map_err(|why| {
+        ApiError::bad_request(format!("the table document does not agree with the record: {why}"))
+    })?;
+    if !crate::store::is_safe_id(&doc.id) {
+        return Err(ApiError::bad_request("the table's id is not a safe name"));
+    }
+    let why = if yokohama_core::is_game_over(&state) { Why::Over } else { Why::Abandoned };
+    let prefix = format!("browser/{}/", caller_segment(user));
+    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id);
+    match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
+        Ok(outcome) => Ok(ArchiveReply {
+            leaf: why.dir(),
+            path,
+            identical: outcome == PutOutcome::Identical,
+        }),
+        // The path is in the archive's own error for the operator's log; the
+        // client is told what it can do about it and not where the file is.
+        Err(PutError::Conflict(_)) => Err(ApiError {
+            status: StatusCode::CONFLICT,
+            message: "a different record is archived under this id".to_string(),
+            table_status: None,
+        }),
+        Err(PutError::Failed(e)) => {
+            Err(ApiError::server_error(format!("the archive could not be written: {e}")))
+        }
+    }
+}
+
 /// The layer's front door: match, answer, and shape the response. A known path
 /// under another method is 405 with an empty body (axum's own shape); a path
 /// that matches nothing is the JSON 404 the server's `fallback` writes.
@@ -1899,6 +2010,10 @@ fn answer(
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
+                // 201 for a pair that landed, 200 for a retry that found its own
+                // bytes already there — the client acts on either (spec §2.4).
+                "/api/archive" => archive_post(games, u, &parse_json(req.content_type, req.body)?)
+                    .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v)),
                 "/api/games/{id}/at" => {
                     run(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
@@ -1996,6 +2111,7 @@ mod tests {
             ("GET", "/api/games/{id}/log"),
             ("GET", "/api/chat"),
             ("POST", "/api/chat"),
+            ("POST", "/api/archive"),
             ("GET", "/api/games/{id}/at"),
             ("GET", "/api/games/{id}/at/{k}"),
             ("GET", "/api/games/{id}/suggest"),

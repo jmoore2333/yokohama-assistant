@@ -72,9 +72,11 @@ pub mod tables;
 /// paths are kept here for the cells, the corpus and the client contract that
 /// name them.
 pub use api::{
-    ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList, Health, IndexQuery, Input, Join,
-    Keep, Labels, ListQuery, LogQuery, Me, RunFrames, RunQuery, Unlock, WhyQuery, RUN_CAP,
+    ArchivePost, ArchiveReply, ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList,
+    Health, IndexQuery, Input, Join, Keep, Labels, ListQuery, LogQuery, Me, RunFrames, RunQuery,
+    Unlock, WhyQuery, RUN_CAP,
 };
+pub use archive::{PutError, PutOutcome};
 
 use http::StatusCode;
 
@@ -952,6 +954,291 @@ mod tests {
         // And it is a 405 under POST, like every other GET-only route.
         let (status, _) = raw(app(Arc::clone(&state)), "POST", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    // -----------------------------------------------------------------------
+    // M6.5b: `POST /api/archive` (R-6.5b.6, R-6.5b.15)
+    // -----------------------------------------------------------------------
+
+    /// A directory of this run's own, emptied first: a re-run must meet a fresh
+    /// archive rather than the last run's landed pairs, or the once-rule fires
+    /// before the cell's first assertion.
+    fn tempdir(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yokohama_web_{name}_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory");
+        dir
+    }
+
+    /// A state whose archive is a real directory — the one shape in which the
+    /// archive route is anything but a 404.
+    fn archive_app(dir: &std::path::Path) -> Arc<AppState> {
+        Arc::new(AppState::with_store_chat_and_archive(
+            Arc::new(MemStore::default()),
+            identity::IdentityMode::Claimed,
+            chat::ChatConfig::default(),
+            Arc::new(archive::DirArchive::new(dir)),
+        ))
+    }
+
+    /// The password on the local pair's table document, so the server-side
+    /// re-strip has something to remove and the cell has a value to search for.
+    const LOCAL_PAIR_PASSWORD: &str = "hunter2";
+
+    /// The two strings a finished browser game sends: a REAL record, played to
+    /// the end, and the table document that describes it — with a lock added,
+    /// because the claim is that the server re-strips what the body carried.
+    ///
+    /// Returns the lock's salt too: the strip is asserted against the VALUE the
+    /// body really carried rather than against the word "lock", which a copy
+    /// under another key would walk straight past (the M6.1 lesson).
+    async fn finished_local_pair() -> (String, String, String) {
+        let (state, name, _) = a_finished_two_person_game("local-pair").await;
+        let (record, _) = state.games.store().read(Doc::Record, name).unwrap().unwrap();
+        let (table, _) = state.games.store().read(Doc::Table, name).unwrap().unwrap();
+        let mut doc: table::TableDoc = serde_json::from_str(&table).unwrap();
+        let lock = table::Lock::new(LOCAL_PAIR_PASSWORD);
+        let salt = lock.salt.clone();
+        doc.lock = Some(lock);
+        (record, serde_json::to_string(&doc).unwrap(), salt)
+    }
+
+    /// One key of a JSON object changed, everything else left exactly as it was
+    /// — the shape all six body edits below share.
+    fn edited(text: &str, f: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(text).expect("the body is JSON");
+        f(v.as_object_mut().expect("an object"));
+        v.to_string()
+    }
+
+    fn with_rev(record: &str, rev: u64) -> String {
+        edited(record, |o| {
+            o.insert("semantics_rev".into(), rev.into());
+        })
+    }
+
+    fn without_rev(record: &str) -> String {
+        edited(record, |o| {
+            o.remove("semantics_rev").expect("the record carried one");
+        })
+    }
+
+    fn without_digest(record: &str) -> String {
+        edited(record, |o| {
+            o.remove("terminal_digest").expect("the record carried one");
+        })
+    }
+
+    /// The first event replaced by a LATER one, which the position it now sits
+    /// in cannot legally take — and if it could, the terminal digest no longer
+    /// matches. Either way the answer is the replay's refusal, which is the
+    /// point: the route does not take the client's word for the history.
+    fn with_first_event_replaced(record: &str) -> String {
+        edited(record, |o| {
+            let events = o.get_mut("events").expect("events").as_array_mut().expect("a list");
+            assert!(events.len() > 1, "anti-vacuity: a one-event record cannot be re-ordered");
+            events[0] = events[1].clone();
+        })
+    }
+
+    /// The seed altered by one bit — the shape a `JSON.parse` round trip gives a
+    /// seed past 2^53 (spec §6.1). It deals a DIFFERENT game, so the events
+    /// replayed against it are not the events that produced them.
+    fn with_seed_altered(record: &str) -> String {
+        edited(record, |o| {
+            let seed = o.get("seed").expect("seed").as_u64().expect("a number");
+            o.insert("seed".into(), (seed ^ 1).into());
+        })
+    }
+
+    /// A record that REPLAYS, is still over, and differs in bytes — the conflict
+    /// case. `engine_version` is provenance only (`record.rs`) and
+    /// `replay_strict` never reads it, so this is the one edit that keeps the
+    /// leaf and the id and therefore the PATH: two builds archiving one game is
+    /// exactly the collision the once-rule is about.
+    fn with_another_engine_version(record: &str) -> String {
+        edited(record, |o| {
+            o.insert("engine_version".into(), "0.0.0-elsewhere".into());
+        })
+    }
+
+    /// A table document that passes `check_shape` and still describes a
+    /// different game. `players` cannot do it — `check_shape` refuses a count
+    /// that disagrees with the seats — so the disagreement is the start seat,
+    /// which is in range at a 2-seat table and wrong against the record.
+    fn with_start_seat(table: &str, seat: u64) -> String {
+        edited(table, |o| {
+            o.insert("start_seat".into(), seat.into());
+        })
+    }
+
+    /// The first `events` moves of a record, re-stamped so it carries the digest
+    /// of the state it really folds to — a game abandoned part way, which is
+    /// what the browser's Abandon and save sends.
+    fn partial_of(record_text: &str, events: usize) -> String {
+        use yokohama_core::{state_at, GameRecord};
+        let mut rec: GameRecord = serde_json::from_str(record_text).expect("a record");
+        assert!(rec.events.len() > events, "anti-vacuity: the partial must be shorter");
+        rec.events.truncate(events);
+        let rules = Rules::standard();
+        let state = state_at(&rec, events, &rules).expect("the partial replays");
+        rec.stamp_terminal_digest(&state);
+        serde_json::to_string(&rec).expect("a record")
+    }
+
+    async fn post_anonymous(
+        state: &Arc<AppState>,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// R-6.5b.6: the five refusals by five DIFFERENT sentences, the leaf from
+    /// the REPLAYED STATE, a partial record ACCEPTED, once per path, the caller
+    /// prefix, and the table re-stripped server-side.
+    #[tokio::test]
+    async fn the_archive_route_checks_and_files_a_browser_game() {
+        let dir = tempdir("archive_route");
+        let app = archive_app(&dir);
+        let (record_text, table_text, salt) = finished_local_pair().await;
+        let body = |r: &str, t: &str| serde_json::json!({ "record": r, "table": t });
+
+        // **The premise that makes the leaf a claim**: the table document this
+        // body carries does NOT say the game is over — its mirror was written at
+        // finalize — so an implementation that read the leaf off the body would
+        // file a finished game under `abandoned/`.
+        let doc: table::TableDoc = serde_json::from_str(&table_text).unwrap();
+        assert!(
+            doc.turn.as_ref().is_none_or(|t| !t.over),
+            "premise: the body's table does not say the game is over"
+        );
+
+        let (status, v) = post_as(&app, WHO, "/api/archive", body(&record_text, &table_text)).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        assert_eq!(v["leaf"], "over", "the leaf is the replayed state's, not the body's");
+        assert_eq!(v["identical"], false);
+        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/over/local-pair.json");
+        let landed =
+            std::fs::read_to_string(dir.join("browser/red_at_wire.test/rev7/over/local-pair.json"))
+                .unwrap();
+        assert_eq!(landed, record_text, "the record lands as sent — its bytes are the digest's");
+        let table_landed = std::fs::read_to_string(
+            dir.join("browser/red_at_wire.test/rev7/over/local-pair.table.json"),
+        )
+        .unwrap();
+        assert!(
+            !table_landed.contains(&salt) && !table_landed.contains(LOCAL_PAIR_PASSWORD),
+            "re-stripped server-side: the lock the body carried is gone"
+        );
+        assert!(table_landed.contains("local-pair"), "anti-vacuity: it is the table's document");
+
+        // The same bytes again: 200 `identical`, never a 409 — a lost reply's
+        // retry has to be safe to act on, because the client deletes on it.
+        let (status, v) = post_as(&app, WHO, "/api/archive", body(&record_text, &table_text)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["identical"], true);
+        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/over/local-pair.json");
+
+        // A DIFFERENT record under the same id: the 409 the client KEEPS the
+        // game on. And the landed copy is untouched — a conflict never deletes.
+        let other = with_another_engine_version(&record_text);
+        assert_ne!(other, record_text, "anti-vacuity: the conflicting record really differs");
+        let (status, v) = post_as(&app, WHO, "/api/archive", body(&other, &table_text)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["error"], "a different record is archived under this id");
+        assert_eq!(
+            std::fs::read_to_string(
+                dir.join("browser/red_at_wire.test/rev7/over/local-pair.json")
+            )
+            .unwrap(),
+            record_text,
+            "a 409 leaves the archived copy exactly as it was"
+        );
+
+        // A PARTIAL record is ACCEPTED — under `abandoned/`, the leaf the state
+        // shows — which is the amendment R-6.5b.6 makes to umbrella R-6.5.6.
+        let partial = partial_of(&record_text, 5);
+        let (status, v) = post_as(&app, WHO, "/api/archive", body(&partial, &table_text)).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        assert_eq!(v["leaf"], "abandoned");
+        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/abandoned/local-pair.json");
+
+        // The five refusals, five sentences.
+        let refusals = [
+            (with_rev(&record_text, 6), table_text.clone(), "this record is at semantics rev 6; this server archives rev 7"),
+            (without_rev(&record_text), table_text.clone(), "missing semantics provenance"),
+            (without_digest(&record_text), table_text.clone(), "the record carries no terminal digest"),
+            (with_first_event_replaced(&record_text), table_text.clone(), "the record does not replay"),
+            (record_text.clone(), with_start_seat(&table_text, 1), "the table document does not agree with the record"),
+        ];
+        let mut sentences = std::collections::BTreeSet::new();
+        for (r, t, expect) in refusals {
+            let (status, v) = post_as(&app, WHO, "/api/archive", body(&r, &t)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+            let s = v["error"].as_str().unwrap().to_string();
+            assert!(s.starts_with(expect), "{s:?} does not start with {expect:?}");
+            sentences.insert(s);
+        }
+        assert_eq!(sentences.len(), 5, "five different sentences");
+
+        // Spec §6.1's own sixth: a seed altered the way a `JSON.parse` round
+        // trip alters one deals a different game, and the replay says so.
+        let (status, v) =
+            post_as(&app, WHO, "/api/archive", body(&with_seed_altered(&record_text), &table_text))
+                .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().starts_with("the record does not replay"),
+            "{v}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The two answers that are not about the record at all: a host that keeps
+    /// no archive HAS no such route (404, and under `NoArchive` — the browser's
+    /// own host — that is the answer by construction), and a caller with no
+    /// identity is refused before the body is looked at.
+    ///
+    /// **The 404 is sent a REAL pair on purpose**: a host with no archive must
+    /// answer before it spends a strict replay, and a body that could not parse
+    /// would reach the same 404 by a different road.
+    #[tokio::test]
+    async fn the_archive_route_is_a_404_where_no_archive_is_kept_and_a_401_with_no_identity() {
+        let app = Arc::new(AppState::in_memory());
+        let (record_text, table_text, _) = finished_local_pair().await;
+        let (status, v) = post_as(
+            &app,
+            WHO,
+            "/api/archive",
+            serde_json::json!({ "record": record_text, "table": table_text }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(v["error"], "this server keeps no archive");
+        let (status, _) = post_anonymous(
+            &app,
+            "/api/archive",
+            serde_json::json!({ "record": "{}", "table": "{}" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     /// R-6.5a.3: HEAD reaches the GET arm and leaves with an empty body — axum's

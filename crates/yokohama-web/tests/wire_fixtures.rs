@@ -160,6 +160,22 @@ impl Api {
         Self { router: app(Arc::clone(&state)), state, compared: std::cell::Cell::new(0) }
     }
 
+    /// The same router over a real ARCHIVE directory (M6.5b, R-6.5b.6).
+    ///
+    /// A third state, for the reason the second one exists: `/api/archive` is a
+    /// 404 wherever the archive is off, and the primary `Api` keeps `NoArchive`
+    /// deliberately — so `health.json` goes on reading `"archive": "off"` and
+    /// the cut moves no payload the walk already froze.
+    fn with_archive(dir: &std::path::Path) -> Self {
+        let state = Arc::new(AppState::with_store_chat_and_archive(
+            Arc::new(yokohama_web::store::MemStore::default()),
+            yokohama_web::identity::IdentityMode::Claimed,
+            yokohama_web::chat::ChatConfig::default(),
+            Arc::new(yokohama_web::archive::DirArchive::new(dir)),
+        ));
+        Self { router: app(Arc::clone(&state)), state, compared: std::cell::Cell::new(0) }
+    }
+
     /// A call as [`WALKER`], which is every call the walk makes that is not a
     /// MOVE — those go as the acting seat (see [`acting`]).
     async fn call(&self, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -1534,7 +1550,130 @@ async fn walk_with(api: &Api) -> Vec<(String, Value)> {
     assert_eq!(status, StatusCode::NOT_FOUND, "{house_chat_off_404}");
     out.push(("house_chat_off_404".to_string(), house_chat_off_404));
 
+    out.extend(archive_payloads(api).await);
+
     out
+}
+
+/// **What the archive route answers a browser** (M6.5b, R-6.5b.6), captured
+/// from a THIRD `Api` whose archive is a real directory.
+///
+/// The record and the table document are this walk's own — read off the primary
+/// state's store, which is where a finished game's bytes are — so the body is a
+/// real pair and not a construction, and the path in the reply is a function of
+/// the walk's id and the walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
+async fn archive_payloads(api: &Api) -> Vec<(String, Value)> {
+    use yokohama_web::store::Doc;
+    let store = api.state.games.store();
+    let (record_text, _) = store.read(Doc::Record, "wire").expect("a store").expect("the record");
+    let (table_text, _) = store.read(Doc::Table, "wire").expect("a store").expect("the table");
+
+    let dir = archive_tempdir();
+    let archived = Api::with_archive(&dir);
+    let body = |r: &str, t: &str| Some(json!({ "record": r, "table": t }));
+    let mut out = Vec::new();
+
+    let (status, archive_post) = archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
+    assert_eq!(status, StatusCode::CREATED, "{archive_post}");
+    assert_eq!(
+        archive_post["path"], "browser/red_at_wire.test/rev7/over/wire.json",
+        "the caller prefix is the ENCODED address (R-6.5b.15)"
+    );
+
+    // The same bytes again: the retry, answered 200 `identical` rather than a
+    // 409, which is what makes a lost reply safe for a client to act on.
+    let (status, archive_identical) =
+        archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
+    assert_eq!(status, StatusCode::OK, "{archive_identical}");
+
+    // A DIFFERENT record under the same id. `engine_version` is provenance only
+    // and `replay_strict` never reads it, so this record replays, is still over,
+    // and therefore collides at the very same path — which is what a conflict is.
+    let (status, archive_409) = archived
+        .call("POST", "/api/archive", body(&with_another_engine_version(&record_text), &table_text))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{archive_409}");
+
+    // A PARTIAL record — the Abandon-and-save shape — under `abandoned/`, the
+    // leaf the REPLAY shows and not the one the body claims.
+    let (status, archive_post_abandoned) =
+        archived.call("POST", "/api/archive", body(&partial_of(&record_text, 5), &table_text)).await;
+    assert_eq!(status, StatusCode::CREATED, "{archive_post_abandoned}");
+    assert_eq!(archive_post_abandoned["leaf"], "abandoned");
+
+    // The four refusals the client's error strip renders. (The fifth — a record
+    // with no `semantics_rev` at all — is `replay_strict`'s own sentence carried
+    // verbatim, and is pinned in the layer's cells rather than committed here.)
+    let refusals = [
+        ("archive_400_rev", edited_record(&record_text, |o| { o.insert("semantics_rev".into(), 6.into()); }), table_text.clone()),
+        ("archive_400_digest", edited_record(&record_text, |o| { o.remove("terminal_digest").expect("a digest"); }), table_text.clone()),
+        ("archive_400_replay", edited_record(&record_text, |o| {
+            let events = o.get_mut("events").expect("events").as_array_mut().expect("a list");
+            assert!(events.len() > 1, "anti-vacuity: a one-event record cannot be re-ordered");
+            events[0] = events[1].clone();
+        }), table_text.clone()),
+        // `players` cannot carry this one: `check_shape` refuses a count that
+        // disagrees with the seats, which is a DIFFERENT sentence. The start
+        // seat is in range at a 2-seat table and wrong against the record.
+        ("archive_400_table", record_text.clone(), edited_record(&table_text, |o| { o.insert("start_seat".into(), 1.into()); })),
+    ];
+    for (name, r, t) in refusals {
+        let (status, v) = archived.call("POST", "/api/archive", body(&r, &t)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {v}");
+        out.push((name.to_string(), v));
+    }
+
+    out.extend([
+        ("archive_post".to_string(), archive_post),
+        ("archive_post_identical".to_string(), archive_identical),
+        ("archive_post_abandoned".to_string(), archive_post_abandoned),
+        ("archive_409".to_string(), archive_409),
+    ]);
+    std::fs::remove_dir_all(&dir).ok();
+    out
+}
+
+/// A directory of this run's own. `walk_with` is driven by several tests, and
+/// each must meet an EMPTY archive or the first send is the once-rule's 200
+/// instead of the 201 the fixture is.
+fn archive_tempdir() -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "yokohama_wire_archive_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temp directory");
+    dir
+}
+
+/// One key of a JSON document changed, everything else left exactly as it was.
+fn edited_record(text: &str, f: impl FnOnce(&mut serde_json::Map<String, Value>)) -> String {
+    let mut v: Value = serde_json::from_str(text).expect("the document is JSON");
+    f(v.as_object_mut().expect("an object"));
+    v.to_string()
+}
+
+/// A record that REPLAYS, is still over, and differs in bytes — the conflict
+/// case. See [`archive_payloads`] for why it is this field and not an event.
+fn with_another_engine_version(record: &str) -> String {
+    edited_record(record, |o| {
+        o.insert("engine_version".into(), "0.0.0-elsewhere".into());
+    })
+}
+
+/// The first `events` moves of a record, re-stamped so it carries the digest of
+/// the state it really folds to — a game abandoned part way through.
+fn partial_of(record_text: &str, events: usize) -> String {
+    use yokohama_core::{state_at, GameRecord};
+    let mut rec: GameRecord = serde_json::from_str(record_text).expect("a record");
+    assert!(rec.events.len() > events, "anti-vacuity: the partial must be shorter");
+    rec.events.truncate(events);
+    let state = state_at(&rec, events, &Rules::standard()).expect("the partial replays");
+    rec.stamp_terminal_digest(&state);
+    serde_json::to_string(&rec).expect("a record")
 }
 
 /// The two payloads the router cannot produce, built in process.

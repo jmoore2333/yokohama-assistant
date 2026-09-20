@@ -667,8 +667,13 @@ impl Games {
         }
         doc.archived_at = Some((self.clock)());
         let table_json = crate::archive::strip_for_archive(&doc);
-        match self.archive.put(crate::archive::Why::Over, id, record_json, &table_json) {
-            Ok(()) => {
+        // The server's OWN games carry the empty caller prefix (R-6.5b.15): the
+        // `browser/<segment>/` tree is for games a browser sent.
+        match self.archive.put("", crate::archive::Why::Over, id, record_json, &table_json) {
+            // Both outcomes are a landed copy: `Identical` means an earlier put
+            // of these very bytes landed and only its stamp did not (M6.5b,
+            // spec §2.4), so the retry stamps rather than being refused.
+            Ok(_) => {
                 // The stamp is what keeps this game to ONE archive copy: the next
                 // abandon puts under `abandoned/`, a DIFFERENT path, so a put that
                 // landed without its stamp would be archived a second time there
@@ -1790,10 +1795,22 @@ pub(crate) mod test_support {
         games.handle(&id).expect("playing")
     }
 
+    /// One remembered put, as [`RecordingArchive`] saw it.
+    ///
+    /// A named struct rather than the tuple it was until M6.5b: the prefix is a
+    /// fifth thing to check and `puts[0].4` reads like nothing at all.
+    pub(crate) struct Put {
+        pub prefix: String,
+        pub why: crate::archive::Why,
+        pub id: String,
+        pub record: String,
+        pub table: String,
+    }
+
     /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts, or
     /// refuses every one of them — the two shapes the archive-site cells need.
     pub(crate) struct RecordingArchive {
-        pub puts: Mutex<Vec<(crate::archive::Why, String, String, String)>>,
+        pub puts: Mutex<Vec<Put>>,
         pub fail: bool,
     }
 
@@ -1807,12 +1824,25 @@ pub(crate) mod test_support {
     }
 
     impl crate::archive::Archive for RecordingArchive {
-        fn put(&self, why: crate::archive::Why, id: &str, r: &str, t: &str) -> Result<(), String> {
+        fn put(
+            &self,
+            prefix: &str,
+            why: crate::archive::Why,
+            id: &str,
+            r: &str,
+            t: &str,
+        ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
             if self.fail {
-                return Err("disk on fire".to_string());
+                return Err(crate::archive::PutError::Failed("disk on fire".to_string()));
             }
-            self.puts.lock().unwrap().push((why, id.to_string(), r.to_string(), t.to_string()));
-            Ok(())
+            self.puts.lock().unwrap().push(Put {
+                prefix: prefix.to_string(),
+                why,
+                id: id.to_string(),
+                record: r.to_string(),
+                table: t.to_string(),
+            });
+            Ok(crate::archive::PutOutcome::Landed)
         }
         fn kind(&self) -> &'static str {
             "recording"

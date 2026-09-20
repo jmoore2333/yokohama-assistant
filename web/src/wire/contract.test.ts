@@ -128,6 +128,14 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["chat_403_not_seated", wire.chat403NotSeated, KEYS.apiError],
     ["chat_403_locked", wire.chat403Locked, KEYS.apiError],
     ["house_chat_off_404", wire.houseChatOff404, KEYS.apiError],
+    // M6.5b's five archive refusals, each one root key, here for the same
+    // reason M6.4's five are: the sentences are asserted below, and this is
+    // what would see a key the server grew on one of them.
+    ["archive_409", wire.archive409, KEYS.apiError],
+    ["archive_400_rev", wire.archive400Rev, KEYS.apiError],
+    ["archive_400_digest", wire.archive400Digest, KEYS.apiError],
+    ["archive_400_replay", wire.archive400Replay, KEYS.apiError],
+    ["archive_400_table", wire.archive400Table, KEYS.apiError],
     // The signal at both statuses. Two rows rather than one because the fields
     // are the same four at each, and a corpus carrying only the playing shape
     // would let a `dealing` reply grow or lose a key unnoticed.
@@ -759,6 +767,41 @@ describe("every why refusal the client can be shown has a payload", () => {
     expect(wire.whyRefused.ok).toBeNull();
     expect(wire.whyRefused.refusal).not.toBeNull();
     expect(wire.whyRefused.refusal!.kind).toBe("no_bot_move_yet");
+  });
+});
+
+describe("the archive replies (M6.5b, R-6.5b.6)", () => {
+  // The compile-time list in `contract.ts` checks the client's own type against
+  // itself; only this comparison can see a key the SERVER added — which is the
+  // direction the six payloads named above arrived in.
+  it.each([
+    ["archive_post", wire.archivePost],
+    ["archive_post_identical", wire.archivePostIdentical],
+    ["archive_post_abandoned", wire.archivePostAbandoned],
+  ] as const)("%s carries leaf, path and identical and nothing else", (_name, payload) => {
+    expect(keys(payload)).toEqual(listed(KEYS.archiveReply));
+  });
+
+  it("the leaf is the server's reading of the record, and the three fixtures show both", () => {
+    // The same walk's record sent whole and sent PARTIAL, under one id: the two
+    // leaves differ, so a client that filed by what it claimed rather than by
+    // what the server replayed would have two fixtures reading alike.
+    expect(wire.archivePost.leaf).toBe("over");
+    expect(wire.archivePostAbandoned.leaf).toBe("abandoned");
+    expect(wire.archivePost.path).toContain("/rev7/over/");
+    expect(wire.archivePostAbandoned.path).toContain("/rev7/abandoned/");
+    // The caller prefix is the ENCODED address (R-6.5b.15) — no `@`, no slash
+    // inside the segment — and the path never spells the address itself.
+    expect(wire.archivePost.path.startsWith("browser/")).toBe(true);
+    expect(wire.archivePost.path).not.toContain("@");
+  });
+
+  it("identical rides EVERY reply, false on the 201 and true on the retry", () => {
+    // Both values on the same path: a retry answers 200 `identical` rather than
+    // a 409, which is the answer the client deletes its local game on.
+    expect(wire.archivePost.identical).toBe(false);
+    expect(wire.archivePostIdentical.identical).toBe(true);
+    expect(wire.archivePostIdentical.path).toBe(wire.archivePost.path);
   });
 });
 

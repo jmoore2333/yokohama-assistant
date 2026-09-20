@@ -993,3 +993,17 @@ export type ChatScope = { kind: "table"; id: string } | { kind: "house" };
 export interface RunFrames {
   frames: HistoricalFrame[];
 }
+
+/** Where a game played in this browser landed when it was sent to the server's
+ *  archive — `POST /api/archive` (M6.5b, R-6.5b.6).
+ *
+ *  The leaf is the SERVER's, chosen from a strict replay of the record rather
+ *  than from anything the body said, so a client cannot file a running game as
+ *  finished. `identical` marks a retry that found its own bytes already there —
+ *  a 200 rather than a 201 — and the client proceeds on either; only a 409
+ *  ("a different record is archived under this id") keeps the game. */
+export interface ArchiveReply {
+  leaf: "over" | "abandoned";
+  path: string;
+  identical: boolean;
+}
