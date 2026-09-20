@@ -332,6 +332,8 @@ impl Games {
         &self.store
     }
 
+    /// The rules this layer's games are built with — one `Rules::standard()` per
+    /// process, held here since M6.5a (the host keeps no handle of its own).
     pub fn rules(&self) -> &Rules {
         &self.rules
     }

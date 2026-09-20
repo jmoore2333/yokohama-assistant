@@ -231,6 +231,10 @@ mod tests {
         // so — and lands; the "once" rule is per (id, why), and the callers
         // (R-6.5a.11) are what keep a game to one reason.
         a.put(Why::Over, "sim-3", "{\"record\":3}", "{\"table\":3}").unwrap();
+        // Both leaves' paths are asserted, not one: the mutation battery found a
+        // `put` that hand-built its `over/` path survived the `abandoned/` pins.
+        assert_eq!(std::fs::read_to_string(dir.join("rev7/over/sim-3.json")).unwrap(), "{\"record\":3}");
+        assert_eq!(std::fs::read_to_string(dir.join("rev7/over/sim-3.table.json")).unwrap(), "{\"table\":3}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -207,15 +207,20 @@ impl Api {
         (status, value)
     }
 
-    /// **R-6.5a.14, the cross-host contract in miniature**: the layer's
-    /// `dispatch`, called DIRECTLY with the same method, path, query, body and
-    /// identity, must answer what the router just answered — status and body,
-    /// byte for byte. Compared HERE, at capture time and against the same state
-    /// (SDD ruling P-1): a replay after the walk would meet a different table
-    /// (`table_dealing` against a playing one), and a replay of a 2xx write would
-    /// apply the move twice. So every READ (GET/HEAD) and every REFUSAL (4xx)
-    /// is compared; a write that landed is not. The three transport routes and
-    /// `/api/art` are the host's own and are skipped.
+    /// **R-6.5a.14, read at its real size**: the layer's `dispatch`, called
+    /// DIRECTLY with the same method, path, query, body and identity, must
+    /// answer what the router just answered — status and body, byte for byte.
+    /// After M6.5a the router IS the adapter over that same `dispatch`, so what
+    /// this proves is that the ADAPTER's request conversion is faithful — the
+    /// path/query split, the content type, the body bytes, the identity, the
+    /// status round-trip — and not that two implementations agree; a second
+    /// host's corpus claim is that host's own cell (M6.5b). Compared HERE, at
+    /// capture time and against the same state (SDD ruling P-1): a replay after
+    /// the walk would meet a different table (`table_dealing` against a playing
+    /// one), and a replay of a 2xx write would apply the move twice. So every
+    /// READ (GET/HEAD) and every REFUSAL (4xx) is compared; a write that landed
+    /// is not. The three transport routes and `/api/art` are the host's own and
+    /// are skipped.
     fn compare_with_dispatch(
         &self,
         who: Option<&str>,
@@ -2383,11 +2388,14 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 }
 
 /// R-6.5a.14: the layer's dispatcher answers what the router answers, for every
-/// committed non-transport READ and REFUSAL — the cross-host contract in
-/// miniature, under axum, before any second host exists. The comparison itself
-/// runs inside [`Api::call_as`] at capture time (SDD ruling P-1); this cell
-/// walks the corpus and asserts how many pairs were compared, so a `call_as`
-/// that stopped comparing fails here rather than going quiet.
+/// committed non-transport READ and REFUSAL. **What that pins is the axum
+/// ADAPTER's conversion** — both sides of every pair are the same `dispatch`
+/// behind the same layer, so a change inside `api.rs` moves both and is caught
+/// by the corpus compare and the route cells instead (spec §6.3 mutation 4's
+/// real catchers). The comparison itself runs inside [`Api::call_as`] at capture
+/// time (SDD ruling P-1); this cell walks the corpus and asserts how many pairs
+/// were compared, so a `call_as` that stopped comparing fails here rather than
+/// going quiet.
 #[tokio::test]
 async fn the_dispatcher_answers_what_the_router_answers() {
     let api = Api::new();

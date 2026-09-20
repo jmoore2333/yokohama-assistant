@@ -179,6 +179,22 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     }
 }
 
+/// The methods the table takes at `path`, in table order, with `HEAD` beside
+/// `GET` as axum's `MethodRouter` lists them — what the adapter writes into a
+/// 405's `Allow` header. Empty for a path no row matches.
+pub fn allowed_methods(path: &str) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for r in routes() {
+        if matches(r.pattern, path).is_some() {
+            out.push(r.method);
+            if r.method == "GET" {
+                out.push("HEAD");
+            }
+        }
+    }
+    out
+}
+
 enum Matched<'a> {
     Route(&'static str, Vec<&'a str>),
     WrongMethod,
@@ -569,8 +585,8 @@ pub(crate) fn undo_allowed(
 
 /// What `GET /api/games` is being asked (§3.3).
 ///
-/// `deny_unknown_fields` through [`QueryArgs`] for the reason that extractor
-/// exists: `?scoped=open` would otherwise default silently to `mine` and answer
+/// `deny_unknown_fields` through the layer's `parse_query` (the same fence
+/// `QueryArgs` was): `?scoped=open` would otherwise default silently to `mine` and answer
 /// a lobby asking for open tables with the caller's own — confidently, and with
 /// something it did not ask for.
 #[derive(Debug, Clone, Deserialize)]
@@ -1496,8 +1512,8 @@ pub struct Events {
 ///
 /// Typed `usize`, so a negative or non-numeric cursor is a 400 from serde
 /// rather than a value this handler would have to range-check; and
-/// `deny_unknown_fields` through [`QueryArgs`] makes a MISSPELLED cursor a 400
-/// too, rather than a silent `None` that polls from the beginning forever.
+/// `deny_unknown_fields` through the layer's `parse_query` makes a MISSPELLED
+/// cursor a 400 too, rather than a silent `None` that polls from the beginning forever.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsQuery {
@@ -1745,9 +1761,10 @@ pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiReq
     }
 }
 
-/// One arm per route; `?` inside an arm is the refusal order axum has today —
-/// identity before body or query, because the `Identity` extractor precedes
-/// `JsonBody`/`QueryArgs` in every handler's argument list at HEAD.
+/// One arm per route; `?` inside an arm is the refusal order axum had before
+/// M6.5a — identity before body or query, because the `Identity` extractor
+/// preceded `JsonBody`/`QueryArgs` in every handler's argument list then (the
+/// mid-point review checked all twenty).
 fn answer(
     games: &Games,
     host: &Host,
@@ -1879,8 +1896,10 @@ mod tests {
 
     #[test]
     fn the_matcher_finds_every_route_in_apps_order() {
-        // Every pattern app() registers, in its order; a route missing here is a
-        // route the dispatcher cannot serve.
+        // Every pattern `app()` registered before M6.5a, in its order, plus the
+        // record route: a hand-kept copy that is a change detector for the table.
+        // A route missing here is a route the dispatcher cannot serve. (The order
+        // is not load-bearing for `find`: no two patterns can match one path.)
         let expected = [
             ("GET", "/api/health"),
             ("GET", "/api/me"),

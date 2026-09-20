@@ -72,9 +72,9 @@ use http::StatusCode;
 use std::sync::Arc;
 
 #[cfg(feature = "server")]
-use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::rejection::QueryRejection;
 #[cfg(feature = "server")]
-use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
 #[cfg(feature = "server")]
 use axum::http::request::Parts;
 #[cfg(feature = "server")]
@@ -198,49 +198,26 @@ impl IntoResponse for ApiError {
 #[cfg(feature = "server")]
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-/// This API's request-BODY extractor, and the reason it is not `axum::Json`.
+/// This API's QUERY-STRING extractor, and the reason it is not `axum::Query` —
+/// since M6.5a the ONLY axum extractor left here, because request bodies reach
+/// the layer as bytes through the adapter and `api::parse_json`, the layer's own
+/// fence, which reproduces axum's sentences. It stays for the one route a host
+/// writes itself, `events?after=&wait=`.
 ///
 /// Two defects, both measured, both closed here:
 ///
-/// 1. **A rejection did not carry a sentence.** `axum::Json`'s own rejection is
-///    a PLAIN-TEXT body, and `web/src/api.ts` builds its `ApiError` by reading
-///    `.error` off the body — so `{not json` reached the player as a bare status
-///    code with nothing to show. Every refusal on this API is one shape, and
-///    that has to include the ones raised before a handler runs.
-/// 2. **A shape error was a 422.** Honest for a generic JSON extractor, but
-///    this API has one meaning for "your request was wrong" and it is 400.
+/// 1. **A rejection did not carry a sentence.** axum's own rejection is a
+///    PLAIN-TEXT body, and `web/src/api.ts` builds its `ApiError` by reading
+///    `.error` off the body — so a malformed request reached the player as a
+///    bare status code with nothing to show. Every refusal on this API is one
+///    shape, and that has to include the ones raised before a handler runs.
+/// 2. **A shape error was a 422.** Honest for a generic extractor, but this API
+///    has one meaning for "your request was wrong" and it is 400.
 ///
-/// The wrapped types carry `#[serde(deny_unknown_fields)]`, which is the half
-/// that matters: `#[serde(default)]` is right for an ABSENT optional field and
-/// wrong for a field the caller believed it was setting. Before the fence, a
-/// client that renamed `start_seat` to `startSeat` got a 201 and a DIFFERENT
-/// GAME. Because the fence sits at the extractor rather than in a handler, a
-/// malformed body is refused before any lookup — so a bad body against a
-/// missing game answers 400, not 404, which is the right precedence.
-#[cfg(feature = "server")]
-pub struct JsonBody<T>(pub T);
-
-#[cfg(feature = "server")]
-impl<T, S> FromRequest<S> for JsonBody<T>
-where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        Json::<T>::from_request(req, state)
-            .await
-            .map(|Json(value)| Self(value))
-            .map_err(|rejection| ApiError::bad_request(rejection.body_text()))
-    }
-}
-
-/// The same fence over a QUERY STRING, for the same reasons.
-///
-/// `?tale=5` for `?tail=5` is otherwise a silent full log: the key is dropped,
-/// the `Option` defaults to `None`, and the caller is answered confidently with
-/// something it did not ask for.
+/// The wrapped type carries `#[serde(deny_unknown_fields)]`, which is the half
+/// that matters: `?tale=5` for `?tail=5` is otherwise a silent full log — the
+/// key is dropped, the `Option` defaults to `None`, and the caller is answered
+/// confidently with something it did not ask for.
 #[cfg(feature = "server")]
 pub struct QueryArgs<T>(pub T);
 
@@ -283,14 +260,15 @@ pub const SIGNAL_KIND: &str = "sse";
 #[cfg(feature = "server")]
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
 
-/// Everything a handler may reach.
+/// Everything a transport handler may reach: the layer's state, the identity
+/// door, the streams' cadence and the streams' channels.
 ///
 /// `Rules::standard()` is not cheap and is immutable once built, so it is
 /// constructed once per process and shared by reference — the same discipline
-/// the CLI's `main` uses.
+/// the CLI's `main` uses — and since M6.5a it is held by [`Games`] alone
+/// (`Games::rules()`), which is where every reader of it now is.
 #[cfg(feature = "server")]
 pub struct AppState {
-    pub rules: Arc<Rules>,
     pub games: Games,
     /// Which header names the caller (R-1.2). Read once at start; no default.
     pub identity: identity::IdentityMode,
@@ -364,9 +342,10 @@ impl AppState {
     /// The one constructor that builds anything; every constructor above is
     /// this one with a store, an identity or a chat chosen for it.
     ///
-    /// The limits reach [`Games`] as well as this state, and the two are not a
-    /// duplicate: the appender enforces them and `/api/health` reports them,
-    /// and neither half can read the other's.
+    /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
+    /// appender enforces them and `/api/health` reports them off the same
+    /// object, so a host passes them in once and nothing on this state can drift
+    /// from what the layer enforces.
     pub fn with_store_and_chat(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -387,7 +366,6 @@ impl AppState {
         let rules = Arc::new(Rules::standard());
         let signals = Arc::new(signal::Signals::default());
         Self {
-            rules: Arc::clone(&rules),
             games: Games::with_parts(
                 rules,
                 store,
@@ -660,10 +638,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // Art is a server route (the manifest reads the gated `art` module), listed
     // in the layer's table for the 405/404 arithmetic and answered here.
     if request.path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
-        return match art_manifest().await {
+        let mut response = match art_manifest().await {
             Ok(j) => j.into_response(),
             Err(e) => e.into_response(),
         };
+        // HEAD leaves with an empty body here too, as it does through `dispatch`.
+        if parts.method == http::Method::HEAD {
+            *response.body_mut() = axum::body::Body::empty();
+        }
+        return response;
     }
     let host = api::Host { identity_name: state.identity.name(), signal_kind: SIGNAL_KIND };
     let out = api::dispatch(&state.games, &host, identity, &request);
@@ -673,6 +656,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         response
             .headers_mut()
             .insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/json"));
+    }
+    // axum's 405 carried an `Allow` header naming the methods the path takes;
+    // `any()` skips it, so the adapter puts it back from the layer's own table
+    // (R-6.5a.3: "axum's 405 shape, reproduced").
+    if out.status == 405 {
+        let allow = api::allowed_methods(request.path).join(",");
+        response
+            .headers_mut()
+            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allow).expect("ASCII method names"));
     }
     response
 }
@@ -822,6 +814,50 @@ mod tests {
         let ours = api::parse_json::<Input>(Some("application/json"), br#"{"line":"1"} trailing"#).unwrap_err();
         assert_eq!(ours.message, axum_text);
         assert!(ours.message.starts_with("Failed to parse the request body as JSON: "), "{}", ours.message);
+        // And the MISSING content type, the third rejection type — pinned against
+        // axum's own rather than a literal, so an upgrade that rewords it is
+        // caught here (R-6.5a.4 asks that each of the four be pinned).
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .body(axum::body::Body::from(r#"{"line":"1"}"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted a body with no content type"),
+        };
+        let ours = api::parse_json::<Input>(None, br#"{"line":"1"}"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+    }
+
+    /// R-6.5a.3's 405 is axum's SHAPE: an empty body AND the `Allow` header
+    /// naming the path's methods — HEAD beside GET, as axum lists it — read off
+    /// the layer's table by the adapter, since `any()` drops the one axum's
+    /// `MethodRouter` wrote.
+    #[tokio::test]
+    async fn a_405_carries_axums_allow_header() {
+        let app = app(Arc::new(AppState::in_memory()));
+        let res = app
+            .clone()
+            .oneshot(Request::builder().method("DELETE").uri("/api/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD"));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/games/sim-1")
+                    .header(identity::CLAIMED_HEADER, WHO)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD,DELETE"));
+        assert_eq!(api::allowed_methods("/api/nothing"), Vec::<&str>::new(), "no path, no methods");
     }
 
     #[tokio::test]
@@ -6164,7 +6200,12 @@ mod tests {
             }
             let name = path.file_name().unwrap().to_str().unwrap().to_string();
             let text = std::fs::read_to_string(&path).expect("readable");
-            let non_test = text.split("#[cfg(test)]").next().unwrap_or("");
+            // A TOP-LEVEL `#[cfg(test)]` — at column 0, so an inner one on a
+            // test-only item (`signal.rs`'s `senders`, `games.rs`'s
+            // `evict_for_test`) does not end the scan early and leave the code
+            // below it unread. Measured: the old `split("#[cfg(test)]")` left
+            // `games.rs:675-706` and `signal.rs:128-169` unscanned.
+            let non_test = text.split("\n#[cfg(test)]").next().unwrap_or("");
             let whole_file_gated = gated_files.contains(&name.as_str())
                 || non_test.trim_start().starts_with("#![cfg(feature = \"server\")]");
             // A block-gated region starts at a line reading `#[cfg(feature = "server")]`
