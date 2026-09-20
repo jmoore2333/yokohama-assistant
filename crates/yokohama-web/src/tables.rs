@@ -38,9 +38,7 @@ use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
-use crate::table::{
-    now_unix, DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror,
-};
+use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror};
 
 /// The shape version stamped on every table document this build writes.
 ///
@@ -743,7 +741,7 @@ impl Games {
             id,
             name: req.name.as_deref().map(str::trim).map(str::to_string),
             created_by: creator.as_str().to_string(),
-            created_at: now_unix(),
+            created_at: (self.clock)(),
             players: req.players,
             colors: config.player_colors.clone(),
             start_seat: config.start_player.0,
@@ -910,7 +908,7 @@ impl Games {
     ) -> Result<Message, GameError> {
         let (mut doc, version) = self.read_chat(key, players)?;
         doc.id = key.to_string();
-        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
+        let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text };
         doc.last = message.seq;
         doc.messages.push(message.clone());
         doc.trim(self.limits.keep);
@@ -1918,6 +1916,37 @@ mod tests {
             games.store().read(Doc::Record, "order").unwrap().is_none(),
             "no record until the last keep",
         );
+    }
+
+    /// **Every stamp this type writes is the injected clock's reading**
+    /// (R-6.5a.6): the table a `create` writes, and the message an append
+    /// writes, which are the only two callers in the crate.
+    ///
+    /// One cell rather than two, because the claim is the SEAM and not either
+    /// site — a `now_unix()` left behind at one of them reads the host's wall
+    /// clock, which is nowhere near this reading, and fails here. That is also
+    /// why the reading is a fixed past instant and not anything derived from
+    /// the host's own clock: a cell comparing against `now_unix()` would pass
+    /// on exactly the code this task exists to remove.
+    ///
+    /// **What it is not**: a fence against `SystemTime` reached for anywhere
+    /// else. R-6.5a.6 gives that to a source-scanning cell, because a compile
+    /// for wasm cannot see a platform call that only panics at run time. What
+    /// this holds is that the two callers ask [`Games`] rather than the clock.
+    ///
+    /// **Mutation-proven at both ends**: `now_unix()` was put back at the
+    /// create site and at the append site in turn, and the cell failed on each
+    /// — on the assertion belonging to the site that moved, so a failure here
+    /// names which of the two it was.
+    #[test]
+    fn a_table_and_a_message_are_stamped_by_the_clock_the_games_was_built_with() {
+        let games = games().with_clock(Arc::new(|| 1_700_000_000));
+        let red = who("red@t.test");
+        let view = games.create(&req("clock"), &red).expect("a table");
+        let (doc, _) = games.read_table(&view.id).expect("a readable store").expect("the table");
+        assert_eq!(doc.created_at, 1_700_000_000, "the table's stamp is the injected reading");
+        let m = games.chat_append(&view.id, red_seat(), "hello").expect("an append");
+        assert_eq!(m.created_at, 1_700_000_000, "and so is a message's");
     }
 
     /// **R-P10, in the evaluator's own words.** The weights were fitted at two

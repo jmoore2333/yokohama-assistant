@@ -103,6 +103,21 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
     }
 }
 
+/// How this crate reads a wall clock (M6.5a, R-6.5a.6).
+///
+/// A seam rather than a call, because `std::time::SystemTime::now` is a
+/// PLATFORM call: on `wasm32-unknown-unknown` it does not fail to compile, it
+/// panics at run time — so a table layer that reached for it directly would
+/// build for the browser and then die stamping its first document. The host
+/// supplies the reading instead — [`crate::table::now_unix`] today, whatever a
+/// wasm host can read when there is one — and nothing below knows which it was
+/// handed.
+///
+/// It is also what lets a cell pin a stamp by VALUE. Everything else this type
+/// writes is a function of the seeds and the identities; a wall clock is not,
+/// which is why the committed corpus has to normalise it away.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -190,6 +205,14 @@ pub struct Games {
     pub(crate) house_lock: Mutex<()>,
     /// The retention numbers (R-6.4.8), from the launch variables.
     pub(crate) limits: ChatLimits,
+    /// The wall clock this type stamps documents from — see [`Clock`] for why
+    /// it is a seam and not a call.
+    ///
+    /// **Two callers, both in [`crate::tables`]**: the `created_at` a `create`
+    /// writes onto a table document, and the one an append writes onto a
+    /// message. Nothing here reads a clock back, and nothing compares two
+    /// readings, so a host is free to hand over a constant.
+    pub(crate) clock: Clock,
 }
 
 /// How many `Repl`s stay resident.
@@ -217,9 +240,11 @@ impl Games {
     /// [`Games::new`] with the chat's retention numbers given rather than
     /// defaulted — how a test asks for a keep small enough to watch a trim
     /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
-    /// calls [`Games::with_parts`] and keeps the handle it passed.
+    /// calls [`Games::with_parts`] and keeps the handle it passed; **its clock
+    /// is the wall clock**, so a cell that pins a stamp by value reaches for
+    /// [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
-        Self::with_parts(rules, store, limits, Arc::new(NoSignal))
+        Self::with_parts(rules, store, limits, Arc::new(NoSignal), Arc::new(crate::table::now_unix))
     }
 
     /// The one constructor that builds anything: every part this type holds
@@ -227,13 +252,15 @@ impl Games {
     ///
     /// How `main` builds the layer (M6.5a, R-6.5a.8) — the signal is a trait
     /// object, so the host builds its own and passes a clone, keeping the
-    /// other half to subscribe on. The two constructors above are this one with
-    /// the retention numbers or the signal chosen for them.
+    /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
+    /// The two constructors above are this one with the retention numbers, the
+    /// signal or the clock chosen for them.
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
         limits: ChatLimits,
         signal: Arc<dyn Signal>,
+        clock: Clock,
     ) -> Self {
         Self {
             rules,
@@ -247,7 +274,20 @@ impl Games {
             chat_last: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
             limits,
+            clock,
         }
+    }
+
+    /// This `Games` with a different [`Clock`].
+    ///
+    /// A builder step rather than a constructor of its own: a cell that pins a
+    /// stamp by VALUE wants the in-memory layer every other cell builds with
+    /// one part of it changed, and spelling [`Games::with_parts`] out there
+    /// would restate the store, the retention numbers and the signal in order
+    /// to say something about none of them.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
@@ -1573,6 +1613,7 @@ pub(crate) mod test_support {
             store,
             ChatLimits::default(),
             signals.clone(),
+            Arc::new(crate::table::now_unix),
         );
         (games, signals)
     }

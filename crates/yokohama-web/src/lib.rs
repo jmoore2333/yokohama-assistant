@@ -328,7 +328,13 @@ impl AppState {
         let signals = Arc::new(signal::Signals::default());
         Self {
             rules: Arc::clone(&rules),
-            games: Games::with_parts(rules, store, chat.limits, signals.clone()),
+            games: Games::with_parts(
+                rules,
+                store,
+                chat.limits,
+                signals.clone(),
+                Arc::new(table::now_unix),
+            ),
             identity,
             heartbeat: HEARTBEAT,
             chat,
