@@ -187,6 +187,14 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   const read = useCallback(
     async function read(why: Why): Promise<void> {
       const mine = generation.current;
+      // **A post in flight PARKS a count trigger** (live review, M-2): the
+      // 201 about to land is the answer to that very count, and asking for the
+      // delta first spends a request to be told what the reply already holds.
+      // Re-checked in `send`'s `finally`, where the cursor has moved.
+      if (why === "count" && inFlight.current) {
+        wanted.current = "count";
+        return;
+      }
       // A mount read falls through a read that is already out, and the two
       // answers are told apart by the generation rather than by arrival order.
       if (reading.current && why !== "mount") {
@@ -229,7 +237,17 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
 
   // A count above what is held: fetch, unless folded (the header shows the
   // difference instead). At or below: nothing — the cell that catches a panel
-  // fetching on every move.
+  // fetching on every move. And nothing while THIS panel's own post is in
+  // flight, which `read` parks and `send` re-checks.
+  //
+  // **What spec §6.1 gets wrong, corrected here** (live review, M-2): it says
+  // the frame an own post causes is "a no-op compare, because the 201's
+  // message is appended locally and `last` advanced". That is true only if the
+  // 201 lands FIRST. On the live tunnel the table's bump reaches the poster's
+  // own stream inside their round trip — the overlap M6.3 measured — so the
+  // count rule read a cursor the reply had not moved yet, and every post cost
+  // one delta GET asking from one below the message it had just written. The
+  // dated spec stands as written; this is the true sentence.
   useEffect(() => {
     if (count === undefined) return;
     if (count > last.current && !folded) void read("count");
@@ -287,6 +305,15 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     } finally {
       inFlight.current = false;
       setSending(false);
+      // The parked count, re-asked against the cursor the 201 has just moved —
+      // so an own post asks for nothing and a message that arrived from
+      // somebody else while this one was out is still fetched. **Only when no
+      // read is out**: a count parked behind a READ is that read's tail's to
+      // consume, and clearing it here would drop the re-ask.
+      if (wanted.current === "count" && !reading.current) {
+        wanted.current = null;
+        if (countWants()) void read("count");
+      }
     }
   };
 

@@ -290,6 +290,54 @@ describe("the chat panel", () => {
     expect(stub.matching("GET", "/chat").at(-1)!.path).toContain(`after=${wire.chatPost.seq}`);
   });
 
+  /** **An own post on an OPEN count-driven panel costs ZERO delta reads** (live
+   *  review, M-2).
+   *
+   *  Spec §6.1 says the frame a post causes is "a no-op compare", because the
+   *  201's message is appended locally and `last` advanced first. On the live
+   *  tunnel it is not: the table's bump reaches the poster's OWN stream inside
+   *  the round trip — the overlap M6.3 already measured — so the count rule
+   *  fired against a cursor the 201 had not moved yet, and every post cost one
+   *  delta GET whose `after` was one below the message it had just written.
+   *
+   *  **The ORDER here is the live one, and it is the whole cell**: the POST is
+   *  held open, the count arrives WHILE it is out, and only then does the 201
+   *  land. A cell that resolved the post first could not fail. */
+  it("asks for no delta when its own post is what moved the count", async () => {
+    open();
+    const posted = gate<Reply>();
+    const stub = chatStub((call) =>
+      call.method === "POST" ? posted.promise : call.method === "GET" ? emptyRoom : undefined,
+    );
+    const { rerender } = render(<Chat scope={TABLE} count={0} colors={colors} sendName={false} />);
+    await settle();
+    // Anti-vacuity: the mount read, and nothing else. A panel that had asked
+    // for nothing at all would satisfy every count below for the wrong reason.
+    const before = stub.matching("GET", "/chat").length;
+    expect(before, "the mount read happened").toBe(1);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Say something" }), "good luck{Enter}");
+    await waitFor(() => expect(stub.matching("POST", "/chat")).toHaveLength(1));
+
+    // The bump lands BEFORE the 201: the count is the poster's own message and
+    // the cursor has not moved yet.
+    rerender(<Chat scope={TABLE} count={wire.chatPost.seq} colors={colors} sendName={false} />);
+    await settle();
+    expect(
+      stub.matching("GET", "/chat"),
+      "a count a post in flight will account for must not be asked about",
+    ).toHaveLength(before);
+
+    // And when the post settles, the re-check finds the count already covered.
+    posted.resolve(wire.chatPost);
+    await settle();
+    expect(stub.matching("GET", "/chat"), "nor once it has landed").toHaveLength(before);
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows, "the line is drawn once, by the 201 and by nothing else").toHaveLength(1);
+    expect(rows[0]!).toHaveTextContent(wire.chatPost.text);
+  });
+
   it("sends the browser's name for a watcher and at the house", async () => {
     open();
     localStorage.setItem(OPEN_KEY, JSON.stringify(["wire", "house"]));

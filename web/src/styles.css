@@ -1338,22 +1338,77 @@ ol.account .mover { font-weight: 700; }
  * (R-6.4.10): `margin-top: auto` in `.side`'s flex column. In the lobby it is an
  * ordinary section and the margin is inert. */
 .side .chat { margin-top: auto; }
-.chat h2, .chat h3 { display: flex; align-items: center; gap: 0.35rem; }
-.chat h3 { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--fg-faint); font-family: var(--mono); font-weight: 500; margin-bottom: 0.5rem; }
+/* **The heading is the PANEL's at all four hosts** (live review, M-3). Two of
+ * them — the open table and the lobby — are `.setup` screens, and `.setup h2`
+ * (`:849`) is declared after `.panel h2` (`:568`) at the same specificity, so
+ * it won on source order: the open table drew a 22.4px letter-spaced CHAT where
+ * every other host draws 10px mono small caps, and `.setup h3`'s `margin-top:
+ * 1.6rem` gave the lobby's folded box 26px of dead space above its one line.
+ *
+ * Restated here rather than fought with a more specific selector, because this
+ * block is below both of them and because the chat's heading really is the same
+ * heading everywhere — the level differs (the lobby's siblings are `h3`), the
+ * look does not. `margin: 0` at the top is the heading reset (`:94`) restated
+ * for the same reason; on the side column it changes nothing. */
+.chat h2, .chat h3 {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--fg-faint); font-family: var(--mono); font-weight: 500;
+  margin: 0 0 0.5rem;
+}
 .chat h2 .fold, .chat h3 .fold { margin-left: auto; font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+/* The rhythm the heading's `margin-top` used to supply by accident. `.setup h3`
+ * gave every lobby section 1.6rem of air above it, and for the three ordinary
+ * sections that margin sits OUTSIDE anything — but the chat's heading is inside
+ * a bordered, padded `.panel`, so the same rule put the air INSIDE the box
+ * (M-3's "26px of dead space above its one header line"). Zeroing it there and
+ * putting it on the section is the same 1.6rem in the place it belongs. */
+.lobby .lobby-chat { margin-top: 1.6rem; }
 .chat-new { font-family: var(--mono); font-size: 10px; line-height: 1.4; padding: 0 0.45rem; border-radius: 999px; background: var(--reachable); color: var(--bg-sunken); }
 /* The body folds the turn account's way: clipped, never unmounted, so the
  * live region stays in the tree. **The cap does NOT lift above 1201px, which is
  * the one place this panel deliberately parts with `.turn-account`** (spec
  * §6.1): a chat's history is long, and an uncapped list would push the input
  * that follows it off the foot of the column. */
-.chat .messages { margin-top: 0.3rem; display: flex; flex-direction: column; max-height: 16rem; }
+/* **The list box is the query container the row rule below reads** (live
+ * review, I-1). What squeezes a message is the width of its own ROW, and that
+ * is not a viewport figure: the side column is ~322px of row at 1280 and at
+ * 2560 alike, while the open table's panel is ~800px at both. A viewport media
+ * query would have fixed the phone and left the desktop side column — where a
+ * watcher's label was photographed leaving the message a column one character
+ * wide — exactly as it was. `inline-size` and not `size`: the height of this box is its content's
+ * and must stay so. */
+.chat .messages { margin-top: 0.3rem; display: flex; flex-direction: column; max-height: 16rem; container-type: inline-size; }
 .chat .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
 .chat-lines { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; max-height: 12rem; overflow: auto; scrollbar-width: thin; }
 .chat-lines li { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .chat-lines time { color: var(--fg-faint); font-family: var(--mono); font-size: 10px; }
 .chat-who { white-space: nowrap; }
 .chat-who .meta { color: var(--fg-faint); }
+/* **In a NARROW list the message gets its own row** (live review, I-1). The
+ * three-track grid above puts the label and the clock first and gives the text
+ * what is left, and the label does not wrap — so at 390px a 15-character
+ * ADDRESS (which is what a line carries for anyone who typed no name) left the
+ * text 158px, twenty-two characters per line, and a watcher's " · watching"
+ * marker took 76px more of it: eleven. Measured on the deployed site, and
+ * measured again by the cell at 74px of a 321px row on a phone AND at 75px of a
+ * 322px row in the SIDE COLUMN at 1280 — the second being the case the review
+ * predicted ("the same rule applies") and did not see, because the names in its
+ * walk were short. Photographed there too, under a watcher's label, stacking
+ * one character per line.
+ *
+ * Nothing is clipped and nothing overflows, so this is a reading of the TEXT
+ * against its ROW in `joins_by_link.spec.ts`, taken at both widths, rather than
+ * a width gate.
+ *
+ * **34rem is chosen to leave the WIDE hosts alone**: the side column is 322px
+ * of row at 1280 and 514px at 1900, so it is always narrow; the open table's
+ * and the lobby's panels are ~800px, so they keep the one-row layout they have
+ * today, at every viewport above the phone. */
+@container (max-width: 34rem) {
+  .chat-lines li { grid-template-columns: auto 1fr; }
+  .chat-lines li .chat-text { grid-column: 1 / -1; }
+}
 /* **The refusal reads as one.** `.error` is a single class and it sits inside
  * a `.messages` box, where `.messages div` (`:706`) is the more specific rule
  * and paints it the ordinary dim grey — so the server's "a message is at most
@@ -1372,6 +1427,23 @@ ol.account .mover { font-weight: 700; }
  * rather than as something to fill in. */
 .who-strip .your-name { display: inline-flex; align-items: center; gap: 0.35rem; margin-left: 0.75rem; font-size: 11.5px; color: var(--fg-dim); }
 .who-strip .your-name input { font: inherit; font-size: 11.5px; width: 9rem; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.1rem 0.35rem; }
+
+/* **On a phone the name takes its own line, and the strip stops breaking its
+ * words** (live review, M-1). The field is a label plus a 9rem input — 177px —
+ * and it joined a `flex` row with no `flex-wrap`, so at 390px the address broke
+ * across three lines and "sign out" across two: a 51px block where the design
+ * is one line of small print. Nothing overflowed and nothing was clipped, which
+ * is why this is a reading of two BOXES in `joins_by_link.spec.ts` and not a
+ * width gate.
+ *
+ * The row wraps, and the name is given the whole second line rather than left
+ * to wrap where it happens to land — a field that lands beside a short address
+ * on one screen and under it on the next is worse than one that is always in
+ * the same place. `flex-end` because that is the strip's own alignment. */
+@media (max-width: 480px) {
+  .who-strip { flex-wrap: wrap; }
+  .who-strip .your-name { margin-left: 0; width: 100%; justify-content: flex-end; }
+}
 
 /* ---- M5: the strips on the table ---------------------------------------- */
 .table-sections {

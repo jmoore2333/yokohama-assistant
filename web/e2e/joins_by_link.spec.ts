@@ -73,6 +73,83 @@ test("a person holding only a link joins a locked open table and plays", async (
   // what it is about to do.
   await signIn(a, "a@e2e.test");
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+
+  // **The who-strip still reads as one line of small print on a phone** (live
+  // review, M-1). M6.4 put "Your name" (R-6.4.3 — a label plus a 9rem input)
+  // into a `flex` row with no `flex-wrap`, so at 390px the lobby's first line
+  // became a 51px block with the address broken across THREE lines and "sign
+  // out" across two. Nothing overflowed and nothing was clipped, which is why
+  // neither the width gate nor the overflow read below can see it.
+  //
+  // **The oracle is the SAME elements at desktop width**, not a pixel constant:
+  // what is claimed is that narrowing the window does not make these two pieces
+  // of text taller, and a magic number would be a second design figure to keep
+  // in step. Read before the resize and again after it.
+  {
+    const desktop = a.viewportSize()!;
+    const strip = a.locator(".who-strip");
+    const parts = () =>
+      strip.evaluate((el) => {
+        const who = el.querySelector(".who")!;
+        const out = el.querySelector("button")!;
+        const name = el.querySelector(".your-name input")!;
+        const box = (n: Element) => Math.round(n.getBoundingClientRect().height);
+        return {
+          who: box(who),
+          out: box(out),
+          name: Math.round(name.getBoundingClientRect().width),
+          nameTop: Math.round(name.getBoundingClientRect().top),
+          whoBottom: Math.round(who.getBoundingClientRect().bottom),
+          strip: Math.round(el.getBoundingClientRect().height),
+          wrap: getComputedStyle(el).flexWrap,
+        };
+      });
+    const wide = await parts();
+    await a.setViewportSize({ width: 390, height: 844 });
+    // The layout has to be DONE before it is read (the width gate's own note).
+    await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    const narrow = await parts();
+
+    // Anti-vacuity: every piece of the strip is really on the phone screen. A
+    // strip that had dropped its name field would satisfy the heights below
+    // for the wrong reason.
+    expect(wide.who, "the address has a box at desktop width").toBeGreaterThan(0);
+    expect(narrow.name, "the name field is still on the screen at 390px").toBeGreaterThan(0);
+
+    expect(
+      narrow.who,
+      `the address wraps at 390px: ${narrow.who}px against ${wide.who}px at ${desktop.width}`,
+    ).toBeLessThanOrEqual(wide.who);
+    expect(
+      narrow.out,
+      `"sign out" wraps at 390px: ${narrow.out}px against ${wide.out}px at ${desktop.width}`,
+    ).toBeLessThanOrEqual(wide.out);
+    // And the field is on its OWN line rather than sharing one — the other half
+    // of the fix, and the half that says the row wrapped where it was told to.
+    // A field that lands beside a short address on one screen and under it on
+    // the next is worse than one that is always in the same place.
+    expect(
+      narrow.nameTop,
+      `the name field shares a line with the address at 390px (top ${narrow.nameTop}, ` +
+        `the address ends at ${narrow.whoBottom})`,
+    ).toBeGreaterThanOrEqual(narrow.whoBottom);
+
+    const read = await readOverflow(a);
+    expect(
+      read.docScrollWidth - read.docClientWidth,
+      `the lobby scrolls sideways at 390px: ${blame(read)}`,
+    ).toBeLessThanOrEqual(0);
+    // eslint-disable-next-line no-console
+    console.log(
+      `who-strip at 390px: address ${narrow.who}px (desktop ${wide.who}) · ` +
+        `sign out ${narrow.out}px (desktop ${wide.out}) · strip ${narrow.strip}px ` +
+        `(desktop ${wide.strip}) · flex-wrap ${narrow.wrap} · name field ${narrow.name}px`,
+    );
+
+    await a.setViewportSize(desktop);
+    await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+  }
+
   await a.getByRole("button", { name: "New table" }).click();
   await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
   // **`exact: true` on all three, and each for its own collision.**
@@ -83,7 +160,11 @@ test("a person holding only a link joins a locked open table and plays", async (
   // about by different names.
   await a.getByLabel("Seat 1", { exact: true }).selectOption("open");
   await a.getByLabel("Name", { exact: true }).fill("Link test");
-  await a.getByLabel("Your name", { exact: true }).fill("Ann");
+  // **A LONG name, deliberately** — it is what the chat row below is measured
+  // under (live review, I-1). The review's own worst case is shorter than this
+  // and needs no arranging at all: an un-named watcher is labelled by their
+  // email and marked " · watching", which is the DEFAULT case at a table.
+  await a.getByLabel("Your name", { exact: true }).fill("Annabelle the Cartographer");
   await a.getByLabel("Ask for a password to join").check();
   await a.getByLabel("Table password", { exact: true }).fill("sesame");
   const created = a.waitForResponse(
@@ -101,6 +182,61 @@ test("a person holding only a link joins a locked open table and plays", async (
   // is "abandon Link test" — and a substring match is case-insensitive, so a
   // bare `getByLabel("Link")` resolved to both.
   await expect(a.getByLabel("Link", { exact: true })).toHaveValue(new RegExp(`/#/t/${id}$`));
+
+  // **One line of chat on the open table**, which is what the two readings in
+  // the next block are taken against. Folded by default (R-6.4.10), so it is
+  // opened first — the panel is shown to the SEATED creator only, which is why
+  // this happens here and not on B's seat picker.
+  const chat = a.locator("section.chat");
+  await chat.getByRole("button", { name: "show" }).click();
+  await chat.getByRole("textbox", { name: "Say something" }).fill("first one here");
+  await chat.getByRole("textbox", { name: "Say something" }).press("Enter");
+  await expect(chat.getByRole("listitem").filter({ hasText: "first one here" })).toBeVisible();
+
+  // **The panel's heading is the PANEL's, on a screen that is also `.setup`**
+  // (live review, M-3). `.setup h2` is declared after `.panel h2` and wins on
+  // source order, so the open table drew a large letter-spaced CHAT where every
+  // other host draws 10px mono small caps — and `.setup h3`'s `margin-top` gave
+  // the lobby's folded box 26px of dead space above its one line. Read as a
+  // COMPUTED value, which is the only thing that can see a cascade defect: the
+  // component suite never loads `styles.css` at all.
+  const headingFont = await chat
+    .locator("h2")
+    .evaluate((el) => getComputedStyle(el).fontSize);
+  expect(headingFont, "the open table's chat heading is the panel's, not the setup screen's").toBe(
+    "10px",
+  );
+
+  // **And a WIDE panel keeps the one-row layout it has always had.** The fix
+  // for I-1 is a CONTAINER query, so it opens on the row's own width and not on
+  // the window's: this panel is ~800px inside the `.setup` column at desktop
+  // width, the label costs a fraction of it, and label, clock and text stay on
+  // one line. Read as three tops, which is what says "one row" without naming a
+  // pixel — and it is what would fail if the threshold were ever raised far
+  // enough to fold the hosts the review did not ask about.
+  const oneRow = await chat
+    .locator("ol.chat-lines li")
+    .first()
+    .evaluate((li) => {
+      const top = (sel: string) => Math.round(li.querySelector(sel)!.getBoundingClientRect().top);
+      return {
+        who: top(".chat-who"),
+        text: top(".chat-text"),
+        row: Math.round(li.getBoundingClientRect().height),
+        line: Math.round(li.querySelector(".chat-who")!.getBoundingClientRect().height),
+      };
+    });
+  // The label and the message share a top — both are 11.5px text on the same
+  // baseline, so this is exact. (The clock is not: it is 10px, and `baseline`
+  // alignment puts its top 2px lower. Asserting on it would be asserting a
+  // font size.)
+  expect(oneRow.text, "the wide panel's message shares the label's row").toBe(oneRow.who);
+  // And the row really is ONE line tall, which is what a top-compare alone
+  // cannot say: two rows whose first lines happened to align would satisfy it.
+  expect(
+    oneRow.row,
+    `the wide panel's row is ${oneRow.row}px against a ${oneRow.line}px line`,
+  ).toBeLessThan(2 * oneRow.line);
 
   // **And it fits a phone** (live review I-1). This screen is the one place in
   // the client where a `.field` holds a whole URL, and at 390px it pushed the
@@ -140,10 +276,42 @@ test("a person holding only a link joins a locked open table and plays", async (
       Math.round(box!.x + box!.width),
       "the Copy button's right edge is past the window",
     ).toBeLessThanOrEqual(read.docClientWidth);
+    // **A long label must not squeeze the message into a column eight
+    // characters wide** (live review, I-1). The row is a three-track grid with
+    // the label `nowrap`, so at 390px the label and the clock took the width
+    // and the text got what was left: measured on the live site at 158px under
+    // a 15-character ADDRESS (22 characters per line), and 76px less again
+    // under a watcher's " · watching" marker — eleven. Nothing is clipped and
+    // nothing overflows, so only a reading of the two boxes can see it.
+    //
+    // The floor is the TEXT against its own ROW rather than a pixel count,
+    // because the row's width is a layout figure the design may change and the
+    // share is the property: a message is the point of the line.
+    const line = await a
+      .locator("section.chat ol.chat-lines li")
+      .first()
+      .evaluate((li) => ({
+        row: Math.round(li.getBoundingClientRect().width),
+        text: Math.round(li.querySelector(".chat-text")!.getBoundingClientRect().width),
+        who: Math.round(li.querySelector(".chat-who")!.getBoundingClientRect().width),
+        time: Math.round(li.querySelector("time")!.getBoundingClientRect().width),
+      }));
+    // Anti-vacuity, and it is the same shape as the Copy button above: a row
+    // that drew no label leaves the text the whole width and passes for the
+    // wrong reason.
+    expect(line.who, "the long label is really on the row").toBeGreaterThan(60);
+    expect(line.row, "the row has a box").toBeGreaterThan(0);
+    expect(
+      line.text / line.row,
+      `the message got ${line.text}px of a ${line.row}px row under a ${line.who}px label ` +
+        `and a ${line.time}px clock`,
+    ).toBeGreaterThanOrEqual(0.6);
     // eslint-disable-next-line no-console
     console.log(
       `open table at 390px: page overflow ${read.docScrollWidth - read.docClientWidth}px (gated) · ` +
-        `link input ${Math.round(fieldWidth)}px · copy right edge ${Math.round(box!.x + box!.width)}`,
+        `link input ${Math.round(fieldWidth)}px · copy right edge ${Math.round(box!.x + box!.width)} · ` +
+        `chat row ${line.row}px = label ${line.who} + clock ${line.time} + text ${line.text} ` +
+        `(${Math.round((100 * line.text) / line.row)}% of the row, floor 60%)`,
     );
 
     await a.setViewportSize(desktop);
@@ -222,6 +390,47 @@ test("a person holding only a link joins a locked open table and plays", async (
     idle += 1;
     if (idle > IDLE_LIMIT) throw await deadEnd(a, { id }, moves);
     await a.waitForTimeout(400);
+  }
+
+  // **And the same reading in the SIDE COLUMN at desktop width** (live review,
+  // I-1, the half the review predicted and did not see).
+  //
+  // The squeeze is a property of the ROW's width and not of the window's: the
+  // side column is ~322px of row at 1280 and at 2560 alike, so a viewport media
+  // query would have fixed the phone and left this. Photographed at 27px of
+  // text under a watcher's label before the fix; measured here under the
+  // creator's own long name, which needs no third browser.
+  {
+    const gameChat = a.locator("aside.side section.chat");
+    await expect(gameChat).toBeVisible();
+    const show = gameChat.getByRole("button", { name: "show" });
+    if (await show.count()) await show.click();
+    await gameChat.getByRole("textbox", { name: "Say something" }).fill("and a line on the game screen");
+    await gameChat.getByRole("textbox", { name: "Say something" }).press("Enter");
+    await expect(
+      gameChat.getByRole("listitem").filter({ hasText: "and a line on the game screen" }),
+    ).toBeVisible();
+    const line = await gameChat
+      .locator("ol.chat-lines li")
+      .last()
+      .evaluate((li) => ({
+        row: Math.round(li.getBoundingClientRect().width),
+        text: Math.round(li.querySelector(".chat-text")!.getBoundingClientRect().width),
+        who: Math.round(li.querySelector(".chat-who")!.getBoundingClientRect().width),
+        time: Math.round(li.querySelector("time")!.getBoundingClientRect().width),
+      }));
+    expect(line.who, "the long label is really on the row").toBeGreaterThan(60);
+    expect(
+      line.text / line.row,
+      `the message got ${line.text}px of a ${line.row}px side-column row under a ` +
+        `${line.who}px label and a ${line.time}px clock`,
+    ).toBeGreaterThanOrEqual(0.6);
+    // eslint-disable-next-line no-console
+    console.log(
+      `side column at ${a.viewportSize()!.width}px: chat row ${line.row}px = label ${line.who} + ` +
+        `clock ${line.time} + text ${line.text} ` +
+        `(${Math.round((100 * line.text) / line.row)}% of the row, floor 60%)`,
+    );
   }
 
   // And the table is in A's lobby, under Your games, saying who is at it and
