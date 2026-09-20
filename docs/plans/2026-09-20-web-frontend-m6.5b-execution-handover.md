@@ -56,20 +56,27 @@ commit that adds this file; every fact below names where it lives.
   artifacts. The owner asked whether to fold it into M6.5b; the recommendation given was no, for
   the reasons in the last message of the session (a spec's worth of product decisions; it
   depends on b's measured asset graph; b is already nine tasks; its asset lifecycle should be
-  settled before c's static-assets deployment). **The owner had not yet answered.**
+  settled before c's static-assets deployment). **The owner agreed — §2 item 3.**
 
-## 2. What the owner still owes before execution starts
+## 2. The three decisions, RULED (owner, 2026-09-20, at the handover)
 
-1. **The execution mode.** The standing ruling (R-P11 as refined 2026-09-20) is INLINE with
-   broad review — the orchestrator executes Tasks 1–3 and 5–9 with the per-edit gates after
-   each, Task 4 (the Worker) under SDD with an Opus implementer and an Opus reviewer, one Opus
-   review at the mid-point after Task 4 and one whole-branch review before the release. The
-   alternative offered was SDD throughout.
-2. **Two spec defaults, reversible:** `labels` read from the server first (bounded at five
-   seconds) with the Worker as the fallback (the alternative wakes the Worker on every page
-   load); the archive's caller directory a readable transliteration (`jamoore_at_gmail.com`)
-   that can collide, with a sha256 prefix the one-line alternative.
-3. **The b2 question** (above).
+1. **The execution mode: subagent-driven development for Tasks 2–8, inline for Tasks 1 and 9.**
+   The owner opened the door to SDD across the board and asked what fits this phase; the session
+   recommended this split and the owner's framing adopts it. Reason: this phase is NOT mostly
+   mechanical — Tasks 3–6 and 8 are where every review wave found its Criticals (the Worker's
+   queue and ownership generation, the trap recovery, the build graph, the four door gates, the
+   real-browser fault cells), Task 2 touches a path-safety boundary and a cross-cycle trait, and
+   Task 7's risk is classification; Task 1 is small, fully specified and deployable alone, and
+   Task 9 is the orchestrator's by nature. **Opus is the floor for every implementer and
+   reviewer; the orchestrator adjudicates.** The layered reviews stay on top: the whole-branch
+   Opus review before the release, spec §6.6's mutation battery, and a HEADED live review of the
+   deployed site. (The 2026-09-20 R-P11 refinement — small mechanical tasks inline — is applied,
+   not reversed: these tasks are neither.)
+2. **The two spec defaults STAND**: `labels` server-first with the Worker as the fallback; the
+   readable caller directory (R-6.5b.15).
+3. **Offline mode is its own cycle, "M6.5b2"**, after M6.5b's close and before M6.5c; its
+   charter is spec §8's level-3 paragraph and its spec is written at M6.5b's close from the
+   measured artifacts. It is NOT in the M6.5b plan and the plan is not to grow it.
 
 ## 3. How to execute (the process, exactly)
 
