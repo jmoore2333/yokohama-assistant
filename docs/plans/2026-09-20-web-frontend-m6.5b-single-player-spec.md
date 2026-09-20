@@ -8,8 +8,11 @@ M6.5a deploy record), from the brainstorm with the owner that same day, under th
 plan is written from it (R-6.5.7, R-P11); the close is its record. Revised twice after an Opus
 adversarial read of the first draft against HEAD (2 Critical / 10 Important / 13 Minor, 41 claims
 verified true) and that reviewer's scoped re-read of the fix wave (24 addressed, 1 partly, 0 not;
-1 new Critical, 3 new Important, 6 new Minor, all fixed in the second wave); both reports are in
-the gitignored `.superpowers/sdd/2026-09-20-web-frontend-m6.5b/` — §9 lists what they changed.**
+1 new Critical, 3 new Important, 6 new Minor, all fixed in the second wave), and a third time
+after the owner's own lightweight-agent read (one execution-critical boundary both prior reviews
+missed, one under-specified lifecycle, one unspecified failure surface, one supersession gap, six
+one-sentence items); the two Opus reports are in the gitignored
+`.superpowers/sdd/2026-09-20-web-frontend-m6.5b/` — §9 lists what all three changed.**
 
 **The headline.** A person opens the site and plays the bot with no server behind the page: the
 whole table layer (`api::dispatch` over `Games`, the engine and the production bot inside it)
@@ -220,10 +223,14 @@ Every line below was opened by the review; the ones it corrected are marked.
   routed by the caller's intent.** The Worker draws `local-<16 hex>` and supplies it on every
   create; the client's one predicate `isLocal(id)` is that prefix, DEFINED once in `api.ts`,
   and every reader that HAS an id (`call`, `recordText`, the transport arm, the screen's
-  source record) goes through it — one definition of what a local GAME is. **Five calls carry
+  source record) goes through it — one definition of what a local GAME is. **Five routes carry
   no id** — `POST /api/games`, `GET /api/games?scope=mine`, `GET /api/health`, `GET /api/me`,
   `GET /api/labels` — and for those `call` takes an explicit `host: "local" | "server"`
-  argument, defaulting to the id-derived answer, which their local callers pass. The create is
+  argument, defaulting to the id-derived answer. **Three have page callers** (the create, the
+  local listing, the `labels` fallback); `/api/health` and `/api/me` are ANSWERED locally (§6.3
+  replays them) but have no local caller in the page — the local deployment facts are a
+  constant and the door is the server's — and the implementer should not invent one to
+  justify the argument. The create is
   routed by the caller's intent because that is what it is. **At its real size:** a server
   table CAN be given the prefix by a hand-written request (the prefix is `is_safe_id`-legal
   and the layer reserves nothing), in which case the page routes it to the Worker, which
@@ -315,8 +322,9 @@ web/wasm-node/` (§6.3). Both output directories are gitignored; `web/package.js
 `build:wasm`, and `build` runs it before `vite build`. `wasm-bindgen-cli` is installed at the
 lock's version (`cargo install wasm-bindgen-cli --version 0.2.128 --locked`), **a from-source
 build of about two minutes that CI caches by version** (`actions/cache` on `~/.cargo/bin/
-wasm-bindgen`), and the release wasm build is a second cargo target the job pays once per run.
-*(M-13)* Task 3 records the module's size (raw and gzip) beside the umbrella's 1.30 MB / 387 KB
+wasm-bindgen`), and the release wasm build is a second cargo target the job pays once per run —
+so the `web-server` job compiles three ways (the debug tests, the wasm check, the release
+module) plus node, and its wall is expected to roughly DOUBLE; recorded at Task 3. *(M-13)* Task 3 records the module's size (raw and gzip) beside the umbrella's 1.30 MB / 387 KB
 — RECORDED, never gated.
 
 ### 2.2 The Worker (`web/src/local/worker.ts`)
@@ -344,11 +352,19 @@ then `init()`s and `load`s every stored pair before it answers anything.
   what "This game is open in another tab" reads. Take over is a second `request` with
   `{ steal: true }`, whose effect on the first holder — its request's promise rejects with an
   `AbortError` — is what turns that tab read-only (§4). **On every acquisition (the first open,
-  a Take over, a Take back) the Worker `init()`s a fresh `Games` and `load`s the pairs from
-  IndexedDB before it answers a call for that game**, so the writer always starts from the
-  last state ANY tab acknowledged; the boot-time load is only the first of these. A reply
-  produced by a call that was in flight when the lock was lost is not written back and is
-  answered to the page as the lock loss, so nothing is shown that will not be kept. *(C-2, M-9)*
+  a Take over, a Take back) the Worker `init()`s a fresh `Games` and `load`s EVERY stored pair
+  from IndexedDB — not only the acquired game's, since `init()` emptied the store and every
+  other local game in this tab would otherwise 404 until reopened; loading bytes is cheap and
+  the `Repl` rebuild stays lazy per game on first touch — before it answers a call for that
+  game**, so the writer always starts from the last state ANY tab acknowledged; the boot-time
+  load is only the first of these. **What releases the lock:** the page keeps the request's
+  callback promise open for as long as the game screen is mounted and resolves it when the
+  screen unmounts, so navigating away (to the lobby, to another game) RELEASES; and the Worker
+  keeps the set of ids this tab holds, so a re-request for one of them short-circuits rather
+  than telling the player their own tab has the game open. A reply produced by a call that was
+  in flight when the lock was lost — under any number of prior holders, since Take over and
+  Take back can alternate — is not written back and is answered to the page as the lock loss,
+  so nothing is shown that will not be kept. *(C-2, M-9, owner read item 2)*
 - **Ids.** The Worker rewrites a create's body to carry `id: "local-<16 hex>"` drawn from
   `crypto.getRandomValues`; the seed is NOT supplied — `draw_seed` inside the module draws it
   through `getrandom`'s `js` feature, and it is never typed (umbrella §3.2).
@@ -378,8 +394,11 @@ then `init()`s and `load`s every stored pair before it answers anything.
   streams stay open while a local game is on screen — a cell (§6.2). The `"sse" | "held"`
   union at `api.ts:193` is untouched. *(I-6)*
 - **Deployment facts per source.** The module-level values become a record keyed by source
-  (`server` | `local`): the local record is a constant (`signal: "none"`, `archive: "off"`,
-  the chat facts unread); the server record is set from the health read as today. A game
+  (`server` | `local`) whose `signal` field is typed `"sse" | "held" | "none"`: the local record
+  is a constant (`signal: "none"`, `archive: "off"`, the chat facts unread); the server record
+  is set from the health read as today, and `signalKind()` becomes a read of the SERVER
+  record with its `"sse" | "held"` union untouched — the transport arm never asks it about a
+  local game, since it reads `Source.host` instead. A game
   screen reads its own source's record through `isLocal(id)` — with ONE named cross-read: a
   local game's Abandon label reads the SERVER's `archive`, because the send goes there.
 - `App.tsx`'s `fetchRun` makes ONE call to the run route (§2.4) with `to = next + 1` (the
@@ -396,11 +415,17 @@ then `init()`s and `load`s every stored pair before it answers anything.
   `HistoricalFrame::from_state`, which `at` becomes a thin wrapper over (`at(k) = from_state
   (state_at(k))`), so the two share one builder. Admission is `at`'s. `RunQuery { from:
   usize, to: usize }` with `deny_unknown_fields` through `parse_query`, so a non-numeric or
-  unknown field is a 400 in axum's words; **`from > to` or `to > len` is the 404 and the
-  sentence `at/{k}` already gives for a position past the end, extended to name the range**,
-  so the two routes refuse one condition one way — and `from > to`, a malformed range rather
-  than a missing position, is DELIBERATELY the same 404 rather than a third answer; a run longer
-  than **64** frames is a 400
+  unknown field is a 400 in axum's words. **The boundary, in numbers, because the client
+  contract depends on it:** a game with `total` events has `total + 1` POSITIONS, `0..=total`,
+  and `at/{total}` is the live frame; the run is half-open, so **the largest admitted `to` is
+  `total + 1`** — which is exactly what `fetchRun` sends (`to = next + 1`, `next` the reply's
+  event count, so the run ends on the live frame) — and **the 404 begins at `to = total + 2`**,
+  with the sentence `at/{k}` already gives for a position past the end, extended to name the
+  range, so the two routes refuse one condition one way; `from > to`, a malformed range rather
+  than a missing position, is DELIBERATELY the same 404 rather than a third answer. *(owner
+  read, item 1 — both prior reviews had "to > len" with `len` the event count, which would have
+  refused every legitimate client call while the pairing cell passed on the same wrong
+  boundary.)* A run longer than **64** frames is a 400
   naming the cap (never a silent clamp — the M6.3 `wait` rule). *(I-7)*
 - **`POST /api/archive`** (R-6.5b.6) — body `ArchivePost { record: String, table: String }`
   with `deny_unknown_fields`, both strings parsed by the SERVER. In order: (1) a
@@ -422,7 +447,10 @@ then `init()`s and `load`s every stored pair before it answers anything.
   *(N-4)* — else 400;
   then **the leaf IS the `Why`**: `Why::Over` iff the replayed state `is_over`, else
   `Why::Abandoned`, never read from the body; then `archive.put(prefix, why, id, record,
-  table)` with the prefix `browser/<caller_segment>/` (R-6.5b.15), answering 201 `{ "leaf":
+  strip_for_archive(&doc))` — the table re-stripped SERVER-side from the parsed document, as
+  `delete` does, so a crafted body carrying a lock or a watcher roster never lands verbatim
+  (the record string is put as sent, since its bytes are the digest's) — with the prefix
+  `browser/<caller_segment>/` (R-6.5b.15), answering 201 `{ "leaf":
   "over" | "abandoned", "path": "…" }`; an existing path is 409 "already archived"; no archive
   on this host is 404 "this server keeps no archive" — under `NoArchive` (the local host) the
   route is that 404 by construction. *(M-12)*
@@ -460,7 +488,10 @@ then `init()`s and `load`s every stored pair before it answers anything.
   server's and a local table has one person); no Unlock, no watchers; undo is the CLI's own,
   as at a one-person table.
 - **"Send to the archive"** on a finished local game's header, dark unless the server's
-  health reported an archive; on 201 it says where the copy went.
+  health reported an archive; on 201 it says where the copy went AND goes dark for the rest of
+  the session (the local document cannot be stamped — the send never goes through the module);
+  after a reload the control is live again and a second click answers the route's 409, shown as
+  "already archived" (§8). *(owner read item 5)*
 
 ### 2.6 What a local game never does
 
@@ -492,6 +523,13 @@ game can be saved as a file first.
   then `init()`s and `load`s the stored pairs — the same path a lock acquisition takes — and
   the page's strip says "reloaded from the last saved move". Nothing acknowledged is lost
   (§2.2's write-after rule), and nothing a stale tab held is kept (§2.2's rebuild rule).
+- **A stored local game that no longer rebuilds** — a later `SEMANTICS_REV` bump or a rules-hash
+  change, which by design stop a save resuming: `Session::from_record` REFUSES with an `Err`
+  (`games.rs:406`, `GameError::Server`), which is a 500 carrying the engine's own sentence and
+  NOT a trap, so the trap recovery above is not entered and its "reloaded" strip never shows.
+  The row stays listed (the listing reads table documents), "Save game file" still works (it
+  reads bytes) and Abandon still works (`delete` reads the store and rebuilds nothing); the
+  game screen shows the sentence naming the revision. *(owner read item 3)*
 - **IndexedDB refuses a write** (quota, a private window): the move is shown with the
   server's own sentence, "APPLIED BUT NOT SAVED" — one rule, one wording, both hosts.
 - **The lock is stolen**: the losing tab's game goes read-only with "opened in another tab"
@@ -548,9 +586,11 @@ game can be saved as a file first.
 
 - The run route: frames equal `/at/{k}`'s BY VALUE over a run with a change in its middle
   (anti-vacuity: the run spans a turn boundary and its middle frame differs from both
-  neighbours); a non-numeric field as a 400 in axum's words; **`to = len + 1` answers what
-  `at/{len + 1}` answers** (the 404, the pairing that makes it a claim); a run over the cap as
-  the 400 naming it; a spectator admitted exactly as at `at/{k}` (one grid row). *(I-7)*
+  neighbours); a non-numeric field as a 400 in axum's words; **`to = total + 1` is ADMITTED and
+  its last frame equals `at/{total}` BY VALUE** (the live frame — the arm the client's every
+  call depends on), and **`to = total + 2` answers what `at/{total + 1}` answers** (the 404, the
+  pairing that makes it a claim); a run over the cap as the 400 naming it; a spectator admitted
+  exactly as at `at/{k}` (one grid row). *(I-7, owner read item 1)*
 - `POST /api/archive`: the five refusals by five DIFFERENT sentences, including the `None`
   rev; the leaf chosen from the replayed state with a body whose table says the opposite; a
   partial record ACCEPTED under `abandoned/`; once per path (409); the `browser/<segment>/`
@@ -620,7 +660,11 @@ tie assumption, not a fixture to accept. *(review claim 37, N-9)*
 A PAIR played by the wasm bot IN A REAL BROWSER — the record AND its local table document,
 exactly what "Send to the archive" sends — produced by §6.5's exit walk and COMMITTED at
 `crates/yokohama-web/tests/fixtures/browser-played-2p.{json,table.json}` with a sidecar naming
-the release, the date, the browser and the module's hash. The pin builds a `Games` over a
+the release, the date, the browser and the module's hash. **It carries a seed, deliberately**
+— it is a record, and the seed is what the replay needs — and it lives under
+`crates/yokohama-web/tests/fixtures/`, outside `web/src/wire/`, which is the ONLY directory the
+corpus's seed value-pin scans (`wire_fixtures.rs`, `corpus()`), so the fence cuts as intended in
+both directions and nobody should move the pair into the corpus. The pin builds a `Games` over a
 `MemStore`, `load`s the pair, and drives the layer's own `why` route through `dispatch` as
 `local@browser` at EVERY bot event natively; a refusal fails it, and the fifteen counters the
 payload carries are read with `placement_cap_binds` asserted zero as the scope partner. The
@@ -718,6 +762,11 @@ review before the release; full SDD only for a task the plan marks large or judg
   address, or two longer than 64 characters, can share a directory and each other's 409.
 - **The leaf at an abandon follows the mirror**, which can be one move stale in one race
   (R-6.5b.13).
+- **The archive route's two-file put is not atomic**: a record that lands with its
+  `.table.json` write failing leaves a half pair, and the retry 409s on the record path. The
+  same accepted class as M6.5a's delete site; the operator's sign is a `.json` with no sibling.
+- **"Send to the archive" after a reload can be clicked again** and answers 409; the local
+  document carries no stamp.
 - **A local game's data leaves the device only by the player's own send or save.** There is
   no sync and no backup; clearing site data deletes the games.
 - **The Web Locks facts are from the specification and compatibility tables until Task 4
@@ -773,3 +822,25 @@ things; all are in the second wave:
 - **N-8** the new crate's scan had no command → Task 9's CLAUDE.md line.
 - **N-9** the clock change's regeneration diff is expected empty → said.
 - **N-10** `from > to` as a 404 is deliberate → said.
+
+The owner's own lightweight-agent read of the twice-revised spec (every citation it checked
+verified true) found what both Opus passes had missed, and the third wave carries it:
+
+- **Item 1 (execution-critical)** the run route's 404 boundary was one position too tight
+  against the client's own `to = next + 1` → §2.4's boundary in numbers, §6.1's two arms
+  (`total + 1` admitted, `total + 2` the 404).
+- **Item 2** the lock lifecycle: `init()` after an acquisition reloads EVERY pair; navigating
+  away RELEASES and a re-request by the holder short-circuits; the in-flight rule holds under
+  any number of prior holders → §2.2.
+- **Item 3** a stored game that no longer rebuilds after a later rev bump is an `Err`, not a
+  trap; the surface is defined → §4.
+- **Item 4** the entry handover's superseded sentences, named here since the handover is in
+  the read order: **its §2 item 5 ("the FOUR checks of R-6.5.6 … game over … under a
+  `browser/<user>/` prefix") is superseded by R-6.5b.6, R-6.5b.15 and §2.4 (five checks, the
+  leaf from the replayed state, the encoded prefix), and its §3 item 5 ("a local game's Abandon
+  reads 'Abandon'") by R-6.5b.6 and §2.5 ("Abandon and save" through the server's archive).**
+- **Item 5** Send to the archive goes dark on 201 and 409s after a reload (§2.5, §8); the route
+  re-strips the table server-side (§2.4); the two-file put is not atomic (§8); two of the five
+  id-less routes have no page caller (R-6.5b.12); the per-source record's `signal` union is the
+  wider one and `signalKind()`'s is untouched (§2.3); the CI job's wall roughly doubles (§2.1).
+- **Context** the committed pair's seed sits outside the corpus pin's scan on purpose (§6.4).
