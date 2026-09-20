@@ -178,8 +178,16 @@ only if 3–4P bots come in scope; seventeen worlds / 7,826 moves played nativel
 WASI came out byte-identical (§0.3, support for M6.5b's pin); `replay_strict` skips the digest
 when absent (a fourth check); input gates open during a house push or R2 put (revisions, a
 pending-deliveries list, delete ordering); the SQLite row cap is 2 MB (~20,000 events of
-headroom); the DO CPU limit reads 30 s unqualified; `workers.dev` off. **Next: you read the
-spec** — then the M6.5a spec and plan. The spec's §6 is what it does
+headroom); the DO CPU limit reads 30 s unqualified; `workers.dev` off. **The M6.5a spec is
+WRITTEN** — `docs/plans/2026-09-19-web-frontend-m6.5a-seam-spec.md`, sixteen rulings R-6.5a.1–16:
+the cut through `Games`, `ApiError` on the `http` crate, ONE route table in a new `api.rs` with
+axum reduced to an adapter (the corpus and the 74 route cells then prove the dispatcher before a
+second host exists), the rejection sentences reproduced and pinned against axum's, the `server`
+feature over optional axum/tokio, the clock seam with its scanning fence, the `Signal` trait, the
+archive trait with a directory implementation and one layout function, `archived_at` at schema 3,
+the two archive sites with their two failure rules, the record route, "Save game file", and the
+corpus rules. **Next: you read both specs**, then the M6.5a plan (writing-plans), then execution
+under R-P11; the M6.5b and M6.5c specs are written at their cycles' starts from M6.5a's close. The spec's §6 is what it does
 NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since
