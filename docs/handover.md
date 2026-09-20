@@ -6,7 +6,13 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-20 (sixth session), at the DEPLOY of **M6.5a "the seam"** as
+**Updated:** 2026-09-20 (sixth session, at its handover for a clean context): the session
+DEPLOYED **M6.5a** (`0.5.0-m6.5a`, RUNBOOK §3.12), brainstormed **M6.5b** with you, wrote its spec
+and plan and carried them through FOUR review waves (spec §9–§10), recorded your Free-tier ruling
+(R-6.5b.16), updated wrangler, and left the execution to a fresh session — **its entry artifact is
+`docs/plans/2026-09-20-web-frontend-m6.5b-execution-handover.md`**, whose §2 lists the three things
+you still owe (the execution mode; the two reversible spec defaults; whether offline mode is its own
+cycle "M6.5b2", which was recommended). The previous update the same day was at the DEPLOY of **M6.5a "the seam"** as
 `yokohama-web:0.5.0-m6.5a` (`deploy/RUNBOOK.md` §3.12 — both archive sites read off the volume, the
 archived record byte-identical to the store's and to the record route's body, the served record
 loaded in the terminal) after a fresh whole-branch review of the close at HEAD, with the M6.5b
@@ -156,11 +162,13 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 
 ## Track 3 — The web client: M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" next (web lane)
 
-**Pre-execution review (owner-requested, 2026-09-20):**
+**Pre-execution review (owner-requested, 2026-09-20) — DISPOSED:**
 [Free-tier, offline, and save review](plans/2026-09-20-web-frontend-m6.5b-review-free-tier-offline-saves.md)
-records eight corrections for the finalizing agent, the owner's current Free-tier target
-(the umbrella still says Paid), and the offline/restore work the current scope defers.
-Advisory findings awaiting disposition; no spec amendment or implementation in that review.
+recorded eight corrections; every one was verified against the code and TAKEN into the spec's
+fourth wave and the plan's revision (spec §10 is the disposition table); the Free-tier target is
+now R-6.5b.16 (you confirmed it), and the offline/restore work is the level-3 charter in spec §8,
+recommended as its own cycle "M6.5b2" between M6.5b and M6.5c. **Execution starts from
+`plans/2026-09-20-web-frontend-m6.5b-execution-handover.md`.**
 
 **M6.5b's SPEC and PLAN are WRITTEN on the stacked branch `web-room-m6.5b`; execution is next.** The spec `docs/plans/2026-09-20-web-frontend-m6.5b-single-player-spec.md` (R-6.5b.1–15, at `54a9a1f`) came out of the brainstorm with you and was revised three times — an Opus adversarial read (2C/10I/13M, 41 claims verified true), that reviewer's scoped re-read of the fix wave (one new Critical: the archive route's table check would have refused every real send, since a bot seat's keep lives in the record), and your own lightweight-agent read (the run route's 404 boundary one position too tight against the client's own `to = next + 1`; the lock lifecycle; a stored game that no longer rebuilds; the handover's superseded sentences) — its §9 traces every change. The plan `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` is nine tasks in dependency order (the run route → the archive route → the wasm crate → the Worker, the SDD candidate → the first screen → the local game screen → the corpus replay → the e2e and the pin → the close), each ending in the spec's own cells. **You confirmed the Free-tier target (R-6.5b.16, amending umbrella R-6.5.12; the decision-log row of 2026-09-20 carries it and M6.5c inherits the consequences). Two defaults in the spec are yours to reverse before execution:** `labels` is read from the server first and falls back to the Worker (the alternative wakes the Worker on every page load); the archive's caller directory is a readable transliteration (`jamoore_at_gmail.com`) that can collide, with a hash the one-line alternative. **M6.5a is DONE, DEPLOYED and reviewed.** (1) **The deploy is done:**
 `yokohama-web:0.5.0-m6.5a`, built from `8a6b391` (the close's docs commit over `42832f8`), live in
