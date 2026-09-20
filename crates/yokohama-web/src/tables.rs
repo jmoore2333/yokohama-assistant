@@ -911,7 +911,7 @@ impl Games {
         let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text };
         doc.last = message.seq;
         doc.messages.push(message.clone());
-        doc.trim(self.limits.keep);
+        doc.trim(self.chat.limits.keep);
         self.write_chat(key, &doc, players, version)?;
         Ok(message)
     }
@@ -935,7 +935,7 @@ impl Games {
         author: Author,
         text: &str,
     ) -> Result<Message, GameError> {
-        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         let lock = self.lock_for(id);
         let _serialized = lock.lock().expect("table lock");
         let (table, _) = self
@@ -957,7 +957,7 @@ impl Games {
     /// the house has no seats, and the shape rule says so rather than this
     /// function restating it.
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
-        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         let _serialized = self.house_lock.lock().expect("house lock");
         let message = self.append_locked(HOUSE, None, author, text)?;
         self.signal.bump_house_chat();

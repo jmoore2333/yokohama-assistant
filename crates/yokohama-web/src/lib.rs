@@ -265,9 +265,6 @@ pub struct AppState {
     /// the wire at all is to build a state whose cadence is 50 ms and read two
     /// of them off a body. Every production constructor sets [`HEARTBEAT`].
     pub heartbeat: std::time::Duration,
-    /// The lobby switch and the two retention caps (M6.4, R-6.4.6, R-6.4.8),
-    /// read once at start; each has a default.
-    pub chat: chat::ChatConfig,
     /// The transport's half of the change signal (M6.5a, R-6.5a.8).
     ///
     /// [`Games`] holds the same object as an `Arc<dyn signal::Signal>` and can
@@ -331,13 +328,12 @@ impl AppState {
             games: Games::with_parts(
                 rules,
                 store,
-                chat.limits,
+                chat,
                 signals.clone(),
                 Arc::new(table::now_unix),
             ),
             identity,
             heartbeat: HEARTBEAT,
-            chat,
             signals,
         }
     }
@@ -383,9 +379,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         rules_hash: state.rules.content_hash(),
         identity: state.identity.name(),
         signal: SIGNAL_KIND,
-        lobby_chat: state.chat.lobby,
-        chat_keep: state.chat.limits.keep.map(|n| n as u64),
-        chat_text: state.chat.limits.text as u64,
+        lobby_chat: state.games.chat.lobby,
+        chat_keep: state.games.chat.limits.keep.map(|n| n as u64),
+        chat_text: state.games.chat.limits.text as u64,
     })
 }
 
@@ -520,16 +516,16 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
 /// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
 fn admitted(
-    state: &AppState,
+    games: &Games,
     id: &str,
     user: &identity::User,
 ) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
     use crate::table::TableStatus as S;
-    let table = state.games.table_for_anyone(id, user)?;
+    let table = games.table_for_anyone(id, user)?;
     if !table.seats_of(user).is_empty() {
         let seat = match table.status {
             S::Playing => {
-                let handle = state.games.handle(id)?;
+                let handle = games.handle(id)?;
                 let repl = handle.lock().expect("a game");
                 client::viewer_seat(&table, user, repl.session.state())
                     .expect("a seat holder has a viewer seat")
@@ -929,7 +925,7 @@ async fn chat_read(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<ChatQuery>,
 ) -> ApiResult<ChatPage> {
-    admitted(&state, &id, &user)?;
+    admitted(&state.games, &id, &user)?;
     let (messages, last) = state.games.chat_page(&id, q.after.unwrap_or(0))?;
     Ok(Json(ChatPage { messages, last }))
 }
@@ -950,8 +946,8 @@ async fn chat_post(
     Path(id): Path<String>,
     JsonBody(req): JsonBody<ChatPost>,
 ) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
-    let (table, viewer) = admitted(&state, &id, &user)?;
-    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
+    let (table, viewer) = admitted(&state.games, &id, &user)?;
+    let text = chat::check_text(&req.text, &state.games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&table, viewer, &user, req.name.as_deref())?;
     let message = state.games.chat_append(&id, author, &text)?;
     Ok((StatusCode::CREATED, Json(message)))
@@ -994,8 +990,8 @@ fn author_of(
 /// something this deployment refuses you — it is something this deployment does
 /// not have. The client reads the same fact off `/api/health` and draws no
 /// panel at all; the sentence is for whoever asks anyway.
-fn lobby_chat_on(state: &AppState) -> Result<(), ApiError> {
-    if state.chat.lobby {
+fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
+    if games.chat.lobby {
         Ok(())
     } else {
         Err(ApiError::not_found("the lobby chat is off"))
@@ -1008,7 +1004,7 @@ async fn house_chat_read(
     State(state): State<Arc<AppState>>,
     QueryArgs(q): QueryArgs<ChatQuery>,
 ) -> ApiResult<ChatPage> {
-    lobby_chat_on(&state)?;
+    lobby_chat_on(&state.games)?;
     let (messages, last) = state.games.house_page(q.after.unwrap_or(0))?;
     Ok(Json(ChatPage { messages, last }))
 }
@@ -1024,8 +1020,8 @@ async fn house_chat_post(
     State(state): State<Arc<AppState>>,
     JsonBody(req): JsonBody<ChatPost>,
 ) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
-    lobby_chat_on(&state)?;
-    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
+    lobby_chat_on(&state.games)?;
+    let text = chat::check_text(&req.text, &state.games.chat.limits).map_err(ApiError::bad_request)?;
     let name = req.name.as_deref().map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
     let author = chat::Author::Watcher { user: user.as_str().to_string(), name };
     let message = state.games.house_append(author, &text)?;
@@ -1056,7 +1052,7 @@ async fn get_game(
     // frame; then the frame is built for that caller — the hand on it is their
     // own and every other seat's is a count (R-1.7), or, for a watcher, every
     // seat's is (M6.3, R-3.7).
-    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let (_table, viewer) = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     Ok(Json(ClientState::of(&id, &repl, viewer, Vec::new())))
@@ -1125,7 +1121,7 @@ async fn input(
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
-    let (table, viewer) = admitted(&state, &id, &user)?;
+    let (table, viewer) = admitted(&state.games, &id, &user)?;
     // **A watcher writes nothing, and hears it before the handle is touched**
     // (M6.3, R-3.6). Above the undo rule and the acting-seat fence because both
     // of those are about a SEAT, and this caller has none: R-P6 would read the
@@ -1348,7 +1344,7 @@ macro_rules! surface {
             State(state): State<Arc<AppState>>,
             Path(id): Path<String>,
         ) -> ApiResult<$model> {
-            let _admitted = admitted(&state, &id, &user)?;
+            let _admitted = admitted(&state.games, &id, &user)?;
             let handle = state.games.handle(&id)?;
             let repl = handle.lock().expect("a game");
             let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
@@ -1406,7 +1402,7 @@ async fn suggest(
     Path(id): Path<String>,
 ) -> ApiResult<explain::SuggestResponse> {
     use explain::SuggestRefusal as R;
-    let (table, viewer) = admitted(&state, &id, &user)?;
+    let (table, viewer) = admitted(&state.games, &id, &user)?;
     // **A watcher gets the not-seated sentence, not the advisor's panel**
     // (M6.3, R-3.6). The R-1.8 refusal below is for a non-acting HOLDER — "it
     // is not your turn" is a true thing to tell somebody who has a turn coming.
@@ -1509,7 +1505,7 @@ async fn why(
     // as "from hand" and names no card, at every seat. What this fence adds is
     // the seat one — an account of a search at a table the caller has no place
     // at is not theirs to read.
-    let _admitted = admitted(&state, &id, &user)?;
+    let _admitted = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let (mode, record, bots) = {
         let repl = handle.lock().expect("a game");
@@ -1601,7 +1597,7 @@ async fn card_index(
     // **And a SPECTATOR is asked for nobody's** (M6.3, R-3.8): `None` marks no
     // `OwnHand` row at all, which is the same sentence one step further —
     // there is no hand here that is this reader's.
-    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let (_table, viewer) = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let me = match viewer {
@@ -1638,7 +1634,7 @@ async fn result(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<outcome::Outcome> {
-    let _admitted = admitted(&state, &id, &user)?;
+    let _admitted = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     if !repl.session.is_over() {
@@ -1679,7 +1675,7 @@ async fn log(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<LogQuery>,
 ) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
-    let _admitted = admitted(&state, &id, &user)?;
+    let _admitted = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
@@ -1813,13 +1809,13 @@ async fn events(
         // request for a table the caller may not read — or that does not
         // exist — would be a refusal delayed by 25 seconds and an entry in a
         // map that nothing prunes.
-        let _admitted = events_at(&state, &id, &user)?;
+        let _admitted = events_at(&state.games, &id, &user)?;
         let mut rx = state.signals.subscribe(&id);
         // Either arm is an answer: the bump, the deadline, or a closed channel
         // (the table was deleted, which the read below reports as a 404).
         let _ = tokio::time::timeout(std::time::Duration::from_secs(wait), rx.changed()).await;
     }
-    Ok(Json(events_at(&state, &id, &user)?))
+    Ok(Json(events_at(&state.games, &id, &user)?))
 }
 
 /// The `Events` object for a live session, from the caller's seat.
@@ -1869,10 +1865,10 @@ fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64)
 /// an open table is still `admitted`'s 403 — and it stops at `open`: `dealing`
 /// and `playing` fall straight through, so a stranger at a deal is refused and
 /// a locked game still asks for its password.
-fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events, ApiError> {
+fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, ApiError> {
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
-    let table = state.games.table_for_anyone(id, user)?;
+    let table = games.table_for_anyone(id, user)?;
     // **Read ONCE, above all three arms**, because every one of them answers
     // it: an open table where the seats are still filling is exactly where the
     // people at it are talking. It sits AFTER the table read, which is as far
@@ -1882,11 +1878,11 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
     // does reach it — one read and, on a miss, a cache seed — and is then
     // refused by `admitted` below. Nothing of it crosses the wire: the 403
     // carries no count.
-    let chat = state.games.chat_last(id);
+    let chat = games.chat_last(id);
     if table.status == crate::table::TableStatus::Open {
         return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
     }
-    let (table, viewer) = admitted(state, id, user)?;
+    let (table, viewer) = admitted(games, id, user)?;
     match table.status {
         // Unreachable behind the return above, and written rather than
         // collapsed into the fall-through: a status this function answers by
@@ -1898,7 +1894,7 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
             Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
         }
         crate::table::TableStatus::Playing => {
-            let handle = state.games.handle(id)?;
+            let handle = games.handle(id)?;
             let repl = handle.lock().expect("a game");
             Ok(events_of(&repl, viewer, chat))
         }
@@ -1952,7 +1948,7 @@ async fn stream(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
-    events_at(&state, &id, &user)?;
+    events_at(&state.games, &id, &user)?;
     let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
     let frames = tokio_stream::wrappers::WatchStream::new(rx).map(move |bump| {
@@ -1961,7 +1957,7 @@ async fn stream(
                 Event::default().event("end").data(r#"{"reason":"deleted"}"#),
             );
         }
-        match events_at(&state, &id, &user) {
+        match events_at(&state.games, &id, &user) {
             Ok(e) => Ok(Event::default()
                 .event("signal")
                 .json_data(e)
@@ -2068,7 +2064,7 @@ async fn at_k(
     State(state): State<Arc<AppState>>,
     Path((id, k)): Path<(String, usize)>,
 ) -> ApiResult<client::HistoricalFrame> {
-    let (_table, viewer) = admitted(&state, &id, &user)?;
+    let (_table, viewer) = admitted(&state.games, &id, &user)?;
     let handle = state.games.handle(&id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();

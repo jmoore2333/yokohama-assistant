@@ -24,7 +24,7 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
-use crate::chat::ChatLimits;
+use crate::chat::{ChatConfig, ChatLimits};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
 use crate::table::{TableStatus, TurnMirror};
@@ -203,8 +203,11 @@ pub struct Games {
     /// both read `last`, both write `last + 1`, and the compare-and-swap saves
     /// only whichever of them the store sees second.
     pub(crate) house_lock: Mutex<()>,
-    /// The retention numbers (R-6.4.8), from the launch variables.
-    pub(crate) limits: ChatLimits,
+    /// The lobby switch and the retention numbers (R-6.4.6, R-6.4.8), from the
+    /// launch variables — on the layer rather than on the host's state since
+    /// M6.5a (R-6.5a.1), so the house switch and the two text checks read one
+    /// set of facts on every host.
+    pub chat: ChatConfig,
     /// The wall clock this type stamps documents from — see [`Clock`] for why
     /// it is a seam and not a call.
     ///
@@ -244,7 +247,13 @@ impl Games {
     /// is the wall clock**, so a cell that pins a stamp by value reaches for
     /// [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
-        Self::with_parts(rules, store, limits, Arc::new(NoSignal), Arc::new(crate::table::now_unix))
+        Self::with_parts(
+            rules,
+            store,
+            ChatConfig { lobby: true, limits },
+            Arc::new(NoSignal),
+            Arc::new(crate::table::now_unix),
+        )
     }
 
     /// The one constructor that builds anything: every part this type holds
@@ -253,12 +262,12 @@ impl Games {
     /// How `main` builds the layer (M6.5a, R-6.5a.8) — the signal is a trait
     /// object, so the host builds its own and passes a clone, keeping the
     /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
-    /// The two constructors above are this one with the retention numbers, the
-    /// signal or the clock chosen for them.
+    /// The two constructors above are this one with the chat facts, the signal
+    /// or the clock chosen for them.
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
-        limits: ChatLimits,
+        chat: ChatConfig,
         signal: Arc<dyn Signal>,
         clock: Clock,
     ) -> Self {
@@ -273,7 +282,7 @@ impl Games {
             signal,
             chat_last: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
-            limits,
+            chat,
             clock,
         }
     }
@@ -297,7 +306,7 @@ impl Games {
     /// The chat's retention numbers, for the route that has to WORD the text
     /// cap in a refusal rather than restate it.
     pub fn limits(&self) -> ChatLimits {
-        self.limits
+        self.chat.limits
     }
 
     /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
@@ -1580,7 +1589,6 @@ pub(crate) mod test_support {
     use yokohama_core::{PlayerColor, Rules};
 
     use super::Games;
-    use crate::chat::ChatLimits;
     use crate::identity::User;
     use crate::signal::Signals;
     use crate::store::{Doc, MemStore, Store};
@@ -1611,7 +1619,7 @@ pub(crate) mod test_support {
         let games = Games::with_parts(
             Arc::new(Rules::standard()),
             store,
-            ChatLimits::default(),
+            crate::chat::ChatConfig::default(),
             signals.clone(),
             Arc::new(crate::table::now_unix),
         );
