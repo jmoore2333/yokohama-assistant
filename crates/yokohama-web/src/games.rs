@@ -634,12 +634,54 @@ impl Games {
         written.insert(id.to_string(), version);
         drop(written);
         self.mirror_turn(id, repl);
+        // The game-over archive site (M6.5a, R-6.5a.11), after the mirror and
+        // before the bump: the bytes just written are what is archived.
+        self.archive_if_over(id, repl, &json);
         // **After the mirror, not before it** (spec §2): the lobby's
         // whose-turn and over lines are read off the mirror, so a bump sent
         // between the record write and the refresh wakes a lobby that then
         // reads the previous turn and hears nothing more.
         self.signal.bump(id);
         Ok(())
+    }
+
+    /// R-6.5a.11's game-over site. **Best effort, and the move is answered 200
+    /// regardless**: the record is already written, the store is the durable
+    /// copy, and a failure here is logged and leaves `archived_at` UNSET —
+    /// which is what says a retry is owed (the next abandon, or the operator;
+    /// umbrella R-6.5.4). Runs once: a table already stamped is not put again,
+    /// which is also what keeps a vs-bot game undone past its end and finished
+    /// a second time at its FIRST completion in the archive (spec §10).
+    ///
+    /// `record_json` is the text the store write above took, so the archived
+    /// bytes ARE the stored bytes — never a re-serialization.
+    fn archive_if_over(&self, id: &str, repl: &Repl, record_json: &str) {
+        if !crate::archive::is_on(&self.archive) || !repl.session.is_over() {
+            return;
+        }
+        let Ok(Some((mut doc, version))) = self.read_table(id) else { return };
+        if doc.archived_at.is_some() {
+            return;
+        }
+        doc.archived_at = Some((self.clock)());
+        let table_json = crate::archive::strip_for_archive(&doc);
+        match self.archive.put(crate::archive::Why::Over, id, record_json, &table_json) {
+            Ok(()) => {
+                // The stamp, retried once on a version conflict: an `unlock` or
+                // a `join` writing the document in the same instant is the only
+                // writer left at game over, and a stamp that never landed after a
+                // put that did would make the next abandon's put a refusal.
+                if let Err(WriteError::Conflict { .. }) = self.write_table(&doc, Some(version)) {
+                    if let Ok(Some((mut again, v2))) = self.read_table(id) {
+                        again.archived_at = doc.archived_at;
+                        if let Err(e) = self.write_table(&again, Some(v2)) {
+                            eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}");
+                        }
+                    }
+                }
+            }
+            Err(e) => eprintln!("archive of {id:?} at game over failed: {e}"),
+        }
     }
 
     /// Refresh the list's two mirrored integers (R-plan-3).
@@ -1731,6 +1773,99 @@ pub(crate) mod test_support {
             }
         }
         games.handle(&id).expect("playing")
+    }
+
+    /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts, or
+    /// refuses every one of them — the two shapes the archive-site cells need.
+    pub(crate) struct RecordingArchive {
+        pub puts: Mutex<Vec<(crate::archive::Why, String, String, String)>>,
+        pub fail: bool,
+    }
+
+    impl RecordingArchive {
+        pub(crate) fn recording() -> Arc<Self> {
+            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: false })
+        }
+        pub(crate) fn failing() -> Arc<Self> {
+            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: true })
+        }
+    }
+
+    impl crate::archive::Archive for RecordingArchive {
+        fn put(&self, why: crate::archive::Why, id: &str, r: &str, t: &str) -> Result<(), String> {
+            if self.fail {
+                return Err("disk on fire".to_string());
+            }
+            self.puts.lock().unwrap().push((why, id.to_string(), r.to_string(), t.to_string()));
+            Ok(())
+        }
+        fn kind(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    /// The two-person table `id`, dealt from [`CORPUS_SEED`], played to the END
+    /// by pumping BOTH seats as bots in process and PERSISTING after every pump
+    /// — the way `input` persists after every move; a pump plays a run of up to
+    /// 200 moves, so this is two or three persists — so the game-over site sees
+    /// more than one persist and exactly one of them is the end. Returns how
+    /// many persists it made and the finished `Repl`.
+    pub(crate) fn play_to_the_end(games: &Games, id: &str) -> (usize, Repl) {
+        let mut repl = both_seats_as_bots(games, id);
+        let mut persists = 0;
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+            games.persist(id, &repl).expect("a persist");
+            persists += 1;
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        (persists, repl)
+    }
+
+    /// A two-person table with ONE bot-pumped move persisted: playing, with
+    /// events, and nowhere near over.
+    pub(crate) fn one_move_in(games: &Games, id: &str) -> Repl {
+        let mut repl = both_seats_as_bots(games, id);
+        repl.pump_bots();
+        assert!(!repl.session.is_over());
+        games.persist(id, &repl).expect("a persist");
+        repl
+    }
+
+    /// The table `id` opened and dealt through `Games` ([`playing`]), and a
+    /// SECOND `Repl` over the very game it describes — same seed, same colours,
+    /// same keeps (card 1 at every seat, `Keep(0)`) — with both seats as bots,
+    /// so `pump_bots` drives it. A `Repl` learns its bots at construction from
+    /// the session's run provenance and `Session` is not `Clone`, which is why
+    /// the table's own handle cannot simply be told to play itself; `persist`
+    /// compares record identity by SEED, so this one persists in its place.
+    fn both_seats_as_bots(games: &Games, id: &str) -> Repl {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, StartingOrderChoice};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let (colors, start) = {
+            let live = handle.lock().unwrap();
+            let state = live.session.state();
+            (state.config.player_colors.clone(), state.config.start_player)
+        };
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = colors;
+        config.start_player = start;
+        let mut session = Session::new_sim(
+            config,
+            CORPUS_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("the very game the table describes");
+        let bots =
+            BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], CORPUS_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        Repl::new(session)
     }
 
     /// A [`MemStore`] that COUNTS its writes.

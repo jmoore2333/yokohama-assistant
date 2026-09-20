@@ -39,6 +39,7 @@ use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
 use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror};
+use yokohama_core::GameRecord;
 
 /// The shape version stamped on every table document this build writes.
 ///
@@ -1665,6 +1666,37 @@ impl Games {
                 doc.created_by
             )));
         }
+        // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): a playing
+        // table with at least one event and no archive stamp is archived
+        // BEFORE anything is unlinked — and if the put fails the delete is
+        // REFUSED, nothing tombstoned, nothing removed, because the save is the
+        // point of the control and the creator can simply try again. A table
+        // already stamped (at game over, or by an earlier failed delete whose
+        // put landed) is deleted without a second put; an open or dealing
+        // table, or a playing one with no events, deletes as before.
+        if crate::archive::is_on(&self.archive)
+            && doc.status == TableStatus::Playing
+            && doc.archived_at.is_none()
+        {
+            let record = self.store.read(Doc::Record, id).map_err(GameError::Server)?;
+            if let Some((record_json, _)) = record {
+                let events = serde_json::from_str::<GameRecord>(&record_json)
+                    .map(|r| r.events.len())
+                    .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
+                if events > 0 {
+                    let mut stamped = doc.clone();
+                    stamped.archived_at = Some((self.clock)());
+                    let table_json = crate::archive::strip_for_archive(&stamped);
+                    self.archive
+                        .put(crate::archive::Why::Abandoned, id, &record_json, &table_json)
+                        .map_err(|why| {
+                            GameError::Server(format!(
+                                "the archive could not be written ({why}) — the table was not deleted"
+                            ))
+                        })?;
+                }
+            }
+        }
         // **The tombstone goes down BEFORE the unlink, and the order is the
         // whole of it.** `create` CLEARS this id from the set, and since the
         // lock split (R-2.9) `create` holds a different mutex from this one, so
@@ -2427,16 +2459,124 @@ mod tests {
             .expect("the process is alive, so the server can still open a table");
     }
 
-    /// Every M6.2 shape arm, read as the SENTENCE it answers with.
-    ///
-    /// Built in Rust rather than as JSON, and that is the point: the arms
-    /// below guard against a document some future write path produces, and a
-    /// JSON literal would only prove that serde can be handed a bad string. A
-    /// `TableDoc` that type-checks and is still refused is the case that
-    /// matters.
-    ///
-    /// The fixture is valid on its own — asserted first, so a cell whose arms
-    /// all fire for the wrong reason cannot pass.
+    // ---------------------------------------------------------------------
+    // The two archive sites (M6.5a, R-6.5a.11).
+    // ---------------------------------------------------------------------
+
+    fn stripped(table_json: &str) -> TableDoc {
+        serde_json::from_str(table_json).expect("the archived table document reads")
+    }
+
+    /// The game-over site: one put, at the end, carrying the STORED bytes and a
+    /// stripped table document; the stamp lands.
+    #[test]
+    fn a_game_that_ends_is_archived_once_with_the_stored_bytes() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let (persists, repl) = play_to_the_end(&games, "over");
+        // A both-bot pump plays a RUN (up to 200 moves) per call, so a 2P game is
+        // two or three persists — enough that "once" is a claim and not a count.
+        assert!(persists >= 2, "anti-vacuity: the game took {persists} persists to end");
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1, "one put at game over, not one per persist ({persists})");
+        assert_eq!(puts[0].0, crate::archive::Why::Over);
+        assert_eq!(puts[0].1, "over");
+        let (stored, _) = games.store().read(Doc::Record, "over").unwrap().unwrap();
+        assert_eq!(puts[0].2, stored, "the archived record is the stored bytes, not a re-serialization");
+        let (doc, _) = games.read_table("over").unwrap().unwrap();
+        assert!(doc.archived_at.is_some(), "the stamp landed");
+        let archived = stripped(&puts[0].3);
+        assert_eq!(archived.archived_at, doc.archived_at, "the archived copy carries the same stamp");
+        assert_eq!(archived.lock, None);
+        assert!(archived.unlocked.is_empty());
+        assert_eq!(archived.status, TableStatus::Playing, "anti-vacuity: it is the table's document");
+        // A persist AFTER the end adds no second put.
+        drop(puts);
+        games.persist("over", &repl).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "stamped tables are not put again");
+    }
+
+    /// The first failure rule: a put that fails at game over is logged, the
+    /// move is still answered, and the stamp stays UNSET — the retry mark.
+    #[test]
+    fn a_failing_archive_at_game_over_still_answers_the_move() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let (_, _repl) = play_to_the_end(&games, "over-fails"); // every persist returned Ok
+        let (doc, _) = games.read_table("over-fails").unwrap().unwrap();
+        assert_eq!(doc.archived_at, None, "unset says a retry is owed");
+        assert!(games.handle("over-fails").is_ok(), "the game is still served");
+    }
+
+    /// The abandon site: a playing table with events is put under `abandoned/`
+    /// and THEN deleted.
+    #[test]
+    fn abandoning_a_playing_table_with_events_archives_then_deletes() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let _repl = one_move_in(&games, "quit");
+        games.delete("quit", &who("red@t.test")).unwrap();
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0, crate::archive::Why::Abandoned);
+        assert_eq!(puts[0].1, "quit");
+        let archived = stripped(&puts[0].3);
+        assert!(archived.archived_at.is_some(), "the archived copy is stamped");
+        let record: GameRecord = serde_json::from_str(&puts[0].2).unwrap();
+        assert!(!record.events.is_empty(), "anti-vacuity: the archived record has the move");
+        assert!(games.read_table("quit").unwrap().is_none(), "deleted after the put");
+        assert!(games.store().read(Doc::Record, "quit").unwrap().is_none());
+    }
+
+    /// Nothing to save, nothing put: an open table, a dealing table, a playing
+    /// table with NO events, and a table already archived at game over.
+    #[test]
+    fn abandoning_an_open_dealing_moveless_or_archived_table_archives_nothing() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let red = who("red@t.test");
+        // Open.
+        let mut open = two_people("open", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).unwrap();
+        games.delete("open", &red).unwrap();
+        // Dealing.
+        games.create(&two_people("dealing", CORPUS_SEED), &red).unwrap();
+        games.delete("dealing", &red).unwrap();
+        // Playing, no move yet.
+        let handle = playing(&games, &two_people("fresh", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        drop(handle);
+        games.delete("fresh", &red).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 0, "open, dealing and moveless tables save nothing");
+        // Finished — archived at over (one put) — then abandoned: no second put.
+        play_to_the_end(&games, "done");
+        assert_eq!(archive.puts.lock().unwrap().len(), 1);
+        games.delete("done", &red).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "the already-archived table added nothing");
+        assert!(games.read_table("done").unwrap().is_none(), "and it was deleted");
+    }
+
+    /// The second failure rule: an abandon whose put fails is REFUSED, with a
+    /// sentence naming the archive, and the table stays exactly as it was.
+    #[test]
+    fn an_abandon_whose_put_fails_is_refused_and_the_table_stays() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let _repl = one_move_in(&games, "stuck");
+        let red = who("red@t.test");
+        let err = games.delete("stuck", &red).unwrap_err();
+        assert!(
+            matches!(&err, GameError::Server(m) if m.starts_with("the archive could not be written (") && m.ends_with("— the table was not deleted")),
+            "{err}"
+        );
+        assert!(err.to_string().contains("disk on fire"), "the archive's own reason is in the sentence: {err}");
+        let (doc, _) = games.read_table("stuck").unwrap().expect("nothing deleted");
+        assert_eq!(doc.archived_at, None, "no stamp without a put");
+        assert!(games.store().read(Doc::Record, "stuck").unwrap().is_some(), "the record is intact");
+        assert!(games.handle("stuck").is_ok(), "no tombstone: the game still answers");
+        // And a stranger's delete is still the seat refusal, before the archive
+        // is asked at all.
+        assert!(matches!(games.delete("stuck", &who("green@t.test")), Err(GameError::Forbidden(_))));
+    }
+
     /// R-6.5a.10: a schema-2 document — everything M6.2 wrote — reads with
     /// `archived_at` absent, and the new stamp is bounded on write exactly as
     /// a message's `created_at` is.
@@ -2459,6 +2599,16 @@ mod tests {
         assert_eq!(check_shape(&fine), Ok(()), "the ceiling itself is allowed");
     }
 
+    /// Every M6.2 shape arm, read as the SENTENCE it answers with.
+    ///
+    /// Built in Rust rather than as JSON, and that is the point: the arms
+    /// below guard against a document some future write path produces, and a
+    /// JSON literal would only prove that serde can be handed a bad string. A
+    /// `TableDoc` that type-checks and is still refused is the case that
+    /// matters.
+    ///
+    /// The fixture is valid on its own — asserted first, so a cell whose arms
+    /// all fire for the wrong reason cannot pass.
     #[test]
     fn every_shape_arm_refuses_with_the_sentence_it_promises() {
         let valid = || TableDoc {
