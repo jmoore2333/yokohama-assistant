@@ -54,6 +54,15 @@ serde_json.workspace = true
 # M6.5a (R-6.5a.2): the layer's refusal type is typed on the `http` crate directly —
 # the same type axum re-exports — so the layer compiles without axum.
 http = "1"
+# M6.5a (R-6.5a.4): the layer's parsers make the SAME calls axum's extractors make
+# so the rejection sentences are byte-equal by construction — `mime` for the
+# content-type rule, `serde_path_to_error` for the field path in the sentence,
+# `serde_urlencoded` + `form_urlencoded` for a query exactly as `Query<T>` reads
+# one. All four are already in the lock through axum and all four build for wasm.
+mime = "0.3"
+serde_path_to_error = "0.1"
+serde_urlencoded = "0.7"
+form_urlencoded = "1"
 
 # THE dependency decision for this crate, owner-ruled 2026-08-30. The workspace
 # had no async runtime and no HTTP framework: `yokohama-bridge` hand-rolls

@@ -933,10 +933,14 @@ name = "yokohama-web"
 version = "0.5.0"
 dependencies = [
  "axum",
+ "form_urlencoded",
  "getrandom",
  "http",
+ "mime",
  "serde",
  "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sha2",
  "tokio",
  "tokio-stream",

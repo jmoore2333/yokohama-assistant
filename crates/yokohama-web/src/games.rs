@@ -316,6 +316,10 @@ impl Games {
         &self.store
     }
 
+    pub fn rules(&self) -> &Rules {
+        &self.rules
+    }
+
     /// The chat's retention numbers, for the route that has to WORD the text
     /// cap in a refusal rather than restate it.
     pub fn limits(&self) -> ChatLimits {

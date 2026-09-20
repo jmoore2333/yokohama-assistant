@@ -52,6 +52,7 @@ pub mod art;
 #[cfg(feature = "server")]
 pub mod assets;
 // ---- end server ----
+pub mod api;
 pub mod chat;
 pub mod client;
 pub mod explain;
@@ -85,7 +86,7 @@ use axum::{
 #[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "server")]
-use yokohama_core::{Rules, SEMANTICS_REV};
+use yokohama_core::Rules;
 
 #[cfg(feature = "server")]
 use crate::client::ClientState;
@@ -381,144 +382,9 @@ impl AppState {
     }
 }
 
-/// What a client must agree with this server about before anything else is
-/// worth asking.
-///
-/// `semantics_rev` and `rules_hash` are the two compatibility keys the engine
-/// itself uses — a save stops resuming across a `semantics_rev` bump BY DESIGN,
-/// and `rules_hash` moves whenever card, site, token or board data does. A
-/// client that caches card art or option shapes checks these, not the server
-/// version, which is provenance only.
-#[derive(Debug, Clone, Serialize)]
-#[cfg(feature = "server")]
-pub struct Health {
-    pub server_version: &'static str,
-    pub semantics_rev: u32,
-    pub rules_hash: String,
-    /// Which identity source this deployment is configured with, by name — the
-    /// one deployment fact a client cannot infer from a successful call.
-    pub identity: &'static str,
-    /// Which change transport to read: [`SIGNAL_KIND`] (M6.3, R-plan-4).
-    ///
-    /// The second such fact, and it is here for the same reason as the first:
-    /// the client's polling hook has to know whether to open `…/stream` or to
-    /// hold a request against `…/events?wait=25`, and it cannot tell from a
-    /// successful call to anything else.
-    pub signal: &'static str,
-    /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
-    /// draws no lobby panel and asks nothing.
-    pub lobby_chat: bool,
-    /// Messages retained per chat document; `null` for `all` (R-6.4.8).
-    pub chat_keep: Option<u64>,
-    /// Characters per message, so the client sizes its input from the
-    /// server's rule and never from a copy (R-6.4.8).
-    pub chat_text: u64,
-}
-
-#[cfg(feature = "server")]
-async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
-    Json(Health {
-        server_version: env!("CARGO_PKG_VERSION"),
-        semantics_rev: SEMANTICS_REV,
-        rules_hash: state.rules.content_hash(),
-        identity: state.identity.name(),
-        signal: SIGNAL_KIND,
-        lobby_chat: state.games.chat.lobby,
-        chat_keep: state.games.chat.limits.keep.map(|n| n as u64),
-        chat_text: state.games.chat.limits.text as u64,
-    })
-}
-
-/// What `/api/me` answers. Never a 401: null is the answer that tells the client
-/// which screen to show (spec §2.3).
-#[derive(Debug, Clone, Serialize)]
-#[cfg(feature = "server")]
-pub struct Me {
-    pub mode: &'static str,
-    pub user: Option<String>,
-}
-
-/// **Who the server thinks you are — and it never refuses to say "nobody".**
-///
-/// The one route that reads the identity headers WITHOUT the extractor, because
-/// the extractor's answer to an absent identity is a 401 and that is precisely
-/// the case this route exists to report. A client with no identity yet needs a
-/// fact back: the mode, so it knows whether a sign-in screen is even meaningful
-/// here, and `user`, which is `null` when nobody is named.
-#[cfg(feature = "server")]
-async fn me(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Json<Me> {
-    Json(Me {
-        mode: state.identity.name(),
-        user: identity::resolve(state.identity, &headers).ok().map(|u| u.as_str().to_string()),
-    })
-}
-
-/// Every static enum the wire carries, in words.
-///
-/// The models are typed and never worded — `screen_model`'s own contract — so a
-/// client needs the wording layer's answers once, and these never change during
-/// a game. Built from DATA rather than a hand-kept variant list: the tile set,
-/// the phase chain, the registries and the achievement registry are what the
-/// engine itself enumerates, so a new variant appears here without anyone
-/// remembering to add it.
-#[derive(Debug, Clone, Serialize)]
-#[cfg(feature = "server")]
-pub struct Labels {
-    pub area_types: std::collections::BTreeMap<String, String>,
-    pub phases: std::collections::BTreeMap<String, String>,
-    pub phase_chain: Vec<String>,
-    pub tech_effects: std::collections::BTreeMap<String, String>,
-    pub achievements: std::collections::BTreeMap<String, String>,
-    /// The evaluator's 34 features, in words (M3).
-    ///
-    /// Keyed by `Feature::name()`, the stable snake_case token the payload
-    /// itself carries — so the wire keeps the identity and this map carries the
-    /// presentation, exactly as every other entry here does. Authored in
-    /// `explain::feature_labels`, never in `yokohama-core`.
-    pub features: std::collections::BTreeMap<String, String>,
-}
-
-#[cfg(feature = "server")]
-fn key_of<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        other => format!("{other:?}"),
-    }
-}
-
-#[cfg(feature = "server")]
-async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
-    use yokohama_cli::describe;
-    use yokohama_cli::screen_model::{achievement_registry, PHASE_CHAIN};
-
-    let mut area_types = std::collections::BTreeMap::new();
-    for t in yokohama_core::full_tile_set() {
-        area_types.insert(key_of(&t), describe::area_type_name(t).to_string());
-    }
-    let mut phases = std::collections::BTreeMap::new();
-    for p in PHASE_CHAIN {
-        phases.insert(key_of(&p), describe::phase_name(p).to_string());
-    }
-    let mut tech_effects = std::collections::BTreeMap::new();
-    for card in state.rules.techs.iter_sorted_by_id() {
-        tech_effects
-            .insert(key_of(&card.effect), describe::tech_effect_text(card.effect).to_string());
-    }
-    let mut achievements = std::collections::BTreeMap::new();
-    for a in achievement_registry() {
-        achievements
-            .insert(key_of(&a.achievement_type), describe::achievement_desc(a.achievement_type));
-    }
-
-    Json(Labels {
-        area_types,
-        phases,
-        phase_chain: PHASE_CHAIN.iter().map(|p| describe::phase_chain_name(*p).to_string()).collect(),
-        tech_effects,
-        achievements,
-        features: crate::explain::feature_labels(),
-    })
-}
+/// The three public payload types live in the layer (M6.5a, R-6.5a.3); their
+/// paths are kept here for the cells and the corpus that name them.
+pub use api::{Health, Labels, Me};
 
 // **`identity::Identity` is on all twenty-three `/api/games` handlers**, and
 // since M6.1 §5.3 every one of them USES the `User` it carries: a game route
@@ -2192,6 +2058,53 @@ async fn at_k(
 
 /// The art manifest, or an honest 404.
 ///
+/// The ONE piece of axum between a request and the layer (R-6.5a.3). Identity
+/// is resolved here with today's extractor logic and handed to the layer as the
+/// host's sentence; the body and query reach the layer as bytes and text. The
+/// body limit is axum's own default (2 MiB), so nothing this API accepted
+/// before is refused now.
+#[cfg(feature = "server")]
+async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 2 << 20).await {
+        Ok(b) => b,
+        Err(e) => {
+            return ApiError::bad_request(format!("the body could not be read: {e}")).into_response()
+        }
+    };
+    let resolved = identity::resolve(state.identity, &parts.headers);
+    let identity: api::Identity<'_> = match &resolved {
+        Ok(u) => Ok(u),
+        Err(m) => Err(m.as_str()),
+    };
+    let content_type = parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
+    let request = api::ApiRequest {
+        method: parts.method.as_str(),
+        path: parts.uri.path(),
+        query: parts.uri.query().unwrap_or(""),
+        content_type,
+        body: &bytes,
+    };
+    // Art is a server route (the manifest reads the gated `art` module), listed
+    // in the layer's table for the 405/404 arithmetic and answered here.
+    if request.path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
+        return match art_manifest().await {
+            Ok(j) => j.into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
+    let host = api::Host { identity_name: state.identity.name(), signal_kind: SIGNAL_KIND };
+    let out = api::dispatch(&state.games, &host, identity, &request);
+    let mut response = Response::new(axum::body::Body::from(out.body.clone()));
+    *response.status_mut() = StatusCode::from_u16(out.status).expect("a known status");
+    if !out.body.is_empty() {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/json"));
+    }
+    response
+}
+
 /// **A checkout with no cropped art is a supported state**, not a broken one:
 /// the client falls back to drawing what it drew before there was any art. So
 /// the absence answers as a refusal with the sentence that explains it — which
@@ -2231,10 +2144,10 @@ async fn fallback(uri: axum::http::Uri) -> Response {
 #[cfg(feature = "server")]
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/health", get(health))
-        .route("/api/me", get(me))
-        .route("/api/labels", get(labels))
-        .route("/api/art", get(art_manifest))
+        .route("/api/health", get(adapter))
+        .route("/api/me", get(adapter))
+        .route("/api/labels", get(adapter))
+        .route("/api/art", get(adapter))
         .route("/api/games", get(list_games).post(create_game))
         .route("/api/games/{id}", get(get_game).delete(delete_game))
         .route("/api/games/{id}/table", get(get_table))
@@ -2265,6 +2178,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yokohama_core::SEMANTICS_REV;
     // The four bumps are the trait's since M6.5a (R-6.5a.8); the cells that
     // drive one by hand need it in scope.
     use crate::signal::Signal;
@@ -2301,6 +2215,93 @@ mod tests {
 
     async fn post_json(uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
         raw_post(uri, serde_json::to_vec(&body).expect("a body")).await
+    }
+
+    /// A request under any METHOD, answered as raw bytes — for the cells about
+    /// the adapter's shape (HEAD, 405, the JSON 404) and, from Task 9, the record
+    /// route's exact bytes. `who` is the claimed identity, or none.
+    async fn raw(app: Router, method: &str, uri: &str, who: Option<&str>) -> (StatusCode, Vec<u8>) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(who) = who {
+            builder = builder.header(identity::CLAIMED_HEADER, who);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).expect("a request"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
+    /// R-6.5a.4's pin: the layer's JSON rejection is axum's own `body_text()`,
+    /// word for word, for a canonical bad body (an unknown key under
+    /// `deny_unknown_fields`). An axum upgrade that rewords fails here, not in
+    /// a client.
+    #[tokio::test]
+    async fn the_layers_json_rejection_is_axums_word_for_word() {
+        use axum::extract::FromRequest;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"line":"1","nope":1}"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted an unknown key"),
+        };
+        let ours = api::parse_json::<Input>(Some("application/json"), br#"{"line":"1","nope":1}"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+        // And the SYNTAX arm, which is a different rejection type with a
+        // different sentence.
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"line":"1"} trailing"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted trailing input"),
+        };
+        let ours = api::parse_json::<Input>(Some("application/json"), br#"{"line":"1"} trailing"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+        assert!(ours.message.starts_with("Failed to parse the request body as JSON: "), "{}", ours.message);
+    }
+
+    #[tokio::test]
+    async fn the_layers_query_rejection_is_axums_word_for_word() {
+        use axum::extract::FromRequestParts;
+        let (mut parts, _) = axum::http::Request::builder().uri("/x?limit=abc").body(()).unwrap().into_parts();
+        let axum_text = match axum::extract::Query::<ListQuery>::from_request_parts(&mut parts, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted limit=abc"),
+        };
+        assert_eq!(api::parse_query::<ListQuery>("limit=abc").unwrap_err().message, axum_text);
+        // The sentence names the FIELD, which is the part a plain
+        // `serde_urlencoded::from_str` would have dropped.
+        assert!(axum_text.contains("limit"), "{axum_text}");
+    }
+
+    /// R-6.5a.3: HEAD reaches the GET arm and leaves with an empty body — axum's
+    /// `get` served HEAD that way, and a proxy or health checker may send one.
+    #[tokio::test]
+    async fn head_on_a_get_route_is_200_with_an_empty_body() {
+        let (status, body) = raw(app(Arc::new(AppState::in_memory())), "HEAD", "/api/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_known_path_under_the_wrong_method_is_405_and_an_unknown_path_is_the_json_404() {
+        let app = app(Arc::new(AppState::in_memory()));
+        let (status, body) = raw(app.clone(), "DELETE", "/api/health", None).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert!(body.is_empty(), "axum's 405 has no body: {}", String::from_utf8_lossy(&body));
+        let (status, body) = raw(app, "GET", "/api/nothing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, br#"{"error":"no such endpoint: /api/nothing"}"#);
     }
 
     async fn raw_post(uri: &str, body: Vec<u8>) -> (StatusCode, serde_json::Value) {
