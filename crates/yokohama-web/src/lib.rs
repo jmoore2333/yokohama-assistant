@@ -6267,8 +6267,12 @@ mod tests {
                     }
                     item_gated = armed;
                     armed = false;
-                    item_open = !line.trim_end().ends_with(';');
-                } else if item_open && line.starts_with('}') {
+                    // Closed on its own line when it ends in `;` or `}` (a one-line
+                    // `impl X {}` or `struct X;`); otherwise open until a column-0
+                    // closer — `}`, or `]`/`)` for a const array or tuple.
+                    let end = line.trim_end();
+                    item_open = !(end.ends_with(';') || end.ends_with('}'));
+                } else if item_open && (line.starts_with('}') || line.starts_with(']') || line.starts_with(')')) {
                     item_open = false;
                 }
                 let in_gate = whole_file_gated || item_gated;
