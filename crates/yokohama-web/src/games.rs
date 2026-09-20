@@ -651,20 +651,33 @@ mod tests {
     /// **Every bump site answers under [`NoSignal`]** (M6.5a, R-6.5a.8, spec
     /// §2.4).
     ///
-    /// [`test_support::games`] builds through `Games::new`, whose signal is the
-    /// no-op, and the walk below drives one write of every kind that bumps —
-    /// **all four trait methods, on the implementation that does nothing**:
-    /// `create` and the finalize's `flip_to_playing` and `persist` reach
-    /// `bump`, `keep` and `chat_append` reach `bump_table`, `house_append`
-    /// reaches `bump_house_chat`, and `delete` reaches `end`. Each is required
-    /// to answer `Ok`.
+    /// The premise, and it is a premise rather than an assertion: the layer is
+    /// built by [`test_support::games`], which installs `NoSignal` because
+    /// `Games::new` defaults to it. Nothing here can check that at run time — a
+    /// `dyn Signal` does not say which one it is — so the dependence is written
+    /// down at that helper as well, where a change to the default would be
+    /// made.
     ///
-    /// **What it can fail on**: a bump site that had kept a `Signals`-shaped
-    /// assumption — a sender looked up and unwrapped, a receiver counted, a
-    /// panic where a channel was expected to exist — is reached here and
-    /// nowhere else in this binary, because every other cell that crosses these
-    /// sites holds a real [`crate::signal::Signals`]. It is not a claim about
-    /// what a bump DOES: there is nothing to observe, which is the point.
+    /// The walk drives one write of every kind that bumps and REQUIRES each to
+    /// answer `Ok`: `create`, the finalize's `flip_to_playing` and `persist`
+    /// reach `bump`, `keep` and `chat_append` reach `bump_table`,
+    /// `house_append` reaches `bump_house_chat`, and `delete` reaches `end` —
+    /// **all four trait methods, on the implementation that does nothing**.
+    ///
+    /// **What it adds over the cells beside it.** Many cells in this binary
+    /// build with `games()` and so cross some of these sites under `NoSignal`
+    /// on their way to asserting something else; a bump site that had kept a
+    /// `Signals`-shaped assumption would break one of them and be reported as
+    /// whatever that cell was about. This one exists for the crossing itself.
+    /// It is the only `NoSignal` cell that drives all four methods THROUGH
+    /// this type's write sites — measured, the nearest other reaches three
+    /// (`a_delete_removes_the_chat_and_its_count`, which sends no house
+    /// message) — so a failure here names the signal rather than a symptom.
+    /// Mutation-proven: each of `NoSignal`'s four bodies was made to panic in
+    /// turn, and this cell failed on all four.
+    ///
+    /// It is not a claim about what a bump DOES: under `NoSignal` there is
+    /// nothing to observe, which is the point.
     #[test]
     fn every_bump_site_answers_under_no_signal() {
         let games = games();
@@ -1533,6 +1546,14 @@ pub(crate) mod test_support {
     use crate::store::{Doc, MemStore, Store};
     use crate::tables::{NewGame, SeatSpec, WireSeed};
 
+    /// The in-memory layer most cells drive.
+    ///
+    /// **Its signal is [`crate::signal::NoSignal`]**, because `Games::new`
+    /// defaults to it (M6.5a, R-6.5a.8). That is a premise
+    /// `every_bump_site_answers_under_no_signal` rests on and cannot assert —
+    /// a `dyn Signal` does not say which one it is — so a change to the
+    /// default belongs with a re-read of that cell. Every cell that watches a
+    /// bump uses [`watched_games`] instead.
     pub(crate) fn games() -> Games {
         Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
     }
