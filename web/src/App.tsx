@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isSignedOut, onUnauthorized, RUN_CAP, setArchiveKind, setChatText, setLobbyChat, setSignalKind } from "./api";
+import { api, ApiError, isLocal, isSignedOut, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
 import { SignIn } from "./SignIn";
 import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
@@ -509,7 +509,12 @@ export function App() {
    *  call is still awaiting `GET …/table` and every state-shaped test is still
    *  false. Both refs' own doc comments carry the measurement. */
   useEffect(() => {
-    if (!door.me?.user) return;
+    // **A LOCAL table needs no door** (M6.5b, spec §2.3). The games in this
+    // browser are answered by a module in this browser: nobody signs in to
+    // reach them, and the gate that holds every other route back would leave
+    // a `#/t/local-…` link dead on a page whose server cannot be reached —
+    // which is the whole of what R-6.5b.2 promises.
+    if (!door.me?.user && !(route.kind === "table" && isLocal(route.id))) return;
     if (route.kind === "table") {
       if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
         // **A refusal is about the table you were opening, so opening another
@@ -585,13 +590,10 @@ export function App() {
     // one refused request rather than a panel that never appears.
     api
       .health()
-      .then((h) => {
-        setSignalKind(h.signal);
-        setLobbyChat(h.lobby_chat);
-        setChatText(h.chat_text);
-        // And the archive (M6.5a, R-6.5a.13), for the Abandon control's label.
-        setArchiveKind(h.archive);
-      })
+      // **All four in ONE statement since M6.5b**: they are now the SERVER's
+      // record in `local/facts.ts`, keyed beside the local host's constants,
+      // and the health read is the one thing that sets it.
+      .then(setServerFacts)
       .catch(() => {});
   }, []);
 

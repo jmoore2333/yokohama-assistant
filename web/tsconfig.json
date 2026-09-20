@@ -16,5 +16,18 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // **The WORKER's own file, and only it** (M6.5b). `src/local/worker.ts` is
+  // compiled by `tsconfig.worker.json` with `lib: ["ES2022", "WebWorker"]`, and
+  // folding it in here would put `DedicatedWorkerGlobalScope` and `document` in
+  // one program — each of which is absent where the other is real. Nothing
+  // under `src` imports it (the page names it as a URL, which TypeScript does
+  // not resolve), so excluding it is enough to keep it out.
+  //
+  // **`src/local/db.ts` is deliberately NOT listed**, although it is the
+  // Worker's too: `src/local/db.test.ts` imports it and runs in jsdom, and an
+  // `exclude` does not keep an IMPORTED file out of a program — only out of the
+  // root file list. Listing it would read as a fence that is not one. It uses
+  // IndexedDB and nothing else, which is in both libs.
+  "exclude": ["src/local/worker.ts"]
 }

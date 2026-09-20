@@ -2,11 +2,13 @@
 
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
 import { CLAIMED_USER_KEY, chatText, lobbyChat, setChatText, setLobbyChat } from "./api";
+import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
+import { currentWorker, FakeWorker, stubWorker } from "./test/fakeWorker";
 import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events } from "./types";
@@ -2786,5 +2788,108 @@ describe("the game screen's chat", () => {
       setLobbyChat(true);
       setChatText(500);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M6.5b: a game played ON THIS DEVICE (R-6.5b.12, spec §6.2).
+
+describe("a local game", () => {
+  const LOCAL = "local-1";
+  /** The corpus's own playable state, re-addressed to a local game — the one
+   *  edit a fixture is allowed here, because a local game is named for its
+   *  host and the corpus's games are the server's. */
+  const localState = { ...wire.optionsMany, id: LOCAL };
+  const firstRow = () => {
+    const prompt = wire.optionsMany.prompt;
+    if (prompt.kind !== "options") throw new Error("fixture moved");
+    return screen.getByRole("button", {
+      name: new RegExp(prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    });
+  };
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+  });
+
+  it("makes NO network request once it is on screen — the fetch spy at zero across three moves", async () => {
+    // **The cell this milestone exists for** (spec §2.6, §6.2). Every call the
+    // screen makes for a `local-` game goes to the Worker; the only `fetch`es
+    // in the run are the boot reads the door and the lobby made BEFORE the
+    // game was opened, and the count does not move afterwards.
+    //
+    // At this task the door is still a gate, so those boot reads are stubbed
+    // and counted as the baseline; Task 5 tightens the same claim to "with
+    // every fetch failing".
+    stubWorker({
+      call: (req) => {
+        if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
+          return { status: 200, body: localState };
+        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: localState };
+        return undefined;
+      },
+    });
+    const stub = await renderApp(localState);
+    const worker = currentWorker();
+    expect(worker.posted.some((p) => p.kind === "call")).toBe(true);
+
+    const baseline = stub.calls.length;
+    const user = userEvent.setup();
+    for (let i = 0; i < 3; i += 1) await user.click(firstRow());
+
+    await waitFor(() =>
+      expect(
+        worker.posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+      ).toHaveLength(3),
+    );
+    expect(stub.calls.length).toBe(baseline);
+    // Nothing leaked into the strip either: an unhandled path throws in the
+    // fake, and a throw would land there.
+    expect(document.querySelector(".error")).toBeNull();
+  });
+
+  it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
+    // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
+    // own words — a REPLY, never a trap — so the trap recovery is not entered
+    // and its "reloaded from the last saved move" never appears. The two are
+    // deliberately different surfaces: one says the save could not be read,
+    // the other says it was recovered.
+    //
+    // The sentence lands on the lobby's strip today, because the refusal
+    // happens on the way INTO the game and `open` routes a refusal there;
+    // Task 6's game screen is what shows it in place.
+    const sentence =
+      "this save was recorded under game-semantics revision 6, but this build plays revision 7 — the save cannot be resumed";
+    stubWorker({
+      call: (req) =>
+        req.path === `/api/games/${LOCAL}` && req.method === "GET"
+          ? { status: 500, body: { error: sentence } }
+          : undefined,
+    });
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (isGamesList(call, "mine")) return gamesNamed(LOCAL);
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    render(<App />);
+    await userEvent.setup().click(await screen.findByRole("link", { name: LOCAL }));
+
+    await screen.findByText(sentence);
+    expect(screen.queryByText(/reloaded from the last saved move/)).toBeNull();
+    // Not a trap: one Worker for the whole cell.
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(FakeWorker.instances[0]!.terminated).toBe(false);
+    // The row is still listed — the listing reads table documents, and this
+    // game's is readable.
+    expect(stub.matching("GET", "/api/games?scope=mine").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: LOCAL })).toBeInTheDocument();
   });
 });

@@ -33,7 +33,7 @@
 // "live" would be a claim it cannot make yet.
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, signalKind } from "./api";
+import { api, ApiError, isLocal, signalKind } from "./api";
 import { readStream } from "./sse";
 import type { Events } from "./types";
 
@@ -118,6 +118,18 @@ export interface Source<T> {
    *  so a frame naming a table would sometimes name the wrong one). Handing
    *  such a frame over as a `T` would have the lobby render `{seq: 4}`. */
   frames?: "value" | "wake";
+  /** `"local"` for a game the module in this browser's own Worker answers
+   *  (M6.5b, R-6.5b.12): there is NOTHING to wait for, because the bot's
+   *  trailing run returns inside the reply that caused it and nobody else sits
+   *  at the table.
+   *
+   *  **On the SOURCE and not a third global** (spec §2.3, amending umbrella
+   *  §2.5): `open()` holds a `Source` and knows no id and no host, so the
+   *  source is the only place the host can be said — the shape M6.3's
+   *  `frames?` already used. The lobby's and the open table's sources never
+   *  set it, so the server's streams stay open while a local game is on
+   *  screen. */
+  host?: "local";
 }
 
 /** What the LOBBY is told about a signal that ended on a FRAME.
@@ -195,6 +207,19 @@ export function usePolled<T>(
     // every re-run that was already live — React bails on an identical value.
     setLink("live");
     if (!key || !active) return;
+    // **A LOCAL game has no signal at all** (M6.5b, R-6.5b.12; spec §2.3) —
+    // no stream, no held request and NO TIMER. The word stays "live", which
+    // is true: the module answering this game is in this tab.
+    //
+    // **Here and not inside `open()`**, which is where a first draft put it:
+    // the effect arms a zero-delay timer to make the first open, so a guard
+    // one call later would still have scheduled one. The cell that says so
+    // reads `vi.getTimerCount()` across sixty fake seconds.
+    //
+    // Read through the ref like every other field of the source, and safe to
+    // read once: `host` is derived from the game id, which IS `key`, so a
+    // source cannot change host without re-running this effect.
+    if (src.current?.host === "local") return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     // **The cleanup's flag, and it is what makes a read in flight harmless.**
     // Aborting stops the reader; it does nothing about a frame already being
@@ -433,6 +458,10 @@ export function useSignal(
           once: () => api.events(game, undefined, HELD_WAIT_S),
           stream: `/api/games/${encodeURIComponent(game)}/stream`,
           frames: "value",
+          // **The game screen is the one consumer that can be local**
+          // (spec §2.3): the lobby and the open table are the server's
+          // whatever is on screen beside them.
+          host: isLocal(game) ? "local" : undefined,
         }
       : null,
     active,

@@ -20,5 +20,9 @@
     "lib": ["ES2022", "WebWorker"],
     "types": []
   },
-  "include": ["src/local/wasm/*.d.ts"]
+  "include": ["src/local/wasm/*.d.ts", "src/local/worker.ts", "src/local/db.ts"],
+  // **`extends` inherits `exclude` too**, and the app project excludes
+  // `worker.ts` — which this project is entirely about. Cleared here, or the
+  // include above would name a file the exclude then took away.
+  "exclude": []
 }
