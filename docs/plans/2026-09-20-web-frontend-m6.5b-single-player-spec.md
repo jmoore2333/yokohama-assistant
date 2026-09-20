@@ -11,8 +11,11 @@ verified true) and that reviewer's scoped re-read of the fix wave (24 addressed,
 1 new Critical, 3 new Important, 6 new Minor, all fixed in the second wave), and a third time
 after the owner's own lightweight-agent read (one execution-critical boundary both prior reviews
 missed, one under-specified lifecycle, one unspecified failure surface, one supersession gap, six
-one-sentence items); the two Opus reports are in the gitignored
-`.superpowers/sdd/2026-09-20-web-frontend-m6.5b/` — §9 lists what all three changed.**
+one-sentence items), and a fourth time after the owner's pre-execution review of the PLAN
+(`docs/plans/2026-09-20-web-frontend-m6.5b-review-free-tier-offline-saves.md`: eight corrections,
+two of them reproduced; every one verified here and taken — §10 is the disposition of each); the
+two Opus reports are in the gitignored `.superpowers/sdd/2026-09-20-web-frontend-m6.5b/` — §9 and
+§10 list what the four reads changed.**
 
 **The headline.** A person opens the site and plays the bot with no server behind the page: the
 whole table layer (`api::dispatch` over `Games`, the engine and the production bot inside it)
@@ -317,9 +320,17 @@ layer is. *(M-11)* `wasm-bindgen` and `js-sys` are plain dependencies and compil
 recorded in Task 3, and the M6.5a close's P-2 ("never built natively") is superseded.
 
 **Build.** `cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm`, then
-`wasm-bindgen --target web --out-dir web/public/wasm/ …` and `--target nodejs --out-dir
-web/wasm-node/` (§6.3). Both output directories are gitignored; `web/package.json` gains
-`build:wasm`, and `build` runs it before `vite build`. `wasm-bindgen-cli` is installed at the
+`wasm-bindgen --target web --out-dir web/src/local/wasm/ …` — INTO A SOURCE DIRECTORY, gitignored,
+so Vite bundles the glue and emits the `.wasm` as a hashed asset (a static import of a file under
+`public/` fails Rollup's resolution — the pre-execution review reproduced it, R7) — and `--target
+nodejs --out-dir web/wasm-node/` followed by writing `web/wasm-node/package.json` as
+`{"type":"commonjs"}`, because the Node glue is CommonJS and `web/package.json` is `"type":
+"module"` (§6.3). `build:wasm` runs BEFORE `tsc`, since the glue's `.d.ts` must exist for the
+typecheck; the Worker compiles under its own `tsconfig.worker.json` (`lib: ["ES2022",
+"WebWorker"]`) rather than by adding worker globals to the window project. The crate's exports
+are thin wrappers over pure-Rust inner functions (`dispatch_inner`, `load_inner`, …) that the
+native cells test — `wasm-bindgen`'s non-wasm stubs cannot make a `JsValue` — and the cells that
+touch the global `Games` serialise on one test lock. `wasm-bindgen-cli` is installed at the
 lock's version (`cargo install wasm-bindgen-cli --version 0.2.128 --locked`), **a from-source
 build of about two minutes that CI caches by version** (`actions/cache` on `~/.cargo/bin/
 wasm-bindgen`), and the release wasm build is a second cargo target the job pays once per run —
@@ -339,14 +350,32 @@ then `init()`s and `load`s every stored pair before it answers anything.
   content type `application/json` when a body is present) → reply `{ seq, status, body }`.
   The same fields as `ApiRequest` and `ApiResponse`; the Worker adds `local@browser` and
   nothing else.
-- **Persistence is the Worker's, decided by OUTCOME and not by method.** After ANY reply, the
-  Worker `read`s the game's record and table and writes both to IndexedDB in one transaction
-  when the bytes differ from what it last wrote, or removes both after a 204 on `DELETE`. One
-  rule, no method list — it covers the move, the bot's pump on a cold read (§0), the
-  cold-rebuild repair and anything a later cycle adds. The module never knows. **Written
-  after the acknowledged reply and never before**: what IndexedDB holds is always a state
-  the player was shown, which is what makes §4's trap recovery honest. *(I-10)*
-- **The lock, and the rebuild it triggers.** Opening a local game is `navigator.locks.request
+- **Persistence is the Worker's, decided by OUTCOME and not by method, for the documents that
+  EXIST, for the games this tab HOLDS, and BEFORE the page is answered.** After any call on a
+  game this tab holds, the Worker `read`s the game's record and table and writes what exists —
+  the table alone while the game is dealing (`create` writes no record; the record appears at
+  the last keep, `tables.rs:1791`), the pair once playing — in one transaction when the bytes
+  differ from what it last wrote, or removes both after a 204 on `DELETE`. One rule, no method
+  list — it covers the move, the bot's pump on a cold read (§0), the cold-rebuild repair and
+  anything a later cycle adds. **A call on a game this tab does NOT hold is answered from its
+  store and never written back** — a second tab's cold GET pumps the bot in ITS store and shows
+  it, and the next holder's rebuild re-derives the same moves from the `(bot_seed, events.len())`
+  key. **The page's success reply is sent AFTER the durable write completes**: a module reply is
+  provisional, and "saved" means the transaction landed — never "the player was shown it". A
+  write the store REFUSES (quota, a private window) is answered with the reply marked unsaved,
+  which the page shows as "APPLIED BUT NOT SAVED" (§4); it is not a trap. The write carries the
+  tab's ownership GENERATION and the transaction checks it against the stored one, so a stale
+  holder whose JS keeps running after a steal cannot commit. *(I-10, R1, R2, R4)*
+- **The Worker is one serialised actor.** Every message runs through ONE operation queue —
+  dispatch, persist, rebuild, hold, release — so a rebuild cannot replace the store under a
+  persist and two holds cannot interleave; the lock's callback promise is held OUTSIDE the
+  queue (a queue that awaited a lock's lifetime would answer nothing else). `lastWritten` is
+  cleared and reseeded from the loaded pairs on every rebuild, so a take-back followed by an
+  undo cannot skip a write because an older cache still matched. The record and table are
+  read for export as one snapshot inside the queue. *(R3)*
+- **The lock, and the rebuild it triggers.** Ownership is derived from the ROUTE's table id —
+  the dealing screen included — and acquired BEFORE any call on that game, never from a
+  `ClientState` already fetched. Opening a local game is `navigator.locks.request
   ("yokohama:local:<id>", { mode: "exclusive", ifAvailable: true }, …)`; when the lock is
   unavailable the callback is invoked with `null` (it does not reject), and that `null` is
   what "This game is open in another tab" reads. Take over is a second `request` with
@@ -357,7 +386,10 @@ then `init()`s and `load`s every stored pair before it answers anything.
   other local game in this tab would otherwise 404 until reopened; loading bytes is cheap and
   the `Repl` rebuild stays lazy per game on first touch — before it answers a call for that
   game**, so the writer always starts from the last state ANY tab acknowledged; the boot-time
-  load is only the first of these. **What releases the lock:** the page keeps the request's
+  load is only the first of these. The acquisition also ADVANCES the game's ownership generation
+  in IndexedDB (a small `meta` store), which every later write checks in its own transaction —
+  the Web Locks specification warns that a stolen-from holder may keep executing, and a JS
+  notification cannot fence a running wasm call or a queued write; the generation can. *(R2)* **What releases the lock:** the page keeps the request's
   callback promise open for as long as the game screen is mounted and resolves it when the
   screen unmounts, so navigating away (to the lobby, to another game) RELEASES; and the Worker
   keeps the set of ids this tab holds, so a re-request for one of them short-circuits rather
@@ -377,9 +409,15 @@ then `init()`s and `load`s every stored pair before it answers anything.
   `identityHeaders()` is not read. `recordText` reads the record for a local game from the
   Worker's side channel (a `read` message), never from the `…/record` route, which the local
   dispatch still answers exactly as the corpus pins it (a 409 while running — umbrella §2.5).
-  `api.labels()` is read from the SERVER first and from the Worker only when that read fails
-  (`App.tsx:561`'s `.catch` is the hook): the words on the cards survive an unreachable API,
-  and the Worker stays lazy — a visitor who only plays hosted games never downloads the module.
+  `api.labels()` is read from the SERVER first, BOUNDED at five seconds, and from the Worker
+  when that read fails OR times out (a hanging read never rejects, so `.catch` alone would
+  never fall back — the pre-execution review's point); and once a local game is on screen the
+  Worker is ready anyway and answers `labels` directly. The words on the cards survive an
+  unreachable API, and the Worker stays lazy — a visitor who only plays hosted games never
+  downloads the module. The route effect's guard at `App.tsx:503` (`if (!door.me?.user)
+  return;`) admits a LOCAL table id signed out, since a local game needs no door. A Worker that
+  fails to start, a module that fails to load, or an IndexedDB that will not open is a VISIBLE
+  line in the local section naming the reason — never an empty list.
   Routing it locally ALWAYS was considered and declined for that boot cost (a stated default
   the owner may reverse; §2.1 would then record the module's cost at every page load). The art
   manifest is the host's (`/api/art` is not in the layer) and degrades to the typed fallback when
@@ -422,7 +460,9 @@ then `init()`s and `load`s every stored pair before it answers anything.
   event count, so the run ends on the live frame) — and **the 404 begins at `to = total + 2`**,
   with the sentence `at/{k}` already gives for a position past the end, extended to name the
   range, so the two routes refuse one condition one way; `from > to`, a malformed range rather
-  than a missing position, is DELIBERATELY the same 404 rather than a third answer. *(owner
+  than a missing position, is DELIBERATELY the same 404 rather than a third answer. **The cap is
+  checked FIRST**: a run longer than 64 is a malformed ask and is the 400 whatever `total` is, so
+  a one-event game asked for `to=65` reads the cap's sentence and not the range's. *(owner
   read, item 1 — both prior reviews had "to > len" with `len` the event count, which would have
   refused every legitimate client call while the pairing cell passed on the same wrong
   boundary.)* A run longer than **64** frames is a 400
@@ -461,8 +501,19 @@ then `init()`s and `load`s every stored pair before it answers anything.
   the umbrella's O-9 cell ("the two implementations write the same relative paths") is
   extended to a NON-EMPTY prefix. `paths` stays the ONE layout function (umbrella R-6.5.4).
   *(I-5)*
-- **"At most once", at its real size.** An implementation refuses an existing PATH, and the
-  path is `prefix/rev/leaf/id`. The client's controls keep one local game to one leaf: Send to
+- **The put protocol, because a 409 must never delete the only complete copy** (R6). An
+  implementation writes the TABLE first and the RECORD second, and **the record's path is the
+  once-marker**. `put` answers `Landed` when it wrote both; **`Identical` when the record at
+  that path already holds the SAME bytes** (a retry after a lost reply — and a half pair, a
+  table with no record, is REPAIRED by writing the record and re-writing the table); and
+  `Err(Conflict)` when the record at that path holds DIFFERENT bytes. The route answers 201 for
+  `Landed`, **200 with `identical: true` for `Identical`**, and 409 "a different record is
+  archived under this id" for the conflict. The client proceeds to its local delete on 201 or
+  200 and KEEPS the game on 409 — a generic 409 is not proof the pair landed, and the earlier
+  draft deleted on it. The two-file put is still not atomic (a crash between the two writes
+  leaves a table alone), which the repair on retry is for; §8 carries it.
+- **"At most once", at its real size.** An implementation refuses a DIFFERENT record at an
+  existing PATH, and the path is `prefix/rev/leaf/id`. The client's controls keep one local game to one leaf: Send to
   the archive is offered only at game over (`over/`) and Abandon and save only while the game
   runs (`abandoned/`), and an abandoned game is deleted locally, so it cannot be sent again.
   What the route does NOT prevent: the same save sent by two different callers lands twice,
@@ -488,8 +539,8 @@ then `init()`s and `load`s every stored pair before it answers anything.
   server's and a local table has one person); no Unlock, no watchers; undo is the CLI's own,
   as at a one-person table.
 - **"Send to the archive"** on a finished local game's header, dark unless the server's
-  health reported an archive; on 201 it says where the copy went AND goes dark for the rest of
-  the session (the local document cannot be stamped — the send never goes through the module);
+  health reported an archive; on 201 (or a 200 `identical`) it says where the copy went AND
+  goes dark for the rest of the session (the local document cannot be stamped — the send never goes through the module);
   after a reload the control is live again and a second click answers the route's 409, shown as
   "already archived" (§8). *(owner read item 5)*
 
@@ -519,10 +570,16 @@ game can be saved as a file first.
 
 - **The module fails to load**: the local section says so in one line naming the reason;
   the server sections are untouched.
-- **A trap inside `dispatch`**: the Worker answers a 500 in the API's `{"error": …}` shape,
-  then `init()`s and `load`s the stored pairs — the same path a lock acquisition takes — and
-  the page's strip says "reloaded from the last saved move". Nothing acknowledged is lost
-  (§2.2's write-after rule), and nothing a stale tab held is kept (§2.2's rebuild rule).
+- **A trap inside `dispatch`**: a trapped module holds its own mutex and TRAPS AGAIN on
+  `init()` — reproduced by the pre-execution review with this crate's exact `Mutex<Option<_>>`
+  shape under `panic = "abort"` (R5) — so recovery is a FRESH INSTANCE: the Worker answers the
+  call as a 500 in the API's `{"error": …}` shape marked `trapped`, the page terminates that
+  Worker, settles every pending request as "the local host restarted", starts a new Worker
+  (which rebuilds from the committed pairs), re-acquires the game's ownership, and only then
+  says "reloaded from the last saved move". Nothing committed is lost (§2.2's
+  commit-before-reply rule), and nothing a stale tab held is kept (§2.2's rebuild rule).
+  Worker `error` and `messageerror` events and a module that fails to load are the visible line
+  of §2.3, not a permanently pending list.
 - **A stored local game that no longer rebuilds** — a later `SEMANTICS_REV` bump or a rules-hash
   change, which by design stop a save resuming: `Session::from_record` REFUSES with an `Err`
   (`games.rs:406`, `GameError::Server`), which is a 500 carrying the engine's own sentence and
@@ -530,8 +587,10 @@ game can be saved as a file first.
   The row stays listed (the listing reads table documents), "Save game file" still works (it
   reads bytes) and Abandon still works (`delete` reads the store and rebuilds nothing); the
   game screen shows the sentence naming the revision. *(owner read item 3)*
-- **IndexedDB refuses a write** (quota, a private window): the move is shown with the
-  server's own sentence, "APPLIED BUT NOT SAVED" — one rule, one wording, both hosts.
+- **IndexedDB refuses a write** (quota, a private window): the reply is answered marked
+  unsaved and the move is shown with the server's own sentence, "APPLIED BUT NOT SAVED" — one
+  rule, one wording, both hosts — and a storage failure is DISTINGUISHED from a trap (R4): the
+  Worker keeps running, the game stays exportable, and the next successful write clears it.
 - **The lock is stolen**: the losing tab's game goes read-only with "opened in another tab"
   and Take back; a move attempted after the loss is refused in the page before it reaches the
   Worker, and a reply that was in flight is not written back (§2.2).
@@ -552,15 +611,20 @@ game can be saved as a file first.
   json` (201 for a partial record, `leaf: "abandoned"`), and the five refusals `archive_400_
   rev.json`, `archive_400_digest.json`, `archive_400_replay.json`, `archive_400_table.json`,
   `archive_409.json` — the walk's own record, edited in memory for each.
-- **`walk.json` — NEW KIND: the walk's request script**, emitted THROUGH `corpus()` (so the
-  orphan cell counts it, as it counts `site_space_words.json`): for every `call_as` of the
-  PRIMARY `Api`, `{ who, method, path, query, body, fixture }` in order, where **`fixture` is
-  nullable** — most rows are intermediates and assertions (the dispatcher cell counts 234
+- **`walk.json` — NEW KIND: the walk's request script, and it lives OUTSIDE the corpus**, at
+  `web/src/wire-script/walk.json`, written by the same test under the same variable with its
+  own staleness check — because the script carries REQUEST bodies (the setup seed, the table
+  passwords) and every leakage pin scans `corpus()` for exactly those strings; a script inside
+  `web/src/wire/` would fail the pins or force an exemption that weakens them (R8). For every
+  `call_as` of the PRIMARY `Api`, `{ who, method, path, query, body, status, fixture }` in
+  order, where **`fixture` is nullable** — most rows are intermediates and assertions (the dispatcher cell counts 234
   compared pairs over a 74-payload walk), every row is REPLAYED so the module's state keeps
   step with the walk's, and only a named row is compared. `call_as` does not know the
   fixture's name — it is bound at the `out.push` sites — so the walk records each call into a
-  side list that those sites annotate; the alternative (a name parameter on `call_as`, ~120
-  call sites) is declined. **The side list is per `Api` instance and only the primary's rows
+  side list that those sites annotate — bound BY VALUE after the walk (the first unbound row whose frozen
+  response equals the payload), with the residual named: two calls with byte-equal responses are
+  interchangeable for the replay, and the status rides the row so a replay compares it too; the
+  alternative (a name parameter on `call_as`, ~120 call sites) is declined. **The side list is per `Api` instance and only the primary's rows
   are emitted**: `house_chat_off_404.json` is captured through `call_as` on a SECOND `Api`
   built with `lobby: false` (`wire_fixtures.rs:1510-1513`), and it belongs in the third column
   below, not in the script. It is the input §6.3 replays through the module. *(M-10, N-2, N-3)*
@@ -673,11 +737,20 @@ Worker's replay wall on reload (O-3), both RECORDED. Regeneration is one documen
 
 ### 6.5 e2e (real Chromium, the release binary)
 
-- **The exit**: a whole game against the bot in the browser with `/api/games` requests counted
-  ZERO after load, off the page's request log (the M6.3 shape); the download; Send to the
+- **The exit**: a whole game against the bot in the browser with EVERY `/api/` request other
+  than `/api/archive` counted ZERO from the moment the local game screen is open, off the
+  page's request log (the M6.3 shape; wider than "no `/api/games`" — streams, other play
+  routes and Worker-originated requests are in the count); the download; Send to the
   archive against the binary started with a temporary `YOKOHAMA_WEB_ARCHIVE_DIR` (the Playwright
   `webServer` block takes an `env` map), the archived file under `browser/<segment>/rev7/
   over/` byte-equal to the download.
+- **Real-Worker fault cells**, because a fake Worker proves page routing and nothing about
+  commit ordering, ownership or recovery: a quota failure injected by overriding
+  `IDBObjectStore.prototype.put` in the page's Worker (Playwright `addInitScript`) shows "APPLIED
+  BUT NOT SAVED" and the game stays exportable; a real trap raised through a `debug_trap` export
+  the e2e build enables (cargo feature `debug`, never in the release module) is recovered by a
+  fresh Worker with play continuing from the last committed move; a create closed before the
+  first card is chosen comes back on reload with its exact setup (the table-only pair, R1).
 - **Two TABS of ONE context** (IndexedDB is per profile; two contexts would prove nothing):
   B opens the lobby first, A plays a run of moves, B opens the game and takes over — **B's first
   frame shows A's moves** — and A is read-only with Take back. *(C-2)*
@@ -748,7 +821,19 @@ review before the release; full SDD only for a task the plan marks large or judg
 - **Not installable, not offline.** Level 3 — a service worker caching the shell, the module
   and the art with a cache keyed to the release and bustable for a patch, an update prompt,
   about 8 MB per browser — is the FIRST follow-up after M6.5b, its own brainstorm and spec.
-  Level 2 is "the API unreachable with the page loaded", never "the origin down".
+  Level 2 is "the API unreachable with the page loaded", never "the origin down". **Its charter
+  is written down now** (the pre-execution review's §3, carried as requirements): a coherent
+  release cached whole (HTML, JS, glue, module, art, manifest, labels) before "available offline"
+  is said; release-keyed asset paths with an update installed and verified before the switch,
+  never mid-move, and eviction that cannot touch IndexedDB; a persistent-storage request when a
+  player starts relying on local saves, with the grant inspected and backup offered; **a
+  browser backup and restore format** carrying the record AS A STRING beside its table document
+  with a versioned envelope, validated in Rust, refusing to overwrite silently — today a
+  downloaded save is a CLI recovery path and the browser has no restore; incompatible saves
+  kept listed and downloadable, never migrated or erased; the origin kept stable across the
+  NAS-to-Workers move, since a different hostname is different storage. Its exit: airplane mode
+  → close the browser → reopen → resume → finish → export, then an update and a restore on a
+  fresh profile, on the owner's own phone.
 - **Nothing hosted.** No Workers, no objects. M6.5c inherits R-6.5b.11's two push shapes and
   the archive route and trait unchanged.
 - **Two seats only**, you and the bot. A local hot-seat human-versus-human is free in the
@@ -762,9 +847,9 @@ review before the release; full SDD only for a task the plan marks large or judg
   address, or two longer than 64 characters, can share a directory and each other's 409.
 - **The leaf at an abandon follows the mirror**, which can be one move stale in one race
   (R-6.5b.13).
-- **The archive route's two-file put is not atomic**: a record that lands with its
-  `.table.json` write failing leaves a half pair, and the retry 409s on the record path. The
-  same accepted class as M6.5a's delete site; the operator's sign is a `.json` with no sibling.
+- **The archive route's two-file put is not atomic**: the table is written first, so a crash
+  between the two writes leaves a table with no record, which the next retry REPAIRS (§2.4);
+  the operator's sign is a `.table.json` with no sibling. A client never deletes on a 409.
 - **"Send to the archive" after a reload can be clicked again** and answers 409; the local
   document carries no stamp.
 - **A local game's data leaves the device only by the player's own send or save.** There is
@@ -775,6 +860,18 @@ review before the release; full SDD only for a task the plan marks large or judg
   M6.5b measures the browser Worker's start-up and records it.
 - Two cosmetic items carried from the M6.5a deploy review: an already-archived finished
   game's row reads "Abandon and save"; "and save" on a just-dealt table (M6.5a §6.3 item 4).
+- **Carried to the M6.5c handover, not this cycle's** (the pre-execution review's §1 and §4):
+  the owner's deployment target is reported to be Workers FREE, where the umbrella's R-6.5.12
+  says Paid — **an owner confirmation the M6.5c spec records before it amends R-6.5.12**; on
+  Free the routing Worker has a 10 ms budget and the object 30 s, so gameplay, replay,
+  `suggest`, `why` and the archive's strict replay run INSIDE objects, `/api/archive` mapped to
+  an object of its own; the layer's `Archive::put` is synchronous and an R2 put is not, so
+  M6.5c defines a prepare/upload/commit protocol with a receipt before a delete is authorised;
+  hibernating WebSockets with the picker persisted (umbrella H-4); static assets served without
+  the Worker; the house projection updated only when a visible field changes; long-save
+  measurements of cold replay, a whole bot turn, projection, serialisation, `why` and the
+  archive replay, CPU and wall separately, on the phone and in a live Free-tier object; the
+  browser crate's global `Games` is the per-tab instance's and never a shared isolate's.
 
 ---
 
@@ -844,3 +941,25 @@ verified true) found what both Opus passes had missed, and the third wave carrie
   id-less routes have no page caller (R-6.5b.12); the per-source record's `signal` union is the
   wider one and `signalKind()`'s is untouched (§2.3); the CI job's wall roughly doubles (§2.1).
 - **Context** the committed pair's seed sits outside the corpus pin's scan on purpose (§6.4).
+
+---
+
+## 10. The pre-execution review's dispositions (the owner's fourth read, of the PLAN)
+
+`docs/plans/2026-09-20-web-frontend-m6.5b-review-free-tier-offline-saves.md` — advisory, at
+`6bc137f`. Each finding was verified against the code here before it was taken; none was wrong.
+
+| finding | verified by | disposition |
+|---|---|---|
+| **R1** a dealing local game has only a table and the Worker persisted nothing without a pair | `tables.rs:1791` "no record until the last keep" | TAKEN — §2.2 persists the documents that exist; the plan's `persist` and the reload cell |
+| **R2** a cold GET pumps and persists before ownership; a stolen-from holder may keep running | `games.rs:405-424`; the Web Locks spec's `steal` note | TAKEN — §2.2: ownership from the ROUTE id before any call, write-back only for held games, a generation checked in the write's transaction |
+| **R3** an async `onmessage` is not an actor; `lastWritten` survives a rebuild | the plan's Worker sketch | TAKEN — §2.2: one operation queue, the lock's promise outside it, the cache reseeded on rebuild |
+| **R4** "written after the acknowledged reply" vs commit-before-success; storage failure treated as a trap | the spec's own §2.2 sentence; the sketch's catch-all | TAKEN — §2.2 commit-before-reply; §4 a storage failure is marked unsaved, never a trap; the transaction helpers abort explicitly |
+| **R5** re-`init()` on a trapped instance traps again | the review's reproduction (this crate's mutex shape, `panic = "abort"`) | TAKEN — §4: a fresh Worker, pending requests settled, ownership re-acquired |
+| **R6** a 409 authorised a local delete; a half pair or a different record both 409 | `archive.rs:138-140` writes the record first | TAKEN — §2.4's put protocol: table first, the record the marker, `Identical` as a 200, repair on retry, a different record a 409 the client keeps the game on |
+| **R7** the static import of the glue from `public/` fails Rollup; the jsdom glob matches the node suite; the Node glue is CommonJS under `"type": "module"`; native `JsValue`; parallel tests on the global | the review's reproduction; `vitest.config.ts`; `web/package.json:6` | TAKEN — §2.1 and §6.3: glue into `web/src/local/wasm/`, `build:wasm` before `tsc`, a Worker tsconfig, the jsdom exclude, the node `package.json`, inner functions, a test lock |
+| **R8** `walk.json` inside `corpus()` carries the seed and passwords the leakage pins scan for | `wire_fixtures.rs:1812-1830`, `corpus()` | TAKEN — §5: the script lives in `web/src/wire-script/`, outside every pin's scan, with its own staleness check |
+| §3's two level-2 details: a hanging `/api/labels` never falls back; `App.tsx:503` gates local routes on the door | `App.tsx:561`, `:503` | TAKEN — §2.3 |
+| §5's notes: the cap cell's precedence; single `cargo test` filters; the no-network claim widened; real-Worker fault cells; attribution trailers | the plan | TAKEN — §2.4 cap-before-range; the plan's commands; §6.5 |
+| §1 Free tier vs R-6.5.12's Paid; offline reopening not delivered; no browser restore | the umbrella `:354`; §8 | CARRIED — §8: an owner confirmation for M6.5c; the level-3 charter written down; restore named as part of it |
+| §4 the M6.5c optimisation list; the async archive seam | — | CARRIED — §8, into the M6.5c entry handover |
