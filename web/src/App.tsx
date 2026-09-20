@@ -14,7 +14,7 @@ import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
 import { LockScreen, LOST_SENTENCE } from "./LockScreen";
 import { localPair } from "./local/client";
-import { useLocalHold } from "./local/useLocalHold";
+import { useLocalHold, type LockState } from "./local/useLocalHold";
 import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
 import { Unlock } from "./Unlock";
@@ -595,6 +595,18 @@ export function App() {
   const lockId = route.kind === "table" && isLocal(route.id) ? route.id : null;
   const lock = useLocalHold(lockId);
   const { takeover: steal } = lock;
+  /** The lock's answer FOR THE GAME THE ADDRESS NAMES, and `"none"` for any
+   *  other — which is what every reader below is entitled to.
+   *
+   *  **The id check is the fix, and a reset inside the hook could not be**
+   *  (review Important 1). React flushes one commit's passive effects in a
+   *  single pass, so on the commit where the route moves from one local game
+   *  to another, the route effect's closure holds the state rendered for the
+   *  game being LEFT. That state is `"held"`, and reading it would admit the
+   *  cold `GET` that PUMPS THE BOT in a record this tab does not own — the
+   *  exact harm P-5 exists to stop. Asking whether the answer is ABOUT this
+   *  game closes it, because the stale value carries the stale id with it. */
+  const lockState: LockState = lock.id === lockId ? lock.state : "none";
 
   /** Take the game anyway — Take over from the tab that found it open
    *  elsewhere, Take back from the one it was stolen from.
@@ -640,12 +652,21 @@ export function App() {
       // `#/new/local` kept the game on screen at an address that no longer
       // named it.
       if (!door.me?.user && !isLocal(route.id)) return;
-      // **Nothing is read until the lock has answered** (P-5, spec §2.2) — the
-      // dealing screen included, since a keep is a write like any other. While
-      // the answer is `"elsewhere"` this table is another tab's and the screen
-      // below draws that instead; `"lost"` leaves the game exactly where it is
-      // and waits for Take back.
-      if (isLocal(route.id) && lock.state !== "held") return;
+      // **Nothing is read until the lock has answered FOR THIS GAME** (P-5,
+      // spec §2.2) — the dealing screen included, since a keep is a write like
+      // any other. While the answer is `"elsewhere"` this table is another
+      // tab's and the screen below draws that instead; `"lost"` leaves the game
+      // exactly where it is and waits for Take back.
+      if (isLocal(route.id) && lockState !== "held") {
+        // **And a game the address no longer names goes off the screen.** The
+        // arm returns before `open`, which is what would otherwise have cleared
+        // it — so without this the game being LEFT stays drawn, answerable, at
+        // an address that names a different table. `tableOnScreen` is the test
+        // rather than `state`, because the deal and the open table are on
+        // screen without one.
+        if (tableOnScreen.current !== null && tableOnScreen.current !== route.id) show(null);
+        return;
+      }
       if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
         // **A refusal is about the table you were opening, so opening another
         // one clears it.** Without this a "you are not seated at this table"
@@ -677,7 +698,7 @@ export function App() {
     }
     // `#/` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
-  }, [route, door.me?.user, lock.state, open, show]);
+  }, [route, door.me?.user, lockState, open, show]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -870,7 +891,7 @@ export function App() {
       // page is the point: a reply from a call in flight when the lock was
       // lost is not written back, so a move that reached the module would show
       // something that will not be kept.
-      if (lock.state === "lost") {
+      if (lockState === "lost") {
         setError(LOST_SENTENCE);
         return;
       }
@@ -980,7 +1001,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed, table, arrive, lock.state],
+    [state, landed, table, arrive, lockState],
   );
 
   /** The OTHER way a change reaches this screen: somebody else made it (M6.1
@@ -1204,10 +1225,10 @@ export function App() {
     // **Another tab has this game open** (R-6.5b.5), and nothing has been read:
     // FIRST here, before the deal and before the game, because the dealing
     // screen writes too and the lock is taken at OPEN time for all of it.
-    if (lockId !== null && (lock.state === "elsewhere" || lock.state === "lost"))
+    if (lockId !== null && (lockState === "elsewhere" || lockState === "lost"))
       return (
         <LockScreen
-          state={lock.state}
+          state={lockState}
           onTakeover={retake}
           onLeave={() => toLobby()}
           who={who}
@@ -1652,6 +1673,14 @@ export function App() {
             Save game file
           </button>
         ) : null}
+        {/* **A tab that has LOST the lock writes nothing** (spec §4, review
+            Important 2), so both controls below go the way the answer bar
+            goes. The Worker fences a delete from a tab that does not hold the
+            game — it answers `not-held` and keeps the pair — so a live Abandon
+            would report a delete that did not happen and return to a lobby
+            still listing the game; and with an archive on it would post a
+            STALE record first. "Save game file" stays, because it reads bytes
+            and writes nothing. */}
         {/* **Send to the archive** (spec §2.5): a finished game in this browser,
             copied to the server that keeps one. Dark where the server keeps
             none — a control promising a save it cannot make is what the label
@@ -1659,7 +1688,7 @@ export function App() {
             local document carries no stamp and there is nothing further to
             send. A reload puts it back, and the server answers that second
             click `identical`. */}
-        {state.over && isLocal(state.id) && archiveKind() !== "off" ? (
+        {state.over && isLocal(state.id) && archiveKind() !== "off" && lockState !== "lost" ? (
           archived[state.id] ? (
             <span className="meta archived" role="status">
               {archived[state.id]}
@@ -1674,7 +1703,7 @@ export function App() {
             tab holds its lock — the lobby's rows withhold it. It reads "Abandon
             and save" when the SERVER keeps an archive, because that is where
             the copy goes. */}
-        {isLocal(state.id) && table ? (
+        {isLocal(state.id) && table && lockState !== "lost" ? (
           <Abandon table={table} local onDone={() => toLobby()} onError={setError} />
         ) : null}
       </header>
@@ -1876,7 +1905,7 @@ export function App() {
               skip
             </button>
           </div>
-        ) : lock.state === "lost" ? (
+        ) : lockState === "lost" ? (
           /* **Another tab took this game** (spec §4). The board, the log and
              every panel stay where they are — what is gone is the ability to
              answer, because the writer is elsewhere. `send` refuses the board's

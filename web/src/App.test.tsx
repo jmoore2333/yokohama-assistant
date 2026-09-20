@@ -3122,6 +3122,63 @@ describe("a local game", () => {
     expect(callsOn(LOCAL)).toHaveLength(before);
   });
 
+  // **A SECOND local game is not read until ITS OWN hold has answered** (P-5,
+  // review Important 1). The lock's answer carries no id of its own, so a
+  // state read off the previous game — `"held"` for the one being left — would
+  // admit the cold `GET` that PUMPS THE BOT in a record this tab does not own.
+  // No existing cell could see it: the hook's id-change cell tests the hook
+  // alone, and every in-app route into a local table passes through the lobby
+  // first, so the switch needs a pasted address — which is what this drives.
+  it("reads NOTHING of a second local game until its own hold has answered", async () => {
+    const OTHER = "local-2";
+    await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      // This tab holds the first game and NOT the second.
+      { hooks: { hold: (id) => id === LOCAL } },
+    );
+    await screen.findByText(/end triggers:/);
+
+    act(() => {
+      window.location.hash = `#/t/${OTHER}`;
+    });
+    expect(await screen.findByText("This game is open in another tab")).toBeInTheDocument();
+    // Not the table, not the state, not a panel — the whole of what P-5 is for.
+    expect(callsOn(OTHER)).toEqual([]);
+    // And the game being LEFT is off the screen, rather than sitting under an
+    // address that no longer names it.
+    expect(screen.queryByText(/end triggers:/)).toBeNull();
+  });
+
+  // **The losing tab writes NOTHING** (spec §4, review Important 2). `send` is
+  // guarded, and so must be every other control that writes: the Worker fences
+  // a delete from a tab that does not hold the game (answering `not-held`), so
+  // a live Abandon would report a delete that did not happen — and with an
+  // archive on, would post a STALE record first.
+  it("takes the header's writing controls away when the lock is lost, and keeps the read", async () => {
+    await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      { archive: "dir", hooks: { pair: () => ({ record: RECORD, table: TABLE }) } },
+    );
+    await screen.findByText(/end triggers:/);
+    // The premise: both controls are there while this tab is the writer.
+    expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+
+    await screen.findByRole("button", { name: "Take back" });
+    expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // Nothing left, nothing sent.
+    expect(currentWorker().posted.filter((p) => p.kind === "call" && p.method === "DELETE")).toEqual(
+      [],
+    );
+    // **The READ stays**, which is the line between read-only and useless: the
+    // bytes in this browser are still the player's to keep (spec §4's rule for
+    // the save that will not rebuild, and the same reason).
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+  });
+
   // **Take back RE-READS** (spec §3: "whoever holds the lock sees every move
   // the other tab played"). The route has not changed, so the effect that
   // opens a table does nothing here — without an explicit re-read the board

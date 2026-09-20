@@ -24,6 +24,19 @@ import { isLocal } from "./ids";
 export type LockState = "none" | "held" | "elsewhere" | "lost";
 
 export interface Hold {
+  /** The game the `state` beside it is ABOUT — `null` where there is none.
+   *
+   *  **A state with no id cannot be read safely from a closure** (review
+   *  Important 1). React flushes one commit's passive effects in a single
+   *  pass, so on the commit where the route moves from one local game to
+   *  another, any effect reading this hook holds the value rendered for the
+   *  game being LEFT — `"held"`, which would admit the cold `GET` that pumps
+   *  the bot in a record this tab does not own. Resetting the state at the top
+   *  of this hook's own effect cannot close that: the reader's captured value
+   *  does not change however the two effects are ordered. Carrying the id does,
+   *  because a reader can then ask whether the answer is about the game it is
+   *  asking for. */
+  id: string | null;
   state: LockState;
   /** Take it anyway — Take over from the second tab, Take back from the one
    *  that lost it. One message and one state: the lock is STOLEN, and the
@@ -33,21 +46,27 @@ export interface Hold {
 }
 
 export function useLocalHold(id: string | null): Hold {
-  const [state, setState] = useState<LockState>("none");
+  /** The answer and the game it is about, as ONE value — never two states that
+   *  a render could catch disagreeing. */
+  const [answer, setAnswer] = useState<{ id: string | null; state: LockState }>({
+    id: null,
+    state: "none",
+  });
 
   useEffect(() => {
     if (id === null || !isLocal(id)) {
-      setState("none");
+      setAnswer({ id: null, state: "none" });
       return;
     }
-    // **The previous game's answer is not this one's.** Without this a switch
-    // from a game this tab holds to one another tab has open would read
-    // `"held"` until the new ask came back — and the screen would fetch.
-    setState("none");
+    // **The previous game's answer is not this one's.** This is not what makes
+    // a stale read impossible — the id on the answer is (see `Hold.id`) — but
+    // it is what keeps the hook's own value honest between the route changing
+    // and the lock answering.
+    setAnswer({ id, state: "none" });
     let live = true;
     void hold(id)
       .then((ok) => {
-        if (live) setState(ok ? "held" : "elsewhere");
+        if (live) setAnswer({ id, state: ok ? "held" : "elsewhere" });
       })
       .catch(() => {
         // The local host could not be asked at all — a Worker that will not
@@ -55,10 +74,10 @@ export function useLocalHold(id: string | null): Hold {
         // every fault listener in its own words, and the first screen is what
         // shows them; leaving this at `"none"` is what keeps the page from
         // reading a game it was never given.
-        if (live) setState("none");
+        if (live) setAnswer({ id, state: "none" });
       });
     const off = onLost((lost) => {
-      if (lost === id && live) setState("lost");
+      if (lost === id && live) setAnswer({ id, state: "lost" });
     });
     return () => {
       live = false;
@@ -73,8 +92,8 @@ export function useLocalHold(id: string | null): Hold {
   const take = useCallback(async () => {
     if (id === null) return;
     await takeover(id);
-    setState("held");
+    setAnswer({ id, state: "held" });
   }, [id]);
 
-  return { state, takeover: take };
+  return { id: answer.id, state: answer.state, takeover: take };
 }
