@@ -889,10 +889,14 @@ impl Games {
     /// the seat bound they pass (a table's player count, or `None` at the
     /// house), and which channel they bump afterwards.
     ///
-    /// **The text has already been checked** by the caller, deliberately BEFORE
-    /// it took its lock, so a message that will be refused never makes anyone
-    /// wait for a table. That is why this takes a `String` rather than a `&str`
-    /// and applies no rule of its own.
+    /// **The text has already been checked** by the caller, deliberately before
+    /// the APPEND takes the table's lock, so a message that will be refused
+    /// never makes anyone wait behind another message. That is why this takes a
+    /// `String` rather than a `&str` and applies no rule of its own. (Not
+    /// "before any lock": the caller's admission runs first, and on a dealing
+    /// table where every human has kept it goes through [`Games::settle`],
+    /// which takes that table's lock to finish the deal — the same correction
+    /// `lib::chat_post`'s own doc carries.)
     ///
     /// The document is written under `key` and its `id` is SET to `key`, so a
     /// document this server writes always names the file it is in — see
@@ -998,10 +1002,15 @@ impl Games {
     /// under no lock of this table's — this is called from a stream's per-bump
     /// closure and must not queue behind a message — so an append can land
     /// between it and this insert, and a plain `insert` would put the older
-    /// number back. The entry never arrives from anywhere but an append, which
-    /// knows a number no read of this kind can have missed, so taking what is
-    /// already there is always the newer answer. Pinned, with the window held
-    /// open by a gate, by
+    /// number back.
+    ///
+    /// **Exactly TWO things fill the entry, and keeping what is there is never
+    /// the older answer under either** (re-review of the fix wave): an append,
+    /// which writes its own number with a plain `insert` after the document is
+    /// written and so knows a number no read of this kind can have missed; and
+    /// a cold seed like this one, which reads the document — so two cold seeds
+    /// racing each other carry the same number and it does not matter which
+    /// wins. Pinned, with the window held open by a gate, by
     /// `a_cold_count_read_never_overwrites_a_newer_one_from_an_append`.
     pub fn chat_last(&self, id: &str) -> u64 {
         if let Some(n) = self.chat_last.lock().expect("games lock").get(id) {
@@ -1012,6 +1021,17 @@ impl Games {
         // this server itself wrote. So the document is parsed without the shape
         // rule and only its `last` is read — and a document that will not parse
         // reads 0 here while every route that SERVES it says so out loud.
+        //
+        // **That 0 is CACHED like any other** (re-review of the fix wave,
+        // out-of-scope note), so an unparseable document makes this table
+        // report 0 for the life of the process — until an append re-inserts a
+        // real number, which it cannot do while the document will not parse.
+        // Pre-existing and deliberate: the alternative is re-reading and
+        // re-parsing a broken file on every bump of a table nobody can fix from
+        // here, and the routes that serve the messages refuse out loud rather
+        // than serving this count as if it meant something. The cell at
+        // `a_chat_document_that_will_not_parse_refuses_the_page_and_reads_zero`
+        // pins the 0; it does not pin the caching.
         let n = match self.store.read(Doc::Chat, id) {
             Ok(Some((json, _))) => serde_json::from_str::<ChatDoc>(&json).map(|d| d.last).unwrap_or(0),
             Ok(None) => 0,
