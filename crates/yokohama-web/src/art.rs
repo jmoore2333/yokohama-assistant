@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 //! The card art, and the join between an engine identifier and a picture.
 //!
 //! The art is cropped out of the TTS sprite sheets by `docs/tools/mkcardart.py`

@@ -139,7 +139,10 @@ impl Default for ChatConfig {
     }
 }
 
+#[cfg(feature = "server")]
 impl ChatConfig {
+    /// The three reads, `server`-only since M6.5a: a host with no process
+    /// environment builds a [`ChatConfig`] itself and never asks.
     pub fn from_env() -> Result<Self, String> {
         Self::from_env_values(
             std::env::var(LOBBY_VAR).ok().as_deref(),
@@ -147,7 +150,10 @@ impl ChatConfig {
             std::env::var(TEXT_VAR).ok().as_deref(),
         )
     }
+}
+// ---- end server ----
 
+impl ChatConfig {
     /// The read split from the parse, the identity extractor's shape, so the
     /// unset case is testable without touching the process environment.
     ///

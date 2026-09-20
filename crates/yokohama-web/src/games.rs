@@ -244,16 +244,29 @@ impl Games {
     /// defaulted — how a test asks for a keep small enough to watch a trim
     /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
     /// calls [`Games::with_parts`] and keeps the handle it passed; **its clock
-    /// is the wall clock**, so a cell that pins a stamp by value reaches for
-    /// [`Games::with_clock`].
+    /// ticks** — 1, 2, 3, one per reading, see [`Games::ticking_clock`] — so a
+    /// cell that pins a stamp by VALUE reaches for [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
         Self::with_parts(
             rules,
             store,
             ChatConfig { lobby: true, limits },
             Arc::new(NoSignal),
-            Arc::new(crate::table::now_unix),
+            Self::ticking_clock(),
         )
+    }
+
+    /// A clock that reads 1, 2, 3, … — one tick per reading, no platform call.
+    ///
+    /// The default for a `Games` built without a host (R-6.5a.6): the wall clock
+    /// is `server`-only and `AppState` passes it, and a constant would make
+    /// every table's `created_at` a tie, turning each "newest first" cell into a
+    /// claim about the id tie-break instead. Small integers, not unix seconds —
+    /// a cell that wants a stamp that LOOKS like a time injects one through
+    /// [`Games::with_clock`].
+    pub(crate) fn ticking_clock() -> Clock {
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        Arc::new(move || ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
     }
 
     /// The one constructor that builds anything: every part this type holds
@@ -1621,7 +1634,7 @@ pub(crate) mod test_support {
             store,
             crate::chat::ChatConfig::default(),
             signals.clone(),
-            Arc::new(crate::table::now_unix),
+            Games::ticking_clock(),
         );
         (games, signals)
     }

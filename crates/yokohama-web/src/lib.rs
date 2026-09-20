@@ -31,9 +31,27 @@
 //! 3. **Seeds are drawn over the full `u64`.** `yokohama_core`'s `agent.rs`
 //!    records that the public board is an injective fingerprint of the setup
 //!    seed, so a sequential or timestamp seed would hand over the hidden set.
+//!
+//! **The `server` feature and its source convention (M6.5a, R-6.5a.5–7).** The
+//! table layer — `Games` and everything it reaches — builds for
+//! `wasm32-unknown-unknown` with `--no-default-features`; axum, tokio and every
+//! platform call live behind the `server` feature. Two fences hold that, and
+//! neither is the other's fallback: the CI check line proves the DEPENDENCY
+//! fence (no axum, no mio), and `platform_calls_stay_behind_the_server_feature`
+//! below proves the PLATFORM-CALL fence by reading this crate's own source,
+//! because a `SystemTime::now()` compiles for the target and only panics there.
+//! The cell reads a convention rather than the compiler: a `server`-only region
+//! inside a mixed file begins with a line `#[cfg(feature = "server")]` (one per
+//! item — an attribute gates ONE item) and ends with a comment line
+//! `// ---- end server ----` at column 0; a whole-`server` file begins with
+//! `#![cfg(feature = "server")]`. A platform call outside such a region is named
+//! by file and line.
 
+#[cfg(feature = "server")]
 pub mod art;
+#[cfg(feature = "server")]
 pub mod assets;
+// ---- end server ----
 pub mod chat;
 pub mod client;
 pub mod explain;
@@ -46,24 +64,38 @@ pub mod store;
 pub mod table;
 pub mod tables;
 
+use http::StatusCode;
+
+#[cfg(feature = "server")]
 use std::sync::Arc;
 
+#[cfg(feature = "server")]
 use axum::extract::rejection::{JsonRejection, QueryRejection};
+#[cfg(feature = "server")]
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+#[cfg(feature = "server")]
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+#[cfg(feature = "server")]
 use axum::response::{IntoResponse, Response};
+#[cfg(feature = "server")]
 use axum::{
     routing::{get, post},
     Json, Router,
 };
+#[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "server")]
 use yokohama_core::{Rules, SEMANTICS_REV};
 
+#[cfg(feature = "server")]
 use crate::client::ClientState;
+#[cfg(feature = "server")]
 use crate::games::Games;
+#[cfg(feature = "server")]
 use crate::tables::NewGame;
+#[cfg(feature = "server")]
 use crate::store::{FsStore, MemStore, Store};
+// ---- end server ----
 
 /// A refused request, as the client sees it.
 ///
@@ -156,6 +188,7 @@ impl From<games::GameError> for ApiError {
     }
 }
 
+#[cfg(feature = "server")]
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = match self.table_status {
@@ -166,6 +199,7 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[cfg(feature = "server")]
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// This API's request-BODY extractor, and the reason it is not `axum::Json`.
@@ -187,8 +221,10 @@ type ApiResult<T> = Result<Json<T>, ApiError>;
 /// GAME. Because the fence sits at the extractor rather than in a handler, a
 /// malformed body is refused before any lookup — so a bad body against a
 /// missing game answers 400, not 404, which is the right precedence.
+#[cfg(feature = "server")]
 pub struct JsonBody<T>(pub T);
 
+#[cfg(feature = "server")]
 impl<T, S> FromRequest<S> for JsonBody<T>
 where
     Json<T>: FromRequest<S, Rejection = JsonRejection>,
@@ -209,8 +245,10 @@ where
 /// `?tale=5` for `?tail=5` is otherwise a silent full log: the key is dropped,
 /// the `Option` defaults to `None`, and the caller is answered confidently with
 /// something it did not ask for.
+#[cfg(feature = "server")]
 pub struct QueryArgs<T>(pub T);
 
+#[cfg(feature = "server")]
 impl<T, S> FromRequestParts<S> for QueryArgs<T>
 where
     Query<T>: FromRequestParts<S, Rejection = QueryRejection>,
@@ -237,6 +275,7 @@ where
 /// It reaches the client on `/api/health` beside the identity mode, for the
 /// same reason that field is there: it is a deployment fact a client cannot
 /// infer from a successful call.
+#[cfg(feature = "server")]
 pub const SIGNAL_KIND: &str = "sse";
 
 /// The SSE comment cadence in production (R-3.12).
@@ -245,6 +284,7 @@ pub const SIGNAL_KIND: &str = "sse";
 /// is the whole of the choice: a stream that says nothing for longer than
 /// either is a stream the infrastructure closes while both ends believe it is
 /// open.
+#[cfg(feature = "server")]
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// Everything a handler may reach.
@@ -252,6 +292,7 @@ pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
 /// `Rules::standard()` is not cheap and is immutable once built, so it is
 /// constructed once per process and shared by reference — the same discipline
 /// the CLI's `main` uses.
+#[cfg(feature = "server")]
 pub struct AppState {
     pub rules: Arc<Rules>,
     pub games: Games,
@@ -275,6 +316,7 @@ pub struct AppState {
     pub signals: Arc<signal::Signals>,
 }
 
+#[cfg(feature = "server")]
 impl AppState {
     /// Backed by a directory on disk.
     pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Self {
@@ -348,6 +390,7 @@ impl AppState {
 /// client that caches card art or option shapes checks these, not the server
 /// version, which is provenance only.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct Health {
     pub server_version: &'static str,
     pub semantics_rev: u32,
@@ -372,6 +415,7 @@ pub struct Health {
     pub chat_text: u64,
 }
 
+#[cfg(feature = "server")]
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     Json(Health {
         server_version: env!("CARGO_PKG_VERSION"),
@@ -388,6 +432,7 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
 /// What `/api/me` answers. Never a 401: null is the answer that tells the client
 /// which screen to show (spec §2.3).
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct Me {
     pub mode: &'static str,
     pub user: Option<String>,
@@ -400,6 +445,7 @@ pub struct Me {
 /// the case this route exists to report. A client with no identity yet needs a
 /// fact back: the mode, so it knows whether a sign-in screen is even meaningful
 /// here, and `user`, which is `null` when nobody is named.
+#[cfg(feature = "server")]
 async fn me(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Json<Me> {
     Json(Me {
         mode: state.identity.name(),
@@ -416,6 +462,7 @@ async fn me(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) 
 /// engine itself enumerates, so a new variant appears here without anyone
 /// remembering to add it.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct Labels {
     pub area_types: std::collections::BTreeMap<String, String>,
     pub phases: std::collections::BTreeMap<String, String>,
@@ -431,6 +478,7 @@ pub struct Labels {
     pub features: std::collections::BTreeMap<String, String>,
 }
 
+#[cfg(feature = "server")]
 fn key_of<T: Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
         Ok(serde_json::Value::String(s)) => s,
@@ -438,6 +486,7 @@ fn key_of<T: Serialize>(v: &T) -> String {
     }
 }
 
+#[cfg(feature = "server")]
 async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
     use yokohama_cli::describe;
     use yokohama_cli::screen_model::{achievement_registry, PHASE_CHAIN};
@@ -515,6 +564,7 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
 /// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
 /// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
+#[cfg(feature = "server")]
 fn admitted(
     games: &Games,
     id: &str,
@@ -568,10 +618,12 @@ fn admitted(
 /// never a status and so tells a stranger nothing the other two do not. The
 /// stranger sweep pins all three route by route, so a refusal moving between
 /// the sets is a failing cell rather than a silent widening.
+#[cfg(feature = "server")]
 const NOT_SEATED: &str = "you are not seated at this table";
 
 /// The refusal a WRITE route gives an admitted spectator: the same sentence a
 /// caller with no seat has always heard, because that is what they are.
+#[cfg(feature = "server")]
 fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
     match viewer {
         client::Viewer::Seat(_) => Ok(()),
@@ -589,6 +641,7 @@ fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
 /// unreachable-by-construction shape as [`admitted`]'s viewer seat:
 /// `Games::read_table` refuses a document whose `seats` disagrees with its
 /// `players`.
+#[cfg(feature = "server")]
 fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
     match table.seats.get(usize::from(seat.0)) {
         Some(crate::table::SeatDoc::Human { user, .. }) => user,
@@ -613,6 +666,7 @@ fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &
 /// The two readers are [`undo_allowed`], which refuses outright at either
 /// status (R-5.2), and the acting-seat fence, which uses it in place of naming
 /// a seat. `None` means the game is live and the reason is about the caller.
+#[cfg(feature = "server")]
 fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> {
     repl.session.record().lockdown.clone().or_else(|| {
         repl.session.is_over().then(|| yokohama_cli::session::ApplyError::GameOver.to_string())
@@ -661,6 +715,7 @@ fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> {
 /// it, or a trailing standalone reveal — and never more: admission requires
 /// that event to be the caller's own, so a bot run can never be sitting in
 /// front of it, even at a mixed table where one seat is a bot.
+#[cfg(feature = "server")]
 fn undo_allowed(
     repl: &yokohama_cli::repl::Repl,
     table: &crate::table::TableDoc,
@@ -711,6 +766,7 @@ fn undo_allowed(
 /// something it did not ask for.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct ListQuery {
     #[serde(default)]
     pub scope: Option<String>,
@@ -726,6 +782,7 @@ pub struct ListQuery {
 /// field it was: a client reading a bare array would have had to change shape to
 /// learn there was a second page.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct GamesList {
     pub games: Vec<crate::table::TableView>,
     /// The cursor for the NEXT page, or `null` when this is the last one.
@@ -734,6 +791,7 @@ pub struct GamesList {
     pub next: Option<String>,
 }
 
+#[cfg(feature = "server")]
 async fn list_games(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -771,6 +829,7 @@ async fn list_games(
 /// **201 with the TABLE, and no game yet.** Nothing is dealt into anyone's hand
 /// by this call: the seats are bound and every human seat is owed a deal it
 /// fetches for itself.
+#[cfg(feature = "server")]
 async fn create_game(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -786,6 +845,7 @@ async fn create_game(
 /// because a join link is an address and the person following one has to see
 /// what they are joining. At every other status this is `Games::table`'s fence
 /// unchanged, and `my_seats` on the view may therefore be EMPTY.
+#[cfg(feature = "server")]
 async fn get_table(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -796,6 +856,7 @@ async fn get_table(
 }
 
 /// The caller's own two cards, over the set table. A seated caller's, or a 403.
+#[cfg(feature = "server")]
 async fn deal(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -807,6 +868,7 @@ async fn deal(
 /// Which of the two dealt cards a seat keeps.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct Keep {
     pub seat: u8,
     pub card: u8,
@@ -822,6 +884,7 @@ pub struct Keep {
 /// ignores one, and a table with a lock refuses without it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct Join {
     pub seat: u8,
     #[serde(default)]
@@ -830,6 +893,7 @@ pub struct Join {
     pub password: Option<String>,
 }
 
+#[cfg(feature = "server")]
 async fn join(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -850,6 +914,7 @@ async fn join(
 /// Access has already opened, and nobody's identity rests on it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct Unlock {
     pub password: String,
 }
@@ -861,6 +926,7 @@ pub struct Unlock {
 /// `TableView`, whose `can_watch` now reads true, so a client that was
 /// drawing the unlock face has the payload it needs to draw the game instead
 /// without a second request.
+#[cfg(feature = "server")]
 async fn unlock(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -875,6 +941,7 @@ async fn unlock(
 /// is the seat's (R-6.4.2).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct ChatPost {
     pub text: String,
     #[serde(default)]
@@ -885,6 +952,7 @@ pub struct ChatPost {
 /// cursor is serde's 400.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct ChatQuery {
     #[serde(default)]
     pub after: Option<u64>,
@@ -898,6 +966,7 @@ pub struct ChatQuery {
 /// already dropped is told where the room has got to rather than left to infer
 /// it from an empty page.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct ChatPage {
     pub messages: Vec<chat::Message>,
     pub last: u64,
@@ -919,6 +988,7 @@ pub struct ChatPage {
 /// `events_carries_the_chat_count_at_open_dealing_and_playing`, which asserts
 /// both halves of that one caller in two adjacent lines. A room is readable by
 /// the people `admitted` admits, not by everyone who can see the door.
+#[cfg(feature = "server")]
 async fn chat_read(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -940,6 +1010,7 @@ async fn chat_read(
 /// lock": `admitted` runs first, and on a dealing table where every human has
 /// kept it goes through `settle`, which takes that table's lock to finish the
 /// deal.)
+#[cfg(feature = "server")]
 async fn chat_post(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -960,6 +1031,7 @@ async fn chat_post(
 /// at a seat the table has already settled that claim. A seated caller who
 /// sends one is refused rather than quietly overridden, because a client that
 /// believed it was setting a name and was answered 201 would go on sending it.
+#[cfg(feature = "server")]
 fn author_of(
     table: &crate::table::TableDoc,
     viewer: client::Viewer,
@@ -990,6 +1062,7 @@ fn author_of(
 /// something this deployment refuses you — it is something this deployment does
 /// not have. The client reads the same fact off `/api/health` and draws no
 /// panel at all; the sentence is for whoever asks anyway.
+#[cfg(feature = "server")]
 fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
     if games.chat.lobby {
         Ok(())
@@ -999,6 +1072,7 @@ fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
 }
 
 /// `GET /api/chat?after=N` — the house. Any signed-in caller.
+#[cfg(feature = "server")]
 async fn house_chat_read(
     identity::Identity(_user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1015,6 +1089,7 @@ async fn house_chat_read(
 /// Which is not a simplification but the shape rule's own answer: the house
 /// document is checked with `players: None`, and a `Seat` author there is
 /// refused on write. There is nothing to be seated at.
+#[cfg(feature = "server")]
 async fn house_chat_post(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1028,6 +1103,7 @@ async fn house_chat_post(
     Ok((StatusCode::CREATED, Json(message)))
 }
 
+#[cfg(feature = "server")]
 async fn keep(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1043,6 +1119,7 @@ async fn keep(
     Ok(Json(state.games.keep(&id, &user, seat, req.card, req.name.as_deref())?))
 }
 
+#[cfg(feature = "server")]
 async fn get_game(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1058,6 +1135,7 @@ async fn get_game(
     Ok(Json(ClientState::of(&id, &repl, viewer, Vec::new())))
 }
 
+#[cfg(feature = "server")]
 async fn delete_game(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1070,6 +1148,7 @@ async fn delete_game(
 /// What the client sends to act.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct Input {
     /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
     /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
@@ -1112,6 +1191,7 @@ pub struct Input {
 /// rather than inside `grammar` calling `step`, so that reading this handler
 /// shows both that a line is checked and that a checked line goes through
 /// untouched.
+#[cfg(feature = "server")]
 async fn input(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1337,6 +1417,7 @@ async fn input(
 /// own anything, so there is nothing here for a viewer to scope. The fence in
 /// front of them is still the seat one: what the three would leak to a stranger
 /// is the offer at a table they have no business at.
+#[cfg(feature = "server")]
 macro_rules! surface {
     ($name:ident, $model:ty, $build:expr) => {
         async fn $name(
@@ -1353,8 +1434,11 @@ macro_rules! surface {
     };
 }
 
+#[cfg(feature = "server")]
 surface!(ports, yokohama_cli::screen_model::PortsPanel, yokohama_cli::screen_model::build_ports);
+#[cfg(feature = "server")]
 surface!(labs, yokohama_cli::screen_model::LabsPanel, yokohama_cli::screen_model::build_labs);
+#[cfg(feature = "server")]
 surface!(areas, yokohama_cli::screen_model::AreasPanel, yokohama_cli::screen_model::build_areas);
 
 /// How much of the log a request gets when it does not say.
@@ -1367,6 +1451,7 @@ surface!(areas, yokohama_cli::screen_model::AreasPanel, yokohama_cli::screen_mod
 /// showing.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct LogQuery {
     #[serde(default)]
     pub tail: Option<usize>,
@@ -1396,6 +1481,7 @@ pub struct LogQuery {
 /// and wrong for a multi-second search: it would block every request for this
 /// game, including the poll that draws the board. `GameState` is history-free
 /// and cheap to clone for exactly this reason.
+#[cfg(feature = "server")]
 async fn suggest(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1493,6 +1579,7 @@ async fn suggest(
 ///
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
+#[cfg(feature = "server")]
 async fn why(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1560,6 +1647,7 @@ async fn why(
 /// exactly ONE card-entry grammar in this project and the web does not get a
 /// second one: a second parser would answer an ambiguous prefix differently from
 /// the terminal on the first `f s` a player typed.
+#[cfg(feature = "server")]
 async fn card_index(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1618,6 +1706,7 @@ async fn card_index(
 /// carrying the CLI's own refusal, which names what it would have accepted.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct IndexQuery {
     #[serde(default)]
     pub filter: Option<String>,
@@ -1629,6 +1718,7 @@ pub struct IndexQuery {
 /// **A 409 while the game is still running**, not an empty payload: asking for
 /// the result of an unfinished game is a client mistake, and `final_result`
 /// would answer with a standing nobody has earned.
+#[cfg(feature = "server")]
 async fn result(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1650,6 +1740,7 @@ async fn result(
 /// Which event `why` should account for. Absent means the most recent bot move.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct WhyQuery {
     #[serde(default)]
     pub event: Option<usize>,
@@ -1669,6 +1760,7 @@ pub struct WhyQuery {
 /// as "hidden starting order" (M6.1 §5.3). So there is nothing here to scope to
 /// a seat, and a per-viewer log would be a second, divergent wording of events
 /// that were already described once, against the state they applied in.
+#[cfg(feature = "server")]
 async fn log(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1707,6 +1799,7 @@ async fn log(
 /// consumer branches on one boolean. It is false once the game is over, so a
 /// finished game never reads as waiting for the reader.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(feature = "server")]
 pub struct Events {
     pub events: usize,
     pub to_move: Option<yokohama_core::PlayerId>,
@@ -1737,6 +1830,7 @@ pub struct Events {
 /// too, rather than a silent `None` that polls from the beginning forever.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(feature = "server")]
 pub struct EventsQuery {
     #[serde(default)]
     pub after: Option<usize>,
@@ -1762,6 +1856,7 @@ pub struct EventsQuery {
 /// silently given 25 would read the early answer as "nothing changed for two
 /// minutes", which is the same failure `deny_unknown_fields` exists to prevent
 /// one field over.
+#[cfg(feature = "server")]
 const MAX_WAIT_SECONDS: u64 = 25;
 
 /// `GET /api/games/{id}/events` — the change signal, polled form.
@@ -1792,6 +1887,7 @@ const MAX_WAIT_SECONDS: u64 = 25;
 /// subscribes, then answers on the first bump or at the deadline. Both arms
 /// answer the same way — a held request that times out is not an error, it is
 /// "nothing has changed".
+#[cfg(feature = "server")]
 async fn events(
     State(state): State<Arc<AppState>>,
     identity::Identity(user): identity::Identity,
@@ -1825,6 +1921,7 @@ async fn events(
 /// stream's own cell asserts the first frame equals an `events` read BY VALUE,
 /// which is the property this function makes true by construction rather than
 /// by agreement between two bodies.
+#[cfg(feature = "server")]
 fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64) -> Events {
     let s = repl.session.state();
     let over = repl.session.is_over();
@@ -1865,6 +1962,7 @@ fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64)
 /// an open table is still `admitted`'s 403 — and it stops at `open`: `dealing`
 /// and `playing` fall straight through, so a stranger at a deal is refused and
 /// a locked game still asks for its password.
+#[cfg(feature = "server")]
 fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, ApiError> {
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
@@ -1940,6 +2038,7 @@ fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, A
 /// is a worse answer than saying nothing. Neither arm closes anything by
 /// itself: what closes a connection is the client acting on `end`, or the
 /// delete that is the only ordinary cause.
+#[cfg(feature = "server")]
 async fn stream(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -2002,6 +2101,7 @@ async fn stream(
 ///
 /// Identity is required and is the whole of the admission — the house is not a
 /// table and has nothing to scope.
+#[cfg(feature = "server")]
 async fn house_stream(
     identity::Identity(_user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -2059,6 +2159,7 @@ async fn house_stream(
 /// milliseconds, `input` already holds the same mutex across a bot search AND a
 /// store write, and the clone that dropping would require copies every `Move` in
 /// the record. Following `why`'s pattern here would cost more than it saves.
+#[cfg(feature = "server")]
 async fn at_k(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -2096,6 +2197,7 @@ async fn at_k(
 /// the absence answers as a refusal with the sentence that explains it — which
 /// names the regeneration command, because the one thing a reader needs here is
 /// how to make it stop being absent.
+#[cfg(feature = "server")]
 async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
     art::load(&art::art_dir()).map(Json).map_err(|e| {
         ApiError::not_found(format!("{e} — run `python3 docs/tools/mkcardart.py` from the repo root"))
@@ -2113,6 +2215,7 @@ async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
 /// one: a missing picture answering with HTML is a broken image whose message
 /// blames the decoder. Everything else is the client, with the SPA fallback
 /// `assets::serve` describes.
+#[cfg(feature = "server")]
 async fn fallback(uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
@@ -2125,6 +2228,7 @@ async fn fallback(uri: axum::http::Uri) -> Response {
 
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
+#[cfg(feature = "server")]
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(health))
@@ -2156,6 +2260,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
         .fallback(fallback)
 }
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {
@@ -7391,5 +7496,76 @@ mod tests {
         assert_eq!(frames_after_chat.len(), 1, "one message, one frame: {frames_after_chat:?}");
         assert_eq!(frames_after_chat[0]["chat"], 1);
         assert_eq!(frames_after_chat[0]["seq"], 0);
+    }
+
+    /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles
+    /// for the target and panics there), so the crate's own source is read at run
+    /// time, cut at each file's first top-level `#[cfg(test)]`, and any platform
+    /// call outside the `server`-gated files or a `#[cfg(feature = "server")]`
+    /// region is named. Two anti-vacuity partners: the gated files must exist, and
+    /// at least one gated site must match, so a pattern that matches nothing is
+    /// caught as loudly as a call that escaped. The region convention this reads
+    /// is written into the crate's module doc.
+    #[test]
+    fn platform_calls_stay_behind_the_server_feature() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let gated_files = ["art.rs", "assets.rs", "main.rs"];
+        let patterns = [
+            "SystemTime",
+            "Instant::now",
+            "std::fs",
+            "std::env",
+            "std::thread",
+            "std::process",
+            "tokio::",
+            "axum::",
+        ];
+        let mut escaped: Vec<String> = Vec::new();
+        let mut gated_hits = 0usize;
+        for name in gated_files {
+            assert!(src.join(name).exists(), "gated file {name} is missing — update the list");
+        }
+        for entry in std::fs::read_dir(&src).expect("src is readable") {
+            let path = entry.expect("an entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            let text = std::fs::read_to_string(&path).expect("readable");
+            let non_test = text.split("#[cfg(test)]").next().unwrap_or("");
+            let whole_file_gated = gated_files.contains(&name.as_str())
+                || non_test.trim_start().starts_with("#![cfg(feature = \"server\")]");
+            // A block-gated region starts at a line reading `#[cfg(feature = "server")]`
+            // and ends at the next line that starts at column 0 with
+            // `// ---- end server ----`; the source keeps those regions contiguous
+            // by convention (the crate's module doc).
+            let mut depth_gate = false;
+            for (n, line) in non_test.lines().enumerate() {
+                if line.trim_start().starts_with("#[cfg(feature = \"server\")]") {
+                    depth_gate = true;
+                    continue;
+                }
+                if depth_gate && line.starts_with("// ---- end server ----") {
+                    depth_gate = false;
+                    continue;
+                }
+                let in_gate = whole_file_gated || depth_gate;
+                for p in patterns {
+                    if line.contains(p) && !line.trim_start().starts_with("//") {
+                        if in_gate {
+                            gated_hits += 1;
+                        } else {
+                            escaped.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(gated_hits > 0, "no gated site matched any pattern — the patterns are stale");
+        assert!(
+            escaped.is_empty(),
+            "platform calls outside the server feature:\n{}",
+            escaped.join("\n")
+        );
     }
 }

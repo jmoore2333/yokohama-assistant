@@ -2270,10 +2270,10 @@ mod tests {
         let games = games();
         let (red, blue, green) = (who("red@t.test"), who("blue@t.test"), who("green@t.test"));
         games.create(&two_people("first", CORPUS_SEED), &red).unwrap();
-        // `created_at` is unix SECONDS (R-plan-1), so two creates in one second
-        // are one instant and the order would be the id tie-break rather than
-        // the claim this cell makes.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // The test clock ticks once per reading (`Games::ticking_clock`), so the
+        // second create is NEWER by construction and this cell's claim is about
+        // the sort's first key, not the id tie-break. (Under the wall clock it
+        // slept 1.1 s here, because `created_at` is unix SECONDS.)
         let handle = playing(&games, &req_seeded("second", CORPUS_SEED), &["red@t.test"]);
         drop(handle);
         let mine = games.list_for(&red).unwrap();
@@ -3563,7 +3563,7 @@ mod tests {
         let red = who("red@t.test");
         let blue = who("blue@t.test");
         open_two(&games, "o1", None);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // One tick per create under the test clock — no wall-clock sleep needed.
         games.create(&two_people("mine-only", CORPUS_SEED), &red).unwrap();
         let mut r = req("o2");
         r.seats = vec![

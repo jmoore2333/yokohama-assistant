@@ -22,7 +22,9 @@
 //! and does not prevent one, which is exactly the property `persist` has always
 //! had — restated here rather than quietly widened.
 
+#[cfg(feature = "server")]
 use std::path::{Path, PathBuf};
+// ---- end server ----
 
 /// A game's name. Also a filename, which is why [`is_safe_id`] exists.
 pub type GameId = String;
@@ -55,6 +57,8 @@ pub enum Doc {
 }
 
 impl Doc {
+    // Reached only by `FsStore::path`; the layer without `server` never spells a file name.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     fn suffix(self) -> &'static str {
         match self {
             Self::Record => ".json",
@@ -205,6 +209,7 @@ fn check_house_id(doc: Doc, id: &str) -> Result<(), String> {
 }
 
 /// The local implementation: one JSON file per document in a directory.
+#[cfg(feature = "server")]
 pub struct FsStore {
     dir: PathBuf,
     /// Held across the read, the compare AND the write of
@@ -213,6 +218,7 @@ pub struct FsStore {
     lock: std::sync::Mutex<()>,
 }
 
+#[cfg(feature = "server")]
 impl FsStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into(), lock: std::sync::Mutex::new(()) }
@@ -300,6 +306,7 @@ impl FsStore {
     }
 }
 
+#[cfg(feature = "server")]
 impl Store for FsStore {
     fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
         if doc == Doc::House {
@@ -393,6 +400,8 @@ impl Store for FsStore {
     }
 }
 
+// ---- end server ----
+
 /// An in-memory store, for tests and for a run that must leave no trace.
 #[derive(Default)]
 pub struct MemStore {
@@ -465,12 +474,15 @@ impl Store for MemStore {
 
 /// The default local directory: `~/.yokohama/games`, or `./yokohama-games` when
 /// there is no home to speak of.
+#[cfg(feature = "server")]
 pub fn default_dir() -> PathBuf {
     std::env::var_os("YOKOHAMA_WEB_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".yokohama").join("games")))
         .unwrap_or_else(|| PathBuf::from("yokohama-games"))
 }
+
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {

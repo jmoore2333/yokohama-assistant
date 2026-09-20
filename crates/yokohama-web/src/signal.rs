@@ -61,14 +61,17 @@ impl Signal for NoSignal {
     fn end(&self, _id: &str) {}
 }
 
+#[cfg(feature = "server")]
 use std::collections::HashMap;
+#[cfg(feature = "server")]
 use std::sync::Mutex;
-
+#[cfg(feature = "server")]
 use tokio::sync::watch;
-
+#[cfg(feature = "server")]
 use crate::store::GameId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(feature = "server")]
 pub struct Bump {
     pub seq: u64,
     /// Sent once, by `end`: the table was deleted and every stream on it closes.
@@ -85,17 +88,20 @@ pub struct Bump {
 /// frame, chat included, which is the M6.4 close's own LEAVE item. Read this as
 /// the shape a later `"value"` consumer needs, not as a saving already taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(feature = "server")]
 pub struct House {
     pub seq: u64,
     pub chat: u64,
 }
 
 #[derive(Default)]
+#[cfg(feature = "server")]
 pub struct Signals {
     tables: Mutex<HashMap<GameId, watch::Sender<Bump>>>,
     house: Mutex<Option<watch::Sender<House>>>,
 }
 
+#[cfg(feature = "server")]
 impl Signals {
     fn table_sender(&self, id: &str) -> watch::Sender<Bump> {
         let mut tables = self.tables.lock().expect("signals lock");
@@ -130,6 +136,7 @@ impl Signals {
 /// `Arc<dyn Signal>` reaches exactly these; `subscribe`, `subscribe_house` and
 /// the two private senders stay inherent, because reading a bump back is the
 /// transport's side and the trait has no business naming a `watch::Receiver`.
+#[cfg(feature = "server")]
 impl Signal for Signals {
     fn bump_table(&self, id: &str) {
         let tx = self.table_sender(id);
@@ -158,6 +165,8 @@ impl Signal for Signals {
         self.house_sender().send_modify(|h| h.seq += 1);
     }
 }
+
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {

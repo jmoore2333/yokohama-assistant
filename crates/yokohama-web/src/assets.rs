@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 //! Serving the built client from the same origin as the API.
 //!
 //! Hand-rolled rather than a `tower-http` dependency: this is a read-only file

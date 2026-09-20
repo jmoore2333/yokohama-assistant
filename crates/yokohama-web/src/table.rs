@@ -414,12 +414,15 @@ pub struct DealView {
 /// A clock that reads before the epoch gives 0 rather than failing: the only
 /// consumer is the list's sort order, and a table sorting last is a better
 /// answer than a create that refuses because the host's clock is wrong.
+#[cfg(feature = "server")]
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {
