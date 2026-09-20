@@ -5,10 +5,11 @@ M6.5a deploy record), from the brainstorm with the owner that same day, under th
 `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (R-6.5.1–13) and from the M6.5a close
 `docs/plans/2026-09-20-web-frontend-m6.5a-close.md` and its entry handover
 `docs/plans/2026-09-20-web-frontend-m6.5b-handover.md`. This document is M6.5b's authority; the
-plan is written from it (R-6.5.7, R-P11); the close is its record. Revised once after an Opus
+plan is written from it (R-6.5.7, R-P11); the close is its record. Revised twice after an Opus
 adversarial read of the first draft against HEAD (2 Critical / 10 Important / 13 Minor, 41 claims
-verified true; the report is in the gitignored `.superpowers/sdd/2026-09-20-web-frontend-m6.5b/`)
-— §9 lists what that read changed.**
+verified true) and that reviewer's scoped re-read of the fix wave (24 addressed, 1 partly, 0 not;
+1 new Critical, 3 new Important, 6 new Minor, all fixed in the second wave); both reports are in
+the gitignored `.superpowers/sdd/2026-09-20-web-frontend-m6.5b/` — §9 lists what they changed.**
 
 **The headline.** A person opens the site and plays the bot with no server behind the page: the
 whole table layer (`api::dispatch` over `Games`, the engine and the production bot inside it)
@@ -241,10 +242,15 @@ Every line below was opened by the review; the ones it corrected are marked.
 - **R-6.5b.15 — the archive's caller prefix is a path-safe ENCODING of the address, never the
   address.** `archive::caller_segment(user) -> String`: the normalised address with `@`
   replaced by `_at_` and every character outside `[a-z0-9._-]` replaced by `_`, capped at 64
-  characters. A segment so built can never be empty, `.` or `..` (it always contains `_at_`)
-  and never contains `/`, so no address can name a path outside the root; a cell asserts that
-  `../../x@y`, `a/b@c` and `..@..` all land inside it (§6.1). Readable on purpose: the owner
-  reviews saves by who sent them, and a hash would hide that. *(C-1)*
+  characters. **The property that holds under the cap**: the segment is at least five
+  characters of `[a-z0-9._-]` with no `/` (a local part and a domain are each non-empty and the
+  separator is four characters, and the cap can only shorten), so it can be neither empty, `.`
+  nor `..`, and no address can name a path outside the root; a cell asserts that `../../x@y`,
+  `a/b@c` and `..@..` all land inside it (§6.1). Readable on purpose: the owner reviews saves by
+  who sent them, and a hash would hide that. **It collides, and §8 says so**: `a/b@c` and
+  `a_b@c` render alike, and two addresses longer than the cap can share a prefix — and with it
+  each other's "already archived" refusal. A hash is the one-line alternative if the bucket must
+  hold no addresses. *(C-1, N-6)*
 
 ---
 
@@ -270,8 +276,9 @@ and exports exactly these:
   string | null, body: Uint8Array) -> { status: number, body: string }` — builds an
   `ApiRequest` and calls `api::dispatch` with `Host { identity_name: "local", signal_kind:
   "none" }` and `Identity = Ok(&User::parse(user))`, or `Err("no identity given")` when
-  `user` is `null`, so an anonymous call answers the layer's own 401 as the corpus captures it
-  (`me_signed_out.json`). **The identity is a parameter so a test can play the corpus walk
+  `user` is `null`, so `/api/me` answers `user: null` as the corpus captures it
+  (`me_signed_out.json` is a 200 — `/api/me` never refuses) and the 401 sweep has an arm it can
+  reach. *(N-5)* **The identity is a parameter so a test can play the corpus walk
   as its own five people** (§6.3); the Worker passes `local@browser` and nothing but the Worker
   can reach the module. *(I-1)*
 - `load(doc: "record" | "table", id: string, text: string)` — writes the document into the
@@ -354,10 +361,13 @@ then `init()`s and `load`s every stored pair before it answers anything.
   `identityHeaders()` is not read. `recordText` reads the record for a local game from the
   Worker's side channel (a `read` message), never from the `…/record` route, which the local
   dispatch still answers exactly as the corpus pins it (a 409 while running — umbrella §2.5).
-  `api.labels()` is routed locally ALWAYS: it needs only `Rules`, and it is what keeps every
-  enum's words on screen when the server cannot be reached. The art manifest is the host's
-  (`/api/art` is not in the layer) and degrades to the typed fallback when it cannot be
-  fetched; level 3 is what fixes that. *(I-2, M-4)*
+  `api.labels()` is read from the SERVER first and from the Worker only when that read fails
+  (`App.tsx:561`'s `.catch` is the hook): the words on the cards survive an unreachable API,
+  and the Worker stays lazy — a visitor who only plays hosted games never downloads the module.
+  Routing it locally ALWAYS was considered and declined for that boot cost (a stated default
+  the owner may reverse; §2.1 would then record the module's cost at every page load). The art
+  manifest is the host's (`/api/art` is not in the layer) and degrades to the typed fallback when
+  it cannot be fetched; level 3 is what fixes that. *(I-2, M-4, N-1)*
 - `signal.ts`: `Source` gains one optional field, `host?: "local"`, and `open()` gains a third
   arm for it: no stream, no held request, nothing to wait for — the bot's trailing run
   returns inside the reply, as the whole-game gate plays it today. **This AMENDS umbrella
@@ -388,7 +398,9 @@ then `init()`s and `load`s every stored pair before it answers anything.
   usize, to: usize }` with `deny_unknown_fields` through `parse_query`, so a non-numeric or
   unknown field is a 400 in axum's words; **`from > to` or `to > len` is the 404 and the
   sentence `at/{k}` already gives for a position past the end, extended to name the range**,
-  so the two routes refuse one condition one way; a run longer than **64** frames is a 400
+  so the two routes refuse one condition one way — and `from > to`, a malformed range rather
+  than a missing position, is DELIBERATELY the same 404 rather than a third answer; a run longer
+  than **64** frames is a 400
   naming the cap (never a silent clamp — the M6.3 `wait` rule). *(I-7)*
 - **`POST /api/archive`** (R-6.5b.6) — body `ArchivePost { record: String, table: String }`
   with `deny_unknown_fields`, both strings parsed by the SERVER. In order: (1) a
@@ -397,8 +409,17 @@ then `init()`s and `load`s every stored pair before it answers anything.
   semantics provenance" sentence carried verbatim; (2) a `terminal_digest` present, else 400
   "the record carries no terminal digest"; (3) `replay_strict` clean, else 400 "the record does
   not replay: <the engine's sentence>"; (4) the table document parses, passes `check_shape`,
-  and AGREES with the record — `players`, `colors`, `start_seat`, `keeps` and `seed` equal
-  (a new `TableDoc::agrees_with(&GameRecord)`; nothing at HEAD compares the two) — else 400;
+  and AGREES with the record (a new `TableDoc::agrees_with(&GameRecord)`; nothing at HEAD
+  compares the two) — `doc.players` equals the record config's player count, `doc.colors ==
+  record.config.player_colors`, `doc.start_seat == record.config.start_player`, `doc.seed ==
+  record.seed`, and **for every seat the document actually claims a keep for** (`keeps[i] ==
+  Some(n)`, 1-based) the record reads `choices[i] == Keep(n - 1)` (0-based, the `- 1` of
+  `choices_of` at `tables.rs:506`). **A `None` keep is NOT compared**: a bot seat's keep lives
+  in the record and never in the table document — `create` fills `keeps` with `None`
+  (`tables.rs:756`), only a seat holder may `keep` (`:1463`), and `choices_of` recomputes the
+  bot's from `bot_keep` at finalize (`:499`) — so every real local pair reads `keeps = [Some(n),
+  None]` against two `Keep`s, and a rule that compared the `None` would 400 every real send
+  *(N-4)* — else 400;
   then **the leaf IS the `Why`**: `Why::Over` iff the replayed state `is_over`, else
   `Why::Abandoned`, never read from the body; then `archive.put(prefix, why, id, record,
   table)` with the prefix `browser/<caller_segment>/` (R-6.5b.15), answering 201 `{ "leaf":
@@ -481,7 +502,7 @@ game can be saved as a file first.
   but one: "already archived" on an abandon means an earlier send landed and only the delete
   failed, so the abandon proceeds.
 - **No reachable API**: the one line, the local facts, the archive controls dark, the words
-  intact (`labels` is local), the pictures gone.
+  intact (`labels` falls back to the Worker), the pictures gone.
 
 ---
 
@@ -494,11 +515,17 @@ game can be saved as a file first.
   rev.json`, `archive_400_digest.json`, `archive_400_replay.json`, `archive_400_table.json`,
   `archive_409.json` — the walk's own record, edited in memory for each.
 - **`walk.json` — NEW KIND: the walk's request script**, emitted THROUGH `corpus()` (so the
-  orphan cell counts it, as it counts `site_space_words.json`): for every `call_as`, `{ who,
-  method, path, query, body, fixture }` in order. `call_as` does not know the fixture's name
-  — it is bound at the `out.push` sites — so the walk records each call into a side list that
-  those sites annotate; the alternative (a name parameter on `call_as`, ~120 call sites) is
-  declined. It is the input §6.3 replays through the module. *(M-10)*
+  orphan cell counts it, as it counts `site_space_words.json`): for every `call_as` of the
+  PRIMARY `Api`, `{ who, method, path, query, body, fixture }` in order, where **`fixture` is
+  nullable** — most rows are intermediates and assertions (the dispatcher cell counts 234
+  compared pairs over a 74-payload walk), every row is REPLAYED so the module's state keeps
+  step with the walk's, and only a named row is compared. `call_as` does not know the
+  fixture's name — it is bound at the `out.push` sites — so the walk records each call into a
+  side list that those sites annotate; the alternative (a name parameter on `call_as`, ~120
+  call sites) is declined. **The side list is per `Api` instance and only the primary's rows
+  are emitted**: `house_chat_off_404.json` is captured through `call_as` on a SECOND `Api`
+  built with `lobby: false` (`wire_fixtures.rs:1510-1513`), and it belongs in the third column
+  below, not in the script. It is the input §6.3 replays through the module. *(M-10, N-2, N-3)*
 - **Every committed file is in exactly ONE of three columns, and the classification is
   DERIVED, not written** (the replay asserts it, so a new fixture cannot join the corpus
   without landing in a column): *(I-1)*
@@ -537,7 +564,10 @@ game can be saved as a file first.
 - R-6.5b.13: a finished unstamped game deleted lands under `over/` when the mirror says over —
   and the cell's doc names the mirror residual. *(M-3)*
 - R-6.5b.14: `content_type("x.wasm") == "application/wasm"` in the existing cell.
-- `TableDoc::agrees_with`: each of the five fields disagreeing is refused by name.
+- `TableDoc::agrees_with`: each of the five fields disagreeing is refused by name, **and the
+  committed browser-played pair of §6.4 — one human, one bot, `keeps = [Some(n), None]` — is
+  ACCEPTED**, which is the arm that keeps the five refusals from passing on a synthetic all-human
+  pair while the only real input is refused. *(N-4)*
 
 ### 6.2 Client cells (vitest)
 
@@ -566,9 +596,10 @@ meaning and its count and the module is a dependency of one command rather than 
 per-edit gate. It loads the module built for Node, calls `set_clock(1_789_000_000)` — the
 `FROZEN_CREATED_AT` the corpus writes, under which every stamp ties and the listing falls to
 the same id tie-break the committed files already show — and replays `walk.json` through
-`dispatch` with each call's OWN identity (`null` for the anonymous call), asserting every
-reply in §5's first column deep-equals the committed file, the second column equal outside
-its named fields, and the third column exactly the files the script does not name. Because it
+`dispatch` with each call's OWN identity (`null` for the anonymous call), executing EVERY row
+and asserting, for every row that names a fixture, that the reply in §5's first column
+deep-equals the committed file, the second column equal outside its named fields, and that the
+third column is exactly the files the script does not name. Because it
 is the same walk through the compiled module, it is also a bot-free determinism claim across
 the compilation boundary. It REFUSES loudly when the module is absent, naming `npm run
 build:wasm`; `YOKOHAMA_WASM_OPTIONAL=1` turns absence into a skip that says so. **CI:** the
@@ -579,7 +610,10 @@ runs `npm run test:wasm`; the `web-client` job is untouched. *(I-8)*
 builds its `Games` with `with_clock` at the same constant, so the walk's listings no longer
 depend on two creates landing inside one wall-clock second — the review found that a straddled
 second boundary would sort `wire2` first and turn the corpus red on unchanged code. The two
-hosts then agree by construction rather than by coincidence. *(review claim 37)*
+hosts then agree by construction rather than by coincidence. **The regeneration diff for that
+change is expected EMPTY** — the committed listings already show the id tie-break, and
+`1_789_000_000` clears `freeze_clock`'s floor — so a non-empty diff there is a finding about the
+tie assumption, not a fixture to accept. *(review claim 37, N-9)*
 
 ### 6.4 The determinism pin (umbrella §2.5, O-3, O-11)
 
@@ -603,6 +637,9 @@ Worker's replay wall on reload (O-3), both RECORDED. Regeneration is one documen
 - **Two TABS of ONE context** (IndexedDB is per profile; two contexts would prove nothing):
   B opens the lobby first, A plays a run of moves, B opens the game and takes over — **B's first
   frame shows A's moves** — and A is read-only with Take back. *(C-2)*
+- **The reload cell**: a local game reloaded mid-play, at a position where the bot is to move,
+  comes back with the bot's cold pump PRESERVED across the reload (the outcome-triggered
+  write-back of §2.2) and the replay wall recorded (O-3). *(N-7)*
 - The first screen with the API refused (a route that 503s `/api/*`): "On this device"
   renders, a local game plays, the option words are intact.
 - Any NEW spec file carries the file-level `test.skip(!haveBrowser, …)` guard that
@@ -642,7 +679,8 @@ on the first per-seat payload). *(I-9, and every review item with a catcher)*
 4. The Worker: messages, IndexedDB, the lock with the rebuild-on-acquire, the in-flight rule,
    persistence by outcome; `api.ts`'s local arm with `host?`; `signal.ts`'s `Source.host?`;
    per-source deployment facts with the one named cross-read. **The SDD candidate.**
-5. The first screen: the four gates, "On this device", Play the bot here, `labels` local.
+5. The first screen: the four gates, "On this device", Play the bot here, `labels` with its
+   Worker fallback.
 6. The local game screen's three differences; Save game file; Abandon and save; Send to the
    archive.
 7. `walk.json` through `corpus()` with the side list; the frozen clock in `Api::new`; the
@@ -650,7 +688,9 @@ on the first per-seat payload). *(I-9, and every review item with a catcher)*
 8. The e2e walk; the committed browser-played PAIR; the determinism pin over `dispatch`; O-3
    recorded; the takeover cell.
 9. Docs: the help panel, `NewGame.id`'s doc line, RUNBOOK §1 (the wasm build line) and §3.13,
-   CLAUDE.md (the fourth web command and its count), the board; the close.
+   CLAUDE.md (the fourth web command `npm run test:wasm` and its count, and `cargo test -p
+   yokohama-wasm` as a per-edit line with its count — the crate's own scan is a test nothing
+   runs until a documented command names it), the board; the close.
 
 Process: R-P11 as refined 2026-09-20 — small mechanical tasks inline with the per-edit gates
 after each, one Opus review at the structural mid-point (after Task 4) and one whole-branch
@@ -674,7 +714,8 @@ review before the release; full SDD only for a task the plan marks large or judg
 - **The lock is per browser profile.** Two profiles on one machine are two IndexedDBs: no
   conflict, and no sharing.
 - **"At most once" is per path.** One save sent by two callers lands under two prefixes;
-  the training side dedups by digest.
+  the training side dedups by digest. **And the caller prefix collides** (R-6.5b.15): an unusual
+  address, or two longer than 64 characters, can share a directory and each other's 409.
 - **The leaf at an abandon follows the mirror**, which can be one move stale in one race
   (R-6.5b.13).
 - **A local game's data leaves the device only by the player's own send or save.** There is
@@ -714,3 +755,21 @@ several right-altitude sentences, and three inferences drawn from true citations
 - **I-10** the bot's pump on a cold GET missed the write-back → persistence by outcome.
 - **M-2 … M-12** as marked in place; **claim 37** the walk's latent clock flake → the frozen
   clock in `Api::new`.
+
+The scoped re-read of that wave found one Critical the wave had introduced and nine smaller
+things; all are in the second wave:
+
+- **N-4** check (4) compared a bot seat's `None` keep against the record's `Keep` and would have
+  refused every real send → the rule compares only the keeps the document claims, and §6.1's
+  cell ACCEPTS the committed browser-played pair.
+- **N-1** `labels` local ALWAYS made the Worker eager on every page load → server first, Worker
+  on failure; the Worker stays lazy (a default the owner may reverse).
+- **N-2, N-3** the third column's rule was false for `house_chat_off_404.json`, and most rows
+  name no fixture → the side list is per primary `Api`; `fixture` nullable; every row replayed.
+- **N-5** the anonymous arm is a 200, not a 401 → §2.1.
+- **N-6** the cap could cut inside `_at_`; the encoding collides → the property that survives
+  the cap, the collisions in §8.
+- **N-7** §6.6 pointed at a reload cell §6.5 did not list → listed.
+- **N-8** the new crate's scan had no command → Task 9's CLAUDE.md line.
+- **N-9** the clock change's regeneration diff is expected empty → said.
+- **N-10** `from > to` as a 404 is deliberate → said.
