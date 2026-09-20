@@ -1214,6 +1214,14 @@ async fn walk_with(api: &Api) -> Vec<(String, Value)> {
             // digits — four is refused at the FENCE, which is a different
             // answer) and the REPL then declines as out of range.
             out.push(("refused".to_string(), api.send_as(mover, "999").await));
+
+            // **The record route while the game RUNS** (M6.5a, R-6.5a.14): the
+            // 409 the client would render if it asked early. The 200 body is
+            // NEVER committed — it is the record, seed and all; the seed pin
+            // reads it as its second anti-vacuity partner instead.
+            let (status, record_409) = api.call("GET", "/api/games/wire/record", None).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{record_409}");
+            out.push(("record_409".to_string(), record_409));
             continue;
         }
 
@@ -1850,6 +1858,23 @@ async fn no_committed_payload_carries_the_setup_seed() {
     assert!(
         !serde_json::to_string(&created).expect("serializable").contains(&decimal),
         "the create that wrote that document answered with the seed in it",
+    );
+
+    // **The SECOND anti-vacuity partner** (M6.5a, R-6.5a.14): the record route's
+    // 200 body DOES carry the seed — it IS the record — and it is never
+    // committed. A finished game is needed, and the walk's own is one at its
+    // end; so the walk runs once more here, on its own state.
+    let api = Api::new();
+    let _ = walk_with(&api).await;
+    let (status, record) = api.call("GET", "/api/games/wire/record", None).await;
+    assert_eq!(status, StatusCode::OK, "{record}");
+    assert!(
+        serde_json::to_string(&record).expect("serializable").contains(&decimal),
+        "the record carries the seed; the search above would otherwise be looking for nothing",
+    );
+    assert!(
+        !wire_dir().join("record.json").exists(),
+        "a record fixture would put the seed in the corpus",
     );
 }
 

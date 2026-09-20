@@ -155,6 +155,7 @@ pub fn routes() -> Vec<Route> {
         ("GET", "/api/games/{id}/why"),
         ("GET", "/api/games/{id}/index/{kind}"),
         ("GET", "/api/games/{id}/result"),
+        ("GET", "/api/games/{id}/record"),
     ]
     .into_iter()
     .map(|(method, pattern)| Route { method, pattern })
@@ -1693,6 +1694,39 @@ pub fn surface<T>(
 }
 
 
+/// `GET /api/games/{id}/record` (M6.5a, R-6.5a.12; umbrella R-6.5.10): a SEAT
+/// HOLDER's finished game as the EXACT bytes the store holds for `Doc::Record`
+/// — never a re-serialization, so the terminal digest the store stamped is the
+/// digest the file carries. A spectator is refused 403 (the record is the
+/// players'); a running game is a 409, because the record carries the setup
+/// seed — hidden-set member #1 — until the last move. Lockdown does not fence
+/// it: this is projection, not computation (the M3 lockdown rule).
+pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> {
+    let (_table, viewer) = admitted(games, id, user)?;
+    if viewer == client::Viewer::Spectator {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "the record is the players' — watch, download nothing".to_string(),
+            table_status: None,
+        });
+    }
+    let handle = games.handle(id)?;
+    let over = handle.lock().expect("a game").session.is_over();
+    if !over {
+        return Err(ApiError {
+            status: StatusCode::CONFLICT,
+            message: "the record is available once the game is over".to_string(),
+            table_status: None,
+        });
+    }
+    let (json, _) = games
+        .store()
+        .read(crate::store::Doc::Record, id)
+        .map_err(ApiError::server_error)?
+        .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
+    Ok(json)
+}
+
 /// The layer's front door: match, answer, and shape the response. A known path
 /// under another method is 405 with an empty body (axum's own shape); a path
 /// that matches nothing is the JSON 404 the server's `fallback` writes.
@@ -1790,6 +1824,10 @@ fn answer(
                     card_index(games, u, b[0], b[1], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}/result" => result(games, u, b[0]).map(|v| ok_json(200, &v)),
+                // The stored bytes, not a re-serialization: the body is the string.
+                "/api/games/{id}/record" => {
+                    record(games, u, b[0]).map(|json| ApiResponse { status: 200, body: json })
+                }
                 _ => Err(ApiError::not_found(format!("no such endpoint: {}", req.path))),
             }
         }
@@ -1871,6 +1909,7 @@ mod tests {
             ("GET", "/api/games/{id}/why"),
             ("GET", "/api/games/{id}/index/{kind}"),
             ("GET", "/api/games/{id}/result"),
+            ("GET", "/api/games/{id}/record"),
         ];
         let table = routes();
         let names: Vec<(&str, &str)> = table.iter().map(|r| (r.method, r.pattern)).collect();

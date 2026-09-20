@@ -887,6 +887,34 @@ mod tests {
         assert_eq!(body, serde_json::json!({ "error": axum_text }).to_string().as_bytes());
     }
 
+    /// R-6.5a.12: the record route's three answers — 409 while the game runs,
+    /// 403 for a watcher of a finished game, and for a seat holder the store's
+    /// EXACT bytes, digest included (the anti-vacuity: the stored record really
+    /// carries a `terminal_digest`, so byte-equality is a claim about something).
+    #[tokio::test]
+    async fn the_record_route_is_409_while_running_403_for_a_watcher_and_the_stored_bytes_when_over() {
+        let (state, name, _) = a_finished_two_person_game("rec").await;
+        start_as(&state, "running", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, body) = get_as(&state, "red@wire.test", "/api/games/running/record").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "the record is available once the game is over");
+        assert!(body.get("status").is_none(), "no table status rides the 409: {body}");
+        // A watcher of the FINISHED game: signed in, no seat, no lock to knock on.
+        let (status, body) = get_as(&state, "green@wire.test", &format!("/api/games/{name}/record")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "the record is the players' — watch, download nothing");
+        // A seat holder gets the store's exact bytes.
+        let (status, raw_bytes) =
+            raw(app(Arc::clone(&state)), "GET", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (stored, _) = state.games.store().read(store::Doc::Record, name).unwrap().unwrap();
+        assert_eq!(raw_bytes, stored.as_bytes(), "the body is the stored record, not a re-serialization");
+        assert!(stored.contains("\"terminal_digest\""), "anti-vacuity: the stored record carries its digest");
+        // And it is a 405 under POST, like every other GET-only route.
+        let (status, _) = raw(app(Arc::clone(&state)), "POST", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
     /// R-6.5a.3: HEAD reaches the GET arm and leaves with an empty body — axum's
     /// `get` served HEAD that way, and a proxy or health checker may send one.
     #[tokio::test]
