@@ -19,7 +19,9 @@
 - **Every 400 sentence the layer's parsers produce is axum's word for word** — a new query struct goes through `parse_query`, a new body through `parse_json`; a range or existence refusal is a 404 in THIS API's words (spec §2.4). Never a silent clamp.
 - **The local player is `local@browser`** (R-6.5b.1). A local game's id starts with `local-` (R-6.5b.12). The Worker is the only caller of the module. The seed leaves the browser only inside a record the player sends or saves (R-6.5b.6).
 - **`.superpowers/sdd/2026-09-20-web-frontend-m6.5b-plan/`** (gitignored) is the ledger: `progress.md` with one `Ruling:` line per deviation from this plan, and every review report. Every deviation is recorded there before the close reads it.
-- Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01LNPQFASEwLCshsidvvrUb3`.
+- Commit messages end with the EXECUTING agent's own attribution lines (the ones its harness names), never the plan author's; the trailers on the plan's own commits are the author's.
+- `cargo test` takes ONE positional filter: where a step names several cells, run one command per cell or a shared substring.
+- **Revised once before execution** after the owner's pre-execution review (spec §10): the Worker is a serialised actor with ownership from the route, a generation checked in every write, persistence of the documents that exist for held games only, commit-before-reply, storage failure distinct from a trap, a fresh Worker on a trap; the archive put protocol (`Landed` / `Identical` / a conflict); the glue bundled from a source directory; the walk script outside the corpus.
 
 ---
 
@@ -144,8 +146,8 @@ fn a_finished_unstamped_game_deleted_lands_under_over() {
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `cargo test -p yokohama-web --lib a_run_ a_finished_unstamped`
-Expected: the three run cells FAIL with 404 "no such endpoint" (the route does not exist); the leaf cell FAILS on `Why::Abandoned`.
+Run: `cargo test -p yokohama-web --lib a_run_` then `cargo test -p yokohama-web --lib a_finished_unstamped`
+Expected: the three run cells FAIL with 404 "no such endpoint" (the route does not exist); the leaf cell FAILS on `Why::Abandoned`. (The cap cell's `to=65` on a one-event game reads the cap's 400 by the precedence the handler states.)
 
 - [ ] **Step 3: Split `HistoricalFrame::at` into `from_state` + `at`, add `run`**
 
@@ -231,17 +233,20 @@ pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFram
     let handle = games.handle(id)?;
     let repl = handle.lock().expect("a game");
     let total = repl.session.record().events.len();
-    if q.from > q.to || q.to > total + 1 {
-        return Err(ApiError::not_found(format!(
-            "this game has {total} events, so its last position is {total} — there is no run from {} to {}",
-            q.from, q.to
-        )));
-    }
-    if q.to - q.from > RUN_CAP {
+    // The cap FIRST (spec §2.4): a run longer than the cap is a malformed ask
+    // whatever `total` is, so a one-event game asked for `to=65` reads this
+    // sentence and not the range's.
+    if q.to > q.from && q.to - q.from > RUN_CAP {
         return Err(ApiError::bad_request(format!(
             "a run is at most {RUN_CAP} positions — ask for from={}&to={} and page",
             q.from,
             q.from + RUN_CAP
+        )));
+    }
+    if q.from > q.to || q.to > total + 1 {
+        return Err(ApiError::not_found(format!(
+            "this game has {total} events, so its last position is {total} — there is no run from {} to {}",
+            q.from, q.to
         )));
     }
     let frames = client::HistoricalFrame::run(&repl, q.from, q.to, viewer).map_err(|e| {
@@ -372,7 +377,7 @@ git commit -m "feat(web): GET …/at?from=&to= — a run of frames by one forwar
 - Test: `archive.rs`, `table.rs`, `lib.rs` test modules
 
 **Interfaces:**
-- Produces: `pub enum PutError { Exists(String), Failed(String) }` (+ `Display`); `trait Archive { fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<(), PutError>; fn kind(&self) -> &'static str; }`; `pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> (String, String)`; `pub fn caller_segment(user: &User) -> String`; `TableDoc::agrees_with(&self, record: &GameRecord) -> Result<(), String>`; `pub struct ArchivePost { pub record: String, pub table: String }`; `pub struct ArchiveReply { pub leaf: &'static str, pub path: String }`; `pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<ArchiveReply, ApiError>`; the row `("POST", "/api/archive")`.
+- Produces: `pub enum PutOutcome { Landed, Identical }`, `pub enum PutError { Conflict(String), Failed(String) }` (+ `Display`); `trait Archive { fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<PutOutcome, PutError>; fn kind(&self) -> &'static str; }` — **the table is written first, the record's path is the once-marker, an identical record answers `Identical` and repairs a half pair, a different record is `Conflict`** (spec §2.4); `pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> (String, String)`; `pub fn caller_segment(user: &User) -> String`; `TableDoc::agrees_with(&self, record: &GameRecord) -> Result<(), String>`; `pub struct ArchivePost { pub record: String, pub table: String }`; `pub struct ArchiveReply { pub leaf: &'static str, pub path: String }`; `pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<ArchiveReply, ApiError>`; the row `("POST", "/api/archive")`.
 - Consumes: `yokohama_core::{GameRecord, replay_strict, is_game_over, SEMANTICS_REV, StartingOrderChoice}`, `store::is_safe_id`, `archive::{is_on, strip_for_archive}`, `tables::check_shape`.
 
 - [ ] **Step 1: Write the failing cells**
@@ -421,10 +426,18 @@ fn a_traversal_shaped_caller_writes_inside_the_root() {
         let written = std::fs::canonicalize(dir.join(&record)).unwrap();
         assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
     }
-    // A second put at the same path is the typed refusal, not a versioned write.
+    // The put protocol (spec §2.4): the same bytes again is IDENTICAL, different bytes a CONFLICT.
     let seg = caller_segment(&crate::identity::User::parse("a/b@c").unwrap());
-    let again = a.put(&format!("browser/{seg}/"), Why::Over, "local-1", "{\"r\":2}", "{\"t\":2}");
-    assert!(matches!(again, Err(PutError::Exists(_))), "{again:?}");
+    let prefix = format!("browser/{seg}/");
+    assert!(matches!(a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Identical)));
+    let again = a.put(&prefix, Why::Over, "local-1", "{\"r\":2}", "{\"t\":2}");
+    assert!(matches!(again, Err(PutError::Conflict(_))), "{again:?}");
+    // A half pair — the table landed, the record did not — is REPAIRED by the retry.
+    let (record, table) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Abandoned, "local-2");
+    std::fs::create_dir_all(dir.join(&table).parent().unwrap()).unwrap();
+    std::fs::write(dir.join(&table), "{\"t\":9}").unwrap();
+    assert!(matches!(a.put(&prefix, Why::Abandoned, "local-2", "{\"r\":9}", "{\"t\":9}"), Ok(PutOutcome::Landed)));
+    assert_eq!(std::fs::read_to_string(dir.join(&record)).unwrap(), "{\"r\":9}");
     std::fs::remove_dir_all(&dir).ok();
 }
 ```
@@ -489,10 +502,14 @@ async fn the_archive_route_checks_and_files_a_browser_game() {
     let table_landed = std::fs::read_to_string(dir.join("browser/red_at_wire.test/rev7/over/local-pair.table.json")).unwrap();
     assert!(!table_landed.contains("hunter2-salt"), "re-stripped server-side: the lock the body carried is gone");
 
-    // Once per path.
+    // The same bytes again: 200 `identical`, never a 409 — a lost reply's retry is safe to act on.
     let (status, v) = post_as(&app, RED, "/api/archive", body(&record_text, &table_text)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["identical"], true);
+    // A DIFFERENT record under the same id: the 409 the client keeps the game on.
+    let (status, v) = post_as(&app, RED, "/api/archive", body(&with_first_event_replaced_and_restamped(&record_text), &table_text)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{v}");
-    assert_eq!(v["error"], "already archived");
+    assert_eq!(v["error"], "a different record is archived under this id");
 
     // A PARTIAL record is accepted under abandoned/ — the leaf from the state.
     let partial = partial_of(&record_text, 5); // truncate to 5 events and re-stamp the digest via state_at + stamp_terminal_digest
@@ -541,16 +558,25 @@ Expected: FAIL to compile (`caller_segment`, `PutError`, the prefix, `agrees_wit
 - [ ] **Step 3: `archive.rs`**
 
 ```rust
-/// Why a put was refused: the path exists (the once-rule), or the write failed.
+/// What a put did (spec §2.4): wrote both files, or found the SAME record already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PutOutcome {
+    Landed,
+    /// The record at this path holds these very bytes: a retry after a lost
+    /// reply. A half pair (the table alone) is repaired on the way to `Landed`.
+    Identical,
+}
+
+/// Why a put was refused: a DIFFERENT record is at this path, or the write failed.
 #[derive(Debug)]
 pub enum PutError {
-    Exists(String),
+    Conflict(String),
     Failed(String),
 }
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Exists(p) => write!(f, "{p} already exists — a game is archived once"),
+            Self::Conflict(p) => write!(f, "{p} holds a different record — a game is archived once"),
             Self::Failed(e) => f.write_str(e),
         }
     }
@@ -559,8 +585,9 @@ impl std::fmt::Display for PutError {
 pub trait Archive: Send + Sync {
     /// `prefix` is `""` for the server's own games and `browser/<segment>/`
     /// (R-6.5b.15) for a browser game sent by a caller; it is the FIRST path
-    /// component and every implementation joins it through [`paths`].
-    fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<(), PutError>;
+    /// component and every implementation joins it through [`paths`]. The
+    /// TABLE is written first and the RECORD's path is the once-marker.
+    fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<PutOutcome, PutError>;
     fn kind(&self) -> &'static str;
 }
 
@@ -593,14 +620,21 @@ pub fn caller_segment(user: &crate::identity::User) -> String {
 `NoArchive::put` takes the new signature and answers `Err(PutError::Failed("no archive is configured".into()))`. `DirArchive::put`:
 
 ```rust
-fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<(), PutError> {
+fn put(&self, prefix: &str, why: Why, id: &str, record_json: &str, table_json: &str) -> Result<PutOutcome, PutError> {
     let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id);
-    Self::write_new(&self.dir.join(&record), record_json)?;
-    Self::write_new(&self.dir.join(&table), table_json)
+    let record_path = self.dir.join(&record);
+    // The record is the marker: the same bytes are a retry, different bytes a conflict.
+    if let Ok(existing) = std::fs::read_to_string(&record_path) {
+        return if existing == record_json { Ok(PutOutcome::Identical) } else { Err(PutError::Conflict(record_path.display().to_string())) };
+    }
+    // Table FIRST (overwriting a half pair's table — a repair), then the record.
+    Self::write_over(&self.dir.join(&table), table_json)?;
+    Self::write_over(&record_path, record_json)?;
+    Ok(PutOutcome::Landed)
 }
 ```
 
-with `write_new` returning `Result<(), PutError>` — `Exists(path.display().to_string())` when the path exists, `Failed(…)` for the mkdir/write/rename errors. The existing directory cell's `second.is_err()` still holds; extend it to `matches!(second, Err(PutError::Exists(_)))`.
+with `write_over` the old `write_new` minus its existence check (temp + rename, `Failed(…)` for the mkdir/write/rename errors). The existing directory cell's "a second put is refused" arm becomes the `Identical`/`Conflict` pair above.
 
 The two call sites: `games.rs` `archive_if_over` — `self.archive.put("", Why::Over, id, record_json, &table_json)`; its `Err(e)` arm logs `{e}` (Display). `tables.rs` `delete` — `.put("", why, id, &record_json, &table_json).map_err(|why| GameError::Server(format!("the archive could not be written ({why}) — the table was not deleted")))`.
 
@@ -657,6 +691,8 @@ pub struct ArchivePost {
 pub struct ArchiveReply {
     pub leaf: &'static str,
     pub path: String,
+    /// The record at that path already held these bytes (a retry): 200, not 201.
+    pub identical: bool,
 }
 
 /// `POST /api/archive`. In order: the rev, the digest, the strict replay, the
@@ -702,10 +738,19 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     let prefix = format!("browser/{}/", caller_segment(user));
     let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id);
     match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
-        Ok(()) => Ok(ArchiveReply { leaf: why.dir(), path }),
-        Err(PutError::Exists(_)) => Err(ApiError { status: StatusCode::CONFLICT, message: "already archived".to_string(), table_status: None }),
+        Ok(PutOutcome::Landed) => Ok(ArchiveReply { leaf: why.dir(), path, identical: false }),
+        Ok(PutOutcome::Identical) => Ok(ArchiveReply { leaf: why.dir(), path, identical: true }),
+        Err(PutError::Conflict(_)) => Err(ApiError { status: StatusCode::CONFLICT, message: "a different record is archived under this id".to_string(), table_status: None }),
         Err(PutError::Failed(e)) => Err(ApiError::server_error(format!("the archive could not be written: {e}"))),
     }
+}
+```
+
+`ArchiveReply` gains `pub identical: bool`; the `answer` arm answers **201 when `!identical` and 200 when `identical`**:
+
+```rust
+"/api/archive" => archive_post(games, u, &parse_json(req.content_type, req.body)?)
+    .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v)),
 }
 ```
 
@@ -715,7 +760,7 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
 "/api/archive" => archive_post(games, u, &parse_json(req.content_type, req.body)?).map(|v| ok_json(201, &v)),
 ```
 
-Re-export `ArchivePost`, `ArchiveReply` from `lib.rs`.
+Re-export `ArchivePost`, `ArchiveReply`, `PutOutcome`, `PutError` from `lib.rs`. (Drop the earlier `answer` arm sketch above that always answered 201.)
 
 - [ ] **Step 6: Run the crate; the corpus on a SECOND `Api`**
 
@@ -729,7 +774,9 @@ let record_text = serde_json::to_string(&record_v).unwrap();
 let body = |r: &str, t: &str| Some(json!({ "record": r, "table": t }));
 let (status, archive_post) = archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
 assert_eq!(status, StatusCode::CREATED, "{archive_post}");
-let (status, archive_409) = archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
+let (status, archive_identical) = archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
+assert_eq!(status, StatusCode::OK, "{archive_identical}");
+let (status, archive_409) = archived.call("POST", "/api/archive", body(&with_first_event_replaced_and_restamped(&record_text), &table_text)).await;
 assert_eq!(status, StatusCode::CONFLICT, "{archive_409}");
 let partial = partial_of(&record_text, 5);
 let (status, archive_post_abandoned) = archived.call("POST", "/api/archive", body(&partial, &table_text)).await;
@@ -738,6 +785,7 @@ assert_eq!(status, StatusCode::CREATED, "{archive_post_abandoned}");
 …
 out.extend([
     ("archive_post".to_string(), archive_post),
+    ("archive_post_identical".to_string(), archive_identical),
     ("archive_post_abandoned".to_string(), archive_post_abandoned),
     ("archive_409".to_string(), archive_409),
     ("archive_400_rev".to_string(), archive_400_rev),
@@ -750,7 +798,7 @@ out.extend([
 The `path` in `archive_post.json` reads `browser/red_at_wire.test/rev7/over/wire.json` — deterministic. `Api::call_as` on the second instance records its own script (Task 7 keeps only the primary's).
 
 Run: `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures && git status --short web/src/wire/`
-Expected diff: SEVEN new files, `health.json` UNCHANGED (the primary `Api` keeps `NoArchive`). Then `cd web && npm run typecheck` — add `ArchiveReply` to `types.ts` (`{ leaf: "over" | "abandoned"; path: string }`) and the `archive_post` row to `contract.ts`; the refusals are `{ error }` and join the untyped-refusal list beside `record_409`.
+Expected diff: EIGHT new files, `health.json` UNCHANGED (the primary `Api` keeps `NoArchive`). (`with_first_event_replaced_and_restamped` replaces the first event with a different legal move and re-stamps the digest through `state_at` + `stamp_terminal_digest`, so the record REPLAYS and differs — the conflict case; the plain `with_first_event_replaced` of the 400 cell leaves the digest stale, which is the replay-refusal case.) Then `cd web && npm run typecheck` — add `ArchiveReply` to `types.ts` (`{ leaf: "over" | "abandoned"; path: string }`) and the `archive_post` row to `contract.ts`; the refusals are `{ error }` and join the untyped-refusal list beside `record_409`.
 
 - [ ] **Step 7: Commit**
 
@@ -769,7 +817,7 @@ git commit -m "feat(web): POST /api/archive — a browser game strict-replayed, 
 - Test: `crates/yokohama-wasm/src/lib.rs` test module, `assets.rs` cell
 
 **Interfaces:**
-- Produces (JS, via wasm-bindgen): `init(): void`; `dispatch(user: string | undefined, method: string, path: string, query: string, content_type: string | undefined, body: Uint8Array): Reply` where `Reply` has getters `status: number`, `body: string`; `load(doc: string, id: string, text: string): void` (throws on a bad doc name or a present document); `read(doc: string, id: string): string | undefined`; `set_clock(seconds: number | undefined): void`. Rust: `Games::load_document(&self, doc: Doc, id: &str, text: &str) -> Result<(), String>`, `Games::read_document(&self, doc: Doc, id: &str) -> Result<Option<String>, String>`. Scripts: `npm run build:wasm` → `web/public/wasm/yokohama_wasm.js` + `.wasm` (target `web`) and `web/wasm-node/` (target `nodejs`).
+- Produces (JS, via wasm-bindgen): `init(): void`; `dispatch(user: string | undefined, method: string, path: string, query: string, content_type: string | undefined, body: Uint8Array): Reply` where `Reply` has getters `status: number`, `body: string`; `load(doc: string, id: string, text: string): void` (throws on a bad doc name or a present document); `read(doc: string, id: string): string | undefined`; `set_clock(seconds: number | undefined): void`. Rust: `Games::load_document(&self, doc: Doc, id: &str, text: &str) -> Result<(), String>`, `Games::read_document(&self, doc: Doc, id: &str) -> Result<Option<String>, String>`. Scripts: `npm run build:wasm` → `web/src/local/wasm/yokohama_wasm.js` + `_bg.wasm` + `.d.ts` (target `web`, gitignored, bundled by Vite) and `web/wasm-node/` (target `nodejs`, with a CommonJS `package.json`); `npm run build:wasm:debug` is the same with the `debug` feature (the e2e's trap hook). Rust: `dispatch_inner`, `load_inner`, `read_inner` are the pure functions the exports wrap and the native cells call.
 - Consumes: `yokohama_web::{api::{dispatch, ApiRequest, Host}, games::Games, store::{Doc, MemStore}, chat::ChatConfig, signal::NoSignal, archive::NoArchive, identity::User}`, `yokohama_core::Rules`.
 
 - [ ] **Step 1: The two `Games` accessors and the MIME arm, with their cells**
@@ -803,8 +851,9 @@ Run: `cargo test -p yokohama-web --lib load_document content_types` — the MIME
 `Cargo.toml` (workspace): add `"crates/yokohama-wasm",` to `members`. `.gitignore`: add
 
 ```
-# M6.5b: the browser host's module, built by `npm run build:wasm` (two targets).
-web/public/wasm/
+# M6.5b: the browser host's module, built by `npm run build:wasm` (two targets). The web
+# glue is generated INTO a source directory so Vite bundles it (spec §2.1, R7).
+web/src/local/wasm/
 web/wasm-node/
 ```
 
@@ -833,6 +882,10 @@ serde_json.workspace = true
 # The lock's version (M6.5a pulled it in through getrandom's `js` feature); `wasm-bindgen-cli` matches it.
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
+
+[features]
+# The e2e build's trap hook (spec §6.5): never in the release module.
+debug = []
 ```
 
 `crates/yokohama-wasm/src/lib.rs`:
@@ -913,40 +966,67 @@ impl Reply {
 /// sentence carried into `dispatch` (so `/api/me` answers `user: null` as the
 /// corpus captures it and the 401 sweep has an arm); the Worker always passes
 /// `local@browser`, and a test passes the corpus walk's own five people.
-#[wasm_bindgen]
-pub fn dispatch(user: Option<String>, method: &str, path: &str, query: &str, content_type: Option<String>, body: &[u8]) -> Reply {
+///
+/// **Every export is a thin wrapper over a pure-Rust `_inner` function** (spec
+/// §2.1): the native cells call the inner ones, because `wasm-bindgen`'s
+/// non-wasm stubs cannot make a `JsValue`.
+pub fn dispatch_inner(user: Option<&str>, method: &str, path: &str, query: &str, content_type: Option<&str>, body: &[u8]) -> (u16, String) {
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before dispatch()");
-    let parsed = user.as_deref().map(User::parse);
+    let parsed = user.map(User::parse);
     let identity: api::Identity<'_> = match &parsed {
         Some(Ok(u)) => Ok(u),
         Some(Err(_)) | None => Err("no identity given"),
     };
-    let req = ApiRequest { method, path, query, content_type: content_type.as_deref(), body };
+    let req = ApiRequest { method, path, query, content_type, body };
     let res = api::dispatch(games, &HOST, identity, &req);
-    Reply { status: res.status, body: res.body }
+    (res.status, res.body)
 }
 
-fn doc_of(name: &str) -> Result<Doc, JsValue> {
+#[wasm_bindgen]
+pub fn dispatch(user: Option<String>, method: &str, path: &str, query: &str, content_type: Option<String>, body: &[u8]) -> Reply {
+    let (status, body) = dispatch_inner(user.as_deref(), method, path, query, content_type.as_deref(), body);
+    Reply { status, body }
+}
+
+fn doc_of(name: &str) -> Result<Doc, String> {
     match name {
         "record" => Ok(Doc::Record),
         "table" => Ok(Doc::Table),
-        other => Err(JsValue::from_str(&format!("no such document kind: {other:?} (record | table)"))),
+        other => Err(format!("no such document kind: {other:?} (record | table)")),
     }
+}
+
+pub fn load_inner(doc: &str, id: &str, text: &str) -> Result<(), String> {
+    let guard = GAMES.lock().expect("the host's games");
+    let games = guard.as_ref().expect("init() before load()");
+    games.load_document(doc_of(doc)?, id, text)
+}
+
+pub fn read_inner(doc: &str, id: &str) -> Result<Option<String>, String> {
+    let guard = GAMES.lock().expect("the host's games");
+    let games = guard.as_ref().expect("init() before read()");
+    games.read_document(doc_of(doc)?, id)
 }
 
 #[wasm_bindgen]
 pub fn load(doc: &str, id: &str, text: &str) -> Result<(), JsValue> {
-    let guard = GAMES.lock().expect("the host's games");
-    let games = guard.as_ref().expect("init() before load()");
-    games.load_document(doc_of(doc)?, id, text).map_err(|e| JsValue::from_str(&e))
+    load_inner(doc, id, text).map_err(|e| JsValue::from_str(&e))
 }
 
 #[wasm_bindgen]
 pub fn read(doc: &str, id: &str) -> Result<Option<String>, JsValue> {
-    let guard = GAMES.lock().expect("the host's games");
-    let games = guard.as_ref().expect("init() before read()");
-    games.read_document(doc_of(doc)?, id).map_err(|e| JsValue::from_str(&e))
+    read_inner(doc, id).map_err(|e| JsValue::from_str(&e))
+}
+
+/// The e2e build's trap hook (spec §6.5, `--features debug`): a panic under
+/// `panic = "abort"` is a trap that leaves `GAMES` locked — the shape a fresh
+/// Worker recovers from and a re-`init()` cannot.
+#[cfg(feature = "debug")]
+#[wasm_bindgen]
+pub fn debug_trap() {
+    let _guard = GAMES.lock().expect("the host's games");
+    panic!("debug_trap");
 }
 
 #[wasm_bindgen]
@@ -961,32 +1041,37 @@ pub fn set_clock(seconds: Option<f64>) {
 mod tests {
     use super::*;
 
+    /// The cells share the global `GAMES` and clock; they run one at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_missing_identity_is_the_layers_own_401_and_me_answers_null() {
+        let _s = SERIAL.lock().unwrap();
         init();
-        let r = dispatch(None, "GET", "/api/games", "", None, b"");
-        assert_eq!(r.status, 401);
-        let r = dispatch(None, "GET", "/api/me", "", None, b"");
-        assert_eq!(r.status, 200);
-        assert_eq!(r.body, r#"{"mode":"local","user":null}"#);
-        let r = dispatch(Some("local@browser".into()), "GET", "/api/health", "", None, b"");
-        assert!(r.body.contains(r#""identity":"local""#) && r.body.contains(r#""signal":"none""#) && r.body.contains(r#""archive":"off""#), "{}", r.body);
+        let (status, _) = dispatch_inner(None, "GET", "/api/games", "", None, b"");
+        assert_eq!(status, 401);
+        let (status, body) = dispatch_inner(None, "GET", "/api/me", "", None, b"");
+        assert_eq!(status, 200);
+        assert_eq!(body, r#"{"mode":"local","user":null}"#);
+        let (_, body) = dispatch_inner(Some("local@browser"), "GET", "/api/health", "", None, b"");
+        assert!(body.contains(r#""identity":"local""#) && body.contains(r#""signal":"none""#) && body.contains(r#""archive":"off""#), "{body}");
     }
 
     #[test]
     fn init_is_a_rebuild_and_load_is_a_create() {
+        let _s = SERIAL.lock().unwrap();
         init();
-        load("table", "local-1", "{}").unwrap_err(); // `{}` is not a table document — the store takes it, `Games` refuses it on read; what this pins is the CREATE rule below
+        load_inner("table", "local-1", "{\"schema\":3}").unwrap();
+        assert!(load_inner("table", "local-1", "{\"schema\":3}").is_err(), "a present document is refused");
+        assert_eq!(read_inner("table", "local-1").unwrap().as_deref(), Some("{\"schema\":3}"));
+        assert!(load_inner("chat", "local-1", "{}").is_err(), "only record | table");
         init();
-        load("table", "local-1", "{\"schema\":3}").unwrap();
-        assert!(load("table", "local-1", "{\"schema\":3}").is_err(), "a present document is refused");
-        assert_eq!(read("table", "local-1").unwrap().as_deref(), Some("{\"schema\":3}"));
-        init();
-        assert_eq!(read("table", "local-1").unwrap(), None, "init() replaced the store");
+        assert_eq!(read_inner("table", "local-1").unwrap(), None, "init() replaced the store");
     }
 
     #[test]
     fn the_clock_freezes_and_ticks() {
+        let _s = SERIAL.lock().unwrap();
         init();
         set_clock(Some(1_789_000_000.0));
         assert_eq!(now(), 1_789_000_000);
@@ -1010,7 +1095,7 @@ mod tests {
 }
 ```
 
-(The first cell in `init_is_a_rebuild…` documents that `load` does not validate — remove the first `load(...).unwrap_err()` line if `MemStore` accepts `{}`; the CREATE rule is the assertion that matters.)
+(`SERIAL` is what keeps three cells that reset one global from racing; the inner functions are what lets them run natively at all.)
 
 - [ ] **Step 3: Build natively and for the target**
 
@@ -1020,15 +1105,19 @@ Expected: four cells pass; clippy clean — RECORD in `progress.md` that `wasm-b
 Run: `rustup target list --installed | grep wasm32-unknown-unknown; cargo install wasm-bindgen-cli --version 0.2.128 --locked; cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm && ls -la target/wasm32-unknown-unknown/release/yokohama_wasm.wasm`
 Expected: the module builds. RECORD its size and `gzip -c … | wc -c` in `progress.md` beside the umbrella's 1.30 MB / 387 KB.
 
-`web/package.json` scripts:
+`web/package.json` scripts — the glue INTO `src/local/wasm/` (Vite bundles it and hashes the `.wasm` as an asset; a static import from `public/` fails Rollup, reproduced), `build:wasm` BEFORE `tsc` (the `.d.ts` must exist for the typecheck), the Node glue given a CommonJS package scope:
 
 ```json
-"build:wasm": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir public/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && wasm-bindgen --target nodejs --out-dir wasm-node ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm",
-"build": "tsc -b && npm run build:wasm && vite build",
+"build:wasm": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && wasm-bindgen --target nodejs --out-dir wasm-node ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && node -e \"require('fs').writeFileSync('wasm-node/package.json', JSON.stringify({type:'commonjs'}))\"",
+"build:wasm:debug": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --features debug --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm",
+"build": "npm run build:wasm && tsc -b && vite build",
+"typecheck": "tsc -b --noEmit && tsc -p tsconfig.node.json && tsc -p tsconfig.worker.json --noEmit",
 ```
 
-Run: `cd web && npm run build:wasm && ls public/wasm wasm-node && npm run build && ls dist/wasm`
-Expected: `yokohama_wasm.js`, `yokohama_wasm_bg.wasm`, `.d.ts` in both; `dist/wasm/` carries the web pair (Vite copies `public/`).
+`web/tsconfig.worker.json`: `{ "extends": "./tsconfig.json", "compilerOptions": { "lib": ["ES2022", "WebWorker"], "types": [] }, "include": ["src/local/worker.ts", "src/local/db.ts", "src/local/wasm/*.d.ts"] }` (exclude `src/local/worker.ts` and `db.ts` from the app project's `include`). `web/vitest.config.ts`: add `exclude: ["src/local/*.node.test.ts", "node_modules/**"]` so the jsdom run never asks for the module.
+
+Run: `cd web && rm -rf src/local/wasm wasm-node && npm run build:wasm && ls src/local/wasm wasm-node && npm run typecheck && npm run build && ls dist/assets | grep -i wasm`
+Expected: `yokohama_wasm.js`, `yokohama_wasm_bg.wasm`, `.d.ts` in both directories; `dist/assets/` carries a hashed `yokohama_wasm_bg-*.wasm`; a CLEAN checkout with both directories deleted builds by these commands alone (the R7 acceptance).
 
 - [ ] **Step 4: CI**
 
@@ -1133,191 +1222,197 @@ export function deletePair(db: IDBDatabase, id: string): Promise<void> {
 
 Cells (`db.test.ts`, `import "fake-indexeddb/auto"` at the top): a pair written reads back as the same two strings; a delete removes both; a `writePair` whose second put throws (spy `objectStore.put` to throw on the second call) leaves NEITHER document (the transaction aborts).
 
-- [ ] **Step 2: The Worker** (`web/src/local/worker.ts`; a module Worker)
+- [ ] **Step 2: The Worker** (`web/src/local/worker.ts`; a module Worker) — **one serialised actor** (spec §2.2, R3): every message runs through one queue; the lock's callback promise is held OUTSIDE it; ownership is a generation stored in IndexedDB and checked in every write's transaction (R2); persistence is of the documents that EXIST, for HELD games only, BEFORE the reply (R1, R2, R4); a trap is answered `trapped` and the PAGE recreates the Worker (R5).
+
+`db.ts` gains a second store `meta` keyed by `id` holding `{ id, generation }`, and the two pair writers take the generation:
 
 ```ts
-import { openDb, readAll, writePair, deletePair, type DocKind } from "./db";
-import init, * as wasm from "/wasm/yokohama_wasm.js"; // the bindgen `web` target's entry: default export initialises, named exports are the six
+/** The pair — or the table alone while dealing — written ONLY if this tab's
+ *  generation is the stored one, in the SAME transaction (spec §2.2, R2). */
+export function writeDocs(db: IDBDatabase, id: string, generation: number, docs: { record?: string; table: string }): Promise<"written" | "stale"> {
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(["docs", "meta"], "readwrite");
+    let outcome: "written" | "stale" = "written";
+    const meta = t.objectStore("meta").get(id);
+    meta.onsuccess = () => {
+      const stored = (meta.result as { generation: number } | undefined)?.generation ?? 0;
+      if (stored !== generation) { outcome = "stale"; t.abort(); return; }
+      try {
+        t.objectStore("docs").put({ doc: "table", id, text: docs.table });
+        if (docs.record !== undefined) t.objectStore("docs").put({ doc: "record", id, text: docs.record });
+      } catch (e) { t.abort(); reject(e); }
+    };
+    t.oncomplete = () => resolve(outcome);
+    t.onabort = () => (outcome === "stale" ? resolve("stale") : reject(t.error ?? new Error("aborted")));
+    t.onerror = () => reject(t.error);
+  });
+}
+/** Advance the game's generation (an acquisition) and return the new value. */
+export function takeGeneration(db: IDBDatabase, id: string): Promise<number> { … get, +1, put, resolve on complete … }
+export function deletePair(db: IDBDatabase, id: string): Promise<void> { … delete both docs and the meta row; oncomplete/onabort/onerror … }
+```
+
+The Worker:
+
+```ts
+/// <reference lib="webworker" />
+import { openDb, readAll, writeDocs, deletePair, takeGeneration } from "./db";
+import init, * as wasm from "./wasm/yokohama_wasm.js";   // generated INTO src/local/wasm by build:wasm; Vite bundles it
 
 const LOCAL_USER = "local@browser";
 const LOCAL_PREFIX = "local-";
-
 type Req = { seq: number } & (
   | { kind: "call"; method: string; path: string; query: string; body: string | null }
-  | { kind: "read"; doc: DocKind; id: string }
-  | { kind: "hold"; id: string }
-  | { kind: "release"; id: string }
-  | { kind: "takeover"; id: string }
-);
+  | { kind: "read"; doc: "record" | "table"; id: string }
+  | { kind: "hold"; id: string } | { kind: "takeover"; id: string } | { kind: "release"; id: string });
 
 let db: IDBDatabase;
-const lastWritten = new Map<string, string>(); // id → record + "\u0000" + table
-const held = new Map<string, () => void>();     // id → the release of the lock's callback promise
+const lastWritten = new Map<string, string>();
+const held = new Map<string, { generation: number; release: () => void }>();
+let queue: Promise<unknown> = Promise.resolve();
+/** Everything runs through here, one at a time (R3). */
+const serial = <T>(f: () => Promise<T>): Promise<T> => { const p = queue.then(f, f); queue = p.catch(() => {}); return p; };
 
-const drawId = () => {
-  const b = new Uint8Array(8);
-  crypto.getRandomValues(b);
-  return LOCAL_PREFIX + [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-};
+const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
+const drawId = () => { const b = new Uint8Array(8); crypto.getRandomValues(b); return LOCAL_PREFIX + [...b].map((x) => x.toString(16).padStart(2, "0")).join(""); };
+const gameOf = (path: string) => { const m = /^\/api\/games\/([^/]+)/.exec(path); return m ? decodeURIComponent(m[1]!) : null; };
 
-/** A FRESH `Games` filled from IndexedDB — at boot, on every lock acquisition,
- *  after a trap (spec §2.2, C-2). Every pair, not one: `init()` emptied the store. */
+/** A FRESH `Games` from the committed pairs, and the write cache RESEEDED from them (R3). */
 async function rebuild(): Promise<void> {
   wasm.init();
-  for (const row of await readAll(db)) wasm.load(row.doc, row.id, row.text);
+  lastWritten.clear();
+  const rows = await readAll(db);
+  for (const r of rows) wasm.load(r.doc, r.id, r.text);
+  const byId = new Map<string, { record?: string; table?: string }>();
+  for (const r of rows) byId.set(r.id, { ...(byId.get(r.id) ?? {}), [r.doc]: r.text });
+  for (const [id, d] of byId) lastWritten.set(id, (d.record ?? "") + "\u0000" + (d.table ?? ""));
 }
 
-const gameOf = (path: string): string | null => {
-  const m = /^\/api\/games\/([^/]+)/.exec(path);
-  return m ? decodeURIComponent(m[1]!) : null;
-};
-
-async function persist(id: string, deleted: boolean): Promise<void> {
-  if (deleted) {
-    await deletePair(db, id);
-    lastWritten.delete(id);
-    return;
-  }
-  const record = wasm.read("record", id);
+/** The documents that EXIST (the table alone while dealing, R1), for a game this
+ *  tab HOLDS, committed BEFORE the page is answered (R2, R4). */
+async function persist(id: string, deleted: boolean): Promise<"saved" | "unsaved" | "not-held"> {
+  const h = held.get(id);
+  if (!h) return "not-held";
+  if (deleted) { await deletePair(db, id); lastWritten.delete(id); return "saved"; }
   const table = wasm.read("table", id);
-  if (record == null || table == null) return;
-  const key = record + "\u0000" + table;
-  if (lastWritten.get(id) === key) return; // decided by OUTCOME: nothing changed, nothing written
-  await writePair(db, id, record, table);
+  if (table == null) return "saved";                       // nothing to keep (the delete's own path handles removal)
+  const record = wasm.read("record", id) ?? undefined;
+  const key = (record ?? "") + "\u0000" + table;
+  if (lastWritten.get(id) === key) return "saved";
+  const outcome = await writeDocs(db, id, h.generation, { record, table });
+  if (outcome === "stale") { held.delete(id); post({ kind: "lost", id }); return "not-held"; }
   lastWritten.set(id, key);
+  return "saved";
 }
 
-async function handle(req: Req): Promise<Record<string, unknown>> {
-  switch (req.kind) {
-    case "call": {
-      let body = req.body;
-      if (req.method === "POST" && req.path === "/api/games" && body) {
-        const parsed = JSON.parse(body) as Record<string, unknown>;
-        body = JSON.stringify({ ...parsed, id: drawId() }); // R-6.5b.12: the Worker draws the id
-      }
-      const bytes = body === null ? new Uint8Array() : new TextEncoder().encode(body);
-      const reply = wasm.dispatch(LOCAL_USER, req.method, req.path, req.query, body === null ? undefined : "application/json", bytes);
-      const id = gameOf(req.path) ?? (req.method === "POST" && req.path === "/api/games" && reply.status === 201 ? (JSON.parse(reply.body) as { id: string }).id : null);
-      if (id && held.has(id) === false && req.method !== "GET" && lostWhileInFlight(id)) {
-        return { error: "this game is open in another tab" };
-      }
-      if (id) await persist(id, req.method === "DELETE" && reply.status === 204);
-      return { status: reply.status, body: reply.body };
-    }
-    case "read":
-      return { text: wasm.read(req.doc, req.id) ?? null };
-    case "hold":
-      return { held: await hold(req.id, false) };
-    case "takeover":
-      return { held: await hold(req.id, true) };
-    case "release":
-      held.get(req.id)?.();
-      held.delete(req.id);
-      return { released: true };
+async function call(req: Extract<Req, { kind: "call" }>): Promise<Record<string, unknown>> {
+  let body = req.body;
+  if (req.method === "POST" && req.path === "/api/games" && body) body = JSON.stringify({ ...(JSON.parse(body) as object), id: drawId() });
+  const bytes = body === null ? new Uint8Array() : new TextEncoder().encode(body);
+  const reply = wasm.dispatch(LOCAL_USER, req.method, req.path, req.query, body === null ? undefined : "application/json", bytes);   // a trap throws here → the catch in onmessage
+  const id = gameOf(req.path) ?? (req.method === "POST" && req.path === "/api/games" && reply.status === 201 ? (JSON.parse(reply.body) as { id: string }).id : null);
+  let saved: "saved" | "unsaved" | "not-held" = "saved";
+  if (id) {
+    try { saved = await persist(id, req.method === "DELETE" && reply.status === 204); }
+    catch (e) { saved = "unsaved"; }                        // a storage failure is NOT a trap (R4)
   }
+  return { status: reply.status, body: reply.body, saved };
 }
 
-const lostWhileInFlight = (id: string) => lost.has(id);
-const lost = new Set<string>();
-
-/** Take the lock and REBUILD the store while holding it (spec §2.2). A lock this
- *  tab already holds short-circuits. `steal` is Take over. */
 function hold(id: string, steal: boolean): Promise<boolean> {
   if (held.has(id)) return Promise.resolve(true);
   return new Promise((resolve) => {
-    const name = `yokohama:local:${id}`;
     const opts: LockOptions = steal ? { mode: "exclusive", steal: true } : { mode: "exclusive", ifAvailable: true };
-    navigator.locks
-      .request(name, opts, async (lock) => {
-        if (lock === null) { resolve(false); return; } // `ifAvailable`: the callback gets null, it does not reject
-        lost.delete(id);
-        await rebuild();
-        await new Promise<void>((release) => { held.set(id, release); resolve(true); });
-      })
-      .catch((e: unknown) => {
-        // A steal by another tab rejects THIS request's promise with AbortError:
-        // the lock is gone, the page goes read-only, and a reply in flight is not
-        // written back.
-        if (e instanceof DOMException && e.name === "AbortError") {
-          held.delete(id);
-          lost.add(id);
-          (self as unknown as Worker).postMessage({ kind: "lost", id });
-        } else {
-          resolve(false);
-        }
-      });
+    navigator.locks.request(`yokohama:local:${id}`, opts, async (lock) => {
+      if (lock === null) { resolve(false); return; }
+      // Inside the queue: the generation advances and the store rebuilds before this tab answers for the game.
+      await serial(async () => { const generation = await takeGeneration(db, id); await rebuild(); await new Promise<void>((release) => { held.set(id, { generation, release }); resolve(true); }); });
+    }).catch((e: unknown) => {
+      if (e instanceof DOMException && e.name === "AbortError") { held.delete(id); post({ kind: "lost", id }); } else resolve(false);
+    });
   });
 }
 
-const ready = (async () => {
-  await init();          // the bindgen glue's default export: fetches and instantiates the module
-  db = await openDb();
-  await rebuild();
-})();
+const ready = (async () => { await init(); db = await openDb(); await rebuild(); })();
 
-self.onmessage = async (e: MessageEvent<Req>) => {
+self.onmessage = (e: MessageEvent<Req>) => {
   const req = e.data;
-  try {
-    await ready;
-    const out = await handle(req);
-    (self as unknown as Worker).postMessage({ seq: req.seq, ...out });
-  } catch (err) {
-    // A trap: answer a 500 in the API's shape, then rebuild from the last saved pairs (spec §4).
-    (self as unknown as Worker).postMessage({ seq: req.seq, status: 500, body: JSON.stringify({ error: `reloaded from the last saved move: ${String(err)}` }) });
-    try { await rebuild(); } catch { /* the next call reports it */ }
-  }
+  void serial(async () => {
+    try {
+      await ready;
+      switch (req.kind) {
+        case "call": post({ seq: req.seq, ...(await call(req)) }); break;
+        case "read": post({ seq: req.seq, text: wasm.read(req.doc, req.id) ?? null }); break;
+        case "hold": post({ seq: req.seq, held: await hold(req.id, false) }); break;
+        case "takeover": post({ seq: req.seq, held: await hold(req.id, true) }); break;
+        case "release": held.get(req.id)?.release(); held.delete(req.id); post({ seq: req.seq, released: true }); break;
+      }
+    } catch (err) {
+      // A trap (or a module that never loaded): answered, then the PAGE recreates this Worker (R5).
+      post({ seq: req.seq, status: 500, body: JSON.stringify({ error: `the local host stopped: ${String(err)}` }), trapped: true });
+    }
+  });
 };
 ```
 
-`LockOptions`/`navigator.locks` types come from `lib.dom`; add `"WebWorker"` to the worker file's `/// <reference lib="webworker" />`. The in-flight rule: a write reply for a game whose lock was lost during the call is answered as the loss and not persisted — that is the `lostWhileInFlight` branch above (refine its placement so `persist` runs only when the lock is still held; a GET is answered regardless).
+(`hold`'s callback holds the lock's promise open OUTSIDE the queue — the `serial` inside it returns once `held.set` has run, and the lock's own callback keeps waiting on `release`; the acquisition itself is serialised with every call. The in-flight rule falls out of `writeDocs`: a call that dispatched under an ownership since stolen finds `"stale"` in its write transaction and is answered as the loss.)
 
-- [ ] **Step 3: The page side** (`web/src/local/client.ts`)
+- [ ] **Step 3: The page side** (`web/src/local/client.ts`) — the Worker singleton, request/reply by `seq`, `trapped` → terminate and recreate (R5), Worker `error`/`messageerror` and a failed start → a visible sentence, never a pending list:
 
 ```ts
-// The page's one door to the Worker (spec §2.2): a singleton started on the
-// first local call, request/reply by `seq`, plus the lock's three verbs and
-// two event hooks (a lock lost; a local write, so the first screen re-lists).
 type Reply = { seq: number } & Record<string, unknown>;
+let worker: Worker | null = null; let seq = 0;
+const pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void }>();
+const lostHandlers = new Set<(id: string) => void>(); const writeHandlers = new Set<() => void>(); const faultHandlers = new Set<(sentence: string) => void>();
+const heldByPage = new Set<string>();           // what to re-acquire after a restart
 
-let worker: Worker | null = null;
-let seq = 0;
-const pending = new Map<number, (r: Reply) => void>();
-const lostHandlers = new Set<(id: string) => void>();
-const writeHandlers = new Set<() => void>();
+function fail(sentence: string) { for (const p of pending.values()) p.reject(new Error(sentence)); pending.clear(); faultHandlers.forEach((f) => f(sentence)); }
 
 function start(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
-  worker.onmessage = (e: MessageEvent<Reply & { kind?: string; id?: string }>) => {
-    if (e.data.kind === "lost" && e.data.id) { lostHandlers.forEach((f) => f(e.data.id!)); return; }
-    pending.get(e.data.seq)?.(e.data);
-    pending.delete(e.data.seq);
+  worker.onerror = (e) => fail(`the local host failed to start: ${e.message}`);
+  worker.onmessageerror = () => fail("the local host sent something this page could not read");
+  worker.onmessage = (e: MessageEvent<Reply & { kind?: string; id?: string; trapped?: boolean }>) => {
+    if (e.data.kind === "lost" && e.data.id) { heldByPage.delete(e.data.id); lostHandlers.forEach((f) => f(e.data.id!)); return; }
+    const p = pending.get(e.data.seq); pending.delete(e.data.seq);
+    if (e.data.trapped) { restart(e.data); return; }
+    p?.resolve(e.data);
   };
   return worker;
 }
 
-function ask<T extends Record<string, unknown>>(msg: Record<string, unknown>): Promise<T> {
+/** R5: a trapped module cannot recover in place — terminate, settle, restart, re-hold. */
+function restart(last: Reply) {
+  worker?.terminate(); worker = null;
+  fail("the local host restarted from the last saved move");
   const w = start();
-  const mine = ++seq;
-  return new Promise((resolve) => { pending.set(mine, (r) => resolve(r as unknown as T)); w.postMessage({ seq: mine, ...msg }); });
+  for (const id of [...heldByPage]) void ask({ kind: "hold", id });
+  void last; void w;
 }
 
-export async function localCall(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }> {
+function ask<T extends Record<string, unknown>>(msg: Record<string, unknown>): Promise<T> {
+  const w = start(); const mine = ++seq;
+  return new Promise((resolve, reject) => { pending.set(mine, { resolve: (r) => resolve(r as unknown as T), reject }); w.postMessage({ seq: mine, ...msg }); });
+}
+
+export async function localCall(method: string, path: string, body?: unknown): Promise<{ status: number; text: string; saved: boolean }> {
   const [p, q = ""] = path.split("?", 2) as [string, string?];
-  const r = await ask<{ status?: number; body?: string; error?: string }>({ kind: "call", method, path: p, query: q, body: body === undefined ? null : JSON.stringify(body) });
-  if (r.error) return { status: 409, text: JSON.stringify({ error: r.error }) };
+  const r = await ask<{ status: number; body: string; saved: "saved" | "unsaved" | "not-held" }>({ kind: "call", method, path: p, query: q, body: body === undefined ? null : JSON.stringify(body) });
   if (method !== "GET") writeHandlers.forEach((f) => f());
-  return { status: r.status!, text: r.body! };
+  return { status: r.status, text: r.body, saved: r.saved === "saved" };
 }
 export const localRead = async (doc: "record" | "table", id: string) => (await ask<{ text: string | null }>({ kind: "read", doc, id })).text;
-export const hold = async (id: string) => (await ask<{ held: boolean }>({ kind: "hold", id })).held;
-export const takeover = async (id: string) => { await ask({ kind: "takeover", id }); };
-export const release = async (id: string) => { await ask({ kind: "release", id }); };
+export const hold = async (id: string) => { const ok = (await ask<{ held: boolean }>({ kind: "hold", id })).held; if (ok) heldByPage.add(id); return ok; };
+export const takeover = async (id: string) => { await ask({ kind: "takeover", id }); heldByPage.add(id); };
+export const release = async (id: string) => { heldByPage.delete(id); await ask({ kind: "release", id }); };
 export const onLost = (f: (id: string) => void) => { lostHandlers.add(f); return () => lostHandlers.delete(f); };
 export const onLocalWrite = (f: () => void) => { writeHandlers.add(f); return () => writeHandlers.delete(f); };
-/** Resolves once the Worker answers its first message (the store is loaded). */
+export const onLocalFault = (f: (s: string) => void) => { faultHandlers.add(f); return () => faultHandlers.delete(f); };
 export const localReady = () => localCall("GET", "/api/health").then(() => undefined);
 ```
+
+`call`'s local arm reads `saved` and, when false, appends the server's own "APPLIED BUT NOT SAVED" to the reply's `warnings` the way the axum host does (find the sentence with `grep -rn "APPLIED BUT NOT SAVED" crates/yokohama-web/src` and reuse the exact words). The route effect at `App.tsx:503` becomes `if (!door.me?.user && !(route.kind === "table" && isLocal(route.id))) return;`, and ownership is taken from the ROUTE's table id (Task 6's `useLocalHold(route.kind === "table" ? route.id : null)`), the dealing screen included — never from `state?.id`.
 
 - [ ] **Step 4: `api.ts` — the local arm, the per-source facts** (`web/src/local/facts.ts` and `api.ts`)
 
@@ -1357,7 +1452,7 @@ async function call<T>(method: string, path: string, body?: unknown, host?: Host
 }
 ```
 
-`recordText(game)`: `if (isLocal(game)) { const t = await localRead("record", game); if (t === null) throw new ApiError("no such local game", 404, null); return t; }` before the `fetch`. `api.labels(host?)`, `api.list(scope, before, host?)`, `api.create(req, host?)`, `api.health(host?)`, `api.me(host?)` pass `host` through; add `archive: (record: string, table: string) => call<ArchiveReply>("POST", "/api/archive", { record, table }, "server")`.
+`api.labels()` is wrapped by the boot effect in Task 5 with a five-second bound (`Promise.race` against a timer) before the Worker fallback — a hanging read never rejects. `recordText(game)`: `if (isLocal(game)) { const t = await localRead("record", game); if (t === null) throw new ApiError("no such local game", 404, null); return t; }` before the `fetch`. `api.labels(host?)`, `api.list(scope, before, host?)`, `api.create(req, host?)`, `api.health(host?)`, `api.me(host?)` pass `host` through; add `archive: (record: string, table: string) => call<ArchiveReply>("POST", "/api/archive", { record, table }, "server")`.
 
 `signal.ts`: `Source<T>` gains `host?: "local";` and `open()`'s first lines become:
 
@@ -1380,6 +1475,7 @@ Cells:
 - `signal.test.ts`: a `Source` with `host: "local"` arms NO timer (`vi.getTimerCount() === 0` across sixty fake seconds) and calls neither `fetch` nor `readStream`; a `Source` without it still opens the stream (the existing cell, unchanged).
 - `App.test.tsx`: **the `fetch` spy at zero across a whole local game** — mount `App` with the fake Worker answering `me`, `health`, `table`, `deal`, the `ClientState` fixtures and `run.json` for the walk; play three inputs; assert `fetch` was never called (it is absent, so any call throws into the error strip — assert the strip is empty), with `POST /api/archive` and `health` the only paths a later cell exempts.
 - `client.test.ts` (with `fake-indexeddb` NOT needed — the Worker is faked): `hold` returns what the Worker says; an unsolicited `lost` reaches `onLost`; every non-GET call fires `onLocalWrite`.
+- `client.test.ts`: a reply carrying `trapped: true` terminates the Worker, rejects every pending call with the restart sentence, starts a fresh Worker and re-`hold`s every game the page held (assert the fake's constructor ran twice and the second instance received `hold` for the held id); a Worker `error` event reaches `onLocalFault` with its sentence; a call whose reply says `saved: "unsaved"` surfaces "APPLIED BUT NOT SAVED" in the frame's `warnings`.
 - **The rebuild-refusal surface** (spec §4): the fake Worker answers `GET /api/games/local-1` with a 500 whose body is `{"error": "this save was recorded under game-semantics revision 6, but this build plays revision 7 — …"}` (the sentence `Session::from_record` gives, spec §0); the game screen shows that sentence in its strip, the "reloaded from the last saved move" wording does NOT appear (a refusal is a reply, never a trap), and "On this device" still lists the game with its Abandon control.
 
 Run: `cd web && npm run typecheck && npm test`
@@ -1444,8 +1540,11 @@ Expected: FAIL — the app renders `null`/the error screen; no such heading.
 `Door.tsx`: a component rendering, for `door.error` → `<div className="setup door-error">{door.error}</div>`; `!door.me` → `<p className="muted">connecting…</p>`; `claimed` with no user → `<SignIn …/>`; no user → the door sentence; else `null` — the SAME four bodies `App.tsx:922-926` return today, moved. In `App.tsx` delete the four `return`s and render `<Door door={door} />` INSIDE the server area of the lobby/setup screen; every hook stays above. `serverUp` is set from the health effect (`then → true`, `catch → false`; `null` until then); the game/table screens for a SERVER game still require `door.me?.user` (pass `signedIn` down; a server game with no user shows the door's content in the game area). `App.tsx`'s labels effect becomes:
 
 ```ts
-api.labels().catch(() => api.labels("local")).then(setLabels).catch(() => setLabels(null));
+const bounded = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms))]);
+bounded(api.labels(), 5_000).catch(() => api.labels("local")).then(setLabels).catch(() => setLabels(null));
 ```
+
+and a cell pins the timeout arm: a server `labels` that never settles yields the Worker's words within the bound (fake timers). A Worker/IndexedDB fault reaches "On this device" through `onLocalFault` and renders as one line naming it, never as an empty list.
 
 `Lobby.tsx`: render `<OnThisDevice onOpen={…} />` FIRST, then `<h2>Lobby</h2>` and, when `serverUp === false`, one `<p className="muted">not connected</p>` in place of the four sections (the `usePolled` stays mounted and keeps trying; the sections come back when a read lands and `serverUp` flips). `OnThisDevice.tsx`:
 
@@ -1488,12 +1587,12 @@ git commit -m "feat(web client): the first screen renders from the browser first
 - Test: `web/src/App.test.tsx`, `web/src/Abandon.test.tsx`, `web/src/Help.test.tsx`, `web/src/local/useLocalHold.test.ts`
 
 **Interfaces:**
-- Produces: `useLocalHold(id: string | null): { state: "held" | "elsewhere" | "lost" | "none"; takeover(): Promise<void> }`; `<LockScreen state onTakeover />`; `Abandon` prop `local?: boolean` (posts `api.archive(record, table)` BEFORE `api.remove` when `facts("server").archive !== "off"`; a failed post refuses with "the archive could not be reached — the game was kept" or the server's sentence; "already archived" proceeds); the "Send to the archive" button.
+- Produces: `useLocalHold(id: string | null): { state: "held" | "elsewhere" | "lost" | "none"; takeover(): Promise<void> }`; `<LockScreen state onTakeover />`; `Abandon` prop `local?: boolean` (posts `api.archive(record, table)` BEFORE `api.remove` when `facts("server").archive !== "off"`; a failed post refuses with "the archive could not be reached — the game was kept" or the server's sentence; a 201 or a 200 `identical` proceeds to the delete, a 409 KEEPS the game); the "Send to the archive" button.
 - Consumes: Task 4's `hold`, `takeover`, `release`, `onLost`, `localRead`, `api.archive`, `facts`.
 
 - [ ] **Step 1: The failing cells**
 
-`App.test.tsx`: "Save game file" is present on a RUNNING local game and absent on a running server game; "Send to the archive" is present on a finished local game only when `facts("server").archive !== "off"`, posts the record text and table text from the Worker's `read` UNPARSED, shows the reply's path, and then goes dark for the session; a lock `state: "elsewhere"` renders "This game is open in another tab" with Take over and NO answer bar; after `onLost` fires the screen is read-only with Take back and a click on an option does not reach the Worker. `Abandon.test.tsx`: local + archive on → `POST /api/archive` then DELETE, in that order; the post failing (network) → no DELETE and the sentence; a 409 "already archived" → the DELETE proceeds. `useLocalHold.test.ts`: `hold` on mount, `release` on unmount and on id change.
+`App.test.tsx`: "Save game file" is present on a RUNNING local game and absent on a running server game; "Send to the archive" is present on a finished local game only when `facts("server").archive !== "off"`, posts the record text and table text from the Worker's `read` UNPARSED, shows the reply's path, and then goes dark for the session; a lock `state: "elsewhere"` renders "This game is open in another tab" with Take over and NO answer bar; after `onLost` fires the screen is read-only with Take back and a click on an option does not reach the Worker. `Abandon.test.tsx`: local + archive on → `POST /api/archive` then DELETE, in that order; a 201 AND a 200 `identical` both proceed to the DELETE; the post failing (network) → no DELETE and the sentence; **a 409 ("a different record is archived under this id") → NO DELETE**, the sentence shown, the game kept (R6 — the earlier draft deleted on it). `useLocalHold.test.ts`: `hold` on mount, `release` on unmount and on id change.
 
 - [ ] **Step 2: Run them to verify they fail** — `cd web && npm test -- App Abandon useLocalHold` — FAIL.
 
@@ -1520,10 +1619,10 @@ In `App.tsx`: `const lock = useLocalHold(state?.id ?? null);` — when `lock.sta
 
 ```ts
 const record = await localRead("record", state.id); const table = await localRead("table", state.id);
-const r = await api.archive(record!, table!); setSent(true); setNotice(`archived under ${r.path}`);
+const r = await api.archive(record!, table!); setSent(true); setNotice(r.identical ? `already archived under ${r.path}` : `archived under ${r.path}`);
 ```
 
-`Abandon.tsx`: the `abandon` function, when `local && facts("server").archive !== "off"`, first `api.archive(await localRead("record", id), await localRead("table", id))` inside a `try` whose catch: an `ApiError` with status 409 proceeds; anything else calls `onError("the archive could not be reached — the game was kept")` (or the server's own sentence for a 400) and returns without removing. The label reads "Abandon and save" for a local game under the same condition. `Help.tsx`: one paragraph under the saving section — a game on this device is saved as a file at any time, sent to the server's archive when finished, or abandoned and saved; the panel's `Help.test.tsx` walks it for the glued-letter rule as every paragraph is.
+`Abandon.tsx`: the `abandon` function, when `local && facts("server").archive !== "off"`, first `api.archive(await localRead("record", id), await localRead("table", id))` inside a `try` whose catch calls `onError(...)` with the server's own sentence for a 4xx (a 409 included — a different record under this id is NOT a reason to delete this one) or "the archive could not be reached — the game was kept" otherwise, and returns without removing; only a resolved call (201, or 200 `identical`) proceeds to `api.remove`. The label reads "Abandon and save" for a local game under the same condition. `Help.tsx`: one paragraph under the saving section — a game on this device is saved as a file at any time, sent to the server's archive when finished, or abandoned and saved; the panel's `Help.test.tsx` walks it for the glued-letter rule as every paragraph is.
 
 - [ ] **Step 4: Run, then the browser** — `cd web && npm run typecheck && npm test && npm run e2e` — green; RECORD counts.
 
@@ -1545,7 +1644,7 @@ git commit -m "feat(web client): a local game's screen — Save game file at any
 - Test: the replay itself
 
 **Interfaces:**
-- Produces: `web/src/wire/walk.json` — `[{ who: string | null, method, path, query, body: object | null, fixture: string | null }]` in call order, the PRIMARY `Api`'s calls only; `AppState::with_clock(self, clock: Clock) -> Self`; `npm run test:wasm`.
+- Produces: `web/src/wire-script/walk.json` — OUTSIDE the corpus directory (R8: the script carries request bodies with the setup seed and the passwords every leakage pin scans `corpus()` for) — `[{ who: string | null, method, path, query, body: object | null, status: number, fixture: string | null }]` in call order, the PRIMARY `Api`'s calls only; `AppState::with_clock(self, clock: Clock) -> Self`; `npm run test:wasm`.
 - Consumes: Task 3's node build at `web/wasm-node/yokohama_wasm.js`.
 
 - [ ] **Step 1: The recorder and the frozen clock**
@@ -1560,6 +1659,7 @@ struct ScriptRow {
     path: String,
     query: String,
     body: Option<Value>,
+    status: u16,
     /// Bound after the walk, by VALUE (see `corpus`); `null` for an intermediate.
     fixture: Option<String>,
     /// Not emitted: the response, frozen, for the association.
@@ -1579,13 +1679,16 @@ for (name, value) in &walk_payloads {
         .unwrap_or_else(|| panic!("{name}.json is not the response of any primary-Api call; list it in the third column"));
     row.fixture = Some(name.clone());
 }
-all.push(("walk".to_string(), serde_json::to_value(&script).unwrap()));
+// NOT into `all`: the script is written to its OWN directory by the compare cell
+// (`web/src/wire-script/walk.json`), so no leakage pin over `corpus()` ever reads a
+// request body (R8). The compare cell writes it under `UPDATE_WIRE_FIXTURES` and
+// otherwise asserts the committed script equals the emitted one, byte for byte.
 ```
 
-(the `house_chat_off_404` and the seven `archive_*` payloads come from second `Api`s whose scripts are dropped, so they are never bound — they are third-column files by construction.)
+(the `house_chat_off_404` and the eight `archive_*` payloads come from second `Api`s whose scripts are dropped, so they are never bound — they are third-column files by construction.) Add to `the_committed_wire_fixtures_are_what_the_server_emits` the same write-or-compare over `wire_script_dir().join("walk.json")`, and one assertion that the script's serialised text CONTAINS the setup seed and the walk's password — the anti-vacuity that says the pins' scope really excludes it on purpose.
 
-Run: `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures && git status --short web/src/wire/`
-Expected diff: `walk.json` NEW, nothing else (the frozen clock changes no committed payload). `cd web && npm run typecheck` — `contract.ts` lists `walk` beside `site_space_words` as a non-payload.
+Run: `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures && git status --short web/src/wire/ web/src/wire-script/`
+Expected diff: `web/src/wire-script/walk.json` NEW, NOTHING under `web/src/wire/` (the frozen clock changes no committed payload). The seed and password pins stay green with no exemption.
 
 - [ ] **Step 2: The replay**
 
@@ -1595,6 +1698,7 @@ Expected diff: `walk.json` NEW, nothing else (the frozen clock changes no commit
 import { defineConfig } from "vitest/config";
 // The wasm corpus replay: Node, no DOM, no shared setup file (spec §6.3, I-8).
 export default defineConfig({ test: { environment: "node", include: ["src/local/*.node.test.ts"] } });
+// (`vitest.config.ts` EXCLUDES this glob — Task 3 — so `npm test` never asks for the module.)
 ```
 
 `package.json`: `"test:wasm": "vitest run -c vitest.node.config.ts"`. `web/src/local/corpus.node.test.ts`:
@@ -1606,6 +1710,7 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 const wire = path.resolve(__dirname, "../wire");
+const script = path.resolve(__dirname, "../wire-script/walk.json");
 const modulePath = path.resolve(__dirname, "../../wasm-node/yokohama_wasm.js");
 const have = fs.existsSync(modulePath);
 if (!have && !process.env.YOKOHAMA_WASM_OPTIONAL) {
@@ -1614,18 +1719,19 @@ if (!have && !process.env.YOKOHAMA_WASM_OPTIONAL) {
 
 const HOST_FIELDS: Record<string, string[]> = { health: ["identity", "signal"], me: ["mode"], me_signed_out: ["mode"] };
 const NOT_SERVED = ["art_manifest", "site_space_words", "watching", "locked", "house_chat_off_404",
-  "archive_post", "archive_post_abandoned", "archive_409", "archive_400_rev", "archive_400_digest", "archive_400_replay", "archive_400_table", "walk"];
+  "archive_post", "archive_post_identical", "archive_post_abandoned", "archive_409", "archive_400_rev", "archive_400_digest", "archive_400_replay", "archive_400_table"];
 
 describe.skipIf(!have)("the browser host serves the corpus", () => {
   it("replays the walk through the module and every named reply equals its file", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as typeof import("../../wasm-node/yokohama_wasm");
     wasm.init();
     wasm.set_clock(1_789_000_000);
-    const rows = JSON.parse(fs.readFileSync(path.join(wire, "walk.json"), "utf8")) as Row[];
+    const rows = JSON.parse(fs.readFileSync(script, "utf8")) as Row[];
     const named = new Set<string>();
     for (const row of rows) {
       const body = row.body === null ? new Uint8Array() : new TextEncoder().encode(JSON.stringify(row.body));
       const reply = wasm.dispatch(row.who ?? undefined, row.method, row.path, row.query, row.body === null ? undefined : "application/json", body);
+      expect(reply.status, `${row.method} ${row.path}`).toBe(row.status); // the status of EVERY row, named or not
       if (row.fixture === null) continue;                       // every row is REPLAYED; only a named one is compared
       named.add(row.fixture);
       const committed = JSON.parse(fs.readFileSync(path.join(wire, `${row.fixture}.json`), "utf8"));
@@ -1654,7 +1760,7 @@ Expected: 1 passed. RECORD the wall. Also `cargo test -p yokohama-web` (the wire
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/yokohama-web/tests/wire_fixtures.rs crates/yokohama-web/src/lib.rs web/src/wire/walk.json web/src/wire/contract.ts web/vitest.node.config.ts web/src/local/corpus.node.test.ts web/package.json .github/workflows/test.yml
+git add crates/yokohama-web/tests/wire_fixtures.rs crates/yokohama-web/src/lib.rs web/src/wire-script/walk.json web/vitest.node.config.ts web/src/local/corpus.node.test.ts web/package.json .github/workflows/test.yml
 git commit -m "test(web): walk.json — the walk's own request script, bound to its fixtures by value; the corpus replayed through the compiled module in Node as its own project; the walk's clock frozen (spec §5, §6.3)"
 ```
 
@@ -1667,7 +1773,7 @@ git commit -m "test(web): walk.json — the walk's own request script, bound to 
 - Modify: `web/e2e/harness.ts` (`startGame(page, { local: true })`), `web/playwright.config.ts` (`YOKOHAMA_WEB_ARCHIVE_DIR` in `env`)
 
 **Interfaces:**
-- Produces: the pair and its sidecar (`{ release, date, browser, module_sha256 }`); the pin as a per-edit integration test; `YOKOHAMA_WEB_UPDATE_PIN=1 npm run e2e -- plays_locally` as the regeneration command.
+- Produces: the pair and its sidecar (`{ release, date, browser, module_sha256 }`); the pin as a per-edit integration test; `YOKOHAMA_WEB_UPDATE_PIN=1 npm run e2e -- plays_locally` as the regeneration command. The e2e's module is the `debug` build (`npm run e2e` runs `build:wasm:debug` before `vite build`); the RELEASE module never carries `debug_trap` (Task 9's RUNBOOK line says which build ships).
 - Consumes: everything above.
 
 - [ ] **Step 1: The spec file** (`web/e2e/plays_locally.spec.ts`, with the `test.skip(!haveBrowser, …)` guard `every_spec_can_skip.spec.ts` enforces):
@@ -1675,14 +1781,14 @@ git commit -m "test(web): walk.json — the walk's own request script, bound to 
 ```ts
 test("a whole game against the bot plays in the browser with zero /api/games calls after load", async ({ page, context }) => {
   const watch = watchForBreakage(page, [{ status: 404, urlIncludes: "/api/archive" }]);
-  const gamesCalls: string[] = [];
-  page.on("request", (r) => { if (new URL(r.url()).pathname.startsWith("/api/games")) gamesCalls.push(r.url()); });
+  const apiCalls: string[] = [];
+  page.on("request", (r) => { const p = new URL(r.url()).pathname; if (p.startsWith("/api/") && p !== "/api/archive") apiCalls.push(p); });
   const game = await startGame(page, { local: true });          // Play the bot here → the form → Deal → keep
   expect(game.id.startsWith("local-")).toBe(true);
-  const before = gamesCalls.length;                              // the sign-in and the lobby's server reads happen before
+  const before = apiCalls.length;                                // the sign-in and the lobby's server reads happen before the game screen
   const pick = rng(0x4c4f_4341); let moves = 0; let screen = await readScreen(page);
   while (!screen.over && moves < CAP) { const via = await act(page, screen, pick); if (via === null) throw await deadEnd(page, game, moves); moves += 1; screen = await readScreen(page); }
-  expect(gamesCalls.length - before, "no /api/games request after load").toBe(0);
+  expect(apiCalls.slice(before), "no /api/ request of ANY kind once the local game is on screen").toEqual([]);
   // The download is the Worker's bytes; the archive copy equals it.
   const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Save game file" }).click()]);
   const saved = fs.readFileSync(await download.path()!, "utf8");
@@ -1699,6 +1805,15 @@ test("a whole game against the bot plays in the browser with zero /api/games cal
 });
 
 test("a reload mid-play comes back from IndexedDB with the bot's cold pump preserved, and the replay wall is recorded", …);
+test("a game closed before its first card is chosen comes back on reload with its setup (the table-only pair)", …);   // R1
+test("a quota failure is APPLIED BUT NOT SAVED and the game stays exportable", async ({ page }) => {
+  await page.addInitScript(() => { /* in every Worker: */ const orig = IDBObjectStore.prototype.put; let n = 0; IDBObjectStore.prototype.put = function (...a) { if (++n > 4) throw new DOMException("quota", "QuotaExceededError"); return orig.apply(this, a as never); }; });
+  … play until the strip reads "APPLIED BUT NOT SAVED"; "Save game file" still downloads the record …
+});
+test("a real trap is recovered by a fresh local host, play continuing from the last committed move", async ({ page }) => {
+  // built with `npm run build:wasm:debug`; the Worker exposes `debug_trap` through a `{ kind: "debug_trap" }` message under that build only
+  … play two moves; send the trap; expect the strip "the local host restarted from the last saved move"; play on; the two moves are still on the log …
+});
 test("the first screen renders On this device with the API refused", async ({ page }) => {
   await page.route("**/api/**", (r) => r.fulfill({ status: 503, body: "down" }));
   await page.goto(BASE_URL);
@@ -1798,7 +1913,7 @@ git commit -m "test(web): the exit — a whole local game with zero /api/games c
 - [ ] **Step 2: RUNBOOK §1** — after the musl line: the wasm build (`rustup target add wasm32-unknown-unknown`, `cargo install wasm-bindgen-cli --version 0.2.128 --locked`, `cd web && npm run build`, which now runs `build:wasm`), and that `web/dist/wasm/` rides in the context tarball unchanged in shape. §3.13 placeholder "written at the deploy".
 - [ ] **Step 3: CLAUDE.md** — the Web (server) bullet gains the pin binary and `cargo test -p yokohama-wasm` with counts; the Web (browser half) bullet gains `npm run test:wasm` as the FOURTH command with its count; the Where-things-stand M6.5b sentence.
 - [ ] **Step 4: The counts in ONE sequence** (web crate, the wasm crate, clippy, the wasm check, the CLI's 851 + 2 untouched, the fenced diff EMPTY, corpus count, typecheck, vitest, test:wasm, e2e with the wall) — RECORDED in the close §2.
-- [ ] **Step 5: The mutation battery** (spec §6.6) by an Opus agent, report in the ledger; then the whole-branch Opus review and its one fix wave; the close written; the M6.5c entry handover; the board.
+- [ ] **Step 5: The mutation battery** (spec §6.6) by an Opus agent, report in the ledger; then the whole-branch Opus review and its one fix wave; the close written; **the M6.5c entry handover carrying spec §8's "carried to M6.5c" list verbatim** — the Free-tier confirmation the owner owes before R-6.5.12 is amended, gameplay and archive verification inside objects, the async archive seam (a prepare/upload/commit protocol with a receipt before any delete), hibernating WebSockets with the picker persisted, static assets outside the Worker, the house projection on visible change only, the long-save measurements, the browser crate's global as per-tab only; the board.
 - [ ] **Step 6: Commit** — `docs(web): M6.5b close …`, PR against `web-room-m6.5`.
 
 ---
