@@ -5,13 +5,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
-import { CLAIMED_USER_KEY, chatText, lobbyChat, setChatText, setLobbyChat } from "./api";
+import { CLAIMED_USER_KEY, chatText, lobbyChat, setArchiveKind, setChatText, setLobbyChat } from "./api";
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
-import { currentWorker, FakeWorker, stubWorker } from "./test/fakeWorker";
-import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type ApiStub, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
-import type { Events } from "./types";
+import type { ClientState, Events } from "./types";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
@@ -2822,18 +2822,369 @@ describe("the game screen's chat", () => {
 
 describe("a local game", () => {
   const LOCAL = "local-1";
+  /** A record whose seed would ROUND if anything on the way parsed it — the
+   *  same needle the hosted Save game file cell uses, for the same reason. */
+  const RECORD = '{"seed":18446744073709551615,"events":[]}';
+  /** The local table document, as the store holds it. Sent BESIDE the record
+   *  and never instead of it: the server checks that the two agree. */
+  const TABLE = '{"schema":3,"id":"local-1","seed":18446744073709551615}';
 
   beforeEach(() => {
     resetLocalHostForTests();
   });
   afterEach(() => {
     resetLocalHostForTests();
+    // The deployment facts are a module singleton and the archive is read from
+    // the boot health: a cell that turned the server's archive on must not
+    // leave it on for the next one.
+    setArchiveKind("off");
   });
 
-  // **The fetch-at-zero claim moved down the file at Task 5** and was tightened
-  // with it: it is now made with every `fetch` FAILING and the game opened from
-  // "On this device", which is the state R-6.5b.8 promises rather than a
-  // stubbed boot. See "the first screen with no server".
+  /** The boot reads answered, and the SERVER LISTING NOTHING — so every row on
+   *  screen is the local section's and a click on one proves where a local game
+   *  is reachable from. */
+  const bootStub = (
+    extra: (call: ApiCall) => Reply | undefined = () => undefined,
+    archive: "off" | "dir" = "off",
+  ) =>
+    stubApi((call) => {
+      const mine = extra(call);
+      if (mine !== undefined) return mine;
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      // The archive is the ONE named cross-read a local screen makes (spec
+      // §2.3), and it is read from the server's own health — never set by hand
+      // here, so the cells run the path the page runs.
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive };
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+
+  /** The local game screen, opened the way a player opens it: the row in "On
+   *  this device", one click. Every game route is answered by the WORKER. */
+  async function openLocal(
+    state: ClientState,
+    opts: {
+      hooks?: FakeWorkerHooks;
+      archive?: "off" | "dir";
+      server?: (call: ApiCall) => Reply | undefined;
+    } = {},
+  ): Promise<{ user: ReturnType<typeof userEvent.setup>; stub: ApiStub }> {
+    const hooks = opts.hooks ?? {};
+    stubWorker({
+      ...hooks,
+      call: (req) => {
+        const mine = hooks.call?.(req);
+        if (mine !== undefined) return mine;
+        if (req.method === "GET" && req.path === `/api/games/${LOCAL}`)
+          return { status: 200, body: state };
+        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: state };
+        return undefined;
+      },
+    });
+    const stub = bootStub(opts.server, opts.archive);
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("link", { name: LOCAL }));
+    return { user, stub };
+  }
+
+  /** Every `call` this tab has posted ON one game — the listing, which carries
+   *  no id, is deliberately not one of them. */
+  const callsOn = (id: string): string[] =>
+    currentWorker()
+      .posted.filter((p) => p.kind === "call" && p.path.startsWith(`/api/games/${id}`))
+      .map((p) => (p.kind === "call" ? `${p.method} ${p.path}` : ""));
+
+  /** The download's three globals, replaced for one cell and put back. */
+  function catchDownload() {
+    const parse = vi.spyOn(JSON, "parse");
+    const clicks: { href: string; download: string }[] = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicks.push({ href: this.href, download: this.download });
+      });
+    const create = vi.fn().mockReturnValue("blob:record");
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+    return {
+      clicks,
+      create,
+      parse,
+      restore: () => {
+        click.mockRestore();
+        parse.mockRestore();
+      },
+    };
+  }
+
+  // **R-6.5b.7: at ANY point, and that is the whole of the difference.** A
+  // hosted game's record is the server's and `GET …/{id}/record` answers 409
+  // while it runs; a local one is the player's own seed on the player's own
+  // disk, read off the Worker's side channel. The hosted half of this claim is
+  // "offers no Save game file while the game runs", above.
+  it("offers Save game file while a local game is still RUNNING, and hands the bytes over untouched", async () => {
+    const caught = catchDownload();
+    try {
+      const { user, stub } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        { hooks: { pair: () => ({ record: RECORD, table: TABLE }) } },
+      );
+      await screen.findByText(/end triggers:/);
+      expect(wire.optionsMany.over, "the premise: this game is still running").toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      await waitFor(() => expect(caught.clicks).toHaveLength(1));
+      expect(caught.clicks[0]?.download).toBe(`${LOCAL}.json`);
+      const blob = caught.create.mock.calls[0]?.[0] as Blob;
+      expect(await readBlob(blob)).toBe(RECORD);
+      // Never parsed on the way — a u64 seed would come back rounded — and
+      // never fetched either: the `…/record` route answers 409 while a game
+      // runs, and this save does not go through it.
+      expect(
+        caught.parse.mock.calls.some(([s]) => s === RECORD),
+        "the record text went through JSON.parse",
+      ).toBe(false);
+      expect(stub.matching("GET", "/record")).toHaveLength(0);
+      expect(callsOn(LOCAL).some((c) => c.includes("/record"))).toBe(false);
+    } finally {
+      caught.restore();
+    }
+  });
+
+  // **The send, and the pair it sends** (R-6.5b.6, spec §2.5). One snapshot of
+  // both documents, posted to the SERVER as the strings the store holds, and
+  // the control goes dark once the copy has landed.
+  it("sends the record and the table to the server's archive unparsed, says where, and goes dark", async () => {
+    const caught = catchDownload();
+    try {
+      const { user, stub } = await openLocal(
+        { ...wire.gameOver, id: LOCAL },
+        {
+          archive: "dir",
+          hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+          server: (call) =>
+            call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+        },
+      );
+      await screen.findByText(/end triggers:/);
+
+      await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+      await waitFor(() => expect(stub.matching("POST", "/api/archive")).toHaveLength(1));
+      // The two documents as they are stored, not as this client could rebuild
+      // them: the record's bytes are what the terminal digest is over.
+      expect(stub.matching("POST", "/api/archive")[0]?.body).toEqual({
+        record: RECORD,
+        table: TABLE,
+      });
+      expect(
+        caught.parse.mock.calls.some(([s]) => s === RECORD || s === TABLE),
+        "a document went through JSON.parse on its way to the archive",
+      ).toBe(false);
+      // Where the copy went, in the server's own words for the path.
+      expect(await screen.findByText(`archived under ${wire.archivePost.path}`)).toBeInTheDocument();
+      // And dark for the rest of the session: there is nothing left to click.
+      expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+      expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    } finally {
+      caught.restore();
+    }
+  });
+
+  // **The second click after a reload** (spec §2.5, §8): the local document
+  // carries no stamp, so the control is live again — and the same bytes at the
+  // same path are the server's `identical`, which is an answer and not a
+  // refusal.
+  it("says already archived when the server answers identical", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 200, body: wire.archivePostIdentical }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(
+      await screen.findByText(`already archived under ${wire.archivePostIdentical.path}`),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+  });
+
+  // A DIFFERENT record under this id: the server's sentence, and the control
+  // stays live — nothing was saved, so nothing about this game has changed.
+  it("shows the server's sentence on a 409 and leaves the control where it is", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 409, body: wire.archive409 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.archive409.error)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+  });
+
+  // **Dark unless the SERVER reported an archive** (spec §2.5). A deployment
+  // that keeps none would answer the send with a 404, and a control that
+  // promised a save it cannot make is the one thing the label rule forbids.
+  it("offers no Send to the archive when the server keeps none", async () => {
+    await openLocal({ ...wire.gameOver, id: LOCAL }, { archive: "off" });
+    await screen.findByText(/end triggers:/);
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // The player's own file is still theirs to save.
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+  });
+
+  // A FINISHED HOSTED game never offers it, archive or no archive: the server
+  // already holds that record, and this control exists to move one that lives
+  // in a browser. Its own cell, because it starts from the lobby — the cell
+  // above ends inside a game, and the hash outlives a `cleanup()`.
+  it("offers no Send to the archive on a hosted game, archive or not", async () => {
+    stubWorker();
+    await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/api/health")
+        ? { ...wire.health, archive: "dir" }
+        : call.path.endsWith("/result")
+          ? wire.result
+          : undefined,
+    );
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // And no abandon on a hosted game's screen either: the lobby's row is
+    // where a server table is abandoned (R-13), and P-6's move is the local
+    // game's alone.
+    expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+  });
+
+  // **Nothing is read before the lock answers** (P-5, spec §2.2): a cold GET on
+  // a local game PUMPS the bot, so a read taken while another tab holds it
+  // would change a record this tab does not own.
+  it("draws the other tab's lock instead of reading the game at all", async () => {
+    await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+    expect(
+      await screen.findByText("This game is open in another tab"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take over" })).toBeEnabled();
+    // Not one call on this game — not the table, not the state, not a panel.
+    expect(callsOn(LOCAL)).toEqual([]);
+    // And no answer bar, because there is no game on screen to answer.
+    expect(document.querySelector("button.option")).toBeNull();
+  });
+
+  it("opens the game when Take over is clicked", async () => {
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      // The first ask is refused and the STEAL is taken: `{ steal: true }` is
+      // what Take over sends, and it is the one thing that separates the two.
+      { hooks: { hold: (_id, steal) => steal } },
+    );
+    await screen.findByText("This game is open in another tab");
+    await user.click(screen.getByRole("button", { name: "Take over" }));
+    await screen.findByText(/end triggers:/);
+    expect(currentWorker().posted.filter((p) => p.kind === "takeover")).toHaveLength(1);
+  });
+
+  // **The losing side** (spec §4). The screen goes read-only with Take back,
+  // and a move attempted after the loss is refused IN THE PAGE — the Worker
+  // never hears it, so nothing is shown that will not be kept.
+  it("goes read-only when another tab takes the game, and the move never reaches the Worker", async () => {
+    await openLocal({ ...wire.placeA, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    // The premise: this prompt makes the BOARD an input, which is the one
+    // control that is not inside the answer bar the loss replaces.
+    expect(wire.placeA.prompt.kind).toBe("place_a");
+    const before = callsOn(LOCAL).length;
+
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+
+    expect(await screen.findByText("This game was opened in another tab")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take back" })).toBeEnabled();
+    expect(document.querySelector("button.option")).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /^A00 / }));
+    expect(screen.getByRole("alert")).toHaveTextContent("opened in another tab");
+    expect(callsOn(LOCAL)).toHaveLength(before);
+  });
+
+  // **Take back RE-READS** (spec §3: "whoever holds the lock sees every move
+  // the other tab played"). The route has not changed, so the effect that
+  // opens a table does nothing here — without an explicit re-read the board
+  // would stay at the position it held when it lost the lock.
+  it("re-reads the game when it is taken back", async () => {
+    await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+    await screen.findByRole("button", { name: "Take back" });
+    const before = callsOn(LOCAL).filter((c) => c === `GET /api/games/${LOCAL}`).length;
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Take back" }));
+    await waitFor(() =>
+      expect(
+        callsOn(LOCAL).filter((c) => c === `GET /api/games/${LOCAL}`).length,
+      ).toBeGreaterThan(before),
+    );
+    // And the answer bar is back, because this tab is the writer again.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Take back" })).toBeNull());
+  });
+
+  // **Three differences and no more** (spec §2.5): no stream, no live strip,
+  // and no Chat panel — the house is the server's and a local table has one
+  // person at it.
+  it("holds no stream, shows no live strip and draws no Chat panel", async () => {
+    const { stub } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    expect(stub.calls.filter((c) => c.path.includes(`/api/games/${LOCAL}/stream`))).toEqual([]);
+    expect(callsOn(LOCAL).some((c) => c.includes("/stream") || c.includes("/events"))).toBe(false);
+    expect(document.querySelector("span.meta.link")).toBeNull();
+    expect(document.querySelector("section.panel.chat")).toBeNull();
+    // Anti-vacuity for both: the screen DID draw, and it drew panels.
+    expect(document.querySelector("header.banner")).not.toBeNull();
+    expect(document.querySelectorAll("section.panel").length).toBeGreaterThan(0);
+  });
+
+  // **The one control a local game has that a hosted one does not** (P-6): the
+  // abandon lives on the game's own screen, where this tab holds its lock, and
+  // it reads "Abandon and save" when the SERVER keeps an archive.
+  it("abandons from its own screen, saving to the server's archive first", async () => {
+    const { user, stub } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive" ? wire.archivePostAbandoned : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    const abandon = screen.getByRole("button", { name: /^abandon / });
+    expect(abandon).toHaveTextContent("Abandon and save");
+
+    await user.click(abandon);
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    // The send FIRST, then the local delete — the order R-6.5b.6 names.
+    await waitFor(() => expect(stub.matching("POST", "/api/archive")).toHaveLength(1));
+    await waitFor(() =>
+      expect(currentWorker().posted.filter((p) => p.kind === "call" && p.method === "DELETE")).toHaveLength(1),
+    );
+    // And back to the lobby, where the game is no longer listed.
+    await screen.findByRole("heading", { name: "On this device" });
+  });
 
   it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
     // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
@@ -2841,45 +3192,54 @@ describe("a local game", () => {
     // and its "reloaded from the last saved move" never appears. The two are
     // deliberately different surfaces: one says the save could not be read,
     // the other says it was recovered.
-    //
-    // The sentence lands on the lobby's strip today, because the refusal
-    // happens on the way INTO the game and `open` routes a refusal there;
-    // Task 6's game screen is what shows it in place.
     const sentence =
       "this save was recorded under game-semantics revision 6, but this build plays revision 7 — the save cannot be resumed";
-    stubWorker({
-      call: (req) =>
-        req.path === `/api/games/${LOCAL}` && req.method === "GET"
-          ? { status: 500, body: { error: sentence } }
-          : undefined,
-    });
-    stubApi((call) => {
-      if (call.path.endsWith("/api/me")) return wire.me;
-      if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/health")) return wire.health;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.path.endsWith("/api/stream")) return openStream();
-      if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
-      // **The server lists nothing**: this game is the BROWSER's, and the row
-      // the cell clicks has to be the local section's or it would prove
-      // nothing about where a local game is reachable from.
-      if (isGamesList(call)) return gamesNamed();
-      throw new Error(`unexpected ${call.method} ${call.path}`);
-    });
-    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-    render(<App />);
-    await userEvent.setup().click(await screen.findByRole("link", { name: LOCAL }));
+    const caught = catchDownload();
+    try {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          // The server DOES keep an archive here, which is what makes the
+          // label assertion below a claim rather than a default.
+          archive: "dir",
+          hooks: {
+            pair: () => ({ record: RECORD, table: TABLE }),
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}` && req.method === "GET"
+                ? { status: 500, body: { error: sentence } }
+                : undefined,
+          },
+        },
+      );
 
-    await screen.findByText(sentence);
-    expect(screen.queryByText(/reloaded from the last saved move/)).toBeNull();
-    // Not a trap: one Worker for the whole cell.
-    expect(FakeWorker.instances).toHaveLength(1);
-    expect(FakeWorker.instances[0]!.terminated).toBe(false);
-    // **The row STAYS listed** (P-6): the listing reads table documents and
-    // this game's is readable, so a save that will not rebuild is still
-    // something a player can find, save as a file and abandon (Task 6).
-    expect(screen.getByRole("link", { name: LOCAL })).toBeInTheDocument();
+      // **The sentence in place, on the game's own screen** — not a bounce to
+      // the lobby, which is what a refusal that is not a trap deserves.
+      await screen.findByText(sentence);
+      expect(screen.queryByText(/reloaded from the last saved move/)).toBeNull();
+      // Not a trap: one Worker for the whole cell.
+      expect(FakeWorker.instances).toHaveLength(1);
+      expect(FakeWorker.instances[0]!.terminated).toBe(false);
+
+      // **Save game file still works, because it reads BYTES** (spec §4) — the
+      // store holds a record this build cannot replay, and it is still the
+      // player's to keep.
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      await waitFor(() => expect(caught.clicks).toHaveLength(1));
+      expect(await readBlob(caught.create.mock.calls[0]?.[0] as Blob)).toBe(RECORD);
+      // And so does Abandon, which rebuilds nothing — and it reads "Abandon"
+      // rather than "Abandon and save" even here, where the server keeps an
+      // archive, because the archive would refuse THIS record: sending first
+      // would leave a game that can never be abandoned.
+      expect(screen.getByRole("button", { name: /^abandon / })).toHaveTextContent(/^Abandon$/);
+
+      // **The row STAYS listed** (P-6): the listing reads table documents and
+      // this game's is readable, so a save that will not rebuild is still
+      // something a player can find, save as a file and abandon.
+      await user.click(screen.getByRole("button", { name: "Lobby" }));
+      expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    } finally {
+      caught.restore();
+    }
   });
 });
 

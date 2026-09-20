@@ -277,6 +277,18 @@ export function Help() {
         a finished game can be saved to a file from its own screen with{" "}
         <em>Save game file</em>, the same file the terminal loads.
       </p>
+      <p>
+        A game you started under <strong>On this device</strong> is different in one way that
+        matters: it is played by this browser and is stored only in this browser, so nobody else
+        can open it and clearing your site data would take it with them. Because it is yours
+        outright, <em>Save game file</em> is offered at any point rather than only at the end, and
+        the file it writes is the same one the terminal loads. When this server keeps an archive,
+        a finished game can be copied to it with <em>Send to the archive</em>, and abandoning a
+        game sends it there first &mdash; if that send cannot be made, the game is kept rather
+        than lost. Opening the same game in a second tab is settled before a move is made: the
+        second tab says the game is open elsewhere and offers to take it over, and the first goes
+        read-only with <em>Take back</em>.
+      </p>
 
       <h3>If something looks wrong</h3>
       <p>

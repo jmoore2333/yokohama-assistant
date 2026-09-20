@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
+import { Abandon } from "./Abandon";
+import { api, ApiError, archiveKind, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
 import { Door } from "./Door";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
@@ -11,6 +12,9 @@ import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
+import { LockScreen, LOST_SENTENCE } from "./LockScreen";
+import { localPair } from "./local/client";
+import { useLocalHold } from "./local/useLocalHold";
 import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
 import { Unlock } from "./Unlock";
@@ -188,6 +192,34 @@ export function App() {
    *  re-fetch what `open` has already read. `show` clears it exactly as it
    *  clears the other two. */
   const [unlock, setUnlock] = useState<{ id: string; table: TableView } | null>(null);
+  /** A game in THIS BROWSER whose save no longer rebuilds (spec §4).
+   *
+   *  **The sixth screen, and it exists so a refusal is not a trap.** A
+   *  `SEMANTICS_REV` bump stops a save resuming by design, and
+   *  `Session::from_record` then refuses with a 500 carrying the engine's own
+   *  sentence — a REPLY, never the module trapping, so nothing is restarted and
+   *  nothing is recovered. What is left is still the player's: the bytes can be
+   *  saved to a file and the game can be abandoned, neither of which rebuilds
+   *  anything. Bouncing to the lobby with the sentence would have offered them
+   *  neither. The table document is held beside the id for the same reason
+   *  `unlock` holds one: the abandon control states what it is about, and this
+   *  screen cannot re-read a game that will not open.
+   *
+   *  A SERVER game that refuses this way is a different matter — it is the
+   *  server's record, on a server whose other games are fine — and keeps the
+   *  bounce it has always had. */
+  const [broken, setBroken] = useState<{ id: string; table: TableView; sentence: string } | null>(
+    null,
+  );
+  /** Where the archive put a local game this session, keyed by id (spec §2.5).
+   *
+   *  **Why it is remembered at all**: the local table document carries no
+   *  stamp — the send never goes through the module — so nothing on disk says
+   *  a copy has been made, and the control would otherwise invite a second
+   *  send of bytes the server already holds. It lives for the page, so a trip
+   *  to the lobby and back does not put the button back; a RELOAD does, and the
+   *  server answers that second click `identical`. */
+  const [archived, setArchived] = useState<Record<string, string>>({});
   /** The table the game on screen belongs to — who sits where, and which of
    *  those seats are the caller's.
    *
@@ -403,6 +435,9 @@ export function App() {
       setDealing(null);
       setOpenTable(null);
       setUnlock(null);
+      // The refusal about a save that would not rebuild goes with the game it
+      // was about, exactly as the other four screens do.
+      setBroken(null);
       setTable(null);
       setRun(null);
       setWalk(null);
@@ -522,7 +557,22 @@ export function App() {
           tableOnScreen.current = id;
           return;
         }
-        const next = await api.get(id);
+        // **A local save that no longer rebuilds is a SCREEN, not a bounce**
+        // (spec §4). The engine refuses the rebuild with a 500 carrying its own
+        // sentence; the row stays listed, the bytes stay saveable and the game
+        // stays abandonable, and none of that is reachable from the lobby.
+        let next: ClientState;
+        try {
+          next = await api.get(id);
+        } catch (e) {
+          if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
+            show(null);
+            setBroken({ id, table: doc, sentence: e.message });
+            tableOnScreen.current = id;
+            return;
+          }
+          throw e;
+        }
         show(next, opening);
         // AFTER `show`, which clears it: React batches both into one render, so
         // the last write is the one that stands.
@@ -533,6 +583,36 @@ export function App() {
     },
     [show],
   );
+
+  /** The local game this tab must OWN before it reads anything — the ROUTE's
+   *  id and never `state.id` (P-5, spec §2.2).
+   *
+   *  **The order is the claim.** A cold `GET /api/games/{id}` on a local game
+   *  PUMPS the bot inside the module, so a read taken before the lock answers
+   *  can change a record another tab is writing. Deriving ownership from a
+   *  `ClientState` would mean reading first and asking afterwards. `null` for
+   *  every other screen, which the hook answers `"none"` to. */
+  const lockId = route.kind === "table" && isLocal(route.id) ? route.id : null;
+  const lock = useLocalHold(lockId);
+  const { takeover: steal } = lock;
+
+  /** Take the game anyway — Take over from the tab that found it open
+   *  elsewhere, Take back from the one it was stolen from.
+   *
+   *  **Who re-reads afterwards depends on which of the two this is, and the
+   *  ref is what tells them apart.** Coming from Take over there is no game on
+   *  screen: the route effect opens it the moment the lock says `"held"`, and
+   *  a second `open` here would be the same table fetched twice. Coming from
+   *  Take back the game IS on screen and the route has not changed, so that
+   *  effect does nothing — and without this re-read the board would stay at the
+   *  position it held when it lost the lock, missing every move the other tab
+   *  made. */
+  const retake = useCallback(async () => {
+    const id = lockId;
+    if (id === null) return;
+    await steal();
+    if (tableOnScreen.current === id) await open(id);
+  }, [lockId, steal, open]);
 
   /** **The route decides the screen, in ONE place.**
    *
@@ -560,6 +640,12 @@ export function App() {
       // `#/new/local` kept the game on screen at an address that no longer
       // named it.
       if (!door.me?.user && !isLocal(route.id)) return;
+      // **Nothing is read until the lock has answered** (P-5, spec §2.2) — the
+      // dealing screen included, since a keep is a write like any other. While
+      // the answer is `"elsewhere"` this table is another tab's and the screen
+      // below draws that instead; `"lost"` leaves the game exactly where it is
+      // and waits for Take back.
+      if (isLocal(route.id) && lock.state !== "held") return;
       if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
         // **A refusal is about the table you were opening, so opening another
         // one clears it.** Without this a "you are not seated at this table"
@@ -591,7 +677,7 @@ export function App() {
     }
     // `#/` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
-  }, [route, door.me?.user, open, show]);
+  }, [route, door.me?.user, lock.state, open, show]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -776,6 +862,18 @@ export function App() {
   const send = useCallback(
     async (line: string) => {
       if (!state || inFlight.current) return;
+      // **A move made after this tab lost the lock is refused HERE, before the
+      // Worker is asked** (spec §4). The answer bar has already been replaced
+      // by the lock's own strip, but the BOARD is an input while a placement
+      // picker is open and it is not inside that bar — so this is the guard
+      // that makes "read-only" true rather than nearly true. Refusing in the
+      // page is the point: a reply from a call in flight when the lock was
+      // lost is not written back, so a move that reached the module would show
+      // something that will not be kept.
+      if (lock.state === "lost") {
+        setError(LOST_SENTENCE);
+        return;
+      }
       // The game this request belongs to, read once: `state` is re-created on
       // every render and the checks below are about the game we posted TO.
       const game = state.id;
@@ -882,7 +980,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed, table, arrive],
+    [state, landed, table, arrive, lock.state],
   );
 
   /** The OTHER way a change reaches this screen: somebody else made it (M6.1
@@ -1046,13 +1144,25 @@ export function App() {
   // that says which of the two you are here — sign-out still lives in the Game
   // menu, where every screen with a menu keeps it.
   //
-  // **And "On this device" where there is nobody to be** (M6.5b): a game in
-  // this browser needs no door, so a screen can be up with the door shut —
-  // and "You are null" is not a thing to print. Task 6 gives the local game
-  // screen its own banner; this is the honest word until then.
+  // **And "On this device" wherever the screen is a local game's** (M6.5b,
+  // R-6.5b.1). Not merely where there is nobody to be: the module answers as
+  // `local@browser` whatever address this browser signed in at, so "You are
+  // red@…" over a game played by this device names somebody who holds no seat
+  // at it. The same word therefore covers the signed-out case, where "You are
+  // null" is not a thing to print.
+  const onThisDevice =
+    (state !== null && isLocal(state.id)) ||
+    (dealing !== null && isLocal(dealing)) ||
+    (route.kind === "new" && route.local) ||
+    broken !== null ||
+    lockId !== null;
   const whoStrip = (
     <span className="meta who">
-      {spectating ? "You are watching" : signedIn ? `You are ${signedIn}` : "On this device"}
+      {spectating
+        ? "You are watching"
+        : onThisDevice || !signedIn
+          ? "On this device"
+          : `You are ${signedIn}`}
     </span>
   );
   const who = (
@@ -1091,6 +1201,54 @@ export function App() {
   // `#/t/<id>` is whichever of the three a table's own status makes it, which is
   // `open`'s question and the route effect's answer.
   if (!state) {
+    // **Another tab has this game open** (R-6.5b.5), and nothing has been read:
+    // FIRST here, before the deal and before the game, because the dealing
+    // screen writes too and the lock is taken at OPEN time for all of it.
+    if (lockId !== null && (lock.state === "elsewhere" || lock.state === "lost"))
+      return (
+        <LockScreen
+          state={lock.state}
+          onTakeover={retake}
+          onLeave={() => toLobby()}
+          who={who}
+        />
+      );
+    // **A save in this browser that no longer rebuilds** (spec §4): the
+    // engine's own sentence, the bytes still saveable and the game still
+    // abandonable — neither of which asks the module to replay anything.
+    if (broken)
+      return (
+        <div className="setup broken-save">
+          <div className="who-strip">{who}</div>
+          <h2>{broken.table.name ?? broken.id}</h2>
+          <div className="error">{broken.sentence}</div>
+          <div className="field unlock-controls">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() =>
+                void saveGameFile(broken.id).catch((e) =>
+                  setError(e instanceof ApiError ? e.message : String(e)),
+                )
+              }
+            >
+              Save game file
+            </button>
+            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
+                `local` means "send this game to the archive first", and the
+                archive would refuse exactly this record — it is the rebuild
+                that has stopped working. Sending first would leave a game that
+                can never be abandoned; the bytes beside this button are the
+                copy that still works. The label follows, and reads "Abandon".
+              */}
+            <Abandon table={broken.table} onDone={() => toLobby()} onError={setError} />
+            <button type="button" className="ghost" onClick={() => toLobby()}>
+              Lobby
+            </button>
+          </div>
+          {error && <div className="error">{error}</div>}
+        </div>
+      );
     // **The two screens a game in this browser reaches with the door shut**
     // (spec §2.5): the local create, and the deal it opens. Both are seated by
     // `LOCAL_USER`, because the module answers as that one address whatever
@@ -1266,6 +1424,40 @@ export function App() {
   const highlights = shown?.changes ?? null;
   const highlightBy = shown ? colors[shown.mover] : undefined;
 
+  /** Copy this finished local game to the SERVER's archive (R-6.5b.6, spec
+   *  §2.5).
+   *
+   *  **Both documents, in ONE snapshot, unparsed** (spec §2.2): the record's
+   *  bytes are what its terminal digest is over and its seed is a `u64` that
+   *  `JSON.parse` would round, and the server checks the table against the
+   *  record — two queued reads can fall either side of a move. The server
+   *  chooses the leaf from the replayed state; nothing here says where the
+   *  copy should go.
+   *
+   *  A 201 and a 200 `identical` both say a complete copy is at a path the
+   *  server names, so both are reported and both darken the control. Every
+   *  refusal is shown as the server sent it and leaves the control alone —
+   *  nothing about this game has changed. */
+  const sendToArchive = async () => {
+    setError(null);
+    try {
+      const pair = await localPair(state.id);
+      if (pair.record === null || pair.table === null) {
+        setError("this game has no saved record on this device");
+        return;
+      }
+      const r = await api.archive(pair.record, pair.table);
+      setArchived((a) => ({
+        ...a,
+        [state.id]: `${r.identical ? "already archived" : "archived"} under ${r.path}`,
+      }));
+    } catch (e) {
+      // The server's own sentence where it gave one; spec §4's words where the
+      // request never reached it. Nothing was sent, so nothing is claimed.
+      setError(e instanceof ApiError ? e.message : "the archive could not be reached");
+    }
+  };
+
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".
   const picking = state.prompt.kind === "place_a" || state.prompt.kind === "place_b";
@@ -1435,13 +1627,19 @@ export function App() {
             </>
           )}
         </span>
-        {/* **Save game file** (M6.5a, R-6.5a.13): the finished game's record, as
-            the bytes the server holds, downloaded as `<id>.json`. Only once the
-            game is over — the record carries the setup seed until the last
-            move, and the server answers 409 before then. The text is never
-            parsed on the way (see `api.recordText`), so the file a player saves
-            is the file the CLI loads. */}
-        {state.over ? (
+        {/* **Save game file** (M6.5a, R-6.5a.13): the game's record, as the
+            bytes whoever holds it holds, downloaded as `<id>.json`. The text is
+            never parsed on the way (see `api.recordText`), so the file a player
+            saves is the file the CLI loads.
+
+            **When it is offered differs by host, and the reason is whose seed
+            it is.** A HOSTED record is the server's and carries the setup seed
+            until the last move, so `…/record` answers 409 before then and the
+            control waits for the game to end. A LOCAL one is the player's own
+            seed on the player's own disk (R-6.5b.7), read off the Worker's side
+            channel rather than through that route — so it is offered at any
+            point. */}
+        {state.over || isLocal(state.id) ? (
           <button
             type="button"
             className="ghost"
@@ -1453,6 +1651,31 @@ export function App() {
           >
             Save game file
           </button>
+        ) : null}
+        {/* **Send to the archive** (spec §2.5): a finished game in this browser,
+            copied to the server that keeps one. Dark where the server keeps
+            none — a control promising a save it cannot make is what the label
+            rule forbids — and dark again once the copy has landed, since the
+            local document carries no stamp and there is nothing further to
+            send. A reload puts it back, and the server answers that second
+            click `identical`. */}
+        {state.over && isLocal(state.id) && archiveKind() !== "off" ? (
+          archived[state.id] ? (
+            <span className="meta archived" role="status">
+              {archived[state.id]}
+            </span>
+          ) : (
+            <button type="button" className="ghost" onClick={() => void sendToArchive()}>
+              Send to the archive
+            </button>
+          )
+        ) : null}
+        {/* **The abandon lives on a LOCAL game's own screen** (P-6), where this
+            tab holds its lock — the lobby's rows withhold it. It reads "Abandon
+            and save" when the SERVER keeps an archive, because that is where
+            the copy goes. */}
+        {isLocal(state.id) && table ? (
+          <Abandon table={table} local onDone={() => toLobby()} onError={setError} />
         ) : null}
       </header>
 
@@ -1578,13 +1801,17 @@ export function App() {
             may write to (R-6.4.1) — and `sendName` is what tells the two apart:
             a seat is named by its seat, and sending a name for one is a 400
             rather than a quiet override (R-6.4.2). */}
-        <Chat
-          key={state.id}
-          scope={{ kind: "table", id: state.id }}
-          count={chatCount}
-          colors={colors}
-          sendName={spectating}
-        />
+        {/* **No Chat panel on a local game** (spec §2.5): the house is the
+            server's, and a table in this browser has one person at it. */}
+        {!isLocal(state.id) && (
+          <Chat
+            key={state.id}
+            scope={{ kind: "table", id: state.id }}
+            count={chatCount}
+            colors={colors}
+            sendName={spectating}
+          />
+        )}
       </aside>
 
       {surface && (
@@ -1649,6 +1876,13 @@ export function App() {
               skip
             </button>
           </div>
+        ) : lock.state === "lost" ? (
+          /* **Another tab took this game** (spec §4). The board, the log and
+             every panel stay where they are — what is gone is the ability to
+             answer, because the writer is elsewhere. `send` refuses the board's
+             own clicks for the same reason, which is what makes this read-only
+             rather than nearly so. */
+          <LockScreen state="lost" onTakeover={retake} inline />
         ) : (
           <Decision
             state={state}

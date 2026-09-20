@@ -8,9 +8,11 @@
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Abandon } from "./Abandon";
 import { setArchiveKind } from "./api";
+import { resetLocalHostForTests } from "./local/client";
+import { stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
@@ -153,5 +155,167 @@ describe("the abandon control", () => {
     } finally {
       setArchiveKind("off");
     }
+  });
+});
+
+// ---- a LOCAL game's abandon (M6.5b, R-6.5b.6, R-6.5b.7) -------------------
+//
+// **The order is the whole rule.** A game on this device exists nowhere else,
+// so "Abandon and save" sends the record and its table document to the
+// SERVER's archive BEFORE the local delete — and a send that does not land
+// keeps the game, because a delete that followed it would be the only copy
+// gone. The one exception is the server's own `identical`: an earlier send
+// landed and only the delete failed.
+describe("the abandon control on a local game", () => {
+  const LOCAL = "local-1";
+  /** A record whose seed would round if anything parsed it, and its table. */
+  const RECORD = '{"seed":18446744073709551615,"events":[]}';
+  const TABLE = '{"schema":3,"id":"local-1"}';
+  /** The row this control sits beside: the corpus's own table, re-addressed to
+   *  this device — which is what routes its DELETE to the Worker. */
+  const localTable = { ...wire.table, id: LOCAL, name: null };
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    setArchiveKind("off");
+  });
+
+  /** The control over a local table, with the two hosts scripted and every
+   *  step recorded in the order it happened. */
+  function local(archive: "off" | "dir", onArchive: () => Reply | Promise<Reply>) {
+    const steps: string[] = [];
+    setArchiveKind(archive);
+    stubWorker({
+      pair: () => ({ record: RECORD, table: TABLE }),
+      call: (req) => {
+        if (req.method === "DELETE") steps.push("delete");
+        return undefined;
+      },
+    });
+    const stub = stubApi(async (call) => {
+      if (call.method === "POST" && call.path === "/api/archive") {
+        steps.push("archive");
+        return await onArchive();
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const onDone = vi.fn();
+    const onError = vi.fn();
+    render(<Abandon table={localTable} local onDone={onDone} onError={onError} />);
+    return { steps, stub, onDone, onError, user: userEvent.setup() };
+  }
+
+  /** Both clicks. */
+  const confirm = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL}` }));
+    await user.click(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` }));
+  };
+
+  it("sends the pair to the archive BEFORE the local delete", async () => {
+    const { steps, stub, onDone, user } = local("dir", () => wire.archivePostAbandoned);
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["archive", "delete"]);
+    // Both documents as the store holds them, one snapshot, neither parsed.
+    expect(stub.matching("POST", "/api/archive")[0]?.body).toEqual({
+      record: RECORD,
+      table: TABLE,
+    });
+  });
+
+  // **"Already archived" PROCEEDS** (spec §4). A 200 `identical` means an
+  // earlier send landed and only the delete failed; refusing here would leave
+  // a game that can never be abandoned.
+  it("proceeds to the delete when the server answers identical", async () => {
+    const { steps, onDone, user } = local("dir", () => ({
+      status: 200,
+      body: wire.archivePostIdentical,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["archive", "delete"]);
+  });
+
+  // **A 409 is a DIFFERENT record under this id, and it is not proof that this
+  // one landed** — so the game is KEPT. An earlier draft deleted on it.
+  it("keeps the game on a 409, and says what the server said", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => ({
+      status: 409,
+      body: wire.archive409,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
+    expect(steps).toEqual(["archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+    // Still asking, so the player can try again beside the sentence.
+    expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
+  });
+
+  it("keeps the game when the record is refused, in the server's own words", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => ({
+      status: 400,
+      body: wire.archive400Replay,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive400Replay.error));
+    expect(steps).toEqual(["archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // **The archive unreachable** (R-6.5b.7): the client's own sentence, because
+  // there is no server sentence to carry — and the game stays.
+  it("keeps the game when the archive cannot be reached", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+    await waitFor(() =>
+      expect(onError).toHaveBeenCalledWith("the archive could not be reached — the game was kept"),
+    );
+    expect(steps).toEqual(["archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // No archive on this server: nothing to send, and the delete is local only.
+  it("deletes without sending anything when the server keeps no archive", async () => {
+    const { steps, onDone, user } = local("off", () => {
+      throw new Error("the archive must not be asked");
+    });
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["delete"]);
+  });
+
+  // **A local table with no `local` saves NOTHING, and says so** — the screen
+  // for a save that no longer rebuilds is the one caller that withholds it,
+  // because the archive would refuse that very record (spec §4: "Abandon still
+  // works"). A label promising a copy nobody can make is what this rule exists
+  // to stop.
+  it("reads Abandon, and sends nothing, for a local table this control does not archive", async () => {
+    setArchiveKind("dir");
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    const stub = stubApi(() => {
+      throw new Error("the archive must not be asked");
+    });
+    const onDone = vi.fn();
+    render(<Abandon table={localTable} onDone={onDone} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
+    await confirm(userEvent.setup());
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("reads Abandon and save when the server keeps an archive", () => {
+    setArchiveKind("dir");
+    stubWorker();
+    stubApi(() => null);
+    render(<Abandon table={localTable} local onDone={() => {}} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(
+      "Abandon and save",
+    );
   });
 });

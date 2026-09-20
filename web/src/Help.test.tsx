@@ -312,6 +312,22 @@ describe("the help panel and talking (M6.4)", () => {
     expect(text).toContain("your address is used");
   });
 
+  // **The games in this browser** (M6.5b, R-6.5b.6, R-6.5b.7). Three facts a
+  // player cannot discover by looking: the file save is offered at ANY point
+  // rather than only at the end, a finished game can be sent to the server's
+  // archive, and abandoning one sends it there first. Read from the SAVING
+  // section, so a sentence about it somewhere else does not satisfy this.
+  it("says a game on this device is saved as a file at any time, sent to the archive, or abandoned and saved", () => {
+    render(<Help />);
+    const text = section("Saving, and coming back");
+    expect(text).toContain("On this device");
+    expect(text).toContain("at any point");
+    expect(text).toContain("Send to the archive");
+    // And where it LIVES, which is the fact that decides whether a player
+    // treats the browser as a backup: nowhere else, until they send or save it.
+    expect(text).toContain("only in this browser");
+  });
+
   it("says where an abandoned game goes when there is an archive, and how a finished one is saved", () => {
     render(<Help />);
     const saving = screen.getByRole("heading", { name: "Saving, and coming back" }).parentElement!;

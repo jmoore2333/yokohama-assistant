@@ -1638,6 +1638,25 @@ ol.account .mover { font-weight: 700; }
 }
 .decision.walking .ghost { margin-left: auto; }
 
+/* ---- M6.5b: a local game's lock, and a save that will not rebuild -------
+ *
+ * The strip that REPLACES the answer bar when another tab takes the game is a
+ * row, exactly as the walk's strip is one and for the same reason: `.decision`
+ * is a column, and a sentence sitting over a full-width button is not the
+ * shape either of them wants.
+ *
+ * The two standalone screens take the unlock face's controls row, for the
+ * reason that rule gives — `.field` centres its children, and two buttons on
+ * their own read as a pair floating in the middle of an empty row. */
+.decision.locked-out {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
+  font-family: var(--display); font-size: 1.05rem;
+}
+.decision.locked-out .primary { margin-left: auto; }
+.locked-out .unlock-controls,
+.broken-save .unlock-controls { justify-content: flex-start; gap: 0.5rem; flex-wrap: wrap; }
+
 /* ---- M5.5: the set table ------------------------------------------------
  *
  * The second setup step is the M5 table with the deals in the deck, so it
