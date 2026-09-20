@@ -311,4 +311,13 @@ describe("the help panel and talking (M6.4)", () => {
     expect(text).toContain("The name you type beside");
     expect(text).toContain("your address is used");
   });
+
+  it("says where an abandoned game goes when there is an archive, and how a finished one is saved", () => {
+    render(<Help />);
+    const saving = screen.getByRole("heading", { name: "Saving, and coming back" }).parentElement!;
+    expect(saving.textContent).toMatch(/keeps an archive/);
+    expect(saving.textContent).toMatch(/saved there before it is abandoned/);
+    expect(saving.textContent).toMatch(/Abandon and save/);
+    expect(saving.textContent).toMatch(/Save game file/);
+  });
 });

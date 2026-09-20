@@ -364,6 +364,16 @@ describe("a refused move", () => {
   });
 });
 
+/** A Blob's text through `FileReader`, which jsdom implements where `Blob.text`
+ *  may not be. */
+const readBlob = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+
 describe("the finished game", () => {
   // `state.scores` is `{seat, total}[]` in SEAT order with no rank and no `won`,
   // so the inline block could only print a colour and a sorted list — a winner
@@ -381,6 +391,57 @@ describe("the finished game", () => {
     await waitFor(() =>
       expect(document.querySelector("table.outcome tr.won")).not.toBeNull(),
     );
+  });
+
+  // **Save game file** (M6.5a, R-6.5a.13). The record is served as TEXT and is
+  // handed to the download as that text: the Blob's bytes are the served string,
+  // and `JSON.parse` is spied to prove the string never went through it (a
+  // u64 seed would come back rounded). The anchor's click is intercepted rather
+  // than allowed, because jsdom cannot navigate — and its `download` and `href`
+  // are what the spy reads.
+  it("offers Save game file once the game is over, and hands the record text to the download untouched", async () => {
+    const record = '{"seed":18446744073709551615,"events":[]}';
+    const parse = vi.spyOn(JSON, "parse");
+    const clicks: { href: string; download: string }[] = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicks.push({ href: this.href, download: this.download });
+      });
+    const create = vi.fn().mockReturnValue("blob:record");
+    const revoke = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revoke, configurable: true });
+    try {
+      const stub = await renderApp(wire.gameOver, (call) => {
+        if (call.path.endsWith("/result")) return wire.result;
+        if (call.path.endsWith("/record")) {
+          return new Response(record, { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return undefined;
+      });
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "Save game file" }));
+      await waitFor(() => expect(clicks).toHaveLength(1));
+      expect(stub.matching("GET", "/record")).toHaveLength(1);
+      const [first] = clicks;
+      expect(first?.download).toBe(`${wire.gameOver.id}.json`);
+      expect(first?.href).toContain("blob:record");
+      const blob = create.mock.calls[0]?.[0] as Blob;
+      expect(blob.type).toBe("application/json");
+      expect(await readBlob(blob)).toBe(record);
+      expect(parse.mock.calls.some(([s]) => s === record), "the record text went through JSON.parse").toBe(false);
+      expect(revoke).toHaveBeenCalledWith("blob:record");
+    } finally {
+      click.mockRestore();
+      parse.mockRestore();
+    }
+  });
+
+  it("offers no Save game file while the game runs", async () => {
+    await renderApp(wire.options);
+    await screen.findByText(/to move/);
+    expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
   });
 
   it("still shows a standing before /result answers, so the block is never empty", async () => {

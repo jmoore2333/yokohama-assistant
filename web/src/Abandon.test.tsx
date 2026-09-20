@@ -6,10 +6,11 @@
 // invariant was asserted by nobody. The guard is now held here, in the one place
 // that has it — and the double-click cell below is what holds it.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Abandon } from "./Abandon";
+import { setArchiveKind } from "./api";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
@@ -127,5 +128,30 @@ describe("the abandon control", () => {
     // The id, and the same fallback the lobby row itself reads — so the button
     // and the row it sits beside cannot name the table two different ways.
     expect(screen.getByRole("button", { name: `abandon ${wire.table.id}` })).toBeInTheDocument();
+  });
+
+  // **The label is the near truth** (M6.5a, R-6.5a.13): "Abandon and save" at a
+  // PLAYING table when this deployment keeps an archive, "Abandon" otherwise —
+  // and the accessible name stays `abandon <table>` in every case, so nothing
+  // that clicks by name moves.
+  it("reads Abandon and save at a playing table when the archive is on, and Abandon otherwise", () => {
+    expect(wire.table.status, "the premise: the corpus table is playing").toBe("playing");
+    expect(wire.tableOpen.status).toBe("open");
+    try {
+      setArchiveKind("dir");
+      render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
+      expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent("Abandon and save");
+      cleanup();
+      setArchiveKind("off");
+      render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
+      expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent(/^Abandon$/);
+      cleanup();
+      setArchiveKind("dir");
+      render(<Abandon table={wire.tableOpen} onDone={() => {}} onError={() => {}} />);
+      expect(screen.getByRole("button", { name: `abandon ${wire.tableOpen.name ?? wire.tableOpen.id}` }))
+        .toHaveTextContent(/^Abandon$/);
+    } finally {
+      setArchiveKind("off");
+    }
   });
 });

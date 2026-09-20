@@ -15,7 +15,7 @@
 // lives here now, and `Abandon.test.tsx` holds it with a double click.
 
 import { useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, archiveKind } from "./api";
 import type { TableView } from "./types";
 
 export function Abandon({
@@ -71,7 +71,13 @@ export function Abandon({
         aria-label={`abandon ${named}`}
         onClick={() => setConfirming(true)}
       >
-        Abandon
+        {/* **"and save" is the near truth** (M6.5a, R-6.5a.13): the server
+            archives a PLAYING table with at least one event when its archive is
+            on, and `TableView` carries no event count — so a table dealt a
+            moment ago reads "and save" and saves nothing. The server's rule is
+            the truth; adding a count to the view would move eight fixtures for
+            one word. */}
+        {archiveKind() !== "off" && table.status === "playing" ? "Abandon and save" : "Abandon"}
       </button>
     );
   }

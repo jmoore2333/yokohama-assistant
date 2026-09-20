@@ -8,6 +8,7 @@
 // and both client defects M2 turned up were found exactly that way, by hand,
 // late.
 
+import fs from "node:fs";
 import { expect, test } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { act, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
@@ -78,6 +79,26 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   for (const text of await standing.allInnerTexts()) {
     expect(text).toMatch(/\d+/);
   }
+
+  // **Save game file** (M6.5a, R-6.5a.13): the download's bytes are exactly
+  // what `GET …/record` serves — the record as text, never parsed on the way,
+  // named `<id>.json`. The served copy is fetched RAW from inside the page so it
+  // carries the identity itself, as the reload cell below does.
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Save game file" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(`${game.id}.json`);
+  const saved = fs.readFileSync((await download.path())!, "utf8");
+  const served = await page.evaluate(async (id: string) => {
+    const who = localStorage.getItem("yokohama.claimed_user");
+    const res = await fetch(`/api/games/${id}/record`, {
+      headers: who ? { "x-yokohama-claimed-user": who } : {},
+    });
+    return await res.text();
+  }, game.id);
+  expect(saved, "the saved file is the served record, byte for byte").toBe(served);
+  expect(served).toContain('"terminal_digest"');
 
   expect(watch.failures, "the page reported no errors while a whole game was played").toEqual([]);
 });

@@ -272,7 +272,10 @@ export function Help() {
         and opening it offers <em>Lobby</em> at the top and your other tables under it to switch
         between. A table you opened yourself can be abandoned, from its own screen while it is
         still filling or from its row in the lobby &mdash; two clicks, and it is gone for everyone
-        who was at it.
+        who was at it. When this server keeps an archive, a game with moves in it is saved there
+        before it is abandoned &mdash; the button then reads <em>Abandon and save</em> &mdash; and
+        a finished game can be saved to a file from its own screen with{" "}
+        <em>Save game file</em>, the same file the terminal loads.
       </p>
 
       <h3>If something looks wrong</h3>

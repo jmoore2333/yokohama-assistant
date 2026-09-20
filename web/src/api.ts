@@ -230,6 +230,21 @@ export const setChatText = (n: number): void => {
   textCap = n;
 };
 
+/** Which archive this deployment writes finished and abandoned games to
+ *  (M6.5a, R-6.5a.13), read once from `GET /api/health` at boot; `"off"` until
+ *  then, and the Abandon control's label is the one thing that reads it. A
+ *  health that does not answer leaves it off, which costs a label that says
+ *  less than the server does — never one that promises a save it will not make. */
+export type ArchiveKind = "off" | "dir" | "r2";
+
+let archive: ArchiveKind = "off";
+
+export const archiveKind = (): ArchiveKind => archive;
+
+export const setArchiveKind = (k: ArchiveKind): void => {
+  archive = k;
+};
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { ...identityHeaders() };
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -345,6 +360,33 @@ const query = (args: Record<string, number | undefined>): string => {
  *  **One path function and not two calls**, because the two scopes differ only
  *  in their address and a client that branched at each call site would have the
  *  branch in as many places as it has panels. */
+/** The finished game's record as TEXT, never parsed (M6.5a, R-6.5a.13; umbrella
+ *  R-6.5.6): `GameRecord.seed` is a u64 that serde writes at full precision and
+ *  `JSON.parse` would round to a double, so a record that went through this
+ *  client's parser and back would carry a DIFFERENT seed silently. The status
+ *  is read exactly as `call` reads it — a refusal is the server's `{"error"}`
+ *  sentence, a 401 reaches the door — but a 200 body is handed on as the string
+ *  it arrived as. */
+export async function recordText(game: string): Promise<string> {
+  const res = await fetch(`/api/games/${id(game)}/record`, { headers: { ...identityHeaders() } });
+  const text = await res.text();
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && "error" in parsed) {
+        message = String((parsed as { error: unknown }).error);
+      }
+    } catch {
+      parsed = null;
+    }
+    if (res.status === 401) unauthorized?.(message);
+    throw new ApiError(message, res.status, parsed);
+  }
+  return text;
+}
+
 const chatPath = (scope: ChatScope, after?: number): string =>
   (scope.kind === "house" ? "/api/chat" : `/api/games/${id(scope.id)}/chat`) + query({ after });
 
@@ -418,6 +460,9 @@ export const api = {
       ...(name ? { name } : {}),
     }),
   get: (game: string) => call<ClientState>("GET", `/api/games/${id(game)}`),
+  /** The record of a FINISHED game the caller sits at, as text — see
+   *  `recordText`. 409 while the game runs, 403 for a watcher. */
+  recordText,
   remove: (game: string) => call<null>("DELETE", `/api/games/${id(game)}`),
   /** The one mutation: an option's `number`, or a sub-prompt token. The server
    *  fences this to gameplay lines; anything else comes back as a refusal that
