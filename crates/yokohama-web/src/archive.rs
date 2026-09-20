@@ -253,15 +253,28 @@ mod dir {
         ) -> Result<PutOutcome, PutError> {
             let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id);
             let record_path = self.dir.join(&record);
-            // The record is the marker: the same bytes are a retry, different
-            // bytes a conflict. A read failure that is not "absent" falls
-            // through to the write, which reports its own reason.
-            if let Ok(existing) = std::fs::read_to_string(&record_path) {
-                return if existing == record_json {
-                    Ok(PutOutcome::Identical)
-                } else {
-                    Err(PutError::Conflict(record_path.display().to_string()))
-                };
+            // **The record is the marker, and it has THREE answers, not two**:
+            // the same bytes are a retry, different bytes a conflict, and
+            // ABSENT is the only road to a write.
+            //
+            // A read that failed for any OTHER reason — a path that is a
+            // directory, a file this process may not read, a truncated write
+            // that left invalid UTF-8 — must NOT fall through. `rename` needs
+            // write permission on the DIRECTORY and not on the file, so a
+            // fall-through would REPLACE an archived record with different
+            // bytes and answer `Landed`: the one outcome this protocol exists
+            // to prevent (spec §2.4 — "a 409 must never delete the only
+            // complete copy"), reached without even a 409.
+            match std::fs::read_to_string(&record_path) {
+                Ok(existing) if existing == record_json => return Ok(PutOutcome::Identical),
+                Ok(_) => return Err(PutError::Conflict(record_path.display().to_string())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(PutError::Failed(format!(
+                        "read {}: {e}",
+                        record_path.display()
+                    )))
+                }
             }
             // The table FIRST — overwriting a half pair's table is the repair —
             // and the record second, which is what makes the pair complete.
@@ -465,6 +478,50 @@ mod tests {
             matches!(NoArchive.put("", Why::Over, "x", "{}", "{}"), Err(PutError::Failed(_))),
             "the guard, not a write — and a FAILURE, never a conflict"
         );
+    }
+
+    /// The third answer to the marker read (review fix, spec §2.4): a record
+    /// that is THERE but cannot be read is a `Failed`, and nothing is written.
+    ///
+    /// **Why this is the centrepiece and not an edge.** The two-arm read this
+    /// replaces treated every `Err` as absence and fell through to the write —
+    /// and the write would have SUCCEEDED, because `rename` needs write
+    /// permission on the directory and not on the file, so an archived record
+    /// that had become unreadable (a mode change, a truncated write that left
+    /// invalid UTF-8) would have been replaced by a different record under an
+    /// `Ok(Landed)`. That is losing the only complete copy without even the 409
+    /// the protocol exists to raise.
+    ///
+    /// A DIRECTORY at the record's path is the portable way to arrange a read
+    /// that fails without being absent: every platform refuses it, and none
+    /// refuses it as `NotFound`.
+    ///
+    /// **MUTATION-PROVEN, and the assertion that fires is the anti-vacuity
+    /// one.** Restoring the two-arm read fails this cell at `nothing was
+    /// written`: the fall-through wrote the TABLE and only then did the
+    /// record's own write fail, so the pair was left with a clobbered table
+    /// beside an unreadable record — worse than either half of the answer
+    /// asserted here, and invisible to a cell that only read the return value.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_record_that_cannot_be_read_is_a_failure_and_writes_nothing() {
+        let dir =
+            std::env::temp_dir().join(format!("yokohama_archive_unreadable_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        let (record, table) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-4");
+        std::fs::create_dir_all(dir.join(&record)).unwrap();
+        let out = a.put("", Why::Over, "sim-4", "{\"record\":1}", "{\"table\":1}");
+        assert!(
+            matches!(&out, Err(PutError::Failed(m)) if m.contains("sim-4.json")),
+            "a marker read that is not 'absent' is a FAILURE naming the path, never a fall-through: {out:?}"
+        );
+        // **The anti-vacuity, and the whole point**: the TABLE is written first,
+        // so a put that returned before the read was settled would have left one
+        // behind — and the record's own path still holds what it held.
+        assert!(!dir.join(&table).exists(), "nothing was written");
+        assert!(dir.join(&record).is_dir(), "and the marker path is untouched");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "server")]
