@@ -1,3 +1,16 @@
+//! **The change signal, as a trait (M6.5a, R-6.5a.8): the layer's eight bump
+//! sites call four methods over `&str`.** [`Signals`] — tokio `watch` channels,
+//! everything below the `use` lines — implements them for the axum host, and
+//! [`NoSignal`] is the unconditional no-op a host with nothing to wake passes.
+//! Subscribing is a transport concern and stays on `Signals`: a stream is the
+//! only thing that reads a bump back, and there is no stream to hold where
+//! there are no channels.
+//!
+//! The trait sits ABOVE the `use` lines deliberately. It is the whole of what
+//! [`crate::games`] needs, it borrows nothing from tokio, and the split is
+//! where the `server` feature's gate will fall: everything from
+//! `use std::collections::HashMap;` down is the tokio half.
+//!
 //! **The change signal (M6.3, spec §2): one `watch` channel per table, one for
 //! the house.** A bump is sent AFTER the write it announces lands, never before,
 //! so a subscriber that wakes and reads sees the new state. `watch` coalesces:
@@ -14,6 +27,39 @@
 //! message costs every visible lobby its three listing reads (recorded in the
 //! M6.4 close as a LEAVE item); the second counter is what a `"value"` consumer
 //! would need to tell them apart.
+
+/// What a write site calls when something it wrote has changed.
+///
+/// Four methods over `&str` and nothing else: this trait knows no game, no
+/// table and no seat, and returns nothing, so it is object-safe and a layer
+/// holds one as `Arc<dyn Signal>`. **A bump follows its write and never
+/// precedes it** — the contract is the caller's, and it is why every call sits
+/// on a success path.
+pub trait Signal: Send + Sync {
+    /// The table's channel AND the house's LISTING counter.
+    fn bump(&self, id: &str);
+    /// The table's channel only (a keep that does not finalize).
+    fn bump_table(&self, id: &str);
+    /// The house's CHAT counter only — a house message wakes every lobby and
+    /// moves no table listing (M6.4, R-6.4.7).
+    fn bump_house_chat(&self);
+    /// The terminal bump: the table is gone and every stream on it ends.
+    fn end(&self, id: &str);
+}
+
+/// The signal of a host with nothing to wake.
+///
+/// Not a test double: a layer compiled without the transport half has no
+/// channels to bump, and the write sites are the same writes either way. It
+/// keeps nothing, so a bump costs a virtual call and no allocation.
+pub struct NoSignal;
+
+impl Signal for NoSignal {
+    fn bump(&self, _id: &str) {}
+    fn bump_table(&self, _id: &str) {}
+    fn bump_house_chat(&self) {}
+    fn end(&self, _id: &str) {}
+}
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -64,37 +110,6 @@ impl Signals {
         house.get_or_insert_with(|| watch::channel(House::default()).0).clone()
     }
 
-    /// The table's channel only (a keep that does not finalize).
-    pub fn bump_table(&self, id: &str) {
-        let tx = self.table_sender(id);
-        tx.send_modify(|b| b.seq += 1);
-    }
-
-    /// The table's channel AND the house's LISTING counter.
-    pub fn bump(&self, id: &str) {
-        self.bump_table(id);
-        self.house_sender().send_modify(|h| h.seq += 1);
-    }
-
-    /// The house's CHAT counter only — a house message wakes every lobby and
-    /// moves no table listing (M6.4, R-6.4.7).
-    pub fn bump_house_chat(&self) {
-        self.house_sender().send_modify(|h| h.chat += 1);
-    }
-
-    /// The terminal bump, then the sender is REMOVED so every stream on the
-    /// table ends; the house is bumped so a lobby drops the row.
-    pub fn end(&self, id: &str) {
-        let tx = self.tables.lock().expect("signals lock").remove(id);
-        if let Some(tx) = tx {
-            tx.send_modify(|b| {
-                b.seq += 1;
-                b.end = true;
-            });
-        }
-        self.house_sender().send_modify(|h| h.seq += 1);
-    }
-
     pub fn subscribe(&self, id: &str) -> watch::Receiver<Bump> {
         self.table_sender(id).subscribe()
     }
@@ -106,6 +121,41 @@ impl Signals {
     #[cfg(test)]
     pub fn senders(&self) -> usize {
         self.tables.lock().expect("signals lock").len()
+    }
+}
+
+/// The four bumps, over the channels above.
+///
+/// They are the trait's since M6.5a rather than inherent, so a layer holding
+/// `Arc<dyn Signal>` reaches exactly these; `subscribe`, `subscribe_house` and
+/// the two private senders stay inherent, because reading a bump back is the
+/// transport's side and the trait has no business naming a `watch::Receiver`.
+impl Signal for Signals {
+    fn bump_table(&self, id: &str) {
+        let tx = self.table_sender(id);
+        tx.send_modify(|b| b.seq += 1);
+    }
+
+    fn bump(&self, id: &str) {
+        self.bump_table(id);
+        self.house_sender().send_modify(|h| h.seq += 1);
+    }
+
+    fn bump_house_chat(&self) {
+        self.house_sender().send_modify(|h| h.chat += 1);
+    }
+
+    /// The terminal bump, then the sender is REMOVED so every stream on the
+    /// table ends; the house is bumped so a lobby drops the row.
+    fn end(&self, id: &str) {
+        let tx = self.tables.lock().expect("signals lock").remove(id);
+        if let Some(tx) = tx {
+            tx.send_modify(|b| {
+                b.seq += 1;
+                b.end = true;
+            });
+        }
+        self.house_sender().send_modify(|h| h.seq += 1);
     }
 }
 
@@ -178,5 +228,47 @@ mod tests {
         let fresh = s.subscribe("t");
         assert_eq!(fresh.borrow().seq, 0);
         assert!(!fresh.borrow().end);
+    }
+
+    /// **The signal of a host with nothing to wake answers every call** (M6.5a,
+    /// R-6.5a.8).
+    ///
+    /// [`NoSignal`] is what a layer built without the server half holds, so the
+    /// eight bump sites call it on every write path there is. The cell walks
+    /// all four methods and then the same four through the trait object the
+    /// layer actually stores, because a `dyn Signal` is the shape that has to
+    /// compile: a trait taking `&str` and returning nothing is object-safe, and
+    /// a method that later grew a generic would fail HERE rather than at the
+    /// one call site that happened to be built.
+    #[test]
+    fn no_signal_accepts_every_call_and_keeps_nothing() {
+        let s = NoSignal;
+        s.bump("a");
+        s.bump_table("a");
+        s.bump_house_chat();
+        s.end("a");
+        // The trait object shape the layer holds.
+        let boxed: std::sync::Arc<dyn Signal> = std::sync::Arc::new(NoSignal);
+        boxed.bump("b");
+    }
+
+    /// **A bump through the trait is the same bump** (M6.5a, R-6.5a.8).
+    ///
+    /// The four methods moved from inherent `impl Signals` to `impl Signal for
+    /// Signals`. The cells above this one hold a `Signals` by value and reach
+    /// them by ordinary method resolution, which says nothing about the shape
+    /// the layer stores; this one subscribes and then calls through
+    /// `Arc<dyn Signal>`, so a dynamic dispatch landing on a different sender —
+    /// or a `NoSignal` wired in its place — reads as a channel that never
+    /// moved.
+    #[test]
+    fn signals_through_the_trait_are_the_same_bumps() {
+        let s = std::sync::Arc::new(Signals::default());
+        let rx = s.subscribe("t");
+        let dynamic: std::sync::Arc<dyn Signal> = s.clone();
+        dynamic.bump("t");
+        assert_eq!(rx.borrow().seq, 1, "a bump through the trait reaches the same channel");
+        dynamic.end("t");
+        assert!(rx.borrow().end);
     }
 }

@@ -25,7 +25,7 @@ use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
 use crate::chat::ChatLimits;
-use crate::signal::Signals;
+use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
 use crate::table::{TableStatus, TurnMirror};
 
@@ -151,8 +151,8 @@ pub struct Games {
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
     pub(crate) deleted: Mutex<std::collections::HashSet<GameId>>,
-    /// The change signal (M6.3, spec §2): one `watch` channel per table and
-    /// one for the house, bumped AFTER each of this type's writes lands.
+    /// The change signal (M6.3, spec §2), bumped AFTER each of this type's
+    /// writes lands — **a trait object since M6.5a** (R-6.5a.8).
     ///
     /// It lives here because every write site does, and only because of that:
     /// [`crate::signal`] knows nothing about a game, a table or a seat, and
@@ -160,7 +160,13 @@ pub struct Games {
     /// something this process wrote has changed, for the streams in front of
     /// it to answer — so a failed or refused write bumps nothing, and every
     /// call below sits on a success path.
-    pub(crate) signals: Signals,
+    ///
+    /// The axum host passes [`crate::signal::Signals`] (one `watch` channel per
+    /// table and one for the house) and keeps its own handle to subscribe on; a
+    /// host with nothing to wake passes [`NoSignal`]. This type cannot tell
+    /// them apart, and that is the point: what a write site owes is the CALL,
+    /// and what becomes of it is the transport's.
+    pub(crate) signal: Arc<dyn Signal>,
     /// The newest chat number per table this process has seen (M6.4, R-plan-5):
     /// seeded from the document on a miss, advanced by every append, dropped by
     /// a delete and by a create.
@@ -209,9 +215,26 @@ impl Games {
     }
 
     /// [`Games::new`] with the chat's retention numbers given rather than
-    /// defaulted — how `main` passes the launch variables, and how a test asks
-    /// for a keep small enough to watch a trim happen.
+    /// defaulted — how a test asks for a keep small enough to watch a trim
+    /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
+    /// calls [`Games::with_parts`] and keeps the handle it passed.
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
+        Self::with_parts(rules, store, limits, Arc::new(NoSignal))
+    }
+
+    /// The one constructor that builds anything: every part this type holds
+    /// that a host may choose, given rather than defaulted.
+    ///
+    /// How `main` builds the layer (M6.5a, R-6.5a.8) — the signal is a trait
+    /// object, so the host builds its own and passes a clone, keeping the
+    /// other half to subscribe on. The two constructors above are this one with
+    /// the retention numbers or the signal chosen for them.
+    pub fn with_parts(
+        rules: Arc<Rules>,
+        store: Arc<dyn Store>,
+        limits: ChatLimits,
+        signal: Arc<dyn Signal>,
+    ) -> Self {
         Self {
             rules,
             store,
@@ -220,7 +243,7 @@ impl Games {
             table_lock: Mutex::new(()),
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
-            signals: Signals::default(),
+            signal,
             chat_last: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
             limits,
@@ -235,13 +258,6 @@ impl Games {
     /// cap in a refusal rather than restate it.
     pub fn limits(&self) -> ChatLimits {
         self.limits
-    }
-
-    /// The change signal every write site bumps ([`Games::signals`] the field).
-    /// The routes in front of this type subscribe through it; nothing here
-    /// reads one back.
-    pub fn signals(&self) -> &Signals {
-        &self.signals
     }
 
     /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
@@ -540,7 +556,7 @@ impl Games {
         // whose-turn and over lines are read off the mirror, so a bump sent
         // between the record write and the refresh wakes a lobby that then
         // reads the previous turn and hears nothing more.
-        self.signals.bump(id);
+        self.signal.bump(id);
         Ok(())
     }
 
@@ -630,6 +646,25 @@ mod tests {
     use crate::store::MemStore;
     use crate::tables::WireSeed;
     use yokohama_core::PlayerId;
+
+    /// **A layer built with no signal still answers every document call**
+    /// (M6.5a, R-6.5a.8).
+    ///
+    /// The signal is a trait object since this cycle, and [`NoSignal`] is what
+    /// a host with nothing to wake passes. Nothing in this type reads a bump
+    /// back, so the property is that the no-op reaches every site without one
+    /// of them having kept a `Signals`-shaped assumption — a `.senders()` read,
+    /// say, or an `expect` on a channel.
+    #[test]
+    fn a_games_built_with_no_signal_still_answers_every_document_call() {
+        let rules = Arc::new(Rules::standard());
+        let store: Arc<dyn Store> = Arc::new(crate::store::MemStore::default());
+        let games =
+            Games::with_parts(rules, store, ChatLimits::default(), Arc::new(crate::signal::NoSignal));
+        // Any document call that reaches a bump site is enough: `chat_last` on a
+        // missing table reads zero and nothing panics on the way.
+        assert_eq!(games.chat_last("nothing"), 0);
+    }
 
     /// **The mirror follows the game, because a list that lies about whose turn
     /// it is is worse than one that says nothing.**
@@ -1194,12 +1229,12 @@ mod tests {
     #[test]
     fn a_persisted_move_bumps_the_table_and_the_house() {
         let store = Arc::new(MemStore::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
         let id = "bumped".to_string();
         let handle = playing(&games, &req("bumped"), &["red@t.test"]);
 
-        let mut rx = games.signals().subscribe(&id);
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
         let before = stored_events(&store, &id);
@@ -1230,7 +1265,7 @@ mod tests {
     /// the one a bump placed at the TOP of the function would sail past.
     #[test]
     fn a_refused_write_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let id = "refused".to_string();
         let handle = playing(&games, &req("refused"), &["red@t.test"]);
         let red = who("red@t.test");
@@ -1240,8 +1275,8 @@ mod tests {
         // `delete` itself ENDS the table's channel, so the subscription for
         // this assertion is taken after it — a fresh sender that has seen
         // nothing, exactly as `signal.rs`'s own end cell describes.
-        let rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
 
         games.persist(&id, &repl).expect_err("the in-flight write is refused");
 
@@ -1296,12 +1331,12 @@ mod tests {
         }
 
         let store = Arc::new(FailingWrites::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
         let id = "wfail".to_string();
         let handle = playing(&games, &req("wfail"), &["red@t.test"]);
 
-        let rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         store.failing.store(true, Ordering::SeqCst);
 
         let mut repl = handle.lock().expect("the handle");
@@ -1390,8 +1425,8 @@ mod tests {
             at: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let id = "mirror".to_string();
         let handle = playing(&games, &req("mirror"), &["red@t.test"]);
 
@@ -1409,8 +1444,8 @@ mod tests {
         doc.turn = None;
         games.write_table(&doc, Some(version)).expect("the mirror is cleared");
 
-        let mut rx = games.signals().subscribe(&id);
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
         store.armed.store(true, Ordering::SeqCst);
@@ -1456,12 +1491,33 @@ pub(crate) mod test_support {
     use yokohama_core::{PlayerColor, Rules};
 
     use super::Games;
+    use crate::chat::ChatLimits;
     use crate::identity::User;
+    use crate::signal::Signals;
     use crate::store::{Doc, MemStore, Store};
     use crate::tables::{NewGame, SeatSpec, WireSeed};
 
     pub(crate) fn games() -> Games {
         Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
+    }
+
+    /// A [`Games`] over `store`, **and the signal handle to subscribe on**.
+    ///
+    /// The signal is a trait object inside `Games` since M6.5a (R-6.5a.8) and
+    /// there is no way back out of it — bumping is all a write site may do — so
+    /// a cell that WATCHES a bump builds the [`Signals`] itself and keeps its
+    /// half, exactly as `AppState` does. [`games`] above stays the helper for
+    /// every cell that does not watch: its signal is the `NoSignal` that
+    /// `Games::new` defaults to.
+    pub(crate) fn watched_games(store: Arc<dyn Store>) -> (Games, Arc<Signals>) {
+        let signals = Arc::new(Signals::default());
+        let games = Games::with_parts(
+            Arc::new(Rules::standard()),
+            store,
+            ChatLimits::default(),
+            signals.clone(),
+        );
+        (games, signals)
     }
 
     /// The corpus seed. **At this seed seat 1's argmax is card 1** (57 against

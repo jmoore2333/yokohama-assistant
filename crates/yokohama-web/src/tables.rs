@@ -766,7 +766,7 @@ impl Games {
                 // other route, which is the same reason the tombstone set is
                 // cleared a few lines above.
                 self.chat_last.lock().expect("games lock").remove(&doc.id);
-                self.signals.bump(&doc.id);
+                self.signal.bump(&doc.id);
                 Ok(doc.view(creator))
             }
             Err(WriteError::Conflict { .. }) => {
@@ -948,7 +948,7 @@ impl Games {
         // leaves the number alone, which is the whole of R-6.4.9.
         self.chat_last.lock().expect("games lock").insert(id.to_string(), message.seq);
         // AFTER the write, never before (the gated cell).
-        self.signals.bump_table(id);
+        self.signal.bump_table(id);
         Ok(message)
     }
 
@@ -962,7 +962,7 @@ impl Games {
         let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
         let _serialized = self.house_lock.lock().expect("house lock");
         let message = self.append_locked(HOUSE, None, author, text)?;
-        self.signals.bump_house_chat();
+        self.signal.bump_house_chat();
         Ok(message)
     }
 
@@ -1252,7 +1252,7 @@ impl Games {
                 // the same flip twice. A `watch` coalesces, so the second
                 // would be harmless — and it would still be a bump for a write
                 // that did not happen, which is the rule this file keeps.
-                self.signals.bump(id);
+                self.signal.bump(id);
                 Ok((doc, version))
             }
             // Another writer flipped it first. Its answer is as good as ours —
@@ -1399,7 +1399,7 @@ impl Games {
                 // The house too: a seat filled is a row on the open list that
                 // changed, and a join that FILLED the table is a row that left
                 // it — the same write, so the same bump.
-                self.signals.bump(id);
+                self.signal.bump(id);
                 Ok(doc.view(user))
             }
             // Somebody took this seat between the read and here. The stored
@@ -1501,7 +1501,7 @@ impl Games {
         // line has moved and no lobby row has. If this keep is the last one,
         // the finalize below reaches the house through `flip_to_playing` —
         // which is a second write and therefore rightly a second bump.
-        self.signals.bump_table(id);
+        self.signal.bump_table(id);
         if doc.all_humans_kept() {
             let (doc, _) = self.finalize(doc)?;
             return Ok(doc.view(user));
@@ -1690,7 +1690,7 @@ impl Games {
         // to read, so every stream on this table has to close rather than
         // fetch a 404. The house is bumped inside `end`, so a lobby drops the
         // row.
-        self.signals.end(id);
+        self.signal.end(id);
         Ok(())
     }
 }
@@ -3700,9 +3700,9 @@ mod tests {
     /// wakes on its first write rather than waiting for its second.
     #[test]
     fn a_create_bumps_the_table_and_the_house() {
-        let games = games();
-        let mut rx = games.signals().subscribe("made");
-        let house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let mut rx = signals.subscribe("made");
+        let house = signals.subscribe_house();
         assert_eq!(rx.borrow().seq, 0, "nothing has happened at this id yet");
 
         games.create(&req("made"), &who("red@t.test")).expect("a table");
@@ -3720,12 +3720,12 @@ mod tests {
     /// placed anywhere but the success arm falls into.
     #[test]
     fn a_refused_create_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&req("twice"), &red).expect("a table");
 
-        let rx = games.signals().subscribe("twice");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("twice");
+        let house = signals.subscribe_house();
         games.create(&req("twice"), &red).expect_err("the name is taken");
 
         assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
@@ -3737,10 +3737,10 @@ mod tests {
     /// is something the lobby shows.
     #[test]
     fn a_join_bumps_the_table_and_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         open_two(&games, "j", None);
-        let mut rx = games.signals().subscribe("j");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("j");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3760,10 +3760,10 @@ mod tests {
     /// the success arm.
     #[test]
     fn a_refused_join_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         open_two(&games, "jr", Some("hunter2"));
-        let rx = games.signals().subscribe("jr");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("jr");
+        let house = signals.subscribe_house();
 
         games
             .join("jr", &who("blue@t.test"), PlayerId::new(1), None, Some("nope"))
@@ -3786,11 +3786,11 @@ mod tests {
     /// would assert the opposite of what it claims to and pass.
     #[test]
     fn a_keep_that_does_not_finalize_bumps_the_table_and_not_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         games.create(&two_people("k", CORPUS_SEED), &red).expect("a table");
-        let mut rx = games.signals().subscribe("k");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("k");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3815,13 +3815,13 @@ mod tests {
     /// at a seat that has already chosen.
     #[test]
     fn a_refused_keep_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&two_people("kr", CORPUS_SEED), &red).expect("a table");
         games.keep("kr", &red, PlayerId::new(0), 1, None).expect("red's keep");
 
-        let rx = games.signals().subscribe("kr");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("kr");
+        let house = signals.subscribe_house();
         games.keep("kr", &red, PlayerId::new(0), 2, None).expect_err("seat 0 has already chosen");
 
         assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
@@ -3844,11 +3844,11 @@ mod tests {
     /// at all, which is how this one was written and what it failed on.
     #[test]
     fn a_delete_ends_the_table_and_bumps_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&req("gone"), &red).expect("a table");
-        let mut rx = games.signals().subscribe("gone");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("gone");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3865,10 +3865,10 @@ mod tests {
     /// close because somebody who could not delete it tried.
     #[test]
     fn a_refused_delete_ends_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         games.create(&two_people("dr", CORPUS_SEED), &red).expect("a table");
-        let mut rx = games.signals().subscribe("dr");
+        let mut rx = signals.subscribe("dr");
         rx.borrow_and_update();
 
         games.delete("dr", &blue).expect_err("delete is the creator's");
@@ -3953,14 +3953,14 @@ mod tests {
             at_flip: Mutex::new(at_flip_tx),
             go_flip: Mutex::new(go_flip_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
         games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
 
-        let mut rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         let before = rx.borrow_and_update().seq;
 
         let keeper = {
@@ -4009,11 +4009,11 @@ mod tests {
     /// than being handed the last message a second time.
     #[test]
     fn a_chat_append_writes_then_bumps_the_table_and_not_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
-        let mut rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         rx.borrow_and_update();
         let m = games.chat_append(&id, red_seat(), "  hello ").expect("an append");
         assert_eq!((m.seq, m.text.as_str()), (1, "hello"));
@@ -4219,8 +4219,8 @@ mod tests {
     /// so reaching it means this process built a message it should not have.
     #[test]
     fn a_house_append_bumps_the_house_chat_counter_only() {
-        let games = games();
-        let mut house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let mut house = signals.subscribe_house();
         house.borrow_and_update();
         let m = games
             .house_append(Author::Watcher { user: "g@t.test".into(), name: Some("G".into()) }, "hi all")
@@ -4331,11 +4331,11 @@ mod tests {
             at_write: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let red = who("red@t.test");
         let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
-        let mut rx = games.signals().subscribe(&id);
+        let mut rx = signals.subscribe(&id);
         rx.borrow_and_update();
 
         let writer = {
@@ -4573,9 +4573,9 @@ mod tests {
             at_write: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
-        let mut house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
+        let mut house = signals.subscribe_house();
         house.borrow_and_update();
 
         let writer = {

@@ -268,6 +268,14 @@ pub struct AppState {
     /// The lobby switch and the two retention caps (M6.4, R-6.4.6, R-6.4.8),
     /// read once at start; each has a default.
     pub chat: chat::ChatConfig,
+    /// The transport's half of the change signal (M6.5a, R-6.5a.8).
+    ///
+    /// [`Games`] holds the same object as an `Arc<dyn signal::Signal>` and can
+    /// only BUMP it; the streams live here and are the only things that read a
+    /// bump back, so the concrete [`signal::Signals`] — the one type that can
+    /// hand out a receiver — is held here rather than fetched back out of the
+    /// layer below.
+    pub signals: Arc<signal::Signals>,
 }
 
 impl AppState {
@@ -317,12 +325,14 @@ impl AppState {
         chat: chat::ChatConfig,
     ) -> Self {
         let rules = Arc::new(Rules::standard());
+        let signals = Arc::new(signal::Signals::default());
         Self {
             rules: Arc::clone(&rules),
-            games: Games::with_limits(rules, store, chat.limits),
+            games: Games::with_parts(rules, store, chat.limits, signals.clone()),
             identity,
             heartbeat: HEARTBEAT,
             chat,
+            signals,
         }
     }
 }
@@ -1798,7 +1808,7 @@ async fn events(
         // exist — would be a refusal delayed by 25 seconds and an entry in a
         // map that nothing prunes.
         let _admitted = events_at(&state, &id, &user)?;
-        let mut rx = state.games.signals().subscribe(&id);
+        let mut rx = state.signals.subscribe(&id);
         // Either arm is an answer: the bump, the deadline, or a closed channel
         // (the table was deleted, which the read below reports as a 404).
         let _ = tokio::time::timeout(std::time::Duration::from_secs(wait), rx.changed()).await;
@@ -1937,7 +1947,7 @@ async fn stream(
     use tokio_stream::StreamExt;
 
     events_at(&state, &id, &user)?;
-    let rx = state.games.signals().subscribe(&id);
+    let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
     let frames = tokio_stream::wrappers::WatchStream::new(rx).map(move |bump| {
         if bump.end {
@@ -1997,7 +2007,7 @@ async fn house_stream(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
-    let rx = state.games.signals().subscribe_house();
+    let rx = state.signals.subscribe_house();
     let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
         Ok::<_, std::convert::Infallible>(
             Event::default()
@@ -2148,6 +2158,9 @@ pub fn app(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The four bumps are the trait's since M6.5a (R-6.5a.8); the cells that
+    // drive one by hand need it in scope.
+    use crate::signal::Signal;
     use crate::store::Doc;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -6268,7 +6281,7 @@ mod tests {
     #[tokio::test]
     async fn the_stream_refuses_an_id_that_is_not_there_without_making_a_sender() {
         let state = Arc::new(AppState::in_memory());
-        assert_eq!(state.games.signals().senders(), 0);
+        assert_eq!(state.signals.senders(), 0);
         let (status, text, _) = stream_frames(
             Arc::clone(&state),
             "/api/games/nope/stream",
@@ -6278,7 +6291,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
         assert_eq!(
-            state.games.signals().senders(),
+            state.signals.senders(),
             0,
             "a refused stream subscribed to something",
         );
@@ -6371,7 +6384,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         store.fail_table_reads.store(1, Ordering::SeqCst);
-        state.games.signals().bump_table("wire");
+        state.signals.bump_table("wire");
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         assert_eq!(
             store.fail_table_reads.load(Ordering::SeqCst),
@@ -6380,7 +6393,7 @@ mod tests {
         );
 
         // And the connection is still there to answer it.
-        state.games.signals().bump_table("wire");
+        state.signals.bump_table("wire");
 
         let (status, text, ended) = reader.await.expect("the reader task");
         assert_eq!(status, StatusCode::OK, "{text}");
@@ -6474,7 +6487,7 @@ mod tests {
         for (table, sentence) in
             [("shut", "this table is locked — unlock it first"), ("dealt", NOT_SEATED)]
         {
-            let before = state.games.signals().senders();
+            let before = state.signals.senders();
             let (status, text, _) = stream_frames(
                 Arc::clone(&state),
                 &format!("/api/games/{table}/stream"),
@@ -6485,7 +6498,7 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN, "{table}: {text}");
             assert!(text.contains(sentence), "{table}: {text}");
             assert_eq!(
-                state.games.signals().senders(),
+                state.signals.senders(),
                 before,
                 "{table}: a refused stream subscribed",
             );
@@ -6981,7 +6994,7 @@ mod tests {
             ..chat::ChatConfig::default()
         }));
         // Not `mut`: this cell only asks `has_changed`, which borrows shared.
-        let house = off.games.signals().subscribe_house();
+        let house = off.signals.subscribe_house();
         for (method, body) in [("GET", None), ("POST", Some(serde_json::json!({ "text": "x" })))] {
             let (status, got) = request_as(&off, "grey@wire.test", method, "/api/chat", body).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{method}: {got}");
