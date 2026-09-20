@@ -1,5 +1,6 @@
 /// <reference types="vitest/config" />
 import { defineConfig, mergeConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import viteConfig from "./vite.config";
 
 // The component suite: the client's own half of the M2.5 harness.
@@ -23,6 +24,14 @@ export default mergeConfig(
       globals: true,
       setupFiles: ["./src/test/setup.ts"],
       include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+      // M6.5b: the wasm corpus replay (`src/local/*.node.test.ts`) is its own
+      // project — environment `node`, no setup file, and it loads a module this
+      // run does not build. `include` above would otherwise sweep it into jsdom.
+      //
+      // It EXTENDS vitest's own defaults rather than replacing them: an
+      // `exclude` given here wins outright, so a bare list would put
+      // `node_modules` and `dist` back into the glob.
+      exclude: [...configDefaults.exclude, "src/local/*.node.test.ts"],
       // DOM cleanup between tests is `cleanup()` in `src/test/setup.ts`, not
       // these — an earlier comment here claimed otherwise. What these three do
       // is undo what a test did to the ENVIRONMENT: `vi.fn` spies, `vi.stubEnv`

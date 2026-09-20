@@ -50,6 +50,39 @@ jobs:
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
+      # M6.5b: the browser host's module is built HERE — this is the job that has
+      # the toolchain and the target — and the corpus replay through it will run
+      # here too (Task 7). `wasm-bindgen-cli` is a from-source build of about two
+      # minutes, cached by version, and the release module is a second cargo
+      # target the job pays once per run: this job now compiles three ways (the
+      # debug tests, the wasm check, the release module) plus node, and its wall
+      # is expected to roughly DOUBLE (spec §2.1).
+      #
+      # The CLI's version is PINNED to the one `crates/yokohama-wasm` depends on
+      # (`wasm-bindgen = "=0.2.128"`). The generator and the crate must match
+      # exactly or the glue refuses the module at load; the cache key carries the
+      # version for the same reason, so a bump here invalidates the cache rather
+      # than restoring a stale binary.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.128
+      - run: test -x ~/.cargo/bin/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build:wasm
+        working-directory: web
+      # The WORKER project, type-checked where the module exists. The
+      # `web-client` job below runs the same script with the module absent and
+      # the opt-out set, so that job checks the app and node projects only —
+      # this is the one place the Worker's own sources are checked at all.
+      - run: npm run typecheck
+        working-directory: web
       - run: cargo test -p yokohama-web --lib --test wire_fixtures
       # M6.5a (R-6.5a.7): the layer builds for the browser and the Worker without
       # its server half. This proves the DEPENDENCY fence (no axum, no mio); the
@@ -92,5 +125,13 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      # M6.5b: this job has no Rust toolchain and builds no module, so the
+      # worker project's inputs (the gitignored glue under `src/local/wasm/`)
+      # are not here. The opt-out turns the typecheck script's refusal into a
+      # skip that SAYS it checked nothing; the `web-server` job above builds the
+      # module and runs the same script without it, which is where the Worker is
+      # actually checked. The spec keeps this job otherwise untouched.
       - run: npm run typecheck
+        env:
+          YOKOHAMA_WASM_OPTIONAL: "1"
       - run: npm test

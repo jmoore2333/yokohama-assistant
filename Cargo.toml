@@ -8,6 +8,7 @@ members = [
     "crates/yokohama-difftest",
     "crates/yokohama-bridge",
     "crates/yokohama-web",
+    "crates/yokohama-wasm",
 ]
 
 [workspace.package]

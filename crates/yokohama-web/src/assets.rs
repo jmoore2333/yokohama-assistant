@@ -58,6 +58,10 @@ pub fn content_type(path: &Path) -> &'static str {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("woff2") => "font/woff2",
         Some("ico") => "image/x-icon",
+        // M6.5b (R-6.5b.14): the browser host's module, emitted by Vite as a
+        // hashed asset. `WebAssembly.instantiateStreaming` refuses any other
+        // type, and the fallback it refuses into is a silent slow path at best.
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -126,5 +130,9 @@ mod tests {
         assert_eq!(content_type(Path::new("a/index-x.js")), "text/javascript; charset=utf-8");
         assert_eq!(content_type(Path::new("a/index-x.css")), "text/css; charset=utf-8");
         assert_eq!(content_type(Path::new("a/font.woff2")), "font/woff2");
+        // M6.5b (R-6.5b.14): the browser host's module. Vite emits it as a
+        // hashed asset beside the bundle, and a browser refuses to
+        // `instantiateStreaming` anything not served as `application/wasm`.
+        assert_eq!(content_type(Path::new("wasm/yokohama_wasm.wasm")), "application/wasm");
     }
 }

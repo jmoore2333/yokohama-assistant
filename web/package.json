@@ -5,10 +5,12 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "build:wasm": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && wasm-bindgen --target nodejs --out-dir wasm-node ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && node -e \"require('fs').writeFileSync('wasm-node/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "build:wasm:debug": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --features debug --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run build:wasm && tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit && tsc -p tsconfig.node.json",
+    "typecheck": "tsc -b --noEmit && tsc -p tsconfig.node.json && node scripts/typecheck-worker.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "npm run build && playwright test"

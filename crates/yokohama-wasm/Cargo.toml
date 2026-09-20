@@ -1,0 +1,38 @@
+[package]
+name = "yokohama-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+# Bundles nothing third-party, but the layer it wraps is `publish = false` for
+# ASSETS.md's reason, and a package that cannot be published is not a dependency
+# anyone outside this workspace can build.
+publish = false
+
+[lib]
+# `cdylib` is the module `wasm-bindgen` reads (spec §2.1). Nothing else: the
+# crate's own cells are unit tests, which cargo compiles from this same lib
+# target with `--test` regardless of its crate type, and no other crate in the
+# workspace links this one — the Worker loads the built module, it does not
+# `use` it.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The layer WITHOUT its server half (R-6.5b.9): axum, tokio and tokio-stream
+# never enter this graph. `yokohama-web` stays exactly what M6.5a made it — a
+# library that knows no host — and this crate is the host.
+yokohama-web = { path = "../yokohama-web", default-features = false }
+yokohama-core = { path = "../yokohama-core" }
+# The lock's version, which M6.5a already pulled in through getrandom's `js`
+# feature; the installed `wasm-bindgen-cli` must match it exactly, so it is
+# pinned with `=` rather than left to a caret range.
+wasm-bindgen = "=0.2.128"
+# The clock, and nothing else: `js_sys::Date::now` is this crate's ONE platform
+# call and its own scan says so.
+js-sys = "0.3"
+
+[features]
+# The e2e build's trap hook (spec §6.5): a panic inside a held lock, so the
+# browser half can be driven through the recovery it claims. Never in the
+# release module — `npm run build:wasm` does not pass it.
+debug = []

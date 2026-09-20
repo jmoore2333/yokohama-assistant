@@ -1,0 +1,24 @@
+{
+  // The WORKER half of the client tree (M6.5b): `web/src/local/`, which runs in
+  // a dedicated Web Worker and not on the page.
+  //
+  // A third project rather than more `include` in `tsconfig.json`, for
+  // `tsconfig.node.json`'s reason read the other way: the Worker has
+  // `self.postMessage` and `importScripts` and has NO `document` or `window`,
+  // so folding it into the app project would put worker globals in scope for
+  // every component — and adding `DOM` here would put `document` in scope for
+  // the Worker, where it does not exist at runtime.
+  //
+  // It is run by `scripts/typecheck-worker.mjs` rather than directly from the
+  // `typecheck` script, because its inputs include the GENERATED glue
+  // (`src/local/wasm/*.d.ts`, which `npm run build:wasm` writes and
+  // `.gitignore` excludes): a checkout that has not built the module must be
+  // told so by name, not fail with a resolution error about a file nobody
+  // committed.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "WebWorker"],
+    "types": []
+  },
+  "include": ["src/local/wasm/*.d.ts"]
+}
