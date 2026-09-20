@@ -643,27 +643,63 @@ pub fn bring_alive(repl: &mut Repl) -> String {
 mod tests {
     use super::test_support::*;
     use super::*;
+    use crate::chat::Author;
     use crate::store::MemStore;
     use crate::tables::WireSeed;
     use yokohama_core::PlayerId;
 
-    /// **A layer built with no signal still answers every document call**
-    /// (M6.5a, R-6.5a.8).
+    /// **Every bump site answers under [`NoSignal`]** (M6.5a, R-6.5a.8, spec
+    /// §2.4).
     ///
-    /// The signal is a trait object since this cycle, and [`NoSignal`] is what
-    /// a host with nothing to wake passes. Nothing in this type reads a bump
-    /// back, so the property is that the no-op reaches every site without one
-    /// of them having kept a `Signals`-shaped assumption — a `.senders()` read,
-    /// say, or an `expect` on a channel.
+    /// [`test_support::games`] builds through `Games::new`, whose signal is the
+    /// no-op, and the walk below drives one write of every kind that bumps —
+    /// **all four trait methods, on the implementation that does nothing**:
+    /// `create` and the finalize's `flip_to_playing` and `persist` reach
+    /// `bump`, `keep` and `chat_append` reach `bump_table`, `house_append`
+    /// reaches `bump_house_chat`, and `delete` reaches `end`. Each is required
+    /// to answer `Ok`.
+    ///
+    /// **What it can fail on**: a bump site that had kept a `Signals`-shaped
+    /// assumption — a sender looked up and unwrapped, a receiver counted, a
+    /// panic where a channel was expected to exist — is reached here and
+    /// nowhere else in this binary, because every other cell that crosses these
+    /// sites holds a real [`crate::signal::Signals`]. It is not a claim about
+    /// what a bump DOES: there is nothing to observe, which is the point.
     #[test]
-    fn a_games_built_with_no_signal_still_answers_every_document_call() {
-        let rules = Arc::new(Rules::standard());
-        let store: Arc<dyn Store> = Arc::new(crate::store::MemStore::default());
-        let games =
-            Games::with_parts(rules, store, ChatLimits::default(), Arc::new(crate::signal::NoSignal));
-        // Any document call that reaches a bump site is enough: `chat_last` on a
-        // missing table reads zero and nothing panics on the way.
-        assert_eq!(games.chat_last("nothing"), 0);
+    fn every_bump_site_answers_under_no_signal() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+
+        // `create` — the bump at the end of its success arm.
+        let id = games.create(&two_people("quiet", CORPUS_SEED), &red).expect("a table").id;
+
+        // `keep` — `bump_table` each time, and the LAST human keep finalizes,
+        // so the flip to `playing` reaches `bump` as well.
+        games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
+        games.keep(&id, &blue, PlayerId::new(1), 1, None).expect("blue's keep, the finalize");
+        // The premise of the line above: a table still dealing has no record,
+        // so a handle at all is the finalize having run.
+        let handle = games.handle(&id).expect("the finalize built a session");
+
+        // `persist` — `bump`, after an applied move.
+        {
+            let mut repl = handle.lock().expect("the handle");
+            let before = repl.session.record().events.len();
+            repl.step("1");
+            assert!(repl.session.record().events.len() > before, "the step applied a move");
+            games.persist(&id, &repl).expect("the move is persisted");
+        }
+
+        // `chat_append` — `bump_table`; `house_append` — `bump_house_chat`.
+        let seat = Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) };
+        games.chat_append(&id, seat, "hello").expect("a table message");
+        games
+            .house_append(Author::Watcher { user: "red@t.test".into(), name: None }, "hi all")
+            .expect("a house message");
+
+        // `delete` — `end`, the one method the others cannot reach.
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(games.read_table(&id).expect("a readable store").is_none(), "the table is gone");
     }
 
     /// **The mirror follows the game, because a list that lies about whose turn
