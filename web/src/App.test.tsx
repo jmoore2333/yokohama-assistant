@@ -2945,12 +2945,76 @@ describe("the first screen with no server", () => {
     );
     render(<App />);
     await localSection();
-    // **Not the same state as a refusal, and it should not read as one.**
-    // Nothing has come back, so the door is still connecting and the health
-    // read has not failed — "not connected" would be a claim this browser
-    // cannot make yet.
-    expect(screen.queryByText("not connected")).toBeNull();
     await playsHere();
+  });
+
+  // **R-6.5b.2 names TWO ways for the read to fail — "the API refusing or not
+  // answering" — and only one of them rejects** (review fix 1). A `fetch` a
+  // server accepts and then says nothing about settles neither way, so before
+  // the health read was bounded this arm read `connecting…` for the life of
+  // the page, and the cell above pinned the absence of the line that should
+  // have replaced it.
+  //
+  // Fake timers, and no `userEvent`: what is being read is a DEADLINE, and the
+  // only way to reach a five-second one in a test is to move the clock.
+  it("says not connected once the bound elapses on a read that never answers", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    render(<App />);
+    await until(
+      () => screen.queryByRole("heading", { name: "On this device" }) !== null,
+      "the local section",
+    );
+    // **The anti-vacuity partner.** Nothing has come back yet, and "not
+    // connected" is a claim this browser cannot make until its own deadline
+    // says so — without this the cell would pass against a client that printed
+    // the line before it had asked.
+    expect(screen.queryByText("not connected")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(
+      () => screen.queryByText("not connected") !== null,
+      "the not-connected line after the bound",
+    );
+    // And it replaces the sections, exactly as the refused arm's does.
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+  });
+
+  // **A late answer is still an answer** (review fix 1). The bound decides
+  // what the screen SAYS; it does not cancel the read, and the unbounded chain
+  // beside it is what makes a server that finally speaks stop being one this
+  // browser claims it cannot reach. A `Promise.race` alone would drop that
+  // answer on the floor.
+  it("stops saying not connected when the server answers after the bound", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    const health = gate<Reply>();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return health.promise;
+      // The door is held too, which is what makes the line reachable at all:
+      // with nothing answered, `connecting…` is what the server area would
+      // otherwise read for ever.
+      return new Promise<Reply>(() => {});
+    });
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(() => screen.queryByText("not connected") !== null, "the not-connected line");
+
+    health.resolve(wire.health);
+    await until(
+      () => screen.queryByText(/connecting/) !== null,
+      "the door's own word, once the server answered",
+    );
+    expect(screen.queryByText("not connected")).toBeNull();
+    // And the games on this device were there throughout.
+    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
   });
 
   it("plays a whole local game with every fetch REFUSING, the spy flat across three moves", async () => {

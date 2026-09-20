@@ -70,11 +70,18 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
   return buildRun(prev, frames, log);
 }
 
-/** How long the SERVER is given to answer the words on the cards before the
- *  module in this browser is asked instead (spec §2.3). Long enough that a
- *  slow link is not treated as an outage, short enough that a player does not
- *  watch raw serde names while a dead connection times out on its own. */
-const LABELS_MS = 5_000;
+/** How long the SERVER is given to answer a boot read before this client acts
+ *  on the silence.
+ *
+ *  **Two reads are bounded by it, and they act on it differently.** The words
+ *  on the cards fall back to the module (spec §2.3); the health read is
+ *  declared NOT LANDED, which is the state R-6.5b.2 names — "the API refusing
+ *  OR NOT ANSWERING" — and the first screen says "not connected" for it. Long
+ *  enough that a slow link is not read as an outage, short enough that a
+ *  player is not left watching raw serde names, or a `connecting…` that no
+ *  timeout of the platform's will ever end, while a dead connection expires on
+ *  its own. */
+const BOUND_MS = 5_000;
 
 /** `p`, or a rejection once `ms` has passed.
  *
@@ -619,7 +626,7 @@ export function App() {
     // The Worker is otherwise left alone here: it is started by the local
     // section's own listing, and a visitor who only plays hosted games never
     // pays for the module twice.
-    bounded(api.labels(), LABELS_MS)
+    bounded(api.labels(), BOUND_MS)
       .catch(() => api.labels("local"))
       .then(setLabels)
       .catch(() => setLabels(null));
@@ -638,21 +645,35 @@ export function App() {
     // deployment answers the house chat at all, and how long a message may be.
     // A health that does not answer leaves both at their defaults, which costs
     // one refused request rather than a panel that never appears.
-    api
-      .health()
-      // **All four in ONE statement since M6.5b**: they are now the SERVER's
+    //
+    // **And whether it LANDED is a second question, bounded** (R-6.5b.2,
+    // review fix 1). The ruling names two ways for the read to fail — the API
+    // refusing, and the API not answering — and only the first of them
+    // rejects: a `fetch` accepted by a server that then says nothing settles
+    // neither way, so an unbounded read left the first screen reading
+    // `connecting…` for the life of the page for exactly the case the ruling
+    // is about. The bound is the same one the words use.
+    //
+    // **The unbounded read keeps its own chain**, so a server that answers
+    // LATE is still a server that answered: it sets the facts and puts the
+    // sections back, where the race's loser would have been dropped on the
+    // floor.
+    const health = api.health();
+    health
+      // **Reachability first, then the payload.** A body this client cannot
+      // make facts of is still evidence the server is there, and the throw
+      // that a malformed one raises must not cost the screen its listings.
+      // **All four facts in ONE statement since M6.5b**: they are the SERVER's
       // record in `local/facts.ts`, keyed beside the local host's constants,
-      // and the health read is the one thing that sets it.
+      // and this read is the one thing that sets it.
       .then((h) => {
-        setServerFacts(h);
         setServerUp(true);
+        setServerFacts(h);
       })
-      // **And whether it landed at all is a fact the first screen draws**
-      // (spec §2.5): a health that refuses, never answers or answers with
-      // something that is not health is a server this browser cannot reach,
-      // and the lobby says so in one line rather than listing "none yet" over
-      // an API that was never asked.
-      .catch(() => setServerUp(false));
+      // Handled by the bounded chain below; swallowed here so a refusal is not
+      // an unhandled rejection as well as a state.
+      .catch(() => {});
+    bounded(health, BOUND_MS).catch(() => setServerUp(false));
   }, []);
 
   const arrive = useCallback(
