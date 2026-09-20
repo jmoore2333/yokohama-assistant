@@ -239,7 +239,10 @@ M6.4's, so the namespace is checked, as the M6.4 close asked.
   reconcile on the training side; an on-demand "save to R2" click was considered and rejected
   for exactly that housekeeping. The R2 binding's presence is the switch, reported on
   `/api/health`; **a failed archive at game over is logged and retried and NEVER refuses a
-  move** — the object's own storage is the durable copy. A later pipeline (Databricks was
+  move** — the object's own storage is the durable copy. The retry has a mechanism on each
+  host and they differ: on an object it is an alarm; on the axum host, which has none, it is
+  the next abandon of that table or the operator's hand, and `archived_at` staying unset in
+  the table document is what says a retry is owed. A later pipeline (Databricks was
   named) is out of scope; the layout is chosen so it can read the bucket. **On the axum host
   the archive is a DIRECTORY** beside the store in the same layout (`YOKOHAMA_WEB_ARCHIVE_DIR`,
   absent = off, reported on `/api/health` the same way), so the NAS collects saves during
