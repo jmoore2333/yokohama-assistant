@@ -186,8 +186,15 @@ second host exists), the rejection sentences reproduced and pinned against axum'
 feature over optional axum/tokio, the clock seam with its scanning fence, the `Signal` trait, the
 archive trait with a directory implementation and one layout function, `archived_at` at schema 3,
 the two archive sites with their two failure rules, the record route, "Save game file", and the
-corpus rules. **Next: you read both specs**, then the M6.5a plan (writing-plans), then execution
-under R-P11; the M6.5b and M6.5c specs are written at their cycles' starts from M6.5a's close. The spec's §6 is what it does
+corpus rules — plus five pre-plan flags from a second review, each verified (HEAD as GET, the
+per-mode 401 carried, the trait's four `&str` methods, `eprintln!` probed on the target). **The
+M6.5a PLAN is WRITTEN** — `docs/plans/2026-09-19-web-frontend-m6.5a-plan.md`, eleven tasks in
+dependency order (signal trait → clock → chat on `Games` → the `server` feature + scanning fence →
+`api.rs` + the four public routes → every route through the adapter → the archive module → the two
+archive sites → the record route → the client → the deploy note), six plan-level rulings, the close
+checklist. **Next: execution under R-P11** (Opus implementers, per-task Opus reviewers, the
+whole-branch review before the release), then the deploy as `0.5.0-m6.5a` and the close; the M6.5b
+and M6.5c specs are written at their cycles' starts from M6.5a's close. The spec's §6 is what it does
 NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since
