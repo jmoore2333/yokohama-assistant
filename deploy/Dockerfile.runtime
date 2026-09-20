@@ -62,6 +62,14 @@ COPY art/  /srv/assets/art/
 # image started without them runs the lobby chat on with a keep of 500
 # messages and 500 characters per message (M6.4, R-6.4.6, R-6.4.8); a bad value
 # still exits 1 naming the variable.
+# `YOKOHAMA_WEB_ARCHIVE_DIR` (M6.5a, umbrella R-6.5.4): unset, no archive — and
+# it is unset here, because keeping saves is a fact about the deployment; set,
+# the directory where a finished or abandoned game's record and table document
+# are written ONCE, in the store's own layout under `rev<N>/over/` and
+# `rev<N>/abandoned/`, so a copy of it is a directory the CLI loads. On the NAS
+# it is `/data/archive`, on the same volume as the store (`RUNBOOK.md` §3);
+# `/api/health` reports `"archive": "dir"` when it is on. A directory that
+# cannot be created exits 1 naming the variable, like the chat variables.
 ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
     YOKOHAMA_WEB_PORT=8080 \
     YOKOHAMA_WEB_DIST=/srv/web/dist \

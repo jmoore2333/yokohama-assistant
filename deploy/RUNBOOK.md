@@ -142,7 +142,7 @@ deployment never matched it, and the file has been corrected.)
 ```
 POST /containers/create?name=yokohama-web
 { "Image": "yokohama-web:0.5.0",
-  "Env": ["YOKOHAMA_WEB_IDENTITY=claimed"],
+  "Env": ["YOKOHAMA_WEB_IDENTITY=claimed", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
                   "Mounts": [{ "Type": "volume", "Source": "yokohama-web-data",
@@ -155,6 +155,14 @@ image started without it **exits 1** naming the three accepted values. A deploy
 from this recipe with the line dropped does not come up. The mode belongs to
 the container because it is a statement about what is in FRONT of the container,
 which the image cannot know.
+
+**The second `Env` entry is the archive (M6.5a, umbrella R-6.5.4), and it is
+on the SAME named volume as the store**: a finished game is written under
+`/data/archive/rev7/over/` and an abandoned one under `…/abandoned/`, each as
+the record `<id>.json` beside its stripped table document `<id>.table.json`, once
+per game id — so the NAS collects saves during development, and `/api/health`
+answers `"archive": "dir"`. Unset, the archive is off and health says `"off"`;
+the image sets no default, for the reason it sets no identity.
 
 **A named volume, not a bind mount.** The image runs as uid 10001 and `chown`s
 `/data` at build time; a named volume inherits that ownership on first use,
@@ -947,6 +955,16 @@ body is §3.10's, unchanged. The close `docs/plans/2026-09-19-web-frontend-m6.4-
   with §3's body INCLUDING the `Env` line. Both halves roll together as §3.10
   says; rolling to m6.4 loses only the five review fixes and nothing on the
   volume. **Fourteen tags now sit on the NAS.**
+
+### 3.12 M6.5a — `0.5.0-m6.5a`, written at the deploy
+
+Not yet deployed. The recipe is §3's with the create body ABOVE (both `Env`
+entries — the identity and `YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive`); the check
+after the swap is `/api/health` reading `"archive": "dir"`, then an abandon of
+a throwaway table with a move in it and one game played to the end, and the two
+files of each read off the volume (`/data/archive/rev7/abandoned/<id>.json` +
+`.table.json`; `…/over/…`). The record of that deployment is written here when
+it happens.
 
 ---
 
