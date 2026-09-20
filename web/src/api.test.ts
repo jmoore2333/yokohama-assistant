@@ -130,11 +130,12 @@ describe("call routes by host", () => {
     // The record's `seed` is a u64 that `JSON.parse` would round — the same
     // reason the hosted `recordText` never parses either.
     const record = '{"seed":18446744073709551615,"events":[]}';
-    stubWorker({ read: (doc, id) => (doc === "record" && id === "local-1" ? record : null) });
+    stubWorker({ pair: (id) => (id === "local-1" ? { record, table: '{"schema":3}' } : {}) });
     const parse = vi.spyOn(JSON, "parse");
     try {
       expect(await api.recordText("local-1")).toBe(record);
-      expect(currentWorker().posted[0]).toMatchObject({ kind: "read", doc: "record", id: "local-1" });
+      // ONE message for both documents — the export snapshot (spec §2.2).
+      expect(currentWorker().posted).toEqual([{ seq: 1, kind: "pair", id: "local-1" }]);
       expect(parse.mock.calls.some(([s]) => s === record)).toBe(false);
     } finally {
       parse.mockRestore();

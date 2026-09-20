@@ -15,11 +15,13 @@
 // **Nothing here knows a rule, a route or a document's shape.** It moves
 // strings. The module in the Worker is the layer; this is a wire.
 
+import { gameIdOf } from "./ids";
+
 /** What the page asks the Worker for. The `call` shape's fields are
  *  `ApiRequest`'s own — the Worker adds `local@browser` and nothing else. */
 export type ReqBody =
   | { kind: "call"; method: string; path: string; query: string; body: string | null }
-  | { kind: "read"; doc: "record" | "table"; id: string }
+  | { kind: "pair"; id: string }
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
   | { kind: "release"; id: string };
@@ -82,6 +84,23 @@ function fail(sentence: string): void {
   for (const f of [...faultHandlers]) f(sentence);
 }
 
+/**
+ * The Worker is DEAD: settle everything waiting on it, and throw the instance
+ * away so the next call starts a fresh one.
+ *
+ * **Review finding #3.** Settling the pending list alone left the dead
+ * instance installed, and `start()` handed it to the next `ask` — whose reply
+ * never came. That is the permanently pending call §2.3 forbids, one step
+ * further along than the one the sentence was written for. The next `ask`
+ * now builds a new Worker; if THAT one cannot start either, it arrives here
+ * again with its own sentence rather than silently waiting.
+ */
+function drop(sentence: string): void {
+  worker?.terminate();
+  worker = null;
+  fail(sentence);
+}
+
 /** The `{"error": …}` sentence inside a reply body, or the body itself where
  *  it is not this API's shape. */
 function sentenceOf(body: unknown): string {
@@ -105,16 +124,15 @@ function start(): Worker {
   const w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
   worker = w;
   w.onerror = (e: ErrorEvent) =>
-    fail(`the local host failed to start: ${e.message || "the Worker reported an error"}`);
-  w.onmessageerror = () => fail("the local host sent something this page could not read");
+    drop(`the local host failed to start: ${e.message || "the Worker reported an error"}`);
+  w.onmessageerror = () => drop("the local host sent something this page could not read");
   w.onmessage = (e: MessageEvent<Reply & { kind?: string; id?: string; trapped?: boolean }>) => {
     const data = e.data;
     if (data.kind === "lost" && typeof data.id === "string") {
       // **Unsolicited**: the lock this tab held was stolen. The page turns the
       // screen read-only; it is told BEFORE the in-flight reply that goes with
       // it, so the screen is already right when the refusal lands.
-      heldByPage.delete(data.id);
-      for (const f of [...lostHandlers]) f(data.id);
+      noteLost(data.id);
       return;
     }
     if (data.trapped) {
@@ -125,9 +143,7 @@ function start(): Worker {
         // The fresh Worker trapped too, and it has answered nothing: this is
         // not a trap to recover from, it is a host that will not start. Say so
         // in ITS own words (§2.3's visible line) rather than restarting again.
-        worker?.terminate();
-        worker = null;
-        fail(`the local host could not be started: ${sentenceOf(data.body)}`);
+        drop(`the local host could not be started: ${sentenceOf(data.body)}`);
         return;
       }
       restartsWithoutAnswer += 1;
@@ -151,6 +167,14 @@ function start(): Worker {
  *  committed is lost, because a success reply is only sent after its write
  *  landed (§2.2). Re-acquiring is what makes the next call writable again:
  *  ownership lives in the Worker, and the Worker that held it is gone. */
+/** This tab does not hold `id` any more. ONE statement of it, reached from the
+ *  Worker's unsolicited message and from a reply that says `not-held` for a
+ *  game this page believed it held (review finding #4). */
+function noteLost(id: string): void {
+  heldByPage.delete(id);
+  for (const f of [...lostHandlers]) f(id);
+}
+
 function restart(): void {
   worker?.terminate();
   worker = null;
@@ -195,19 +219,51 @@ export async function localCall(
   // which only ever happens on the way into the screen that is about to draw
   // it anyway.
   if (method !== "GET") for (const f of [...writeHandlers]) f();
+
+  // **`not-held` is a lock loss when this page believed it held the game**
+  // (review finding #4). The Worker posts its own unsolicited `lost` on the
+  // paths it notices — the steal's abort, a write that reads a newer
+  // generation — and this is the arm for a reply that got here first, or for
+  // a hold this tab let go of without the Worker saying so. `noteLost` is the
+  // same statement both reach, so the screen turns read-only once.
+  const game = gameIdOf(path);
+  if (r.saved === "not-held" && game !== null && heldByPage.has(game)) noteLost(game);
+
   return {
     status: r.status,
     text: r.body,
-    saved: r.saved !== "unsaved",
+    // **"Saved" means the transaction LANDED** (spec §2.2), so only `"saved"`
+    // is saved — and a GET, which wrote nothing and was never meant to (a
+    // second tab's cold read is answered from its own store). The first draft
+    // read `!== "unsaved"`, which reported an unpersisted MOVE as kept: the
+    // dangerous direction, and reachable without a page bug.
+    saved: r.saved === "saved" || (r.saved === "not-held" && method === "GET"),
     reason: r.reason ?? null,
   };
 }
 
-/** A stored document's exact bytes, or `null`. What `recordText` reads for a
- *  local game: the record never goes through `…/record` (a 409 while the game
- *  runs — R-6.5b.7 saves at any point) and is never parsed on the way. */
-export const localRead = async (doc: "record" | "table", id: string): Promise<string | null> =>
-  (await ask<{ text: string | null }>({ kind: "read", doc, id })).text;
+/**
+ * BOTH of a game's stored documents, read as ONE SNAPSHOT inside the Worker's
+ * queue (spec §2.2; review finding #6) — each the store's exact bytes, or
+ * `null` where there is none.
+ *
+ * **One message and not two**, which is the whole of why it exists. "Send to
+ * the archive" sends the record and the table together and the server checks
+ * that they agree; two queued reads can fall either side of a move, and the
+ * pair would be refused for a mismatch this client caused. `recordText`'s
+ * local arm reads the record off it for the same reason it costs nothing to.
+ *
+ * Neither document is parsed on the way: the record's `seed` is a `u64` that
+ * `JSON.parse` would round, and the record never goes through `…/record`
+ * either, which the local dispatch still answers with a 409 while the game
+ * runs (R-6.5b.7 saves at any point).
+ */
+export const localPair = async (
+  id: string,
+): Promise<{ record: string | null; table: string | null }> => {
+  const r = await ask<{ record: string | null; table: string | null }>({ kind: "pair", id });
+  return { record: r.record, table: r.table };
+};
 
 /** Take this game for this tab: `false` means another tab has it open.
  *

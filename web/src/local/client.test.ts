@@ -11,7 +11,7 @@ import {
   hold,
   localCall,
   localHostStarted,
-  localRead,
+  localPair,
   onLocalFault,
   onLocalWrite,
   onLost,
@@ -73,10 +73,19 @@ describe("the local host's wire", () => {
     expect(JSON.parse(out.text)).toEqual({ error: "not your turn" });
   });
 
-  it("reads a stored document's bytes, and answers null for one that is not there", async () => {
-    stubWorker({ read: (doc, id) => (doc === "record" && id === "local-1" ? "{\"seed\":1}" : null) });
-    expect(await localRead("record", "local-1")).toBe('{"seed":1}');
-    expect(await localRead("record", "local-2")).toBeNull();
+  it("reads BOTH stored documents in ONE message, and answers null for what is not there", async () => {
+    // Review finding #6 / spec §2.2: "the record and table are read for export
+    // as one snapshot inside the queue". Two messages would be two queued
+    // operations that a move can fall between, and "Send to the archive" sends
+    // the pair to a server that checks they agree.
+    stubWorker({
+      pair: (id) => (id === "local-1" ? { record: '{"seed":1}', table: '{"schema":3}' } : {}),
+    });
+    expect(await localPair("local-1")).toEqual({ record: '{"seed":1}', table: '{"schema":3}' });
+    expect(currentWorker().posted).toEqual([{ seq: 1, kind: "pair", id: "local-1" }]);
+    // A game still dealing has a table and no record; one that is not there
+    // has neither.
+    expect(await localPair("local-2")).toEqual({ record: null, table: null });
   });
 
   it("fires onLocalWrite for every non-GET and for no GET", async () => {
@@ -106,12 +115,47 @@ describe("the local host's wire", () => {
     expect(out.reason).toBe("the quota is full");
   });
 
-  it("counts a call on a game this tab does not hold as SAVED, because nothing was refused", async () => {
-    // `"not-held"` is the rule and not a failure (spec §2.2): a second tab's
-    // read is answered from its own store and never written back, and telling
-    // the player their move was not saved would be false.
+  it("counts a READ on a game this tab does not hold as saved, and a WRITE as NOT saved", async () => {
+    // Review finding #4. `"saved"` means the transaction LANDED (spec §2.2).
+    // A GET on a game this tab does not hold wrote nothing and was never meant
+    // to — a second tab's cold read is answered from its own store — so it is
+    // saved. A MOVE on one is applied in the module and never written, and
+    // reporting that as kept is the dangerous direction.
     stubWorker({ call: () => ({ status: 200, body: { ok: true }, saved: "not-held" }) });
     expect((await localCall("GET", "/api/games/local-1")).saved).toBe(true);
+    expect((await localCall("POST", "/api/games/local-1/input", { line: "1" })).saved).toBe(false);
+  });
+
+  it("reads `not-held` on a game this page BELIEVED it held as the lock loss", async () => {
+    // Review finding #4's other half. The Worker posts its own unsolicited
+    // `lost` on the paths it notices; this is the arm for a reply that got
+    // here first, or a hold the Worker no longer has. One statement of it, so
+    // the screen turns read-only once.
+    let holds = true;
+    stubWorker({
+      call: () => (holds ? undefined : { status: 200, body: { ok: true }, saved: "not-held" }),
+    });
+    const lost = vi.fn();
+    onLost(lost);
+    expect(await hold("local-1")).toBe(true);
+    await localCall("GET", "/api/games/local-1");
+    expect(lost).not.toHaveBeenCalled();
+
+    holds = false;
+    await localCall("GET", "/api/games/local-1");
+    expect(lost).toHaveBeenCalledExactlyOnceWith("local-1");
+    // Told once: the page no longer believes it holds the game, so a second
+    // `not-held` says nothing more — and a restart would not re-acquire it.
+    await localCall("GET", "/api/games/local-1");
+    expect(lost).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing about a game the page never held", async () => {
+    stubWorker({ call: () => ({ status: 200, body: { ok: true }, saved: "not-held" }) });
+    const lost = vi.fn();
+    onLost(lost);
+    await localCall("GET", "/api/games/local-9");
+    expect(lost).not.toHaveBeenCalled();
   });
 });
 
@@ -238,13 +282,34 @@ describe("the two failures that must never leave a pending list", () => {
     expect(FakeWorker.instances).toHaveLength(3);
   });
 
-  it("turns a Worker that will not start into a sentence, not a pending list", async () => {
-    stubWorker({ call: () => "pending" });
+  it("turns a Worker that will not start into a sentence, and THROWS THE DEAD ONE AWAY", async () => {
+    // Review finding #3. Settling the pending list left the dead instance
+    // installed, and `start()` handed it to the next `ask` — whose reply never
+    // came. The second half of this cell is the one that fails against that:
+    // a call made after the fault must reach a NEW Worker and answer.
+    let alive = false;
+    stubWorker({ call: () => (alive ? undefined : "pending") });
     const fault = vi.fn();
     onLocalFault(fault);
     const waiting = localCall("GET", "/api/games/local-1");
-    currentWorker().raise("Failed to fetch dynamically imported module");
+    const dead = currentWorker();
+    dead.raise("Failed to fetch dynamically imported module");
     await expect(waiting).rejects.toThrow(/the local host failed to start/);
     expect(fault.mock.calls[0]![0]).toContain("Failed to fetch dynamically imported module");
+    expect(dead.terminated).toBe(true);
+
+    alive = true;
+    expect((await localCall("GET", "/api/games/local-1")).status).toBe(200);
+    expect(FakeWorker.instances).toHaveLength(2);
+    expect(currentWorker()).not.toBe(dead);
+  });
+
+  it("does the same for a message this page cannot read", async () => {
+    stubWorker({ call: () => "pending" });
+    const waiting = localCall("GET", "/api/games/local-1");
+    const dead = currentWorker();
+    dead.onmessageerror!({ data: undefined } as MessageEvent<unknown>);
+    await expect(waiting).rejects.toThrow(/could not read/);
+    expect(dead.terminated).toBe(true);
   });
 });

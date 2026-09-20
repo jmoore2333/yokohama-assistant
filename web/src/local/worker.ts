@@ -36,7 +36,7 @@
 //    ordinary replies.
 
 import { deletePair, openDb, readAll, takeGeneration, writeDocs } from "./db";
-import { drawLocalId } from "./ids";
+import { drawLocalId, gameIdOf } from "./ids";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
 
 /** The one address a local game is ever played by (R-6.5b.1). Never a person:
@@ -48,7 +48,7 @@ const LOCAL_USER = "local@browser";
  *  a module here without putting the page's imports in the Worker's program. */
 type Req = { seq: number } & (
   | { kind: "call"; method: string; path: string; query: string; body: string | null }
-  | { kind: "read"; doc: "record" | "table"; id: string }
+  | { kind: "pair"; id: string }
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
   | { kind: "release"; id: string }
@@ -151,17 +151,31 @@ function lose(id: string): void {
 async function persist(id: string, deleted: boolean): Promise<Outcome> {
   const entry = held.get(id);
   if (!entry) return { saved: "not-held" };
+
+  // **The MODULE's reads sit outside the `try`** (§4, R4; review finding #2).
+  // `read` returns a `Result` and can throw, and the `catch` below answers
+  // `unsaved` — the page's "APPLIED BUT NOT SAVED", which is about the STORE.
+  // A module fault reported that way is the one classification §4 says must be
+  // distinguished; escaping this function is what puts it on the trap path.
+  const table = deleted ? undefined : wasm.read("table", id);
+  const record = deleted ? undefined : wasm.read("record", id);
+
   try {
     if (deleted) {
-      await deletePair(db, id);
+      // **Fenced by the generation like every other write** — review finding
+      // #1 (`db.ts`'s `deletePair`): a stale holder's delete removes nothing
+      // and is answered as the lock loss.
+      const outcome = await deletePair(db, id, entry.generation);
+      if (outcome === "stale") {
+        lose(id);
+        return { saved: "lost" };
+      }
       lastWritten.delete(id);
       return { saved: "saved" };
     }
-    const table = wasm.read("table", id);
     // Nothing to keep. A game this tab holds but the module does not know is
     // the shape of a 404, and there is no document to write.
     if (table === undefined) return { saved: "saved" };
-    const record = wasm.read("record", id);
     const key = cacheKey(record, table);
     if (lastWritten.get(id) === key) return { saved: "saved" };
     const outcome = await writeDocs(db, id, entry.generation, { record, table });
@@ -174,7 +188,8 @@ async function persist(id: string, deleted: boolean): Promise<Outcome> {
   } catch (e) {
     // **A storage refusal is NOT a trap** (R4): quota, a private window. The
     // Worker keeps running, the game stays exportable, and the page shows the
-    // server's own "APPLIED BUT NOT SAVED".
+    // server's own "APPLIED BUT NOT SAVED". Only IndexedDB is inside this
+    // `try` — see the reads above.
     return { saved: "unsaved", reason: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -188,8 +203,10 @@ async function persist(id: string, deleted: boolean): Promise<Outcome> {
  *  to race; generation 0 is what a game no tab has held reads, so the write
  *  passes its own fence without advancing it. */
 async function persistCreate(id: string): Promise<Outcome> {
+  // Outside the `try`, for `persist`'s reason (review finding #2): a throw
+  // from the module is a trap, not a storage refusal.
+  const table = wasm.read("table", id);
   try {
-    const table = wasm.read("table", id);
     if (table === undefined) return { saved: "saved" };
     const outcome = await writeDocs(db, id, 0, { table });
     if (outcome === "stale") return { saved: "lost" };
@@ -205,17 +222,6 @@ async function persistCreate(id: string): Promise<Outcome> {
  *  nothing is shown that will not be kept. */
 const LOST_SENTENCE =
   "this game was taken over in another tab — what you just did here was not kept";
-
-const GAME = /^\/api\/games\/([^/]+)/;
-const gameOf = (path: string): string | null => {
-  const m = GAME.exec(path);
-  if (!m) return null;
-  try {
-    return decodeURIComponent(m[1]!);
-  } catch {
-    return m[1]!;
-  }
-};
 
 const isCreate = (req: Extract<Req, { kind: "call" }>): boolean =>
   req.method === "POST" && req.path === "/api/games";
@@ -262,7 +268,7 @@ async function call(req: Extract<Req, { kind: "call" }>): Promise<Record<string,
     const out = status === 201 ? await persistCreate(drawn) : { saved: "saved" as const };
     return { status, body: text, ...out };
   }
-  const id = gameOf(req.path);
+  const id = gameIdOf(req.path);
   if (id === null) return { status, body: text, saved: "saved" };
   const out = await persist(id, req.method === "DELETE" && status === 204);
   if (out.saved === "lost") {
@@ -313,8 +319,14 @@ function hold(id: string, steal: boolean): Promise<boolean> {
       return generation;
     });
 
-  /** The lock was taken and the page has since left: answer honestly — it WAS
-   *  taken — and let it go at once. */
+  /** The page let go while this acquisition was in flight.
+   *
+   *  **Answered `false`, and that is review finding #5.** An earlier draft
+   *  said `true` — "the lock WAS taken" — and returned without recording the
+   *  entry, so the page added the game to `heldByPage` for a hold the Worker
+   *  does not have: a restart would re-acquire a lock nobody wants, and every
+   *  write on that game would come back `not-held`. The honest answer for a
+   *  hold that is not recorded is that this tab does not hold it. */
   const gone = (): boolean => !wanted.has(id);
 
   let attempt: Promise<boolean>;
@@ -328,7 +340,8 @@ function hold(id: string, steal: boolean): Promise<boolean> {
     // What is missing is only the polite refusal BEFORE the second tab opens —
     // last opener wins instead of being offered Take over.
     attempt = acquire().then((generation) => {
-      if (!gone()) held.set(id, { generation, release: noop, done: Promise.resolve() });
+      if (gone()) return false;
+      held.set(id, { generation, release: noop, done: Promise.resolve() });
       return true;
     });
   } else {
@@ -374,7 +387,7 @@ function hold(id: string, steal: boolean): Promise<boolean> {
         return;
       }
       if (gone()) {
-        say(true);
+        say(false);
         return;
       }
       await new Promise<void>((release) => {
@@ -451,8 +464,17 @@ async function handle(req: Req): Promise<void> {
     case "call":
       post({ seq: req.seq, ...(await call(req)) });
       return;
-    case "read":
-      post({ seq: req.seq, text: wasm.read(req.doc, req.id) ?? null });
+    case "pair":
+      // **BOTH documents, read inside ONE queued operation** (spec §2.2's
+      // "the record and table are read for export as one snapshot"; review
+      // finding #6). Two messages would be two operations a move can fall
+      // between, and "Send to the archive" would send a table the server finds
+      // does not match the record.
+      post({
+        seq: req.seq,
+        record: wasm.read("record", req.id) ?? null,
+        table: wasm.read("table", req.id) ?? null,
+      });
       return;
     case "release": {
       // **The page's intent first**, so an acquisition still in flight drops

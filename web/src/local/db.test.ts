@@ -54,8 +54,8 @@ describe("the local document store", () => {
     const db = await openDb();
     await writeDocs(db, "local-1", 0, { record: "R", table: "T" });
     await writeDocs(db, "local-2", 0, { record: "R2", table: "T2" });
-    await takeGeneration(db, "local-1");
-    await deletePair(db, "local-1");
+    const mine = await takeGeneration(db, "local-1");
+    expect(await deletePair(db, "local-1", mine)).toBe("deleted");
     expect((await readAll(db)).map((r) => r.id)).toEqual(["local-2", "local-2"]);
     // The generation goes with the game. A row left behind would make the NEXT
     // game drawn under the same id (a collision a 64-bit draw does not make,
@@ -110,6 +110,31 @@ describe("the local document store", () => {
     // And the current holder writes.
     expect(await writeDocs(db, "local-1", 2, { record: "R2", table: "T2" })).toBe("written");
     expect((await readAll(db)).map((r) => r.text)).toEqual(["R2", "T2"]);
+  });
+
+  it("refuses a STALE holder's delete, and takes nothing with it", async () => {
+    // Review finding #1. A removal is a write, and it was the one write that
+    // carried no generation: `held` keeps its entry until the steal's
+    // `AbortError` is delivered, so a holder stolen from could dispatch a
+    // DELETE in that gap and take the NEW holder's documents and its meta row
+    // with it — after which the new holder reads `stale` on its next write and
+    // is told it lost a game that no longer exists.
+    const db = await openDb();
+    await writeDocs(db, "local-1", 0, { record: "R", table: "T" });
+    const stolenFrom = await takeGeneration(db, "local-1");
+    const theNewHolder = await takeGeneration(db, "local-1");
+
+    expect(await deletePair(db, "local-1", stolenFrom)).toBe("stale");
+    expect((await readAll(db)).map((r) => r.text)).toEqual(["R", "T"]);
+    // And the generation is untouched, so the new holder still writes.
+    expect(await readGeneration(db, "local-1")).toBe(theNewHolder);
+    expect(await writeDocs(db, "local-1", theNewHolder, { record: "R2", table: "T2" })).toBe(
+      "written",
+    );
+    // The holder that really does own it removes the lot.
+    expect(await deletePair(db, "local-1", theNewHolder)).toBe("deleted");
+    expect(await readAll(db)).toEqual([]);
+    expect(await readGeneration(db, "local-1")).toBe(0);
   });
 
   it("takes a generation per GAME, and a fresh game starts at 0 so a create can write", async () => {

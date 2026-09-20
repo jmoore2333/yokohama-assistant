@@ -34,6 +34,26 @@ export const isLocal = (id: string): boolean => id.startsWith(LOCAL_PREFIX);
  *  collide on, and the archive files a browser game under the caller's prefix
  *  and this id. The SEED is not drawn here — `draw_seed` inside the module
  *  draws it through `getrandom`, and it is never typed. */
+/** The game id a path names, or `null` where it names none — the five routes
+ *  that carry no id (R-6.5b.12) and `/api/archive`.
+ *
+ *  **One statement, three importers** (`api.ts`, `client.ts`, `worker.ts`).
+ *  The page and the Worker each had their own, with different character
+ *  classes, agreeing only because the page splits the query off first — which
+ *  is the kind of quiet agreement that stops being one. The class admits a
+ *  `?` nowhere, so a path with a query attached still answers the id. */
+export function gameIdOf(path: string): string | null {
+  const m = /^\/api\/games\/([^/?]+)/.exec(path);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]!);
+  } catch {
+    // A malformed escape is a hand-written path, not a bug here: hand the raw
+    // segment on and let whoever owns the store refuse it in its own words.
+    return m[1]!;
+  }
+}
+
 export function drawLocalId(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);

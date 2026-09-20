@@ -24,9 +24,9 @@ import type {
   TableView,
   WhyResponse,
 } from "./types";
-import { localCall, localRead } from "./local/client";
+import { localCall, localPair } from "./local/client";
 import { facts, patchServerFacts, serverFacts, setServerFacts, type ArchiveKind, type Host } from "./local/facts";
-import { isLocal, LOCAL_PREFIX } from "./local/ids";
+import { gameIdOf, isLocal, LOCAL_PREFIX } from "./local/ids";
 
 /** Which host a game belongs to, and what a local one is called (R-6.5b.12).
  *
@@ -259,18 +259,6 @@ export const setArchiveKind = (k: ArchiveKind): void => {
   patchServerFacts({ archive: k });
 };
 
-/** The game id a path names, or `null` where it names none — the five routes
- *  that carry no id (R-6.5b.12) and `/api/archive`. */
-const gameIdOf = (path: string): string | null => {
-  const m = /^\/api\/games\/([^/?]+)/.exec(path);
-  if (!m) return null;
-  try {
-    return decodeURIComponent(m[1]!);
-  } catch {
-    return m[1]!;
-  }
-};
-
 /** The move happened and the browser would not keep it (spec §4).
  *
  *  **The server's own wording, and the server's own place for it**
@@ -444,7 +432,11 @@ export async function recordText(game: string): Promise<string> {
     // while the game runs — and R-6.5b.7 offers "Save game file" at any point,
     // because it is the player's own seed on the player's own disk. The bytes
     // are the store's, and are not parsed on the way here either.
-    const text = await localRead("record", game);
+    // **ONE queued read of BOTH documents** (spec §2.2's export snapshot, review
+    // finding #6): the record alone is what this call wants, but a second
+    // message for the table — which "Send to the archive" needs beside it —
+    // could fall either side of a move.
+    const text = (await localPair(game)).record;
     if (text === null) {
       throw new ApiError("this game has no saved record on this device", 404, null);
     }

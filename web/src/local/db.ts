@@ -66,7 +66,12 @@ export function openDb(): Promise<IDBDatabase> {
 export const readAll = (db: IDBDatabase): Promise<DocRow[]> =>
   done(db.transaction(DOCS, "readonly").objectStore(DOCS).getAll() as IDBRequest<DocRow[]>);
 
-/** What generation this game is on, or `0` for a game no tab has ever held. */
+/** What generation this game is on, or `0` for a game no tab has ever held.
+ *
+ *  **No production caller**: the Worker never needs to ask, because every
+ *  write carries the generation it took and re-reads the stored one inside its
+ *  own transaction. It exists so `db.test.ts` can read the fence's own state,
+ *  the way `resetLocalHostForTests` exists for the cells. */
 export const readGeneration = async (db: IDBDatabase, id: string): Promise<number> => {
   const row = await done(
     db.transaction(META, "readonly").objectStore(META).get(id) as IDBRequest<
@@ -154,17 +159,44 @@ export function writeDocs(
   });
 }
 
-/** Remove a game from this device: both documents and its generation, in one
- *  transaction. Called after the module answered 204 to a `DELETE`. */
-export function deletePair(db: IDBDatabase, id: string): Promise<void> {
+/**
+ * Remove a game from this device: both documents and its generation, in one
+ * transaction — and ONLY if `generation` is still the stored one.
+ *
+ * **The same fence as [`writeDocs`], and for a worse case** (spec §2.2, R2;
+ * review finding #1). A removal is a write, and it was the one write that
+ * carried no generation: a holder stolen from — `held` keeps its entry until
+ * the steal's `AbortError` is delivered — could dispatch a `DELETE` in that
+ * gap and take both documents AND the meta row with it. The new holder would
+ * then read `stale` on its next write, be told it had lost a game that no
+ * longer existed, and nothing would be recoverable. A stale delete now
+ * removes nothing and is answered as the lock loss.
+ */
+export function deletePair(
+  db: IDBDatabase,
+  id: string,
+  generation: number,
+): Promise<"deleted" | "stale"> {
   return new Promise((resolve, reject) => {
     const t = db.transaction([DOCS, META], "readwrite");
-    const docs = t.objectStore(DOCS);
-    docs.delete(["record", id]);
-    docs.delete(["table", id]);
-    t.objectStore(META).delete(id);
-    t.oncomplete = () => resolve();
-    t.onabort = () => reject(t.error ?? new Error("the delete was rolled back"));
+    let stale = false;
+    const meta = t.objectStore(META).get(id) as IDBRequest<
+      { id: string; generation: number } | undefined
+    >;
+    meta.onsuccess = () => {
+      if ((meta.result?.generation ?? 0) !== generation) {
+        stale = true;
+        t.abort();
+        return;
+      }
+      const docs = t.objectStore(DOCS);
+      docs.delete(["record", id]);
+      docs.delete(["table", id]);
+      t.objectStore(META).delete(id);
+    };
+    t.oncomplete = () => resolve("deleted");
+    t.onabort = () =>
+      stale ? resolve("stale") : reject(t.error ?? new Error("the delete was rolled back"));
     t.onerror = () => reject(t.error ?? new Error("the delete failed"));
   });
 }

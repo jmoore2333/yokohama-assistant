@@ -37,7 +37,8 @@ export interface FakeWorkerHooks {
    *  arranges a waiting request for the trap to settle. */
   call?: (req: Extract<Req, { kind: "call" }>) => CallReply | "pending" | undefined;
   hold?: (id: string, steal: boolean) => boolean;
-  read?: (doc: "record" | "table", id: string) => string | null | undefined;
+  /** Both documents of one game, as the `pair` message answers them. */
+  pair?: (id: string) => { record?: string | null; table?: string | null } | undefined;
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -131,9 +132,9 @@ export class FakeWorker {
         };
         break;
       }
-      case "read": {
-        const text = hooks.read?.(req.doc, req.id);
-        reply = { text: text === undefined ? null : text };
+      case "pair": {
+        const both = hooks.pair?.(req.id) ?? {};
+        reply = { record: both.record ?? null, table: both.table ?? null };
         break;
       }
       case "hold":
