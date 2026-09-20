@@ -9,8 +9,9 @@
 
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
+import { resetLocalHostForTests } from "./local/client";
 import { DISPLAY_NAME_KEY, setLobbyChat } from "./api";
 import { OPEN_KEY } from "./chatFold";
 import { fakeStream, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
@@ -69,6 +70,17 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
  *  find the corpus's `wire` row in both. */
 const section = (heading: string): HTMLElement =>
   screen.getByRole("heading", { name: heading }).closest("section")!;
+
+// The lobby draws "On this device" since M6.5b, and that section talks to a
+// Worker this suite does not stub: with no `Worker` in jsdom the local read
+// rejects and the section says so, which is what every cell below renders
+// past. The singleton is reset so no cell inherits another's host.
+beforeEach(() => {
+  resetLocalHostForTests();
+});
+afterEach(() => {
+  resetLocalHostForTests();
+});
 
 describe("the lobby", () => {
   it("draws both sections from the two scopes, with the same row in each", async () => {
@@ -397,5 +409,93 @@ describe("the lobby's chat and its name field", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---- the server AREA (M6.5b, spec §2.5) ------------------------------------
+//
+// The first screen renders from this browser FIRST: "On this device" is above
+// everything, and what used to be four gates in front of the whole page — the
+// door's error, its silence, the sign-in form and the door sentence — is now
+// the content of the part of the screen the server owns.
+describe("the server area", () => {
+  it("draws On this device ABOVE the lobby, whatever the server is doing", async () => {
+    show();
+    const local = await screen.findByRole("heading", { name: "On this device" });
+    const lobby = screen.getByRole("heading", { name: "Lobby" });
+    // Order, and not merely presence: the guarantee is that the games in this
+    // browser are the first thing on the screen.
+    expect(local.compareDocumentPosition(lobby) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders the door's content in place of the lists, and asks the server for nothing", async () => {
+    const stub = stubApi(() => {
+      throw new Error("a signed-out lobby asked the server for something");
+    });
+    render(<Lobby me={null} door={<p>the door says so</p>} />);
+    await screen.findByRole("heading", { name: "On this device" });
+    expect(screen.getByText("the door says so")).toBeInTheDocument();
+    // **Every `/api/games` route is a 401 without an identity** (M6.1), so a
+    // lobby that listed first would show a refusal as the player's first
+    // screen — the reason the door was a gate in the first place, kept.
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it("says not connected in place of the four sections, and goes on reading", async () => {
+    const stub = stubApi((call) => {
+      const l = lists(call);
+      if (l !== undefined) return l;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<Lobby me={ME} serverUp={false} />);
+    expect(await screen.findByText("not connected")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Open tables" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Games in progress" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
+    // **The read is still going out.** The line says what is true of the last
+    // health read, not that this screen has given up: the sections come back
+    // when a read lands.
+    await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1));
+  });
+
+  it("does not re-read because its host re-rendered with a new callback", async () => {
+    // **The trap this prop walks into.** `take` is what the opening read and
+    // the poll both call, and a `useCallback` that closed over the prop would
+    // get a new identity every time `App` re-rendered — which re-runs the
+    // opening read's effect, one `fetchLists` per render of a screen that has
+    // not changed. The host builds the callback inline, as hosts do.
+    const stub = stubApi((call) => {
+      const l = lists(call);
+      if (l !== undefined) return l;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const { rerender } = render(<Lobby me={ME} onReached={() => {}} />);
+    await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1));
+    for (let i = 0; i < 3; i += 1) rerender(<Lobby me={ME} onReached={() => {}} />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument());
+    expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1);
+  });
+
+  it("tells the app when a read lands, which is what brings the sections back", async () => {
+    const onReached = vi.fn();
+    stubApi((call) => {
+      const l = lists(call);
+      if (l !== undefined) return l;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<Lobby me={ME} serverUp={false} onReached={onReached} />);
+    await waitFor(() => expect(onReached).toHaveBeenCalled());
   });
 });

@@ -143,7 +143,12 @@ export async function openFromList(page: Page, id: string): Promise<void> {
   // show" with its fold control in it — so the loose name resolves to two
   // headings and every walk in this directory fails in strict mode.
   await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
-  await page.locator(".lobby .saved").first().getByRole("link", { name: id, exact: true }).click();
+  // **`.your-games` and no longer `.saved` first.** M6.5b puts "On this
+  // device" at the top of this screen, in the same `.saved` shape — so
+  // `.first()` stopped meaning "Your games" the moment the games in the
+  // browser were listed above it, which is the same drift `:not(.open-tables)`
+  // met in `joins_by_link`. The section names itself; use the name.
+  await page.locator(".lobby .your-games").getByRole("link", { name: id, exact: true }).click();
 }
 
 /**

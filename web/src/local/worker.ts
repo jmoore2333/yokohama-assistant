@@ -36,12 +36,8 @@
 //    ordinary replies.
 
 import { deletePair, openDb, readAll, takeGeneration, writeDocs } from "./db";
-import { drawLocalId, gameIdOf } from "./ids";
+import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
-
-/** The one address a local game is ever played by (R-6.5b.1). Never a person:
- *  the server's archive attributes a browser game to the SERVER's caller. */
-const LOCAL_USER = "local@browser";
 
 /** The page's requests. Mirrors `client.ts`'s `Req`, which is the page's own
  *  statement of the same shape — the two sides of a `postMessage` cannot share

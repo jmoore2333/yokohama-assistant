@@ -5,8 +5,9 @@
 // the whole reason `parseRoute` is total rather than returning `null` for a
 // caller to decide about.
 
+import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { hashOf, parseRoute } from "./route";
+import { hashOf, parseRoute, useRoute } from "./route";
 
 describe("the hash routes", () => {
   it("parses the three routes and reads anything else as the lobby", () => {
@@ -30,5 +31,38 @@ describe("the hash routes", () => {
     // The encoding really happens, so the round trip above is not two identity
     // functions agreeing with each other.
     expect(hashOf({ kind: "table", id: "a b" })).toBe("#/t/a%20b");
+  });
+
+  // **The form has two addresses since M6.5b** (spec §2.5): `#/new` opens a
+  // table on the server and `#/new/local` opens one in this browser, and the
+  // second is reachable with no door at all — which is the whole of what makes
+  // "Play the bot here" work on an unreachable API.
+  it("reads #/new/local as the local create and round-trips it", () => {
+    expect(parseRoute("#/new/local")).toEqual({ kind: "new", local: true });
+    expect(hashOf({ kind: "new", local: true })).toBe("#/new/local");
+    expect(parseRoute(hashOf({ kind: "new", local: true }))).toEqual({ kind: "new", local: true });
+    // The server's create is untouched, and carries no flag rather than a false
+    // one: `{kind: "new"}` is what every existing caller builds.
+    expect(hashOf({ kind: "new" })).toBe("#/new");
+    expect(parseRoute("#/new")).toEqual({ kind: "new" });
+    // Anything else under `/new` is the lobby, like every other unrecognized
+    // hash — `#/new/server` is not a third form.
+    expect(parseRoute("#/new/server")).toEqual({ kind: "lobby" });
+  });
+
+  // **The two creates are two SCREENS, which `useRoute` has to notice.** The
+  // hook hands back the same object for the same route so consumers' effects do
+  // not re-run on a screen that has not moved — and a sameness test that read
+  // the `kind` alone would call `#/new` and `#/new/local` one screen, leaving a
+  // player who asked for the local form looking at the server's.
+  it("hands back a NEW route object when the create changes host", () => {
+    window.location.hash = "#/new";
+    const { result } = renderHook(() => useRoute());
+    expect(result.current).toEqual({ kind: "new" });
+    act(() => {
+      window.location.hash = "#/new/local";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(result.current).toEqual({ kind: "new", local: true });
   });
 });

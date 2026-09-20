@@ -1855,6 +1855,32 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/me").length).toBeGreaterThanOrEqual(2);
   });
 
+  // **The door's FIRST answer, as content** (M6.5b, spec §2.5). The other
+  // three arms are exercised by the cells around this one — the form, the
+  // sentence, and the silence in "the first screen with no server" — and this
+  // is the one that needs arranging: `/api/me` refusing while the server is
+  // otherwise reachable, which is what tells the door's own complaint from the
+  // "not connected" line that replaces it when NOTHING answered.
+  it("draws the door's refusal beside the games on this device, rather than instead of them", async () => {
+    stubWorker();
+    const sentence = "the store could not be read";
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return { status: 500, body: { ...wire.error, error: sentence } };
+      // The server is up — that is the whole point of this arm: the door
+      // itself refused, and its words are the useful ones.
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    // And not the line for a server nobody reached: this one answered.
+    expect(screen.queryByText("not connected")).toBeNull();
+  });
+
   it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
     stubApi((call) =>
       // The corpus carries only the `claimed` door — the fixture server runs in
@@ -2796,17 +2822,6 @@ describe("the game screen's chat", () => {
 
 describe("a local game", () => {
   const LOCAL = "local-1";
-  /** The corpus's own playable state, re-addressed to a local game — the one
-   *  edit a fixture is allowed here, because a local game is named for its
-   *  host and the corpus's games are the server's. */
-  const localState = { ...wire.optionsMany, id: LOCAL };
-  const firstRow = () => {
-    const prompt = wire.optionsMany.prompt;
-    if (prompt.kind !== "options") throw new Error("fixture moved");
-    return screen.getByRole("button", {
-      name: new RegExp(prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    });
-  };
 
   beforeEach(() => {
     resetLocalHostForTests();
@@ -2815,41 +2830,10 @@ describe("a local game", () => {
     resetLocalHostForTests();
   });
 
-  it("makes NO network request once it is on screen — the fetch spy at zero across three moves", async () => {
-    // **The cell this milestone exists for** (spec §2.6, §6.2). Every call the
-    // screen makes for a `local-` game goes to the Worker; the only `fetch`es
-    // in the run are the boot reads the door and the lobby made BEFORE the
-    // game was opened, and the count does not move afterwards.
-    //
-    // At this task the door is still a gate, so those boot reads are stubbed
-    // and counted as the baseline; Task 5 tightens the same claim to "with
-    // every fetch failing".
-    stubWorker({
-      call: (req) => {
-        if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
-          return { status: 200, body: localState };
-        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: localState };
-        return undefined;
-      },
-    });
-    const stub = await renderApp(localState);
-    const worker = currentWorker();
-    expect(worker.posted.some((p) => p.kind === "call")).toBe(true);
-
-    const baseline = stub.calls.length;
-    const user = userEvent.setup();
-    for (let i = 0; i < 3; i += 1) await user.click(firstRow());
-
-    await waitFor(() =>
-      expect(
-        worker.posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
-      ).toHaveLength(3),
-    );
-    expect(stub.calls.length).toBe(baseline);
-    // Nothing leaked into the strip either: an unhandled path throws in the
-    // fake, and a throw would land there.
-    expect(document.querySelector(".error")).toBeNull();
-  });
+  // **The fetch-at-zero claim moved down the file at Task 5** and was tightened
+  // with it: it is now made with every `fetch` FAILING and the game opened from
+  // "On this device", which is the state R-6.5b.8 promises rather than a
+  // stubbed boot. See "the first screen with no server".
 
   it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
     // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
@@ -2869,12 +2853,17 @@ describe("a local game", () => {
           ? { status: 500, body: { error: sentence } }
           : undefined,
     });
-    const stub = stubApi((call) => {
+    stubApi((call) => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/health")) return wire.health;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (isGamesList(call, "mine")) return gamesNamed(LOCAL);
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      // **The server lists nothing**: this game is the BROWSER's, and the row
+      // the cell clicks has to be the local section's or it would prove
+      // nothing about where a local game is reachable from.
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -2887,9 +2876,193 @@ describe("a local game", () => {
     // Not a trap: one Worker for the whole cell.
     expect(FakeWorker.instances).toHaveLength(1);
     expect(FakeWorker.instances[0]!.terminated).toBe(false);
-    // The row is still listed — the listing reads table documents, and this
-    // game's is readable.
-    expect(stub.matching("GET", "/api/games?scope=mine").length).toBeGreaterThan(0);
+    // **The row STAYS listed** (P-6): the listing reads table documents and
+    // this game's is readable, so a save that will not rebuild is still
+    // something a player can find, save as a file and abandon (Task 6).
     expect(screen.getByRole("link", { name: LOCAL })).toBeInTheDocument();
+  });
+});
+
+// ---- the first screen with no server (M6.5b, R-6.5b.2, R-6.5b.8) ----------
+//
+// **The guarantee, in two code paths.** An API that REFUSES and an API that
+// never ANSWERS are two different states of `useMe` — the first sets the
+// door's error, the second leaves it null for ever — and until this cycle
+// each of them drew nothing at all: four `return`s above every screen. The
+// games in this browser have to be reachable through both.
+describe("the first screen with no server", () => {
+  const LOCAL = "local-1";
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    vi.useRealTimers();
+  });
+
+  /** The local section, drawn and read. */
+  const localSection = async () => {
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+  };
+
+  /** And its action WORKING, which is the half of R-6.5b.8 an enabled button
+   *  does not prove: the form the click opens is behind the ROUTE, and the
+   *  route effect used to be gated on a door that is shut in both of these
+   *  cells. */
+  const playsHere = async () => {
+    await userEvent.setup().click(screen.getByRole("button", { name: "Play the bot here" }));
+    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    // The form that needs no server: two seats, you and the bot.
+    expect(screen.getByText("the bot")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
+  };
+
+  it("renders On this device with its games when every fetch REFUSES", async () => {
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    render(<App />);
+    await localSection();
+    // The four server sections are replaced by the one line that says what is
+    // true, rather than by a door error about a server nobody can reach.
+    expect(await screen.findByText("not connected")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    await playsHere();
+  });
+
+  it("renders On this device when the server never answers", async () => {
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    render(<App />);
+    await localSection();
+    // **Not the same state as a refusal, and it should not read as one.**
+    // Nothing has come back, so the door is still connecting and the health
+    // read has not failed — "not connected" would be a claim this browser
+    // cannot make yet.
+    expect(screen.queryByText("not connected")).toBeNull();
+    await playsHere();
+  });
+
+  it("plays a whole local game with every fetch REFUSING, the spy flat across three moves", async () => {
+    // **The tightened fetch-at-zero cell** (spec §6.2): at Task 4 the door was
+    // still a gate, so the boot reads were stubbed and counted as a baseline.
+    // Now the boot reads FAIL and the game is opened from the local section,
+    // which is the shape R-6.5b.8 promises.
+    const localState = { ...wire.optionsMany, id: LOCAL };
+    stubWorker({
+      call: (req) => {
+        if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
+          return { status: 200, body: localState };
+        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: localState };
+        return undefined;
+      },
+    });
+    const spy = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("link", { name: LOCAL }));
+    await screen.findByText(/end triggers:/);
+
+    // Every boot read has already failed by now; from here the count must not
+    // move, and a fetch that DID go out would be one more refusal.
+    const baseline = spy.mock.calls.length;
+    const prompt = wire.optionsMany.prompt;
+    if (prompt.kind !== "options") throw new Error("fixture moved");
+    const row = () =>
+      screen.getByRole("button", {
+        name: new RegExp(prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      });
+    for (let i = 0; i < 3; i += 1) await user.click(row());
+    await waitFor(() =>
+      expect(
+        currentWorker().posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+      ).toHaveLength(3),
+    );
+    expect(spy.mock.calls.length).toBe(baseline);
+  });
+});
+
+// ---- the words on the cards survive an unreachable API (spec §2.3) --------
+describe("the option words", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    vi.useRealTimers();
+  });
+
+  const askedLocally = () =>
+    currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/labels");
+
+  it("reads them from the Worker when the server's labels read is REFUSED", async () => {
+    stubWorker();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/labels")) return { status: 503, body: wire.error };
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await waitFor(() => expect(askedLocally()).toHaveLength(1));
+  });
+
+  it("falls back inside the five-second bound when the server's read never settles", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    stubApi((call) => {
+      // **A read that hangs never rejects**, so a `.catch` alone would wait for
+      // ever and the cards would keep their raw serde names for the life of
+      // the page. The bound is what turns silence into an answer.
+      if (call.path.endsWith("/api/labels")) return new Promise<Reply>(() => {});
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await flush();
+    // The anti-vacuity partner: BEFORE the bound the server is still being
+    // waited on, so a cell that only looked after it would pass against a
+    // client that asked both hosts at once.
+    expect(askedLocally()).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(() => askedLocally().length === 1, "the Worker was asked for the words");
+  });
+
+  it("leaves the Worker's words alone when the server answers", async () => {
+    stubWorker();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    // The local listing is read whatever happens — the section is the first
+    // thing on the screen — so the claim is about the WORDS and not about the
+    // Worker: a server that answers is never asked for them twice.
+    await waitFor(() => expect(currentWorker().posted.length).toBeGreaterThan(0));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(askedLocally()).toHaveLength(0);
   });
 });

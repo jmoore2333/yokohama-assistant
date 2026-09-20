@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isLocal, isSignedOut, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
-import { SignIn } from "./SignIn";
-import { doorSentence, useMe } from "./whoami";
+import { api, ApiError, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
+import { Door } from "./Door";
+import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
 import { Chat } from "./Chat";
@@ -70,6 +70,28 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
   return buildRun(prev, frames, log);
 }
 
+/** How long the SERVER is given to answer the words on the cards before the
+ *  module in this browser is asked instead (spec §2.3). Long enough that a
+ *  slow link is not treated as an outage, short enough that a player does not
+ *  watch raw serde names while a dead connection times out on its own. */
+const LABELS_MS = 5_000;
+
+/** `p`, or a rejection once `ms` has passed.
+ *
+ *  **Because a read that HANGS never rejects.** `fetch` against a server that
+ *  accepts the connection and then says nothing settles neither way, so a
+ *  `.catch` alone is a fallback that can never be reached — the
+ *  pre-execution review's point, and the reason this is a race rather than a
+ *  catch. The loser's timer is left to fire and reject a promise nobody is
+ *  holding, which is harmless: `Promise.race` has already settled.
+ *
+ *  Outside the component because it closes over nothing. */
+const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms)),
+  ]);
+
 /** How a run REACHED this browser, and who is watching it (spec §5.2).
  *
  *  **Two facts that used to be one nullable seat, and separating them is the
@@ -125,6 +147,15 @@ export function App() {
   }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
+  /** Whether `GET /api/health` LANDED — the one thing this client asks about
+   *  the server's reachability, as opposed to about its answers (M6.5b,
+   *  R-6.5b.2).
+   *
+   *  `null` until it answers, which is a real third state: nothing has come
+   *  back yet, and "not connected" would be a claim this browser cannot make.
+   *  It is the health read and not the door's because the door has four
+   *  answers of its own and only one of them is about reachability. */
+  const [serverUp, setServerUp] = useState<boolean | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
   /** The table being DEALT, when there is one (M6.1 §7.4).
    *
@@ -509,13 +540,19 @@ export function App() {
    *  call is still awaiting `GET …/table` and every state-shaped test is still
    *  false. Both refs' own doc comments carry the measurement. */
   useEffect(() => {
-    // **A LOCAL table needs no door** (M6.5b, spec §2.3). The games in this
-    // browser are answered by a module in this browser: nobody signs in to
-    // reach them, and the gate that holds every other route back would leave
-    // a `#/t/local-…` link dead on a page whose server cannot be reached —
-    // which is the whole of what R-6.5b.2 promises.
-    if (!door.me?.user && !(route.kind === "table" && isLocal(route.id))) return;
     if (route.kind === "table") {
+      // **A LOCAL table needs no door** (M6.5b, spec §2.3). The games in this
+      // browser are answered by a module in this browser: nobody signs in to
+      // reach them, and the gate that holds every other route back would leave
+      // a `#/t/local-…` link dead on a page whose server cannot be reached —
+      // which is the whole of what R-6.5b.2 promises.
+      //
+      // **Inside the table arm since Task 5**, and that is not a move for
+      // tidiness: as a guard over the whole effect it also held back the tail
+      // below, so a signed-out player leaving a local game for `#/` or
+      // `#/new/local` kept the game on screen at an address that no longer
+      // named it.
+      if (!door.me?.user && !isLocal(route.id)) return;
       if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
         // **A refusal is about the table you were opening, so opening another
         // one clears it.** Without this a "you are not seated at this table"
@@ -572,7 +609,20 @@ export function App() {
   }, [state?.over, state?.id]);
 
   useEffect(() => {
-    api.labels().then(setLabels).catch(() => setLabels(null));
+    // **The words on the cards survive an unreachable API** (spec §2.3,
+    // R-6.5b.8). The SERVER is asked first — it is the one that may have been
+    // updated — under a bound, and the Worker answers when that read fails OR
+    // times out. The bound is what makes the fallback reachable at all: a
+    // hanging read never rejects, so a `.catch` alone would wait for ever and
+    // the cards would keep their raw serde names for the life of the page.
+    //
+    // The Worker is otherwise left alone here: it is started by the local
+    // section's own listing, and a visitor who only plays hosted games never
+    // pays for the module twice.
+    bounded(api.labels(), LABELS_MS)
+      .catch(() => api.labels("local"))
+      .then(setLabels)
+      .catch(() => setLabels(null));
     // A 404 here means the server has no cropped art. That is a supported
     // state, not a failure: every card falls back to its typed values, which is
     // exactly the surface that existed before there was any art.
@@ -593,8 +643,16 @@ export function App() {
       // **All four in ONE statement since M6.5b**: they are now the SERVER's
       // record in `local/facts.ts`, keyed beside the local host's constants,
       // and the health read is the one thing that sets it.
-      .then(setServerFacts)
-      .catch(() => {});
+      .then((h) => {
+        setServerFacts(h);
+        setServerUp(true);
+      })
+      // **And whether it landed at all is a fact the first screen draws**
+      // (spec §2.5): a health that refuses, never answers or answers with
+      // something that is not health is a server this browser cannot reach,
+      // and the lobby says so in one line rather than listing "none yet" over
+      // an API that was never asked.
+      .catch(() => setServerUp(false));
   }, []);
 
   const arrive = useCallback(
@@ -916,25 +974,29 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
-  // ---- the door, below every hook and above every screen (M6.1 §7.1) -------
+  // ---- the door, below every hook and no longer in front of the page ------
   //
-  // Four answers, in order, and the ORDER is the rule:
-  //
-  // 1. `/api/me` refused. Say so and offer nothing — a sign-in form over a
-  //    server that cannot answer would take a name and lose it.
-  // 2. It has not answered yet: draw NOTHING. A default either way flashes the
-  //    wrong screen at half the players for one round trip, and the one that
-  //    flashes is the sign-in form at people who are already signed in.
-  // 3. Nobody is signed in under `claimed` — the one door this browser can
-  //    knock on. The form.
-  // 4. Nobody is signed in under Cloudflare Access or the edge Worker. There is
-  //    no form to offer: the identity comes from in front of the server, so the
-  //    only useful thing to say is which header was expected.
-  if (door.error) return <div className="setup door-error">{door.error}</div>;
-  if (!door.me) return null;
-  if (door.me.mode === "claimed" && !door.me.user)
-    return <SignIn onSignedIn={() => refresh()} notice={door.notice ?? undefined} />;
-  if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
+  // **Four answers, and since M6.5b none of them is a GATE** (spec §2.5,
+  // R-6.5b.8). They were four `return`s here — a refusal, a silence, the
+  // sign-in form and the sentence naming the expected header — and each of
+  // them drew nothing else at all, including the games in this browser's own
+  // IndexedDB, which need no door to play. `Door` renders the same four
+  // bodies, in the same order and for the same reasons, as the CONTENT of the
+  // part of the first screen the server owns; `firstScreen` below is what puts
+  // them there.
+  const signedIn = door.me?.user ?? null;
+  /** The API could not be reached AT ALL: the health read failed and the door
+   *  has never answered either.
+   *
+   *  **One sentence beats two complaints.** Both reads failed for the same
+   *  reason, and the door's own words for it — "TypeError: Failed to fetch",
+   *  or a sign-in form over a server that would take a name and lose it — say
+   *  less than "not connected" and offer more. Where the door DID answer, its
+   *  four answers stand: the server is demonstrably reachable, whatever the
+   *  health read made of it. */
+  const unreachable = serverUp === false && door.me === null;
+  const doorContent =
+    signedIn || unreachable ? null : <Door door={door} onSignedIn={() => refresh()} />;
 
   // **Who you are, and how to stop being them.**
   //
@@ -945,7 +1007,7 @@ export function App() {
   // The button exists under `claimed` ONLY. Under the two edge doors there is
   // nothing stored to clear, and a control that looked like it logged you out
   // while Access kept letting you in would be a lie on screen.
-  const signOutButton = door.me.mode === "claimed" && (
+  const signOutButton = signedIn && door.me?.mode === "claimed" && (
     <button type="button" className="ghost" onClick={signOut}>
       sign out
     </button>
@@ -962,14 +1024,40 @@ export function App() {
   // is not a seat at this table, and the strip is the one line on the banner
   // that says which of the two you are here — sign-out still lives in the Game
   // menu, where every screen with a menu keeps it.
+  //
+  // **And "On this device" where there is nobody to be** (M6.5b): a game in
+  // this browser needs no door, so a screen can be up with the door shut —
+  // and "You are null" is not a thing to print. Task 6 gives the local game
+  // screen its own banner; this is the honest word until then.
   const whoStrip = (
-    <span className="meta who">{spectating ? "You are watching" : `You are ${door.me.user}`}</span>
+    <span className="meta who">
+      {spectating ? "You are watching" : signedIn ? `You are ${signedIn}` : "On this device"}
+    </span>
   );
   const who = (
     <>
       {whoStrip}
       {signOutButton}
     </>
+  );
+
+  /** The first screen: the frame, the games in THIS BROWSER, and then whatever
+   *  the server's part of it has to say — the lobby's three listings, the
+   *  door's own answer, or the one line that says the API cannot be reached.
+   *
+   *  **Every screen behind a door lands here when there is no user** (spec
+   *  §2.5). The four `return`s that used to do that job drew nothing else;
+   *  this draws the door's words with the local section above them, which is
+   *  the whole of R-6.5b.8. */
+  const firstScreen = (notice?: string | null) => (
+    <Lobby
+      me={signedIn}
+      who={signedIn ? who : undefined}
+      notice={notice ?? null}
+      door={doorContent}
+      serverUp={serverUp}
+      onReached={() => setServerUp(true)}
+    />
   );
 
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
@@ -982,13 +1070,37 @@ export function App() {
   // `#/t/<id>` is whichever of the three a table's own status makes it, which is
   // `open`'s question and the route effect's answer.
   if (!state) {
+    // **The two screens a game in this browser reaches with the door shut**
+    // (spec §2.5): the local create, and the deal it opens. Both are seated by
+    // `LOCAL_USER`, because the module answers as that one address whatever
+    // this browser signed in at — a dealing screen handed the signed-in name
+    // would find no seat of its own at a table this device owns outright.
+    if (route.kind === "new" && route.local)
+      return <NewGame local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
+    if (dealing && isLocal(dealing))
+      return (
+        <Dealing
+          game={dealing}
+          me={LOCAL_USER}
+          art={art}
+          labels={labels}
+          sections={enabled}
+          onToggleSection={toggleSection}
+          onPlaying={() => open(dealing, true)}
+          onLeave={toLobby}
+          who={who}
+        />
+      );
+    // Every screen below is the SERVER's, and the door is what stands in front
+    // of it — as content on the first screen rather than as a gate.
+    if (!signedIn) return firstScreen(error);
     if (route.kind === "new")
-      return <NewGame me={door.me.user} onCreated={(t) => open(t.id)} who={who} />;
+      return <NewGame me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing)
       return (
         <Dealing
           game={dealing}
-          me={door.me.user}
+          me={signedIn}
           art={art}
           labels={labels}
           sections={enabled}
@@ -1005,7 +1117,7 @@ export function App() {
       return (
         <OpenTable
           game={openTable}
-          me={door.me.user}
+          me={signedIn}
           // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
           // What the open table knows is that it is no longer open; whether
           // that is the deal or a game already running is `open`'s own
@@ -1058,8 +1170,15 @@ export function App() {
           who={who}
         />
       );
-    return <Lobby me={door.me.user} who={who} notice={error} />;
+    return firstScreen(error);
   }
+
+  // **A SERVER game still needs a door, and a local one does not.** The screen
+  // below asks the routes this caller is admitted to; with nobody at the door
+  // there is no such caller, so the first screen — carrying the door's own
+  // words — is where that lands. A `local-` game is answered by the module in
+  // this browser and has no such question.
+  if (!isLocal(state.id) && !signedIn) return firstScreen(error);
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =

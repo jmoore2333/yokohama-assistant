@@ -18,6 +18,17 @@
  *  alphanumerics, `.`, `_` and `-`. */
 export const LOCAL_PREFIX = "local-";
 
+/** The one address a local game is ever played by (R-6.5b.1). Never a person:
+ *  the server's archive attributes a browser game to the SERVER's caller, and
+ *  no listing on any server ever prints this.
+ *
+ *  **Here rather than in `worker.ts`, for this file's own reason.** The Worker
+ *  hands it to `dispatch` and the PAGE seats it on a local create — the module
+ *  answers as this address whatever door the browser signed in at, so a form
+ *  that posted the signed-in name would open a table its own player holds no
+ *  seat at. Two statements of one string is what this file exists to avoid. */
+export const LOCAL_USER = "local@browser";
+
 /** Is this game the browser's own?
  *
  *  **At its real size** (spec R-6.5b.12): a SERVER table can be given this

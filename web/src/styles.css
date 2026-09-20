@@ -895,6 +895,20 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
 
+/* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
+   (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
+   box — the one they had when each of them WAS the page — so nested inside
+   this one they would centre a 52rem column inside a 52rem column and push
+   themselves three rems down from a heading they belong under. The box is
+   theirs where they stand alone and flat where they stand here; nothing in
+   those components moves for it. */
+.lobby > .setup { max-width: none; margin: 0; padding: 0; }
+/* The games on this device sit above the lobby's own heading, so they need the
+   rhythm `.setup h3`'s top margin gives every other section — the first child
+   has none to inherit. */
+.lobby .on-this-device { margin-top: 0.6rem; }
+.lobby .on-this-device .local-fault { color: var(--fg-dim); }
+
 /* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
    is the setup screens' own `.setup` box and the rows are their `.field
    .seat-row`, so the only rule it needs of its own is the list's markers —

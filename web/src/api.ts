@@ -26,7 +26,7 @@ import type {
 } from "./types";
 import { localCall, localPair } from "./local/client";
 import { facts, patchServerFacts, serverFacts, setServerFacts, type ArchiveKind, type Host } from "./local/facts";
-import { gameIdOf, isLocal, LOCAL_PREFIX } from "./local/ids";
+import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
 
 /** Which host a game belongs to, and what a local one is called (R-6.5b.12).
  *
@@ -35,8 +35,9 @@ import { gameIdOf, isLocal, LOCAL_PREFIX } from "./local/ids";
  *  the screen's own reads all go through this one predicate, so "which host is
  *  this game's?" is asked one way. The definition itself lives one file down
  *  because the WORKER draws the ids and compiles without the DOM, while this
- *  module reads `localStorage`. */
-export { isLocal, LOCAL_PREFIX };
+ *  module reads `localStorage`. **`LOCAL_USER` rides with them** (R-6.5b.1):
+ *  the create form seats it, and the Worker hands it to `dispatch`. */
+export { isLocal, LOCAL_PREFIX, LOCAL_USER };
 export type { ArchiveKind, Host };
 export { setServerFacts };
 
