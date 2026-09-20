@@ -6,7 +6,12 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-19 (fourth session), at the RE-CHARTER of **M6.5 "the hosting move"** as
+**Updated:** 2026-09-20 (sixth session), at the DEPLOY of **M6.5a "the seam"** as
+`yokohama-web:0.5.0-m6.5a` (`deploy/RUNBOOK.md` §3.12 — both archive sites read off the volume, the
+archived record byte-identical to the store's and to the record route's body, the served record
+loaded in the terminal) after a fresh whole-branch review of the close at HEAD, with the M6.5b
+brainstorm following in the same session; the fifth session, earlier the same day, executed and
+closed M6.5a (Track 3). The update before those was 2026-09-19 (fourth session), at the RE-CHARTER of **M6.5 "the hosting move"** as
 WebAssembly + Durable Objects: the brainstorm with you, your thirteen rulings, and the umbrella spec
 `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` landed on the stacked branch `web-room-m6.5`
 (Track 3 carries it; M6.5a "the seam" is next). The previous update, earlier the same day, was the
@@ -48,21 +53,24 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
   artifact, then the findings document, then the two rulings together (Track 1).
 - **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
-  Cloudflare Access, now **`yokohama-web:0.5.0-m6.4.1`** on the NAS via Portainer. Nothing about it
-  moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
+  Cloudflare Access, now **`yokohama-web:0.5.0-m6.5a`** on the NAS via Portainer (since 2026-09-20
+  14:04:35Z, `deploy/RUNBOOK.md` §3.12). Nothing about it moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
   M6.1 "identity and seats" (live 2026-09-15, `docs/plans/2026-09-15-web-frontend-m6.1-close.md`),
   M6.2 "the lobby" (live 2026-09-16, `docs/plans/2026-09-16-web-frontend-m6.2-close.md`),
   M6.3 "transport and spectating" (live 2026-09-16,
   `docs/plans/2026-09-16-web-frontend-m6.3-close.md`) and **M6.4 "chat" (live 2026-09-17, the
   point release 2026-09-20, `docs/plans/2026-09-19-web-frontend-m6.4-close.md`)**: two players talk
   during a game, a third reads and answers, the lobby talks, and the first HEADED review of the live
-  site found — and the point release fixed — what four headless reviews could not see. **Four pull
+  site found — and the point release fixed — what four headless reviews could not see. **Five pull
   requests now**: `web-room` is PR #31 against master, `web-room-m6.2` PR #32 against `web-room`,
-  `web-room-m6.3` PR #33 against `web-room-m6.2`, and **PR #34** is `web-room-m6.4` against
-  `web-room-m6.3` — nothing merged, **merge order is yours**. **M6.5 (the hosting move) was
+  `web-room-m6.3` PR #33 against `web-room-m6.2`, `web-room-m6.4` PR #34 against `web-room-m6.3`,
+  and **PR #35** is `web-room-m6.5` against `web-room-m6.4` — nothing merged, **merge order is yours**. **M6.5 (the hosting move) was
   RE-CHARTERED on 2026-09-19 as WebAssembly + Durable Objects** — its authority is the umbrella spec
   `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` on branch `web-room-m6.5` (stacked on
-  `web-room-m6.4` at `faf1a88`, your call), three sub-cycles a/b/c, **M6.5a "the seam" next** (Track 3).
+  `web-room-m6.4` at `faf1a88`, your call), three sub-cycles a/b/c. **M6.5a "the seam" is CLOSED AND
+  LIVE (2026-09-20, `docs/plans/2026-09-20-web-frontend-m6.5a-close.md`; the table layer builds for
+  `wasm32-unknown-unknown` and finished and abandoned games are archived on the NAS); M6.5b
+  "single-player in the browser" is next** (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -146,9 +154,48 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5a "the seam" EXECUTED AND CLOSED 2026-09-20 (`42832f8` on `web-room-m6.5`, NOT deployed — your step); M6.5b "single-player in the browser" next; M6.4 "chat" CLOSED (`0.5.0-m6.4.1` live) (web lane)
+## Track 3 — The web client: M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" next (web lane)
 
-**M6.5a is done and waits on you for three things, in order.** (1) **Deploy `yokohama-web:0.5.0-m6.5a`** from `42832f8` with the create body's SECOND `Env` entry, `YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive` (`deploy/RUNBOOK.md` §3; §3.12 is the placeholder for the record): after the swap `/api/health` reads `"archive": "dir"`; abandon a throwaway table with a move in it and read `/data/archive/rev7/abandoned/<id>.json` + `.table.json` off the volume; play one game to the end and read the two files under `over/`. (2) **The pull request** for `web-room-m6.5` against `web-room-m6.4` (the same stacked shape as #31 → #34; merge order yours). (3) **Open M6.5b** from `docs/plans/2026-09-20-web-frontend-m6.5b-handover.md` — its spec is written at its start (R-6.5.7), and §3 of the handover lists the decisions that spec takes first (the local identity, the JS clock, the Worker, the two tabs, the bot seed, a local abandon). What shipped, in one breath: the table layer is out from under axum — the crate builds for `wasm32-unknown-unknown` without its `server` half (CI checks it; a source-scanning cell ENFORCES one `#[cfg(feature = "server")]` per item), every route is a typed `pub fn` behind one table and one `dispatch` in `api.rs` whose 400 sentences are axum's word for word and pinned against axum, the signal/clock/archive are seams on `Games`, finished and abandoned games are archived once under `rev7/over/` and `rev7/abandoned/`, a seat holder can download a finished record as the store's exact bytes, and the client saves it without parsing it. **The record of record is the close `docs/plans/2026-09-20-web-frontend-m6.5a-close.md`** — §2 the counts in one sequence (web 259 · CLI 851 + 2 · vitest 640 in 38 · e2e 39 in 8 · corpus 83 · the five fenced crates and the CLI untouched · `SEMANTICS_REV` 7), §4 the reviews (two per-task, one mid-point, one whole-branch, each with a fix wave; the fifteen-mutation battery at 15 of 15), §5 the rulings with their costs, §6 the LEAVE list and FIVE owner items, §7 what it does NOT claim (nothing RUNS in wasm; one host; not deployed). **You ruled mid-cycle** that small tasks execute INLINE with broad review rather than per-task SDD; the close records it and the memory carries it.
+**M6.5a is DONE, DEPLOYED and reviewed; M6.5b's brainstorm is next.** (1) **The deploy is done:**
+`yokohama-web:0.5.0-m6.5a`, built from `8a6b391` (the close's docs commit over `42832f8`), live in
+container `579cd1ff…` since **14:04:35Z** with BOTH `Env` entries — `deploy/RUNBOOK.md` §3.12 is the
+record. `/api/health` reads `"archive": "dir"`; a throwaway table abandoned after one move left
+`/data/archive/rev7/abandoned/<id>.json` + `.table.json` (schema 3, no lock, no roster, the stamp set)
+and a throwaway game played to the end through the API left the pair under `over/`, its record
+**byte-identical** to the store's copy and to the body `GET …/record` served (one sha256 for all
+three), and that served record loaded in the terminal with `why` reconstructing the bot's last move
+with no refusal. Both throwaways were deleted afterwards; the volume is back to your one table, which
+is a schema-2 document the new binary reads with every new field at its default. (2) **PR #35** is
+open against `web-room-m6.4` (https://github.com/jmoore2333/yokohama-assistant/pull/35; CI green on
+all three jobs) — the stack is #31 → #32 → #33 → #34 → #35 and merge order is yours. (3) **The
+fresh review before the deploy found nothing that blocks it and two things to carry forward**, both
+recorded here and in the RUNBOOK rather than changed on the reviewed branch: **a schema rollback
+caveat** — `TABLE_SCHEMA` is 3, only `create` stamps it, and every binary before `0.5.0-m6.5a`
+REFUSES a schema-3 document (the lobby drops the row, its reads fail) until the newer binary is back
+(RUNBOOK §3.12, §5); and **a LEAVE for the M6.5b spec** — `delete` chooses the archive leaf by
+STATUS, so a FINISHED game with no stamp (finished before this release, or one whose game-over put
+failed) is archived under `abandoned/` at its delete: the leaf lies, the archived table's `turn.over`
+tells the truth, and the one-line fix is to choose `Why::Over` when the mirror says over — a spec
+sentence for M6.5b, not a hot change. (A third, cosmetic: an already-archived finished game's lobby
+row still reads "Abandon and save" while nothing more is saved — beside the close's owner item 4.)
+**Next: open M6.5b** from `docs/plans/2026-09-20-web-frontend-m6.5b-handover.md` — its spec is
+written at its start (R-6.5.7), and §3 of the handover lists the decisions that spec takes first (the
+local identity, the JS clock, the Worker, the two tabs, the bot seed, a local abandon). What shipped,
+in one breath: the table layer is out from under axum — the crate builds for `wasm32-unknown-unknown`
+without its `server` half (CI checks it; a source-scanning cell ENFORCES one `#[cfg(feature =
+"server")]` per item), every route is a typed `pub fn` behind one table and one `dispatch` in
+`api.rs` whose 400 sentences are axum's word for word and pinned against axum, the signal/clock/archive
+are seams on `Games`, finished and abandoned games are archived once under `rev7/over/` and
+`rev7/abandoned/`, a seat holder can download a finished record as the store's exact bytes, and the
+client saves it without parsing it. **The record of record is the close
+`docs/plans/2026-09-20-web-frontend-m6.5a-close.md`** — §2 the counts in one sequence (web 259 · CLI
+851 + 2 · vitest 640 in 38 · e2e 39 in 8 · corpus 83 · the five fenced crates and the CLI untouched ·
+`SEMANTICS_REV` 7; re-read at `8a6b391` before the deploy: web 259, clippy, the wasm check, typecheck,
+vitest 640 — all green), §4 the reviews (two per-task, one mid-point, one whole-branch, each with a
+fix wave; the fifteen-mutation battery at 15 of 15), §5 the rulings with their costs, §6 the LEAVE
+list and FIVE owner items (the first, the deploy, now done), §7 what it does NOT claim (nothing RUNS
+in wasm; one host). **You ruled mid-cycle** that small tasks execute INLINE with broad review rather
+than per-task SDD; the close records it and the memory carries it.
 
 **M6.5 was re-chartered on 2026-09-19** in a brainstorm with you, and the umbrella spec
 `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` is its authority (branch `web-room-m6.5`,
