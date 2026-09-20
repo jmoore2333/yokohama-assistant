@@ -29,5 +29,12 @@
   // `exclude` does not keep an IMPORTED file out of a program — only out of the
   // root file list. Listing it would read as a fence that is not one. It uses
   // IndexedDB and nothing else, which is in both libs.
-  "exclude": ["src/local/worker.ts"]
+  //
+  // **The node replay's own file** (M6.5b). `src/local/corpus.node.test.ts`
+  // reads `node:fs`, `node:path` and `node:module`, which do not exist in a
+  // browser and are not in this project's `types`. It is a ROOT file here — no
+  // file under `src` imports it — so excluding it keeps it out, and
+  // `tsconfig.node.json` picks it up instead, where `process` and the node
+  // module ids are real.
+  "exclude": ["src/local/worker.ts", "src/local/*.node.test.ts"]
 }

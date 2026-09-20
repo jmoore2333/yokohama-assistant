@@ -392,6 +392,20 @@ impl AppState {
             signals,
         }
     }
+
+    /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
+    ///
+    /// A builder step over [`Games::with_clock`], for the one caller that needs
+    /// the whole state rather than the layer: the wire corpus, whose listings
+    /// sort `(created_at desc, id asc)` and whose two creates therefore have to
+    /// land in the SAME second or the committed page swaps its rows. Under a
+    /// wall clock that is true roughly 999 runs in 1,000, which is the worst
+    /// kind of true for a golden — and the browser host replays the same walk
+    /// against a frozen reading of its own, so the two hosts now agree by
+    /// construction rather than by coincidence.
+    pub fn with_clock(self, clock: games::Clock) -> Self {
+        Self { games: self.games.with_clock(clock), ..self }
+    }
 }
 
 // ---------------------------------------------------------------------------

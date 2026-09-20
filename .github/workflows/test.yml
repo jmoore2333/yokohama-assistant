@@ -89,6 +89,12 @@ jobs:
       # platform-call fence is `platform_calls_stay_behind_the_server_feature`,
       # which runs in the line above.
       - run: cargo check -p yokohama-web --no-default-features --target wasm32-unknown-unknown
+      # M6.5b (spec §6.3): the corpus, replayed through the module built above.
+      # It runs AFTER `wire_fixtures`, which is what re-derives the committed
+      # corpus and the walk's request script from the real router — a replay
+      # against a stale script would compare two stale things and agree.
+      - run: npm run test:wasm
+        working-directory: web
 
   # **The browser client, which nothing here could make red until M3.5.**
   #

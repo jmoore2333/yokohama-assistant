@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit && tsc -p tsconfig.node.json && node scripts/typecheck-worker.mjs",
     "test": "vitest run",
+    "test:wasm": "vitest run -c vitest.node.config.ts",
     "test:watch": "vitest",
     "e2e": "npm run build && playwright test"
   },

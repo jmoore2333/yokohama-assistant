@@ -128,6 +128,62 @@ impl Rng {
     }
 }
 
+/// **One request the walk made, as the browser host will be asked to make it**
+/// (M6.5b, spec §5).
+///
+/// The corpus is the walk's ANSWERS; this is the walk's QUESTIONS, and the two
+/// together are what lets a second host claim the corpus: `web/src/local/
+/// corpus.node.test.ts` loads the compiled module, replays these rows through
+/// `dispatch`, and compares every reply that names a fixture against the
+/// committed file.
+///
+/// **It lives OUTSIDE `web/src/wire/`**, at `web/src/wire-script/walk.json`,
+/// and the reason is a fence rather than tidiness: a row carries the REQUEST
+/// BODY, and the walk's bodies spell the setup seed and both passwords — the
+/// three strings [`no_committed_payload_carries_the_setup_seed`] and
+/// [`no_payload_of_this_run_carries_the_password_or_its_hash`] scan the corpus
+/// for. A script inside the corpus directory would fail those pins or force an
+/// exemption, and an exemption is how a pin stops being one.
+///
+/// **`fixture` is nullable and most rows are `None`.** The walk makes several
+/// hundred calls and commits under a hundred payloads: the intermediates are
+/// what move the game to the state a fixture is taken from, so every row is
+/// REPLAYED and only a named one is compared. The name is bound after the walk,
+/// BY VALUE — see [`Corpus`].
+#[derive(Clone, serde::Serialize)]
+struct ScriptRow {
+    /// The identity header's value, or `null` for the one call that omits it.
+    who: Option<String>,
+    method: String,
+    path: String,
+    /// Everything after the `?`, empty when there was none — `dispatch` takes
+    /// the two halves separately and the adapter is what splits them.
+    query: String,
+    body: Option<Value>,
+    status: u16,
+    /// Which committed payload this call answered, bound after the walk.
+    fixture: Option<String>,
+    /// **Not emitted**: the frozen response, which is what the binding compares.
+    #[serde(skip)]
+    response: Value,
+}
+
+/// The routes the HOST serves and the layer does not — the three transport
+/// routes and the art.
+///
+/// Single-sourced because two callers ask the same question for the same
+/// reason: [`Api::compare_with_dispatch`] cannot compare a route `dispatch`
+/// does not have, and the script cannot ask a second host to replay one. A
+/// payload captured from one of these is therefore in the third column of spec
+/// §5's table — not served by that host — by construction rather than by a
+/// list.
+fn hosts_own(path: &str) -> bool {
+    path.ends_with("/events")
+        || path.ends_with("/stream")
+        || path == "/api/stream"
+        || path == "/api/art"
+}
+
 struct Api {
     router: axum::Router,
     /// The state BEHIND the router, kept reachable.
@@ -142,6 +198,11 @@ struct Api {
     /// directly and compared byte for byte — see [`Api::call_as`]. The count is
     /// the anti-vacuity of `the_dispatcher_answers_what_the_router_answers`.
     compared: std::cell::Cell<usize>,
+    /// Every call this `Api` answered, in order — the walk's own request script
+    /// (M6.5b). **Per instance**, so the two secondary `Api`s below keep their
+    /// rows to themselves and only the primary's are emitted: the payloads they
+    /// produce are third-column files by construction.
+    script: std::cell::RefCell<Vec<ScriptRow>>,
 }
 
 impl Api {
@@ -156,8 +217,13 @@ impl Api {
     /// the wire — so that payload comes from a second state built here rather
     /// than from an extra route on the first.
     fn with_chat(chat: yokohama_web::chat::ChatConfig) -> Self {
-        let state = Arc::new(AppState::in_memory_with_chat(chat));
-        Self { router: app(Arc::clone(&state)), state, compared: std::cell::Cell::new(0) }
+        let state = Arc::new(AppState::in_memory_with_chat(chat).with_clock(frozen_clock()));
+        Self {
+            router: app(Arc::clone(&state)),
+            state,
+            compared: std::cell::Cell::new(0),
+            script: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     /// The same router over a real ARCHIVE directory (M6.5b, R-6.5b.6).
@@ -172,8 +238,14 @@ impl Api {
             yokohama_web::identity::IdentityMode::Claimed,
             yokohama_web::chat::ChatConfig::default(),
             Arc::new(yokohama_web::archive::DirArchive::new(dir)),
-        ));
-        Self { router: app(Arc::clone(&state)), state, compared: std::cell::Cell::new(0) }
+        )
+        .with_clock(frozen_clock()));
+        Self {
+            router: app(Arc::clone(&state)),
+            state,
+            compared: std::cell::Cell::new(0),
+            script: std::cell::RefCell::new(Vec::new()),
+        }
     }
 
     /// A call as [`WALKER`], which is every call the walk makes that is not a
@@ -220,6 +292,25 @@ impl Api {
                 panic!("{uri} must answer JSON: {e}: {:?}", String::from_utf8_lossy(&bytes))
             })
         };
+        // **The script** (M6.5b, spec §5). Recorded HERE because every capture
+        // path in this file — `call`, `get`, `get_as`, `get_anonymous`,
+        // `as_actor`, `send_as` — reaches the wire through this one method, so
+        // one push sees every call the walk makes and no caller has to remember
+        // to record itself. The response is frozen on the way in, since that is
+        // the form the committed payloads are in and the binding is by value.
+        let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+        let mut response = value.clone();
+        freeze_clock(&mut response);
+        self.script.borrow_mut().push(ScriptRow {
+            who: who.map(str::to_string),
+            method: method.to_string(),
+            path: path.to_string(),
+            query: query.to_string(),
+            body,
+            status: status.as_u16(),
+            fixture: None,
+            response,
+        });
         (status, value)
     }
 
@@ -247,11 +338,7 @@ impl Api {
         bytes: &[u8],
     ) {
         let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
-        let hosts_own = path.ends_with("/events")
-            || path.ends_with("/stream")
-            || path == "/api/stream"
-            || path == "/api/art";
-        if hosts_own || !(method == "GET" || method == "HEAD" || status.is_client_error()) {
+        if hosts_own(path) || !(method == "GET" || method == "HEAD" || status.is_client_error()) {
             return;
         }
         let user = who.map(|w| yokohama_web::identity::User::parse(w).expect("a valid identity"));
@@ -332,6 +419,25 @@ impl Api {
 /// plausible unix timestamp, so a `created_at` that became a string, a null or a
 /// zero fails here rather than being normalized away.
 const FROZEN_CREATED_AT: u64 = 1_789_000_000;
+
+/// The walk's own clock, stopped at [`FROZEN_CREATED_AT`] (M6.5b, spec §6.3).
+///
+/// [`freeze_clock`] below rewrites a stamp AFTER the fact, which keeps the
+/// committed numbers still; this stops the server's clock BEFORE it, which is a
+/// different claim and the one the lobby fixtures need. `games.rs`'s listing
+/// sorts `(created_at desc, id asc)` over unix SECONDS, so the two creates in
+/// [`walk_with`] agree about their order only while they land in the same
+/// second — true roughly 999 runs in 1,000 under a wall clock, and a golden
+/// that is right 999 times in 1,000 is a golden that goes red on unchanged
+/// code. Stopped, the tie is structural and the id decides, which is what the
+/// committed pages already show.
+///
+/// It is also what lets a SECOND host replay this walk: `set_clock` on the
+/// browser host's module takes the same constant, so the two agree by
+/// construction rather than by coincidence.
+fn frozen_clock() -> yokohama_web::games::Clock {
+    Arc::new(|| FROZEN_CREATED_AT)
+}
 
 /// Replace every `created_at` with [`FROZEN_CREATED_AT`], wherever it is nested
 /// — **and the same clock where it is spelled inside a list CURSOR**.
@@ -528,6 +634,13 @@ fn wire_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/src/wire")
 }
 
+/// Where the walk's request script lives — **beside the corpus and not in it**
+/// (M6.5b, spec §5). See [`ScriptRow`] for why a directory of its own is a
+/// fence rather than a filing preference.
+fn wire_script_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/src/wire-script")
+}
+
 /// The art directory, resolved from THIS crate rather than from the process's
 /// working directory: `art::art_dir()`'s default is relative to the repo root,
 /// and a cargo test runs in the crate root.
@@ -555,13 +668,35 @@ fn art_dir() -> PathBuf {
 /// 2. **It captures INTERMEDIATE states.** A placement with something selected
 ///    carries a live fee, and that is where a real defect lived: a player
 ///    pressed Confirm and paid a yen no surface had stated.
-async fn walk() -> Vec<(String, Value)> {
+async fn walk() -> Walk {
     let api = Api::new();
-    walk_with(&api).await
+    let (payloads, aside) = walk_with(&api).await;
+    Walk { payloads, script: api.script.take(), aside }
+}
+
+/// What one walk produced: its payloads, and the requests behind them.
+struct Walk {
+    payloads: Vec<(String, Value)>,
+    /// The PRIMARY `Api`'s calls, in order — the script a second host replays.
+    script: Vec<ScriptRow>,
+    /// The calls the walk made on a SECOND `Api` — one built with the lobby
+    /// chat off, one with a real archive directory.
+    ///
+    /// **Kept rather than dropped, so the classification can be derived.** A
+    /// browser host has neither of those deployments, so the payloads these
+    /// produced are third-column files (spec §5) by construction. Holding them
+    /// is what lets [`corpus`] tell "answered by a host this script does not
+    /// describe" apart from "answered by nothing at all" — the second is a
+    /// payload that slipped into the walk from a construction, and it is a hard
+    /// failure rather than a quiet widening of the third column.
+    aside: Vec<ScriptRow>,
 }
 
 /// The walk over a caller's [`Api`], so a cell can read what the walk counted.
-async fn walk_with(api: &Api) -> Vec<(String, Value)> {
+///
+/// Answers the payloads and the rows of the two SECOND `Api`s it builds along
+/// the way — see [`Walk::aside`].
+async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
 
     // **The opening sequence, and every payload it produces** (M6.1 §4). A
     // create opens a DEALING table; each seat fetches its own two cards and
@@ -1550,9 +1685,12 @@ async fn walk_with(api: &Api) -> Vec<(String, Value)> {
     assert_eq!(status, StatusCode::NOT_FOUND, "{house_chat_off_404}");
     out.push(("house_chat_off_404".to_string(), house_chat_off_404));
 
-    out.extend(archive_payloads(api).await);
+    let (archived, archive_script) = archive_payloads(api).await;
+    out.extend(archived);
 
-    out
+    let mut aside = off.script.take();
+    aside.extend(archive_script);
+    (out, aside)
 }
 
 /// **What the archive route answers a browser** (M6.5b, R-6.5b.6), captured
@@ -1562,7 +1700,7 @@ async fn walk_with(api: &Api) -> Vec<(String, Value)> {
 /// state's store, which is where a finished game's bytes are — so the body is a
 /// real pair and not a construction, and the path in the reply is a function of
 /// the walk's id and the walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
-async fn archive_payloads(api: &Api) -> Vec<(String, Value)> {
+async fn archive_payloads(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
     use yokohama_web::store::Doc;
     let store = api.state.games.store();
     let (record_text, _) = store.read(Doc::Record, "wire").expect("a store").expect("the record");
@@ -1630,7 +1768,7 @@ async fn archive_payloads(api: &Api) -> Vec<(String, Value)> {
         ("archive_409".to_string(), archive_409),
     ]);
     std::fs::remove_dir_all(&dir).ok();
-    out
+    (out, archived.script.take())
 }
 
 /// A directory of this run's own. `walk_with` is driven by several tests, and
@@ -1676,11 +1814,18 @@ fn partial_of(record_text: &str, events: usize) -> String {
     serde_json::to_string(&rec).expect("a record")
 }
 
-/// The two payloads the router cannot produce, built in process.
+/// The payloads the router cannot produce, built in process.
 ///
-/// Both are real states of the served type, and both are unreachable over HTTP
-/// from a deterministic game: `Watching` needs a BOT to be the acting seat (and
-/// a bot's seed is entropy), and `Locked` needs a driver or engine fault.
+/// **Six of them, not the two this doc used to claim** (M6.5b): `watching` and
+/// `locked` were the original pair, and M3's four explanation payloads joined
+/// them without the sentence moving. All six are real states of the served
+/// type and all six are unreachable over HTTP from a deterministic bot-free
+/// game: `Watching` needs a BOT to be the acting seat (and a bot's seed is
+/// entropy), `Locked` needs a driver or engine fault, and the four `why`
+/// payloads need a bot move to account for.
+///
+/// They are therefore third-column files in spec §5's table — constructed, not
+/// routed — which the browser host's replay asserts by name.
 fn constructed() -> Vec<(String, Value)> {
     use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
     use yokohama_cli::repl::Repl;
@@ -1864,10 +2009,23 @@ fn every_refusal_payload() -> Value {
     serde_json::to_value(rows).expect("serializable refusals")
 }
 
-/// The whole committed corpus, in one place, so the two tests below cannot
-/// disagree about what it contains.
-async fn corpus() -> Vec<(String, Value)> {
-    let mut all = walk().await;
+/// The whole committed corpus and the walk's request script, in one place, so
+/// the tests below cannot disagree about what either contains.
+struct Corpus {
+    payloads: Vec<(String, Value)>,
+    /// The primary `Api`'s calls, in order, each one that produced a committed
+    /// payload carrying its name — see [`ScriptRow`] and [`corpus`].
+    script: Vec<ScriptRow>,
+}
+
+/// The whole committed corpus, in one place, so the tests below cannot
+/// disagree about what it contains — and the walk's request script beside it,
+/// bound to the payloads it produced.
+async fn corpus() -> Corpus {
+    let Walk { payloads: mut all, mut script, aside } = walk().await;
+    // Everything above this line came from the walk, and everything below it
+    // did not: the binding below reads exactly this prefix.
+    let from_the_walk = all.len();
     all.extend(constructed());
     all.push((
         "art_manifest".to_string(),
@@ -1882,10 +2040,52 @@ async fn corpus() -> Vec<(String, Value)> {
     for (_, value) in all.iter_mut() {
         freeze_clock(value);
     }
+
+    // **The binding, BY VALUE** (M6.5b, spec §5). `call_as` does not know what
+    // a payload will be called — the name is chosen at the `out.push` site, a
+    // hundred-odd of them — so rather than thread a name through every call,
+    // each walk payload finds the FIRST unbound row whose frozen response
+    // equals it. Two calls with byte-equal responses are interchangeable for a
+    // replay, so the residual is a name on one of them and the claim is the
+    // same either way.
+    //
+    // **A walk payload that matches no PRIMARY row is classified, never
+    // skipped.** It came from somewhere this script does not describe, and
+    // which somewhere decides whether that is fine: a second `Api` is a
+    // deployment the browser host is not, and its payload is a third-column
+    // file by construction; nothing at all is a construction that slipped into
+    // the walk, and that is a hard failure, because the third column of spec
+    // §5's table is DERIVED from this file set and would otherwise widen by one
+    // with nothing saying so.
+    for (name, value) in &all[..from_the_walk] {
+        if let Some(row) = script.iter_mut().find(|r| r.fixture.is_none() && &r.response == value) {
+            row.fixture = Some(name.clone());
+            continue;
+        }
+        // No PRIMARY row answered it, so it came from a second `Api` — a
+        // deployment the script does not describe, whose payloads a browser
+        // host therefore does not serve. That is CHECKED and not assumed: a
+        // payload no `Api` at all answered is a construction that slipped into
+        // the walk, and the third column would widen by one with nothing
+        // saying so.
+        assert!(
+            aside.iter().any(|r| &r.response == value),
+            "{name}.json is the answer to no request this walk made — not the primary `Api`'s \
+             and not a second one's. A payload that is built rather than fetched belongs in \
+             `constructed()`, where the browser host's replay reads it as not served.",
+        );
+    }
+    // The HOST's own routes leave the script with the rows that named them: the
+    // browser host has no `/events`, no `/stream` and no `/api/art`, so those
+    // requests are not askable of it and the payloads they produced fall into
+    // the third column — derived here, rather than written down in the replay.
+    script.retain(|r| !hosts_own(&r.path));
+
     // Sorted, so the file set is a set and its order is not an accident of the
-    // walk. (The names, not the payloads — payload key order is serde's.)
+    // walk. (The names, not the payloads — payload key order is serde's.) The
+    // SCRIPT keeps the walk's order, which is the only order it replays in.
     all.sort_by(|a, b| a.0.cmp(&b.0));
-    all
+    Corpus { payloads: all, script }
 }
 
 /// **The terminal's own words for every printed building-site space.**
@@ -1980,7 +2180,7 @@ async fn no_committed_payload_carries_the_setup_seed() {
     let hex = format!("{SETUP_SEED:016x}");
     let mut offenders: Vec<String> = Vec::new();
 
-    for (name, value) in corpus().await {
+    for (name, value) in corpus().await.payloads {
         let text = serde_json::to_string(&value).expect("serializable");
         if text.contains(&decimal) || text.contains(&hex) {
             offenders.push(name);
@@ -2083,7 +2283,7 @@ async fn no_committed_payload_carries_the_setup_seed() {
 async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
     // This run's payloads, taken before the golden compares them — the same
     // corpus the committed files are cut from.
-    let run = corpus().await;
+    let run = corpus().await.payloads;
 
     let api = Api::new();
     let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
@@ -2234,7 +2434,7 @@ async fn a_silent_watcher_is_named_nowhere_and_a_posting_one_only_as_an_author()
 
     let mut offenders: Vec<String> = Vec::new();
     let mut allowed_hits = 0usize;
-    for (name, value) in corpus().await {
+    for (name, value) in corpus().await.payloads {
         for (who, needle, may_post) in [
             ("the watcher", GREEN, true),
             ("a watcher who never spoke", QUIET, false),
@@ -2495,7 +2695,8 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 
     let mut drifted: Vec<String> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    for (name, value) in corpus().await {
+    let Corpus { payloads, script } = corpus().await;
+    for (name, value) in payloads {
         names.push(name.clone());
         let path = dir.join(format!("{name}.json"));
         let emitted = format!("{}\n", serde_json::to_string_pretty(&value).expect("pretty JSON"));
@@ -2534,6 +2735,29 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
     }
 
+    // **The walk's request script, written under the same variable and checked
+    // the same way** (M6.5b, spec §5). It is not a payload and it does not live
+    // in the corpus directory, so the orphan sweep above never sees it and no
+    // leakage pin ever reads it — which is the whole point, since a row carries
+    // the request BODY.
+    let script_path = wire_script_dir().join("walk.json");
+    let emitted_script =
+        format!("{}\n", serde_json::to_string_pretty(&script).expect("pretty JSON"));
+    if update {
+        std::fs::create_dir_all(wire_script_dir()).expect("the script directory");
+        std::fs::write(&script_path, &emitted_script).expect("writing the script");
+    } else {
+        match std::fs::read_to_string(&script_path) {
+            Ok(committed) if committed == emitted_script => {}
+            Ok(committed) => drifted.push(format!(
+                "  wire-script/walk.json — committed {} bytes, the walk makes {} bytes",
+                committed.len(),
+                emitted_script.len(),
+            )),
+            Err(e) => drifted.push(format!("  wire-script/walk.json — {e}")),
+        }
+    }
+
     assert!(
         drifted.is_empty(),
         "the wire contract moved:\n{}\n\nIf the change is intended, regenerate and READ THE DIFF:\n  \
@@ -2541,6 +2765,23 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
          then re-run the client's type gate, which checks these files against \
          `web/src/types.ts`:\n  (cd web && npm run typecheck)",
         drifted.join("\n"),
+    );
+
+    // **The anti-vacuity of the script's own address.** The two pins above
+    // search `corpus()` for the setup seed and for both passwords and find
+    // nothing — which is only a claim while those strings are somewhere this
+    // codebase really does write down. They are HERE, in the request bodies the
+    // walk sent, and that is the reason the script is a directory away from the
+    // files those pins read. A script that had quietly stopped carrying its
+    // bodies would make this fail rather than make the pins pass more easily.
+    assert!(
+        emitted_script.contains(&SETUP_SEED.to_string()),
+        "the script carries the create's own body, seed and all — the pins' scope excludes it \
+         on purpose, and this is what says the exclusion is doing work",
+    );
+    assert!(
+        emitted_script.contains(WIRE_PASSWORD),
+        "the script carries the join's own body, password and all",
     );
 
     assert!(!update, "UPDATE_WIRE_FIXTURES was set: fixtures were REWRITTEN, not checked");
@@ -2558,7 +2799,7 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 #[tokio::test]
 async fn the_dispatcher_answers_what_the_router_answers() {
     let api = Api::new();
-    let payloads = walk_with(&api).await;
+    let (payloads, _aside) = walk_with(&api).await;
     let compared = api.compared.get();
     // Measured 2026-09-20 at the M6.5a Task 6 head: 234 pairs over a walk of 74
     // payloads (every read and refusal, some payloads several reads), all equal.
