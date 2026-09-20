@@ -249,6 +249,15 @@ Every line below was opened by the review; the ones it corrected are marked.
   the mirror. *(M-3)*
 - **R-6.5b.14 — `.wasm` is served as `application/wasm`.** One arm in `assets::content_type`
   and one assertion in its cell.
+- **R-6.5b.16 — the hosted deployment target is Workers FREE (owner, 2026-09-20, confirming
+  what the pre-execution review reported), which AMENDS umbrella R-6.5.12's "Workers Paid".**
+  Nothing in M6.5b moves for it — this cycle deploys to the NAS — but M6.5c inherits it as a
+  constraint rather than a claim: on Free the routing Worker has a 10 ms CPU budget per request
+  and a SQLite-backed object 30 s, so gameplay, replay, `suggest`, `why` and the archive's
+  strict replay run INSIDE objects (`/api/archive` mapped to an object of its own), static
+  assets are served without the Worker, and the daily Free quotas (requests, GB-s, rows read
+  and written, 5 GB) are BUDGETED before the first deploy and MEASURED in the live setup
+  (R-6.5.8). §8 carries the list.
 - **R-6.5b.15 — the archive's caller prefix is a path-safe ENCODING of the address, never the
   address.** `archive::caller_segment(user) -> String`: the normalised address with `@`
   replaced by `_at_` and every character outside `[a-z0-9._-]` replaced by `_`, capped at 64
@@ -861,9 +870,8 @@ review before the release; full SDD only for a task the plan marks large or judg
 - Two cosmetic items carried from the M6.5a deploy review: an already-archived finished
   game's row reads "Abandon and save"; "and save" on a just-dealt table (M6.5a §6.3 item 4).
 - **Carried to the M6.5c handover, not this cycle's** (the pre-execution review's §1 and §4):
-  the owner's deployment target is reported to be Workers FREE, where the umbrella's R-6.5.12
-  says Paid — **an owner confirmation the M6.5c spec records before it amends R-6.5.12**; on
-  Free the routing Worker has a 10 ms budget and the object 30 s, so gameplay, replay,
+  the deployment target is Workers FREE — **confirmed by the owner 2026-09-20, R-6.5b.16, which
+  amends umbrella R-6.5.12** — and on Free the routing Worker has a 10 ms budget and the object 30 s, so gameplay, replay,
   `suggest`, `why` and the archive's strict replay run INSIDE objects, `/api/archive` mapped to
   an object of its own; the layer's `Archive::put` is synchronous and an R2 put is not, so
   M6.5c defines a prepare/upload/commit protocol with a receipt before a delete is authorised;
@@ -961,5 +969,5 @@ verified true) found what both Opus passes had missed, and the third wave carrie
 | **R8** `walk.json` inside `corpus()` carries the seed and passwords the leakage pins scan for | `wire_fixtures.rs:1812-1830`, `corpus()` | TAKEN — §5: the script lives in `web/src/wire-script/`, outside every pin's scan, with its own staleness check |
 | §3's two level-2 details: a hanging `/api/labels` never falls back; `App.tsx:503` gates local routes on the door | `App.tsx:561`, `:503` | TAKEN — §2.3 |
 | §5's notes: the cap cell's precedence; single `cargo test` filters; the no-network claim widened; real-Worker fault cells; attribution trailers | the plan | TAKEN — §2.4 cap-before-range; the plan's commands; §6.5 |
-| §1 Free tier vs R-6.5.12's Paid; offline reopening not delivered; no browser restore | the umbrella `:354`; §8 | CARRIED — §8: an owner confirmation for M6.5c; the level-3 charter written down; restore named as part of it |
+| §1 Free tier vs R-6.5.12's Paid; offline reopening not delivered; no browser restore | the umbrella `:354`; §8 | TAKEN as R-6.5b.16 (the owner confirmed Free the same day; R-6.5.12 amended) and CARRIED — §8: the level-3 charter written down; restore named as part of it |
 | §4 the M6.5c optimisation list; the async archive seam | — | CARRIED — §8, into the M6.5c entry handover |
