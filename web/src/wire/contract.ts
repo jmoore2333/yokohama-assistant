@@ -544,7 +544,7 @@ const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
 const HEALTH = [
-  "server_version", "semantics_rev", "rules_hash", "identity", "signal",
+  "server_version", "semantics_rev", "rules_hash", "identity", "signal", "archive",
   "lobby_chat", "chat_keep", "chat_text",
 ] as const;
 const ME = ["mode", "user"] as const;

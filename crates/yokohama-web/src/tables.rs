@@ -47,7 +47,7 @@ use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, Tu
 /// schema-1 document READS here unchanged; the number is what lets an OLDER
 /// server refuse a document a newer one wrote, which is the direction that
 /// cannot be made safe by defaults.
-const TABLE_SCHEMA: u32 = 2;
+const TABLE_SCHEMA: u32 = 3;
 
 /// The bot stream seed a THROWAWAY table is built with.
 ///
@@ -393,6 +393,12 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
     }
     if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
         return Err(format!("{bad:?} on the watcher list is not an address this server writes"));
+    }
+    // M6.5a's stamp, bounded like a message's `created_at` (R-6.5a.10).
+    if let Some(at) = doc.archived_at {
+        if at > crate::chat::MAX_CREATED_AT {
+            return Err(format!("archived_at {at} is past {}", crate::chat::MAX_CREATED_AT));
+        }
     }
     for (i, seat) in doc.seats.iter().enumerate() {
         if let SeatDoc::Human { name: Some(name), .. } = seat {
@@ -755,6 +761,7 @@ impl Games {
             // refused lives there and the trim must agree with it here.
             lock: req.password.as_deref().map(str::trim).map(Lock::new),
             unlocked: Vec::new(),
+            archived_at: None,
         };
         match self.write_table(&doc, None) {
             Ok(_) => {
@@ -2430,6 +2437,28 @@ mod tests {
     ///
     /// The fixture is valid on its own — asserted first, so a cell whose arms
     /// all fire for the wrong reason cannot pass.
+    /// R-6.5a.10: a schema-2 document — everything M6.2 wrote — reads with
+    /// `archived_at` absent, and the new stamp is bounded on write exactly as
+    /// a message's `created_at` is.
+    #[test]
+    fn a_schema_two_table_document_reads_with_archived_at_absent_and_a_bound_is_kept_on_write() {
+        let json = r#"{"schema":2,"id":"old","name":"old","created_by":"red@t.test",
+            "created_at":1789000000,"players":2,"colors":["Red","Blue"],"start_seat":0,
+            "seats":[{"kind":"human","user":"red@t.test"},{"kind":"human","user":"blue@t.test"}],
+            "keeps":[null,null],"seed":7,"status":"dealing","turn":null}"#;
+        let doc: TableDoc = serde_json::from_str(json).expect("a schema-2 document reads");
+        assert_eq!(doc.schema, 2);
+        assert_eq!(doc.archived_at, None);
+        assert_eq!(check_shape(&doc), Ok(()), "and it is a shape this server still accepts");
+        let mut bad = doc.clone();
+        bad.archived_at = Some(crate::chat::MAX_CREATED_AT + 1);
+        let why = check_shape(&bad).unwrap_err();
+        assert!(why.contains("archived_at"), "{why}");
+        let mut fine = doc;
+        fine.archived_at = Some(crate::chat::MAX_CREATED_AT);
+        assert_eq!(check_shape(&fine), Ok(()), "the ceiling itself is allowed");
+    }
+
     #[test]
     fn every_shape_arm_refuses_with_the_sentence_it_promises() {
         let valid = || TableDoc {
@@ -2451,6 +2480,7 @@ mod tests {
             turn: None,
             lock: None,
             unlocked: Vec::new(),
+            archived_at: None,
         };
         assert_eq!(check_shape(&valid()), Ok(()), "the fixture itself is well formed");
 

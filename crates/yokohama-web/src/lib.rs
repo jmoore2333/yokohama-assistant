@@ -53,6 +53,7 @@ pub mod art;
 pub mod assets;
 // ---- end server ----
 pub mod api;
+pub mod archive;
 pub mod chat;
 pub mod client;
 pub mod explain;
@@ -314,8 +315,21 @@ pub struct AppState {
 #[cfg(feature = "server")]
 impl AppState {
     /// Backed by a directory on disk.
-    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Self {
-        Self::with_store_and_chat(Arc::new(FsStore::new(store::default_dir())), identity, chat)
+    /// The production state: the file store, and the archive the environment
+    /// names (M6.5a, R-6.5a.9) — `YOKOHAMA_WEB_ARCHIVE_DIR` unset is no archive;
+    /// set to a directory that cannot be created is an `Err` `main` exits 1
+    /// on, naming the variable, the shape `ChatConfig::from_env` already has.
+    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Result<Self, String> {
+        let archive: Arc<dyn archive::Archive> = match archive::DirArchive::from_env()? {
+            Some(dir) => Arc::new(dir),
+            None => Arc::new(archive::NoArchive),
+        };
+        Ok(Self::with_store_chat_and_archive(
+            Arc::new(FsStore::new(store::default_dir())),
+            identity,
+            chat,
+            archive,
+        ))
     }
 
     /// Backed by memory, in `claimed` mode — the mode every test drives with a
@@ -358,6 +372,18 @@ impl AppState {
         identity: identity::IdentityMode,
         chat: chat::ChatConfig,
     ) -> Self {
+        Self::with_store_chat_and_archive(store, identity, chat, Arc::new(archive::NoArchive))
+    }
+
+    /// The one constructor that builds anything — the store, the identity door,
+    /// the chat facts and the archive all given (M6.5a). Every constructor above
+    /// is this one with something chosen for it; `in_memory*` keep no archive.
+    pub fn with_store_chat_and_archive(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+    ) -> Self {
         let rules = Arc::new(Rules::standard());
         let signals = Arc::new(signal::Signals::default());
         Self {
@@ -368,6 +394,7 @@ impl AppState {
                 chat,
                 signals.clone(),
                 Arc::new(table::now_unix),
+                archive,
             ),
             identity,
             heartbeat: HEARTBEAT,

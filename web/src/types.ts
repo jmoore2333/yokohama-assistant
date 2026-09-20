@@ -453,6 +453,10 @@ export interface Health {
   /** Which change transport `usePolled` reads: the stream, or the held
    *  request (M6.3). A deployment fact, not a preference. */
   signal: "sse" | "held";
+  /** Which archive this deployment writes finished and abandoned games to
+   *  (M6.5a): none, a directory beside the store, or (M6.5c) a bucket. Read at
+   *  boot; the Abandon control's label is what reads it. */
+  archive: "off" | "dir" | "r2";
   /** Whether the house chat answers (M6.4). Off, this client draws no lobby
    *  panel and asks for nothing. */
   lobby_chat: boolean;

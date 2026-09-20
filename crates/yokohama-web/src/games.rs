@@ -24,6 +24,7 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
+use crate::archive::{Archive, NoArchive};
 use crate::chat::{ChatConfig, ChatLimits};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
@@ -216,6 +217,11 @@ pub struct Games {
     /// message. Nothing here reads a clock back, and nothing compares two
     /// readings, so a host is free to hand over a constant.
     pub(crate) clock: Clock,
+    /// Where a finished or abandoned game's record and table document go
+    /// (M6.5a, R-6.5a.9) — `NoArchive` for a host that keeps none, the
+    /// directory on the NAS, M6.5c's bucket. Asked at the two sites of
+    /// R-6.5a.11 and nowhere else.
+    pub(crate) archive: Arc<dyn Archive>,
 }
 
 /// How many `Repl`s stay resident.
@@ -253,6 +259,7 @@ impl Games {
             ChatConfig { lobby: true, limits },
             Arc::new(NoSignal),
             Self::ticking_clock(),
+            Arc::new(NoArchive),
         )
     }
 
@@ -283,6 +290,7 @@ impl Games {
         chat: ChatConfig,
         signal: Arc<dyn Signal>,
         clock: Clock,
+        archive: Arc<dyn Archive>,
     ) -> Self {
         Self {
             rules,
@@ -297,7 +305,15 @@ impl Games {
             house_lock: Mutex::new(()),
             chat,
             clock,
+            archive,
         }
+    }
+
+    /// This `Games` with a different [`Archive`] — the builder step a cell
+    /// that watches a put reaches for, as [`Games::with_clock`] is for a stamp.
+    pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
+        self.archive = archive;
+        self
     }
 
     /// This `Games` with a different [`Clock`].
@@ -1639,6 +1655,7 @@ pub(crate) mod test_support {
             crate::chat::ChatConfig::default(),
             signals.clone(),
             Games::ticking_clock(),
+            Arc::new(crate::archive::NoArchive),
         );
         (games, signals)
     }

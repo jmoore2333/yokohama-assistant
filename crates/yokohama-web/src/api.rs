@@ -223,6 +223,10 @@ pub struct Health {
     /// hold a request against `…/events?wait=25`, and it cannot tell from a
     /// successful call to anything else.
     pub signal: &'static str,
+    /// Which archive this deployment writes finished and abandoned games to
+    /// (M6.5a, R-6.5a.13): `"off"`, `"dir"`, or M6.5c's `"r2"`. The client's
+    /// Abandon control reads it for its label, and nothing else does.
+    pub archive: &'static str,
     /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
     /// draws no lobby panel and asks nothing.
     pub lobby_chat: bool,
@@ -240,6 +244,7 @@ pub fn health(games: &Games, host: &Host) -> Health {
         rules_hash: games.rules().content_hash(),
         identity: host.identity_name,
         signal: host.signal_kind,
+        archive: games.archive.kind(),
         lobby_chat: games.chat.lobby,
         chat_keep: games.chat.limits.keep.map(|n| n as u64),
         chat_text: games.chat.limits.text as u64,

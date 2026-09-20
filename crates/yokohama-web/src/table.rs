@@ -209,6 +209,14 @@ pub struct TableDoc {
     /// [`crate::tables::UNLOCKED_CAP`] and requires each entry to parse.
     #[serde(default)]
     pub unlocked: Vec<String>,
+    /// When this table was archived (M6.5a, R-6.5a.10) — unix seconds from the
+    /// layer's clock — or `None`. Set at game over when the put lands and at an
+    /// abandon whose put lands; **unset after a failed put at game over is what
+    /// says a retry is owed** (umbrella R-6.5.4). Additive with a default, so a
+    /// schema-2 document reads with `None`; `TABLE_SCHEMA` is 3 since this
+    /// field. Bounded in `tables::check_shape` like every other stamp.
+    #[serde(default)]
+    pub archived_at: Option<u64>,
 }
 
 impl TableDoc {
@@ -451,6 +459,7 @@ mod tests {
             turn: None,
             lock: None,
             unlocked: Vec::new(),
+            archived_at: None,
         }
     }
 
@@ -526,6 +535,7 @@ mod tests {
             turn: None,
             lock: None,
             unlocked: Vec::new(),
+            archived_at: None,
         }
     }
 
