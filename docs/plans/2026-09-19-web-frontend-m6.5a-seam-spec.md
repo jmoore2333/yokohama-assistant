@@ -83,7 +83,7 @@ it.
 | `chat.rs:145-147`, `identity.rs:56` | `std::env::var` | `server`, §2.3 |
 | `identity.rs:20-22`, `:149-163` | the axum extractor | `server` |
 | `tables.rs:213` (`create` `:697`, `:709`; `finalize` `:1195`) | `draw_seed` → `SeedSchedule::from_os_entropy` | unchanged; `getrandom`'s `js` feature, §2.5 |
-| `tables.rs:1565`, `:1576`, `:1587` | `eprintln!` in `list` | unchanged (a discarded write on the target) |
+| `tables.rs:1565`, `:1576`, `:1587` | `eprintln!` in `list` | unchanged — VERIFIED on the target: a `wasm32-unknown-unknown` module calling `eprintln!` has no imports and returns normally under Node (the write is discarded, nothing traps) |
 | `games.rs:21`, `tables.rs:21`, `store.rs:213`, `:399` | `std::sync::{Arc, Mutex}` | unchanged (single-threaded on the target; compiles) |
 
 `Cargo.toml` enables six tokio features; `net`, `signal`, `rt-multi-thread` fail the target,
@@ -152,7 +152,16 @@ clears `written`/`live`/`chat_last` and `signals.end`.
   extractor, converts the request, calls `dispatch`, and writes the response — so the 74
   route cells and the corpus drive the layer's dispatcher through the only axum code that
   remains. Unknown path → the 404 `fallback` (`lib.rs:2104`) answers today; known path with a
-  wrong method → axum's 405 shape, reproduced. **Why Level 2 now and not per-route functions
+  wrong method → axum's 405 shape, reproduced. **HEAD is GET with the body removed**: axum's
+  `get` routes serve HEAD that way today (its own doc says so, `routing/method_routing.rs:55`),
+  no fixture and no client sends one, and a proxy or health checker might — so the adapter maps
+  HEAD to the GET arm and strips the body, and a cell pins `HEAD /api/health` at 200 with an
+  empty body through the adapter. **Identity is the host's sentence, carried, not the layer's,
+  reproduced**: `dispatch` takes `identity: Result<&User, &str>`; a game route given `Err(msg)`
+  answers 401 with `msg` in this API's shape, and the axum adapter passes `resolve`'s own
+  message (`identity.rs:127-145`, one sentence per mode) — so the 401 sweep stays byte-equal
+  through the adapter and a direct-dispatch cell pins the same text. What an identity-less
+  host passes is that host's spec (M6.5b). **Why Level 2 now and not per-route functions
   alone**: M6.5b's browser host is "one function, request-in / response-out over the same
   method, path, query and body" (umbrella §2.5), and building that dispatcher HERE means the
   corpus proves it under axum before any second host exists; the alternative leaves three
@@ -187,11 +196,14 @@ clears `written`/`live`/`chat_last` and `signals.end`.
   inert on native, version-pinned (0.3 renames the feature). The line proves the DEPENDENCY
   fence (no axum, no mio); §6.2's cell proves the PLATFORM-CALL fence; neither is the
   other's fallback.
-- **R-6.5a.8 — the signal is a trait.** `signal::Signal { bump, bump_table, bump_house_chat,
-  end }` on `Games` as `Arc<dyn Signal>`; `Signals` (the tokio watch channels, unchanged in
-  behaviour) implements it under `server`; `NoSignal` is the unconditional no-op. The eight
-  bump sites call the trait and do not move. `subscribe`/`subscribe_house` stay on `Signals`
-  and are reached by the transport routes only. This is room plan R-P9's third seam made a
+- **R-6.5a.8 — the signal is a trait.** `signal::Signal { fn bump(&self, id: &str); fn
+  bump_table(&self, id: &str); fn bump_house_chat(&self); fn end(&self, id: &str) }` — four
+  methods over `&str` and nothing else, exactly the four signatures `Signals` has at HEAD
+  (`signal.rs:68-87`), so the trait is unconditional while `Bump`, `House`,
+  `subscribe`/`subscribe_house` and `senders` stay on `Signals` under `server`, reached by the
+  transport routes only. On `Games` as `Arc<dyn Signal + Send + Sync>`; `Signals` (the tokio
+  watch channels, unchanged in behaviour) implements it under `server`; `NoSignal` is the
+  unconditional no-op. The eight bump sites call the trait and do not move. This is room plan R-P9's third seam made a
   type, and the object host implements it in M6.5c.
 - **R-6.5a.9 — the archive is a trait with two implementations this cycle** (umbrella
   R-6.5.4, R-6.5.5, O-9): `archive::Archive { fn put(&self, why: Why /*Over | Abandoned*/,
@@ -277,10 +289,11 @@ clears `written`/`live`/`chat_last` and `signals.end`.
 
 ### 2.2 `dispatch`, precisely
 
-- Identity is resolved BY THE HOST and passed in: the axum adapter runs today's extractor and
-  passes `Some(user)` or the 401 it would have raised (the extractor's own sentence, so the
-  401 sweep is unchanged); a host with no identity passes `None`, which every game route
-  refuses exactly as the extractor does.
+- Identity is resolved BY THE HOST and passed in as `Result<&User, &str>`: the axum adapter
+  runs `resolve` and passes the user or its per-mode sentence; every game route answers an
+  `Err` as the 401 the extractor raises today, byte-equal. The public four take no identity
+  (`me` reports the `Err` as `user: null` exactly as `lib.rs:384-390` does).
+- HEAD reaches the GET arm and leaves with an empty body (R-6.5a.3).
 - `me` answers from `host.identity_name` and the passed user; `health` from `Games` (rules
   hash, chat facts, `archive.kind()`), `host.signal_kind` and `host.identity_name`, plus the
   crate version and `SEMANTICS_REV`.
@@ -361,8 +374,9 @@ only manifest line that mentions wasm.
 ### 6.1 Cells this cycle adds (names indicative; the plan fixes them)
 
 - `api.rs`: `the_dispatcher_answers_what_the_router_answers` (in `wire_fixtures`, R-6.5a.14);
-  a 405 for a known path under a wrong method; the JSON 404 for an unknown path; the three
-  rejection pins against axum's own text (R-6.5a.4).
+  a 405 for a known path under a wrong method; the JSON 404 for an unknown path; HEAD on a GET
+  route at 200 with an empty body; the 401 for an `Err` identity byte-equal to `resolve`'s
+  sentence in all three modes; the three rejection pins against axum's own text (R-6.5a.4).
 - `games.rs`/`tables.rs`: `Games::with_clock` pins `created_at` (§3); `NoSignal` answers every
   route (§2.4); at-over archives once and never twice; at-over failure answers 200 and logs;
   abandon of a playing table with events archives once then deletes; abandon of an open or
@@ -413,7 +427,11 @@ reason.
 12. The clock seam bypassed (`now_unix` called directly) → `with_clock`'s pin red AND §6.2
     red, two catchers.
 13. A second `Why` path in `DirArchive` not derived from `archive::paths` → the layout cell red.
-14. The corpus regenerated with a changed `ClientState` → non-empty diff, read and refused.
+14. The adapter answering HEAD with 405 → the HEAD cell red.
+15. The dispatcher refusing an `Err` identity with a sentence of its own → the 401 pin red.
+
+(Regenerating the corpus and reading the diff is a DISCIPLINE, §7, not a mutation catcher —
+the same note the adversarial read made about the umbrella's §4.)
 
 ---
 
