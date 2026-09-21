@@ -64,10 +64,13 @@ Every one of these was measured on 2026-09-21 on the owner's M5 workstation and 
   Nine seeds per timing, median reported, `wasm-opt` 132, `wasm-bindgen` 0.2.128. Builds ran under
   20–35 s and each `wasm-opt` pass under 4 s. **The handover's §2 figure of 2.84 MB / 758 KB is the
   `release` row and stays true of HEAD**; the gzip differs from its 758 KB because this reading used
-  `gzip -9`.
+  `gzip -9`. The raw figure also differs from the close's 2,842,550 B by 109 bytes for the same
+  asset: two builds of the same source, not two different artifacts, and the close records it as
+  build variance so the two figures do not read as a contradiction.
 - **The release is about 14.6 MB today, not "about 8 MB".** The charter's estimate predates the
   help pictures. Measured: art 7.4 MB (**131 WebP files plus `manifest.json`**, not the 132 WebP
-  files `CLAUDE.md` and the handover both say — the 132nd file is the manifest), help 4.2 MB (five
+  files `CLAUDE.md` and the handover both say — the 132nd file is the manifest; **`CLAUDE.md` and
+  the handover both need amending at the close**), help 4.2 MB (five
   1710×869 PNGs, 611–954 KB each), the module 2.84 MB, the client bundle 329 KB, its CSS 35 KB, the
   Worker chunk 13 KB, `index.html` 1.4 KB. §2.7 brings it to about 10 MB.
 - **A finished game is small.** The committed 595-event pair is 54,103 B for the record and 554 B
@@ -150,7 +153,12 @@ Every one of these was measured on 2026-09-21 on the owner's M5 workstation and 
   is a fairly straightforward mobile browser comptibility test."* Recorded, not gated.
 - **R-6.5b2.18 — the fonts are self-hosted.** The page loads Fraunces and JetBrains Mono from
   Google's CDN, so an offline launch silently loses its typefaces. Both are Open Font License, so
-  this is permitted outright and is the only way the release is self-contained.
+  this is permitted outright and is the only way the release is self-contained. **The licence text
+  travels with the files**: each family's OFL copy committed beside it and named in `NOTICE`, with
+  `ASSETS.md` pointing at the path, since that file today lists only what carries NO grant and a
+  granted third-party asset needs its grant recorded where a reader will look. The
+  `<link rel="icon" href="data:,">` in `index.html` is superseded by the manifest's icons and the
+  `apple-touch-icon`, and goes.
 
 ---
 
@@ -178,8 +186,14 @@ makes a deployment with no Access in front of it a supported shape rather than a
 every later `fetch` to a protected path carries it. "Play with others" is therefore a plain link
 and never a `fetch`, so the login is an ordinary navigation the browser already knows how to do.
 **The service worker never intercepts it** (§2.3) and the SPA fallback must not answer it, so it is
-a real route and not a path that falls through to `index.html`. Under multiplayer off (§3.1) it is
-not served at all, because there is nothing behind it to enter.
+a real route and not a path that falls through to `index.html`.
+
+**It is served whenever ANY protected route is configured**, which is multiplayer on OR an archive
+on — not multiplayer alone. R-6.5b2.4 is about the multiplayer routes not existing; the turnstile is
+about acquiring the cookie for whatever protected route does. The first draft of this section tied
+it to multiplayer and thereby pointed §2.6's outbox remedy and R-6.5b2.14 at a 404 on precisely the
+deployment §3.1 describes, single player free and anonymous with a door to pass once to contribute
+a save. With nothing protected at all it is not served, and the door draws no link.
 
 **An expired session is read, not guessed.** Every call `api.ts` makes gains
 `X-Requested-With: XMLHttpRequest`, measured in §0.3 as the one header that turns Access's redirect
@@ -213,11 +227,22 @@ Three routes come off the first-screen path, and two of them disappear rather th
   (`api.rs:323`), is deployment-independent, and the corpus replay already proves both hosts emit
   it byte-identically. The boot's server-first-with-a-bound chain (`App.tsx:740`) becomes
   local-first for the door and for any local game.
-- **`/api/health` is not read at the door.** Every fact it carries — the transport, the chat caps,
-  the identity mode, whether an archive exists — is a multiplayer or past-the-door concern. It is
-  read on entering multiplayer, and **the last answer is remembered** (one key, the shape of
-  `chatFold.ts`) so an offline launch knows what the deployment was like instead of assuming the
-  `archive: "off"` default §0.3 measured.
+- **`/api/health` is not read at the door, but it IS read before the archive fact is used.** Every
+  fact it carries — the transport, the chat caps, the identity mode, whether an archive exists — is
+  a multiplayer or past-the-door concern, so the door itself asks nothing. **The last answer is
+  remembered** (one key, the shape of `chatFold.ts`) and the read is made at three points: entering
+  multiplayer, a local game reaching game over, and Abandon being clicked on a local game. It is
+  bounded the way the labels read already is, and a browser that has an answer never asks again
+  unless it is stale.
+
+  **This is not a weakening of R-6.5b2.7 and the reason matters.** `archiveKind()` drives the whole
+  LOCAL channel — the send control's render condition (`App.tsx:1719`), "Abandon and save"
+  (`Abandon.tsx:110`) and the outbox's entry condition (§2.6) — so a spec that removed the boot read
+  and gave the local channel nothing would make §0.3's measured bug permanent for ONLINE sessions
+  too: a single-player visitor would never learn `archive: "dir"`, would see no send control, and
+  would have Abandon delete silently. Browsing and playing still cost zero Worker invocations; the
+  cost is at most one per browser, at the moment a game ends, on a person who has already decided
+  to keep something.
 
 After the first visit the service worker serves the shell, the bundle, the module and the art from
 the cache, so a returning single-player visitor touches the network not at all.
@@ -265,6 +290,22 @@ hardest sentence is satisfied by the choice of API rather than by a rule anyone 
 `dist` and a worker registered there would serve a stale module tree. `/sw.js` must 404 when absent
 rather than fall through to `index.html`; `assets.rs` already refuses the SPA fallback for `.js`
 paths, and a cell pins that it still does for this one.
+
+**`/sw.js` is served `Cache-Control: no-store`.** `assets.rs`'s rule sets a header on `/assets/`
+and on nothing else, so today this file would go out with no freshness header at all and a browser
+may heuristically cache it. Update detection is a byte comparison of this one file, so a cached copy
+delays every update by the cache window. It is the one path besides `/assets/` that gets a header,
+and the existing cell that asserts "hashed assets are immutable and nothing else carries one" is
+widened rather than weakened.
+
+**The e2e must not register it by accident, and that is a design decision rather than a discovery.**
+`npm run e2e` runs `build:client`, which is a production build, so without a rule every one of the
+existing 46 cells would register a worker and start a ten-megabyte precache per context, and every
+reload-based cell would start reading a cache-first navigation. Registration therefore consults a
+flag an `addInitScript` sets, a shared fixture turns it OFF for every spec, and the offline spec
+turns it on. **The convention is held by a test and not by memory**, in the shape
+`every_spec_can_skip.spec.ts` already uses: a spec that neither takes the fixture nor opts in is
+named at run time.
 
 **The install is visible and bounded.** The door shows it happening and says "ready to play
 offline" only when the release is complete. When `navigator.connection.saveData` is set, the art
@@ -325,10 +366,16 @@ the archive route and the IndexedDB rows already follow.
 
 **Validation lives in Rust and is shared with the archive route.** `archive_post` already
 strict-replays a record and checks `TableDoc::agrees_with`; that becomes one function two callers
-use, so a backup and an upload cannot disagree about what a valid game is. Two new `yokohama-wasm`
-exports wrap it: `backup(pairs_json) -> envelope_json` stamps and wraps what the Worker read, and
-`restore_read(envelope_json) -> report_json` validates and returns a per-game verdict with the
-player count, the event count and whether it is finished.
+use, so a backup and an upload cannot disagree about what a valid game is. **One** new
+`yokohama-wasm` export wraps it: `restore_read(envelope_json) -> report_json` validates and returns
+a per-game verdict with the player count, the event count and whether it is finished.
+
+**Writing the envelope is the PAGE's job and deliberately not the module's.** The page already
+holds both documents as strings — `localPair` is what the archive send reads — so building the
+envelope is a wrapper around strings it has, not a parse. The reason to keep it out of wasm is the
+case that matters most: a module that fails to load is exactly when a player most needs their games
+out, and a `backup` export would die with it. Restore needs the engine and cannot be moved; backup
+does not and is not.
 
 **The two failures get different answers**, which is R-6.5b2.12:
 
@@ -342,6 +389,12 @@ player count, the event count and whether it is finished.
 writes only where nothing is present. Present and byte-identical reads "already on this device";
 present and different **refuses and names the row**. So a restore run twice is harmless, which is
 the property that makes it usable when you are not sure the first one worked.
+
+**A restored cross-rev game must actually LIST, and that is a separate claim from the report.**
+M6.5b's broken-save screen is a rev-mismatched record under a table document written at the CURRENT
+schema; a restored cross-rev pair may be foreign on both sides, and `TableDoc`'s shape check is what
+decides whether the row appears at all. A cell restores such a pair on a fresh profile and asserts
+the row is IN the listing with its reason, not merely that `restore_read` called it unplayable.
 
 **The raw `<id>.json` export stays exactly as it is**, because the terminal loads that and only
 that. Two controls, each saying in a few words what it is for.
@@ -357,6 +410,11 @@ reached the archive, and when it was last tried.
 - **Entered** when a local game ends and the deployment is known to keep an archive and the upload
   does not land. The reason is recorded and shown, because **"no connection" and "not signed in"
   are different problems** and only the second has something the player can do about it now.
+- **"Not signed in" names BOTH doors under `claimed`.** Passing `/enter` gets the Access cookie;
+  `POST /api/archive` then still refuses in this API's own JSON shape until the in-app sign-in has
+  supplied `X-Yokohama-Claimed-User`. So the remedy is mode-aware, read off `/api/health.identity`:
+  under `claimed` it is two steps and says so, under `cf-access` and `worker` the turnstile is the
+  whole of it.
 - **Drained** on the browser's `online` event, at the next launch, and on the player's own button.
   **Deliberately not the Background Sync API**, which Safari does not implement: a portable
   mechanism beats one that works on one platform.
@@ -364,9 +422,13 @@ reached the archive, and when it was last tried.
   the same bytes and the client already treats 200 and 201 alike.
 - **Never authorises a delete.** Only a landed upload does, which is `Abandon`'s existing rule.
 
-**Abandon stays deliberate.** Offline it refuses with a sentence that says the game has not been
-saved anywhere else, and offers two named choices: back it up to a file, or abandon without saving.
-It does not join the outbox and it does not delete quietly — the behaviour §0.3 measured at HEAD.
+**Abandon stays deliberate, and "unknown" is not "off".** Three states, not two. A deployment
+KNOWN to keep no archive deletes as it always has, which is correct and is not a bug. A deployment
+known to keep one sends first and keeps the game if the send fails, which is HEAD's behaviour and is
+kept. **Unknown triggers the bounded health read at the click**: if it answers, the answer decides;
+if it does not answer, Abandon REFUSES and offers two named choices, back it up to a file or abandon
+without saving. It never joins the outbox and it never deletes quietly, which is the behaviour §0.3
+measured at HEAD and the one thing in this area that must not regress.
 
 **Uploading requires passing the door** (R-6.5b2.14). A pending game whose reason is "not signed
 in" offers the same `/enter` link the door does.
@@ -425,11 +487,13 @@ not trip them and a dependency that doubles the module does.
 | | what it is | absent or off |
 |---|---|---|
 | `dev-identity` | a cargo feature on `yokohama-web`, in `default` beside `server` | `YOKOHAMA_WEB_IDENTITY=claimed` **exits 1 naming the feature**; `cf-access` and `worker` unaffected. A public build turns it off with `--no-default-features --features server`, which is the one spelling that keeps the server half and drops this |
-| `YOKOHAMA_WEB_MULTIPLAYER` | `on` (default) or `off` | the game, chat and stream routes and `/enter` are **not served**; `/api/health` reports `multiplayer: false`; the door draws single player only. **`/api/archive` is NOT one of them** — it is governed by its own variable below, so a single-player deployment can still collect saves |
+| `YOKOHAMA_WEB_MULTIPLAYER` | `on` (default) or `off` | the game, chat and stream routes are **not served**; `/api/health` reports `multiplayer: false`; the door draws single player only. **`/api/archive` is NOT one of them** — it is governed by its own variable below, so a single-player deployment can still collect saves |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | unchanged from M6.5a | no archive; the outbox never enters |
 
-They are **independent**. Multiplayer off with an archive on is a coherent deployment: play single
-player free and anonymous, pass the door once to contribute a save. A bad value for any of them
+They are **independent**, and `/enter` follows their OR rather than either one: it is served when
+multiplayer is on or an archive is configured, and only a deployment with nothing protected at all
+does without it. Multiplayer off with an archive on is a coherent deployment: play single player
+free and anonymous, pass the door once to contribute a save. A bad value for any of them
 exits 1 naming the variable, which is `main.rs`'s existing rule.
 
 `YOKOHAMA_WEB_MULTIPLAYER=off` removes the routes from the layer's route TABLE, so an unknown path
@@ -507,7 +571,10 @@ Additive and small, which is the property to check at review:
 - That the archive route and the envelope validator are the same function over one pair.
 - The multiplayer switch: every protected pattern 404s under it, every public one answers.
 - The `dev-identity` refusal, by name.
-- `GET /enter` is a 302 to `/#/lobby`, and `/sw.js` 404s when absent rather than answering HTML.
+- `GET /enter` is a 302 to `/#/lobby`; it is SERVED with multiplayer off and an archive on, and
+  absent only when nothing is protected.
+- `/sw.js` 404s when absent rather than answering HTML, and is served `no-store` while `/assets/`
+  keeps `immutable` and nothing else carries a header.
 - `/api/art`'s body and `assets/art/manifest.json` deserialize to the same `ArtManifest`.
 - `yokohama-wasm`'s two new exports, native cells under the existing test lock.
 
@@ -524,6 +591,9 @@ Additive and small, which is the property to check at review:
 - The outbox state machine and its two reasons.
 - Restore's report rendering, including the clash naming its row.
 - Storage reporting across granted, denied and unavailable.
+- The archive fact: unknown triggers the read; a known `"off"` deletes on Abandon; a known archive
+  sends first; unknown with no answer REFUSES. The four arms are the finding §9 records.
+- The outbox's remedy under `claimed` names two steps and under `cf-access` one.
 
 ### 6.3 Playwright (`npm run e2e`)
 
@@ -536,7 +606,8 @@ This is where the cycle's claims actually live. Six cells, and the first is the 
 3. **The update.** A second release served; the offer appears, the app does NOT switch until the
    reload is clicked, and the old cache is gone after activation.
 4. **Restore on a fresh profile.** A new context with empty storage restores the envelope and plays
-   the restored game.
+   the restored game. A cross-rev pair restored the same way **appears in the listing** with its
+   reason, which is a different claim from the report calling it unplayable.
 5. **The clash.** A restore over a present, different game refuses and names the row; a restore of
    identical bytes reads "already on this device".
 6. **The outbox.** Finish a game offline, come back online, and the upload lands with nobody
@@ -558,7 +629,9 @@ entry dropped from the list; the install's all-or-nothing turned into best-effor
 called on install; `/api/*` allowed into the cache; the cache name pinned to a constant instead of
 the digest; the clash rule turned into an overwrite; a rev-mismatched record rejected instead of
 kept; the outbox draining on a failed send; Abandon deleting after a failed upload; the
-`X-Requested-With` header removed; the multiplayer switch leaving one route served.
+`X-Requested-With` header removed; the multiplayer switch leaving one route served; `/enter` tied to
+the multiplayer switch alone; the archive fact's lazy read removed so `archiveKind()` stays `"off"`;
+Abandon treating "unknown" as "off"; `/sw.js` losing its `no-store`.
 
 ---
 
@@ -587,6 +660,12 @@ kept; the outbox draining on a failed send; Abandon deleting after a failed uplo
   wait a week.
 - **The e2e proves the mechanism in Chromium.** The phone is the only reading on WebKit and it is
   one device, by hand, once.
+- **The expired-session read covers the STREAM too, and that is a gain rather than a gap.** A
+  review of this spec proposed carrying "`EventSource` cannot send `X-Requested-With`, so an expired
+  Access session mid-game loops against 302s" as a non-claim. It rests on a false premise: this
+  client has never used `EventSource` — `sse.ts:102` is a `fetch` and the file's own first paragraph
+  says why — so the stream carries the header like every other call and an expired session mid-game
+  becomes the same readable 401. What was offered as a defect is closed by the same line of §2.1.
 - **Inherited and untouched**: the vs-bot gate livelock, the e2e `CAP = 4000`, `walk.json`'s
   419 KB pretty-printed diff, "who starts" on the local form, and nothing in CI building the
   self-host image.
@@ -600,5 +679,47 @@ kept; the outbox draining on a failed send; Abandon deleting after a failed uplo
 - `cf-access` or another identity method in place of `claimed`, which is what makes a path-scoped
   door fail closed.
 - The archive moving to R2, inheriting this cycle's outbox and the existing layout function.
+- **The SPA-fallback cells must be re-proven on the Worker.** `/sw.js` 404ing rather than answering
+  HTML, and `/enter` reaching the origin rather than the fallback, are proven here against axum's
+  own map. Workers' static assets have their own `not_found_handling`, so the same two properties
+  are a different mechanism there and a green cell in this cycle is not evidence about that one.
 - The measurements the umbrella's §6.1 still owes: cold replay, a whole bot turn, `why` and the
   archive replay inside a live Free-tier object.
+
+---
+
+## 9. What the review changed (so a sentence can be traced to its reason)
+
+An adversarial read of the first draft, 2026-09-21, before the plan. Its verdict was that the
+mechanism held and the honesty list was sound; what it found was one contradiction I introduced in
+my own self-review and three execution traps that would have surfaced mid-cycle.
+
+- **The contradiction, and it was mine.** Making the archive independent of the multiplayer switch
+  (§3.1) and tying `/enter` to that switch (§2.1) were two edits made in the same pass, and together
+  they pointed the outbox's remedy at a 404 on exactly the deployment the spec describes. `/enter`
+  now follows the OR of the two.
+- **The archive fact had no read point.** Removing the boot's health read to satisfy R-6.5b2.7 left
+  `archiveKind()` at its `"off"` default forever, which would have made §0.3's measured bug
+  permanent for ONLINE single-player sessions — no send control, and Abandon deleting silently.
+  §2.2 now names three lazy read points and §2.6 adds the three-state Abandon rule, where "unknown"
+  is not "off".
+- **"Not signed in" named one door of two.** Under `claimed` the turnstile is not enough; the
+  in-app sign-in is the second step. The remedy is mode-aware.
+- **The service worker would have run in all 46 existing e2e cells**, since `build:client` is a
+  production build. §2.3 makes the fixture and its structural guard a design decision.
+- **`storageState` cannot carry what cell 2 is about.** §6.3 names `launchPersistentContext`.
+- **The profile move has three call sites and an output path that moves with it**, the Dockerfile's
+  own wasm build among them. §2.7 names all of them and rules on `build:wasm:debug`.
+- **Accepted as an improvement on the design, not a correction to it**: `backup` leaves wasm for the
+  page. A module that will not load is exactly when a player most needs their games out, and an
+  export living inside it would die with it. Only `restore_read` needs the engine.
+- **Rejected, with evidence**: the `EventSource` non-claim (§7). The client reads the stream with
+  `fetch` and has since M6.3.
+- Smaller, all taken: `/sw.js` served `no-store`; a cell that a restored cross-rev game LISTS and
+  not merely that the report calls it unplayable; the OFL texts committed beside the fonts and named
+  in `NOTICE`; the superseded `data:,` icon; the corpus replay's new exemption; the 109-byte build
+  variance and the `CLAUDE.md` art-count debt recorded in §0.3; the Workers `not_found_handling`
+  re-proving carried to §8.
+- **Checked and found not to bite**: the source scanner's per-item rule, which keys on regions
+  opened by the literal `server` attribute and is blind to a `dev-identity` gate elsewhere. The one
+  shape that would trip it is named in §2.7.
