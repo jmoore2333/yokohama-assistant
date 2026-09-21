@@ -290,6 +290,11 @@ pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
 pub struct Multiplayer(pub bool);
 
 impl Multiplayer {
+    /// The variable's name, held here rather than written at each of its three
+    /// sites — the read, the refusal sentence and the cell that asserts the
+    /// refusal names it. A refusal that named a variable the reader's
+    /// environment does not have is worse than no refusal at all, and that is
+    /// exactly what a second spelling of this string would produce.
     pub const VAR: &'static str = "YOKOHAMA_WEB_MULTIPLAYER";
 
     /// The parse, split from the read so the unset case is testable without
@@ -354,6 +359,16 @@ pub struct AppState {
     /// which on THIS host are the same answer, because an axum deployment that
     /// offers no multiplayer plays nothing at all.
     pub multiplayer: Multiplayer,
+    /// Where the built client lives (M6.5b2), read from `assets::dist_dir()`
+    /// ONCE at construction rather than on every request that misses a route.
+    ///
+    /// A seam for the same reason the archive and the clock are seams: a cell
+    /// can arrange a `dist` the ROUTER really answers from, which is what makes
+    /// "the fallback refuses `/enter` rather than serving the shell" a claim a
+    /// mutation can break. The alternative was writing `YOKOHAMA_WEB_DIST` from
+    /// a test, and `identity::from_env_value`'s own doc is this crate's rule
+    /// against mutating the process environment under a threaded runner.
+    pub dist: std::path::PathBuf,
 }
 
 #[cfg(feature = "server")]
@@ -454,7 +469,14 @@ impl AppState {
             // deployment that existed before M6.5b2, and only `new` and
             // [`Self::with_multiplayer`] can say otherwise.
             multiplayer: Multiplayer(true),
+            dist: assets::dist_dir(),
         }
+    }
+
+    /// This state serving the client from `dist` (M6.5b2) — [`Self::with_clock`]'s
+    /// shape again, for the cells that need a real shell behind the fallback.
+    pub fn with_dist(self, dist: impl Into<std::path::PathBuf>) -> Self {
+        Self { dist: dist.into(), ..self }
     }
 
     /// This state with the multiplayer switch thrown (M6.5b2, R-6.5b2.4).
@@ -793,7 +815,7 @@ async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
 /// blames the decoder. Everything else is the client, with the SPA fallback
 /// `assets::serve` describes.
 #[cfg(feature = "server")]
-async fn fallback(uri: axum::http::Uri) -> Response {
+async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
     }
@@ -809,7 +831,7 @@ async fn fallback(uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/art/") {
         return art::serve(uri).await;
     }
-    assets::serve(uri).await
+    assets::serve(&state.dist, uri).await
 }
 
 /// The path the turnstile answers on, named once because TWO places read it and
@@ -867,8 +889,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         // to the adapter, plus `/api/games` itself, which has no `{*rest}` tail.
         .route("/api/{*rest}", axum::routing::any(adapter))
         .route("/api/games", axum::routing::any(adapter))
-        .with_state(state)
+        // BEFORE `with_state`, which `fallback` now needs: it reads the client
+        // root off the state rather than the environment (M6.5b2).
         .fallback(fallback)
+        .with_state(state)
 }
 // ---- end server ----
 
@@ -960,17 +984,19 @@ mod tests {
         app(Arc::new(AppState::in_memory().with_multiplayer(Multiplayer(multiplayer))))
     }
 
-    /// The router with the two protected things chosen INDEPENDENTLY, over a
-    /// `dist` the SPA fallback can really answer from (M6.5b2, spec §2.1).
+    /// The router with the two protected things chosen INDEPENDENTLY (M6.5b2,
+    /// spec §2.1) — the pair `/enter`'s OR condition is made of — serving its
+    /// client from `dist`, so the SPA fallback behind `/enter` is really live.
     ///
-    /// The dist root is a process-global — `assets::dist_dir` reads
-    /// `YOKOHAMA_WEB_DIST` — so it is set here from the caller's own directory
-    /// rather than left to whatever the checkout has. A `/enter` that fell
-    /// through to a fallback with no build behind it would answer 404 as well,
-    /// and the cell below would pass for the wrong reason; its own positive
-    /// control is what asserts this arrangement took.
+    /// The archive is an [`archive::DirArchive`] over a path that is never
+    /// created: `archive::is_on` reads its `kind()` and nothing in these cells
+    /// finishes a game, so the switch is thrown without touching a disk.
+    ///
+    /// Nothing here writes `YOKOHAMA_WEB_DIST`: the root is PASSED, through
+    /// `AppState::dist`, because a process-global written from one cell would
+    /// race `dist_dir`'s and `art_dir`'s reads in the cells scheduled beside it
+    /// — which is the rule `identity::from_env_value`'s own doc states.
     async fn app_with(multiplayer: bool, archive: bool, dist: &std::path::Path) -> Router {
-        std::env::set_var("YOKOHAMA_WEB_DIST", dist);
         let archive: Arc<dyn archive::Archive> = if archive {
             Arc::new(archive::DirArchive::new(dist.join("archive")))
         } else {
@@ -983,14 +1009,16 @@ mod tests {
                 chat::ChatConfig::default(),
                 archive,
             )
-            .with_multiplayer(Multiplayer(multiplayer)),
+            .with_multiplayer(Multiplayer(multiplayer))
+            .with_dist(dist),
         ))
     }
 
-    /// A `dist` directory with a real `index.html`, so the SPA fallback is LIVE
-    /// for whatever [`app_with`] is then asked about.
+    /// A `dist` directory holding a real `index.html` and NO `sw.js` — the two
+    /// facts the turnstile cell's probes are about. The caller removes it.
     fn dist_with_index_html() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("yokohama-enter-dist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("a dist directory");
         std::fs::write(root.join("index.html"), b"<!doctype html><title>Yokohama</title>")
             .expect("a shell");
@@ -4874,6 +4902,20 @@ mod tests {
             let (status, _) = raw(app.clone(), "GET", uri, Some(WHO)).await;
             assert_eq!(status, StatusCode::OK, "{uri} is public and still answers");
         }
+        // **And `/api/health` SAYS so** (spec §3.1): the two facts a client
+        // reads to decide what to draw follow what is served. `lobby_chat` is
+        // the one that used to lie — `/api/chat` is a row the switch removes,
+        // so a panel drawn on its word would have fetched a 404 for ever.
+        let (_, body) = raw(app.clone(), "GET", "/api/health", Some(WHO)).await;
+        let off: serde_json::Value = serde_json::from_slice(&body).expect("health is JSON");
+        assert_eq!(off["multiplayer"], false, "the switch is reported: {off}");
+        assert_eq!(off["lobby_chat"], false, "and so is the chat that went with it: {off}");
+        // The contrast, without which both could be constants: the SAME reads
+        // under the switch on.
+        let (_, body) = raw(app_with_multiplayer(true).await, "GET", "/api/health", Some(WHO)).await;
+        let on: serde_json::Value = serde_json::from_slice(&body).expect("health is JSON");
+        assert_eq!(on["multiplayer"], true, "{on}");
+        assert_eq!(on["lobby_chat"], true, "{on}");
         // `/api/art` is public too, and it is asserted by WHOSE answer it is
         // rather than by a status: the adapter answers it before the layer, and
         // under `cargo test` the working directory is this crate's, so the
@@ -4904,26 +4946,44 @@ mod tests {
     ///
     /// **"Absent" has to be ARRANGED, not merely unregistered.** `assets::serve`
     /// answers any extensionless path with `index.html`, so a `/enter` that is
-    /// simply not on the router falls through to the SPA fallback and answers 200
-    /// HTML. This cell therefore runs against a `dist` that HAS an `index.html`;
-    /// against an empty directory it would pass for the wrong reason, which is
-    /// what the positive control at the end asserts is not what happened.
+    /// simply not on the router falls through to the SPA fallback and answers
+    /// 200 HTML. This cell therefore runs against a `dist` that HAS an
+    /// `index.html` AND is the one the ROUTER serves from (`AppState::dist`):
+    /// delete `fallback`'s `/enter` arm and the second assertion below reads
+    /// the shell, which is what makes it a claim a mutation can break. Against
+    /// a dist the router never saw, every arm would pass unchanged.
+    ///
+    /// The root is passed and never configured — nothing here writes
+    /// `YOKOHAMA_WEB_DIST`.
+    ///
+    /// The same arrangement carries spec §6.1's other pin: an ABSENT `/sw.js`
+    /// is a 404 and never the shell, because it has an extension and the SPA
+    /// rule does not apply to it. Its anti-vacuity partner is the positive
+    /// control below, where an ordinary route on the SAME router does answer
+    /// the shell — so the 404 is the extension rule and not an empty build.
     #[tokio::test]
     async fn enter_follows_any_protected_route_and_not_multiplayer_alone() {
-        let dist = dist_with_index_html(); // a real shell, so the fallback is live
+        let dist = dist_with_index_html();
         let (status, _, _) =
             raw_location(app_with(false, /*archive*/ true, &dist).await, "GET", "/enter").await;
         assert_eq!(status, StatusCode::FOUND, "multiplayer off + archive on still needs the door");
+
         let nothing_protected = app_with(false, /*archive*/ false, &dist).await;
         let (status, _, body) = raw_location(nothing_protected.clone(), "GET", "/enter").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "nothing protected, no turnstile");
         assert!(!body.contains("<!doctype"), "and NOT the SPA fallback's index.html");
-        // The positive control: the fallback this cell is about really is live
-        // under the very same router, so the 404 above is `/enter`'s own answer
-        // and not an empty `dist`'s.
+        // Spec §6.1: `/sw.js` absent is a 404 and never HTML — a worker script
+        // answered as `index.html` registers and then fails to parse.
+        let (status, _, body) = raw_location(nothing_protected.clone(), "GET", "/sw.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "an absent worker script is a 404");
+        assert!(!body.contains("<!doctype"), "and never the shell: {body}");
+        // The positive control, which is what the two `<!doctype>` refusals
+        // above are measured against: the fallback on this very router IS live.
         let (status, _, body) = raw_location(nothing_protected, "GET", "/lobby").await;
         assert_eq!(status, StatusCode::OK, "the SPA fallback answers an ordinary route");
         assert!(body.contains("<!doctype"), "with the shell: {body}");
+
+        std::fs::remove_dir_all(&dist).expect("the dist is removable");
     }
 
     // ---- M4: the replay projection -------------------------------------------

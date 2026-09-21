@@ -109,8 +109,15 @@ fn cache_control(uri_path: &str) -> Option<&'static str> {
 /// HTML produces the error every SPA developer has debugged at least once: the
 /// browser reports a syntax error at `<!doctype`, and the real fault (a stale
 /// or missing build) is nowhere in the message.
-pub async fn serve(uri: Uri) -> Response {
-    serve_path(&dist_dir(), uri.path())
+///
+/// **The root is GIVEN since M6.5b2** (`AppState::dist`, read from
+/// [`dist_dir`] once at construction) rather than read from the environment per
+/// request. It is the seam the archive and the clock already are, and it is
+/// what lets the turnstile cell arrange a dist the ROUTER really answers from —
+/// without which "the fallback refuses `/enter` rather than serving the shell"
+/// could only be asserted about a dist the router never saw.
+pub async fn serve(root: &Path, uri: Uri) -> Response {
+    serve_path(root, uri.path())
 }
 
 /// [`serve`]'s whole body, over a root given rather than read from the

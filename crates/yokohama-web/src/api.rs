@@ -281,6 +281,12 @@ pub struct Health {
     pub archive: &'static str,
     /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
     /// draws no lobby panel and asks nothing.
+    ///
+    /// **Since M6.5b2 it is the chat switch AND [`Host::serves_games`]**, which
+    /// is the predicate the sentence above always claimed: `/api/chat` is one
+    /// of the rows the multiplayer switch removes, so a deployment with the
+    /// switch off served no house chat while reporting that it did — and a
+    /// client believing it drew a panel whose every fetch was a 404.
     pub lobby_chat: bool,
     /// Messages retained per chat document; `null` for `all` (R-6.4.8).
     pub chat_keep: Option<u64>,
@@ -303,7 +309,7 @@ pub fn health(games: &Games, host: &Host) -> Health {
         identity: host.identity_name,
         signal: host.signal_kind,
         archive: games.archive.kind(),
-        lobby_chat: games.chat.lobby,
+        lobby_chat: games.chat.lobby && host.serves_games,
         chat_keep: games.chat.limits.keep.map(|n| n as u64),
         chat_text: games.chat.limits.text as u64,
         multiplayer: host.multiplayer_offered,
