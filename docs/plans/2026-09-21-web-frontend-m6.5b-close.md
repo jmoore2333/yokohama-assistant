@@ -427,7 +427,7 @@ sentence; the Playwright "ONCE" comment; the CI line for the wasm crate's cells.
 
 ### 6.3 OWNER ITEMS
 
-1. **The deploy** — `0.5.0-m6.5b`, RUNBOOK §3.13 <!-- DEPLOY -->.
+1. **The deploy** — DONE at this close: `yokohama-web:0.5.0-m6.5b`, container `1a14939b…` started 2026-09-21 04:59:06Z, health `archive: dir`, the module served `application/wasm` and `immutable` through the tunnel (RUNBOOK §3.13).
 2. **The module's size**: 2.84 MB raw / 758 KB gzip, with no `[profile.release]` tuning
    (`opt-level`, `lto`, `codegen-units`, `wasm-opt`) anywhere in the workspace; the wave's
    `Cache-Control: immutable` on hashed assets makes it a once-per-release download, and a size
