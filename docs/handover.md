@@ -6,7 +6,26 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-21 (seventh session, the M6.5b EXECUTION, end to end): the session executed
+**Updated:** 2026-09-21 (eighth session, the M6.5b2 BRAINSTORM, SPEC and PLAN — no source moved):
+the session brainstormed **M6.5b2 "the front door, installable and offline"** with you from the
+M6.5b2 entry handover, took your eighteen rulings, wrote the spec and the eleven-task plan on the new
+branch `web-room-m6.5b2` (stacked on `web-room-m6.5b`, base `369a1f2`), had BOTH read adversarially,
+and revised both against fourteen findings. **The cycle grew a third leg during the brainstorm and it
+is the one the other two rest on: a FRONT DOOR** — offline is incoherent while the first fetch of the
+shell needs an Access login, so Access moves from the hostname to ONE application with six path
+destinations, `/enter` becomes a turnstile, and `#/` becomes a door with two ways on. Your rulings
+also made `claimed` a build feature a public build can compile out, made multiplayer a deployment
+switch whose OFF does not serve the routes at all, and reserved `yokohama.moore.nyc` for the Worker
+while the NAS moves to `yokohama-nas.moore.nyc`. **Two measurements are worth your eye**: single
+player on Workers Free costs ZERO invocations and is uncapped (static assets are free and unlimited),
+and the module drops from 2.84 MB to 1.17 MB raw for 6.6 ms on a bot turn. **The pre-implementation
+review caught two things that would have shipped broken and green** — Vite's manifest names neither
+the module nor the Worker chunk, so the precache generator and its own completeness test would have
+agreed on a release with no game engine in it; and five Access applications are five audiences, so a
+token minted at `/enter` would have authorized `/enter` alone. **Track 3 carries it; the entry
+artifact for execution is `docs/plans/2026-09-21-web-frontend-m6.5b2-execution-handover.md`.**
+
+The previous update, 2026-09-21 (seventh session, the M6.5b EXECUTION, end to end): the session executed
 all nine tasks of `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` under your ruling (1 and 9
 inline, 2–8 subagent-driven with Opus), took the Fable whole-branch review through ONE fix wave and
 its scoped re-review, ran spec §6.6's battery (19 caught, the one survivor closed by a test
