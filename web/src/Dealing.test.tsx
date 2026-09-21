@@ -487,6 +487,29 @@ describe("the dealing screen", () => {
     expect(waiting.textContent).not.toMatch(/@/);
   });
 
+  /** **A LOCAL table's deal draws NO chat panel** (M6.5b, spec §2.5: the house is
+   *  the server's and a local table has one person). The release's headed live
+   *  review found the panel here, accepting messages from `local@browser`, while
+   *  the game screen had none — so this is the cell that was missing: the local
+   *  host answers the deal, and the DOM holds no chat `log` region at all. */
+  it("draws no chat panel on a LOCAL game's deal", async () => {
+    const { stubWorker, currentWorker } = await import("./test/fakeWorker");
+    vi.stubGlobal(
+      "Worker",
+      stubWorker({
+        call: (req) => (req.path.endsWith("/deal") ? { status: 200, body: wire.deal } : undefined),
+      }),
+    );
+    stubApi(() => undefined); // nothing hosted is asked for a local table
+    render(<Host game="local-1" me="local@browser" />);
+    await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    expect(screen.queryByRole("log")).toBeNull();
+    // …and nothing was ASKED of the local host about chat either.
+    const posted = (currentWorker() as unknown as { posted?: Array<{ kind?: string; path?: string }> }).posted ?? [];
+    expect(posted.filter((m) => m.kind === "call" && (m.path ?? "").includes("/chat"))).toHaveLength(0);
+    void currentWorker;
+  });
+
   it("shows a refusal rather than a blank screen", async () => {
     stubApi((call) =>
       call.path.endsWith("/deal")
