@@ -3,11 +3,15 @@
 The code in this repository is licensed under the Apache License, Version 2.0
 (see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)).
 
-**The paths listed below are NOT.** They are components of a published
-commercial board game, they are not the copyright holder's to relicense, and
-**no license to them is granted or implied** — not by the Apache-2.0 grant on
-the code, not by their presence in this repository, and not by any statement
-in this file.
+**The paths listed under *The excluded paths* below are NOT.** They are
+components of a published commercial board game, they are not the copyright
+holder's to relicense, and **no license to them is granted or implied** — not
+by the Apache-2.0 grant on the code, not by their presence in this repository,
+and not by any statement in this file.
+
+A second, much shorter section — *Third-party material that DOES carry a
+grant* — lists what is here from elsewhere **with** a license. Nothing is in
+both.
 
 ## The excluded paths
 
@@ -16,7 +20,7 @@ in this file.
 | `tts-assets/` | Source sprite sheets and scans — card fronts and backs, area-board tiles, tokens, the rulebook PDF | 118 tracked files, ~60 MB (84 `.jpg`, 28 `.png`, 2 `.pdf`, plus an extraction summary, a mapping JSON and one extraction script) | Extracted 2025-12-07 from the Tabletop Simulator community mod for Yokohama (Steam Workshop id 1840951801); see `tts-assets/EXTRACTION_SUMMARY.md` |
 | `crates/yokohama-web/assets/art/` | Derived crops of the above, cut into per-item images (`orders/`, `techs/`, `sites/`, `areas/`, `tokens/`, `achievements/`, `five-power/`, `mercenaries/`, `backs/`) plus `manifest.json` | 132 tracked files, ~7.7 MB (131 `.webp` + the manifest) | Added 2026-08-31; produced from `tts-assets/` by this repository's own tooling. Being derived does not launder the underlying copyright — these are excluded on exactly the same footing as their source |
 | `analysis-1/00-yokohama-rulebook.pdf` | The published English rulebook, complete | 1 file, ~6.5 MiB | Publisher's rulebook, used as the rules source of record for the engine |
-| `web/public/help/` | Screenshots of the running browser client, used by its in-app Help panel and by `README.md` | 5 `.png`, ~4.0 MiB (1710×869 each, the owner's viewport) | Added 2026-09-01, regenerated 2026-09-02 at the M5 table; generated from the real application by `web/e2e/shots.spec.ts`. **The layout, typography and every word in them are this repository's own work — the card and tile images inside them are not**, being the `crates/yokohama-web/assets/art/` crops as the browser draws them. A photograph of excluded material is excluded material, so these sit here on the same footing rather than on the code's |
+| `web/public/help/` | Screenshots of the running browser client, used by its in-app Help panel and by `README.md` | 5 `.webp`, ~747 KiB (1710×869 each, the owner's viewport) | Added 2026-09-01, regenerated 2026-09-02 at the M5 table, re-cut from PNG to WebP 2026-09-21 (M6.5b2, 4,210,470 → 764,742 B at quality 90); generated from the real application by `web/e2e/shots.spec.ts` and converted by `docs/tools/mkhelpart.py`. The PNG the generator writes is a gitignored intermediate. **The layout, typography and every word in them are this repository's own work — the card and tile images inside them are not**, being the `crates/yokohama-web/assets/art/` crops as the browser draws them. A photograph of excluded material is excluded material, so these sit here on the same footing rather than on the code's |
 
 The extraction script (`tts-assets/parse_tts_mod.py`) and the manifest
 (`crates/yokohama-web/assets/art/manifest.json`) are this repository's own
@@ -31,11 +35,36 @@ UI with no art at all when the manifest is absent — a supported state its own
 code documents — so a fork that drops these paths can regenerate art-free
 screenshots rather than losing the help panel.
 
+## Third-party material that DOES carry a grant
+
+Everything in the section above is here without a license. This one is the
+other kind, and it is in this file because a reader asking "where did this come
+from and may I ship it" looks here first and should not have to read an absence
+as an answer.
+
+| Path | Contents | Scale | License and provenance |
+|------|----------|-------|------------------------|
+| `web/public/fonts/fraunces/` | The browser client's display typeface, latin subset, as a variable `woff2` | 1 `.woff2` (67 KiB) + `OFL.txt` | **SIL Open Font License 1.1.** Fraunces v38, copyright 2018 The Fraunces Project Authors (https://github.com/undercasetype/Fraunces). The `woff2` is the latin subset Google Fonts serves for `Fraunces:opsz,wght@9..144,500;9..144,700`; the `OFL.txt` is verbatim from https://github.com/googlefonts/fraunces |
+| `web/public/fonts/jetbrains-mono/` | The browser client's monospace typeface, latin subset, as a variable `woff2` | 1 `.woff2` (31 KiB) + `OFL.txt` | **SIL Open Font License 1.1.** JetBrains Mono v24, copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono). The `woff2` is the latin subset Google Fonts serves for `JetBrains+Mono:wght@400;500;700`; the `OFL.txt` is verbatim from that repository |
+
+Both were downloaded on 2026-09-21 and are the **same bytes the page already
+fetched** from `fonts.gstatic.com` — self-hosting them changed where they come
+from, not what renders. The reason it had to change is M6.5b2's: a service
+worker cannot precache another origin, so an offline launch lost both typefaces
+while the rest of the release was intact.
+
+**The OFL's conditions are met by the layout, not by this paragraph.** Each
+family's license text sits in the same directory as its font file, so a copy of
+that directory carries its own grant; neither family is renamed; and nothing
+here sells a font by itself. `NOTICE` names both families, their copyright
+holders and the path to each license, which is the file an Apache-2.0
+redistributor is required to carry forward.
+
 ## Whose they are
 
 The game is **Yokohama**, designed by **Hisashi Hayashi**, published in 2016 by
 **Tasty Minstrel Games** and **Okazu Brand**. All artwork, card text, board
-art, iconography, and rulebook text in the paths above are the property of
+art, iconography, and rulebook text in *The excluded paths* are the property of
 their respective rights holders. This project is unaffiliated with, and not
 endorsed by, the designer or either publisher.
 
@@ -54,10 +83,13 @@ legal advice.
 
 ## If you fork, copy, or redistribute this repository
 
-You must **remove the paths listed above**, or obtain your own permission from
-the rights holders. The Apache-2.0 license on the code gives you nothing with
-respect to them. Redistributing the code is fine; redistributing the game's
-art and rulebook along with it is not something this repository can authorize.
+You must **remove the paths listed under *The excluded paths***, or obtain your
+own permission from the rights holders. The Apache-2.0 license on the code gives
+you nothing with respect to them. Redistributing the code is fine; redistributing
+the game's art and rulebook along with it is not something this repository can
+authorize. **The two font directories are the opposite case** and travel with
+the code: keep each `OFL.txt` beside its font file and the grant comes with
+them.
 
 The code does not require the assets to build or to run: the CLI has no asset
 dependency at all, and the web frontend's art layer is a display enhancement

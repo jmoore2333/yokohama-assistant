@@ -66,3 +66,13 @@ web/wasm-node/
 web/test-results/
 web/playwright-report/
 docs/tools/__pycache__/
+
+# M6.5b2: the help panel's screenshots are an INTERMEDIATE. `shots.spec.ts` can
+# only write PNG or JPEG (Playwright has no WebP encoder), and 4.2 MB of PNG was
+# 29% of a release the service worker now precaches whole -- so the generator
+# writes HERE, outside `public/`, and `docs/tools/mkhelpart.py` cuts the
+# committed `web/public/help/*.webp` from what it wrote. Outside `public/`
+# because Vite copies that tree into `dist/` wholesale: a PNG left there would
+# ship beside the WebP cut from it. Same reasoning as the two rows above, one
+# step longer.
+web/help-shots/

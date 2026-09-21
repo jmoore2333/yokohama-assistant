@@ -23,12 +23,17 @@ export function rng(seed: number): () => number {
  * warning that is not a defect would make this a list nobody reads, and React's
  * own development warnings do not reach a production build anyway.
  *
- * **Failed responses are filtered to THIS ORIGIN.** `index.html` pulls two font
- * families from `fonts.googleapis.com`, so an unfiltered watch makes the whole
- * browser gate fail on somebody else's outage or on a machine with no network —
- * a red run that says nothing about this repo. Art 404s are a supported state in
- * the client, which draws its typed fallback, but not in a checkout that has the
- * art committed, which every checkout does; those are same-origin and still
+ * **Failed responses are filtered to THIS ORIGIN.** The reason this was written
+ * has since been REMOVED — `index.html` pulled two font families from
+ * `fonts.googleapis.com`, and an unfiltered watch made the whole browser gate
+ * fail on somebody else's outage or on a machine with no network. M6.5b2
+ * self-hosted both (R-6.5b2.18), so the release fetches nothing off-origin at
+ * all and this filter drops nothing today. It stays as a POLICY rather than a
+ * workaround: a gate that can go red because a third party is down is a gate
+ * that says nothing about this repository, and the next off-origin thing
+ * somebody adds should not be able to do that. Art 404s are a supported state
+ * in the client, which draws its typed fallback, but not in a checkout that has
+ * the art committed, which every checkout does; those are same-origin and still
  * counted.
  */
 /**

@@ -14,12 +14,14 @@
          the browser answers itself, off the network, with nothing to serve and
          nothing to commit. -->
     <link rel="icon" href="data:," />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- **The typefaces are in-house since M6.5b2** (R-6.5b2.18). Two
+         `preconnect`s and a render-blocking stylesheet from
+         `fonts.googleapis.com` stood here; both families are OFL and are now
+         served from this origin, declared by `@font-face` at the head of
+         `src/styles.css`. Nothing else could make the release self-contained:
+         a service worker cannot precache a third party's origin, so an offline
+         launch lost both typefaces and one round trip to a second host was on
+         the critical path of every online one. -->
   </head>
   <body>
     <div id="root"></div>

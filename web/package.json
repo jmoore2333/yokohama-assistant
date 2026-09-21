@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build:wasm": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && wasm-bindgen --target nodejs --out-dir wasm-node ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm && node -e \"require('fs').writeFileSync('wasm-node/package.json', JSON.stringify({type:'commonjs'}))\"",
+    "build:wasm": "cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-wasm --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release-wasm/yokohama_wasm.wasm && wasm-bindgen --target nodejs --out-dir wasm-node ../target/wasm32-unknown-unknown/release-wasm/yokohama_wasm.wasm && node -e \"require('fs').writeFileSync('wasm-node/package.json', JSON.stringify({type:'commonjs'}))\" && node scripts/wasm-opt.mjs src/local/wasm/yokohama_wasm_bg.wasm wasm-node/yokohama_wasm_bg.wasm",
     "build:wasm:debug": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --features debug --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm",
     "dev": "vite",
     "build": "npm run build:wasm && npm run build:client",

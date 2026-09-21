@@ -32,8 +32,21 @@ WORKDIR /src
 # `cargo build` needs no C toolchain for this workspace today (no build.rs
 # anywhere, checked), but pkg-config and a linker are cheap insurance and this
 # stage is not in the final image.
+#
+# **`binaryen` is not insurance — it is a prerequisite** (M6.5b2, R-6.5b2.15).
+# The module is built with `--profile release-wasm` and then run through
+# `wasm-opt -Oz`, which is 1.78 MB -> 1.17 MB; `npm run build:wasm` refuses
+# outright when it is absent, and this stage runs the same steps by hand.
+# Debian trixie's package is `120-4` (`wasm-opt version 120`, read off an
+# `apt-cache policy` in this very base image) against the workstation's and
+# CI's 132. That difference is measured, not assumed: this stage's module is
+# **1,174,709 B** where the workstation's is 1,169,222 B, 5,487 bytes and
+# 0.47% apart — within build noise for a release budget, and worth apt's
+# pin-free simplicity here. **A ceiling on the module must clear the LARGER of
+# the two**, because this is the build a deployment ships. CI pins the upstream
+# 132 binary instead, since that is where the recorded byte counts are taken.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config \
+ && apt-get install -y --no-install-recommends pkg-config binaryen \
  && rm -rf /var/lib/apt/lists/*
 
 # **The pin first, and the target onto the pinned toolchain.** `rustup target
@@ -62,17 +75,26 @@ COPY crates/ ./crates/
 # and leaves the oracle, difftest, bridge and gen-data crates unbuilt — they
 # are development tooling and nothing at runtime calls them.
 #
-# Both builds and the `wasm-bindgen` run are ONE step because `target/` is a
-# cache mount: it does not survive the layer, so anything that reads what a
-# build wrote has to read it here. `/out/wasm` is outside the mount, which is
-# what makes the glue a real artifact the next stage can copy.
+# Both builds, the `wasm-bindgen` run and the `wasm-opt` pass are ONE step
+# because `target/` is a cache mount: it does not survive the layer, so anything
+# that reads what a build wrote has to read it here. `/out/wasm` is outside the
+# mount, which is what makes the glue a real artifact the next stage can copy —
+# and the optimizer therefore runs on the copy in `/out/wasm`, after
+# `wasm-bindgen`, which is the same order `npm run build:wasm` uses.
+#
+# **The server binary stays on `--release` and the module moves to
+# `--profile release-wasm`** (M6.5b2, R-6.5b2.15): `opt-level = "z"` is a trade
+# a phone's cold start wants and a long-running server does not.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release -p yokohama-web \
  && cp target/release/yokohama-web /usr/local/bin/yokohama-web \
- && cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm \
+ && cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-wasm \
  && wasm-bindgen --target web --out-dir /out/wasm \
-      target/wasm32-unknown-unknown/release/yokohama_wasm.wasm
+      target/wasm32-unknown-unknown/release-wasm/yokohama_wasm.wasm \
+ && wasm-opt -Oz --strip-debug --strip-producers \
+      /out/wasm/yokohama_wasm_bg.wasm -o /out/wasm/yokohama_wasm_bg.wasm \
+ && ls -l /out/wasm/yokohama_wasm_bg.wasm
 
 # ---------------------------------------------------------------------------
 # 2. The browser client. Vite output only; none of this reaches the runtime
@@ -87,6 +109,14 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
 COPY web/ ./
+# The card art, for the precache generator, which hashes it (M6.5b2 Task 6).
+# The runtime stage below copies the same tree to `/srv/assets/art` and that is
+# where the SERVER reads it; this copy exists because `build:client` now has a
+# step that walks every file the release contains. The path is chosen by what
+# the generator asks for, which is `../crates/yokohama-web/assets/art` relative
+# to `web/` — and this stage's `web/` is `/app`, so the tree has to sit at the
+# image root for that `..` to land on it.
+COPY crates/yokohama-web/assets/art /crates/yokohama-web/assets/art
 # The generated glue, from the stage that has the toolchain. It lands where
 # `npm run build:wasm` would have written it — `web/src/local/wasm/`, a source
 # directory, so Vite bundles the loader and emits the `.wasm` as a hashed asset

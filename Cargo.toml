@@ -17,6 +17,29 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["Jeremy Moore"]
 
+# The browser host's module, and NOTHING else (M6.5b2, R-6.5b2.15).
+#
+# A phone compiles this module on every cold start, and the whole release is
+# precached, so bytes here are paid by every visitor on every version. Measured
+# on this machine, `wasm-bindgen`'s output: 2,842,659 B under plain `release`,
+# 1,782,864 B under this profile, and 1,169,222 B / 452,820 B gzipped once
+# `npm run build:wasm` runs `wasm-opt -Oz` over it. The cost is a whole bot turn
+# going 28.6 -> 35.2 ms. Spec §0.3 carries all nine builds; its 1,168,913 B and
+# the figure above are the same artifact two builds apart, which that document
+# also records as ordinary build variance.
+#
+# **It is its own profile rather than a `[profile.release]` edit** because
+# nothing selects it without `--profile release-wasm`: the fifteen-gate release
+# roster, `cargo build --release`, the server binary and the Docker image's
+# `yokohama-web` all build exactly what they built before this section existed.
+# A repo-wide `opt-level = "z"` would have quietly re-timed every gate wall and
+# every arena figure recorded against the old one.
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

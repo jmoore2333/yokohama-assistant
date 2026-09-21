@@ -9,10 +9,13 @@
 // question.
 //
 // The screenshots are OPTIONAL by construction (see `Shot`): they are generated
-// from the real app by `web/e2e/shots.spec.ts` into `web/public/help/`, and a
-// checkout that has not generated them shows the words alone rather than a
-// column of broken images. That is the same posture the card art already takes
-// when `crates/yokohama-web/assets/art/` is absent.
+// from the real app by `web/e2e/shots.spec.ts` into the gitignored
+// `web/help-shots/` as PNG and cut to the committed `web/public/help/*.webp` by
+// `docs/tools/mkhelpart.py` (M6.5b2 — the PNGs are intermediates, because
+// 4.2 MB of them was 29% of a release the service worker precaches whole, and
+// they sit outside `public/` so Vite cannot ship them). A checkout without them shows
+// the words alone rather than a column of broken images, the same posture the
+// card art takes when `crates/yokohama-web/assets/art/` is absent.
 
 import { useState } from "react";
 
@@ -78,12 +81,12 @@ export function Help() {
         edge rather than at the top of a column.
       </p>
       <Shot
-        src="/help/screen.png"
+        src="/help/screen.webp"
         alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
         caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
       />
       <Shot
-        src="/help/strips.png"
+        src="/help/strips.webp"
         alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
         caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
       />
@@ -103,7 +106,7 @@ export function Help() {
         move, and the pyramid is a picture you can read rather than press.
       </p>
       <Shot
-        src="/help/placement.png"
+        src="/help/placement.webp"
         alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
         caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
       />
@@ -139,7 +142,7 @@ export function Help() {
         reconstruction does not match what was played, it refuses and says so.
       </p>
       <Shot
-        src="/help/explain.png"
+        src="/help/explain.webp"
         alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
         caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
       />
@@ -163,7 +166,7 @@ export function Help() {
         record, and the position you scrub to is not playable.
       </p>
       <Shot
-        src="/help/replay.png"
+        src="/help/replay.webp"
         alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
         caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
       />

@@ -22,6 +22,49 @@
  * rule with a false premise is how the rule survives three milestones.
  */
 
+/* The two typefaces, in-house since M6.5b2 (R-6.5b2.18).
+ *
+ * They used to come from `fonts.googleapis.com` through two `preconnect`s and a
+ * render-blocking stylesheet in `index.html`. An offline launch silently lost
+ * both and fell back to Georgia and the system monospace — the one part of the
+ * release the service worker could not precache, because it was on somebody
+ * else's origin. Both families are SIL Open Font License 1.1, so self-hosting
+ * is permitted outright; each family's OFL text is committed beside its file,
+ * `NOTICE` names both, and `ASSETS.md` records the grant.
+ *
+ * **These are the exact bytes the page fetched before**, the LATIN subset from
+ * Google's own CSS2 endpoint (Fraunces v38, JetBrains Mono v24), so nothing
+ * about rendering moves — including which characters fall back. Google served
+ * ONE file per family for every weight we asked for, because both are variable
+ * fonts with a `wght` axis; two files replace the five faces the old stylesheet
+ * declared, and the weight RANGE below is what tells the browser to use that
+ * axis rather than synthesise a bold.
+ *
+ * The latin-ext, greek, cyrillic and vietnamese subsets are deliberately not
+ * here. They would add 71 KB to a release that is precached WHOLE on every
+ * version, for characters this instrument shows only if a player types one into
+ * their display name — and a character outside the file falls through to the
+ * next family in the stack, which is exactly what U+25B6 (the mover's ▶) has
+ * always done.
+ *
+ * `font-display: swap` is the old stylesheet's own setting, carried over: text
+ * is readable in the fallback immediately and reflows once, which on a cold
+ * offline start is the difference between a blank screen and a legible one. */
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+  src: url("/fonts/fraunces/fraunces-latin.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
 

@@ -2,16 +2,26 @@
 //
 // **A generator, not a test.** Nothing here asserts a product property; it
 // drives the shipped client in real Chromium against the real release binary
-// and writes the five `web/public/help/*.png`, which Vite copies into `dist/`
-// and the server serves at `/help/…`. It lives in `e2e/` because that is where the
-// browser and the server already are, and because a screenshot generator that
-// needed its own harness would be a second driver of the same app.
+// and writes the five `web/help-shots/*.png`. It lives in `e2e/` because that
+// is where the browser and the server already are, and because a screenshot
+// generator that needed its own harness would be a second driver of the same
+// app.
 //
-// It is deliberately NOT part of `npm run e2e`'s meaning. Run it on purpose:
+// **Since M6.5b2 the PNG it writes is an INTERMEDIATE and is gitignored.**
+// Playwright has no WebP encoder, and 4.2 MB of PNG was 29% of a release the
+// service worker now precaches whole — so a second step cuts the committed
+// `web/public/help/*.webp`, which is what Vite copies into `dist/` and the
+// server serves at `/help/…`. The PNG is written OUTSIDE `public/` for exactly
+// that reason: Vite copies that tree wholesale, so a PNG left in it would ship
+// beside the WebP cut from it. Both commands, in this order:
 //
 // ```text
 // cd web && npm run build && YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts
+// python3 docs/tools/mkhelpart.py
 // ```
+//
+// Running the first alone changes nothing a reader will see: the client reads
+// the `.webp`.
 //
 // The env var is not optional: `playwright.config.ts` drops this file from the
 // glob without it, so the command that omits it discovers zero tests and exits
@@ -41,7 +51,13 @@ import { act, readScreen, rng, startGame } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
-const SHOTS = "public/help";
+// **Outside `public/`, and that is the point** (M6.5b2). Vite copies `public/`
+// into `dist/` wholesale, so a PNG written there would ship BESIDE the WebP cut
+// from it — 4.2 MB of intermediate in a release the service worker precaches
+// whole, which is exactly what the cut was for. This directory is gitignored
+// and is read by `docs/tools/mkhelpart.py`, which writes the committed
+// `web/public/help/*.webp`.
+const SHOTS = "help-shots";
 
 /** The owner's screen, and the shape every picture in the help is taken at.
  *

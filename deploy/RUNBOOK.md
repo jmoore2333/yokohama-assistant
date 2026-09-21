@@ -75,14 +75,26 @@ generator on the PINNED toolchain, once:
 ```bash
 rustup target add wasm32-unknown-unknown                   # onto the PINNED toolchain
 cargo install wasm-bindgen-cli --version 0.2.128 --locked   # the lock's version; ~2 min from source
+brew install binaryen                                       # M6.5b2: wasm-opt, a PREREQUISITE
 ```
 
-`build:wasm` compiles `crates/yokohama-wasm` in release for `wasm32-unknown-unknown`
-and runs `wasm-bindgen` twice: the web glue INTO `web/src/local/wasm/` (gitignored;
-Vite bundles it and emits the module as a hashed asset,
-`web/dist/assets/yokohama_wasm_bg-<hash>.wasm`, ~2.8 MB raw / ~760 KB gzip, served
-`immutable` since the M6.5b fix wave) and the Node glue into `web/wasm-node/` for
-`npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
+**`binaryen` is not optional since M6.5b2** (R-6.5b2.15). `build:wasm` ends with
+`wasm-opt -Oz --strip-debug --strip-producers` over both emitted modules, and
+`web/scripts/wasm-opt.mjs` **refuses the build** when `wasm-opt` is not on
+`PATH`, naming `brew install binaryen` and `apt-get install binaryen`.
+`YOKOHAMA_WASM_OPT_OPTIONAL=1` turns that into a build that prints, out loud,
+that it produced an UNOPTIMIZED module — **do not cut a deploy from one**: it is
+1.78 MB instead of 1.17 MB. The workstation reading is `wasm-opt version 132`.
+
+`build:wasm` compiles `crates/yokohama-wasm` with **`--profile release-wasm`**
+(M6.5b2: `opt-level = "z"`, fat LTO, one codegen unit — the server binary stays
+on plain `--release`) for `wasm32-unknown-unknown`, reading it from
+`target/wasm32-unknown-unknown/release-wasm/`, and runs `wasm-bindgen` twice:
+the web glue INTO `web/src/local/wasm/` (gitignored; Vite bundles it and emits
+the module as a hashed asset, `web/dist/assets/yokohama_wasm_bg-<hash>.wasm`,
+**1,169,222 B raw / 452,820 B gzip since M6.5b2** — it was ~2.8 MB raw /
+~760 KB gzip — served `immutable` since the M6.5b fix wave) and the Node glue
+into `web/wasm-node/` for `npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
 module (`build:wasm:debug`, which carries the `debug_trap` export the trap cell
 needs) and leaves it in `web/src/local/wasm/` AND `web/dist/` — so a deploy cut
 after an e2e run ships a debug module unless `npm run build` is run again; the

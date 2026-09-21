@@ -68,6 +68,41 @@ jobs:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-0.2.128
       - run: test -x ~/.cargo/bin/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      # M6.5b2 (R-6.5b2.15): `npm run build:wasm` now runs `wasm-opt` and
+      # REFUSES when it is absent, so this job does not build at all without
+      # binaryen. It is a prerequisite, not a nicety: `--profile release-wasm`
+      # emits 1.78 MB and the pass takes it to 1.17 MB, which is the figure the
+      # release budget and every §0.3 measurement are stated at.
+      #
+      # **Pinned to the upstream release binary rather than apt's package.** The
+      # workstation runs binaryen 132 (`wasm-opt version 132`) and
+      # `ubuntu-latest`'s `binaryen` is several versions behind it, so
+      # `apt-get install binaryen` would optimize with a different compiler than
+      # every recorded byte count was taken on — a size regression CI could not
+      # see and a difference nobody could reproduce locally. The tarball is one
+      # static binary; the cache key carries the version, so a bump here
+      # invalidates the cache rather than restoring the old one.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/wasm-opt
+          key: binaryen-132-x86_64-linux
+      - name: Install binaryen 132 (wasm-opt)
+        run: |
+          mkdir -p ~/.local/bin
+          if [ ! -x ~/.local/bin/wasm-opt ]; then
+            curl -fsSL -o /tmp/binaryen.tar.gz \
+              https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz
+            # One member out of twenty-two: the release ships the whole suite
+            # and a static `libbinaryen.a`, so `wasm-opt` needs nothing beside
+            # it and unpacking the rest would cost 100 MB of runner disk.
+            tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt
+            cp /tmp/binaryen-version_132/bin/wasm-opt ~/.local/bin/wasm-opt
+            chmod +x ~/.local/bin/wasm-opt
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Printed so the log says which optimizer produced the module, rather than
+      # leaving a reader to infer it from a cache key.
+      - run: wasm-opt --version
       - uses: actions/setup-node@v4
         with:
           node-version: 22
