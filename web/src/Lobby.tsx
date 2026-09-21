@@ -1,5 +1,12 @@
-// The first screen after the door (spec §5.2): the tables you sit at, and the
-// tables waiting for someone to sit down.
+// The SERVER's first screen (spec §5.2): the tables you sit at, and the tables
+// waiting for someone to sit down.
+//
+// **At `#/lobby` since M6.5b2, and no longer the screen a visitor lands on.**
+// `#/` is the front door (R-6.5b2.1), which draws from this browser alone; the
+// Access turnstile `/enter` redirects here, which is why the lobby needed an
+// address of its own. "On this device" went with the door — it is a channel
+// now, not a section above these lists — and what is left here is one link
+// back to it.
 //
 // **Two scopes, ONE signal** (R-plan-4). `mine` and `open` are two questions
 // about the same store and a player reads them together, so one `usePolled`
@@ -25,7 +32,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Abandon } from "./Abandon";
 import { api, ApiError, clearDisplayName, displayName, lobbyChat, setDisplayName } from "./api";
 import { Chat } from "./Chat";
-import { OnThisDevice } from "./OnThisDevice";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
@@ -134,11 +140,13 @@ export function Lobby({
   who?: ReactNode;
   /** A sentence from OUTSIDE the lobby, drawn ABOVE the lobby's two lists.
    *
-   *  **The lobby is where a refused table lands** (spec §5.1): a `#/t/<id>` the
-   *  caller cannot see is a 403, and the screen it goes back to has to carry the
-   *  sentence — a player returned to a bare lobby learns only that their link
-   *  did nothing. The game screen's error strip is inside the game, so it could
-   *  not have said this.
+   *  **The lobby is where a refused SERVER table lands** (spec §5.1): a
+   *  `#/t/<id>` the caller cannot see is a 403, and the screen it goes back to
+   *  has to carry the sentence — a player returned to a bare lobby learns only
+   *  that their link did nothing. The game screen's error strip is inside the
+   *  game, so it could not have said this. A refused `local-` table lands on
+   *  the DOOR instead (M6.5b2, R-6.5b2.1), where its siblings are listed, and
+   *  `FrontDoor` carries the same sentence there.
    *
    *  **Above the lists, and not under them** (live review M-6). The spec's word
    *  is "shows the sentence above the lobby", and this was rendered last: a
@@ -321,14 +329,17 @@ export function Lobby({
           )}
         </div>
       )}
-      {/* **The first thing on the first screen, and it needs nothing from the
-          server** (R-6.5b.8): the games in this browser, read from the module
-          in this tab's own Worker. Above the heading rather than beside the
-          lists, because what it promises is that a player whose API is
-          unreachable still lands on something they can play. */}
-      <OnThisDevice />
-
       <h2>Lobby</h2>
+      {/* **The one way back to the door** (R-6.5b2.1). "On this device" stood
+          above these lists until this cycle; single player is a channel of its
+          own now, at `#/`, and this screen is no longer the first one. It is an
+          ANCHOR for `lobbyRow`'s reason — the control's whole job is to go to an
+          address — and it is drawn OUTSIDE the three states below, so a player
+          who is not signed in, or whose API cannot be reached, can still reach
+          the games in their own browser from here. */}
+      <a className="to-door" href={hashOf({ kind: "door" })}>
+        Play on this device
+      </a>
       {notice && <div className="error">{notice}</div>}
 
       {/* **The part of this screen the SERVER owns, and its three states**

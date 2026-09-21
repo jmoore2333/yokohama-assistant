@@ -129,6 +129,19 @@ describe("the help panel and the lobby", () => {
     expect(text).not.toContain("back to the start screen");
   });
 
+  // **The first screen is the DOOR since M6.5b2** (R-6.5b2.1), and a page that
+  // went on opening "Sign in first" would be describing the screen this cycle
+  // replaced — the exact drift this file exists for. What a reader needs is the
+  // two ways on, and that the lobby is somewhere they can get back FROM.
+  it("names the door's two ways on, and the lobby at its own address", () => {
+    render(<Help />);
+    const text = section("Starting a game");
+    expect(text).toContain("Play on this device");
+    expect(text).toContain("Play with others");
+    expect(text).toContain("link back to the door");
+    expect(text).not.toContain("Sign in first");
+  });
+
   // **The name field, in the paragraph that describes the LOBBY** (spec §6.6's
   // third edit, ruling R-7-1). The same fact is stated again in the Talking
   // section, deliberately — a player setting up a table and a player about to

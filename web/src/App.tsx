@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { Abandon } from "./Abandon";
 import { api, ApiError, archiveKind, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
 import { Door } from "./Door";
+import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
@@ -469,22 +470,37 @@ export function App() {
     [landed],
   );
 
-  /** **Land on the lobby, with the server's sentence if there is one.**
+  /** **Land on a first screen, with the server's sentence if there is one.**
    *
-   *  The five paths that put a player back on the lobby against their will —
-   *  a refused `#/t/<id>`, a game that stopped answering, a deal or an open
-   *  table that went out from under them, a hand-over that found the table
-   *  filled — say the same two things in the same order, and they also have to
-   *  agree with `noticeFor` about which visit the sentence belongs to. One
-   *  callback, so that agreement is not five separate things to keep true.
+   *  The paths that put a player back on a first screen against their will — a
+   *  refused `#/t/<id>`, a game that stopped answering, a deal or an open table
+   *  that went out from under them, a hand-over that found the table filled —
+   *  say the same two things in the same order, and they also have to agree
+   *  with `noticeFor` about which visit the sentence belongs to. One callback,
+   *  so that agreement is not several separate things to keep true.
+   *
+   *  **There are TWO first screens since M6.5b2** (R-6.5b2.1), and which one a
+   *  game belongs to is not a preference: a local game is listed on the DOOR
+   *  and a table of the server's in the LOBBY, so a sentence about a game shown
+   *  on the other screen would be an explanation with nothing under it. The
+   *  destination rides through `noticeFor` too, because the route effect clears
+   *  a notice as soon as the route is not the one it was raised for.
    *
    *  A `null` or absent sentence CLEARS, which is what leaving by choice
    *  should do. */
-  const toLobby = useCallback((sentence?: string | null) => {
+  const leave = useCallback((to: "door" | "lobby", sentence?: string | null) => {
     setError(sentence ?? null);
-    noticeFor.current = sentence == null ? null : "lobby";
-    navigate({ kind: "lobby" });
+    noticeFor.current = sentence == null ? null : to;
+    navigate({ kind: to });
   }, []);
+  /** Out to the SERVER's first screen. Every control in this client that says
+   *  "Lobby" comes here, whatever it is leaving: the word on the button is the
+   *  promise, and the lobby carries a link back to the door. */
+  const toLobby = useCallback((sentence?: string | null) => leave("lobby", sentence), [leave]);
+  /** Out to the DOOR, where the games in this browser are listed — the landing
+   *  for a local game that ends, is abandoned, or is asked for and no longer
+   *  there. */
+  const toDoor = useCallback((sentence?: string | null) => leave("door", sentence), [leave]);
 
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
@@ -683,10 +699,17 @@ export function App() {
         noticeFor.current = null;
         open(route.id).catch((e) => {
           // A table that does not exist, or is not this caller's to see. The
-          // sentence is the server's and the lobby is where it is shown — a
-          // bare screen at a `#/t/<id>` that answers nothing is the one place a
-          // player cannot act from.
-          toLobby(e instanceof ApiError ? e.message : String(e));
+          // sentence is the server's and a first screen is where it is shown —
+          // a bare screen at a `#/t/<id>` that answers nothing is the one place
+          // a player cannot act from.
+          //
+          // **WHICH first screen is the id's own answer** (R-6.5b2.1): a
+          // `local-` table is listed on the door and nowhere else, so a local
+          // game that has been deleted would otherwise explain itself on a
+          // screen its siblings are not on.
+          const said = e instanceof ApiError ? e.message : String(e);
+          if (isLocal(route.id)) toDoor(said);
+          else toLobby(said);
         });
       }
       return;
@@ -700,9 +723,9 @@ export function App() {
       setError(null);
       noticeFor.current = null;
     }
-    // `#/` or `#/new`: no game, no deal and no table on screen.
+    // `#/`, `#/lobby` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
-  }, [route, door.me?.user, lockState, open, show]);
+  }, [route, door.me?.user, lockState, open, show, toDoor, toLobby]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -1132,7 +1155,7 @@ export function App() {
   // them drew nothing else at all, including the games in this browser's own
   // IndexedDB, which need no door to play. `Door` renders the same four
   // bodies, in the same order and for the same reasons, as the CONTENT of the
-  // part of the first screen the server owns; `firstScreen` below is what puts
+  // part of the first screen the server owns; `lobbyScreen` below is what puts
   // them there.
   const signedIn = door.me?.user ?? null;
   /** The API could not be reached AT ALL: the health read failed and the door
@@ -1203,15 +1226,27 @@ export function App() {
     </>
   );
 
-  /** The first screen: the frame, the games in THIS BROWSER, and then whatever
-   *  the server's part of it has to say — the lobby's three listings, the
-   *  door's own answer, or the one line that says the API cannot be reached.
+  /** **The FRONT DOOR at `#/`, and everyone sees it** (R-6.5b2.1).
+   *
+   *  Two ways on: the games in this browser, and a link to the turnstile. It
+   *  asks the server nothing — not even whether the other channel is served,
+   *  which is a BUILD value (R-6.5b2.7) — so it is the one screen that renders
+   *  with the API refused, never answering, or not deployed at all. It is NOT
+   *  behind the sign-in gate below, and that is the whole product change: until
+   *  this cycle the first screen belonged to the server. */
+  const doorScreen = (notice?: string | null) => (
+    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} />
+  );
+
+  /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
+   *  answer, or the one line that says the API cannot be reached.
    *
    *  **Every screen behind a door lands here when there is no user** (spec
    *  §2.5). The four `return`s that used to do that job drew nothing else;
-   *  this draws the door's words with the local section above them, which is
-   *  the whole of R-6.5b.8. */
-  const firstScreen = (notice?: string | null) => (
+   *  this draws the door's words in the place the listings would be. The games
+   *  in THIS BROWSER are no longer stacked on top of it — they are the other
+   *  channel now, at `#/`, and the lobby carries one link back to them. */
+  const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
       who={signedIn ? who : undefined}
@@ -1272,7 +1307,11 @@ export function App() {
                 can never be abandoned; the bytes beside this button are the
                 copy that still works. The label follows, and reads "Abandon".
               */}
-            <Abandon table={broken.table} onDone={() => toLobby()} onError={setError} />
+            {/* A broken save is a LOCAL one by construction (see `broken`'s own
+                doc), so abandoning it lands on the door, where the rest of this
+                browser's games are listed. The button beside it says "Lobby"
+                and goes there. */}
+            <Abandon table={broken.table} onDone={() => toDoor()} onError={setError} />
             <button type="button" className="ghost" onClick={() => toLobby()}>
               Lobby
             </button>
@@ -1307,9 +1346,12 @@ export function App() {
           who={who}
         />
       );
-    // Every screen below is the SERVER's, and the door is what stands in front
-    // of it — as content on the first screen rather than as a gate.
-    if (!signedIn) return firstScreen(error);
+    // **The front door, and it is in front of the sign-in gate rather than
+    // behind it** (R-6.5b2.1). Below this line every screen is the SERVER's.
+    if (route.kind === "door") return doorScreen(error);
+    // The door the server owns stands in front of those, as content on the
+    // lobby rather than as a gate.
+    if (!signedIn) return lobbyScreen(error);
     if (route.kind === "new")
       return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing)
@@ -1386,7 +1428,7 @@ export function App() {
           who={who}
         />
       );
-    return firstScreen(error);
+    return lobbyScreen(error);
   }
 
   // **A SERVER game still needs a door, and a local one does not.** The screen
@@ -1394,7 +1436,7 @@ export function App() {
   // there is no such caller, so the first screen — carrying the door's own
   // words — is where that lands. A `local-` game is answered by the module in
   // this browser and has no such question.
-  if (!isLocal(state.id) && !signedIn) return firstScreen(error);
+  if (!isLocal(state.id) && !signedIn) return lobbyScreen(error);
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =
@@ -1732,7 +1774,7 @@ export function App() {
             and save" when the SERVER keeps an archive, because that is where
             the copy goes. */}
         {isLocal(state.id) && table && lockState !== "lost" ? (
-          <Abandon table={table} local onDone={() => toLobby()} onError={setError} />
+          <Abandon table={table} local onDone={() => toDoor()} onError={setError} />
         ) : null}
       </header>
 

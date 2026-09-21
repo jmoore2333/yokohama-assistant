@@ -170,9 +170,13 @@ export function Help() {
 
       <h3>Starting a game</h3>
       <p>
-        Sign in first: the server has to know who you are before it will show you a table, and
-        under this deployment that is an email address you type once and it remembers. What you
-        land on is the <strong>lobby</strong>. It has three lists &mdash; <em>Your games</em>, the
+        The first screen is the <strong>front door</strong>, and it offers two ways on.{" "}
+        <strong>Play on this device</strong> is the games in this browser &mdash; nobody signs in
+        for those, and the last section of this page is about them. <strong>Play with others</strong>{" "}
+        goes to the server, which has to know who you are before it will show you a table: under
+        this deployment that is an email address you type once and it remembers. What you land on
+        there is the <strong>lobby</strong>, at an address of its own, with one link back to the
+        door at the top of it. It has three lists &mdash; <em>Your games</em>, the
         tables you already sit at; <em>Open tables</em>, every table on the server still waiting
         for players, whoever opened it; and <em>Games in progress</em>, the ones you can watch
         &mdash; and <em>New table</em>, which is the form. Beside <strong>You are</strong> at the
@@ -278,9 +282,11 @@ export function Help() {
         <em>Save game file</em>, the same file the terminal loads.
       </p>
       <p>
-        A game you started under <strong>On this device</strong> is different in one way that
-        matters: it is played by this browser and is stored only in this browser, so nobody else
-        can open it and clearing your site data would take it with them. Because it is yours
+        A game you started under <strong>On this device</strong> &mdash; the door’s own
+        section, which is where those games are listed rather than in the lobby &mdash; is
+        different in one way that matters: it is played by this browser and is stored only in
+        this browser, so nobody else can open it and clearing your site data would take it with
+        them. Because it is yours
         outright, <em>Save game file</em> is offered at any point rather than only at the end, and
         the file it writes is the same one the terminal loads. When this server keeps an archive,
         a finished game can be copied to it with <em>Send to the archive</em>, and abandoning a

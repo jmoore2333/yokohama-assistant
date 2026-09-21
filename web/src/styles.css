@@ -889,11 +889,12 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    is a real button, and a selector that stopped naming the element would start
    styling the `<summary>`s that deliberately do not carry it (see the banner's
    note above). */
-.lobby .saved li a.row-link {
+.lobby .saved li a.row-link, .front-door .saved li a.row-link {
   background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
 }
-.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
+.lobby .saved li a.row-link:hover,
+.front-door .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
    (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
@@ -903,11 +904,34 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    theirs where they stand alone and flat where they stand here; nothing in
    those components moves for it. */
 .lobby > .setup { max-width: none; margin: 0; padding: 0; }
-/* The games on this device sit above the lobby's own heading, so they need the
-   rhythm `.setup h3`'s top margin gives every other section — the first child
-   has none to inherit. */
-.lobby .on-this-device { margin-top: 0.6rem; }
-.lobby .on-this-device .local-fault { color: var(--fg-dim); }
+/* The games on this device are the door's FIRST section since M6.5b2 (they were
+   the lobby's first child before it), so they need the rhythm `.setup h3`'s top
+   margin gives every other section — a first child has none to inherit, and its
+   own margin collapses out of the box. Unscoped for that reason: the rule is
+   about being first, and the host is no longer fixed. */
+.on-this-device { margin-top: 0.6rem; }
+.on-this-device .local-fault { color: var(--fg-dim); }
+
+/* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
+/* Two ways on, and the second is a LINK rather than a button: Access answers a
+   navigation with a redirect to another origin, which a `fetch` follows and
+   then fails opaquely (spec §0.3). So it wears `button.primary`'s box, restated
+   for the element the way `a.row-link` restates `button.ghost`'s — those rules
+   are styled ON the element name and so do not reach an `<a>`. */
+.front-door .with-others a.enter {
+  display: inline-block;
+  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; text-decoration: none;
+}
+.front-door .with-others { margin-top: 1.6rem; }
+/* The way back, for the same reason and in `button.ghost`'s box. */
+.lobby a.to-door {
+  display: inline-block;
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
+  margin-bottom: 0.6rem;
+}
+.lobby a.to-door:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
    is the setup screens' own `.setup` box and the rows are their `.field

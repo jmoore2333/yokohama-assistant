@@ -359,9 +359,11 @@ test("a game closed before its first card is chosen comes back on reload with it
   const watch = watchForBreakage(page);
   // Deliberately NOT `startGame`: the whole subject is the state BEFORE the
   // keep, where the table document exists and the record does not (R1).
+  //
+  // **And no sign-in, because the door needs none** (M6.5b2, R-6.5b2.1): `/` is
+  // the front door, the games in this browser are on it, and the local create
+  // is one click from there.
   await page.goto("/");
-  await page.getByLabel("Email").fill(WALKER);
-  await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("button", { name: "Play the bot here" }).click();
   await page.getByRole("button", { name: "Deal" }).click();
   await page.waitForURL(/#\/t\/local-[0-9a-f]+$/);
@@ -504,8 +506,23 @@ test("the first screen renders On this device with the API refused, and a local 
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
-  await expect(page.getByText("not connected")).toBeVisible();
   await expect(page.getByRole("button", { name: "Play the bot here" })).toBeVisible();
+  // **The other way on is drawn from the BUILD, not from an answer** (M6.5b2,
+  // R-6.5b2.7): every `/api/` request is being refused here, and the link is on
+  // the screen anyway with the turnstile's own address in it. This is the half
+  // no jsdom cell can make — there the refusal is a stub; here it is the edge.
+  // It is READ and never followed: `/enter` is a navigation, and following it
+  // would take this page off the app.
+  await expect(page.getByRole("link", { name: "Play with others" })).toHaveAttribute(
+    "href",
+    "/enter",
+  );
+  // **The door reports nothing about a server it never asks** (R-6.5b2.7). The
+  // line that does report one is the LOBBY's, one hash away, and it is still
+  // there — so the claim this cell has always made is read where it now lives.
+  await expect(page.getByText("not connected")).toHaveCount(0);
+  await page.goto("/#/lobby");
+  await expect(page.getByText("not connected")).toBeVisible();
 
   const game = await startGame(page, { local: true, signedOut: true });
   const pick = rng(0x4f46_464c); // "OFFL"
@@ -536,9 +553,9 @@ test("two tabs: B boots first, A plays, B takes over and sees A's moves; A goes 
   // takeover that did not rebuild from IndexedDB would show B an empty or
   // stale game, and the assertion below is what catches it.
   const b = await context.newPage();
+  // The DOOR, which is where the games in this browser are listed since M6.5b2
+  // and which needs no sign-in at all (R-6.5b2.1).
   await b.goto("/");
-  await b.getByLabel("Email").fill(WALKER);
-  await b.getByRole("button", { name: "Sign in" }).click();
   await expect(b.locator(".on-this-device")).toBeVisible();
   await localHost(b);
 

@@ -107,8 +107,14 @@ export const WALKER = "walker@e2e.test";
  * waits for the strip that says so. The wait is on EITHER, because `App` draws
  * nothing at all until `/api/me` answers — a bare `count()` would read zero for
  * a player who is signed in perfectly well.
+ *
+ * **The default lands on `#/lobby` since M6.5b2** (R-6.5b2.1). `/` is the front
+ * door, which is drawn from this browser alone and has no sign-in on it at all:
+ * a walk that went there and waited for a form would wait for ever. The server's
+ * own door stands on the lobby, which is where every caller of this helper is
+ * headed anyway.
  */
-export async function signIn(page: Page, email: string = WALKER, url = "/"): Promise<void> {
+export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby"): Promise<void> {
   await page.goto(url);
   const form = page.getByRole("heading", { name: "Sign in" });
   const strip = page.getByText(new RegExp(`^You are ${email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
@@ -241,12 +247,13 @@ export async function startGame(
  * reading it there also says the route was taken.
  */
 async function createLocal(page: Page, signedOut: boolean): Promise<string> {
-  if (signedOut) await page.goto("/");
-  else await signIn(page);
-  // The lobby's own heading, which renders in every one of the server area's
-  // three states — including the one where the API cannot be reached at all,
-  // which is the state `signedOut` exists for.
-  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  if (!signedOut) await signIn(page);
+  // **The FRONT DOOR since M6.5b2** (R-6.5b2.1), whichever arm got here: the
+  // games in this browser and the button that starts one live at `#/`, and
+  // nothing on that screen needs a server — which is the state `signedOut`
+  // exists for, and the reason the signed-in arm comes back here too.
+  await page.goto("/#/");
+  await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
   await page.getByRole("button", { name: "Play the bot here" }).click();
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
   await page.getByRole("button", { name: "Deal" }).click();

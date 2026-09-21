@@ -1181,6 +1181,9 @@ describe("opening a saved table", () => {
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
+    // The server's tables are the LOBBY's since M6.5b2 — `#/` is the front
+    // door, which lists the games in this browser instead (R-6.5b2.1).
+    window.location.hash = "#/lobby";
     render(<App />);
     // The lobby row is a LINK since M6.2 (R-14).
     await userEvent.setup().click(await screen.findByRole("link", { name: "wire" }));
@@ -1302,6 +1305,9 @@ describe("the boards a player switches during setup", () => {
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+    // The form is the SERVER's, and so is the screen it is opened from: `#/` is
+    // the front door since M6.5b2 (R-6.5b2.1).
+    window.location.hash = "#/lobby";
     render(<App />);
     const user = userEvent.setup();
 
@@ -1345,6 +1351,19 @@ describe("the boards a player switches during setup", () => {
 // a table is not opened twice because `open` navigates before it fetches.
 
 describe("the route", () => {
+  // **The local host is a module SINGLETON, and two cells here start one.**
+  // The door draws "On this device", which asks this tab's Worker for its
+  // games; `stubWorker` clears the fakes it has built but not the singleton
+  // holding one, so without this the local-create cell below finds a host from
+  // the door cell above it and `currentWorker()` has nothing to hand back. The
+  // shape is `a local game`'s own.
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+  });
+
   /** `App`, signed in, over a stub that answers the bootstrap and both lobby
    *  scopes from the corpus. */
   const app = (handler: (call: ApiCall) => Reply | undefined = () => undefined) => {
@@ -1364,15 +1383,44 @@ describe("the route", () => {
       if (isGamesList(call, "mine")) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+    // **The LOBBY unless the cell says otherwise.** The suite's `beforeEach`
+    // empties the hash, which reads as the front door since M6.5b2 — the one
+    // screen in this client that is drawn from the browser alone. Every cell
+    // below that is about the server's screens says so by starting here; the
+    // two that are about the door set their own hash or assert the empty one.
+    if (!window.location.hash) window.location.hash = "#/lobby";
     render(<App />);
     return { stub, user: userEvent.setup() };
   };
 
-  it("lands on the lobby, and #/new draws the form", async () => {
+  // **The first screen is the DOOR, and everyone sees it** (R-6.5b2.1). It is
+  // drawn from this browser alone — the Worker's own listing and a link — so it
+  // renders in front of the sign-in gate rather than behind it, which is what
+  // lets the shell be fetched without a login at all.
+  it("lands on the door, which draws both ways on", async () => {
+    stubWorker();
+    // Said out loud, because `app()` above starts its other cells at the lobby:
+    // this is the one that is about the screen a bare `#/` draws.
+    window.location.hash = "#/";
+    app();
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    // A LINK and never a fetch: Access answers a navigation with a redirect to
+    // another origin, which a `fetch` follows and then fails opaquely.
+    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute(
+      "href",
+      "/enter",
+    );
+    // And the lobby is not this screen, which is the half that moved.
+    expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
+    expect(window.location.hash).toBe("#/");
+  });
+
+  it("draws the lobby at #/lobby, and #/new draws the form", async () => {
+    window.location.hash = "#/lobby";
     const { user } = app();
-    // The first screen after the door is the LOBBY, not the form — which is the
-    // product change: a player with three games open used to be shown a blank
-    // create.
+    // The server's first screen is the LOBBY, not the form — which is M6.2's
+    // product change, kept: a player with three games open used to be shown a
+    // blank create.
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "New game" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "New table" }));
@@ -1449,7 +1497,7 @@ describe("the route", () => {
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
   });
 
-  it("shows the server's sentence over the lobby when a table refuses, and goes back to #/", async () => {
+  it("shows the server's sentence over the lobby when a table refuses, and goes back to #/lobby", async () => {
     window.location.hash = "#/t/not-yours";
     app((call) =>
       call.path.endsWith("/api/games/not-yours/table")
@@ -1476,7 +1524,10 @@ describe("the route", () => {
     // table that answers nothing is the one place a player cannot act from —
     // and a reload would earn the same refusal again.
     expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    // **The lobby and not the door**, because the table that refused is the
+    // SERVER's: a sentence about it belongs on the screen its siblings are
+    // listed on (R-6.5b2.1). A `local-` id lands on the door instead.
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
   });
 
   // **And it does not outlive the SCREEN either** (final review M5). The clear
@@ -1497,7 +1548,7 @@ describe("the route", () => {
     await user.click(screen.getByRole("button", { name: "New table" }));
     await screen.findByRole("heading", { name: "New game" });
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
-    window.location.hash = "#/";
+    window.location.hash = "#/lobby";
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
   });
@@ -1675,7 +1726,7 @@ describe("the route", () => {
     await screen.findByLabelText("Password");
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-    await waitFor(() => expect(window.location.hash).toBe("#/"));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     // The face went with the screen — a leftover would draw over the next table
     // opened.
     expect(screen.queryByLabelText("Password")).toBeNull();
@@ -1840,7 +1891,12 @@ describe("the route", () => {
     await user.click(gameMenu());
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-    expect(window.location.hash).toBe("#/");
+    // **`#/lobby` since M6.5b2**, and the word on the button is why: every
+    // control in this client that says "Lobby" goes to the lobby, whatever it
+    // is leaving. What lands on the DOOR is a game that ENDS — abandoned,
+    // deleted, or asked for and no longer there — and only when it is a local
+    // one, because that is the screen its siblings are listed on.
+    expect(window.location.hash).toBe("#/lobby");
   });
 });
 
@@ -1864,6 +1920,10 @@ describe("the door", () => {
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       return undefined;
     });
+    // **The lobby, because that is where the server's door now stands**
+    // (R-6.5b2.1): `#/` is the front door and draws no sign-in at all — it is
+    // the screen that needs no identity.
+    window.location.hash = "#/lobby";
     render(<App />);
     await screen.findByRole("heading", { name: "Sign in" });
     // **Nothing is asked for from behind the door.** Every `/api/games` route
@@ -1891,7 +1951,7 @@ describe("the door", () => {
   // is the one that needs arranging: `/api/me` refusing while the server is
   // otherwise reachable, which is what tells the door's own complaint from the
   // "not connected" line that replaces it when NOTHING answered.
-  it("draws the door's refusal beside the games on this device, rather than instead of them", async () => {
+  it("draws the door's refusal in place of the lists, with this browser's games one hash away", async () => {
     stubWorker();
     const sentence = "the store could not be read";
     stubApi((call) => {
@@ -1903,12 +1963,20 @@ describe("the door", () => {
       if (call.path.endsWith("/api/art")) return wire.artManifest;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+    window.location.hash = "#/lobby";
     render(<App />);
     expect(await screen.findByText(sentence)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
     // And not the line for a server nobody reached: this one answered.
     expect(screen.queryByText("not connected")).toBeNull();
+    // **The other channel is still reachable from here** (R-6.5b2.1). "On this
+    // device" is the DOOR's since this cycle, and the lobby's one link back is
+    // drawn OUTSIDE the server area's three states — including this one, where
+    // the door itself refused and there is nothing else on the screen to press.
+    act(() => {
+      window.location.hash = "#/";
+    });
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
   });
 
   it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
@@ -1917,6 +1985,7 @@ describe("the door", () => {
       // that mode — so the MODE is the one field moved off a real payload.
       call.path.endsWith("/api/me") ? { ...wire.meSignedOut, mode: "cf-access" } : undefined,
     );
+    window.location.hash = "#/lobby";
     render(<App />);
     await screen.findByText(/Cf-Access-Authenticated-User-Email/);
     // There is nothing to type: the identity arrives from an edge in front of
@@ -2034,6 +2103,7 @@ describe("the door", () => {
       if (isGamesList(call)) return signedOutReply();
       return undefined;
     });
+    window.location.hash = "#/lobby";
     render(<App />);
     await screen.findByRole("heading", { name: "Sign in" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
@@ -2078,6 +2148,8 @@ describe("the door", () => {
       if (call.path.endsWith("/areas")) return wire.areas;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+    // The create is the SERVER's, and so is the screen it starts from.
+    window.location.hash = "#/lobby";
     render(<App />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "New table" }));
@@ -3362,7 +3434,21 @@ describe("a local game", () => {
       // **The row STAYS listed** (P-6): the listing reads table documents and
       // this game's is readable, so a save that will not rebuild is still
       // something a player can find, save as a file and abandon.
+      //
+      // **It is listed on the DOOR since M6.5b2** (R-6.5b2.1), which is where
+      // the games in this browser live. The button says "Lobby" and goes to
+      // the lobby — every control in this client that names that destination
+      // still reaches it — so the way to this row is the lobby's own link back,
+      // taken here as the address it carries.
       await user.click(screen.getByRole("button", { name: "Lobby" }));
+      expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Play on this device" })).toHaveAttribute(
+        "href",
+        "#/",
+      );
+      act(() => {
+        window.location.hash = "#/";
+      });
       expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
     } finally {
       caught.restore();
@@ -3370,13 +3456,19 @@ describe("a local game", () => {
   });
 });
 
-// ---- the first screen with no server (M6.5b, R-6.5b.2, R-6.5b.8) ----------
+// ---- the first screen with no server (M6.5b R-6.5b.8, M6.5b2 R-6.5b2.1) ----
 //
 // **The guarantee, in two code paths.** An API that REFUSES and an API that
 // never ANSWERS are two different states of `useMe` — the first sets the
-// door's error, the second leaves it null for ever — and until this cycle
-// each of them drew nothing at all: four `return`s above every screen. The
-// games in this browser have to be reachable through both.
+// door's error, the second leaves it null for ever — and before M6.5b each of
+// them drew nothing at all: four `return`s above every screen. The games in
+// this browser have to be reachable through both.
+//
+// **The first screen is the DOOR since M6.5b2**, and it is drawn from this
+// browser alone: the games in its own IndexedDB and a link to the turnstile.
+// The line that reports an unreachable API is the LOBBY's and stays there — a
+// screen that asks the server nothing has nothing to report about it — so the
+// cells below read the two screens at the two addresses.
 describe("the first screen with no server", () => {
   const LOCAL = "local-1";
 
@@ -3417,10 +3509,21 @@ describe("the first screen with no server", () => {
     );
     render(<App />);
     await localSection();
-    // The four server sections are replaced by the one line that says what is
-    // true, rather than by a door error about a server nobody can reach.
+    // **The door says nothing about the server, because it asks it nothing**
+    // (R-6.5b2.7).
+    expect(screen.queryByText("not connected")).toBeNull();
+    // And the line that DOES report it is one hash away, where the four server
+    // sections it replaces would be: the truth is still told, on the screen
+    // whose subject the server is.
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
     expect(await screen.findByText("not connected")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    act(() => {
+      window.location.hash = "#/";
+    });
+    await localSection();
     await playsHere();
   });
 
@@ -3451,11 +3554,11 @@ describe("the first screen with no server", () => {
       "fetch",
       vi.fn(() => new Promise<Response>(() => {})),
     );
+    // The LOBBY, because the line under test is the lobby's: the door reports
+    // nothing about a server it never asks (R-6.5b2.7).
+    window.location.hash = "#/lobby";
     render(<App />);
-    await until(
-      () => screen.queryByRole("heading", { name: "On this device" }) !== null,
-      "the local section",
-    );
+    await until(() => screen.queryByRole("heading", { name: "Lobby" }) !== null, "the lobby");
     // **The anti-vacuity partner.** Nothing has come back yet, and "not
     // connected" is a claim this browser cannot make until its own deadline
     // says so — without this the cell would pass against a client that printed
@@ -3492,6 +3595,7 @@ describe("the first screen with no server", () => {
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+    window.location.hash = "#/lobby";
     render(<App />);
     await until(() => screen.queryByRole("heading", { name: "Your games" }) !== null, "the lobby");
 
@@ -3520,6 +3624,7 @@ describe("the first screen with no server", () => {
       // otherwise read for ever.
       return new Promise<Reply>(() => {});
     });
+    window.location.hash = "#/lobby";
     render(<App />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -3532,8 +3637,11 @@ describe("the first screen with no server", () => {
       "the door's own word, once the server answered",
     );
     expect(screen.queryByText("not connected")).toBeNull();
-    // And the games on this device were there throughout.
-    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    // **And the way to the games on this device was there throughout.** The
+    // section itself is the door's since M6.5b2; what this screen owes a player
+    // whose server will not answer is a way OUT of it, and that link is drawn
+    // in every one of the server area's three states.
+    expect(screen.getByRole("link", { name: "Play on this device" })).toBeInTheDocument();
   });
 
   it("plays a whole local game with every fetch REFUSING, the spy flat across three moves", async () => {

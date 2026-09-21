@@ -442,11 +442,16 @@ export async function renderApp(
   // built for are one string.
   localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 
+  // **At `#/lobby`, because `#/` is the front door since M6.5b2** (R-6.5b2.1).
+  // The door lists the games in THIS BROWSER and offers a link to the turnstile;
+  // the server's tables are the lobby's, which is where the row below is. The
+  // suite's own `beforeEach` leaves the hash empty, which now reads as the door.
+  window.location.hash = "#/lobby";
   const view = render(<App />);
-  // **Through the LOBBY now, which is the first screen after the door (spec
-  // §5.1).** The row is the same row the saved list used to draw, in the
-  // section that is now its home; the id is still what names it, because
-  // `gamesNamed` clears the corpus row's own name.
+  // **Through the LOBBY, the server's own first screen (spec §5.1).** The row
+  // is the same row the saved list used to draw, in the section that is now its
+  // home; the id is still what names it, because `gamesNamed` clears the corpus
+  // row's own name.
   //
   // **A LINK since M6.2 (R-14)**: the row's job is to go to `#/t/<id>`, so it
   // carries that address in an `href` and the browser navigates. A `button`
