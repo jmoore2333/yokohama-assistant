@@ -156,7 +156,8 @@ pub struct NewGame {
     #[serde(default)]
     pub name: Option<String>,
     /// The storage id, under [`is_safe_id`]; absent, the server draws one. Tests
-    /// and the fixture harness set it; the browser never does.
+    /// and the fixture harness set it, and since M6.5b the browser's Worker sets it
+    /// on every LOCAL create (`local-<16 hex>`, R-6.5b.12); a hosted create never does.
     #[serde(default)]
     pub id: Option<String>,
     /// Written onto every seat the creator holds (R-2.3), and onto no other —
