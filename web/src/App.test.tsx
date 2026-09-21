@@ -5,7 +5,15 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
-import { CLAIMED_USER_KEY, chatText, lobbyChat, setArchiveKind, setChatText, setLobbyChat } from "./api";
+import {
+  CLAIMED_USER_KEY,
+  chatText,
+  lobbyChat,
+  rememberServerFacts,
+  resetFactsForTest,
+  setChatText,
+  setLobbyChat,
+} from "./api";
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
@@ -182,12 +190,12 @@ describe("art", () => {
   // art. A 404 must therefore not be an error the player sees.
   it("a server with no art still renders the game", async () => {
     const stub = await renderApp(wire.optionsMany, (call) =>
-      call.path.endsWith("/api/art") ? { status: 404, body: { error: "no art here" } } : undefined,
+      call.path.endsWith("/art/manifest.json") ? { status: 404, body: { error: "no art here" } } : undefined,
     );
     // The 404 branch was actually ENTERED. The first draft of this test let the
-    // harness answer `/api/art` from the corpus before the handler saw it, so
+    // harness answer `/art/manifest.json` from the corpus before the handler saw it, so
     // it asserted the absence of an error message on a page that had art.
-    expect(stub.matching("GET", "/api/art")).toHaveLength(1);
+    expect(stub.matching("GET", "/art/manifest.json")).toHaveLength(1);
     expect(screen.queryByText(/no art here/)).toBeNull();
     expect(screen.getByRole("heading", { name: "Yokohama" })).toBeInTheDocument();
     // And the typed fallback is what is drawn: the card face carries the id
@@ -1164,7 +1172,7 @@ describe("opening a saved table", () => {
       if (mine !== undefined) return mine;
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (isGamesList(call, "mine")) return gamesNamed("wire");
       // The lobby asks for all THREE scopes (spec §5.2, R-3.9); nothing here is
       // open and nothing is being watched.
@@ -1281,7 +1289,7 @@ describe("the boards a player switches during setup", () => {
       if (call.path.endsWith("/api/me")) return wire.me;
       if (isGamesList(call)) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
       // DEALING table, the dealing screen fetches the caller's own two cards,
       // and the keep that finishes the dealing answers with the table at
@@ -1373,7 +1381,7 @@ describe("the route", () => {
       if (mine !== undefined) return mine;
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/api/health")) return wire.health;
       // A screen with a signal opens one; a cell about the signal scripts its
       // own above, and this is the resting answer for the rest.
@@ -1917,7 +1925,7 @@ describe("the door", () => {
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.split("?")[0]!.endsWith("/api/games")) return wire.games;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       return undefined;
     });
     // **The lobby, because that is where the server's door now stands**
@@ -1945,6 +1953,38 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/me").length).toBeGreaterThanOrEqual(2);
   });
 
+  // **The FRONT door is not behind the server's** (M6.5b2, R-6.5b2.1). The
+  // cells in "the first screen with no server" read `#/` with the API refused;
+  // this one reads it with the server perfectly reachable and NOBODY signed in,
+  // which is the arrangement where a gate would still have been visible: the
+  // form is one hash away and is not drawn here, and the door asks `/api/me`
+  // nothing to find that out.
+  it("draws the door and no sign-in at #/ when the server is up and nobody is signed in", async () => {
+    stubWorker();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/";
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute("href", "/enter");
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    // And the door was never asked who this is.
+    expect(stub.matching("GET", "/api/me")).toHaveLength(0);
+
+    // One hash away, the form IS drawn — so the absence above is this screen's
+    // rule and not a client that has stopped asking altogether.
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(stub.matching("GET", "/api/me")).toHaveLength(1);
+  });
+
   // **The door's FIRST answer, as content** (M6.5b, spec §2.5). The other
   // three arms are exercised by the cells around this one — the form, the
   // sentence, and the silence in "the first screen with no server" — and this
@@ -1960,7 +2000,7 @@ describe("the door", () => {
       // itself refused, and its words are the useful ones.
       if (call.path.endsWith("/api/health")) return wire.health;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     window.location.hash = "#/lobby";
@@ -1977,6 +2017,49 @@ describe("the door", () => {
     });
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    // **And an ordinary refusal offers no turnstile** (M6.5b2) — the
+    // anti-vacuity partner of the cell below, which draws one. This sentence
+    // is the server's own and `/enter` would do nothing about it.
+    expect(screen.queryByRole("link", { name: "Sign in again" })).toBeNull();
+  });
+
+  // **The EDGE's 401 is the one refusal a player can act on** (M6.5b2, spec
+  // §2.1). The session in FRONT of the server expired; the name this browser
+  // holds is perfectly good, and passing the turnstile once fixes it. So the
+  // sentence is the expired-session line with `/enter` beside it — a
+  // navigation and never a fetch, because Access answers a fetch with a 302 to
+  // another origin that fails opaquely.
+  //
+  // It goes the whole way: the header `serverHeaders()` sends is what makes the
+  // 401 same-origin and readable, `settle` tells it from this API's own 401 by
+  // the `WWW-Authenticate` header, and `Door` draws it through `Refusal`.
+  it("draws the turnstile's link for an EXPIRED Access session, and keeps the stored name", async () => {
+    stubWorker();
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return new Response("<html>", {
+          status: 401,
+          headers: {
+            "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"',
+          },
+        });
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/lobby";
+    render(<App />);
+    expect(await screen.findByText(/Your session has expired/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/enter");
+    // **The claimed name is NOT dropped**, which is the half a status-only read
+    // would get wrong: the door this browser knocks on is fine, and signing the
+    // player out of it would replace an actionable sentence with a form that
+    // cannot mint the cookie that is actually missing.
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
+    // And the sign-in form is not what they are shown.
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
   });
 
   it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
@@ -2097,7 +2180,7 @@ describe("the door", () => {
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       // Both scopes, because the lobby asks for both and a client that saw one
       // refuse and one answer would draw half a lobby over a closed door.
       if (isGamesList(call)) return signedOutReply();
@@ -2121,7 +2204,7 @@ describe("the door", () => {
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (isGamesList(call)) return gamesNamed();
       if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
         return { status: 201, body: wire.tableDealing };
@@ -2936,10 +3019,11 @@ describe("a local game", () => {
   });
   afterEach(() => {
     resetLocalHostForTests();
-    // The deployment facts are a module singleton and the archive is read from
-    // the boot health: a cell that turned the server's archive on must not
-    // leave it on for the next one.
-    setArchiveKind("off");
+    // The deployment facts are a module singleton, and since M6.5b2 they carry
+    // the TIME they were read: a cell that left a fresh record behind would
+    // stop the next cell's own read from happening at all, as well as leaving
+    // its archive on. The whole record goes back, not one field of it.
+    resetFactsForTest();
   });
 
   /** The boot reads answered, and the SERVER LISTING NOTHING — so every row on
@@ -2958,7 +3042,7 @@ describe("a local game", () => {
       // §2.3), and it is read from the server's own health — never set by hand
       // here, so the cells run the path the page runs.
       if (call.path.endsWith("/api/health")) return { ...wire.health, archive };
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
         return { ...wire.houseChat, messages: [], last: 0 };
@@ -3360,7 +3444,16 @@ describe("a local game", () => {
   // **The one control a local game has that a hosted one does not** (P-6): the
   // abandon lives on the game's own screen, where this tab holds its lock, and
   // it reads "Abandon and save" when the SERVER keeps an archive.
+  //
+  // **The fact is REMEMBERED here rather than read at boot** (M6.5b2, spec
+  // §2.2): a RUNNING local game is on the local channel and asks the server
+  // nothing, so what this browser knows about the archive is what it was told
+  // last time it was past the door. This is that browser. The read that makes
+  // the arrangement unnecessary is Abandon's own, at the click, and belongs to
+  // the outbox cycle (§2.6) — what this cell is about is the ORDER: the send
+  // first, then the delete.
   it("abandons from its own screen, saving to the server's archive first", async () => {
+    rememberServerFacts({ ...wire.health, archive: "dir" });
     const { user, stub } = await openLocal(
       { ...wire.optionsMany, id: LOCAL },
       {
@@ -3499,6 +3592,27 @@ describe("the first screen with no server", () => {
     expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
   };
 
+  // **R-6.5b2.7: the door costs the Worker nothing.** The art manifest is a
+  // static file and the words on the cards come from the local host, so neither
+  // is a server route — and `/api/me` is not read either, which is the fourth
+  // request an earlier draft of this cycle did not count.
+  it("the first screen asks the server for nothing", async () => {
+    stubWorker();
+    const spy = vi.fn().mockRejectedValue(new Error("no server in this test"));
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+    await screen.findByText(/On this device/);
+    // The listing is the Worker's and lands after the render, so every read
+    // this screen makes is given a real turn before they are counted.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    const asked = spy.mock.calls.map((c) => String(c[0]));
+    expect(asked.filter((u) => u.startsWith("/api/"))).toEqual([]);
+    // The anti-vacuity half: it DID fetch, just not the API.
+    expect(asked).toContain("/art/manifest.json");
+  });
+
   it("renders On this device with its games when every fetch REFUSES", async () => {
     stubWorker();
     vi.stubGlobal(
@@ -3591,7 +3705,7 @@ describe("the first screen with no server", () => {
       if (call.path.endsWith("/api/health")) return new Promise<Reply>(() => {});
       if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -3687,44 +3801,83 @@ describe("the first screen with no server", () => {
 });
 
 // ---- the words on the cards survive an unreachable API (spec §2.3) --------
+//
+// **LOCAL-FIRST on the local channel since M6.5b2** (spec §2.2). `/api/labels`
+// is computed from the engine's registries, is deployment-independent, and the
+// corpus replay proves both hosts emit it byte-identically — so the front door
+// and a local game read the module in this tab's Worker and ask the server
+// nothing at all (R-6.5b2.7). Past the door the SERVER is asked first, because
+// it is the one that may have been updated, and the Worker is still the answer
+// when that read fails or times out.
 describe("the option words", () => {
   beforeEach(() => {
     resetLocalHostForTests();
   });
   afterEach(() => {
     resetLocalHostForTests();
+    resetFactsForTest();
     vi.useRealTimers();
   });
 
+  /** Every local labels read this test has made, across every Worker.
+   *
+   *  **Over the INSTANCES and not over `currentWorker()`**, because a lobby
+   *  visit starts no Worker at all since M6.5b2: the local channel is what
+   *  starts one, and "the server answered, so the module was never asked" has
+   *  to be readable as zero rather than as a throw. */
   const askedLocally = () =>
-    currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/labels");
+    FakeWorker.instances
+      .flatMap((w) => w.posted)
+      .filter((p) => p.kind === "call" && p.path === "/api/labels");
 
-  it("reads them from the Worker when the server's labels read is REFUSED", async () => {
-    stubWorker();
-    stubApi((call) => {
-      if (call.path.endsWith("/api/labels")) return { status: 503, body: wire.error };
-      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+  /** The four routes a signed-in LOBBY visit makes, with the labels read left
+   *  to the caller — which is the one this describe is about. */
+  const pastTheDoor = (labels: (call: ApiCall) => Reply | undefined) => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    window.location.hash = "#/lobby";
+    return stubApi((call) => {
+      if (call.path.endsWith("/api/labels")) return labels(call);
+      if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/health")) return wire.health;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
+  };
+
+  // **The door's own rule, and the one that is new this cycle** (R-6.5b2.7):
+  // the words come from the module and `/api/labels` is not asked for at all.
+  // The anti-vacuity partner is the cell below it, where the same client DOES
+  // ask the server once it is past the door.
+  it("reads them from the Worker at the door, and asks the server for nothing", async () => {
+    stubWorker();
+    const spy = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", spy);
     render(<App />);
+    await waitFor(() => expect(askedLocally()).toHaveLength(1));
+    expect(spy.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith("/api/"))).toEqual([]);
+  });
+
+  it("reads them from the Worker when the SERVER's labels read is REFUSED", async () => {
+    stubWorker();
+    pastTheDoor(() => ({ status: 503, body: wire.error }));
+    render(<App />);
+    // The screen opens ON the lobby, so the local channel's own read never
+    // happens and this ONE local read is the server refusal's fallback. The
+    // anti-vacuity partners are the cell above — where the server is not asked
+    // at all — and the one below, where it answers and is kept.
     await waitFor(() => expect(askedLocally()).toHaveLength(1));
   });
 
   it("falls back inside the five-second bound when the server's read never settles", async () => {
     vi.useFakeTimers();
     stubWorker();
-    stubApi((call) => {
-      // **A read that hangs never rejects**, so a `.catch` alone would wait for
-      // ever and the cards would keep their raw serde names for the life of
-      // the page. The bound is what turns silence into an answer.
-      if (call.path.endsWith("/api/labels")) return new Promise<Reply>(() => {});
-      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
-      if (call.path.endsWith("/api/health")) return wire.health;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
-      throw new Error(`unexpected ${call.method} ${call.path}`);
-    });
+    // **A read that hangs never rejects**, so a `.catch` alone would wait for
+    // ever. The bound is what turns silence into an answer.
+    pastTheDoor(() => new Promise<Reply>(() => {}));
     render(<App />);
     await flush();
     // The anti-vacuity partner: BEFORE the bound the server is still being
@@ -3739,18 +3892,12 @@ describe("the option words", () => {
 
   it("leaves the Worker's words alone when the server answers", async () => {
     stubWorker();
-    stubApi((call) => {
-      if (call.path.endsWith("/api/labels")) return wire.labels;
-      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
-      if (call.path.endsWith("/api/health")) return wire.health;
-      if (call.path.endsWith("/api/art")) return wire.artManifest;
-      throw new Error(`unexpected ${call.method} ${call.path}`);
-    });
+    pastTheDoor(() => wire.labels);
     render(<App />);
-    // The local listing is read whatever happens — the section is the first
-    // thing on the screen — so the claim is about the WORDS and not about the
-    // Worker: a server that answers is never asked for them twice.
-    await waitFor(() => expect(currentWorker().posted.length).toBeGreaterThan(0));
+    // The screen draws, the server answers, and the module is never asked for
+    // the words at all — which on this channel also means no Worker is started
+    // for them.
+    await screen.findByRole("heading", { name: "Lobby" });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });

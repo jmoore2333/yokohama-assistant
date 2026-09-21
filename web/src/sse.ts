@@ -4,16 +4,22 @@
 // it cannot carry a header. The `claimed` door is `X-Yokohama-Claimed-User` and
 // Cloudflare Access is a cookie the browser would send anyway, so an
 // `EventSource` would sign exactly one of the two deployments this server has.
-// A `fetch` carries `identityHeaders()` like every other call, and gets an
+// A `fetch` carries `serverHeaders()` like every other call, and gets an
 // `AbortController` with it — which is also what a hidden tab needs, and what
 // `EventSource` does not offer either.
+//
+// **Since M6.5b2 that header set carries `X-Requested-With` too** (spec §2.1),
+// and this is one of the three sites that has to: the open is built here, and
+// the refusal is parsed here, so a change made in `api.ts` alone would leave a
+// reconnect after an expired Access session reporting an ordinary network
+// failure. `EventSource` could not have sent that header either.
 //
 // What is here is the transport and NOTHING about the signal: this module knows
 // `event:` and `data:` lines, and does not know that a `signal` frame carries an
 // `Events` or that an `end` frame means a table was deleted. That belongs to
 // `signal.ts`, which is the one place the four consumers meet.
 
-import { ApiError, identityHeaders } from "./api";
+import { ACCESS_CHALLENGE, ApiError, isAccessChallenge, serverHeaders } from "./api";
 
 /** One frame off the wire: its name, and its payload as TEXT.
  *
@@ -100,10 +106,15 @@ export async function readStream(
   onOpen?: () => void,
 ): Promise<"ended" | "closed"> {
   const res = await fetch(url, {
-    headers: { ...identityHeaders(), accept: "text/event-stream" },
+    headers: { ...serverHeaders(), accept: "text/event-stream" },
     signal,
   });
   if (!res.ok || !res.body) {
+    // **The EDGE's 401 is not this API's** (spec §2.1): the session in front of
+    // the server expired, and the sentence for that is the one with the
+    // turnstile's link. Read the same way `call` reads it, through the same
+    // two functions, so the three sites cannot drift.
+    if (res.status === 401 && isAccessChallenge(res)) throw new ApiError(ACCESS_CHALLENGE, 401);
     let message = `${res.status} ${res.statusText}`.trim();
     try {
       const parsed = (await res.json()) as { error?: unknown };

@@ -16,6 +16,7 @@
 // as well as on.
 
 import { useEffect, useState } from "react";
+import { isLocal } from "./local/ids";
 
 export type Route =
   /** The front door at `#/` (R-6.5b2.1): play on this device, or play with
@@ -59,6 +60,25 @@ export function parseRoute(hash: string): Route {
     }
   }
   return { kind: "door" };
+}
+
+/** Which of the two channels a screen belongs to (M6.5b2, R-6.5b2.1).
+ *
+ *  **Single player is a channel now, not a section.** The door, the local
+ *  create and a `local-` table are drawn from this browser alone; everything
+ *  else is the server's. The distinction is what decides who the client talks
+ *  to at all: the LOCAL channel asks the server nothing, which is the whole of
+ *  R-6.5b2.7 — a single-player visitor costs the Worker zero invocations. */
+export type Channel = "local" | "multiplayer";
+
+/** A route's channel. One function, because three effects and one hook ask the
+ *  same question and three copies of the test are three places for the answer
+ *  to drift the next time a route is added. */
+export function channelOf(route: Route): Channel {
+  if (route.kind === "door") return "local";
+  if (route.kind === "new") return route.local ? "local" : "multiplayer";
+  if (route.kind === "table") return isLocal(route.id) ? "local" : "multiplayer";
+  return "multiplayer";
 }
 
 export function hashOf(route: Route): string {

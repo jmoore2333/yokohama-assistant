@@ -1,7 +1,6 @@
 import type {
   AreasPanel,
   ArchiveReply,
-  ArtManifest,
   ChatMessage,
   ChatPage,
   ChatPost,
@@ -25,7 +24,17 @@ import type {
   WhyResponse,
 } from "./types";
 import { localCall, localPair } from "./local/client";
-import { facts, patchServerFacts, serverFacts, setServerFacts, type ArchiveKind, type Host } from "./local/facts";
+import {
+  facts,
+  patchServerFacts,
+  recallServerFacts,
+  rememberServerFacts,
+  resetFactsForTest,
+  serverFacts,
+  serverFactsTakenAt,
+  type ArchiveKind,
+  type Host,
+} from "./local/facts";
 import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
 
 /** Which host a game belongs to, and what a local one is called (R-6.5b.12).
@@ -39,7 +48,13 @@ import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
  *  the create form seats it, and the Worker hands it to `dispatch`. */
 export { isLocal, LOCAL_PREFIX, LOCAL_USER };
 export type { ArchiveKind, Host };
-export { setServerFacts };
+/** The server's remembered facts, re-exported for the same reason `isLocal` is:
+ *  a page reader takes what it knows about the server from this module, and
+ *  `local/facts.ts` is where the record and its timestamp live. `App` records a
+ *  landed health read with `rememberServerFacts`; `recallServerFacts` is what
+ *  reads it back without asking; `resetFactsForTest` puts a cell's module state
+ *  back without touching what is written down. */
+export { recallServerFacts, rememberServerFacts, resetFactsForTest };
 
 /** A refusal from the server, carrying the sentence it refused with — and the
  *  STATUS it arrived with, because one caller has to branch on which refusal
@@ -196,8 +211,73 @@ export function identityHeaders(): Record<string, string> {
   return who ? { "x-yokohama-claimed-user": who } : {};
 }
 
+/** What EVERY request to the server carries: the identity header, and the one
+ *  header that makes an expired Access session readable (M6.5b2, spec §2.1).
+ *
+ *  **`X-Requested-With` is a MEASUREMENT and not a convention** (spec §0.3,
+ *  taken against the live deployment on 2026-09-21). Cloudflare Access answers
+ *  a request without it with a `302` to `bdvc.cloudflareaccess.com`, which is
+ *  another origin: a `fetch` follows it and then fails opaquely, so the client
+ *  sees a network error and says so. With it, the answer is a same-origin `401`
+ *  carrying `WWW-Authenticate: Cloudflare-Access …`, whose headers this client
+ *  can read. `Accept: application/json`, `Sec-Fetch-Mode: cors` and
+ *  `Sec-Fetch-Dest: empty` were each measured NOT to trigger it.
+ *
+ *  **Shared by all THREE fetch sites**, and that is the whole reason it is a
+ *  function: `call` is not the only one — `readStream` opens the change stream
+ *  itself and `recordText` reads a body as text — so a header added at one site
+ *  would leave a stream reconnect and Save-game-file reporting an expired
+ *  session as an ordinary network failure. */
+export function serverHeaders(): Record<string, string> {
+  return { ...identityHeaders(), "X-Requested-With": "XMLHttpRequest" };
+}
+
+/** Whether this response is the EDGE saying the session is gone, rather than
+ *  the server saying nobody is signed in.
+ *
+ *  The header is the whole test: Access names itself in `WWW-Authenticate`, and
+ *  this API never sends that header at all. The two 401s mean different things
+ *  and must not render the same sentence — one is fixed by passing the
+ *  turnstile, the other by signing in. */
+export function isAccessChallenge(res: Response): boolean {
+  return res.headers.get("www-authenticate")?.startsWith("Cloudflare-Access") ?? false;
+}
+
+/** What the player reads when the EDGE refused (spec §4).
+ *
+ *  A sentence and not a status, and the one string the screen matches on to
+ *  draw the link to `/enter` beside it — a navigation, never a fetch, because
+ *  passing the turnstile is what mints the cookie every later request carries. */
+export const ACCESS_CHALLENGE = "Your session has expired.";
+
+/** How long the SERVER is given to answer a read before this client acts on
+ *  the silence.
+ *
+ *  **Because a read that HANGS never rejects**: a `fetch` against a server that
+ *  accepts the connection and then says nothing settles neither way, so a
+ *  `.catch` alone is a fallback that can never be reached. Long enough that a
+ *  slow link is not read as an outage, short enough that a player is not left
+ *  watching raw serde names while a dead connection expires on its own.
+ *
+ *  **Here rather than in `App`, since M6.5b2**, because the facts read below
+ *  is bounded by the same number the words on the cards are — two reads, one
+ *  deadline, and a second constant would be a second thing to keep in step. */
+export const BOUND_MS = 5_000;
+
+/** `p`, or a rejection once `ms` has passed.
+ *
+ *  A race rather than a catch, for the reason [`BOUND_MS`] gives. The loser's
+ *  timer is left to fire and reject a promise nobody is holding, which is
+ *  harmless: `Promise.race` has already settled. */
+export const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms)),
+  ]);
+
 /** Which change transport this DEPLOYMENT serves, read once from
- *  `GET /api/health` at boot and then read by `usePolled` on every open.
+ *  `GET /api/health` on entering the multiplayer channel (M6.5b2: no longer at
+ *  boot — the door asks nothing) and then read by `usePolled` on every open.
  *
  *  **A deployment fact and never a preference** (spec R-3.1): the edge in front
  *  of this server may not hold a stream open, and the held request is the same
@@ -217,7 +297,7 @@ export const setSignalKind = (k: "sse" | "held"): void => {
 };
 
 /** Whether this DEPLOYMENT answers the house chat (M6.4, R-6.4.6), read once
- *  from `GET /api/health` at boot.
+ *  from the same `GET /api/health` the transport above comes from.
  *
  *  Module-level for the reason `signalKind` is: one value for the life of the
  *  page, read by components that must not re-render when it is set. The default
@@ -245,20 +325,65 @@ export const setChatText = (n: number): void => {
 };
 
 /** Which archive this deployment writes finished and abandoned games to
- *  (M6.5a, R-6.5a.13), read once from `GET /api/health` at boot; `"off"` until
- *  then, and the Abandon control's label is the one thing that reads it. A
- *  health that does not answer leaves it off, which costs a label that says
- *  less than the server does — never one that promises a save it will not make.
+ *  (M6.5a, R-6.5a.13); `"off"` until a health read has landed.
  *
  *  **One named CROSS-READ** (spec §2.3): a LOCAL game's Abandon label reads
  *  this — the server's — because "Abandon and save" sends the pair to the
  *  server's archive. Every other fact a local screen reads is
- *  `facts("local")`'s. */
+ *  `facts("local")`'s.
+ *
+ *  **Since M6.5b2 the read that fills it is [`ensureArchiveFact`] and no longer
+ *  a boot read**, because the door asks the server nothing (R-6.5b2.7). This
+ *  accessor is the SYNCHRONOUS value a render reads; a caller that is deciding
+ *  something asks that one. */
 export const archiveKind = (): ArchiveKind => facts("server").archive;
 
 export const setArchiveKind = (k: ArchiveKind): void => {
   patchServerFacts({ archive: k });
 };
+
+/** How long a remembered health answer is trusted without asking again. */
+const FACTS_FRESH_MS = 3_600_000;
+
+/** The archive fact, read if it has to be (M6.5b2, spec §2.2).
+ *
+ *  **Three read points and no boot read.** The door costs the Worker nothing
+ *  (R-6.5b2.7), so the health read moved to the moments the answer is actually
+ *  used: entering the multiplayer channel, a local game reaching game over, and
+ *  Abandon being clicked on a local game. Browsing and playing still cost zero
+ *  invocations; the cost is at most one per browser, at the moment a game ends,
+ *  on a person who has already decided to keep something.
+ *
+ *  **A remembered answer goes stale and must be able to.** A deployment that
+ *  turns its archive on after a browser once read `"off"` would otherwise have
+ *  that browser deleting finished games for ever, with no mechanism that could
+ *  correct it — so anything older than an hour is re-read here, and `force` is
+ *  for a decision that cannot be undone.
+ *
+ *  **`"unknown"` is not a synonym for `"off"`.** It is the answer when nothing
+ *  has ever been read and nothing answers now: "off" is a claim about the
+ *  deployment, and a browser that has not asked has no grounds for it. */
+export async function ensureArchiveFact(opts?: {
+  /** Read the server again however fresh the remembered answer is — what a
+   *  delete that cannot be undone asks for. */
+  force?: boolean;
+}): Promise<ArchiveKind | "unknown"> {
+  const at = serverFactsTakenAt();
+  const fresh = at !== null && Date.now() - at < FACTS_FRESH_MS;
+  if (fresh && !opts?.force) return facts("server").archive;
+  try {
+    // **Through `api.health`, and bounded by the same number the words are**: a
+    // read that hangs would otherwise leave a caller waiting for ever for an
+    // answer it is about to act on.
+    const h = await bounded(api.health(), BOUND_MS);
+    rememberServerFacts(h);
+    return h.archive;
+  } catch {
+    // Nothing answered. A stale answer is still the last thing this deployment
+    // said; with nothing remembered at all there is nothing to say.
+    return at === null ? "unknown" : facts("server").archive;
+  }
+}
 
 /** The move happened and the browser would not keep it (spec §4).
  *
@@ -287,17 +412,19 @@ async function call<T>(method: string, path: string, body?: unknown, host?: Host
     // `identityHeaders()` is not read here: the Worker adds `local@browser`
     // and nothing on this device signs in.
     const r = await localCall(method, path, body);
-    const out = settle<T>(r.status, "", r.text);
+    // Nothing is in front of the module in this browser, so nothing can
+    // challenge it: the local arm is never an expired session.
+    const out = settle<T>(r.status, "", r.text, false);
     return r.saved ? out : withUnsaved(out, r.reason);
   }
-  const headers: Record<string, string> = { ...identityHeaders() };
+  const headers: Record<string, string> = { ...serverHeaders() };
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  return settle<T>(res.status, res.statusText, await res.text());
+  return settle<T>(res.status, res.statusText, await res.text(), isAccessChallenge(res));
 }
 
 /** Whether a path names a LOCAL game. Its own function so the two callers —
@@ -313,7 +440,15 @@ const isLocalOf = (path: string): boolean => {
  *  Extracted verbatim from `call` at M6.5b: a local reply arrives as a status
  *  and a string exactly as a fetched one does, and a second copy of this would
  *  be a second place where a refusal is worded or a 401 reaches the door. */
-function settle<T>(status: number, statusText: string, text: string): T {
+function settle<T>(
+  status: number,
+  statusText: string,
+  text: string,
+  /** Whether the response carried Access's own `WWW-Authenticate` — see
+   *  [`isAccessChallenge`]. The two 401s are different refusals and the caller
+   *  is the only one holding the `Response` that tells them apart. */
+  challenged: boolean,
+): T {
   // **The status is read BEFORE the body is parsed, and the parse cannot throw
   // over it.** This used to be an unguarded `JSON.parse` above the `res.ok`
   // check, so any non-JSON response became a `SyntaxError` and the status code —
@@ -335,6 +470,14 @@ function settle<T>(status: number, statusText: string, text: string): T {
   // status LINE at all — so the fallback is trimmed rather than left with a
   // trailing space.
   const bare = `${status} ${statusText}`.trim();
+  // **The EDGE's 401, which is not this API's** (M6.5b2, spec §2.1). The
+  // session in front of the server expired; the name this browser holds is
+  // fine. So the sentence is the expired-session line — the screen draws the
+  // turnstile's link beside it — and `unauthorized` is deliberately NOT fired:
+  // dropping the claimed user would sign the player out of a deployment that
+  // never asked them to, and the form they would then be shown cannot mint the
+  // cookie that is actually missing.
+  if (status === 401 && challenged) throw new ApiError(ACCESS_CHALLENGE, status, null);
   if (status < 200 || status >= 300) {
     const message =
       !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
@@ -443,21 +586,15 @@ export async function recordText(game: string): Promise<string> {
     }
     return text;
   }
-  const res = await fetch(`/api/games/${id(game)}/record`, { headers: { ...identityHeaders() } });
+  const res = await fetch(`/api/games/${id(game)}/record`, { headers: { ...serverHeaders() } });
   const text = await res.text();
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(text);
-      if (parsed && typeof parsed === "object" && "error" in parsed) {
-        message = String((parsed as { error: unknown }).error);
-      }
-    } catch {
-      parsed = null;
-    }
-    if (res.status === 401) unauthorized?.(message);
-    throw new ApiError(message, res.status, parsed);
+    // **`settle`'s refusal half, rather than a second copy of it** (M6.5b2).
+    // This site restated the sentence rule, the 401 rule and — once there were
+    // two kinds of 401 — would have restated the challenge read too. It always
+    // throws for a non-2xx, which is why the return below is still reached only
+    // on success.
+    settle<never>(res.status, res.statusText, text, isAccessChallenge(res));
   }
   return text;
 }
@@ -485,9 +622,6 @@ export const api = {
    *  when that read fails or times out — the module carries the same registry
    *  the server does. */
   labels: (host?: Host) => call<Labels>("GET", "/api/labels", undefined, host),
-  /** 404s when the server has no cropped art. That is a supported state, not an
-   *  error: callers treat the rejection as "no art" and draw without it. */
-  art: () => call<ArtManifest>("GET", "/api/art"),
   /** One page of the lobby, newest first.
    *
    *  Three scopes and not a filter: `mine` is every table you sit at, at every

@@ -282,7 +282,7 @@ export function Help() {
         <em>Save game file</em>, the same file the terminal loads.
       </p>
       <p>
-        A game you started under <strong>On this device</strong> &mdash; the door’s own
+        A game you started under <strong>On this device</strong> &mdash; the door&rsquo;s own
         section, which is where those games are listed rather than in the lobby &mdash; is
         different in one way that matters: it is played by this browser and is stored only in
         this browser, so nobody else can open it and clearing your site data would take it with

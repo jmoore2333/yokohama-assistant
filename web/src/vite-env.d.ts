@@ -5,6 +5,17 @@
 // undeclared name is `any` rather than an error — which is exactly how a
 // misspelt switch ships silently. Naming them here makes each one a property
 // with a type.
+//
+// **The declaration alone was not enough, which is why `ViteTypeOptions` is
+// here.** Vite's own fallback index signature stays in place unless a project
+// opts out of it, so `import.meta.env.VITE_MULTIPLAER` still typed as `any` and
+// the comment above described a fence that did not exist. `strictImportMetaEnv`
+// is Vite's switch for removing it: with it set, a name not declared below is a
+// compile error, which is what this file was always meant to say.
+
+interface ViteTypeOptions {
+  strictImportMetaEnv: unknown;
+}
 
 interface ImportMetaEnv {
   /** Whether this BUILD draws the way on to the server (R-6.5b2.7, spec §2.1).

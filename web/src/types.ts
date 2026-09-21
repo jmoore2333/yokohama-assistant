@@ -455,7 +455,9 @@ export interface Health {
   signal: "sse" | "held";
   /** Which archive this deployment writes finished and abandoned games to
    *  (M6.5a): none, a directory beside the store, or (M6.5c) a bucket. Read at
-   *  boot; the Abandon control's label is what reads it. */
+   *  the three points spec §2.2 names since M6.5b2 — entering the multiplayer
+   *  channel, a local game ending, and Abandon being clicked — and remembered
+   *  with the time it was taken. */
   archive: "off" | "dir" | "r2";
   /** Whether the house chat answers (M6.4). Off, this client draws no lobby
    *  panel and asks for nothing. */

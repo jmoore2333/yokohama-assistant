@@ -331,7 +331,7 @@ export function gate<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 /** The payloads `App` fetches to DRAW A SCREEN, answered from the corpus.
  *
  *  A FALLBACK, consulted only after the caller's own handler declines — see
- *  [`renderApp`]. It used to answer first, which silently stole `/api/art` from
+ *  [`renderApp`]. It used to answer first, which silently stole `/art/manifest.json` from
  *  any test that wanted to see the 404 branch.
  *
  *  **The three board panels joined the two bootstrap routes at W5b**, because
@@ -364,7 +364,9 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
   // Every screen with a signal opens one. A cell about the signal scripts its
   // own; this is the resting answer for the rest.
   if (call.path.endsWith("/stream")) return openStream();
-  if (call.path.endsWith("/api/art")) return wire.artManifest;
+  // **The art manifest is a static FILE since M6.5b2** (spec §2.2), not
+  // `/api/art`: the door costs the Worker nothing, and a static asset is free.
+  if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
   // **`GET …/table` is now on the way into every game (M6.1 §7.4)**: `App`'s
   // `open` asks what a table IS before it fetches the game, because a table
   // still dealing refuses the game route with a 409. So every cell that opens a
@@ -411,7 +413,7 @@ export async function renderApp(
 ): Promise<ApiStub> {
   // **The caller's handler is asked FIRST, and `undefined` means "not mine".**
   // The first draft answered the bootstrap routes before consulting it, so a
-  // test that wanted to see `/api/art` refuse got the corpus manifest instead
+  // test that wanted to see `/art/manifest.json` refuse got the corpus manifest instead
   // and its 404 branch was never entered — the test passed while asserting
   // nothing about the case it named.
   const stub = stubApi(async (call) => {

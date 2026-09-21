@@ -32,6 +32,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Abandon } from "./Abandon";
 import { api, ApiError, clearDisplayName, displayName, lobbyChat, setDisplayName } from "./api";
 import { Chat } from "./Chat";
+import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
@@ -340,7 +341,7 @@ export function Lobby({
       <a className="to-door" href={hashOf({ kind: "door" })}>
         Play on this device
       </a>
-      {notice && <div className="error">{notice}</div>}
+      {notice && <Refusal sentence={notice} />}
 
       {/* **The part of this screen the SERVER owns, and its three states**
           (M6.5b, spec §2.5). The door's four answers used to be four `return`s
@@ -431,7 +432,7 @@ export function Lobby({
         </>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

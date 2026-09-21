@@ -200,12 +200,19 @@ test("a whole game against the bot plays in the browser with no /api/ request at
 
   const game = await startGame(page, { local: true });
   expect(game.id.startsWith("local-"), `a local id, not ${game.id}`).toBe(true);
-  // **The baseline is taken HERE**, with the game already on screen: the sign
-  // in, the health read, the labels and the art all happen before it and are
-  // the server's business. `/api/archive` is the one exemption, and it is not
-  // reached until the game is over.
+  // **The baseline is taken HERE**, with the game already on screen: this walk
+  // SIGNS IN first, so the lobby's own reads — the door, the health, the words
+  // and the listings — all happen before it and are the server's business.
+  // `/api/archive` is the one exemption, and it is not reached until the game
+  // is over.
+  //
+  // **What changed at M6.5b2 is which SCREEN those reads belong to** (spec
+  // §2.2): they are the lobby's now and not the boot's, which is why the walk
+  // still makes them and why the archive fact is already known by the time this
+  // game ends. The cell that reads the door's own cost is the jsdom one; the
+  // one below this test reads it in a browser, with every `/api/` refused.
   const before = apiCalls.length;
-  expect(before, "the boot really did talk to the server, so zero below means something").toBeGreaterThan(0);
+  expect(before, "the sign-in really did talk to the server, so zero below means something").toBeGreaterThan(0);
 
   const pick = rng(0x4c4f_4341); // "LOCA"
   const used = new Map<Affordance, number>();
@@ -228,6 +235,13 @@ test("a whole game against the bot plays in the browser with no /api/ request at
   // on points and be split by the engine's tie-break.
   await expect(page.locator("table.outcome tbody tr")).toHaveCount(2);
   await expect(page.locator("table.outcome tr.won")).toHaveCount(1);
+
+  // **The control the archive fact decides is drawn, and it costs no request**
+  // (M6.5b2, spec §2.2). The game reaching game over IS one of the three read
+  // points, but the answer this browser already holds is under an hour old —
+  // the lobby read it on the way in and it was written down with the time it
+  // was taken — so the read is not repeated and the count below stays at zero.
+  await expect(page.getByRole("button", { name: "Send to the archive" })).toBeVisible();
 
   const duringPlay = apiCalls.slice(before);
   expect(duringPlay, "no /api/ request of ANY kind once the local game is on screen").toEqual([]);
@@ -498,15 +512,35 @@ test("a real trap is recovered by a fresh local host, and play continues from th
 test("the first screen renders On this device with the API refused, and a local game plays", async ({
   page,
 }) => {
-  // Every `/api/` request refused at the edge — the health read, the door, the
-  // labels and the art. Level 2 is "the API unreachable with the page loaded"
-  // (spec §8), which is exactly this.
+  // Every `/api/` request refused at the edge. Level 2 is "the API unreachable
+  // with the page loaded" (spec §8), which is exactly this — and since M6.5b2
+  // the front door makes none of them, so what the refusal is really reaching
+  // is the LOBBY one hash away, below.
   await page.route("**/api/**", (r) => r.fulfill({ status: 503, body: "down" }));
   const watch = watchForBreakage(page, [{ status: 503, urlIncludes: "/api/" }]);
+  /** Every same-origin path this page asks for — the same instrument the walk
+   *  above uses, read here for the DOOR rather than for a game. */
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    const url = new URL(r.url());
+    if (url.origin === new URL(BASE_URL).origin) asked.push(url.pathname);
+  });
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Play the bot here" })).toBeVisible();
+  // **The door costs the Worker NOTHING** (R-6.5b2.7), in a real browser: not
+  // `/api/me`, not the health, not the words, not the art. The jsdom cell makes
+  // the same claim against a stubbed `fetch`; this one makes it against the
+  // network, where the art manifest really is a static file served beside the
+  // pictures rather than a route.
+  expect(
+    asked.filter((p) => p.startsWith("/api/")),
+    "the front door asks the API for nothing",
+  ).toEqual([]);
+  // The anti-vacuity half: it DID fetch, just not the API — the art manifest is
+  // a static file now, served beside the pictures it names.
+  expect(asked, "and the manifest is a file, not a route").toContain("/art/manifest.json");
   // **The other way on is drawn from the BUILD, not from an answer** (M6.5b2,
   // R-6.5b2.7): every `/api/` request is being refused here, and the link is on
   // the screen anyway with the turnstile's own address in it. This is the half

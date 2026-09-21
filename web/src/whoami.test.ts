@@ -7,6 +7,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { CLAIMED_USER_KEY } from "./api";
+import type { Channel } from "./route";
 import { stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 import { doorSentence, useMe } from "./whoami";
@@ -25,10 +26,15 @@ const meFromStorage = () =>
   );
 
 describe("useMe", () => {
+  // **The hook takes the CHANNEL since M6.5b2** (R-6.5b2.7, spec §2.2). Every
+  // cell here is about the door the SERVER owns, so they all run on the
+  // multiplayer channel; the cell below this describe is the one that reads the
+  // other arm — the front door, where `/api/me` is not asked at all.
+
   it("reads /api/me once at mount and hands back what it said", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     const stub = meFromStorage();
-    const { result } = renderHook(() => useMe());
+    const { result } = renderHook(() => useMe("multiplayer"));
     // `null` until it answers is the whole reason the app draws nothing at
     // first: a default of "signed out" would flash the sign-in screen at every
     // player who is already signed in.
@@ -41,7 +47,7 @@ describe("useMe", () => {
   it("re-reads it on refresh, which is how signing out reaches the screen", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     const stub = meFromStorage();
-    const { result } = renderHook(() => useMe());
+    const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
     localStorage.removeItem(CLAIMED_USER_KEY);
     act(() => result.current.refresh());
@@ -56,7 +62,7 @@ describe("useMe", () => {
   it("carries the refusal's sentence to the door, and drops the name with it", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     meFromStorage();
-    const { result } = renderHook(() => useMe());
+    const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
     expect(result.current.notice).toBeNull();
 
@@ -71,7 +77,7 @@ describe("useMe", () => {
   it("says nothing when the player signs out on purpose", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     meFromStorage();
-    const { result } = renderHook(() => useMe());
+    const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
     act(() => result.current.signedOut("stale sentence from an earlier refusal"));
     await waitFor(() => expect(result.current.notice).not.toBeNull());
@@ -91,9 +97,35 @@ describe("useMe", () => {
     stubApi((call) =>
       call.path.endsWith("/api/me") ? { status: 500, body: wire.error } : undefined,
     );
-    const { result } = renderHook(() => useMe());
+    const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.error).toBe(wire.error.error));
     expect(result.current.me).toBeNull();
+  });
+
+  // **The LOCAL channel asks nothing** (R-6.5b2.7, spec §2.2): the front door
+  // draws the games in this browser and a link to the turnstile, and `/api/me`
+  // is a protected path now — read there it would be a 401 on every visit.
+  // `me` stays at its third state, which is exactly what "nothing has been
+  // asked" should look like.
+  it("asks nothing at all on the local channel, and asks once on entering the other", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const stub = meFromStorage();
+    const { result, rerender } = renderHook(({ c }: { c: Channel }) => useMe(c), {
+      initialProps: { c: "local" as Channel },
+    });
+    await waitFor(() => expect(stub.calls.length).toBe(0));
+    expect(result.current.me).toBeNull();
+    expect(result.current.error).toBeNull();
+
+    rerender({ c: "multiplayer" });
+    await waitFor(() => expect(result.current.me).toEqual(wire.me));
+    expect(stub.matching("GET", "/api/me")).toHaveLength(1);
+
+    // And going BACK to the door keeps what the server said rather than asking
+    // again: nothing about the door makes the answer stale.
+    rerender({ c: "local" });
+    await waitFor(() => expect(result.current.me).toEqual(wire.me));
+    expect(stub.matching("GET", "/api/me")).toHaveLength(1);
   });
 });
 
