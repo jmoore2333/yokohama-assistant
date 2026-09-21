@@ -242,6 +242,31 @@ alone — the inherited defect.
 
 **The scoped re-review** (Opus, `final-rereview.md`): all EIGHT items ADDRESSED with file:line — the `not-held` loss raised in `localCall` (`client.ts:305-313`, cells in `client.test.ts` and `api.test.ts`), `Cache-Control` on the success arm for `assets/` paths only with `/api/`, `/art/` and the fallback structurally excluded (`assets.rs:85-129`), the CI line, the `NewGame` remount reading the posted `players: 2`, the `serverUp` guard through the real not-connected arm, the archive guard with both clicks in one `act`, `checked_sub` refused by name, the six doc sites with the sidecar and the restart wording untouched; 0 Critical / 0 Important / 3 Minor new (a stale doc, an over-wide comment, an app-wide rather than per-game guard), all LEAVE.
 
+### 4.6 The headed live review of the deployed site (Opus, Playwright over real Chrome 153, headed; `live-review.md`, screenshots `live-01…10`)
+
+Run against `0.5.0-m6.5b` on the NAS through the tunnel, signed in as a throwaway identity.
+**SHIP WITH FIXES — 0 Critical / 1 Important / 3 Minor.** What held, measured: `/api/` requests
+during play **0** across a create, the deal, the keep, seven moves, a bot turn, Suggest, Why, the
+scrubber and an Undo — by an in-page `fetch`/XHR/EventSource probe AND the MCP's network log;
+two tabs both directions correct (the second refused with Take over, took over with every move,
+the first read-only with Take back, Abandon absent, Save kept; Take back returned it); the abandon
+landed on the NAS at `browser/live-review_at_m65b.test/rev7/abandoned/local-…{.json,.table.json}`
+(201; rev 7, 14 events, bot `v4-step9-draft1`); "not connected" at **5,146 ms** on a hung API and
+never spuriously; the module one request, 2,842,659 B raw / 727 KB over the wire (zstd), cached
+at 8–13 ms afterwards; the API-refused first screen with a real 503 on `/api/*`.
+**The Important (I-1): a Chat panel rendered on a LOCAL game's DEAL screen and accepted messages
+from `local@browser`** — spec §2.5 "no Chat panel" on a local table; the game screen was clean;
+reproduced on two fresh games. Fixed the same night as the point release **`0.5.0-m6.5b.1`**:
+`253387d` the RED cell (a local deal over the fake Worker holds no chat `log` region and posts
+no chat message to the local host — measured red with the guard mutated to always render),
+`9bd1d4b` the guard (`!isLocal(game)` around the deal screen's Chat mount); typecheck 0, vitest
+**747**/42; the e2e was not re-run for it (a Dealing-only change whose e2e cells all sign in
+hosted). The three Minors LEAVE as owner items: local rows name `local@browser` beside hosted
+rows naming a person; the take-over screen names no game, so with two local games you cannot
+tell which you are claiming; `why`'s refusal shows the machine tag `no_bot_move_yet` (inherited
+from M3). The review's own lesson repeats M6.4's: the vitest and e2e cells covered the GAME
+screen's three differences and never the DEAL screen's, and only a headed walk noticed.
+
 ### 4.5 The mutation battery (spec §6.6; Opus; `mutation-battery.md`; at `ee552cf`)
 
 Twenty-three mutations, each applied, run against the cell the spec names, and reverted with the
@@ -447,6 +472,9 @@ sentence; the Playwright "ONCE" comment; the CI line for the wasm crate's cells.
    opener silently wins (the generation still fences the first tab's writes).
 8. **Nothing in CI builds the self-host image** (`deploy/Dockerfile`), verified once by hand.
 9. **Inherited**: the vs-bot gate livelock (M6.4 close §6.3); the Dockerfile's floating base tag.
+10. **From the headed live review** (§4.6): local rows and the archived table name `local@browser`
+    beside hosted rows naming a person; the take-over screen names no game; `why`'s refusal shows
+    the machine tag `no_bot_move_yet` (inherited from M3).
 
 ---
 
@@ -496,6 +524,8 @@ The whole-branch review's sentences, carried as written with the wave's outcome 
 - **The three `events*` fixtures are unreplayable by the browser host** — the signal is the
   host's, and nothing in the corpus replay says the browser host's own signalling is right; Task 8's
   cells are where a local game's signalling is exercised.
+- **The point release `0.5.0-m6.5b.1` was not re-walked by the e2e** (a Dealing-only change; its
+  e2e cells sign in hosted) and not re-reviewed headed; the fix's cell is the claim.
 - **The plan's Task 9 carries two stale sentences** (`web/dist/wasm/`; "the Free-tier confirmation
   the owner owes") that this document does not copy.
 - **The mutation battery ran at `ee552cf`**, one commit before the close HEAD; the one commit

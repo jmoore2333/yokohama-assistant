@@ -1140,7 +1140,10 @@ new ones is byte-identical to `0.5.0-m6.5a`'s.
     NO `cache-control`, as the wave's cell requires.
   - `GET /art/areas/Church.webp` 200 `image/webp`.
   - The HEADED live review of the deployed site is `.superpowers/sdd/2026-09-20-web-frontend-m6.5b-plan/live-review.md`
-    and the close's §4.6 <!-- LIVE-REVIEW -->.
+    and the close's §4.6: **SHIP WITH FIXES** — zero `/api/` requests across a whole local
+    session, both takeover directions, the abandon landed under `browser/<caller>/rev7/abandoned/`,
+    "not connected" at 5.1 s on a hung API; one Important (a chat panel on a LOCAL game's DEAL
+    screen) fixed as the point release below.
 - **Downtime:** the ~66 s between `stop` and `start` (the four swap calls were made one per
   tool turn this time); nobody was playing.
 - **Rollback:** `yokohama-web:0.5.0-m6.5a` stays on the NAS; recreate from that tag with §3's
