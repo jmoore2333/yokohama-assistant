@@ -1154,6 +1154,18 @@ new ones is byte-identical to `0.5.0-m6.5a`'s.
   browser that already holds the m6.5b client — nothing, since a local game never touches the
   server; a browser game's "Send to the archive" would answer 404 until the newer binary is
   back. **Sixteen tags now sit on the NAS.**
+- **The point release `0.5.0-m6.5b.1`, 06:40Z the same night** — the headed live review's one
+  Important (a Chat panel on a LOCAL game's DEAL screen, accepting messages from `local@browser`)
+  fixed at `9bd1d4b` (the RED cell `253387d` first). A client-only change: the musl binary is the
+  same 6,633,736 bytes from the same Rust; `npm run build` re-cut the bundle as `index-BEX0dlqy.js`
+  with the module and the Worker chunk unchanged by hash; context tarball 14,860,110 B, fetched by
+  the NAS at 06:39:33Z; image `yokohama-web:0.5.0-m6.5b.1` Id `sha256:a13d983096ed…` 29,429,784 B
+  created 06:39:45Z; the swap (stop ~06:39:59Z → create 06:40:14Z → start **06:40:19Z**) to
+  container `0c3e49f6b21726edc1dff9e8b4388c13a07df562bac5dbaf589cbeca8e3249dc`, same address
+  172.21.0.4, both `Env` entries, the volume across; verified through the tunnel at 06:40:33Z
+  (health `archive: dir`; `/` serves `index-BEX0dlqy.js`; `/api/games` 401; the module
+  `application/wasm` + `immutable`). Not re-walked headed and not re-run through the e2e (the
+  close §7 says so). **Seventeen tags now sit on the NAS.**
 
 ---
 
