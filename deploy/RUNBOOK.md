@@ -63,6 +63,29 @@ RUSTFLAGS="-C linker=$LLD -C link-self-contained=yes" \
 cd web && npm run build && cd ..     # dist/ is architecture-independent
 ```
 
+**Since M6.5b the client build BUILDS THE WASM MODULE first** (`npm run build` =
+`build:wasm && build:client`), so the workstation needs the target and the
+generator on the PINNED toolchain, once:
+
+```bash
+rustup target add wasm32-unknown-unknown                   # onto the PINNED toolchain
+cargo install wasm-bindgen-cli --version 0.2.128 --locked   # the lock's version; ~2 min from source
+```
+
+`build:wasm` compiles `crates/yokohama-wasm` in release for `wasm32-unknown-unknown`
+and runs `wasm-bindgen` twice: the web glue INTO `web/src/local/wasm/` (gitignored;
+Vite bundles it and emits the module as a hashed asset,
+`web/dist/assets/yokohama_wasm_bg-<hash>.wasm`, ~2.8 MB raw / ~760 KB gzip, served
+`immutable` since the M6.5b fix wave) and the Node glue into `web/wasm-node/` for
+`npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
+module (`build:wasm:debug`, which carries the `debug_trap` export the trap cell
+needs) and leaves it in `web/src/local/wasm/` AND `web/dist/` — so a deploy cut
+after an e2e run ships a debug module unless `npm run build` is run again; the
+preflight is `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js`, which must
+print `0` before the context is cut. (2) The `.wasm` rides in the context tarball
+under `dist/assets/`, not under a `wasm/` directory — the runtime image needs no
+change for it, and `assets.rs` serves it as `application/wasm`.
+
 **Two things that will bite without this shape.** Plain
 `cargo build --target x86_64-unknown-linux-musl` on macOS **compiles fine and
 fails at LINK**, because rustc reaches for the host `cc`, and Apple's `ld` does
@@ -1059,6 +1082,12 @@ committed wire payload but two is byte-identical to `0.5.0-m6.4.1`'s.
   schema-3 table comes back untouched when the newer binary is restored. Rolling to
   m6.4.1 loses the record route, the button and the archive sites, and nothing on
   the volume. **Fifteen tags now sit on the NAS.**
+
+---
+
+### 3.13 M6.5b is live — the tenth deployment, 2026-09-21 (a record, not a plan)
+
+<!-- WRITTEN AT THE DEPLOY -->
 
 ---
 
