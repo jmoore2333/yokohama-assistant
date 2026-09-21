@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:wasm": "vitest run -c vitest.node.config.ts",
     "test:watch": "vitest",
-    "e2e": "npm run build && playwright test"
+    "e2e": "npm run build:wasm:debug && npm run build:client && playwright test"
   },
   "dependencies": {
     "react": "^19.0.0",

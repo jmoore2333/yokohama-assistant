@@ -48,6 +48,12 @@ type Req = { seq: number } & (
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
   | { kind: "release"; id: string }
+  // **The e2e build's trap hook, and it is the WORKER's alone** (spec §6.5).
+  // It is not in `client.ts`'s mirror of this union because no page code sends
+  // it: the browser walk posts it into this Worker itself, so the recovery it
+  // drives is the page's own and nothing on the page had to be opened up to
+  // drive it.
+  | { kind: "debug_trap" }
 );
 
 /** What this tab owns: the generation it took, the way to let the lock go, and
@@ -486,6 +492,32 @@ async function handle(req: Req): Promise<void> {
         await entry.done;
       }
       post({ seq: req.seq, released: true });
+      return;
+    }
+    // **A real trap, for the cell that has to survive one** (spec §6.5,
+    // §4). `debug_trap` panics inside the module under a held lock, which
+    // leaves it trapped: every later call throws and the PAGE starts a fresh
+    // Worker. Present only in the build `npm run build:wasm:debug` makes, so
+    // it is reached through the namespace rather than by name and a release
+    // module — which does not export it — answers that it has none.
+    //
+    // **It does not report the trap as a trap.** The reply carries no
+    // `trapped` flag, so the page learns of it on its NEXT call, which is the
+    // shape a production trap has: a trap happens inside a call somebody made,
+    // and the pending call is what carries the restart back to the screen. A
+    // hook that announced itself would exercise a path no real fault takes.
+    case "debug_trap": {
+      const hook = (wasm as unknown as { debug_trap?: () => void }).debug_trap;
+      if (!hook) {
+        post({ seq: req.seq, trap: "not available: this module was not built with `debug`" });
+        return;
+      }
+      try {
+        hook();
+        post({ seq: req.seq, trap: "the module did not trap" });
+      } catch (err) {
+        post({ seq: req.seq, trap: String(err) });
+      }
       return;
     }
     // The acquisitions never reach here; `onmessage` routes them.
