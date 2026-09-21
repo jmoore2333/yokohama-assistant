@@ -47,12 +47,25 @@ pub struct ApiResponse {
     pub body: String,
 }
 
-/// The two deployment facts `/api/health` and `/api/me` report that the layer
-/// cannot know: which identity door this host has, and which change transport.
+/// The deployment facts the layer cannot know and a host must tell it: which
+/// identity door it has, which change transport it runs, whether it serves the
+/// game routes at all, and whether it OFFERS multiplayer.
 #[derive(Debug, Clone, Copy)]
 pub struct Host {
     pub identity_name: &'static str,
     pub signal_kind: &'static str,
+    /// Whether [`routes`] includes the game and chat rows on this host
+    /// (M6.5b2, R-6.5b2.4). Off, they are not in the table, so an unknown path
+    /// is the table's own 404 and nothing "hides" a route.
+    pub serves_games: bool,
+    /// Whether this DEPLOYMENT offers multiplayer, which [`Health`] reports.
+    ///
+    /// **Two facts and not one** (spec §3.1). A local game plays by calling
+    /// `/api/games/…` through this same [`dispatch`], so the browser host
+    /// SERVES the game routes and OFFERS no multiplayer; axum with the switch
+    /// off does neither. A single field would have made single player stop
+    /// working the moment a deployment said it had no multiplayer.
+    pub multiplayer_offered: bool,
 }
 
 /// The caller, or the host's own sentence for why there is none.
@@ -126,7 +139,14 @@ pub struct Route {
 /// host writes itself. `/api/art` is listed so the 405/404 arithmetic is one
 /// table, but its body lives in the server (art is gated) and the adapter
 /// answers it before calling [`dispatch`].
-pub fn routes() -> Vec<Route> {
+///
+/// **`serves_games` removes rows rather than gating them** (M6.5b2, R-6.5b2.4):
+/// a host that does not serve games has no game or chat row at all, so every
+/// such path is the same `no such endpoint` 404 a misspelling is, and there is
+/// no second sentence to leak which of the two it was. `/api/archive` is NOT
+/// one of them — it has its own variable (spec §3.1), so a single-player
+/// deployment can still collect saves — and neither are the public four.
+pub fn routes(serves_games: bool) -> Vec<Route> {
     [
         ("GET", "/api/health"),
         ("GET", "/api/me"),
@@ -160,8 +180,17 @@ pub fn routes() -> Vec<Route> {
         ("GET", "/api/games/{id}/record"),
     ]
     .into_iter()
+    .filter(|(_, pattern)| serves_games || !is_game_route(pattern))
     .map(|(method, pattern)| Route { method, pattern })
     .collect()
+}
+
+/// The rows the multiplayer switch takes away: every game route and both house
+/// chat routes. A prefix test and not a list, so a route added under
+/// `/api/games` is governed by the switch the day it lands rather than the day
+/// someone remembers to add it here.
+fn is_game_route(pattern: &str) -> bool {
+    pattern.starts_with("/api/games") || pattern.starts_with("/api/chat")
 }
 
 /// Segment-wise match; `{name}` binds one segment. Returns the bound values in
@@ -184,9 +213,13 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
 /// The methods the table takes at `path`, in table order, with `HEAD` beside
 /// `GET` as axum's `MethodRouter` lists them — what the adapter writes into a
 /// 405's `Allow` header. Empty for a path no row matches.
-pub fn allowed_methods(path: &str) -> Vec<&'static str> {
+///
+/// It takes the host's `serves_games` for the same reason [`find`] does: a 405
+/// and its `Allow` are answers ABOUT the table, so they have to be read off the
+/// table this host actually serves.
+pub fn allowed_methods(path: &str, serves_games: bool) -> Vec<&'static str> {
     let mut out = Vec::new();
-    for r in routes() {
+    for r in routes(serves_games) {
         if matches(r.pattern, path).is_some() {
             out.push(r.method);
             if r.method == "GET" {
@@ -205,10 +238,10 @@ enum Matched<'a> {
 
 /// HEAD reaches the GET arm (R-6.5a.3 — axum's `get` serves HEAD that way);
 /// [`dispatch`] strips the body afterwards.
-fn find<'a>(method: &str, path: &'a str) -> Matched<'a> {
+fn find<'a>(method: &str, path: &'a str, serves_games: bool) -> Matched<'a> {
     let method = if method == "HEAD" { "GET" } else { method };
     let mut path_known = false;
-    for r in routes() {
+    for r in routes(serves_games) {
         if let Some(bound) = matches(r.pattern, path) {
             path_known = true;
             if r.method == method {
@@ -254,6 +287,12 @@ pub struct Health {
     /// Characters per message, so the client sizes its input from the
     /// server's rule and never from a copy (R-6.4.8).
     pub chat_text: u64,
+    /// Whether this deployment offers multiplayer (M6.5b2, R-6.5b2.4).
+    ///
+    /// [`Host::multiplayer_offered`] and never `serves_games`: the browser host
+    /// serves every game route — a local game is played through them — and
+    /// reports `false` here, because there is no one else at the table.
+    pub multiplayer: bool,
 }
 
 pub fn health(games: &Games, host: &Host) -> Health {
@@ -267,6 +306,7 @@ pub fn health(games: &Games, host: &Host) -> Health {
         lobby_chat: games.chat.lobby,
         chat_keep: games.chat.limits.keep.map(|n| n as u64),
         chat_text: games.chat.limits.text as u64,
+        multiplayer: host.multiplayer_offered,
     }
 }
 
@@ -1922,7 +1962,7 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
 /// under another method is 405 with an empty body (axum's own shape); a path
 /// that matches nothing is the JSON 404 the server's `fallback` writes.
 pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiRequest<'_>) -> ApiResponse {
-    let (pattern, bound) = match find(req.method, req.path) {
+    let (pattern, bound) = match find(req.method, req.path, host.serves_games) {
         Matched::Route(p, b) => (p, b),
         Matched::WrongMethod => return ApiResponse { status: 405, body: String::new() },
         Matched::NoRoute => {
@@ -2120,32 +2160,32 @@ mod tests {
             ("GET", "/api/games/{id}/result"),
             ("GET", "/api/games/{id}/record"),
         ];
-        let table = routes();
+        let table = routes(true);
         let names: Vec<(&str, &str)> = table.iter().map(|r| (r.method, r.pattern)).collect();
         assert_eq!(names, expected.to_vec());
     }
 
     #[test]
     fn the_matcher_binds_segments_and_tells_a_wrong_method_from_no_route() {
-        match find("GET", "/api/games/sim-1/at/7") {
+        match find("GET", "/api/games/sim-1/at/7", true) {
             Matched::Route(p, b) => {
                 assert_eq!(p, "/api/games/{id}/at/{k}");
                 assert_eq!(b, vec!["sim-1", "7"]);
             }
             _ => panic!("a known route"),
         }
-        assert!(matches!(find("HEAD", "/api/health"), Matched::Route("/api/health", _)), "HEAD reaches GET");
-        assert!(matches!(find("DELETE", "/api/health"), Matched::WrongMethod));
-        assert!(matches!(find("GET", "/api/nothing"), Matched::NoRoute));
+        assert!(matches!(find("HEAD", "/api/health", true), Matched::Route("/api/health", _)), "HEAD reaches GET");
+        assert!(matches!(find("DELETE", "/api/health", true), Matched::WrongMethod));
+        assert!(matches!(find("GET", "/api/nothing", true), Matched::NoRoute));
         // Since M6.5b the five-segment `…/at` is the RUN route (R-6.5b.10), and
         // the six-segment `…/at/{k}` beside it: the matcher is segment-wise.
-        match find("GET", "/api/games/sim-1/at") {
+        match find("GET", "/api/games/sim-1/at", true) {
             Matched::Route(p, b) => {
                 assert_eq!(p, "/api/games/{id}/at");
                 assert_eq!(b, vec!["sim-1"]);
             }
             _ => panic!("the run route"),
         }
-        assert!(matches!(find("GET", "/api/games/sim-1/index"), Matched::NoRoute), "a short path binds nothing");
+        assert!(matches!(find("GET", "/api/games/sim-1/index", true), Matched::NoRoute), "a short path binds nothing");
     }
 }

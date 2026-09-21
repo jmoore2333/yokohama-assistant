@@ -63,6 +63,10 @@ pub fn content_type(path: &Path) -> &'static str {
         // hashed asset. `WebAssembly.instantiateStreaming` refuses any other
         // type, and the fallback it refuses into is a silent slow path at best.
         Some("wasm") => "application/wasm",
+        // M6.5b2 (R-6.5b2.9): the web app manifest, which the browser's install
+        // check reads. Without this arm it falls through to
+        // `application/octet-stream` and the install prompt never appears.
+        Some("webmanifest") => "application/manifest+json",
         _ => "application/octet-stream",
     }
 }
@@ -82,7 +86,18 @@ pub fn content_type(path: &Path) -> &'static str {
 /// re-fetched bundle. This cycle put the browser host's module (758 KB
 /// gzipped) under `assets/` and mounts `OnThisDevice` on every first screen,
 /// so the gap was being paid per visit.
+///
+/// **M6.5b2 adds the second rule and it is the opposite one** (R-6.5b2.8). The
+/// service worker script is how a browser decides whether a release has
+/// changed — a byte comparison of this one file — so a heuristically cached
+/// copy delays every update by however long the browser chose to keep it, and
+/// with no freshness header at all heuristic caching is exactly what it may do.
+/// `no-store` is the only answer that makes update detection a property of the
+/// release rather than of a cache the server never saw.
 fn cache_control(uri_path: &str) -> Option<&'static str> {
+    if uri_path == "/sw.js" {
+        return Some("no-store");
+    }
     uri_path.starts_with("/assets/").then_some("public, max-age=31536000, immutable")
 }
 
@@ -173,18 +188,43 @@ mod tests {
         assert_eq!(content_type(Path::new("wasm/yokohama_wasm.wasm")), "application/wasm");
     }
 
-    /// M6.5b's fix wave: Vite's hashed output is immutable, and NOTHING else
-    /// this map serves carries a freshness header.
+    /// The manifest's media type, which the installer checks (spec §2.3). Without
+    /// this arm it falls through to `application/octet-stream`.
+    #[test]
+    fn the_web_app_manifest_has_its_own_media_type() {
+        assert_eq!(content_type(Path::new("manifest.webmanifest")), "application/manifest+json");
+    }
+
+    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8): Vite's hashed output is
+    /// immutable, the service worker is `no-store`, and NOTHING else this map
+    /// serves carries a freshness header.
     ///
-    /// The `assets/` half is what the cycle needs — `OnThisDevice` mounts on
+    /// The `assets/` half is what M6.5b needed — `OnThisDevice` mounts on
     /// every first screen and instantiates the browser host's module, so
     /// without this the 758 KB was re-fetched on every visit. The `index.html`
     /// half is what keeps it safe: that document is the one that NAMES the
     /// hashes, and a cached copy would pin a released build for a year. The
     /// SPA fallback is asserted too, because it answers `index.html`'s bytes
     /// under some other path.
+    ///
+    /// **One cell and not two**, so the "nothing else" clause stays a single
+    /// claim: a second cell for `/sw.js` alone would leave this one's `for` loop
+    /// free to be quietly narrowed. The rule is read BOTH ways — through
+    /// `serve_path`, which is what proves the header reaches a response, and
+    /// through [`cache_control`] directly, which is how paths this map never
+    /// reads from disk (`/art/*`, a manifest that is not built in a test) are
+    /// covered without arranging a file for each.
     #[test]
-    fn hashed_assets_are_immutable_and_nothing_else_carries_a_cache_header() {
+    fn hashed_assets_are_immutable_the_worker_is_no_store_and_nothing_else_carries_a_header() {
+        assert_eq!(cache_control("/assets/index-abc123.js"), Some("public, max-age=31536000, immutable"));
+        // Update detection is a BYTE COMPARISON of this one file, so a browser
+        // that heuristically caches it delays every update by the cache window —
+        // and with no header at all, heuristic caching is exactly what it may do.
+        assert_eq!(cache_control("/sw.js"), Some("no-store"));
+        for path in ["/", "/index.html", "/manifest.webmanifest", "/art/manifest.json", "/help/screen.webp"] {
+            assert_eq!(cache_control(path), None, "{path} carries no freshness header");
+        }
+
         let root =
             std::env::temp_dir().join(format!("yokohama-assets-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -192,6 +232,7 @@ mod tests {
         std::fs::write(root.join("assets").join("yokohama_wasm_bg-Bo5LQV_3.wasm"), b"\0asm")
             .unwrap();
         std::fs::write(root.join("index.html"), b"<!doctype html>").unwrap();
+        std::fs::write(root.join("sw.js"), b"// the worker").unwrap();
 
         let cached = |uri: &str| -> Option<String> {
             serve_path(&root, uri)
@@ -205,6 +246,7 @@ mod tests {
             Some("public, max-age=31536000, immutable"),
             "a hashed asset is immutable by construction"
         );
+        assert_eq!(cached("/sw.js").as_deref(), Some("no-store"), "and it reaches the response");
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");
         assert_eq!(cached("/lobby"), None, "the same document through the SPA fallback");
 

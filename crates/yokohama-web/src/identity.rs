@@ -84,7 +84,23 @@ impl FromStr for IdentityMode {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
         match s.trim() {
+            // **`claimed` needs the build to have been asked for it**
+            // (M6.5b2, R-6.5b2.3). The mode itself stays — the variant, the
+            // header and every cell that drives one are unconditional, because
+            // a mode that vanished from the type would take the browser host's
+            // own tests with it. What the feature gates is the one place a
+            // DEPLOYMENT can choose it: this parse. A public build drops the
+            // feature and the refusal below names it, so the operator reads why
+            // rather than guessing at a typo.
+            #[cfg(feature = "dev-identity")]
             "claimed" => Ok(Self::Claimed),
+            #[cfg(not(feature = "dev-identity"))]
+            "claimed" => Err(format!(
+                "{ENV_VAR}=claimed needs the `dev-identity` feature, which this build was \
+                 compiled without: `claimed` trusts whatever email a caller sends and is a \
+                 development door, not a security boundary. Use cf-access or worker, or build \
+                 with the feature."
+            )),
             "cf-access" => Ok(Self::CfAccess),
             "worker" => Ok(Self::Worker),
             other => Err(format!(
@@ -233,6 +249,9 @@ mod tests {
 
     #[test]
     fn the_mode_comes_from_the_environment_and_has_no_default() {
+        // `claimed` is the one arm that depends on a feature since M6.5b2
+        // (R-6.5b2.3); both of its shapes are asserted by the cell below.
+        #[cfg(feature = "dev-identity")]
         assert!(matches!(IdentityMode::from_str("claimed"), Ok(IdentityMode::Claimed)));
         assert!(matches!(IdentityMode::from_str("cf-access"), Ok(IdentityMode::CfAccess)));
         assert!(matches!(IdentityMode::from_str("worker"), Ok(IdentityMode::Worker)));
@@ -248,5 +267,22 @@ mod tests {
         // sets the variable, so `Err(_) => Ok(Self::Claimed)` would have
         // deleted R-1.3 with every suite green.
         assert!(IdentityMode::from_env_value(None).is_err(), "unset is a refusal, not a default");
+    }
+
+    /// R-6.5b2.3: `claimed` is a DEVELOPMENT door and a build can refuse it.
+    /// The feature is in `default`, so this cell runs in the accepting shape and
+    /// asserts the mode parses; the refusing shape is asserted by its negation
+    /// below, which compiles in both and is the one that would silently vanish if
+    /// the `cfg` were written the other way round.
+    #[test]
+    fn claimed_parses_only_where_the_development_feature_is_compiled_in() {
+        let parsed = IdentityMode::from_env_value(Some("claimed"));
+        if cfg!(feature = "dev-identity") {
+            assert!(matches!(parsed, Ok(IdentityMode::Claimed)));
+        } else {
+            let err = parsed.expect_err("a build without dev-identity refuses claimed");
+            assert!(err.contains("dev-identity"), "the refusal NAMES the feature: {err}");
+            assert!(err.contains("cf-access") && err.contains("worker"), "and what to use instead: {err}");
+        }
     }
 }

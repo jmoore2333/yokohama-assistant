@@ -392,6 +392,12 @@ impl Api {
         let host = yokohama_web::api::Host {
             identity_name: self.state.identity.name(),
             signal_kind: yokohama_web::SIGNAL_KIND,
+            // The walk's routers are built from a state that never throws the
+            // multiplayer switch, so the adapter's own host reads both of these
+            // true — and this one has to say the same thing or the dispatcher
+            // would be compared against a router serving a different table.
+            serves_games: self.state.multiplayer.0,
+            multiplayer_offered: self.state.multiplayer.0,
         };
         let out = yokohama_web::api::dispatch(
             &self.state.games,

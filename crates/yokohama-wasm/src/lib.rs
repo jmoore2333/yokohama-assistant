@@ -67,10 +67,18 @@ fn now() -> u64 {
     }
 }
 
-/// The two deployment facts this host reports. `"none"` rather than `"sse"`:
+/// The deployment facts this host reports. `"none"` rather than `"sse"`:
 /// nothing in a browser store can be signalled to, and the page's local arm
 /// never opens a stream.
-const HOST: Host = Host { identity_name: "local", signal_kind: "none" };
+///
+/// **`serves_games` and `multiplayer_offered` disagree here, and that is the
+/// point of them being two fields** (M6.5b2, spec §3.1): a local game is played
+/// by calling `/api/games/…` through this very layer, so the routes must be
+/// served — while there is nobody else at the table, so `/api/health` reports
+/// no multiplayer. A single field would have made single player stop working
+/// the moment this host told the truth about itself.
+const HOST: Host =
+    Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
 
 /// Build a FRESH `Games` over a fresh `MemStore`, replacing any earlier one.
 #[wasm_bindgen]
