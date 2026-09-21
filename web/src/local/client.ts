@@ -175,16 +175,73 @@ function noteLost(id: string): void {
   for (const f of [...lostHandlers]) f(id);
 }
 
+/** Raised while a restart is re-acquiring what this tab held, and opened when
+ *  the re-holds have answered.
+ *
+ *  **Everything else waits for them** (spec §4: the page "starts a new Worker
+ *  …, re-acquires the game's ownership, and only then says 'reloaded from the
+ *  last saved move'"). The order is not decoration. A `hold` is answered
+ *  OUTSIDE the Worker's serial queue, so a call sent in the same tick can be
+ *  served before the lock is granted — and a call on a game the Worker does
+ *  not yet hold is answered `not-held`, which the rule below reads as the lock
+ *  being lost. The page then told the player their game had been opened in
+ *  another tab, about its own restart, and took the answer bar away.
+ *
+ *  Measured in a real browser (`web/e2e/plays_locally.spec.ts`, the trap
+ *  cell): after the restart `navigator.locks.query()` showed the game held by
+ *  the FRESH Worker's client id, while the screen read "This game was opened
+ *  in another tab" — the re-read `App`'s own refusal handler makes had
+ *  overtaken the re-hold. */
+let reacquiring: Promise<void> | null = null;
+
 function restart(): void {
   worker?.terminate();
   worker = null;
-  fail(RESTART_SENTENCE);
   const ids = [...heldByPage];
-  // `start()` happens inside `ask`; asking for the holds is what starts it.
-  for (const id of ids) void ask({ kind: "hold", id }).catch(() => undefined);
+  // **The gate is raised BEFORE the pending calls are settled, and the holds
+  // are sent AFTER.** Both halves of that order were measured, and each fixes
+  // a different way of getting this wrong:
+  //
+  //  - Settling is what makes the page ask again — `App`'s own refusal handler
+  //    re-reads the game — so a gate raised afterwards is raised behind the
+  //    very call it exists for.
+  //  - [`fail`] rejects EVERYTHING pending, and a hold sent first is pending.
+  //    The first draft sent the holds first and gated on THEIR promises: `fail`
+  //    rejected them a line later, the gate opened at once, and three reads
+  //    went out and came back `not-held` while the acquisition was still in
+  //    flight. That is the defect, in the log, with `navigator.locks.query()`
+  //    showing the game held by this very Worker.
+  //
+  // So the gate is its own promise, opened when the re-holds have ANSWERED.
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  reacquiring = gate;
+  fail(RESTART_SENTENCE);
+  // `start()` happens inside `ask`; asking for the holds is what starts the new
+  // Worker. Nothing else can be posted ahead of them: every other `ask` is now
+  // waiting on the gate.
+  void Promise.all(ids.map((id) => ask({ kind: "hold", id }).catch(() => undefined))).then(() => {
+    // Only the LATEST restart's gate is cleared here: a second trap during the
+    // first recovery installs its own, and clearing unconditionally would drop
+    // it.
+    if (reacquiring === gate) reacquiring = null;
+    open();
+  });
 }
 
 function ask<T extends Record<string, unknown>>(msg: ReqBody): Promise<T> {
+  // A restart's own re-holds are what the gate is waiting FOR, so they pass it;
+  // everything else waits, and asks again once the ownership question has an
+  // answer. A `hold` never blocks — the acquisition is `ifAvailable`, which is
+  // refused rather than queued — so this cannot become a wait with no end.
+  //
+  // **The residual, named**: a call that overtakes an acquisition is still
+  // answered `not-held`, and the page still reads that as the loss. This
+  // closes the one path that reached it without another tab being involved.
+  const gate = msg.kind === "hold" ? null : reacquiring;
+  if (gate) return gate.then(() => ask<T>(msg));
   const w = start();
   const mine = (seq += 1);
   return new Promise<T>((resolve, reject) => {
@@ -324,6 +381,7 @@ export const localHostStarted = (): boolean => worker !== null;
 export function resetLocalHostForTests(): void {
   worker?.terminate();
   worker = null;
+  reacquiring = null;
   seq = 0;
   pending.clear();
   heldByPage.clear();

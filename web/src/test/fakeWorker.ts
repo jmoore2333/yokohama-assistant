@@ -36,7 +36,10 @@ export interface FakeWorkerHooks {
   /** `"pending"` answers NOTHING and leaves the call in flight — how a cell
    *  arranges a waiting request for the trap to settle. */
   call?: (req: Extract<Req, { kind: "call" }>) => CallReply | "pending" | undefined;
-  hold?: (id: string, steal: boolean) => boolean;
+  /** `"pending"` leaves the ACQUISITION unanswered — how a cell arranges the
+   *  window in which a Worker has been asked for a game and does not yet hold
+   *  it. */
+  hold?: (id: string, steal: boolean) => boolean | "pending";
   /** Both documents of one game, as the `pair` message answers them. */
   pair?: (id: string) => { record?: string | null; table?: string | null } | undefined;
 }
@@ -138,9 +141,12 @@ export class FakeWorker {
         break;
       }
       case "hold":
-      case "takeover":
-        reply = { held: hooks.hold?.(req.id, req.kind === "takeover") ?? true };
+      case "takeover": {
+        const held = hooks.hold?.(req.id, req.kind === "takeover") ?? true;
+        if (held === "pending") return;
+        reply = { held };
         break;
+      }
       case "release":
         reply = { released: true };
         break;

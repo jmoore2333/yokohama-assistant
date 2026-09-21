@@ -234,6 +234,52 @@ describe("the two failures that must never leave a pending list", () => {
     expect((await localCall("GET", "/api/games/local-1")).status).toBe(200);
   });
 
+  it("posts NOTHING after a restart until the re-hold has been answered", async () => {
+    // **The order spec §4 states**: the page starts a new Worker, "re-acquires
+    // the game's ownership, and only then says 'reloaded from the last saved
+    // move'". A call that overtakes the acquisition is answered `not-held` by
+    // a Worker that is about to own the game, and the page reads that as the
+    // lock being LOST — so the screen tells the player their game was opened
+    // in another tab, about its own restart.
+    //
+    // Measured in a real browser before it was fixed (`plays_locally.spec.ts`,
+    // the trap cell): three reads came back `not-held` while
+    // `navigator.locks.query()` showed the game held by that very Worker.
+    // Settling the pending calls is what makes the page ask again, and the
+    // first draft gated on the re-hold's own promise — which [`fail`] had just
+    // rejected, so the gate was open before it was closed.
+    let asked = 0;
+    stubWorker({
+      hold: () => (asked++ === 0 ? true : "pending"),
+      call: (req) =>
+        req.path.endsWith("/ports")
+          ? { status: 500, body: { error: "unreachable executed" }, trapped: true }
+          : undefined,
+    });
+    expect(await hold("local-1")).toBe(true);
+
+    const refusal = await localCall("GET", "/api/games/local-1/ports").then(
+      () => null,
+      (e: Error) => e,
+    );
+    expect(refusal?.message).toContain(RESTART_SENTENCE);
+
+    // `App`'s own shape: the refusal handler re-reads the game. It reaches the
+    // fresh Worker, which has been ASKED for the game and does not hold it
+    // yet — so nothing is sent.
+    const reread = localCall("GET", "/api/games/local-1");
+    await tick();
+    const second = currentWorker();
+    expect(second.posted).toHaveLength(1);
+    expect(second.posted[0]).toMatchObject({ kind: "hold", id: "local-1" });
+
+    // The acquisition answers, and only then does the waiting call go out.
+    second.emit({ seq: (second.posted[0] as unknown as { seq: number }).seq, held: true });
+    await tick();
+    expect(second.posted.map((p) => p.kind)).toEqual(["hold", "call"]);
+    expect((await reread).status).toBe(200);
+  });
+
   it("reports a host that CANNOT boot after one restart, instead of restarting for ever", async () => {
     // A module that fails to load and an IndexedDB that will not open both
     // trap on every message — including the `hold` the restart itself sends —
