@@ -342,7 +342,16 @@ impl TableDoc {
         }
         for (i, keep) in self.keeps.iter().enumerate() {
             if let Some(n) = keep {
-                let expected = yokohama_core::StartingOrderChoice::Keep(n - 1);
+                // **`checked_sub`, because this is `pub` and the numbering is
+                // 1-based.** `Some(0)` names no card; through the route it
+                // cannot arrive — `check_shape` bounds every keep to 1 or 2
+                // before anything reads it — but a caller of this function has
+                // made no such promise, and the bare `- 1` underflowed rather
+                // than refusing.
+                let Some(index) = n.checked_sub(1) else {
+                    return Err(format!("keep: seat {i} claims card 0, which is not a card"));
+                };
+                let expected = yokohama_core::StartingOrderChoice::Keep(index);
                 if record.choices.get(i) != Some(&expected) {
                     return Err(format!(
                         "keep: seat {i} kept card {n} by the table and not by the record"
@@ -636,6 +645,16 @@ mod tests {
         assert!(
             d.agrees_with(&rec).unwrap_err().contains("keep"),
             "a CLAIMED keep that disagrees is refused"
+        );
+        // A keep of `0`: the numbering here is 1-based, so there is no such
+        // card. Unreachable through the route — `check_shape` bounds a keep to
+        // 1 or 2 before `agrees_with` is ever called — but this is `pub`, and
+        // the arithmetic used to underflow rather than refuse.
+        let mut d = doc.clone();
+        d.keeps[0] = Some(0);
+        assert!(
+            d.agrees_with(&rec).unwrap_err().contains("card 0"),
+            "a keep of card 0 is refused by name, not by an underflow"
         );
     }
 

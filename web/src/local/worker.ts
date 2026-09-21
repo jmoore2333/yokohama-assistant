@@ -37,6 +37,7 @@
 
 import { deletePair, openDb, readAll, takeGeneration, writeDocs } from "./db";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
+import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
 
 /** The page's requests. Mirrors `client.ts`'s `Req`, which is the page's own
@@ -219,12 +220,6 @@ async function persistCreate(id: string): Promise<Outcome> {
   }
 }
 
-/** What a reply says when the lock went while the call was in flight (spec
- *  §2.2): the module's answer is discarded and the page is told the loss, so
- *  nothing is shown that will not be kept. */
-const LOST_SENTENCE =
-  "this game was taken over in another tab — what you just did here was not kept";
-
 const isCreate = (req: Extract<Req, { kind: "call" }>): boolean =>
   req.method === "POST" && req.path === "/api/games";
 
@@ -273,10 +268,16 @@ async function call(req: Extract<Req, { kind: "call" }>): Promise<Record<string,
   const id = gameIdOf(req.path);
   if (id === null) return { status, body: text, saved: "saved" };
   const out = await persist(id, req.method === "DELETE" && status === 204);
+  // **What a reply says when the lock went while the call was in flight** (spec
+  // §2.2): the module's answer is discarded and the page is told the loss, so
+  // nothing is shown that will not be kept. The sentence is `lost.ts`'s because
+  // the PAGE builds this same refusal for the path this side cannot see — a
+  // write answered `not-held` because the steal's abort had already removed
+  // the hold (`client.ts`'s `localCall`, whole-branch review Important #1).
   if (out.saved === "lost") {
     return {
       status: 409,
-      body: JSON.stringify({ error: LOST_SENTENCE }),
+      body: JSON.stringify({ error: TAKEN_OVER_SENTENCE }),
       saved: "lost",
     };
   }

@@ -20,6 +20,7 @@ import {
   RESTART_SENTENCE,
   takeover,
 } from "./client";
+import { TAKEN_OVER_SENTENCE } from "./lost";
 import { currentWorker, FakeWorker, stubWorker } from "../test/fakeWorker";
 
 /** Let the microtask chain settle. The fake answers on a microtask, as a real
@@ -123,7 +124,44 @@ describe("the local host's wire", () => {
     // reporting that as kept is the dangerous direction.
     stubWorker({ call: () => ({ status: 200, body: { ok: true }, saved: "not-held" }) });
     expect((await localCall("GET", "/api/games/local-1")).saved).toBe(true);
-    expect((await localCall("POST", "/api/games/local-1/input", { line: "1" })).saved).toBe(false);
+    const write = await localCall("POST", "/api/games/local-1/input", { line: "1" });
+    expect(write.saved).toBe(false);
+    // And it is not merely unsaved: see the cell below for what it says.
+    expect(write.status).toBe(409);
+  });
+
+  it("answers a WRITE the Worker did not keep as the LOCK LOSS, not as an unsaved move", async () => {
+    // **The in-flight rule's other path** (spec §2.2, whole-branch review
+    // Important #1). §2.2 says a reply from a call that was in flight when the
+    // lock was lost "is answered to the page as the lock loss, so nothing is
+    // shown that will not be kept". The Worker keeps that on the GENERATION
+    // path — a write whose transaction reads a newer owner becomes a 409. It
+    // could not keep it on the other one: when the steal's abort has already
+    // removed the hold, the queued write is answered `not-held`, which used to
+    // reach the page as the module's own 200 with `saved: false`. The page
+    // then DREW the move — applied in a store about to be discarded — under
+    // "APPLIED BUT NOT SAVED — the browser refused the write", a sentence
+    // about the store. Nothing about the store refused it; the lock did.
+    //
+    // So a non-GET answered `not-held` is a refusal here, in the same words
+    // the generation path uses, and `settle` raises it as the refusal `send`
+    // already shows.
+    let holds = true;
+    stubWorker({
+      call: () => (holds ? undefined : { status: 200, body: { ok: true }, saved: "not-held" }),
+    });
+    const lost = vi.fn();
+    onLost(lost);
+    expect(await hold("local-1")).toBe(true);
+
+    holds = false;
+    const out = await localCall("POST", "/api/games/local-1/input", { line: "1" });
+    expect(out.status).toBe(409);
+    expect(out.saved).toBe(false);
+    expect((JSON.parse(out.text) as { error: string }).error).toBe(TAKEN_OVER_SENTENCE);
+    // The screen turns read-only ONCE, and by the same statement every other
+    // path to the loss goes through.
+    expect(lost).toHaveBeenCalledExactlyOnceWith("local-1");
   });
 
   it("reads `not-held` on a game this page BELIEVED it held as the lock loss", async () => {

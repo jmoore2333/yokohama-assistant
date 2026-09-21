@@ -16,6 +16,7 @@
 // strings. The module in the Worker is the layer; this is a wire.
 
 import { gameIdOf } from "./ids";
+import { TAKEN_OVER_SENTENCE } from "./lost";
 
 /** What the page asks the Worker for. The `call` shape's fields are
  *  `ApiRequest`'s own — the Worker adds `local@browser` and nothing else. */
@@ -160,13 +161,6 @@ function start(): Worker {
   return w;
 }
 
-/** R5: a trapped module holds its own mutex and traps again on `init()`, so
- *  recovery is a FRESH INSTANCE — terminate, settle, start, re-hold.
- *
- *  The new Worker rebuilds from the committed pairs on boot, and nothing
- *  committed is lost, because a success reply is only sent after its write
- *  landed (§2.2). Re-acquiring is what makes the next call writable again:
- *  ownership lives in the Worker, and the Worker that held it is gone. */
 /** This tab does not hold `id` any more. ONE statement of it, reached from the
  *  Worker's unsolicited message and from a reply that says `not-held` for a
  *  game this page believed it held (review finding #4). */
@@ -194,6 +188,13 @@ function noteLost(id: string): void {
  *  overtaken the re-hold. */
 let reacquiring: Promise<void> | null = null;
 
+/** R5: a trapped module holds its own mutex and traps again on `init()`, so
+ *  recovery is a FRESH INSTANCE — terminate, settle, start, re-hold.
+ *
+ *  The new Worker rebuilds from the committed pairs on boot, and nothing
+ *  committed is lost, because a success reply is only sent after its write
+ *  landed (§2.2). Re-acquiring is what makes the next call writable again:
+ *  ownership lives in the Worker, and the Worker that held it is gone. */
 function restart(): void {
   worker?.terminate();
   worker = null;
@@ -285,6 +286,30 @@ export async function localCall(
   // same statement both reach, so the screen turns read-only once.
   const game = gameIdOf(path);
   if (r.saved === "not-held" && game !== null && heldByPage.has(game)) noteLost(game);
+
+  // **A WRITE the Worker did not keep is the LOCK LOSS, and is refused here**
+  // (spec §2.2; whole-branch review, Important #1). §2.2's in-flight rule is
+  // that a reply from a call in flight when the lock went "is answered to the
+  // page as the lock loss, so nothing is shown that will not be kept". The
+  // Worker holds that on the generation path, where a stale write becomes a
+  // 409 with these very words. It cannot hold it on the other path: once the
+  // steal's abort has removed the hold, the queued write is answered
+  // `not-held`, and that reply carried the module's own 200 — so the page drew
+  // a move applied in a store about to be discarded, under "APPLIED BUT NOT
+  // SAVED", whose reason names the store. The store refused nothing.
+  //
+  // **AFTER `noteLost`, deliberately**, which is the Worker's own order: the
+  // screen is already read-only when the refusal lands. A GET is untouched —
+  // it wrote nothing and was never meant to, and a second tab's cold read is
+  // answered from its own store.
+  if (r.saved === "not-held" && method !== "GET") {
+    return {
+      status: 409,
+      text: JSON.stringify({ error: TAKEN_OVER_SENTENCE }),
+      saved: false,
+      reason: null,
+    };
+  }
 
   return {
     status: r.status,

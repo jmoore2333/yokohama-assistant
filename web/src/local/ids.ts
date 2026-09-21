@@ -37,14 +37,6 @@ export const LOCAL_USER = "local@browser";
  *  browser's own client never causes, and never a leak. */
 export const isLocal = (id: string): boolean => id.startsWith(LOCAL_PREFIX);
 
-/** A fresh local id: `local-` and sixteen hex digits from the platform's own
- *  entropy.
- *
- *  **64 bits and not a counter**, for the reason the server draws its ids that
- *  way: an id is a name two tabs, two devices and two archive sends can
- *  collide on, and the archive files a browser game under the caller's prefix
- *  and this id. The SEED is not drawn here — `draw_seed` inside the module
- *  draws it through `getrandom`, and it is never typed. */
 /** The game id a path names, or `null` where it names none — the five routes
  *  that carry no id (R-6.5b.12) and `/api/archive`.
  *
@@ -65,6 +57,14 @@ export function gameIdOf(path: string): string | null {
   }
 }
 
+/** A fresh local id: `local-` and sixteen hex digits from the platform's own
+ *  entropy.
+ *
+ *  **64 bits and not a counter**, for the reason the server draws its ids that
+ *  way: an id is a name two tabs, two devices and two archive sends can
+ *  collide on, and the archive files a browser game under the caller's prefix
+ *  and this id. The SEED is not drawn here — `draw_seed` inside the module
+ *  draws it through `getrandom`, and it is never typed. */
 export function drawLocalId(): string {
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);

@@ -104,7 +104,15 @@ const HOST_FIELDS: Record<string, string[]> = {
 };
 
 /**
- * Spec §5's third column: every committed file this host does not serve.
+ * Spec §5's third column: every committed file no row of this walk produces on
+ * this host.
+ *
+ * **Not "does not serve", which was wider than the truth** (whole-branch
+ * review, vacuity #2). The module DOES serve `/why` — `browser_played_pin`
+ * drives it through this very layer — and `watching`, `locked` and the two
+ * other `why*` files below are out of this list for a different reason from
+ * the transport's: they are shapes a deterministic bot-free WALK cannot reach,
+ * not routes the host lacks.
  *
  * It is a DERIVED truth stated back, not a filing decision — the replay asserts
  * this set equals exactly the files `walk.json` does not name, so a fixture
@@ -117,7 +125,9 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   word itself.
  * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal` and
  *   `why_refusals` are built in process by `constructed()`, because a router
- *   cannot reach them from a deterministic bot-free game.
+ *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
+ *   this host — the `why` ones are what the committed pair is reconstructed
+ *   through — and it is the walk that cannot ask for them.
  * - `events`, `events_dealing` and `events_open` are the TRANSPORT route, which
  *   axum serves and `api::dispatch` has no row for. A browser host has no
  *   stream to signal on, so it has nothing to answer here.

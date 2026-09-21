@@ -1380,6 +1380,36 @@ describe("the route", () => {
     expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
   });
 
+  // **The two forms are two components, keyed by host** (whole-branch review,
+  // Minor #1). They sit at the same position in `App`'s tree, so React used to
+  // reconcile one into the other and the STATE went with it: Players set to 4
+  // on the server's form, then a hand-typed `#/new/local`, and the local
+  // create posted `players: 4` beside the two seats a local table has — which
+  // the module refuses in `check_shape`'s words.
+  it("posts two players for a local table after the server's form has been set to four", async () => {
+    stubWorker();
+    const { user } = app();
+    await user.click(await screen.findByRole("button", { name: "New table" }));
+    await user.selectOptions(await screen.findByLabelText("Players"), "4");
+    // The premise, asserted: the server's form really is at four.
+    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe("4");
+
+    act(() => {
+      window.location.hash = "#/new/local";
+    });
+    // The local form asks none of it — which is also how this cell tells the
+    // two apart, since both headings read "New game".
+    await waitFor(() => expect(screen.queryByLabelText("Players")).toBeNull());
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+
+    const posted = currentWorker().posted.find(
+      (p) => (p as { method?: string }).method === "POST" && (p as { path?: string }).path === "/api/games",
+    ) as { body: string } | undefined;
+    const body = JSON.parse(posted?.body ?? "{}") as { players: number; seats: unknown[] };
+    expect(body.seats).toHaveLength(2);
+    expect(body.players).toBe(2);
+  });
+
   it("draws the form for a hash typed before the app mounts", async () => {
     // **The route is read at MOUNT, not only on `hashchange`.** A link is
     // followed in a cold tab, where no `hashchange` ever fires.
@@ -2997,6 +3027,46 @@ describe("a local game", () => {
     }
   });
 
+  // **Two clicks in one tick are ONE send** (whole-branch review, Minor #4).
+  // The control darkens on the ANSWER, so it cannot be the guard: before the
+  // wave a double click posted twice, the second landed as `identical`, and a
+  // FIRST send reported itself as "already archived".
+  //
+  // **Both clicks inside ONE `act`**, the board tile's own idiom four hundred
+  // lines up and for its reason: `userEvent` awaits between interactions, and
+  // with a render in between the control is already gone — the cell would pass
+  // with the guard removed, which is not a test of the guard. Measured: it
+  // did.
+  it("sends once however fast the archive control is clicked twice", async () => {
+    const caught = catchDownload();
+    try {
+      const landed = gate<Reply>();
+      const { stub } = await openLocal(
+        { ...wire.gameOver, id: LOCAL },
+        {
+          archive: "dir",
+          hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+          server: (call) =>
+            call.method === "POST" && call.path === "/api/archive" ? landed.promise : undefined,
+        },
+      );
+      await screen.findByText(/end triggers:/);
+
+      const button = await screen.findByRole("button", { name: "Send to the archive" });
+      act(() => {
+        fireEvent.click(button);
+        fireEvent.click(button);
+      });
+      landed.resolve(wire.archivePost as unknown as Reply);
+      await screen.findByText(`archived under ${wire.archivePost.path}`);
+      expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+      // The first send's own word, never the second's.
+      expect(screen.queryByText(/already archived/)).toBeNull();
+    } finally {
+      caught.restore();
+    }
+  });
+
   // **The second click after a reload** (spec §2.5, §8): the local document
   // carries no stamp, so the control is live again — and the same bytes at the
   // same path are the server's `identical`, which is an answer and not a
@@ -3400,6 +3470,38 @@ describe("the first screen with no server", () => {
     );
     // And it replaces the sections, exactly as the refused arm's does.
     expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+  });
+
+  // **A listing that LANDED is an answer, and the bound must not take it back**
+  // (whole-branch review, Minor #2). `Lobby`'s `onReached` sets `serverUp`
+  // true the moment any listing arrives — that is what brings the sections
+  // back for a player who opened the page while the API was slow — and the
+  // bound's `catch` used to write `false` over it unconditionally. A health
+  // read that is merely the slowest of the four then replaced a working lobby
+  // with "not connected".
+  it("keeps the lobby when a listing landed before the health read's bound elapsed", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    stubApi((call) => {
+      // The one read that never answers is `/api/health`: everything else
+      // lands, so the browser HAS reached this server.
+      if (call.path.endsWith("/api/health")) return new Promise<Reply>(() => {});
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await until(() => screen.queryByRole("heading", { name: "Your games" }) !== null, "the lobby");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    // The bound has passed and the health read is still out; the sections stay,
+    // because something else already answered.
+    expect(screen.queryByText("not connected")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument();
   });
 
   // **A late answer is still an answer** (review fix 1). The bound decides

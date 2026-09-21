@@ -3,8 +3,12 @@
 //!
 //! This is HOST code. Its platform calls are the clock and the bindgen glue and
 //! nothing else — [`this_host_makes_no_platform_call_but_the_clock`] holds that
-//! over this crate's own source, the way
-//! `platform_calls_stay_behind_the_server_feature` holds it over the layer's.
+//! over this crate's own non-test source, with the SAME EIGHT PATTERNS the
+//! layer's `platform_calls_stay_behind_the_server_feature` names. The two
+//! scans are not the same scan and this doc used to claim they were
+//! (whole-branch review, vacuity #5): the layer's ENFORCES per-item `#[cfg]`
+//! gating below a file's test module, while this one stops at the first
+//! top-level `#[cfg(test)]` and reads what is above it.
 //! It is the only caller of the layer in the browser, and its own only caller
 //! is the dedicated Web Worker the client half starts
 //! (`web/src/local/worker.ts`, which lands with that half) — nothing on the
@@ -206,8 +210,14 @@ pub fn set_clock(seconds: Option<f64>) {
 }
 
 /// The e2e build's trap hook (spec §6.5, `--features debug`): a panic under a
-/// held lock is a trap that leaves `GAMES` poisoned — the shape a fresh Worker
-/// recovers from and a re-`init()` cannot.
+/// held lock is a trap that leaves `GAMES` LOCKED FOR EVER — the shape a fresh
+/// Worker recovers from and a re-`init()` cannot.
+///
+/// **Not "poisoned", which is the wrong word on this target** (whole-branch
+/// review, vacuity #6): `wasm32-unknown-unknown` aborts on panic rather than
+/// unwinding, so the guard is never dropped and the mutex is never poisoned —
+/// it is simply still held. The consequence is the same one the recovery is
+/// built for: the next `init()` traps too.
 #[cfg(feature = "debug")]
 #[wasm_bindgen]
 pub fn debug_trap() {

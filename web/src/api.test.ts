@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, onUnauthorized } from "./api";
 import { resetLocalHostForTests } from "./local/client";
+import { TAKEN_OVER_SENTENCE } from "./local/lost";
 import { stubApi } from "./test/harness";
 import { currentWorker, FakeWorker, stubWorker } from "./test/fakeWorker";
 import { wire } from "./wire/contract";
@@ -88,6 +89,22 @@ describe("call routes by host", () => {
     expect(state.id).toBe("local-1");
     expect(currentWorker().posted).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("raises a local write the lock did not keep as a refusal, never as an applied move", async () => {
+    // **The page half of §2.2's in-flight rule** (whole-branch review,
+    // Important #1), end to end: `localCall` turns a non-GET answered
+    // `not-held` into a 409, and `settle` raises it — so `send`'s own catch
+    // shows the loss and nothing of that move is drawn. Before the wave this
+    // resolved: the module's 200 came back as an applied state with
+    // "APPLIED BUT NOT SAVED — the browser refused the write" appended, a
+    // sentence about a store that had refused nothing.
+    forbidFetch();
+    stubWorker({ call: () => ({ status: 200, body: { ok: true }, saved: "not-held" }) });
+    const refused = await api.input("local-1", "1", "options").catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).status).toBe(409);
+    expect((refused as ApiError).message).toBe(TAKEN_OVER_SENTENCE);
   });
 
   it("sends every OTHER game's call to fetch and starts no Worker", async () => {

@@ -84,6 +84,13 @@ jobs:
       - run: npm run typecheck
         working-directory: web
       - run: cargo test -p yokohama-web --lib --test wire_fixtures
+      # M6.5b's fix wave: the browser host's own crate. It is host code with
+      # four cells — among them the scan that holds its platform calls to the
+      # clock — and nothing in CI ran them: the `build:wasm` step above only
+      # COMPILES it for the browser. This is the class CLAUDE.md's gate rule
+      # names, "a suite no documented gate line names is a suite that never
+      # runs"; the toolchain is already here and it takes seconds.
+      - run: cargo test -p yokohama-wasm
       # M6.5a (R-6.5a.7): the layer builds for the browser and the Worker without
       # its server half. This proves the DEPENDENCY fence (no axum, no mio); the
       # platform-call fence is `platform_calls_stay_behind_the_server_feature`,

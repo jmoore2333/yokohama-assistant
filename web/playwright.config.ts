@@ -101,10 +101,15 @@ function gamesDir(): string {
  *  must not write into whatever the operator is actually keeping.
  *
  *  **A READER, not a maker.** `gamesDir` empties what it hands back, and this
- *  module is loaded by every Playwright process — the server's, and the test
+ *  module is loaded by every Playwright process — the runner's, and each test
  *  worker's. A spec calling an emptying helper to find out where the file is
- *  would delete the file it came to read, so the emptying happens ONCE, in the
- *  `env` map below, and the spec reads this. */
+ *  would delete the file it came to read, so the emptying is left to the `env`
+ *  map below and the spec reads this.
+ *
+ *  **Which happens at each config EVALUATION, not once per run** (whole-branch
+ *  review, vacuity #3): every process that loads this module runs `fresh()`
+ *  again, the shape `gamesDir` has had since M6.1. Harmless at `workers: 1`
+ *  unless a worker restarts mid-run. */
 export function archiveDir(): string {
   return join(tmpdir(), `yokohama-e2e-archive-${PORT}`);
 }

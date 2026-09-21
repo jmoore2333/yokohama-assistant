@@ -220,6 +220,10 @@ export function App() {
    *  to the lobby and back does not put the button back; a RELOAD does, and the
    *  server answers that second click `identical`. */
   const [archived, setArchived] = useState<Record<string, string>>({});
+  /** A send to the archive is OUT. A ref for `inFlight`'s reason and not the
+   *  darkened control's: the control darkens on the ANSWER, and two clicks in
+   *  one tick are both dispatched before any answer exists. */
+  const archiving = useRef(false);
   /** The table the game on screen belongs to — who sits where, and which of
    *  those seats are the caller's.
    *
@@ -780,7 +784,13 @@ export function App() {
       // Handled by the bounded chain below; swallowed here so a refusal is not
       // an unhandled rejection as well as a state.
       .catch(() => {});
-    bounded(health, BOUND_MS).catch(() => setServerUp(false));
+    // **Only from `null`** (whole-branch review, Minor #2). The bound answers
+    // the question "has anything come back yet?", and a LISTING that landed
+    // is an answer: `Lobby`'s `onReached` sets this true the moment one does,
+    // whatever the health read is doing. An unconditional `false` here took a
+    // working lobby off the screen and replaced it with "not connected"
+    // whenever the health read alone was the slow one.
+    bounded(health, BOUND_MS).catch(() => setServerUp((v) => v ?? false));
   }, []);
 
   const arrive = useCallback(
@@ -1276,7 +1286,13 @@ export function App() {
     // this browser signed in at — a dealing screen handed the signed-in name
     // would find no seat of its own at a table this device owns outright.
     if (route.kind === "new" && route.local)
-      return <NewGame local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
+      // **Keyed by HOST** (whole-branch review, Minor #1). The two forms sit at
+      // the same position in this tree, so React reconciles one into the other
+      // and the STATE goes with it: `#/new` with Players set to 4, then a
+      // hand-typed `#/new/local`, kept the 4 beside two seats and the module
+      // refused the create in `check_shape`'s words. A key is what makes the
+      // switch a remount.
+      return <NewGame key="local" local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing && isLocal(dealing))
       return (
         <Dealing
@@ -1295,7 +1311,7 @@ export function App() {
     // of it — as content on the first screen rather than as a gate.
     if (!signedIn) return firstScreen(error);
     if (route.kind === "new")
-      return <NewGame me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
+      return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing)
       return (
         <Dealing
@@ -1460,6 +1476,14 @@ export function App() {
    *  refusal is shown as the server sent it and leaves the control alone —
    *  nothing about this game has changed. */
   const sendToArchive = async () => {
+    // **One send per click, and a ref because state would not do** (whole-
+    // branch review, Minor #4; `inFlight`'s own reasoning above). React
+    // batches, so two clicks in a tick both read a state flag as false and
+    // both post — and the SECOND lands as `identical`, so a first send
+    // reported itself as "already archived". The control darkens on the
+    // answer, which is too late to be the guard.
+    if (archiving.current) return;
+    archiving.current = true;
     setError(null);
     try {
       const pair = await localPair(state.id);
@@ -1476,6 +1500,10 @@ export function App() {
       // The server's own sentence where it gave one; spec §4's words where the
       // request never reached it. Nothing was sent, so nothing is claimed.
       setError(e instanceof ApiError ? e.message : "the archive could not be reached");
+    } finally {
+      // Released either way: a refusal leaves this game exactly as it was, and
+      // sending again is the right thing to be able to do.
+      archiving.current = false;
     }
   };
 
