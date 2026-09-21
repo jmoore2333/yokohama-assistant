@@ -1239,12 +1239,20 @@ step 3 before the name was left routed.
    record id `622c274ecda97fe11c65a34bc7e2b2a9`, created **22:20:13.81Z** (§3.1: DNS is not automatic).
 2. **Ingress, transitional.** `/volume1/docker/cloudflared/config/config.yml` backed up as
    **`config.yml.bak-2026-09-21`** (2,770 B, sha256 `00ecb105f3043cbdaa3dbc4f72c63fe7919fcedd42026dd30c225e36696176a0`)
-   and rewritten with the new block ABOVE the catch-all and the old block KEPT, then
-   `POST /containers/cloudflared-nas/restart` at ~22:22:2xZ.
+   and rewritten with the new block ABOVE the catch-all and the old block KEPT — the writing
+   container was created at **22:22:17Z** — then `POST /containers/cloudflared-nas/restart`, issued
+   at **≈22:22:29Z**. That figure is BOUNDED and not read off a log: it sits between the config
+   write at 22:22:17Z and a reading taken at 22:22:41Z, twelve seconds after the call returned.
 3. **The protection reading, taken before leaving it routed.** From a vantage with **no session**,
    `https://yokohama-nas.moore.nyc/` read **302 → `https://bdvc.cloudflareaccess.com/cdn-cgi/access/login/yokohama-nas.moore.nyc?kid=5fa7a989…`**
-   — not 200. (One transient reading at 22:23:16Z, seconds after the restart, was **403** rather than
-   302 while the destination propagated at the edge; a refusal either way, and it did not recur.)
+   — not 200. **One earlier reading, and the sequence is worth getting right.** At **22:23:16Z** an
+   unenrolled probe could not connect to the new name at all — no A record, the DNS note below — so
+   it read nothing about Access. The first unenrolled request that did reach the edge, at
+   **≈22:23:45Z with the address pinned, about seventy-five seconds after the restart**, read **403**
+   rather than 302 while the destination propagated. A refusal either way, and it did not recur.
+   An earlier draft of this record called that 403 "seconds after the restart" and placed it at the
+   22:23:16Z probe; both were wrong. The times above are the container timestamps, and the 403 sits
+   AFTER the ingress restart, not before it.
 4. **Ingress, final.** The `yokohama.moore.nyc` block retired, `config.yml` rewritten (sha256
    `b6f8ecafb71764fa36ff308959f5b03bf63eeba91cf3c7c6117c467e9966df4a`), `cloudflared-nas` restarted
    at **22:28:49Z**; four tunnel connections registered by 22:28:53Z with no ingress error.
@@ -1261,7 +1269,12 @@ consequence was stored (owner, R-6.5b2.5).
 **A drift the move surfaced, worth its own line.** The NAS's `config.yml` had not been touched since
 2026-09-02 and still carried the **pre-M6.1** sentence *"this origin has NO authentication of any
 kind"* — the repo's copy had been corrected and the deployed file had not. The file installed here is
-byte-identical to `deploy/cloudflared-config.yml` at this commit, so the two agree again.
+byte-identical to `deploy/cloudflared-config.yml` **as it stood at the deploy** (sha256
+`b6f8ecaf…`), so the two agreed again at that moment. **They no longer match byte-for-byte**: the
+fix round that followed this record's review reworded two COMMENTS in the repo copy (this file's
+sha256 is now `e487c6aa…`) and the NAS was deliberately not touched to re-sync them,
+since a comment is not ingress. The ingress blocks are identical and that is the part that runs;
+whoever next restarts `cloudflared-nas` should copy this file over and close the gap.
 
 #### THE MEASUREMENT VANTAGE — read this before trusting any reading below
 
@@ -1271,7 +1284,8 @@ device silently. The corollary this deployment had to discover is the other half
 from it at all** — every `curl` from it is the owner, and the app's own answers are what come back.
 The unenrolled vantage used for every 302/401 below was a **throwaway `alpine` container on the NAS
 itself** (`NetworkMode: bridge`, egress the house IP, no WARP and no cookie), driven through
-Portainer's Docker proxy and deleted afterwards. Both vantages are recorded because they answer
+Portainer's Docker proxy. **Nine such containers were created across this deployment** — five
+probes, one DNS diagnostic, one config read and two config writes — **and all nine were deleted.** Both vantages are recorded because they answer
 different questions: the unenrolled one says whether the door is shut, the enrolled one says what the
 application does once you are through it.
 
@@ -1300,6 +1314,12 @@ shell, from a deployment that did not work.
 **UNENROLLED, no session (from the NAS), final state.** Identical on both names — which is the
 comparison that matters, since the old name is meant to be no more reachable than the new one is
 without a session:
+
+**The asset row names a file this vantage never saw.** With no session the page is not served, so
+there is nothing to scrape a hashed name out of; `index-COGqoKfc.js` is supplied from the build
+(§1's `dist/assets/` listing) and requested by name. That is deliberate — §3.2 wants a REAL hashed
+asset rather than the `/assets/` directory, which the SPA fallback would answer either way — but it
+means this row tests the door and not the file map.
 
 ```
                                     nav   xhr   www-authenticate
@@ -1341,7 +1361,11 @@ way about the path-scoped design. §3.2 expects `/`, a hashed asset, `/art/manif
 `/api/health`, `/api/labels` and `/api/art` to answer **200 with no session** so that a browser
 playing single player never meets the door. Under the hostname-wide application they answer **302**,
 as the table above shows. That is the deployed policy behaving correctly, not a defect, and the
-reading §3.2 asks for cannot be taken until the application is path-scoped.
+reading §3.2 asks for cannot be taken until the application is path-scoped. (A small thing to know
+before comparing: **spec §3.2's step 3 is headed "FIVE DESTINATIONS" and then enumerates six** —
+`/api/games`, `/api/chat`, `/api/stream`, `/api/archive`, `/api/me` and `/enter` — and its next
+paragraph says "five applications would each need their own". This record follows the
+ENUMERATION and says six.)
 
 #### Step 4b — the positive reading, performed in part
 
@@ -1368,8 +1392,11 @@ both were deleted.
 **Read that at its real size.** On an enrolled device WARP re-authenticates every request on its own,
 so a single-session pass does not by itself prove one token would have sufficed. The attempt to
 remove that confound — replaying the same cookie from the unenrolled NAS — was **refused, 302 on
-every route**, because a WARP-issued token carries a `device_id` and is bound to the device that got
-it. So the cookie-only reading cannot be taken from a second machine. What IS settled, and is the
+every route**, which is consistent with a WARP-issued token being bound to the device that obtained
+it. **The refusal is what was measured; the mechanism is not** — the token's own decoded claims,
+printed during the reading, carried `aud`, `email`, `warp_as_auth` and the hostname, and no
+`device_id` was read out of it. The load-bearing conclusion needs only the refusal: the cookie-only
+reading cannot be taken from a second machine. What IS settled, and is the
 stronger fact, is structural: there is **one** application on this hostname carrying **one** audience,
 so the many-audiences failure §2.1 guards against cannot arise here. The reading that would test the
 path-scoped design is owed with it.
@@ -1379,9 +1406,12 @@ path-scoped design is owed with it.
 The headed walk of the deployed site (the door draws at `#/`; "Play on this device" starts a local
 game with no sign-in; "Play with others" goes through `/enter` to the lobby; a signed-in hosted game
 still plays) was **not performed** and is not claimed. No authenticated browser was available to the
-session: the Claude-in-Chrome extension was not connected, and the workstation's own resolver could
-not reach the new name for the reasons above, so no browser on this machine could have loaded it
-either. M6.4's §4.5 is why a headless substitute was not offered in its place.
+session: **the Claude-in-Chrome extension was not connected**, which is the blocker on its own. The
+workstation's resolver would also not return the new name's **A** record for the reasons below — a
+`curl` from this machine read `Could not resolve host` throughout — but that is a weaker statement
+than the one an earlier draft made: **no browser was tried here**, and the same resolvers did return
+the **AAAA** records, so whether a browser on an IPv6-capable path would have loaded the site is
+untested. M6.4's §4.5 is why a headless substitute was not offered in place of the walk.
 
 #### What this deployment does NOT claim
 
@@ -1434,10 +1464,15 @@ measurement says it should go on doing so.
 ## 5. Rollback
 
 - **The tunnel:** restore a backup beside it on the NAS and restart
-  `cloudflared-nas`. One file, one restart. `config.yml.bak-2026-09-21` is the
-  one that puts `yokohama.moore.nyc` back (§3.14); `config.yml.bak-2026-09-01`
-  is the older, pre-M6.1 file and restoring it would also undo every comment
-  correction since.
+  `cloudflared-nas`. One file, one restart. **`config.yml.bak-2026-09-21` is the
+  one to reach for** — it is the file that was running until §3.14's move, so it
+  puts `yokohama.moore.nyc` back. **Both backups carry PRE-M6.1 comment text**,
+  not just the older one: the 2026-09-21 copy is the NAS's own untouched
+  2026-09-02 file, which still says this origin has "NO authentication of any
+  kind" (§3.14's drift note). So either restore re-routes correctly and
+  re-introduces a comment that has been false since M6.1; the accurate text is
+  `deploy/cloudflared-config.yml` in this repo. `config.yml.bak-2026-09-01`
+  (1,890 B) is older still.
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
 - **The previous build:** every earlier tag is still an image on the NAS (§3.9

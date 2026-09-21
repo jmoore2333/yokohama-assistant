@@ -10,7 +10,8 @@
 #   3. create a proxied CNAME  <name>.moore.nyc -> 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.cfargotunnel.com
 #   4. create a Cloudflare Access application for that hostname -- or add
 #      the hostname as a DESTINATION on an existing one, which is what the
-#      `yokohama` application does for all three names below
+#      `yokohama` application does for all three names it carries (only two of
+#      them are routed here: `yokohama.moore.nyc` is held for the Worker)
 #   5. `docker restart cloudflared-nas`
 #
 # Steps 3 and 4 are not optional. Ingress alone routes nothing (no DNS) and
@@ -62,7 +63,8 @@ ingress:
   # published nowhere; that is the other half of why the arrangement holds.
   #
   # M6.5b2's spec (§3.2) designs a PATH-SCOPED application instead -- one
-  # application, six destinations, the public paths open -- so that a browser
+  # application, six destinations (its own heading says FIVE and then lists
+  # six; this follows the list), the public paths open -- so that a browser
   # playing only single player never meets the door. That is NOT deployed: the
   # owner ruled on 2026-09-21 that the root-domain policy stays through
   # development. Nothing in the app knows the difference, which is the point of
