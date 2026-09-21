@@ -10,11 +10,16 @@ guesses are the useful part.
 
 ## 0. What is true before you start
 
-- **`yokohama.moore.nyc` is behind Cloudflare Access.** Verified, not assumed:
-  it answers 200 and issues a `CF_Authorization` token from
-  `bdvc.cloudflareaccess.com`. **The client inherits that policy by taking the
-  hostname and needs no Access application of its own.** (Both M4 documents
-  carried this as UNVERIFIED; it is now settled.)
+- **The client's hostname is `yokohama-nas.moore.nyc` since 2026-09-21, and it
+  is behind Cloudflare Access.** It served `yokohama.moore.nyc` from 2026-09-01
+  until M6.5b2 moved it and freed that name for the Worker (§3.14). Verified,
+  not assumed: with no session every path answers **302** to
+  `bdvc.cloudflareaccess.com`, and an enrolled caller is issued a
+  `CF_Authorization` from it. **The client needs no Access application of its
+  own** — the owner's existing `yokohama` application carries all three
+  hostnames as destinations under ONE audience, and the policy is
+  HOSTNAME-WIDE. (Both M4 documents carried this as UNVERIFIED; it is now
+  settled, and §3.14 records how it was read rather than believed.)
 - **The server reads ONE identity header, and which one is a deployment
   decision.** (Since M6.1, 2026-09-15; before it this bullet said "no
   authentication of any kind", which was true then and is not now.)
@@ -1169,6 +1174,237 @@ new ones is byte-identical to `0.5.0-m6.5a`'s.
 
 ---
 
+### 3.14 M6.5b2's door is live on the NEW hostname — the eleventh deployment, 2026-09-21 (a record, not a plan)
+
+A **MID-CYCLE** build: the door, not the cycle's release. M6.5b2 Tasks 1–3 are in — the server's
+three switches (`YOKOHAMA_WEB_MULTIPLAYER`, the `dev-identity` cargo feature, the archive
+directory), the `/enter` turnstile, the front door at `#/` with "On this device" and "Play with
+others", and the lobby moved to `#/lobby` — and the NAS took **`yokohama-nas.moore.nyc`**, freeing
+`yokohama.moore.nyc` for the Worker. The cycle's remaining work (Tasks 5–9: the module's size, the service
+worker, installability, the backup envelope and the outbox) is not in this build, so this is a
+development deploy and not a release.
+
+- **Build:** `web-room-m6.5b2` at `553e3ee`, tree clean. The musl cross-compile per §1: `Finished
+  release in 5.82s` (warm cache); the binary is `ELF 64-bit LSB pie executable, x86-64, static-pie
+  linked`, **6,642,280 bytes** (§3.13's 6,633,736 + 8,544: the three switches and the turnstile).
+  The client build was `npm run build` — the RELEASE module; §1's preflight `grep -c debug_trap
+  web/src/local/wasm/yokohama_wasm.js` read **0**, and vite's own
+  `"debug_trap" is not exported by "src/local/wasm/yokohama_wasm.js"` warning is the same fact from
+  the other side, since only the debug module carries that export. `web/dist/assets/` carries
+  `index-COGqoKfc.js` 332,072 B, `index-CcfDU4W0.css` 35,524 B, `worker-CqmNdmwq.js` 13,174 B and
+  **`yokohama_wasm_bg-CZUeFC4o.wasm` 2,846,763 B (758.03 kB gzip)** — the plain `release` profile
+  still, as M6.5b left it; Task 5 is what shrinks it. Context tarball **14,866,798 B**, sha256
+  `a46d2d2528ba3707b57b9c644f492680047c018488935c49e25acdfde1030eb1`, cut at **22:18:58Z**, served
+  by `python3 -m http.server 8899 --bind 0.0.0.0` on the workstation at 192.168.1.16; the NAS
+  (192.168.1.173) fetched it in one GET at **22:19:06Z**; the file server was stopped at
+  **22:19:25Z**.
+- **Image:** `yokohama-web:0.5.0-m6.5b2-rc1`, Id
+  `sha256:2ee5e7bbfc6742fe30d36e00ae91fff3ce9b92428346e7acb08c3e2f99cd90c0`, **29,446,020 B**,
+  created **22:19:17Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.5b2-rc1&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2).
+- **Swap:** the four calls ran between **22:19:25Z** and **22:19:42.87Z** — `stop` on the
+  `0.5.0-m6.5b.1` container (`0c3e49f6…`, created 2026-09-21 06:40:14Z) → `DELETE` →
+  `POST /containers/create?name=yokohama-web` with §3's body — **both `Env` entries** and
+  **`YOKOHAMA_WEB_MULTIPLAYER` deliberately UNSET, so it defaults to `on`** (R-6.5b2.3 keeps
+  `claimed`), the two labels, `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named
+  volume `yokohama-web-data` → `/data` — → container Id
+  `08e036107e74d3da9cd17237a537056d31b21210a6e7b658cfb8e9771ba32695`, created **22:19:40.24Z**,
+  started **22:19:42.87Z**. Same address on `cf-internal` (**172.21.0.4**), so nothing about the
+  container needed cloudflared. Downtime under 18 s; nobody was playing.
+- **Verified through the tunnel at 22:19:49Z** (on `yokohama.moore.nyc`, which was still the live
+  name at that minute):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","archive":"dir","lobby_chat":true,"chat_keep":500,"chat_text":500,"multiplayer":true}`
+    — **`multiplayer: true`** and **`archive: dir`**, the two readings this deploy owed.
+  - `GET /` serves `index-COGqoKfc.js`, which exists only in this build.
+  - `GET /api/games` **401**; `GET /enter` **302 → `/#/lobby`**, which is Task 1's turnstile answering
+    from the deployed binary.
+  - `GET /assets/yokohama_wasm_bg-CZUeFC4o.wasm` 200, `application/wasm`, `content-length: 2846763`,
+    `cache-control: public, max-age=31536000, immutable`; `GET /art/areas/Church.webp` 200 `image/webp`.
+
+#### The hostname move, in the order it was performed
+
+**The Access application was NOT created or changed here.** The owner ruled on 2026-09-21 that the
+hostname-wide policy stays through development, and had already added the new name to the existing
+application. Read from the API rather than assumed: application **`yokohama`**, id
+`11cbcf68-96cd-4310-baee-f2ade812155d`, audience
+`5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7`, `session_duration` 730h, with
+**three destinations** — `yokohama.moore.nyc`, `yokohama-cli.moore.nyc`, `yokohama-nas.moore.nyc` —
+and two **allow** policies, `sbaitso-friendly` (4 emails) and `yokohama-players` (3 emails). No IP
+rule, no bypass. So "protect first, then route" was satisfied before step 1 below, and verified at
+step 3 before the name was left routed.
+
+1. **DNS.** Proxied CNAME `yokohama-nas.moore.nyc` → `6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.cfargotunnel.com`,
+   record id `622c274ecda97fe11c65a34bc7e2b2a9`, created **22:20:13.81Z** (§3.1: DNS is not automatic).
+2. **Ingress, transitional.** `/volume1/docker/cloudflared/config/config.yml` backed up as
+   **`config.yml.bak-2026-09-21`** (2,770 B, sha256 `00ecb105f3043cbdaa3dbc4f72c63fe7919fcedd42026dd30c225e36696176a0`)
+   and rewritten with the new block ABOVE the catch-all and the old block KEPT, then
+   `POST /containers/cloudflared-nas/restart` at ~22:22:2xZ.
+3. **The protection reading, taken before leaving it routed.** From a vantage with **no session**,
+   `https://yokohama-nas.moore.nyc/` read **302 → `https://bdvc.cloudflareaccess.com/cdn-cgi/access/login/yokohama-nas.moore.nyc?kid=5fa7a989…`**
+   — not 200. (One transient reading at 22:23:16Z, seconds after the restart, was **403** rather than
+   302 while the destination propagated at the edge; a refusal either way, and it did not recur.)
+4. **Ingress, final.** The `yokohama.moore.nyc` block retired, `config.yml` rewritten (sha256
+   `b6f8ecafb71764fa36ff308959f5b03bf63eeba91cf3c7c6117c467e9966df4a`), `cloudflared-nas` restarted
+   at **22:28:49Z**; four tunnel connections registered by 22:28:53Z with no ingress error.
+
+**`yokohama.moore.nyc` is now HELD FOR THE WORKER.** Its DNS record still points at this tunnel, so
+a request reaches cloudflared and falls through to the catch-all: every path reads **404** from an
+enrolled shell, and from an unenrolled one the 404 is not even observable, because Access answers
+302 first. **One exception, and it is the edge and not the origin:** `/assets/index-COGqoKfc.js`
+still read **200** on the old name with `cf-cache-status: HIT` and `age: 292` — the immutable hashed
+asset is in Cloudflare's cache and will age out. Nothing else on that hostname answers.
+**Local single-player games did not travel**, because browser storage is per ORIGIN; nothing of
+consequence was stored (owner, R-6.5b2.5).
+
+**A drift the move surfaced, worth its own line.** The NAS's `config.yml` had not been touched since
+2026-09-02 and still carried the **pre-M6.1** sentence *"this origin has NO authentication of any
+kind"* — the repo's copy had been corrected and the deployed file had not. The file installed here is
+byte-identical to `deploy/cloudflared-config.yml` at this commit, so the two agree again.
+
+#### THE MEASUREMENT VANTAGE — read this before trusting any reading below
+
+§3.2 already says the deploy check **needs WARP active**, because Access authenticates an enrolled
+device silently. The corollary this deployment had to discover is the other half of that sentence:
+**with WARP on, the workstation IS an authenticated caller, so a "no session" reading cannot be taken
+from it at all** — every `curl` from it is the owner, and the app's own answers are what come back.
+The unenrolled vantage used for every 302/401 below was a **throwaway `alpine` container on the NAS
+itself** (`NetworkMode: bridge`, egress the house IP, no WARP and no cookie), driven through
+Portainer's Docker proxy and deleted afterwards. Both vantages are recorded because they answer
+different questions: the unenrolled one says whether the door is shut, the enrolled one says what the
+application does once you are through it.
+
+**A second wrinkle, recorded because it will look like a failure to the next reader, and because
+it is a cost of taking a NEW hostname rather than an existing one.** Two caching resolvers on this
+network — the workstation's (WARP's) and the house router's at 192.168.1.1 — held a **NODATA answer
+for the A record** of the new name for the whole session, from lookups made ~20 s after the record
+was created. Diagnosed rather than guessed: the same resolvers return the **AAAA** records for that
+name, and BOTH families for the old one, so it is a negative cache of one rrset and not a Gateway
+policy suppressing the domain. (The account does carry a Gateway DNS rule `SecurityRisks` blocking
+eleven security categories; a block there would have taken both families, and Cloudflare's intel API
+reports no security category on either hostname. Worth an owner glance anyway if the name is still
+unreachable tomorrow.) `moore.nyc`'s SOA minimum is **1800**, so the entries expire about thirty
+minutes after they were taken. The zone's own nameservers, 1.1.1.1 and 8.8.8.8 all answered
+correctly throughout, and every reading in this record was taken with
+`--resolve yokohama-nas.moore.nyc:443:104.21.92.62` — which pins the address and leaves SNI, Host and
+therefore both Access and the tunnel exactly as a browser would find them.
+
+**The lesson for the next hostname move:** take the CNAME and then do not look at it for a minute.
+A lookup taken in the seconds after the record is created can cache a miss for half an hour on every
+resolver that hears it, including the owner's own laptop — and it is indistinguishable, from the
+shell, from a deployment that did not work.
+
+#### The two curl loops, both hostnames, both vantages
+
+**UNENROLLED, no session (from the NAS), final state.** Identical on both names — which is the
+comparison that matters, since the old name is meant to be no more reachable than the new one is
+without a session:
+
+```
+                                    nav   xhr   www-authenticate
+/                                   302    —
+/assets/index-COGqoKfc.js           302    —
+/art/manifest.json                  302    —
+/api/health                         302    —
+/api/labels                         302    —
+/api/art                            302    —
+/api/games                          302   401   Cloudflare-Access
+/api/games/x/input                  302   401   Cloudflare-Access
+/api/chat                           302   401   Cloudflare-Access
+/api/stream                         302   401   Cloudflare-Access
+/api/games/x/stream                 302   401   Cloudflare-Access
+/api/archive                        302   401   Cloudflare-Access
+/api/me                             302   401   Cloudflare-Access
+/enter                              302   401   Cloudflare-Access
+```
+
+**ENROLLED (WARP, the owner's identity), `yokohama-nas.moore.nyc`.** These are the APPLICATION's
+answers, past the door:
+
+```
+/                                   200      /api/games            401
+/assets/index-COGqoKfc.js           200      /api/games/x/input    405   (GET on a POST route)
+/art/manifest.json                  200      /api/chat             401
+/api/health                         200      /api/stream           401
+/api/labels                         200      /api/games/x/stream   401
+/api/art                            200      /api/archive          405   (GET on a POST route)
+                                             /api/me               200
+                                             /enter                302 → /#/lobby
+```
+
+The same loop on `yokohama.moore.nyc` after the retirement reads **404 everywhere** but the cached
+asset noted above.
+
+**The spec §3.2 public-path 200 readings are DEFERRED BY OWNER DECISION** and are not evidence either
+way about the path-scoped design. §3.2 expects `/`, a hashed asset, `/art/manifest.json`,
+`/api/health`, `/api/labels` and `/api/art` to answer **200 with no session** so that a browser
+playing single player never meets the door. Under the hostname-wide application they answer **302**,
+as the table above shows. That is the deployed policy behaving correctly, not a defect, and the
+reading §3.2 asks for cannot be taken until the application is path-scoped.
+
+#### Step 4b — the positive reading, performed in part
+
+On ONE session on the new hostname: `GET /enter` **302 → `/#/lobby`** issuing a single
+`CF_Authorization` whose claims name `aud=5fa7a989…`, `email=jamoore@gmail.com`,
+`host=yokohama-nas.moore.nyc`; then, with that jar and no further navigation —
+
+```
+GET  /api/me                 200   {"mode":"claimed","user":"jamoore@gmail.com"}
+GET  /api/games              200   the owner's games
+GET  /api/stream             200   text/event-stream; both house bumps arrived on it —
+                                   {"seq":3,"chat":0} from a create, {"seq":4,"chat":0} from a delete
+POST /api/games              201   a smoke table, deleted below
+GET  /api/games/<id>/chat    200   {"messages":[],"last":0}
+POST /api/games/<id>/chat    201   author {"kind":"seat","seat":0,…}
+GET  /api/games/<id>/stream  200   event: signal / data: {"events":0,"to_move":null,"status":"dealing",…}
+POST /api/archive {}         400   "missing field" — the body is wrong, which is the point: not a 401
+DELETE /api/games/<id>       204
+```
+
+and the jar held **exactly one** `CF_Authorization` at the end. Two smoke tables were created and
+both were deleted.
+
+**Read that at its real size.** On an enrolled device WARP re-authenticates every request on its own,
+so a single-session pass does not by itself prove one token would have sufficed. The attempt to
+remove that confound — replaying the same cookie from the unenrolled NAS — was **refused, 302 on
+every route**, because a WARP-issued token carries a `device_id` and is bound to the device that got
+it. So the cookie-only reading cannot be taken from a second machine. What IS settled, and is the
+stronger fact, is structural: there is **one** application on this hostname carrying **one** audience,
+so the many-audiences failure §2.1 guards against cannot arise here. The reading that would test the
+path-scoped design is owed with it.
+
+#### Step 5 — OWNER-OWED
+
+The headed walk of the deployed site (the door draws at `#/`; "Play on this device" starts a local
+game with no sign-in; "Play with others" goes through `/enter` to the lobby; a signed-in hosted game
+still plays) was **not performed** and is not claimed. No authenticated browser was available to the
+session: the Claude-in-Chrome extension was not connected, and the workstation's own resolver could
+not reach the new name for the reasons above, so no browser on this machine could have loaded it
+either. M6.4's §4.5 is why a headless substitute was not offered in its place.
+
+#### What this deployment does NOT claim
+
+- Nothing about the **path-scoped** Access design. It is unbuilt and unmeasured (spec §3.2).
+- Nothing about Tasks 5–9. The module is still the plain `release` profile at 2,846,763 B, there is
+  no service worker, no backup envelope and no outbox in this build.
+- **A known interim state, accepted for this development deploy** (Task 2's review recorded it): on a
+  first visit, **Abandon on a RUNNING local game deletes it without a send** — the "abandon and save"
+  path does not yet reach the archive from that entry point. Task 9 closes it.
+
+#### Rollback
+
+`yokohama-web:0.5.0-m6.5b.1` stays on the NAS; recreate from that tag with §3's body. **Nothing in
+this release changes a stored document's schema** (`TABLE_SCHEMA` stays 3, the record format is
+fenced), so — unlike §3.12 — **a rollback across it is NOT a schema rollback**: every table this
+release created reads under `0.5.0-m6.5b.1`. What a rollback loses is the three switches and the
+`/enter` turnstile, so `#/` would fall back to the M6.5b first screen. **The hostname is a separate
+rollback**: restore `config.yml.bak-2026-09-21` on the NAS and restart `cloudflared-nas` to put
+`yokohama.moore.nyc` back (the DNS record for it was never removed). **Eighteen tags now sit on the
+NAS.**
+
+---
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
@@ -1197,8 +1433,11 @@ measurement says it should go on doing so.
 
 ## 5. Rollback
 
-- **The tunnel:** restore `config.yml.bak-2026-09-01` on the NAS and restart
-  `cloudflared-nas`. One file, one restart.
+- **The tunnel:** restore a backup beside it on the NAS and restart
+  `cloudflared-nas`. One file, one restart. `config.yml.bak-2026-09-21` is the
+  one that puts `yokohama.moore.nyc` back (§3.14); `config.yml.bak-2026-09-01`
+  is the older, pre-M6.1 file and restoring it would also undo every comment
+  correction since.
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
 - **The previous build:** every earlier tag is still an image on the NAS (§3.9

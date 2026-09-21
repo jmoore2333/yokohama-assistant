@@ -8,7 +8,9 @@
 #   1. put the service's container on the `cf-internal` docker network
 #   2. add an ingress block below, above the catch-all
 #   3. create a proxied CNAME  <name>.moore.nyc -> 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.cfargotunnel.com
-#   4. create a Cloudflare Access application for that hostname
+#   4. create a Cloudflare Access application for that hostname -- or add
+#      the hostname as a DESTINATION on an existing one, which is what the
+#      `yokohama` application does for all three names below
 #   5. `docker restart cloudflared-nas`
 #
 # Steps 3 and 4 are not optional. Ingress alone routes nothing (no DNS) and
@@ -32,19 +34,39 @@ originRequest:
 
 ingress:
   # --- Yokohama: the BROWSER CLIENT ---------------------------------------
-  # The M4 web frontend: the same engine and the same legal-move gate the
-  # terminal uses, drawn in a browser. Took this hostname from ttyd on
-  # 2026-09-01, which is why the terminal moved to the block below.
+  # The web frontend: the same engine and the same legal-move gate the
+  # terminal uses, drawn in a browser. It served `yokohama.moore.nyc` from
+  # 2026-09-01 -- taking that hostname from ttyd, which is why the terminal
+  # moved to the block below -- until 2026-09-21, when M6.5b2 moved it here.
   #
-  # PROTECTED BY: the Cloudflare Access application already on this hostname.
-  # That is load-bearing and not decorative. Since M6.1 the origin does read an
-  # identity -- one header, named by `YOKOHAMA_WEB_IDENTITY`, required on every
-  # `/api/games` route -- but it runs in `claimed` mode, which authenticates the
-  # DOOR and not the SEAT: anyone past Access can claim any email. So Access is
-  # still the only thing separating strangers from the game store, and removing
-  # it from this hostname makes the store readable by anyone who sends a header.
-  # This tunnel is also the one path to the container's port 8080, which is
+  # WHY THE MOVE: `yokohama.moore.nyc` is HELD FOR THE WORKER. M6.5c puts
+  # hosted multiplayer in Durable Objects behind that name, and the NAS goes on
+  # being the self-host path under this one, consistent with
+  # `yokohama-cli.moore.nyc` below. Browser storage is per ORIGIN, so local
+  # single-player games did NOT travel across the move; nothing of consequence
+  # was stored (owner, R-6.5b2.5).
+  #
+  # PROTECTED BY: the Cloudflare Access application named `yokohama`, which
+  # carries this hostname as one of its THREE destinations
+  # (`yokohama.moore.nyc`, `yokohama-cli.moore.nyc`, `yokohama-nas.moore.nyc`)
+  # under ONE audience and the owner's two email allow-list policies. It is
+  # HOSTNAME-WIDE: every path here is behind it, `/api/health` and the client
+  # bundle included. That is load-bearing and not decorative. Since M6.1 the
+  # origin does read an identity -- one header, named by
+  # `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route -- but it
+  # runs in `claimed` mode, which authenticates the DOOR and not the SEAT:
+  # anyone past Access can claim any email. So Access is still the only thing
+  # separating strangers from the game store, and removing it from this
+  # hostname makes the store readable by anyone who sends a header. This
+  # tunnel is also the one path to the container's port 8080, which is
   # published nowhere; that is the other half of why the arrangement holds.
+  #
+  # M6.5b2's spec (§3.2) designs a PATH-SCOPED application instead -- one
+  # application, six destinations, the public paths open -- so that a browser
+  # playing only single player never meets the door. That is NOT deployed: the
+  # owner ruled on 2026-09-21 that the root-domain policy stays through
+  # development. Nothing in the app knows the difference, which is the point of
+  # R-6.5b2.2.
   #
   # SINCE M6.3 THIS HOSTNAME CARRIES A LONG-LIVED STREAM. The browser client
   # holds one server-sent-event connection per visible tab on
@@ -59,7 +81,7 @@ ingress:
   # it in under a second; with the heartbeat disabled in a throwaway build, the
   # idle stream was reset at 125s. If that 25s constant ever moves, it moves
   # against this number.
-  - hostname: yokohama.moore.nyc
+  - hostname: yokohama-nas.moore.nyc
     service: http://yokohama-web:8080
 
   # --- Yokohama: the CLI, in a browser terminal ---------------------------
@@ -70,6 +92,11 @@ ingress:
   # due a rebuild from the current CLI -- owner, 2026-09-01.
   - hostname: yokohama-cli.moore.nyc
     service: http://yokohama-terminal:7681
+
+  # `yokohama.moore.nyc` HAS NO BLOCK HERE, and that is deliberate (2026-09-21,
+  # M6.5b2): the name is HELD FOR THE WORKER. Its DNS record still points at
+  # this tunnel, so a request for it reaches cloudflared and falls through to
+  # the catch-all 404 below. Do not add it back without deciding what owns it.
 
   # --- add new services above this line -----------------------------------
   # - hostname: foo.moore.nyc
