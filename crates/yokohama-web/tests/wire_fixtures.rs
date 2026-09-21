@@ -149,7 +149,7 @@ impl Rng {
 /// hundred calls and commits under a hundred payloads: the intermediates are
 /// what move the game to the state a fixture is taken from, so every row is
 /// REPLAYED and only a named one is compared. The name is bound after the walk,
-/// BY VALUE — see [`Corpus`].
+/// BY VALUE — see [`Corpus`] and [`digest_of`].
 #[derive(Clone, serde::Serialize)]
 struct ScriptRow {
     /// The identity header's value, or `null` for the one call that omits it.
@@ -163,9 +163,44 @@ struct ScriptRow {
     status: u16,
     /// Which committed payload this call answered, bound after the walk.
     fixture: Option<String>,
-    /// **Not emitted**: the frozen response, which is what the binding compares.
+    /// **Not emitted**: [`digest_of`] the frozen response, which is what the
+    /// binding compares. A digest and not the response itself — see that
+    /// function for why the relation is the same one, and what 32 bytes in
+    /// place of a `Value` is worth.
     #[serde(skip)]
-    response: Value,
+    digest: [u8; 32],
+}
+
+/// A payload's identity for the binding: SHA-256 over `serde_json`'s own
+/// serialization of it.
+///
+/// **This is `Value` equality and not an approximation of it.** `serde_json`
+/// here is built WITHOUT `preserve_order` — `yokohama-web` pulls in no
+/// `indexmap` at all — so a `Value`'s object is a `BTreeMap` and
+/// `to_string` is a CANONICAL form: two equal `Value`s serialize to the same
+/// bytes, and two that serialize to the same bytes are equal. The residual is
+/// a SHA-256 collision, which is not a thing that happens by accident.
+///
+/// **Why a digest at all**, since `Value == Value` is the obvious spelling: the
+/// row would otherwise have to hold the response, and there are 2,197 of them —
+/// 1,969 whole `ClientState` frames of 39–76 KB each. `#[serde(skip)]` keeps
+/// those out of the FILE and not out of memory: they stayed alive through the
+/// binding, the retain, the sort and the serialization, in a binary whose four
+/// corpus-building tests the harness runs in parallel. Measured on one machine
+/// with `/usr/bin/time -l`, before and after this function:
+///
+/// | | one walk | the whole binary |
+/// |---|---|---|
+/// | the response retained | 653 MB | 2.99 GB |
+/// | this digest | 55 MB | 92 MB |
+///
+/// A response is dead the instant its digest is taken, so nothing holds more
+/// than one of them at a time.
+fn digest_of(value: &Value) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(value).expect("a serializable payload"));
+    hasher.finalize().into()
 }
 
 /// The routes the HOST serves and the layer does not — the three transport
@@ -297,10 +332,16 @@ impl Api {
         // `as_actor`, `send_as` — reaches the wire through this one method, so
         // one push sees every call the walk makes and no caller has to remember
         // to record itself. The response is frozen on the way in, since that is
-        // the form the committed payloads are in and the binding is by value.
+        // the form the committed payloads are in and the binding is by value —
+        // and it is DIGESTED on the way in and dropped, which is the whole of
+        // why a walk of 2,197 replies costs 55 MB rather than 653 ([`digest_of`]).
+        // The `drop` is doing work: a binding lives to the end of its block, so
+        // without it this frame would hold a whole `ClientState` across the push.
         let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
-        let mut response = value.clone();
-        freeze_clock(&mut response);
+        let mut frozen = value.clone();
+        freeze_clock(&mut frozen);
+        let digest = digest_of(&frozen);
+        drop(frozen);
         self.script.borrow_mut().push(ScriptRow {
             who: who.map(str::to_string),
             method: method.to_string(),
@@ -309,7 +350,7 @@ impl Api {
             body,
             status: status.as_u16(),
             fixture: None,
-            response,
+            digest,
         });
         (status, value)
     }
@@ -2045,7 +2086,8 @@ async fn corpus() -> Corpus {
     // a payload will be called — the name is chosen at the `out.push` site, a
     // hundred-odd of them — so rather than thread a name through every call,
     // each walk payload finds the FIRST unbound row whose frozen response
-    // equals it. Two calls with byte-equal responses are interchangeable for a
+    // equals it — by [`digest_of`], which is that equality and not a weaker
+    // one. Two calls with byte-equal responses are interchangeable for a
     // replay, so the residual is a name on one of them and the claim is the
     // same either way.
     //
@@ -2058,7 +2100,8 @@ async fn corpus() -> Corpus {
     // §5's table is DERIVED from this file set and would otherwise widen by one
     // with nothing saying so.
     for (name, value) in &all[..from_the_walk] {
-        if let Some(row) = script.iter_mut().find(|r| r.fixture.is_none() && &r.response == value) {
+        let want = digest_of(value);
+        if let Some(row) = script.iter_mut().find(|r| r.fixture.is_none() && r.digest == want) {
             row.fixture = Some(name.clone());
             continue;
         }
@@ -2069,7 +2112,7 @@ async fn corpus() -> Corpus {
         // the walk, and the third column would widen by one with nothing
         // saying so.
         assert!(
-            aside.iter().any(|r| &r.response == value),
+            aside.iter().any(|r| r.digest == want),
             "{name}.json is the answer to no request this walk made — not the primary `Api`'s \
              and not a second one's. A payload that is built rather than fetched belongs in \
              `constructed()`, where the browser host's replay reads it as not served.",
