@@ -13,12 +13,16 @@
 
 /** What the worker does with one request.
  *
- *  `bypass` and `network` both reach the network today and are deliberately
- *  DISTINCT values: `bypass` is a RULE — the API and the turnstile are never
- *  read and never written, whatever a release lists — while `network` is merely
- *  the default for a path this release does not know. `sw.ts` answers neither
- *  with `respondWith`, so in both cases the browser makes the request it would
- *  have made with no worker installed at all. */
+ *  `bypass` and `network` are deliberately DISTINCT values: `bypass` is a RULE
+ *  — the API and the turnstile are never read and never written, whatever a
+ *  release lists, and `sw.ts` answers it by NOT answering, so the browser makes
+ *  the request it would have made with no worker installed at all — while
+ *  `network` is merely a path this release does not list. **`sw.ts` DOES answer
+ *  that one** (PR #37 F2, R-F2): from a retained generation of ours that holds
+ *  the path, else from the network, and it caches nothing. Which generation
+ *  holds a path is cache knowledge, so it is asked there and this function
+ *  stays pure; the value keeps its name because the network is still where a
+ *  path goes when no generation of ours has it. */
 export type Route = "bypass" | "cache" | "navigate" | "network";
 
 /** Whether this path belongs to the server rather than to the release.
@@ -43,7 +47,10 @@ export function isServerPath(pathname: string): boolean {
  * 2. A navigation is answered with the shell, whatever path it names: the
  *    client routes on the hash, so every address is `index.html`.
  * 3. A precached path is served from the cache.
- * 4. Everything else goes to the network and is not cached.
+ * 4. Everything else is `network`, and is never cached. `sw.ts` answers it from
+ *    a RETAINED generation that holds it, else the network — which is how the
+ *    tab that did not click an update still reaches its own release's hashed
+ *    names (R-F2 amends spec §2.3's "goes to the network" forward).
  *
  * @param url       the request's URL, already known to be same-origin
  * @param mode      `request.mode` — `"navigate"` for a document load

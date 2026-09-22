@@ -22,8 +22,14 @@
 // with the same string the fixture uses: a ten-megabyte precache per context
 // that no assertion reads is wall nobody is buying anything with.
 //
-// **Cell 3 MUTATES `web/dist` in place**, puts it back in a `finally`, and
-// CHECKS the restoration there too — the files' own bytes and the restored
+// **A seventh cell is PR #37's F2** (`docs/plans/2026-09-22-web-frontend-
+// m6.5b2-pr37-fixes.md`, R-F2): the tab that did NOT click an update, handed to
+// the new worker still running the old bundle, restarting its local host with
+// the network off. It sits beside cell 3 because it is cell 3's machinery with
+// a second tab and a genuinely renamed file.
+//
+// **Cells 3 and 7 MUTATE `web/dist` in place**, put it back in a `finally`, and
+// CHECK the restoration there too — the files' own bytes and the restored
 // worker's cache name, read back from disk. `dist` is what the walk's server
 // serves per request, so a cell that left it changed would hand every spec
 // after it a release the build did not produce; the check therefore has to run
@@ -32,6 +38,7 @@
 // the build was restored or not.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -69,6 +76,10 @@ const DIST = path.join(HERE, "..", "dist");
  *  change to tell two releases apart. */
 const MARKED = path.join(DIST, "manifest.webmanifest");
 const SW = path.join(DIST, "sw.js");
+const ASSETS = path.join(DIST, "assets");
+/** The name cell 7 gives the local host's chunk in release 2 — Vite's own
+ *  `<name>-<8 characters>.js` shape, spelling what it is for. */
+const RENAMED = "worker-F2retain.js";
 /** The committed envelope cells 4 and 5 restore: a finished 2P game, a
  *  table-only game at the deal, a cross-rev pair and a record that is not one.
  *  `crates/yokohama-web`'s own backup cells read the same file. */
@@ -537,6 +548,269 @@ test("the update: a second release waits, nothing switches until the click, and 
   if (failure) throw failure;
 });
 
+test("the tab that did not click: handed to release 2's worker still running release 1, it restarts its local host offline", async ({
+  page: a,
+  context,
+}) => {
+  // **The platform behaviour the first design misread** (PR #37 F2). Spec §2.3
+  // reasoned that because nothing calls `clients.claim()`, a tab that did not
+  // click the update stays with the OLD worker. It does not: `skipWaiting()` is
+  // registration-wide, so the click in tab A hands tab B to the NEW worker too —
+  // with B still running release 1's bundle and asking for release 1's hashed
+  // names, which release 2 does not list. `activate` retains release 1's
+  // generation for exactly that tab; this cell is the first thing that asks
+  // whether anything READS it, at the moment it matters most: B's local host
+  // restarting, offline, after the origin has dropped the file.
+  //
+  // **Cell 3 could not see this, and not for want of trying.** Its releases
+  // differ in the stable-named manifest, so every name release 1's bundle knows
+  // is a name release 2 lists too; and it uses one page, which is the tab that
+  // clicked.
+  const before = distInventory();
+  const was = { worker: fs.readFileSync(SW) };
+  const firstName = cacheNameOf(was.worker.toString("utf8"));
+
+  // **The local host's chunk, and its ONE reference**, found rather than
+  // assumed, so a build that grew a second reference fails HERE by name rather
+  // than shipping a release 2 that half-renamed it. `sw.js` names it too, and
+  // is regenerated below rather than patched.
+  const chunks = fs.readdirSync(ASSETS).filter((f) => /^worker-[\w-]+\.js$/.test(f));
+  expect(chunks, "the build emits exactly one local-host chunk").toHaveLength(1);
+  const oldName = chunks[0]!;
+  const oldPath = `/assets/${oldName}`;
+  const newPath = `/assets/${RENAMED}`;
+  expect(fs.existsSync(path.join(ASSETS, RENAMED)), "the new name is not already taken").toBe(false);
+  const referrers = [...before.keys()].filter(
+    (f) => f !== "sw.js" && fs.readFileSync(path.join(DIST, f)).includes(oldName),
+  );
+  expect(referrers, "exactly one built file names the chunk").toHaveLength(1);
+  expect(referrers[0], "and it is the bundle that starts the local host").toMatch(
+    /^assets\/index-[\w-]+\.js$/,
+  );
+  const bundlePath = `/${referrers[0]!}`;
+  const referrer = path.join(DIST, referrers[0]!);
+  const referrerBytes = fs.readFileSync(referrer);
+  const referrerText = referrerBytes.toString("utf8");
+  expect(referrerText.split(oldName).length - 1, "and it names it exactly once").toBe(1);
+  const chunkBytes = fs.readFileSync(path.join(ASSETS, oldName));
+
+  const watchA = watchForFaults(a);
+  /** Held so the `finally` restores and CHECKS before anything propagates —
+   *  cell 3's reason, and its shape. */
+  let failure: unknown = null;
+  try {
+    // ---- release 1, and TWO tabs it controls ------------------------------
+    await a.goto("/");
+    const one = await installed(a);
+    expect(one, "the release on disk is the release in the cache").toBe(firstName);
+    // The install visit is never controlled (cell 3 says why, measured); the
+    // reload is what puts A in front of release 1's worker.
+    await a.reload();
+    expect(await controlled(a), "A is served by release 1's worker").toBe(true);
+
+    const b = await context.newPage();
+    const watchB = watchForFaults(b);
+    /** Every local host B starts, by the path its script was asked for. */
+    const started: string[] = [];
+    b.on("worker", (w) => started.push(new URL(w.url()).pathname));
+    await b.goto("/");
+    expect(await controlled(b), "B loads in front of release 1's worker, as any returning tab does").toBe(
+      true,
+    );
+
+    // B's game: local, held by B, played past its opening and left on a screen
+    // with an option to click — which is what the restart below needs.
+    const game = await startGame(b, { local: true, signedOut: true });
+    const pick = rng(0x5245_5441); // "RETA"
+    await playSome(b, game, pick, 6);
+    await playUntilAnswerable(b, game, pick);
+    const committed = await storedEvents(b, game.id);
+    expect(committed, "B holds a played game to go on with").toBeGreaterThan(0);
+    expect(started, "B's local host is release 1's chunk, and so far the only one").toEqual([oldPath]);
+
+    // **Release 1's worker, held by B's own window.** Two readings come off it
+    // after the update: that B's document was never replaced — the property
+    // survives only in the document that set it — and that B's controller by
+    // then is a DIFFERENT worker from this one.
+    await b.evaluate(() => {
+      const w = window as unknown as { __release1?: ServiceWorker | null; __handovers?: number };
+      w.__release1 = navigator.serviceWorker.controller;
+      w.__handovers = 0;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        w.__handovers = (w.__handovers ?? 0) + 1;
+      });
+    });
+
+    // ---- release 2: the local host's chunk under a NEW name ---------------
+    fs.renameSync(path.join(ASSETS, oldName), path.join(ASSETS, RENAMED));
+    fs.writeFileSync(referrer, referrerText.replace(oldName, RENAMED));
+    execFileSync("node", ["scripts/precache.mjs"], { cwd: path.join(HERE, ".."), stdio: "pipe" });
+    const listing = fs.readFileSync(SW, "utf8");
+    const two = cacheNameOf(listing);
+    expect(two, "a renamed file is a different release").not.toBe(one);
+    expect(listing.includes(oldName), "release 2 does not list release 1's chunk").toBe(false);
+    expect(listing.includes(RENAMED), "and does list its own").toBe(true);
+    // Asked of the server from OUTSIDE the browser, so no cache of any kind
+    // stands between the question and the origin.
+    expect((await fetch(`${BASE_URL}${oldPath}`)).status, "release 1's chunk is gone from the origin").toBe(
+      404,
+    );
+    expect((await fetch(`${BASE_URL}${newPath}`)).status, "and release 2's is on it").toBe(200);
+
+    // ---- A takes the update ------------------------------------------------
+    /** Every local host A starts from here on. */
+    const aStarted: string[] = [];
+    a.on("worker", (w) => aStarted.push(new URL(w.url()).pathname));
+    await checkForUpdate(a);
+    await expect(a.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    expect(await releaseCaches(a), "release 2 is cached whole, beside release 1").toEqual(
+      [one, two].sort(),
+    );
+    // The LOAD event and not a poll — cell 3 measured why.
+    await Promise.all([
+      a.waitForEvent("load"),
+      a.getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    // **A is on release 2, read off the bundle it RUNS**: its door starts the
+    // local host from the new name, which only release 2's bundle knows.
+    await expect.poll(() => aStarted.includes(newPath), { timeout: 30_000 }).toBe(true);
+    expect(aStarted, "and never from release 1's").not.toContain(oldPath);
+    await expect
+      .poll(() => releaseCaches(a), { timeout: 30_000 })
+      .toEqual([one, two].sort());
+
+    // ---- B: never reloaded, and in front of release 2's worker -------------
+    //
+    // **The finding, read off the platform.** `controllerchange` fired in B,
+    // which did not click; the worker B held is redundant; and B's controller
+    // is the registration's ACTIVE worker — the one A reloaded onto. The two
+    // workers share a script URL (`/sw.js`), so a URL comparison would say
+    // nothing; object identity does, because a window hands back the same
+    // `ServiceWorker` object for the same worker.
+    await expect
+      .poll(
+        () => b.evaluate(() => (window as unknown as { __handovers?: number }).__handovers ?? -1),
+        { timeout: 30_000 },
+      )
+      .toBe(1);
+    const handed = await b.evaluate(async () => {
+      const w = window as unknown as { __release1?: ServiceWorker | null };
+      const now = navigator.serviceWorker.controller;
+      const active = (await navigator.serviceWorker.getRegistration())?.active ?? null;
+      return {
+        sameDocument: w.__release1 !== undefined,
+        changed: now !== null && now !== w.__release1,
+        isActive: now !== null && now === active,
+        oldState: w.__release1?.state ?? null,
+      };
+    });
+    expect(handed.sameDocument, "B was never reloaded").toBe(true);
+    expect(handed.changed, "B's controller is no longer the worker it loaded under").toBe(true);
+    expect(handed.isActive, "it is the registration's active worker, the one A reloaded onto").toBe(
+      true,
+    );
+    expect(handed.oldState, "and release 1's worker is gone").toBe("redundant");
+
+    // ---- no HTTP cache, and no network -------------------------------------
+    //
+    // **The HTTP cache goes FIRST, because it MASKS the defect — measured.**
+    // Release 1's install fetched every entry with `cache: "reload"`, which
+    // writes the HTTP cache, and the server serves `/assets/` `immutable` — so a
+    // request the worker let through to "the network" can be answered from
+    // there without the network at all. With this one call removed, the cell
+    // PASSED against the pre-fix worker: the chunk was gone from the origin and
+    // the network was off, so by elimination the HTTP cache served it. The
+    // clear takes that and nothing else, which is asserted — Cache Storage is
+    // the thing under test.
+    const cdp = await context.newCDPSession(b);
+    await cdp.send("Network.clearBrowserCache");
+    expect(await releaseCaches(b), "clearing the HTTP cache left both generations").toEqual(
+      [one, two].sort(),
+    );
+    expect(await cacheHas(b, one, oldPath), "release 1's chunk is in the retained generation").toBe(true);
+    expect(await cacheHas(b, two, oldPath), "and not in release 2's").toBe(false);
+    await context.setOffline(true);
+
+    // **Which worker B's controller is, asked of something only ONE of them
+    // could answer that way** — the second reading, independent of object
+    // identity. The bundle's path is the SAME in both releases and its bytes
+    // are not: release 2's names the new chunk. With no network and no HTTP
+    // cache, a fetch through B's controller is one of the two workers answering
+    // from its own generation, and the body says which.
+    const served = await b.evaluate(
+      (at) =>
+        fetch(at, { cache: "no-store" }).then(
+          (r) => r.text(),
+          (e: unknown) => `failed: ${String(e)}`,
+        ),
+      bundlePath,
+    );
+    expect(served.includes(RENAMED), "B's controller serves release 2's bundle").toBe(true);
+
+    // ---- B's local host restarts, and asks for release 1's name ------------
+    //
+    // A REAL trap through the module's own `debug_trap`, exactly as
+    // `plays_locally.spec.ts`'s trap cell raises one (`npm run e2e` builds the
+    // debug module): the next call dies, the page throws the Worker away and
+    // starts a fresh one from the URL ITS bundle carries — release 1's.
+    const host = b.workers().find((w) => new URL(w.url()).pathname === oldPath);
+    expect(host, "B's running local host is release 1's chunk").toBeDefined();
+    await host!.evaluate(() => {
+      (self as unknown as { onmessage: (e: { data: unknown }) => void }).onmessage({
+        data: { seq: 987_654, kind: "debug_trap" },
+      });
+    });
+    await b.locator("button.option:not([disabled])").first().click();
+    await expect(b.locator(".decision.notices .error")).toContainText("the local host restarted");
+    await expect
+      .poll(() => started.length, { message: "B started a fresh local host", timeout: 30_000 })
+      .toBe(2);
+    expect(started[1], "from release 1's name: the only one B's bundle knows").toBe(oldPath);
+    expect(await storedEvents(b, game.id), "nothing committed was lost").toBe(committed);
+
+    // **And B's game goes on, offline.** The script the fresh host was started
+    // from exists nowhere now but in release 1's retained generation — gone
+    // from the origin, absent from release 2's list, out of the HTTP cache, and
+    // the network off — so a move COMMITTED here is the retained generation
+    // answering.
+    await expect(b.getByText("This game was opened in another tab")).toHaveCount(0);
+    const now = await playUntilCommitted(b, game, pick, committed);
+    expect(now, "a move committed after the restart").toBeGreaterThan(committed);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `RETAINED: ${one} -> ${two}; ${oldName} renamed ${RENAMED}; B, never reloaded, restarted ` +
+        `its local host offline from ${oldPath} and committed event ${now} (was ${committed})`,
+    );
+    expect(watchA.failures).toEqual([]);
+    expect(watchB.failures).toEqual([]);
+  } catch (e) {
+    failure = e;
+  } finally {
+    // **Every file this cell renamed, patched or regenerated goes back byte for
+    // byte, and the WHOLE tree is proven against its own inventory HERE**,
+    // inside the `finally` — cell 3's reason: `dist` is what the walk's server
+    // serves and every later spec reads it, and `git status` says nothing about
+    // a gitignored directory. Proving the whole tree rather than the four files
+    // also says the cell changed nothing it did not mean to.
+    fs.writeFileSync(path.join(ASSETS, oldName), chunkBytes);
+    fs.rmSync(path.join(ASSETS, RENAMED), { force: true });
+    fs.writeFileSync(referrer, referrerBytes);
+    fs.writeFileSync(SW, was.worker);
+    const drift = inventoryDrift(before, distInventory());
+    const back = cacheNameOf(fs.readFileSync(SW, "utf8"));
+    if (drift.length > 0 || back !== firstName) {
+      throw new Error(
+        `dist was NOT restored: ${drift.join("; ") || "every file is its original bytes"}; ` +
+          `sw.js names ${back} (expected ${firstName}). ` +
+          `Rebuild with \`npm run build:client\` before trusting any later spec.` +
+          (failure ? ` The cell itself had already failed: ${String(failure)}` : ""),
+      );
+    }
+  }
+  if (failure) throw failure;
+});
+
 test("a restore on a fresh profile lands four verdicts, and the cross-rev pair is LISTED with its reason", async ({
   page,
   context,
@@ -871,3 +1145,96 @@ const checkForUpdate = (page: Page): Promise<void> =>
     const reg = await navigator.serviceWorker.getRegistration();
     await reg?.update();
   });
+
+// ---------------------------------------------------- cell 7's own tools
+
+/** Every file under `dist`, by its path there, with its SHA-256 — what cell 7
+ *  proves its restoration against. */
+function distInventory(): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (dir: string) => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).isDirectory()) visit(full);
+      else {
+        const at = path.relative(DIST, full).split(path.sep).join("/");
+        out.set(at, createHash("sha256").update(fs.readFileSync(full)).digest("hex"));
+      }
+    }
+  };
+  visit(DIST);
+  return out;
+}
+
+/** How `now` differs from `was`, one sentence per file; empty when the two
+ *  trees are the same bytes under the same names. */
+function inventoryDrift(was: Map<string, string>, now: Map<string, string>): string[] {
+  const out: string[] = [];
+  for (const [at, digest] of was) {
+    const found = now.get(at);
+    if (found === undefined) out.push(`${at} is missing`);
+    else if (found !== digest) out.push(`${at} is not its original bytes`);
+  }
+  for (const at of now.keys()) if (!was.has(at)) out.push(`${at} was not there before`);
+  return out;
+}
+
+/** How many events this browser has COMMITTED for a game, read from the page's
+ *  own IndexedDB — `plays_locally.spec.ts`'s `storedEvents`, restated because
+ *  importing a spec file would register its tests here. `-1` where no record is
+ *  stored yet. */
+async function storedEvents(page: Page, id: string): Promise<number> {
+  const record = await page.evaluate(
+    (game) =>
+      new Promise<string | null>((resolve, reject) => {
+        const open = indexedDB.open("yokohama-local");
+        open.onerror = () => reject(new Error("IndexedDB would not open"));
+        open.onsuccess = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains("docs")) {
+            reject(new Error("no `docs` store — has the Worker ever run?"));
+            return;
+          }
+          const t = db.transaction("docs", "readonly");
+          const rec = t.objectStore("docs").get(["record", game]) as IDBRequest<{ text: string } | undefined>;
+          t.oncomplete = () => resolve(rec.result?.text ?? null);
+          t.onerror = () => reject(t.error ?? new Error("the read failed"));
+        };
+      }),
+    id,
+  );
+  if (record === null) return -1;
+  return (JSON.parse(record) as { events: unknown[] }).events.length;
+}
+
+/** Play until the screen offers an OPTION ROW, so the click that meets the
+ *  trap has something to click — `plays_locally.spec.ts`'s helper. */
+async function playUntilAnswerable(page: Page, game: Game, pick: () => number): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    const screen = await readScreen(page);
+    if (screen.over) throw new Error("the game ended before the cell could act");
+    if (screen.options > 0) return;
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
+  }
+  throw new Error("forty moves and the screen never offered an option row");
+}
+
+/** Click until this browser COMMITS another event, and answer the new count —
+ *  `plays_locally.spec.ts`'s helper, and its reason: a click is not a move (an
+ *  option row can open a sub-picker), so "play went on" is asked of the STORE. */
+async function playUntilCommitted(
+  page: Page,
+  game: Game,
+  pick: () => number,
+  from: number,
+): Promise<number> {
+  for (let i = 0; i < 12; i += 1) {
+    const screen = await readScreen(page);
+    if (screen.over) throw new Error("the game ended before another move was committed");
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
+    await readScreen(page);
+    const now = await storedEvents(page, game.id);
+    if (now > from) return now;
+  }
+  throw new Error(`twelve clicks and nothing past event ${from} was committed`);
+}

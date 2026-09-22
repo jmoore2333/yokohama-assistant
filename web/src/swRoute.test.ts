@@ -20,6 +20,10 @@ describe("what the worker does with a request", () => {
     expect(swRoute(new URL("/assets/index-abc.js", "https://h"), "cors", PRE)).toBe("cache");
     expect(swRoute(new URL("/t/anything", "https://h"), "navigate", PRE)).toBe("navigate");
   });
+  // The ROUTE's answer. What the worker then does with `network` — a retained
+  // generation that holds the path, else the network (PR #37 F2, R-F2) — is
+  // cache knowledge this function does not have, and `sw.node.test.ts` reads
+  // it off the real worker.
   it("lets anything else go to the network uncached", () => {
     expect(swRoute(new URL("/unknown.json", "https://h"), "cors", PRE)).toBe("network");
   });

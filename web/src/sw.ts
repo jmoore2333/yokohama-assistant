@@ -10,8 +10,9 @@
 // by however long the browser chose to keep it.
 //
 // **Every DECISION here is somewhere else, and on purpose.** The routing rule
-// is `swRoute.ts`, the install's verification and the sweep's retention rule are
-// `swInstall.ts`, and both are tested in the component suite without a browser.
+// is `swRoute.ts`; the install's verification, the sweep's retention rule and
+// which retained generations a fetch may read are `swInstall.ts`; and both are
+// tested in the component suite without a browser.
 // What is left in this file is the plumbing those decisions drive — which is
 // the half a browser must run to check, so the less of it there is the better.
 
@@ -26,6 +27,7 @@ import {
   INSTALL_CONCURRENCY,
   INSTALL_DEADLINE_MS,
   generationsToDelete,
+  retainedGenerations,
   type Generation,
 } from "./swInstall";
 import { swRoute } from "./swRoute";
@@ -193,12 +195,17 @@ async function tellTheClients(reason: string): Promise<void> {
 
 // **`activate` retains the PREVIOUS generation** and deletes only ones older
 // than that (spec §2.3), because an open tab still running the old bundle asks
-// for its own hashed module by name.
+// for its own hashed module by name — and `fromRetained` below is what answers
+// it from there (PR #37 F2).
 //
 // **And it does NOT call `clients.claim()`.** Claiming would put this worker in
-// front of pages still running the old bundle — the exact mixture the matched
-// cache generation exists to prevent. A page gets this release by reloading,
-// which is what the update offer's click does.
+// front of pages NO worker served — the visit that installed it among them,
+// whose bundle came from the network. A page gets this release by reloading,
+// which is what the update offer's click does. **What not claiming does NOT
+// buy, and what the first design misread:** the pages the previous worker
+// controlled are handed to this one by `skipWaiting()` itself, which is
+// registration-wide — so a tab that did not click is in front of this worker,
+// still running the old bundle, whether or not anything claims it.
 self.addEventListener("activate", (event) => {
   event.waitUntil(sweep());
 });
@@ -251,11 +258,17 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   const route = swRoute(url, request.mode, PRECACHED);
-  // `bypass` and `network` are both answered by NOT answering: no
-  // `respondWith`, so the browser makes exactly the request it would have made
-  // with no worker installed.
+  // `bypass` is answered by NOT answering — no `respondWith`, so the browser
+  // makes exactly the request it would have made with no worker installed,
+  // which is what rule 1 means by "never intercepted". It is asked FIRST, in
+  // `swRoute`, so nothing below can reach the API or the turnstile.
+  //
+  // **`network` IS answered** (PR #37 F2, R-F2): from a retained generation
+  // that holds the path, else from the network. It used to be left alone like
+  // `bypass`, and that is what stranded the tab that did not click.
   if (route === "cache") event.respondWith(fromCache(url.pathname, request));
   else if (route === "navigate") event.respondWith(fromCache("/index.html", request));
+  else if (route === "network") event.respondWith(fromRetained(url.pathname, request));
 });
 
 /** The cached copy, or the network if this generation somehow lacks it.
@@ -271,6 +284,39 @@ async function fromCache(path: string, request: Request): Promise<Response> {
     if (hit) return hit;
   } catch {
     // fall through
+  }
+  return fetch(request);
+}
+
+/** A path this release does not list: from a RETAINED generation of ours that
+ *  holds it, else the network — and written nowhere (PR #37 F2, R-F2, which
+ *  amends spec §2.3's third rule forward).
+ *
+ *  **This is the tab the retention exists for.** `skipWaiting()` is
+ *  registration-wide, so one player's click hands every tab the previous worker
+ *  controlled to this one, including a tab that did not click and is still
+ *  running the previous release's bundle (spec §2.3, lines 337–339). That tab
+ *  asks for its own hashed names — a Worker it restarts, most of all — which
+ *  this release does not list. Before this branch nothing read the generation
+ *  `activate` keeps for it, so such a request went to the network and failed
+ *  offline, or once the origin had dropped the file.
+ *
+ *  **Only what a release of ours listed can come out of here.** The caches are
+ *  [`retainedGenerations`]' — ours by prefix, never this release's own — and
+ *  the stamp is skipped, being the one entry every generation holds that no
+ *  precache named. `caches.match` with a `cacheName` reads and never creates,
+ *  so a generation swept between the listing and the read is a miss rather
+ *  than an empty cache brought back into being. */
+async function fromRetained(path: string, request: Request): Promise<Response> {
+  if (path !== META_PATH) {
+    try {
+      for (const name of retainedGenerations(CACHE_NAME, await caches.keys())) {
+        const hit = await caches.match(path, { cacheName: name });
+        if (hit) return hit;
+      }
+    } catch {
+      // fall through: a Cache Storage that will not answer leaves the network
+    }
   }
   return fetch(request);
 }

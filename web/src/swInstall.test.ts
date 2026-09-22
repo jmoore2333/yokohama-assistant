@@ -8,7 +8,7 @@
 // day they do not.
 
 import { describe, expect, it } from "vitest";
-import { checkHead, checkDigest, generationsToDelete, hex } from "./swInstall";
+import { checkHead, checkDigest, generationsToDelete, hex, retainedGenerations } from "./swInstall";
 import { CACHE_PREFIX } from "./precache";
 
 describe("what the install accepts", () => {
@@ -116,5 +116,31 @@ describe("which cache generations activate deletes", () => {
     const b = generationsToDelete(mine, [g("new", 9), g("bbb", 5), g("aaa", 5)]);
     expect(a).toEqual(b);
     expect(a.length).toBe(1);
+  });
+});
+
+// **Which caches the fetch handler may read a path this release does not list
+// from** (PR #37 F2, R-F2). The tab that did not click is handed to the new
+// worker still running the old bundle, and asks for the old names; the retained
+// generation is where they are. `sw.node.test.ts` drives the worker over the
+// same rule — this is the rule by itself.
+describe("which generations a path this release does not list may be read from", () => {
+  const mine = CACHE_PREFIX + "new";
+
+  it("every generation of ours except this release's own, in the order they were listed", () => {
+    expect(
+      retainedGenerations(mine, [CACHE_PREFIX + "prev", mine, CACHE_PREFIX + "older"]),
+    ).toEqual([CACHE_PREFIX + "prev", CACHE_PREFIX + "older"]);
+    expect(retainedGenerations(mine, [mine])).toEqual([]);
+    expect(retainedGenerations(mine, [])).toEqual([]);
+  });
+
+  // **Never a cache outside the prefix.** The Cache Storage of an origin is
+  // shared, so "every cache that is not mine" would read whatever else the
+  // origin ever put there — and serve it as if a release had verified it.
+  it("never a cache outside its own prefix", () => {
+    expect(
+      retainedGenerations(mine, ["someone-elses-cache", CACHE_PREFIX + "prev", "workbox-precache"]),
+    ).toEqual([CACHE_PREFIX + "prev"]);
   });
 });

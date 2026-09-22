@@ -46,6 +46,8 @@ const BODIES: Record<string, { body: string; type: string }> = {
   "/assets/app-abc.js": { body: "console.log('app')", type: "text/javascript; charset=utf-8" },
   "/art/orders/O01.webp": { body: "RIFF....WEBP", type: "image/webp" },
 };
+/** What the fake origin answers for a path it does not have. */
+const NOT_ON_THE_ORIGIN = "not on this origin";
 const ENTRIES = Object.entries(BODIES).map(([path, { body, type }]) => ({
   path,
   digest: createHash("sha256").update(body).digest("hex"),
@@ -76,16 +78,27 @@ function workerSource(): Promise<string> {
 
 class FakeCache {
   readonly entries = new Map<string, Response>();
+  /** `puts` is the owning `FakeCaches`' log, so a write anywhere is visible in
+   *  one place — which is what "nothing is written at fetch time" is read off. */
+  constructor(
+    private readonly name: string,
+    private readonly puts: string[],
+  ) {}
   async put(key: string, value: Response): Promise<void> {
+    this.puts.push(`${this.name} ${key}`);
     this.entries.set(key, value);
   }
+  /** A CLONE, as a real cache hands back a fresh `Response` per match — so a
+   *  cell may read the same entry twice without meeting a used body. */
   async match(key: string): Promise<Response | undefined> {
-    return this.entries.get(key);
+    return this.entries.get(key)?.clone();
   }
 }
 
 class FakeCaches {
   readonly generations = new Map<string, FakeCache>();
+  /** Every `put` into any generation, as "<cache> <path>", in order. */
+  readonly puts: string[] = [];
   /** Make the NEXT `open` fail, once — the transient the worker must recover
    *  from rather than remember. */
   failNextOpen = false;
@@ -96,10 +109,23 @@ class FakeCaches {
     }
     let cache = this.generations.get(name);
     if (!cache) {
-      cache = new FakeCache();
+      cache = new FakeCache(name, this.puts);
       this.generations.set(name, cache);
     }
     return cache;
+  }
+  /** `CacheStorage.match` as the platform defines it: with a `cacheName`, that
+   *  one cache and `undefined` where it does not exist — never creating it —
+   *  and without one, every cache in the order `keys()` lists them. The second
+   *  arm is here so a worker that dropped the name would be READING the other
+   *  caches in this fake, which is the mutation the prefix cell exists for. */
+  async match(key: string, options: { cacheName?: string } = {}): Promise<Response | undefined> {
+    if (options.cacheName !== undefined) return this.generations.get(options.cacheName)?.match(key);
+    for (const cache of this.generations.values()) {
+      const hit = await cache.match(key);
+      if (hit) return hit;
+    }
+    return undefined;
   }
   async keys(): Promise<string[]> {
     return [...this.generations.keys()];
@@ -135,11 +161,15 @@ interface Harness {
  *  aborts — a real `fetch` rejects on abort, and a fake that did not would make
  *  a hung lane look like a healthy one. */
 async function boot(
-  answer: (path: string) => { status: number; body: string; type: string } = (path) => ({
-    status: 200,
-    body: BODIES[path]!.body,
-    type: BODIES[path]!.type,
-  }),
+  answer: (path: string) => { status: number; body: string; type: string } = (path) => {
+    const known = BODIES[path];
+    // A path the origin does not have answers as the origin does after a
+    // release dropped the file: a 404, which is what makes "answered from the
+    // network" readable in a cell.
+    return known
+      ? { status: 200, body: known.body, type: known.type }
+      : { status: 404, body: NOT_ON_THE_ORIGIN, type: "text/plain" };
+  },
   hold?: string,
 ): Promise<Harness> {
   const code = await workerSource();
@@ -389,13 +419,16 @@ describe("the worker's fetch", () => {
 
   // Not intercepted AT ALL: no `respondWith`, so the browser makes exactly the
   // request it would have made with no worker installed.
+  //
+  // **A path the release does not list is no longer in this list** (PR #37 F2,
+  // R-F2): the worker now ANSWERS it, from a retained generation that holds it
+  // or else from the network, and the block below is where that is read.
   it("does not touch the API, the turnstile, another origin or a POST", async () => {
     const worker = await boot();
     await worker.install();
     expect(await worker.request("https://yokohama.test/api/health", "cors")).toBeNull();
     expect(await worker.request("https://yokohama.test/enter", "navigate")).toBeNull();
     expect(await worker.request("https://elsewhere.test/index.html", "navigate")).toBeNull();
-    expect(await worker.request("https://yokohama.test/unknown.json", "cors")).toBeNull();
     // **The POST, which the name claimed and no arm drove** (whole-branch
     // review, false sentence 7). It is asked of a path the release DOES carry,
     // so the only thing that can be answering `null` is the verb —
@@ -405,5 +438,149 @@ describe("the worker's fetch", () => {
     expect(
       await (await worker.request("https://yokohama.test/index.html", "cors"))!.text(),
     ).toBe(BODIES["/index.html"]!.body);
+  });
+});
+
+// **PR #37's F2** (`docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md`,
+// R-F2): the tab that did not click. `skipWaiting()` is registration-wide, so
+// the click in one tab hands EVERY tab the previous worker controlled to the
+// new one — including a tab still running the previous release's bundle, which
+// asks for its own hashed names. `activate` keeps the previous generation for
+// exactly that tab (spec §2.3), and until this fix nothing READ it: the new
+// worker knew only its own list and its own cache, so a name it did not list
+// went to the network — which offline, or once the origin had dropped the file,
+// is a failure. These cells run the real worker against that arrangement.
+describe("the worker's fetch, for a path its own release does not list", () => {
+  /** The generation `activate` retained: under the prefix, not this release. */
+  const PREVIOUS = "yokohama-release-previous";
+  /** A hashed name the previous release listed and this one does not. */
+  const OLD = "/assets/worker-old.js";
+  const OLD_BODY = "the previous release's local host";
+
+  /** A worker with its own release installed, and the previous release's
+   *  generation beside it holding `plant`'s paths. */
+  async function beside(plant: Record<string, string>) {
+    const worker = await boot();
+    await worker.install();
+    const previous = await worker.caches.open(PREVIOUS);
+    await previous.put(META_PATH, new Response(JSON.stringify({ createdAt: 1 })));
+    for (const [path, body] of Object.entries(plant)) await previous.put(path, new Response(body));
+    return worker;
+  }
+
+  // **(a) The defect itself.** The retained generation holds the name and the
+  // worker answers it from there — and the NETWORK is not asked: the retained
+  // copy is the answer, not a fallback waiting behind a request that offline
+  // cannot succeed.
+  it("answers it from the retained generation that holds it, and asks the network nothing", async () => {
+    const worker = await beside({ [OLD]: OLD_BODY });
+    const before = worker.asked.length;
+    const answered = await worker.request(`https://yokohama.test${OLD}`, "cors");
+    expect(answered, "the worker answered the old release's name").not.toBeNull();
+    expect(await answered!.text()).toBe(OLD_BODY);
+    expect(worker.asked.length, "and not one request reached the network").toBe(before);
+  });
+
+  // **(b) A path no generation holds is the network's**, answered through the
+  // worker now rather than by not answering: whatever the origin says — here
+  // the 404 of a file it dropped — is what the page gets, once.
+  it("sends a path no generation holds to the network, once, and hands back its answer", async () => {
+    const worker = await beside({ [OLD]: OLD_BODY });
+    const before = worker.asked.length;
+    const answered = await worker.request("https://yokohama.test/assets/nobody-has-it.js", "cors");
+    expect(answered, "answered, from the network").not.toBeNull();
+    expect(answered!.status).toBe(404);
+    expect(await answered!.text()).toBe(NOT_ON_THE_ORIGIN);
+    expect(worker.asked.slice(before).map((a) => a.path)).toEqual(["/assets/nobody-has-it.js"]);
+  });
+
+  // **(c) Only a cache of OURS is ever read.** The origin's Cache Storage is
+  // shared (`swInstall.ts`'s sweep says the same about deleting), so a cache
+  // some other script put there holding the very path is not a release and is
+  // not an answer. The network is.
+  //
+  // **A retained generation that does NOT hold the path is planted beside it,
+  // and that is what gives the cell its reach.** With no generation of ours to
+  // look in, the lookup never runs and a worker reading EVERY cache would pass
+  // for the wrong reason — measured: `caches.match` with its `cacheName`
+  // dropped survived this cell until the previous generation was here.
+  it("never reads a cache outside its own prefix, even one holding the path", async () => {
+    const worker = await beside({ "/assets/something-else.js": "not the path asked for" });
+    const foreign = await worker.caches.open("someone-elses-cache");
+    await foreign.put(OLD, new Response("somebody else's bytes"));
+    const before = worker.asked.length;
+    const answered = await worker.request(`https://yokohama.test${OLD}`, "cors");
+    expect(await answered!.text(), "the answer is the network's, not the foreign cache's").toBe(
+      NOT_ON_THE_ORIGIN,
+    );
+    expect(worker.asked.slice(before).map((a) => a.path)).toEqual([OLD]);
+  });
+
+  // **And never the stamp**, which is the one entry every generation holds that
+  // no precache listed. Without this the sentence R-F2 rests its cost on — "the
+  // only paths a generation can hold are ones a precache listed" — would be
+  // false by one path, and the previous generation's install time would be
+  // served as if it were a file.
+  it("does not serve a retained generation's stamp as if it were a file", async () => {
+    const worker = await beside({ [OLD]: OLD_BODY });
+    const before = worker.asked.length;
+    const answered = await worker.request(`https://yokohama.test${META_PATH}`, "cors");
+    expect(await answered!.text()).toBe(NOT_ON_THE_ORIGIN);
+    expect(worker.asked.slice(before).map((a) => a.path)).toEqual([META_PATH]);
+  });
+
+  // **(d) Rule 1 is still FIRST.** A retained generation somehow holding the
+  // API or the turnstile — planted here, since no generator can list either
+  // (`precache.ts` refuses them) — still cannot have them answered: no
+  // `respondWith` at all, so the browser makes the request itself. A retained
+  // lookup asked before the bypass is the mutation this cell catches.
+  it("does not answer the API or the turnstile even from a generation that holds them", async () => {
+    const worker = await beside({
+      "/api/health": '{"stale":true}',
+      "/api/games/x/input": '{"stale":true}',
+      "/enter": "a door served from a cache",
+    });
+    const before = worker.asked.length;
+    expect(await worker.request("https://yokohama.test/api/health", "cors")).toBeNull();
+    expect(await worker.request("https://yokohama.test/api/games/x/input", "cors")).toBeNull();
+    expect(await worker.request("https://yokohama.test/enter", "cors")).toBeNull();
+    expect(await worker.request("https://yokohama.test/enter", "navigate")).toBeNull();
+    expect(worker.asked.length, "and the worker fetched none of them itself").toBe(before);
+  });
+
+  // **(e) A navigation is still THIS release's shell**, whatever an older
+  // generation holds under the same name: the retained lookup is for a path
+  // this release does not list, and `/index.html` is listed.
+  it("answers a navigation with this release's shell, not the retained one", async () => {
+    const worker = await beside({ "/index.html": "<!doctype html><title>the previous release</title>" });
+    const shell = BODIES["/index.html"]!.body;
+    expect(await (await worker.request("https://yokohama.test/t/anything", "navigate"))!.text()).toBe(
+      shell,
+    );
+    expect(await (await worker.request("https://yokohama.test/index.html", "cors"))!.text()).toBe(
+      shell,
+    );
+  });
+
+  // **(f) Nothing is written at fetch time** — not into this release's cache,
+  // not into the retained one, and no generation brought into being. Every
+  // branch is driven: a retained hit, a miss to the network, a listed path, a
+  // navigation, the stamp and the API.
+  it("writes nothing into any cache while it answers", async () => {
+    const worker = await beside({ [OLD]: OLD_BODY, "/api/health": "{}" });
+    const puts = worker.caches.puts.length;
+    const names = await worker.caches.keys();
+    for (const [url, mode] of [
+      [`https://yokohama.test${OLD}`, "cors"],
+      ["https://yokohama.test/assets/nobody-has-it.js", "cors"],
+      ["https://yokohama.test/assets/app-abc.js", "cors"],
+      ["https://yokohama.test/t/anything", "navigate"],
+      [`https://yokohama.test${META_PATH}`, "cors"],
+      ["https://yokohama.test/api/health", "cors"],
+    ] as const) {
+      await worker.request(url, mode);
+    }
+    expect(worker.caches.puts.slice(puts), "not one put at fetch time").toEqual([]);
+    expect(await worker.caches.keys(), "and no generation created or removed").toEqual(names);
   });
 });

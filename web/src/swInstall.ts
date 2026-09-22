@@ -101,8 +101,13 @@ export interface Generation {
  * **The previous generation is RETAINED** (spec §2.3), because an open tab
  * still running the old bundle asks for its own hashed module by name and
  * deleting it out from under that tab is the multi-tab failure the whole update
- * policy exists to avoid. Nothing calls `clients.claim()`, so such a tab really
- * does exist until it is closed.
+ * policy exists to avoid. Such a tab really does exist until it is closed — and
+ * it is controlled by the NEW worker, not the old one: `skipWaiting()` is
+ * registration-wide, so the click in one tab hands every tab the old worker
+ * controlled to the new one, `clients.claim()` or not. It is served its old
+ * names out of this generation by `sw.ts`'s `fromRetained`, reading the caches
+ * [`retainedGenerations`] names (PR #37 F2, R-F2). Before that fix nothing read
+ * it, and the retention kept bytes no request could reach.
  *
  * It names only caches under [`CACHE_PREFIX`]. The Cache Storage of an origin
  * is shared, so a sweep written as "delete everything that is not mine" would
@@ -115,4 +120,23 @@ export function generationsToDelete(mine: string, generations: readonly Generati
     // which one survived.
     .sort((a, b) => b.createdAt - a.createdAt || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return others.slice(1).map((g) => g.name);
+}
+
+/**
+ * Which caches the fetch handler may answer a path THIS release does not list
+ * from: every generation of OURS other than this release's own, in the order
+ * the platform listed them (PR #37 F2, R-F2).
+ *
+ * **The reader of the generation [`generationsToDelete`] retains.** A tab that
+ * did not click the update offer is handed to the new worker still running the
+ * old bundle, and asks for the old release's hashed names; this release does
+ * not list them, and the previous generation holds them.
+ *
+ * **The prefix again, for the sweep's reason read the other way round.** The
+ * origin's Cache Storage is shared, so a read of "every cache that is not mine"
+ * would serve whatever else the origin ever put there as if a release of ours
+ * had fetched it and checked its digest.
+ */
+export function retainedGenerations(mine: string, names: readonly string[]): string[] {
+  return names.filter((name) => name.startsWith(CACHE_PREFIX) && name !== mine);
 }
