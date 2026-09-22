@@ -187,7 +187,7 @@ async function playUntilAnswerable(page: Page, game: { id: string }, pick: () =>
   throw new Error("forty moves and the screen never offered an option row");
 }
 
-test("a whole game against the bot plays in the browser with no /api/ request at all", async ({
+test("a whole game against the bot plays in the browser with no /api/ request while it is played", async ({
   page,
 }) => {
   const watch = watchForBreakage(page);
@@ -241,24 +241,29 @@ test("a whole game against the bot plays in the browser with no /api/ request at
   await expect(page.locator("table.outcome tbody tr")).toHaveCount(2);
   await expect(page.locator("table.outcome tr.won")).toHaveCount(1);
 
-  // **The control the archive fact decides is drawn, and it costs no request**
-  // (M6.5b2, spec §2.2). The game reaching game over IS one of the three read
-  // points, but the answer this browser already holds is under an hour old —
-  // the lobby read it on the way in and it was written down with the time it
-  // was taken — so the read is not repeated and the count below stays at zero.
-  await expect(page.getByRole("button", { name: "Send to the archive" })).toBeVisible();
-
-  // **What the ENDING costs, and it is new at M6.5b2** (spec §2.6): the
+  // **What the ENDING does, and it is new at M6.5b2** (spec §2.6): the
   // game-over hook offers the finished game to the archive without the player
-  // clicking anything. That attempt is the whole reason the outbox exists — a
-  // send that does not land has to be REMEMBERED rather than lost, and the
-  // control that used to be the only way to make one is dark on a browser that
-  // has never been told there is an archive at all (spec §0.3).
-  await expect
-    .poll(() => apiCalls.filter((c) => c === "POST /api/archive").length, {
-      message: "the game-over hook offers the finished game to the archive by itself",
-    })
-    .toBe(1);
+  // clicking anything, and the screen says where the copy went. That attempt is
+  // the whole reason the outbox exists — a send that does not land has to be
+  // REMEMBERED rather than lost, and the control that used to be the only way
+  // to make one is dark on a browser that has never been told there is an
+  // archive at all (spec §0.3).
+  //
+  // **The archive fact itself costs no request here**: the game reaching game
+  // over IS one of the three read points, but the answer this browser already
+  // holds is under an hour old — the lobby read it on the way in and wrote it
+  // down with the time it was taken — so the read is not repeated, which is
+  // what keeps the count below at exactly one.
+  const archivePath = `browser/${SEGMENT}/${REV}/over/${game.id}.json`;
+  await expect(page.locator(".meta.archived")).toHaveText(`archived under ${archivePath}`);
+  // **And no control is offered for work already done** (review M-6): the copy
+  // is made, so the button that would make it is gone rather than sitting there
+  // to buy an `identical`.
+  await expect(page.getByRole("button", { name: "Send to the archive" })).toHaveCount(0);
+  expect(
+    apiCalls.filter((c) => c === "POST /api/archive").length,
+    "the ending costs exactly one archive POST, made by the hook",
+  ).toBe(1);
   /** Everything this page asked the API for since the game opened, MINUS the
    *  archive's own POST — which is counted exactly, just above, so filtering it
    *  here cannot hide a second one. */
@@ -280,11 +285,10 @@ test("a whole game against the bot plays in the browser with no /api/ request at
   expect(saved, "the download is the STORED record, byte for byte").toBe(stored.record);
   expect(stored.table, "a playing game has both documents on this device").not.toBeNull();
 
-  // **The copy is ALREADY THERE, and nobody clicked anything** (M6.5b2, spec
-  // §2.6): the server replayed the record the hook sent and chose the leaf
-  // from the state it reached. Nothing in the body said where the copy should
-  // go.
-  const archivePath = `browser/${SEGMENT}/${REV}/over/${game.id}.json`;
+  // **The copy is on disk, and nobody clicked anything** (M6.5b2, spec §2.6):
+  // the server replayed the record the hook sent and chose the leaf from the
+  // state it reached. Nothing in the body said where the copy should go, and
+  // the path the screen printed above is the server's own answer.
   const onDisk = path.join(archiveDir(), ...archivePath.split("/"));
   expect(fs.existsSync(onDisk), "the game-over hook's own send landed").toBe(true);
   const archived = fs.readFileSync(onDisk, "utf8");
@@ -293,18 +297,11 @@ test("a whole game against the bot plays in the browser with no /api/ request at
   // never had. Its presence is the operator's sign that the pair is whole.
   expect(fs.existsSync(onDisk.replace(/\.json$/, ".table.json"))).toBe(true);
 
-  // **Send to the archive still works, and says what is TRUE** (R-6.5b.6): the
-  // same bytes a second time are the server's `identical`, which is an answer
-  // and not a refusal — so the player is told the copy is already made rather
-  // than being shown a send that pretends to be the first.
-  await page.getByRole("button", { name: "Send to the archive" }).click();
-  await expect(page.locator(".meta.archived")).toHaveText(`already archived under ${archivePath}`);
-
   // **And the reading holds to the END of the cell**, which the slice above
-  // cannot say by itself: it is one moment, and the download and the click come
-  // after it. Everything this page asked the API for since the game opened is
-  // TWO archive POSTs and nothing else — the hook's and the click's.
-  expect(apiCalls.slice(before)).toEqual(["POST /api/archive", "POST /api/archive"]);
+  // cannot say by itself: it is one moment, and the download comes after it.
+  // Everything this page asked the API for since the game opened is ONE archive
+  // POST and nothing else.
+  expect(apiCalls.slice(before)).toEqual(["POST /api/archive"]);
 
   // eslint-disable-next-line no-console
   console.log(

@@ -18,8 +18,11 @@ import { openDb, readOutboxRow } from "./local/db";
 import {
   archiveDisposition,
   drain,
+  enqueue,
+  onArchived,
   noteGameOver,
   pending,
+  reasonWords,
   reconsiderAll,
   recordLanded,
   resetOutboxForTests,
@@ -46,11 +49,20 @@ function hosts(opts: {
   /** The games the local listing reports. */
   games?: { id: string; over: boolean }[];
   pair?: { record: string | null; table: string | null };
+  /** Which games' pair reads REJECT, and with what — how a cell arranges a
+   *  local host that faults on one game and answers for the others. */
+  pairFails?: Record<string, string>;
 }) {
   const posts: string[] = [];
   const healths: number[] = [];
+  /** Every `pair` message, by game — the count I-2 is about. */
+  const pairAsks: string[] = [];
   stubWorker({
-    pair: () => opts.pair ?? { record: RECORD, table: TABLE },
+    pair: (id) => {
+      pairAsks.push(id);
+      if (opts.pairFails?.[id]) throw new Error(opts.pairFails[id]);
+      return opts.pair ?? { record: RECORD, table: TABLE };
+    },
     call: (req) => {
       if (req.path === "/api/games" && req.method === "GET") {
         return {
@@ -81,7 +93,7 @@ function hosts(opts: {
     }
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
-  return { posts, healths, stub };
+  return { posts, healths, pairAsks, stub };
 }
 
 beforeEach(() => {
@@ -375,5 +387,165 @@ describe("the row a landed send leaves behind", () => {
     expect(await readOutboxRow(db, GAME)).toEqual(
       expect.objectContaining({ id: GAME, state: "sent" }),
     );
+  });
+});
+
+// ---- one bad game must not block the good ones (review I-1) ----------------
+//
+// **`localPair` rejects whenever the local host faults, traps or is torn down
+// mid-message.** Before the fix that rejection escaped the drain's loop into
+// one outer `catch {}`: the loop exited, nothing was written down, and every
+// row behind it was never tried — and because each later trigger re-reads the
+// store in the same order, the same row failed first every time. One game whose
+// record reliably trapped the module would have blocked every other game's send
+// for ever, with nothing on the door saying so.
+describe("a row that cannot even be read", () => {
+  const OTHER = "local-8";
+
+  it("does not stop the rows behind it, and is recorded rather than dropped", async () => {
+    // Two games waiting, and the FIRST one's pair read throws.
+    hosts({ archive: null });
+    await noteGameOver(GAME);
+    await noteGameOver(OTHER);
+    expect((await pending()).map((r) => r.id).sort()).toEqual([GAME, OTHER]);
+
+    const back = hosts({
+      archive: "dir",
+      pairFails: { [GAME]: "the local host restarted — reloaded from the last saved move" },
+    });
+    await drain();
+
+    // The good row went.
+    expect(back.posts).toEqual([RECORD]);
+    const rows = await pending();
+    expect(rows.map((r) => r.id)).toEqual([GAME]);
+    // **Recorded, not dropped** — and worded as what actually happened. "No
+    // connection" would be a false sentence about a module that trapped.
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        id: GAME,
+        reason: "offline",
+        sentence: "the local host restarted — reloaded from the last saved move",
+      }),
+    );
+    expect(rows[0]!.lastTried).toBeGreaterThan(0);
+    // And the WORDS on the door are that sentence, not the connection's.
+    expect(reasonWords(rows[0]!.reason, rows[0]!.sentence)).toBe(
+      "the local host restarted — reloaded from the last saved move",
+    );
+  });
+
+  it("says no connection where the failure carried no sentence of its own", async () => {
+    hosts({ archive: "dir", onArchive: () => ({ status: 503, body: { error: "unavailable" } }) });
+    await noteGameOver(GAME);
+    const row = (await pending())[0]!;
+    // A 503 is the moment and not the record, so it is retried — and the words
+    // stay the connection's, because nothing local failed.
+    expect(row.reason).toBe("offline");
+    expect(reasonWords(row.reason, row.sentence)).toBe("no connection");
+  });
+
+  it("goes on through the sweep too, where the listing names a game the module cannot read", async () => {
+    const found = hosts({
+      archive: "dir",
+      games: [
+        { id: GAME, over: true },
+        { id: OTHER, over: true },
+      ],
+      pairFails: { [GAME]: "the local host stopped" },
+    });
+    await reconsiderAll();
+    expect(found.posts).toEqual([RECORD]);
+    expect((await pending()).map((r) => r.id)).toEqual([GAME]);
+  });
+});
+
+// ---- ONE snapshot per game per attempt (review I-2; spec §2.2) -------------
+//
+// **The receipt has to be checked against the very bytes that are posted.** An
+// earlier draft read the pair to check the receipt and then `offer` read it
+// AGAIN to post it: two Worker round-trips per game, and two answers to "what
+// is this game" where the server is checking that the record and the table
+// agree.
+describe("the snapshot a game is sent as", () => {
+  it("is read ONCE per game per attempt", async () => {
+    const sent = hosts({ archive: "dir" });
+    await noteGameOver(GAME);
+    expect(sent.pairAsks).toEqual([GAME]);
+    expect(sent.posts).toEqual([RECORD]);
+  });
+
+  it("is read once per game in a drain over several rows", async () => {
+    hosts({ archive: null });
+    await noteGameOver(GAME);
+    await noteGameOver("local-8");
+    const back = hosts({ archive: "dir" });
+    await drain();
+    expect(back.pairAsks.sort()).toEqual([GAME, "local-8"]);
+  });
+
+  it("is read once per game in the sweep", async () => {
+    const found = hosts({ archive: "dir", games: [{ id: GAME, over: true }] });
+    await reconsiderAll();
+    expect(found.pairAsks).toEqual([GAME]);
+  });
+});
+
+// ---- what a landed send tells the screen (review M-6) ---------------------
+describe("a send that lands", () => {
+  it("names the game and the SERVER's path, so a control is not offered twice", async () => {
+    hosts({ archive: "dir" });
+    const landed: [string, string][] = [];
+    const off = onArchived((id, path) => landed.push([id, path]));
+    try {
+      await noteGameOver(GAME);
+      expect(landed).toEqual([[GAME, wire.archivePost.path]]);
+    } finally {
+      off();
+    }
+  });
+
+  it("says nothing when the send did not land", async () => {
+    hosts({ archive: "dir", onArchive: () => ({ status: 400, body: wire.archive400Replay }) });
+    const landed: string[] = [];
+    const off = onArchived((id) => landed.push(id));
+    try {
+      await noteGameOver(GAME);
+      expect(landed).toEqual([]);
+    } finally {
+      off();
+    }
+  });
+});
+
+// ---- the reason a row was given is not thrown away (review M-7) -----------
+describe("a drain that learns nothing", () => {
+  it("leaves each row's own reason where it is", async () => {
+    // A row entered as "signed out" on a browser that has never had a landed
+    // health read is not reachable in production; the RULE is what this pins —
+    // a drain that cannot learn the fact must not overwrite what a row says.
+    await enqueue(GAME, "signed-out");
+    hosts({ archive: null });
+    await drain();
+    expect((await pending())[0]).toEqual(expect.objectContaining({ reason: "signed-out" }));
+  });
+});
+
+// ---- the connections this module opens are given back (review M-2) --------
+describe("the database handles", () => {
+  it("closes every connection it opens, across a whole drain", async () => {
+    hosts({ archive: null });
+    await noteGameOver(GAME);
+    await noteGameOver("local-8");
+
+    const opens = vi.spyOn(indexedDB, "open");
+    const closes = vi.spyOn(IDBDatabase.prototype, "close");
+    hosts({ archive: "dir" });
+    await drain();
+    await pending();
+    // The premise: this really did open connections, so the equality below is
+    // not two zeros.
+    expect(opens.mock.calls.length).toBeGreaterThan(1);
+    expect(closes.mock.calls.length).toBe(opens.mock.calls.length);
   });
 });

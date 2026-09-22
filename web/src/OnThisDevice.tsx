@@ -13,13 +13,12 @@
 // is abandoned on its own screen, where this tab holds its lock.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, useIdentityMode } from "./api";
 import { unplayableIds } from "./backup";
 import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
 import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
-import { serverFacts } from "./local/facts";
 import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
 import { navigate } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
@@ -330,7 +329,7 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  * whatever the answer turns out to be.
  */
 function Remedy(): React.ReactNode {
-  const claimed = serverFacts().identity === "claimed";
+  const claimed = useIdentityMode() === "claimed";
   return (
     <span className="muted remedy">
       <a href="/enter">Sign in at the door</a>

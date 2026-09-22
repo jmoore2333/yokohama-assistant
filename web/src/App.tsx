@@ -14,7 +14,7 @@ import {
   RUN_CAP,
   useArchiveFact,
 } from "./api";
-import { noteGameOver, recordLanded, startOutbox } from "./outbox";
+import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { useReadiness } from "./swRegister";
@@ -910,6 +910,18 @@ export function App() {
   // a module that wired a window listener when it was imported could never take
   // it off again.
   useEffect(() => startOutbox(), []);
+
+  // **And what the hook's own send landed as** (review M-6). `archived` is what
+  // darkens "Send to the archive", and before this the only send it knew about
+  // was the one its own button made — so a game the game-over hook had already
+  // copied still offered the control, and clicking it bought the server's
+  // `identical`. The path is the SERVER's, in the same words the button's own
+  // reply is reported in.
+  useEffect(
+    () =>
+      onArchived((id, path) => setArchived((a) => (a[id] ? a : { ...a, [id]: `archived under ${path}` }))),
+    [],
+  );
 
   const arrive = useCallback(
     async (e: Events) => {
@@ -1865,12 +1877,13 @@ export function App() {
             local document carries no stamp and there is nothing further to
             send. A reload puts it back, and the server answers that second
             click `identical`. */}
-        {/* **`archive` and no longer `archiveKind()`** (M6.5b2, spec §2.2): the
-            fact is read when the game ENDS rather than at boot, so the value a
-            render reads has to be one that changes this screen. `"unknown"` is
-            dark for the same reason `"off"` is — nothing answered, so nothing
-            can be promised — and is a different state, which is what Task 9's
-            Abandon needs it to be. */}
+        {/* **`archive` is `useArchiveFact()`'s, and there is no module read
+            left** (M6.5b2, spec §2.2): the fact is read when the game ENDS
+            rather than at boot, so the value a render reads has to be one that
+            changes this screen. `"unknown"` is dark for the same reason
+            `"off"` is — nothing answered, so nothing can be promised — and is
+            a different state, which is what Abandon's three arms need it to
+            be. */}
         {state.over &&
         isLocal(state.id) &&
         archive !== "off" &&

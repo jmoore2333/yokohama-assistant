@@ -351,6 +351,19 @@ export const setChatText = (n: number): void => {
 export const useArchiveFact = (): ArchiveKind | "unknown" =>
   useSyncExternalStore(onServerFacts, archiveAnswer, archiveAnswer);
 
+/** Which DOOR this deployment reads, as this browser last heard it — `""`
+ *  where nothing has ever said (M6.5b2, spec §2.6).
+ *
+ *  **A hook for [`useArchiveFact`]'s reason** (review M-5): the outbox's
+ *  "not signed in" remedy is two steps under `claimed` and one under the other
+ *  two doors, and a module read during render is a value that never redraws
+ *  when the health answer lands. The same shape the archive fact retired one
+ *  file over; restating it for the identity would have been the same defect. */
+const identityMode = (): string => serverFacts().identity;
+
+export const useIdentityMode = (): string =>
+  useSyncExternalStore(onServerFacts, identityMode, identityMode);
+
 /** How long a remembered health answer is trusted without asking again. */
 const FACTS_FRESH_MS = 3_600_000;
 

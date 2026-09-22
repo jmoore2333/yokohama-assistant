@@ -446,6 +446,26 @@ describe("the games waiting to reach the archive", () => {
     expect(within(box).queryByText(/then sign in here/i)).toBeNull();
   });
 
+  // **The remedy follows the door the server NAMES, even when it is named after
+  // the row is drawn** (review M-5). The identity is read through the facts
+  // subscription and not off the module during render — the same shape the
+  // archive fact retired one file over, and a module read here would leave the
+  // row saying whatever it mounted with.
+  it("picks up the door's name when the health read lands after the row is on screen", async () => {
+    stubWorker();
+    await enqueue(LOCAL, "signed-out");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    // Nothing has said which door this is, so the turnstile is the whole of it.
+    expect(within(box).queryByText(/then sign in here/i)).toBeNull();
+
+    act(() => {
+      rememberServerFacts({ ...wire.health, identity: "claimed" });
+    });
+    // No re-render was asked for; the subscription is what redraws.
+    expect(await within(await waiting()).findByText(/then sign in here/i)).toBeInTheDocument();
+  });
+
   // **A permanent refusal carries the server's own sentence and offers no
   // retry**: these bytes will be refused the same way for ever, and a button
   // that only asks again would be a button that never works.

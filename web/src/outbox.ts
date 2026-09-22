@@ -33,10 +33,21 @@
 //    queue (R-6.5b2.13).
 // 6. **Deliberately NOT the Background Sync API**, which Safari does not
 //    implement: a portable mechanism beats one that works on one platform.
-// 7. **Every entry point ANSWERS.** Each is called with `void` from a render or
-//    an event handler, so a browser with no usable IndexedDB — a private
-//    window, a blocked site — has no outbox rather than an unhandled rejection
-//    on a screen that is otherwise fine.
+// 7. **Every entry point ANSWERS, with ONE named exception.** Each is called
+//    with `void` from a render or an event handler, so a browser with no usable
+//    IndexedDB — a private window, a blocked site — has no outbox rather than
+//    an unhandled rejection on a screen that is otherwise fine. The exception
+//    is an open BLOCKED by another tab holding storage version 1 (`db.ts`):
+//    that open waits rather than failing, by design, so an entry point behind
+//    it does not settle until the other tab goes. It is acceptable because the
+//    whole local channel is unusable in that state — every game read is waiting
+//    on the same open — the page says so in one sentence naming the tab, and it
+//    self-heals.
+// 8. **Nothing here caps how many games one pass posts**, and the spec asks for
+//    no cap. What is bounded is the HEALTH read (`ensureArchiveFact`), not the
+//    loop: a device with several old finished games posts them all on the first
+//    discovery, one after another, never in parallel. Said out loud because
+//    "bounded" is easy to read as a claim about the loop.
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, ensureArchiveFact } from "./api";
@@ -78,7 +89,12 @@ export const archiveDisposition = (kind: ArchiveKind | "unknown"): "send" | "del
 export const reasonWords = (reason: PendingReason, sentence?: string): string => {
   switch (reason) {
     case "offline":
-      return "no connection";
+      // **The sentence where the failure had one of its OWN**: a local host
+      // that trapped or would not start is not a connection problem, and "no
+      // connection" about a module fault is a false sentence on a screen. A
+      // `fetch` that never arrived carries none and reads as the connection it
+      // is.
+      return sentence ?? "no connection";
     case "signed-out":
       return "not signed in";
     case "unknown":
@@ -143,12 +159,56 @@ const changed = (): void => {
   for (const f of [...listeners]) f();
 };
 
-/** The database, or `null` where this browser has no usable one (rule 7). */
-async function store(): Promise<IDBDatabase | null> {
+/** Whoever is drawing the game a send just landed for (review M-6). */
+const landedListeners = new Set<(id: string, path: string) => void>();
+
+/**
+ * A copy of `id` is at `path` — told to the screen that has that game open.
+ *
+ * **So a control is not offered for work already done.** The game screen's
+ * "Send to the archive" darkens once a copy has landed, and before this the
+ * only send it knew about was the one its own button made — so after the hook
+ * had quietly archived the game the button was still there, and clicking it
+ * bought the server's `identical`. The path is the SERVER's, carried and not
+ * composed here.
+ */
+export const onArchived = (f: (id: string, path: string) => void): (() => void) => {
+  landedListeners.add(f);
+  return () => {
+    landedListeners.delete(f);
+  };
+};
+
+const announceLanded = (id: string, path: string): void => {
+  for (const f of [...landedListeners]) f(id, path);
+};
+
+/**
+ * Run `f` against this browser's database, and CLOSE the connection after it
+ * (review M-2).
+ *
+ * **One connection per public call, and it is given back.** Every operation
+ * here used to open its own and keep it: `pending()` alone runs once per
+ * change, so a drain of N rows left N+ connections open for the life of the
+ * page. Nothing downstream may hold the handle past `f`.
+ *
+ * **A browser with no usable store answers `fallback`** (rule 7): a private
+ * window, a blocked site, a browser with no IndexedDB at all has no outbox
+ * rather than an unhandled rejection on a screen that is otherwise fine.
+ */
+async function withStore<T>(f: (db: IDBDatabase) => Promise<T>, fallback: T): Promise<T> {
+  let db: IDBDatabase;
   try {
-    return await openDb();
+    db = await openDb();
   } catch {
-    return null;
+    return fallback;
+  }
+  try {
+    return await f(db);
+  } catch {
+    return fallback;
+  } finally {
+    db.close();
   }
 }
 
@@ -156,29 +216,28 @@ const isPending = (r: OutboxRow): r is Extract<OutboxRow, { state: "pending" }> 
   r.state === "pending";
 
 /** Every game waiting to reach the archive, receipts excluded. */
-export async function pending(): Promise<Pending[]> {
-  const db = await store();
-  if (!db) return [];
-  try {
-    return (await readOutbox(db)).filter(isPending).map((r) => ({
-      id: r.id,
-      reason: r.reason,
-      lastTried: r.lastTried,
-      ...(r.sentence === undefined ? {} : { sentence: r.sentence }),
-    }));
-  } catch {
-    return [];
-  }
-}
+export const pending = (): Promise<Pending[]> =>
+  withStore(
+    async (db) =>
+      (await readOutbox(db)).filter(isPending).map((r) => ({
+        id: r.id,
+        reason: r.reason,
+        lastTried: r.lastTried,
+        ...(r.sentence === undefined ? {} : { sentence: r.sentence }),
+      })),
+    [],
+  );
 
-/** Write one game's reason for waiting. */
-export async function enqueue(
+/** Write one game's reason for waiting, inside the caller's own connection.
+ *
+ *  **It never throws** — a store that refused is a browser with no outbox, and
+ *  every caller is inside a loop that must go on to the next row. */
+async function putPending(
+  db: IDBDatabase,
   id: string,
   reason: PendingReason,
   sentence?: string,
 ): Promise<void> {
-  const db = await store();
-  if (!db) return;
   try {
     await putOutboxRow(db, {
       id,
@@ -193,17 +252,8 @@ export async function enqueue(
   }
 }
 
-/**
- * This game's bytes reached the archive — write the receipt (rule 4).
- *
- * **Public, because the manual control is a landed send too.** "Send to the
- * archive" on a finished game's own screen posts the same pair through the same
- * route, and a copy that landed there is as landed as one this module made: the
- * row goes and the hook does not offer the same bytes again.
- */
-export async function recordLanded(id: string, record: string): Promise<void> {
-  const db = await store();
-  if (!db) return;
+/** Write the receipt, inside the caller's own connection. Never throws. */
+async function putReceipt(db: IDBDatabase, id: string, record: string): Promise<void> {
   try {
     await putOutboxRow(db, {
       id,
@@ -218,7 +268,7 @@ export async function recordLanded(id: string, record: string): Promise<void> {
 }
 
 /** Forget what this game was waiting to do — what a deployment with no archive
- *  leaves behind. */
+ *  leaves behind. Never throws. */
 async function forget(db: IDBDatabase, id: string): Promise<void> {
   try {
     await deleteOutboxRow(db, id);
@@ -228,32 +278,45 @@ async function forget(db: IDBDatabase, id: string): Promise<void> {
   }
 }
 
+/** Write one game's reason for waiting. The public face of [`putPending`]. */
+export const enqueue = (id: string, reason: PendingReason, sentence?: string): Promise<void> =>
+  withStore((db) => putPending(db, id, reason, sentence), undefined);
+
 /**
- * Offer one game's pair to the archive, and say what came of it.
+ * This game's bytes reached the archive — write the receipt (rule 4).
  *
- * **One snapshot of both documents** (spec §2.2): the server checks that the
- * record and the table agree, and two queued reads can fall either side of a
- * move. Neither is parsed on the way — the record's `seed` is a `u64` that
- * `JSON.parse` would round.
+ * **Public, because the manual control is a landed send too.** "Send to the
+ * archive" on a finished game's own screen posts the same pair through the same
+ * route, and a copy that landed there is as landed as one this module made: the
+ * row goes and the hook does not offer the same bytes again.
+ */
+export const recordLanded = (id: string, record: string): Promise<void> =>
+  withStore((db) => putReceipt(db, id, record), undefined);
+
+/**
+ * Offer one game's snapshot to the archive, and write down what came of it.
+ *
+ * **The pair is the CALLER's, read once** (review I-2; spec §2.2's one-snapshot
+ * rule). This used to read it again for itself, so the receipt was checked
+ * against one read and the bytes posted and fingerprinted came from another —
+ * two Worker round-trips, and two answers to "what is this game" where the
+ * server is checking that the record and the table agree.
  *
  * **Safe to retry by construction**: the server answers `identical` for a
  * second send of the same bytes, and this client treats 200 and 201 alike.
  */
-async function offer(db: IDBDatabase, id: string): Promise<void> {
-  const pair = await localPair(id);
-  // Nothing to send is nothing owed. A game with no record is a game with no
-  // moves in it — or one this device has since deleted — and the archive has
-  // no use for either.
-  if (pair.record === null || pair.table === null) {
-    await forget(db, id);
-    return;
-  }
+async function offer(
+  db: IDBDatabase,
+  id: string,
+  pair: { record: string; table: string },
+): Promise<void> {
   try {
-    await api.archive(pair.record, pair.table);
-    await recordLanded(id, pair.record);
+    const reply = await api.archive(pair.record, pair.table);
+    await putReceipt(db, id, pair.record);
+    announceLanded(id, reply.path);
   } catch (e) {
     const { reason, sentence } = reasonFor(e);
-    await enqueue(id, reason, sentence);
+    await putPending(db, id, reason, sentence);
   }
 }
 
@@ -262,6 +325,62 @@ async function offer(db: IDBDatabase, id: string): Promise<void> {
 async function alreadySent(db: IDBDatabase, id: string, record: string): Promise<boolean> {
   const row = await readOutboxRow(db, id);
   return row?.state === "sent" && row.fingerprint === fingerprint(record);
+}
+
+/** The sentence a LOCAL failure carried, where it had one.
+ *
+ *  **Not `reasonFor`'s job, and the difference is which side failed.** A
+ *  `fetch` that never arrived is a connection and is worded as one; a Worker
+ *  that trapped, restarted or would not start is not, and "no connection"
+ *  about a module fault is a false sentence on a screen. */
+const localSentence = (e: unknown): string | undefined =>
+  e instanceof Error && e.message ? e.message : undefined;
+
+/**
+ * ONE game's whole attempt: the snapshot, the receipt check, the send — and the
+ * row it leaves behind whatever happens (review I-1, I-2).
+ *
+ * **Every failure is this ROW's failure, and the caller goes on to the next.**
+ * `localPair` rejects whenever the local host faults, traps or is torn down
+ * mid-message, and before this that rejection escaped both drain loops into one
+ * outer `catch {}`: the loop exited, nothing was written down, and rows 2..N
+ * were never tried. Because every later trigger re-reads the store in the same
+ * order, the same row failed first every time — one game whose record reliably
+ * trapped the module would have blocked every other game's send for ever, with
+ * nothing on the door saying so.
+ *
+ * **ONE `localPair` for the whole attempt**, which is spec §2.2's rule: the
+ * receipt is checked against the very bytes that are posted and fingerprinted.
+ */
+async function attempt(
+  db: IDBDatabase,
+  id: string,
+  kind: ArchiveKind | "unknown",
+): Promise<void> {
+  try {
+    const pair = await localPair(id);
+    // Nothing to send is nothing owed. A game with no record is a game with no
+    // moves in it — or one this device has since deleted — and the archive has
+    // no use for either.
+    if (pair.record === null || pair.table === null) {
+      await forget(db, id);
+      return;
+    }
+    if (await alreadySent(db, id, pair.record)) return;
+    if (kind === "off") {
+      await forget(db, id);
+      return;
+    }
+    if (kind === "unknown") {
+      await putPending(db, id, "unknown");
+      return;
+    }
+    await offer(db, id, { record: pair.record, table: pair.table });
+  } catch (e) {
+    // The row records the attempt — which is what `lastTried` means — and the
+    // loop above goes on.
+    await putPending(db, id, "offline", localSentence(e));
+  }
 }
 
 /**
@@ -275,33 +394,14 @@ async function alreadySent(db: IDBDatabase, id: string, record: string): Promise
  */
 export async function noteGameOver(id: string): Promise<void> {
   await serial(async () => {
-    try {
-      // **The READ comes first, before the store is even opened** (spec §2.2).
-      // This is one of the three read points in its own right: the send
-      // control on the finished game's own screen is drawn from the answer,
-      // and a browser that could not open its database would otherwise never
-      // learn what this deployment keeps. A browser with no usable store has
-      // no outbox and no local games either, so nothing below it runs.
-      const kind = await ensureArchiveFact();
-      const db = await store();
-      if (!db) return;
-      const pair = await localPair(id);
-      if (pair.record === null || pair.table === null) return;
-      if (await alreadySent(db, id, pair.record)) return;
-      if (kind === "off") {
-        // Nothing is owed here, and anything this game was waiting for is owed
-        // no longer.
-        await forget(db, id);
-        return;
-      }
-      if (kind === "unknown") {
-        await enqueue(id, "unknown");
-        return;
-      }
-      await offer(db, id);
-    } catch {
-      /* rule 7 */
-    }
+    // **The READ comes first, before the store is even opened** (spec §2.2).
+    // This is one of the three read points in its own right: the send control
+    // on the finished game's own screen is drawn from the answer, and a browser
+    // that could not open its database would otherwise never learn what this
+    // deployment keeps. A browser with no usable store has no outbox and no
+    // local games either, so nothing below it runs.
+    const kind = await ensureArchiveFact();
+    await withStore((db) => attempt(db, id, kind), undefined);
   });
 }
 
@@ -316,47 +416,31 @@ export async function noteGameOver(id: string): Promise<void> {
  */
 export async function drain(): Promise<void> {
   await serial(async () => {
-    const db = await store();
-    if (!db) return;
-    try {
-      const waiting = (await readOutbox(db)).filter(isPending).filter((r) => r.reason !== "refused");
-      if (waiting.length === 0) return;
-      const kind = await ensureArchiveFact();
-      if (kind === "unknown") {
-        // Still nothing known. The rows stay, and say so.
-        for (const r of waiting) if (r.reason !== "unknown") await enqueue(r.id, "unknown");
-        return;
-      }
+    const waiting = await withStore(
+      async (db) => (await readOutbox(db)).filter(isPending).filter((r) => r.reason !== "refused"),
+      [] as Extract<OutboxRow, { state: "pending" }>[],
+    );
+    if (waiting.length === 0) return;
+    const kind = await ensureArchiveFact();
+    // **Still nothing known: the rows stay AS THEY ARE** (review M-7). An
+    // earlier draft rewrote each one as "not yet known", which threw away the
+    // more specific reason a row had been given.
+    if (kind === "unknown") return;
+    await withStore(async (db) => {
       if (kind === "off") {
         for (const r of waiting) await forget(db, r.id);
         return;
       }
-      for (const r of waiting) await offer(db, r.id);
-    } catch {
-      /* rule 7 */
-    }
+      for (const r of waiting) await attempt(db, r.id, kind);
+    }, undefined);
   });
 }
 
 /** One game, because the player asked for it by name. */
 export async function sendNow(id: string): Promise<void> {
   await serial(async () => {
-    const db = await store();
-    if (!db) return;
-    try {
-      const kind = await ensureArchiveFact();
-      if (kind === "unknown") {
-        await enqueue(id, "unknown");
-        return;
-      }
-      if (kind === "off") {
-        await forget(db, id);
-        return;
-      }
-      await offer(db, id);
-    } catch {
-      /* rule 7 */
-    }
+    const kind = await ensureArchiveFact();
+    await withStore((db) => attempt(db, id, kind), undefined);
   });
 }
 
@@ -376,46 +460,35 @@ export async function sendNow(id: string): Promise<void> {
  */
 export async function reconsiderAll(): Promise<void> {
   await serial(async () => {
-    const db = await store();
-    if (!db) return;
-    try {
-      const waiting = (await readOutbox(db)).filter(isPending).filter((r) => r.reason !== "refused");
-      const kind = await ensureArchiveFact();
-      if (kind === "unknown") return;
-      if (kind === "off") {
+    const rows = await withStore(
+      async (db) => (await readOutbox(db)).filter(isPending),
+      [] as Extract<OutboxRow, { state: "pending" }>[],
+    );
+    const waiting = rows.filter((r) => r.reason !== "refused");
+    const kind = await ensureArchiveFact();
+    if (kind === "unknown") return;
+    if (kind === "off") {
+      await withStore(async (db) => {
         for (const r of waiting) await forget(db, r.id);
-        return;
-      }
-      const ids = new Set(waiting.map((r) => r.id));
-      // **A REFUSED game is not swept back in by the listing.** `waiting`
-      // already excludes it, but the listing does not know about rows at all —
-      // so without this a rediscovery would post the very bytes the server has
-      // already said it will not take, once per discovery, for ever.
-      const refused = new Set(
-        (await readOutbox(db))
-          .filter(isPending)
-          .filter((r) => r.reason === "refused")
-          .map((r) => r.id),
-      );
-      try {
-        const list = await api.list("mine", undefined, "local");
-        for (const t of list.games) if (t.over === true && !refused.has(t.id)) ids.add(t.id);
-      } catch {
-        // The module could not list. The rows this browser already wrote down
-        // are still owed, and are still tried below.
-      }
-      for (const id of ids) {
-        const pair = await localPair(id);
-        if (pair.record === null || pair.table === null) {
-          await forget(db, id);
-          continue;
-        }
-        if (await alreadySent(db, id, pair.record)) continue;
-        await offer(db, id);
-      }
-    } catch {
-      /* rule 7 */
+      }, undefined);
+      return;
     }
+    const ids = new Set(waiting.map((r) => r.id));
+    // **A REFUSED game is not swept back in by the listing.** `waiting` already
+    // excludes it, but the listing does not know about rows at all — so without
+    // this a rediscovery would post the very bytes the server has already said
+    // it will not take, once per discovery, for ever.
+    const refused = new Set(rows.filter((r) => r.reason === "refused").map((r) => r.id));
+    try {
+      const list = await api.list("mine", undefined, "local");
+      for (const t of list.games) if (t.over === true && !refused.has(t.id)) ids.add(t.id);
+    } catch {
+      // The module could not list. The rows this browser already wrote down are
+      // still owed, and are still tried below.
+    }
+    await withStore(async (db) => {
+      for (const id of ids) await attempt(db, id, kind);
+    }, undefined);
   });
 }
 
