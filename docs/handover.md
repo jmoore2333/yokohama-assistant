@@ -22,7 +22,7 @@ The session answered them in a fix wave on the same branch. The fix wave's revie
 - The mutation battery read **16 of 16 caught**.
 - Every gate was run in one sequence: npm test 1024/55, e2e 61/11, yokohama-web 289.
 
-**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8 is what wants you: the point release `0.5.0-m6.5b2.1` and its deploy, and the push to PR #37. The branch is eighteen commits ahead of the PR, ending `13dc65f`.
+**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8 is what wants you: the point release `0.5.0-m6.5b2.1` and its deploy, and the push to PR #37. The branch is ahead of the PR by the wave's eighteen commits, ending `13dc65f`, plus the record's docs commits.
 
 The previous update, 2026-09-22 (ninth session, the M6.5b2 EXECUTION, end to end): the session executed all
 eleven tasks of `docs/plans/2026-09-21-web-frontend-m6.5b2-plan.md` under your ruling that EVERY

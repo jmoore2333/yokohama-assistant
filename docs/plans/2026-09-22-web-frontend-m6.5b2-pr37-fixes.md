@@ -207,5 +207,5 @@ These join the M6.5c entry artifact's §4, `docs/plans/2026-09-22-web-frontend-m
 1. **The point release.** Build and deploy `yokohama-web:0.5.0-m6.5b2.1` from `13dc65f` to the NAS by `deploy/RUNBOOK.md` §1–§2, recorded as a §3.16 deployment record. The live `0.5.0-m6.5b2` carries all three defects.
    - All three fixes are client-side. A player gets them once they take the update offer, or once every tab on the old release has closed.
    - The first activation over the live generation keeps that generation (§5.5).
-2. **The push.** The eighteen commits are local; PR #37 does not have them yet.
+2. **The push.** The wave's eighteen commits and this record's commit are local; PR #37 does not have them yet.
 3. **The E2 and R-F6 browser readings**, carried as §5.7 says.
