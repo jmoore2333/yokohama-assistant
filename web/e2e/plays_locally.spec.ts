@@ -532,6 +532,91 @@ test("a quota failure is APPLIED BUT NOT SAVED, and the game stays exportable", 
   expect(watch.failures).toEqual([]);
 });
 
+// **A store that refuses READS as well as writes** (PR #37 fix wave, fix round
+// 1, review I-1). The quota cell above refuses only `put`, so every read still
+// works and it cannot see what an export does when IndexedDB will not answer
+// at all — a connection closed by another tab's storage upgrade, or WebKit's
+// lost connection after a backgrounding. The export arm reads IndexedDB since
+// R-F1, and a failed read there used to be answered as a TRAP: the page
+// restarted the host, and the restart threw away the only copy of the move the
+// store had just refused. The click meant to rescue the move destroyed it.
+test("a store that will not even be READ still exports the move it refused, and the host is not restarted", async ({
+  page,
+}) => {
+  const watch = watchForBreakage(page);
+  let started = 0;
+  page.on("worker", () => {
+    started += 1;
+  });
+  const game = await startGame(page, { local: true });
+  const worker = await localHost(page);
+  const hosts = started;
+  expect(hosts, "the tab has its local host").toBeGreaterThan(0);
+  const pick = rng(0x5245_4144); // "READ"
+  await playSome(page, game, pick, 6);
+  await playUntilAnswerable(page, game, pick);
+  const committed = await storedEvents(page, game.id);
+  expect(committed, "there is a played game here to keep").toBeGreaterThan(0);
+
+  // Writes first, exactly as the quota cell refuses them, so there IS a move
+  // that exists only in the module.
+  await worker.evaluate(() => {
+    const orig = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore,
+      ...args: Parameters<typeof orig>
+    ) {
+      if (this.name === "docs") throw new DOMException("the quota is full", "QuotaExceededError");
+      return orig.apply(this, args);
+    };
+  });
+  // **Until the refusal SHOWS, and not one click**: a click is not a move (see
+  // `playUntilCommitted`). An option row that opens a sub-picker changes no
+  // document, writes nothing and is refused nothing — measured, one run in
+  // twenty of this cell's first draft did exactly that.
+  const unsaved = page.locator(".deck .warn", { hasText: "APPLIED BUT NOT SAVED" });
+  for (let i = 0; i < 12 && (await unsaved.count()) === 0; i += 1) {
+    const screen = await readScreen(page);
+    if (screen.over) throw new Error("the game ended before a move was refused");
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
+    await readScreen(page);
+  }
+  await expect(unsaved).toBeVisible();
+  expect(await storedEvents(page, game.id), "the store kept nothing new").toBe(committed);
+
+  // **And now every transaction the Worker asks for is refused** — the shape a
+  // connection closed on `versionchange` has, where `db.transaction` throws
+  // before any request is made. INSIDE the Worker only: the page's own reads
+  // below are what this cell checks the exports against.
+  await worker.evaluate(() => {
+    IDBDatabase.prototype.transaction = function () {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    };
+  });
+
+  // The owner cannot read its generation, so it answers from memory — the last
+  // owner the store knew of, holding the only copy of the refused move.
+  const file = await downloaded(page, () =>
+    page.getByRole("button", { name: "Save game file" }).click(),
+  );
+  expect(eventsOf(file.text), "Save game file carries the move the store refused").toBeGreaterThan(
+    committed,
+  );
+  const backup = await downloaded(page, () =>
+    page.getByRole("button", { name: "Back up", exact: true }).click(),
+  );
+  expect(backedUp(backup.text, game.id).record, "and so does the backup, byte for byte").toBe(
+    file.text,
+  );
+
+  // **Nothing was restarted**: the host holding that move is the one that
+  // answered both exports.
+  expect(started, "the page started no second local host").toBe(hosts);
+  expect(page.workers()).toContain(worker);
+  await expect(page.getByText("the local host restarted")).toHaveCount(0);
+  expect(watch.failures).toEqual([]);
+});
+
 test("a real trap is recovered by a fresh local host, and play continues from the last committed move", async ({
   page,
 }) => {
@@ -824,4 +909,134 @@ test("a tab that lost the game exports what the new owner COMMITTED, not its own
   expect(backed.record, "the backup is B's committed record, byte for byte").toBe(stored.record);
   expect(backed.table, "and B's committed table").toBe(stored.table);
   expect(watchA.failures).toEqual([]);
+});
+
+/** Take the Web Locks API away from ONE local host — the browser `worker.ts`'s
+ *  `!hasLocks()` arm is written for (Chrome before 69, Firefox before 96,
+ *  Safari before 15.4).
+ *
+ *  **Inside the Worker, and before it is asked to hold anything**: `hasLocks()`
+ *  is read on every hold (`worker.ts`'s `hold`), not once at boot, so a host
+ *  that booted with locks and is shadowed afterwards takes its NEXT game the
+ *  no-locks way. An own property on the navigator shadows the prototype's
+ *  getter. Answers what `navigator.locks` now reads, so the cell can assert
+ *  the premise rather than assume it. */
+async function withoutLocks(host: Worker): Promise<string> {
+  return host.evaluate(() => {
+    Object.defineProperty(navigator, "locks", { value: undefined, configurable: true });
+    return typeof navigator.locks;
+  });
+}
+
+/** The ownership generation IndexedDB holds for a game, read from the page. */
+async function storedGeneration(page: Page, id: string): Promise<number> {
+  return page.evaluate(
+    (game) =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open("yokohama-local");
+        open.onerror = () => reject(new Error("IndexedDB would not open"));
+        open.onsuccess = () => {
+          const db = open.result;
+          const get = db.transaction("meta", "readonly").objectStore("meta").get(game) as IDBRequest<
+            { generation: number } | undefined
+          >;
+          get.onsuccess = () => {
+            resolve(get.result?.generation ?? 0);
+            db.close();
+          };
+          get.onerror = () => reject(get.error ?? new Error("the read failed"));
+        };
+      }),
+    id,
+  );
+}
+
+// **The generation's own wiring, in a browser** (fix round 1, review M-1).
+// With Web Locks the steal's `AbortError` clears the old holder's `held` entry
+// before any export runs, so every cell above reaches the STORE branch through
+// "not held" and none of them can tell whether the Worker hands `exportPair`
+// the real stored generation. Without Web Locks nothing clears it: B opening
+// the game takes a newer generation and never touches A, so A still holds its
+// own, older one — and only the generation read inside the export arm says
+// that A's memory is no longer the game.
+test("without Web Locks, a tab whose game was opened elsewhere exports the new owner's COMMITTED record", async ({
+  page: a,
+  context,
+}) => {
+  const watchA = watchForBreakage(a);
+  // A boots on the DOOR, which starts its host, and loses its locks there —
+  // before the game it is about to create is held.
+  await a.goto("/");
+  await expect(a.getByRole("heading", { name: "On this device" })).toBeVisible();
+  const hostA = await localHost(a);
+  expect(await withoutLocks(hostA), "A's host has no Web Locks").toBe("undefined");
+  await a.getByRole("button", { name: "Play the bot here" }).click();
+  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
+  await a.getByRole("button", { name: "Deal" }).click();
+  await a.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });
+  const game = { id: a.url().split("#/t/")[1]! };
+  await a.locator(".app.setup-table.dealing button.deal-pick:not([disabled])").first().click();
+  await expect(a.locator(".app:not(.setup-table)")).toBeVisible();
+  expect(a.workers(), "the host told there are no locks is the one that holds the game").toEqual([
+    hostA,
+  ]);
+  // **The premise, asked of the browser's own lock manager**: nothing holds
+  // this game's lock, so A holds it by generation alone.
+  const lockName = `yokohama:local:${game.id}`;
+  const heldLocks = async () =>
+    a.evaluate(async () => ((await navigator.locks.query()).held ?? []).map((l) => l.name));
+  expect(await heldLocks(), "A took the game without a Web Lock").not.toContain(lockName);
+
+  const pick = rng(0x4e4f_4c4b); // "NOLK"
+  await playSome(a, game, pick, 6);
+  await playUntilAnswerable(a, game, pick);
+  const left = await storedEvents(a, game.id);
+  expect(left, "A played a real run of moves").toBeGreaterThan(0);
+  const generationA = await storedGeneration(a, game.id);
+
+  // B, the same way: booted on the door, locks taken away, and only then sent
+  // to the game — by its address, in the same document, so the host that was
+  // shadowed is the host that holds.
+  const b = await context.newPage();
+  const watchB = watchForBreakage(b);
+  await b.goto("/");
+  await expect(b.locator(`.on-this-device a[href="#/t/${game.id}"]`)).toBeVisible();
+  const hostB = await localHost(b);
+  expect(await withoutLocks(hostB), "B's host has no Web Locks").toBe("undefined");
+  await b.evaluate((id) => {
+    location.hash = `#/t/${id}`;
+  }, game.id);
+  await expect(b.locator(".app:not(.setup-table)")).toBeVisible();
+  // Last opener wins: nobody offered B a Take over, because nothing could say
+  // the game was open elsewhere.
+  await expect(b.getByText("This game is open in another tab")).toHaveCount(0);
+  await readScreen(b);
+  expect(b.workers()).toEqual([hostB]);
+
+  const now = await playUntilCommitted(b, game, rng(0x4e45_5752), left); // "NEWR"
+  expect(now).toBeGreaterThan(left);
+  expect(
+    await storedGeneration(a, game.id),
+    "B took a NEWER generation — which is how its writes passed the fence",
+  ).toBeGreaterThan(generationA);
+  // **And A was never told.** No abort reached it, so its `held` entry still
+  // names the older generation — the state this cell exists to export from.
+  await expect(a.getByText("This game was opened in another tab")).toHaveCount(0);
+
+  const stored = await storedPair(a, game.id);
+  const file = await downloaded(a, () =>
+    a.getByRole("button", { name: "Save game file" }).click(),
+  );
+  expect(file.text, "A's Save game file is B's committed record, byte for byte").toBe(
+    stored.record,
+  );
+  expect(eventsOf(file.text)).toBe(now);
+  const one = await downloaded(a, () =>
+    a.getByRole("button", { name: "Back up", exact: true }).click(),
+  );
+  const backed = backedUp(one.text, game.id);
+  expect(backed.record, "and A's backup is B's committed record").toBe(stored.record);
+  expect(backed.table, "with B's committed table").toBe(stored.table);
+  expect(watchA.failures).toEqual([]);
+  expect(watchB.failures).toEqual([]);
 });
