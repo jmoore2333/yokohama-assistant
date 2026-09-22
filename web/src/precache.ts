@@ -184,9 +184,11 @@ function contains(data: Uint8Array | string, needle: string): boolean {
  *
  *  **A mirror of the Rust table and pinned to it by a cell** that reads
  *  `crates/yokohama-web/src/assets.rs` and compares arm for arm — including the
- *  default, because `.txt` (the two OFL copies under `dist/fonts/`) really does
- *  go out as `application/octet-stream` and an install expecting `text/plain`
- *  would fail on a file the server served correctly. */
+ *  DEFAULT, because a path with no arm really does go out as
+ *  `application/octet-stream` and an install expecting anything else would fail
+ *  on a file the server served correctly. (`.txt` was that case until this
+ *  cycle's fix wave, when the two OFL copies under `dist/fonts/` got an arm of
+ *  their own and this table moved with it.) */
 export function expectedType(path: string): string {
   const dot = path.lastIndexOf(".");
   const ext = dot < 0 ? "" : path.slice(dot + 1).toLowerCase();
@@ -217,6 +219,8 @@ export function expectedType(path: string): string {
       return "application/wasm";
     case "webmanifest":
       return "application/manifest+json";
+    case "txt":
+      return "text/plain";
     default:
       return "application/octet-stream";
   }

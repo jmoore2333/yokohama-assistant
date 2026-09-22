@@ -153,7 +153,22 @@ jobs:
       # a mapping key, so the unquoted form made this WHOLE FILE fail to parse
       # (confirmed with two independent YAML parsers) and GitHub would have
       # reported an invalid workflow rather than running anything.
-      - run: "cargo test -p yokohama-web --no-default-features --features server --lib identity::"
+      #
+      # **The COUNT is asserted, because a filter that matches nothing exits 0**
+      # (whole-branch review, Minor 6; ledger Task 1 L75). A rename of the
+      # module or of a cell would drop R-6.5b2.3's only CI witness behind a
+      # green check — the class this lane keeps finding, a test that never runs.
+      # `set -o pipefail` is not enough on its own here, so the output is
+      # captured, printed, and then read.
+      - name: the refusing build, and that its five identity cells really ran
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "test result: ok. 5 passed" || {
+            echo "::error::the identity:: filter did not run five cells — R-6.5b2.3's only CI witness"
+            exit 1
+          }
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.
       # It runs AFTER `wire_fixtures`, which is what re-derives the committed
       # corpus and the walk's request script from the real router — a replay

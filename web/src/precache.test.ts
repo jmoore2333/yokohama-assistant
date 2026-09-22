@@ -8,7 +8,7 @@
 // the inventory.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   artFilesFrom,
@@ -227,10 +227,14 @@ describe("the media types", () => {
     }
     const fallback = /_\s*=>\s*"([^"]+)"/.exec(body);
     expect(fallback, "assets.rs has no default arm").not.toBeNull();
-    // `.txt` (the two OFL copies under dist/fonts/) really does go out as the
-    // default, and an install expecting `text/plain` would fail on it.
-    expect(expectedType("OFL.txt")).toBe(fallback![1]);
+    // The DEFAULT, which is the half a list of arms cannot state: a path with
+    // no arm at all goes out as `application/octet-stream`, and an install
+    // expecting anything else would fail on a file the server served correctly.
     expect(expectedType("no-extension")).toBe(fallback![1]);
+    // And `.txt` is no longer that case — the OFL copies under `dist/fonts/`
+    // got an arm of their own in M6.5b2's fix wave, and the loop above is what
+    // holds the two tables together across the change.
+    expect(expectedType("OFL.txt")).toBe("text/plain");
   });
 });
 
@@ -318,5 +322,33 @@ describe("the substitution check", () => {
   it("refuses a worker carrying the wrong number of digests", () => {
     const short = built.replace(JSON.stringify(release.entries[0]!.digest), '"xx"');
     expect(checkSubstitution(short, release)).toMatch(/does not carry/);
+  });
+});
+
+// ---- the licence that ships is the licence beside the font ----------------
+//
+// **`ASSETS.md` said the two copies "are checked identical when either is
+// changed", and nothing checked them** (whole-branch review, false sentence 8;
+// ledger Task 5 L150). The source copy sits beside the woff2 so a copy of that
+// directory carries its own grant; the `public/` copy is the one Vite emits
+// into `dist/`, which is what a deployment hands to a browser and what an image
+// pushes to a registry. Two files, one grant, and until this cell a re-download
+// could have updated one of them.
+describe("the font licences", () => {
+  it("ships a copy byte-identical to the one beside the font, for every family", () => {
+    const families = readdirSync("src/fonts");
+    // The premise: there really are families to compare, and each really has a
+    // font beside its licence — so a renamed directory fails here rather than
+    // passing as "no families disagreed".
+    expect(families.length).toBeGreaterThan(1);
+    for (const family of families) {
+      const beside = readdirSync(`src/fonts/${family}`);
+      expect(beside, family).toContain("OFL.txt");
+      expect(beside.some((f) => f.endsWith(".woff2")), `${family} has a font`).toBe(true);
+      expect(
+        readFileSync(`public/fonts/${family}/OFL.txt`, "utf8"),
+        `public/fonts/${family}/OFL.txt is not the copy beside the font`,
+      ).toBe(readFileSync(`src/fonts/${family}/OFL.txt`, "utf8"));
+    }
   });
 });

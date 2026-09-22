@@ -67,6 +67,13 @@ pub fn content_type(path: &Path) -> &'static str {
         // check reads. Without this arm it falls through to
         // `application/octet-stream` and the install prompt never appears.
         Some("webmanifest") => "application/manifest+json",
+        // The two `dist/fonts/<family>/OFL.txt` copies — the grant `ASSETS.md`
+        // says travels with the bytes (whole-branch review, Minor 9). Served as
+        // the default they were a DOWNLOAD rather than a licence a reader could
+        // open, which is a poor way to carry a licence; and
+        // `precache.ts`'s mirror moves with this arm, because the install
+        // compares what it computed against what the server answered.
+        Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
@@ -205,9 +212,11 @@ mod tests {
         // hashed asset beside the bundle, and a browser refuses to
         // `instantiateStreaming` anything not served as `application/wasm`.
         assert_eq!(content_type(Path::new("wasm/yokohama_wasm.wasm")), "application/wasm");
+        // M6.5b2's fix wave: the OFL copies that ship under `dist/fonts/`.
+        assert_eq!(content_type(Path::new("fonts/inter/OFL.txt")), "text/plain; charset=utf-8");
     }
 
-    /// The manifest's media type, which the installer checks (spec §2.3). Without
+    /// The manifest's media type, which the installer checks (spec §2.4). Without
     /// this arm it falls through to `application/octet-stream`.
     #[test]
     fn the_web_app_manifest_has_its_own_media_type() {

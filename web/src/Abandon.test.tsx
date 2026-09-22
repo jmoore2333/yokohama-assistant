@@ -461,7 +461,12 @@ describe("the abandon control on a local game", () => {
 
       await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
       await waitFor(() => expect(caught.clicks).toHaveLength(1));
-      expect(caught.clicks[0]!.download).toBe(`${LOCAL}.json`);
+      // **The ENVELOPE's name, not the record's** (whole-branch review, false
+      // sentence 10): `<id>.json` is what "Save game file" writes and what the
+      // terminal loads, and this control wrote its envelope under that very
+      // name — one file a player could not tell from the other, and one the
+      // terminal would refuse.
+      expect(caught.clicks[0]!.download).toBe(`${LOCAL}.backup.json`);
       // The envelope carries this device's own record, seed and all — the file
       // this app restores, which is what makes the choice a real alternative
       // to throwing the game away.

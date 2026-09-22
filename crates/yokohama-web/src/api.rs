@@ -1884,13 +1884,18 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The four checks, in spec §2.4's order** (five REFUSALS, because a rev that
-/// disagrees and a rev that is absent are different sentences): a
-/// `semantics_rev` present and equal to this build's; a terminal digest
-/// present; `replay_strict` clean; and the table document parsing, passing
-/// [`tables::check_shape`] and AGREEING with the record. A fifth guard follows
-/// them — the document's id is `is_safe_id`'s, because it becomes a path
-/// component. Then **the leaf IS the `Why`** — `Over` iff the
+/// **The EIGHT checks [`backup::check_pair_with`] makes, in spec §2.4's order**
+/// (nine refusals through this route, because the archive-off 404 is asked
+/// first, and a rev that disagrees and a rev that is absent are two different
+/// sentences): the record parses; a `semantics_rev` present and equal to this
+/// build's; a terminal digest present; `replay_strict` clean; the table
+/// document parses; it passes [`tables::check_shape`]; it AGREES with the
+/// record; and its id is `is_safe_id`'s, because it becomes a path component.
+/// **The count is stated here once** — an earlier draft said four here, four
+/// again at the call below and five in `CLAUDE.md`, three counts for one
+/// function (whole-branch review, false sentence 4); the order is the one
+/// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`
+/// probes pairwise. Then **the leaf IS the `Why`** — `Over` iff the
 /// replayed state is over, else `Abandoned` — and one put under
 /// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
 /// table RE-STRIPPED server-side from the parsed document, as `delete` does, so
@@ -1904,9 +1909,9 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     if !is_on(&games.archive) {
         return Err(ApiError::not_found("this server keeps no archive"));
     }
-    // **The four checks are `backup::check_pair`'s since M6.5b2** (R-6.5b2.10,
-    // spec §2.5): one function, two callers, so a backup and an upload cannot
-    // disagree about what a valid game is. The order and every sentence are
+    // **The eight checks above are `backup::check_pair`'s since M6.5b2**
+    // (R-6.5b2.10, spec §2.5): one function, two callers, so a backup and an
+    // upload cannot disagree about what a valid game is. The order and every sentence are
     // this route's own and did not move — pinned through `dispatch` by
     // `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
     // which was written and green BEFORE the extraction.

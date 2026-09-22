@@ -25,6 +25,7 @@ import {
   backupEverything,
   backupOne,
   buildEnvelope,
+  WORKER_BOUND_MS,
   forgetUnplayable,
   listUnplayable,
   restorePairs,
@@ -156,12 +157,22 @@ describe("backing up", () => {
       await putPair(id, RECORD_TEXT, tableFor(id));
     }
     const worker = stubWorker({ pair: () => "pending" }); // the module never came up
-    const started = Date.now();
+    // **The bound is counted, not timed** (ledger Task 8 L195). This read a
+    // real wall clock against 3,000 ms and flaked once in nine full-suite
+    // runs — a per-edit gate failing for a reason that is not about the code,
+    // and the figure it compared against (two bounds) sat uncomfortably close
+    // to the three the defect costs. `withinBound` arms exactly one timer per
+    // ask, so COUNTING the long timers this export arms says the same thing
+    // exactly, under any load: one for the whole export, not one per game.
+    const timers = vi.spyOn(globalThis, "setTimeout");
     const text = await backupEverything();
-    const spent = Date.now() - started;
+    const bounds = timers.mock.calls.filter(
+      ([, ms]) => typeof ms === "number" && ms > WORKER_BOUND_MS / 2,
+    ).length;
+    timers.mockRestore();
     const asked = worker.instances.flatMap((w) => w.posted).filter((r) => r.kind === "pair").length;
     expect(asked, "one game spends the budget; the rest are not asked").toBe(1);
-    expect(spent, "one bound, not three").toBeLessThan(3_000);
+    expect(bounds, "one bound is armed for the whole export, not one per game").toBe(1);
     // And the export is COMPLETE: the database's copies are what a silent
     // Worker falls back to, which is the whole point of the fallback.
     expect((JSON.parse(text) as Envelope).games.map((g) => g.id)).toEqual([

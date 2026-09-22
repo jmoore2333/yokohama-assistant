@@ -14,7 +14,10 @@
 //   - "Save game file" (`App.tsx`) is the raw `<id>.json` record — the file the
 //     terminal loads. It is unchanged by this cycle.
 //   - "Back up" here is an ENVELOPE — a file this app can restore, carrying the
-//     record AND the table document, one game or every game on the device.
+//     record AND the table document, one game or every game on the device. It
+//     is named `<id>.backup.json`, and `Abandon`'s "Back it up to a file" — the
+//     other control that writes one — names it the same way since the
+//     whole-branch review found it using the record's own name.
 //
 // **All the words a player reads are here or in `backup.ts`'s report**, and the
 // verdict sentences are the VALIDATOR's own, carried rather than reworded: the

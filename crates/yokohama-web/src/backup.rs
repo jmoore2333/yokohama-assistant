@@ -97,9 +97,16 @@ pub struct BackupGame {
     #[serde(default)]
     pub record: Option<String>,
     pub table: String,
-    /// What the EXPORTER said about this game, carried so a row that will not
-    /// open can say what it was written at. Optional because a browser that has
-    /// never reached a health read cannot say.
+    /// What the exporting device's COMPATIBILITY ROW said about this game,
+    /// carried so a row that will not open can say what it was written at.
+    ///
+    /// **`null` for every game that opens on the exporting device** (ruling
+    /// I-2 of Task 8; whole-branch review, false sentence 5), whatever health
+    /// reads that browser has landed: only a game the exporter could not open
+    /// has a compat row, and only that row knows a revision this build did not
+    /// write. The doc this replaces described the draft the ruling superseded
+    /// — the exporter's own revision — which would have stamped every game
+    /// with the sender's build.
     #[serde(default)]
     pub semantics_rev: Option<u32>,
     #[serde(default)]

@@ -610,13 +610,17 @@ test("a restore on a fresh profile lands four verdicts, and the cross-rev pair i
   // **Which screen it is has to be asked of something only ONE of them has.**
   // `atTheGame` and the banner's `.meta` are both satisfied by the deal screen
   // too — `Dealing.tsx` renders the same `header.banner`, the same `<h1>` and
-  // the same id — so they say the page loaded and nothing more. The two reads
-  // below are exclusive in both directions: the game root is the one `.app`
-  // without `setup-table` (`harness.ts`'s own "am I in a game" locator), and
-  // "Choose your card" is the deal's own heading. **The WITNESS that it is
-  // playable is the move loop underneath them**: the deal screen has no option
-  // rows and no pickable tiles, so `act` would answer `null` and `deadEnd`
-  // would throw.
+  // the same id — so they say the page loaded and nothing more. **Exactly one
+  // of the two reads below is exclusive** (whole-branch review, false sentence
+  // 11; ledger Task 10 L225): the game root is the one `.app` without
+  // `setup-table`, which is `harness.ts`'s own "am I in a game" locator. The
+  // count-0 read of "Choose your card" is NOT — `Dealing.tsx` gates that
+  // heading, so a deal screen can be drawn without it and the read would pass
+  // on the screen it is meant to exclude. It is kept as a cheap sanity read
+  // and claims nothing. **The WITNESS that this is playable is the move loop
+  // underneath them**: the deal screen has no option rows and no pickable
+  // tiles, so `act` would answer `null` and `deadEnd` would throw, which is
+  // why `playSome === 3` is the assertion that carries the claim.
   await page.goto("/#/t/local-at-the-deal");
   await expect(atTheGame(page)).toBeVisible();
   await expect(page.locator(".app:not(.setup-table)")).toBeVisible();

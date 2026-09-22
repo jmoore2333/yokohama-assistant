@@ -186,7 +186,13 @@ export function Abandon({
     if (saving.current) return;
     saving.current = true;
     try {
-      download(`${table.id}.json`, await backupOne(table.id));
+      // **`.backup.json`, which is `BackUpOne`'s name and not the RECORD's**
+      // (whole-branch review, false sentence 10 / Minor 3). This writes the
+      // ENVELOPE — the file this app restores — and it was named exactly as
+      // "Save game file" names the raw record the terminal loads, so the one
+      // control on the refusal path produced a file a player could not tell
+      // from the other by name and the terminal would have refused.
+      download(`${table.id}.backup.json`, await backupOne(table.id));
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {

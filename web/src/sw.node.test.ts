@@ -121,7 +121,11 @@ interface Harness {
   message(data: unknown): void;
   /** The response the worker answered with, or `null` when it did not
    *  intercept at all. */
-  request(url: string, mode: string): Promise<Response | null>;
+  /** `method` defaults to GET. It is a parameter because the worker's own
+   *  first line is `if (request.method !== "GET") return;` and a harness that
+   *  hard-coded the verb could not drive it (whole-branch review, false
+   *  sentence 7). */
+  request(url: string, mode: string, method?: string): Promise<Response | null>;
 }
 
 /** Build the worker and wire it to fakes.
@@ -201,10 +205,10 @@ async function boot(
     install: () => drive("install"),
     activate: () => drive("activate"),
     message: (data) => handlers.get("message")!({ data } as never),
-    request: async (url, mode) => {
+    request: async (url, mode, method = "GET") => {
       let answered: Promise<Response> | null = null;
       handlers.get("fetch")!({
-        request: { url, mode, method: "GET" },
+        request: { url, mode, method },
         respondWith: (p: Promise<Response>) => (answered = p),
       } as never);
       return answered === null ? null : await answered;
@@ -392,5 +396,14 @@ describe("the worker's fetch", () => {
     expect(await worker.request("https://yokohama.test/enter", "navigate")).toBeNull();
     expect(await worker.request("https://elsewhere.test/index.html", "navigate")).toBeNull();
     expect(await worker.request("https://yokohama.test/unknown.json", "cors")).toBeNull();
+    // **The POST, which the name claimed and no arm drove** (whole-branch
+    // review, false sentence 7). It is asked of a path the release DOES carry,
+    // so the only thing that can be answering `null` is the verb —
+    // `sw.ts`'s own first line — and not the route.
+    expect(await worker.request("https://yokohama.test/index.html", "cors", "POST")).toBeNull();
+    // Its anti-vacuity partner: the same path, as a GET, is served.
+    expect(
+      await (await worker.request("https://yokohama.test/index.html", "cors"))!.text(),
+    ).toBe(BODIES["/index.html"]!.body);
   });
 });

@@ -104,8 +104,13 @@ export interface RestoreReport {
  *  module is up, so a wait longer than this is a module that is not coming.
  *  **And shared, not per game**: a Worker that STARTS and never initialises
  *  answers nothing at all, and a per-game bound would make "Back up everything"
- *  take this long times the number of games. */
-const WORKER_BOUND_MS = 1_500;
+ *  take this long times the number of games.
+ *
+ *  **Exported for the cell that spends it** (ledger Task 8 L195): the cell that
+ *  proves one bound is spent for a whole export advances a fake clock by this
+ *  number, which is what took a wall-clock assertion — and its flake — out of a
+ *  per-edit gate. */
+export const WORKER_BOUND_MS = 1_500;
 
 /** Settle with `null` if `p` has not answered in `ms`.
  *

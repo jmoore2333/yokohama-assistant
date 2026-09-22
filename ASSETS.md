@@ -74,8 +74,11 @@ referenced, so the SOURCE copy never reaches `dist/`: a byte-identical copy live
 at `web/public/fonts/<family>/OFL.txt`, which Vite copies verbatim into
 `dist/fonts/<family>/OFL.txt`, so the built bundle — the thing a deployment hands
 to a browser and an image pushes to a registry — carries the grant with the
-bytes. The two copies are checked identical when either is changed; a re-download
-updates both.
+bytes. **The two copies are checked identical by a test** — `the font licences`
+in `web/src/precache.test.ts`, which walks every family under `web/src/fonts/`
+and compares its `OFL.txt` with the `web/public/fonts/` copy byte for byte — so
+a re-download that updated one of them fails `npm test`. (Until this cycle's fix
+wave that sentence named a check nothing performed.)
 
 ## Whose they are
 

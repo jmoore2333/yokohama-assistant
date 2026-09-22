@@ -892,8 +892,13 @@ export function App() {
     // measured bug of spec §0.3, which this closes for an ONLINE single-player
     // session as well as an offline one.
     //
-    // It is at most one request per browser, at the end of a game, for a
-    // player who has already decided to keep something.
+    // **At most one request per HOUR per finished game OPENED** (whole-branch
+    // review, false sentence 3), which is wider than "once per browser" and is
+    // the accounting R-6.5b2.7 actually rests on: this effect keys on
+    // `state.over && isLocal`, so re-opening a finished local game fires it
+    // again, and `ensureArchiveFact` re-reads whenever the remembered answer is
+    // over an hour old. Bounded, but bounded by the hour and not by the
+    // browser.
     if (!state?.over || !isLocal(state.id)) return;
     // **The hook is `noteGameOver`, and the read is inside it** (M6.5b2, spec
     // §2.6). It asks what this deployment keeps, offers the game to the archive
