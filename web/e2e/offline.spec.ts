@@ -1,0 +1,765 @@
+// **The six offline cells: where this cycle's claims actually live** (M6.5b2,
+// spec §6.3).
+//
+// Every other instrument in this cycle stops short of the thing the milestone
+// is about. `swRoute.ts` and `swInstall.ts` are pure functions with cells;
+// `swRegister.test.ts` drives the lifecycle over a seam; `precache.test.ts`
+// builds a release out of a fixture tree. None of them installs a service
+// worker, none of them takes the network away, and none of them closes a
+// browser and opens it again. So the three things only this file can see are
+// the three the cycle claims: that a release really is cached whole and serves
+// a whole game with the network off, that it survives the browser closing, and
+// that a second release waits behind the running one until somebody asks for
+// it.
+//
+// @yokohama-service-worker: on
+//
+// **This is the ONE spec that registers the worker**, which is why it takes
+// `test` from `@playwright/test` and not from `./sw`, and why it says so in the
+// marker above — `every_spec_declares_its_worker.spec.ts` reads this directory
+// at run time and names any file that does neither. Cells 4 and 5 are about a
+// restore and not about the shell, so they flag the worker OFF for themselves
+// with the same string the fixture uses: a ten-megabyte precache per context
+// that no assertion reads is wall nobody is buying anything with.
+//
+// **Cell 3 MUTATES `web/dist` in place** and puts it back in a `finally`, with
+// the restored worker's cache name asserted equal to the one the cell started
+// with. `dist` is what the walk's server serves per request, so a cell that
+// left it changed would hand every spec after it a release the build did not
+// produce.
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium, expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { archiveDir, BASE_URL, haveBrowser } from "../playwright.config";
+// The flag every OTHER spec gets from the `context` fixture. Imported as the
+// string rather than restated, so the two can never disagree about what the
+// client reads.
+import { NO_SERVICE_WORKER } from "./sw";
+// The cache-name prefix the worker and the generator share. Read from the
+// module that defines it rather than written out again here: a sweep that
+// looked for a prefix this file had guessed would report "no generations" for
+// ever and every retention assertion below would pass by finding nothing.
+import { CACHE_PREFIX } from "../src/precache";
+import { act, atTheGame, deadEnd, readScreen, rng, startGame, WALKER, type Game } from "./harness";
+
+// No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
+// `every_spec_can_skip.spec.ts` reads this directory for.
+test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
+
+/** The walk's own cap, the same figure every other walk here carries. */
+const CAP = 4000;
+
+/** How long a cold install is given. `INSTALL_DEADLINE_MS` in `swInstall.ts` is
+ *  120 s for the install itself, and this is the same budget plus the page's
+ *  own boot — a wait shorter than the worker's own deadline would report a slow
+ *  machine as a failed release. */
+const INSTALL_WAIT_MS = 150_000;
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const DIST = path.join(HERE, "..", "dist");
+/** The web app manifest: small, valid JSON, precached, and read by nothing the
+ *  app's behaviour depends on — which is what makes it the file cell 3 can
+ *  change to tell two releases apart. */
+const MARKED = path.join(DIST, "manifest.webmanifest");
+const SW = path.join(DIST, "sw.js");
+/** The committed envelope cells 4 and 5 restore: a finished 2P game, a
+ *  table-only game at the deal, a cross-rev pair and a record that is not one.
+ *  `crates/yokohama-web`'s own backup cells read the same file. */
+const ENVELOPE = path.join(HERE, "..", "src", "wire-script", "backup-envelope.json");
+
+/**
+ * A path-safe rendering of the caller's address — the server's own rule in
+ * `archive.rs`'s `caller_segment`, restated here for `plays_locally.spec.ts`'s
+ * reason: the reply is the thing under test, so a server that filed a game
+ * under the wrong prefix would be believed by a walk that took the prefix from
+ * it.
+ */
+const SEGMENT = [...WALKER]
+  .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
+  .join("");
+
+/** This build's semantics rev, which is the archive's own directory level. */
+const REV = "rev7";
+
+/**
+ * Where `api.ts` keeps the name this browser signs its requests with
+ * (`CLAIMED_USER_KEY`).
+ *
+ * **Restated rather than imported**, because importing `src/api.ts` here would
+ * pull React and the whole client into the node project this file is
+ * type-checked in. A rename on the client side makes cell 6 fail LOUDLY — the
+ * archive POST answers 401 and the row reads "not signed in" instead of going
+ * away — which is the direction a restated constant has to fail in to be worth
+ * restating.
+ */
+const CLAIMED_USER_KEY = "yokohama.claimed_user";
+
+// ---------------------------------------------------------------- helpers
+
+/** Every release generation this origin holds, sorted. */
+const releaseCaches = (page: Page, prefix: string = CACHE_PREFIX): Promise<string[]> =>
+  page.evaluate(
+    (p) => caches.keys().then((names) => names.filter((n) => n.startsWith(p)).sort()),
+    prefix,
+  );
+
+/** Whether one generation holds one path. */
+const cacheHas = (page: Page, name: string, at: string): Promise<boolean> =>
+  page.evaluate(
+    ({ name: n, at: a }) =>
+      caches
+        .open(n)
+        .then((c) => c.match(a))
+        .then(Boolean),
+    { name, at },
+  );
+
+/**
+ * Wait for the door to say the release is cached, and CHECK that it is.
+ *
+ * **The line alone would be a claim about a string.** `readinessOf` reads
+ * "ready" from the lifecycle's `installed` state, which is what an
+ * all-or-nothing install reaches only after every body has been fetched and
+ * digested — so the line is a real signal. The cache read beside it is what
+ * says the signal is about this release rather than about a worker that
+ * registered and cached nothing.
+ */
+async function installed(page: Page): Promise<string> {
+  await expect(page.getByText("Ready to play offline.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+  const names = await releaseCaches(page);
+  // Every caller is a FRESH profile installing its first release, so "the one
+  // generation" is unambiguous — asserted rather than assumed, because a helper
+  // that quietly picked the alphabetically last of several would be reporting
+  // about whichever name sorted highest.
+  expect(names, "a fresh profile holds exactly one release generation").toHaveLength(1);
+  const release = names[0]!;
+  expect(await cacheHas(page, release, "/index.html"), "the shell is in the cache").toBe(true);
+  expect(
+    await cacheHas(page, release, "/art/manifest.json"),
+    "and so is the art, which is what makes this a whole release rather than a shell",
+  ).toBe(true);
+  return release;
+}
+
+/** Play `n` moves, or until the game ends. */
+async function playSome(page: Page, game: Game, pick: () => number, n: number): Promise<number> {
+  let moves = 0;
+  for (let i = 0; i < n; i += 1) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
+    moves += 1;
+  }
+  await readScreen(page);
+  return moves;
+}
+
+/** Play to a winner, the same loop `plays_locally.spec.ts` uses. */
+async function playToOver(page: Page, game: Game, pick: () => number): Promise<number> {
+  let moves = 0;
+  let screen = await readScreen(page);
+  while (!screen.over && moves < CAP) {
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, moves);
+    moves += 1;
+    screen = await readScreen(page);
+  }
+  expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);
+  await expect(page.getByText("The game is over.")).toBeVisible();
+  return moves;
+}
+
+/** The turn the screen is on, off the decision zone's own chain — what says a
+ *  resumed game came back where it was left rather than at the start. */
+const chainOf = (page: Page): Promise<string> =>
+  page.locator(".decision .chain").first().innerText();
+
+/** Whether this page is being served by a worker at all. Offline, the answer
+ *  is the difference between a cached release and a lucky HTTP cache. */
+const controlled = (page: Page): Promise<boolean> =>
+  page.evaluate(() => navigator.serviceWorker.controller !== null);
+
+/** Every request this page made to the API, split by what became of it.
+ *
+ *  **A response of ANY status counts as "the network answered"**, which is
+ *  what the offline claim is about: a 404 from the server is as much a
+ *  contradiction of "nothing succeeded" as a 200 would be. A request that
+ *  failed is recorded separately and is the anti-vacuity half — a page that
+ *  TRIED and could not reach the server is a page whose instrument is wired to
+ *  something. */
+function watchTheApi(page: Page): { answered: string[]; failed: string[] } {
+  const answered: string[] = [];
+  const failed: string[] = [];
+  const mine = (url: string) => {
+    const u = new URL(url);
+    return u.origin === new URL(BASE_URL).origin && u.pathname.startsWith("/api/") ? u.pathname : null;
+  };
+  page.on("response", (r) => {
+    const at = mine(r.url());
+    if (at) answered.push(`${r.request().method()} ${at} ${r.status()}`);
+  });
+  page.on("requestfailed", (r) => {
+    const at = mine(r.url());
+    if (at) failed.push(`${r.method()} ${at}`);
+  });
+  return { answered, failed };
+}
+
+/**
+ * Uncaught exceptions, and console errors the network did not cause.
+ *
+ * **`watchForBreakage` cannot be used here and the reason is the subject.**
+ * Chromium logs every failed resource load as a console error, and four of
+ * these six cells take the network away on purpose — so the shared watch would
+ * report the very state the cell arranged. What is still worth watching is a
+ * page that THREW, which no amount of offline explains.
+ */
+function watchForFaults(page: Page): { failures: string[] } {
+  const failures: string[] = [];
+  const network = /net::ERR_|Failed to load resource|Failed to fetch|NetworkError/i;
+  page.on("console", (m) => {
+    if (m.type() !== "error") return;
+    if (network.test(m.text())) return;
+    failures.push(`console.error: ${m.text()}`);
+  });
+  page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
+  return { failures };
+}
+
+/** The restore report on screen, as {id → what it says}. */
+const reportRows = async (page: Page): Promise<Map<string, string>> =>
+  new Map(
+    await page.locator(".restore-report li").evaluateAll((els) =>
+      els.map(
+        (el) =>
+          [
+            el.querySelector(".restore-id")?.textContent?.trim() ?? "",
+            el.querySelector(".meta")?.textContent?.trim() ?? "",
+          ] as [string, string],
+      ),
+    ),
+  );
+
+/** Hand the file input a path and wait for the report to be drawn. */
+async function restore(page: Page, file: string): Promise<Map<string, string>> {
+  await page.getByLabel("Restore from a backup").setInputFiles(file);
+  await expect(page.locator(".restore-report li").first()).toBeVisible({ timeout: 60_000 });
+  return reportRows(page);
+}
+
+// ------------------------------------------------------------------ cells
+
+test("offline: the release installs, the page comes back with the network off, and a whole game plays", async ({
+  page,
+  context,
+}) => {
+  const watch = watchForFaults(page);
+  const api = watchTheApi(page);
+
+  await page.goto("/");
+  await installed(page);
+
+  // **The network goes away, and the page is loaded again from nothing but the
+  // cache.** The reload is what makes the page CONTROLLED — the worker does not
+  // call `clients.claim()`, so the visit that installed it is not served by it
+  // — which is also the state a returning player is in.
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
+  expect(await controlled(page), "the shell came from the worker and not from the network").toBe(
+    true,
+  );
+
+  // A whole game, played with the network off. `signedOut` because there is no
+  // door to type into and a local game needs none.
+  const game = await startGame(page, { local: true, signedOut: true });
+  expect(game.id.startsWith("local-"), `a local id, not ${game.id}`).toBe(true);
+  const moves = await playToOver(page, game, rng(0x4f46_464c)); // "OFFL"
+
+  // **The anti-vacuity half, and it is the whole reading.** "Nothing
+  // succeeded" is trivially true of a page that never asked — so the game had
+  // to have been PLAYED (the move count and the ranked standing below), and the
+  // page had to have TRIED to reach the API and failed: the game-over hook asks
+  // this deployment what it keeps, which offline is a request that never
+  // arrives.
+  expect(moves, "a whole game really was played offline").toBeGreaterThan(20);
+  await expect(page.locator("table.outcome tbody tr")).toHaveCount(2);
+  await expect(page.locator("table.outcome tr.won")).toHaveCount(1);
+  // **The window is the WHOLE cell and not only the offline half**, which is a
+  // stronger reading and the true one: the front door asks the API for nothing
+  // (R-6.5b2.7), so not one request of this page's was answered from the first
+  // visit to the last move.
+  expect(api.answered, "not one /api/ request of this page's was ever answered").toEqual([]);
+  expect(
+    api.failed.filter((f) => f.endsWith("/api/health")).length,
+    "and the page did ask: the game-over hook's own health read never arrived",
+  ).toBeGreaterThan(0);
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `OFFLINE WALK: game ${game.id} finished in ${moves} clicks with the network off; ` +
+      `${api.failed.length} /api/ requests failed, ${api.answered.length} were answered`,
+  );
+  expect(watch.failures, "the page threw nothing while it played with no network").toEqual([]);
+});
+
+test("close and reopen: the profile keeps the release and the game, and both come back offline", async () => {
+  // **`launchPersistentContext` and nothing else will do** (spec §6.3).
+  // `storageState` carries cookies, localStorage and — at 1.62.1 — optionally
+  // IndexedDB, but never the Cache Storage or the worker registration, which
+  // are the two things this cell is about. A profile directory carries all
+  // four, because it is what a browser actually keeps.
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "yokohama-e2e-profile-"));
+  let first: BrowserContext | null = null;
+  let second: BrowserContext | null = null;
+  try {
+    first = await chromium.launchPersistentContext(profile, { baseURL: BASE_URL });
+    const a = first.pages()[0] ?? (await first.newPage());
+    await a.goto("/");
+    const release = await installed(a);
+
+    const game = await startGame(a, { local: true, signedOut: true });
+    const pick = rng(0x434c_4f53); // "CLOS"
+    const opening = await playSome(a, game, pick, 24);
+    expect(opening, "there is a played game here to come back to").toBeGreaterThan(0);
+    const left = await chainOf(a);
+
+    // Offline BEFORE the close, so nothing can quietly re-fetch on the way out.
+    await first.setOffline(true);
+    await first.close();
+    first = null;
+
+    // **The same profile, opened again with the network still off.** Nothing is
+    // carried across in this process: the release, the registration and the
+    // game are whatever Chromium wrote into that directory.
+    second = await chromium.launchPersistentContext(profile, { baseURL: BASE_URL, offline: true });
+    const b = second.pages()[0] ?? (await second.newPage());
+    const watch = watchForFaults(b);
+    const api = watchTheApi(b);
+
+    await b.goto("/");
+    await expect(b.getByRole("heading", { name: "On this device" })).toBeVisible();
+    expect(await controlled(b), "the reopened browser was served by its own worker").toBe(true);
+    expect(
+      await releaseCaches(b),
+      "and it is the same release generation the first session installed",
+    ).toEqual([release]);
+
+    // The game is LISTED, by its own id, on a door drawn from this browser alone.
+    const row = b.locator(".on-this-device").getByRole("link", { name: game.id, exact: true });
+    await expect(row).toBeVisible();
+    await row.click();
+
+    // …and RESUMED at the turn it was left on, which is the claim a listing
+    // cannot make by itself.
+    await expect(b.locator(".decision .chain").first()).toBeVisible();
+    expect(await chainOf(b), "the reopened game resumes where the closed one stopped").toBe(left);
+
+    const moves = await playToOver(b, game, pick);
+    expect(moves, "and it plays on, offline, to a winner").toBeGreaterThan(0);
+
+    // **Exported.** The raw record is the file the terminal loads, and it is
+    // reachable with no server: the bytes come off the Worker's own snapshot.
+    const [download] = await Promise.all([
+      b.waitForEvent("download"),
+      b.getByRole("button", { name: "Save game file" }).click(),
+    ]);
+    expect(download.suggestedFilename()).toBe(`${game.id}.json`);
+    const saved = fs.readFileSync((await download.path())!, "utf8");
+    const record = JSON.parse(saved) as { events: unknown[]; terminal_digest?: unknown };
+    expect(record.terminal_digest, "a finished record carries the engine's own digest").toBeTruthy();
+    expect(
+      record.events.length,
+      "and it carries at least the moves the first session committed",
+    ).toBeGreaterThanOrEqual(opening);
+
+    expect(api.answered, "the whole reopened session answered nothing from the network").toEqual([]);
+    // eslint-disable-next-line no-console
+    console.log(
+      `REOPEN: ${game.id} — ${opening} moves before the close, ${moves} after, ` +
+        `${record.events.length} events exported, release ${release}`,
+    );
+    expect(watch.failures).toEqual([]);
+  } finally {
+    await first?.close();
+    await second?.close();
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+});
+
+test("the update: a second release waits, nothing switches until the click, and the previous generation is kept", async ({
+  page,
+}) => {
+  const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
+  const firstName = cacheNameOf(was.worker.toString("utf8"));
+  const watch = watchForFaults(page);
+  try {
+    await page.goto("/");
+    const one = await installed(page);
+    expect(one, "the release on disk is the release in the cache").toBe(firstName);
+    expect(await releaseCaches(page), "a fresh profile holds exactly one generation").toEqual([one]);
+
+    // **The page has to be CONTROLLED before an update can wait, and that is a
+    // fact about the platform rather than a step of convenience.** A new worker
+    // waits only while some client is still being served by the old one — with
+    // none, it activates immediately and there is nothing to offer. The visit
+    // that installs the release is never controlled, because the worker does not
+    // call `clients.claim()` (spec §2.3), so the reload here is what puts this
+    // page in the state a returning player is in. Measured: without it the
+    // second release installed, activated on its own and the door never showed
+    // an offer — which is the platform behaving correctly for a tab nobody is
+    // playing in.
+    await page.reload();
+    expect(await controlled(page), "a player's open tab is served by the worker").toBe(true);
+    expect(await markOnScreen(page), "release 1 is the build's own manifest").toBeNull();
+
+    // ---- release 2 -------------------------------------------------------
+    const two = shipRelease(2);
+    expect(two, "a changed file is a different release").not.toBe(one);
+    await checkForUpdate(page);
+    await expect(page.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+
+    // **Nothing has switched.** The offer is on screen and the controlling
+    // worker is still release 1's, so the file this page reads is still the one
+    // it cached — which is the claim spec §2.3 makes about an open tab.
+    expect(
+      await markOnScreen(page),
+      "the running page still reads its OWN release while the new one waits",
+    ).toBeNull();
+    expect(
+      await releaseCaches(page),
+      "and release 2 is cached whole, beside the one being served",
+    ).toEqual([one, two].sort());
+
+    // The player asks for it. `applyUpdate` posts skip-waiting and waits for
+    // `controllerchange` before it reloads, which is what makes the reload land
+    // on the new worker rather than race it.
+    //
+    // **The wait is the LOAD EVENT and deliberately not a poll, which this cell
+    // measured the hard way.** An `expect.poll` over `page.evaluate` started in
+    // the same tick as the click left the reload unlanded for the whole 60 s
+    // budget — the offer still on screen, the old controller still serving —
+    // and the same click with a `load` wait instead lands it in about a second.
+    // Whatever the exact mechanism (a CDP evaluate per 100 ms against a
+    // document that is trying to navigate), the lesson generalises: do not
+    // interrogate a page you have just asked to reload.
+    await Promise.all([
+      page.waitForEvent("load"),
+      page.getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    expect(await markOnScreen(page), "the reloaded page is served release 2").toBe(2);
+    await expect(page.getByText("A new version is ready.")).toHaveCount(0);
+
+    // **`activate` RETAINS the previous generation** (spec §2.3): a tab still
+    // running release 1 asks for release 1's hashed module by name, and a sweep
+    // that deleted it would take the bundle out from under a game in progress.
+    await expect
+      .poll(() => releaseCaches(page), { timeout: 30_000 })
+      .toEqual([one, two].sort());
+
+    // ---- release 3, which is what makes the retention above a reading ----
+    //
+    // A generation kept after ONE activation could be a sweep that never runs.
+    // Release 3 is the other half: release 1 is now two generations back, and
+    // it goes.
+    const three = shipRelease(3);
+    expect([one, two]).not.toContain(three);
+    await checkForUpdate(page);
+    await expect(page.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    await Promise.all([
+      page.waitForEvent("load"),
+      page.getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    expect(await markOnScreen(page), "the reloaded page is served release 3").toBe(3);
+    await expect
+      .poll(() => releaseCaches(page), { timeout: 30_000 })
+      .toEqual([two, three].sort());
+
+    // eslint-disable-next-line no-console
+    console.log(`UPDATE: ${one} -> ${two} -> ${three}; release 1 swept, release 2 retained`);
+    expect(watch.failures).toEqual([]);
+  } finally {
+    // **The build goes back byte for byte**, because `dist` is what the walk's
+    // server serves and every spec after this one reads it.
+    fs.writeFileSync(MARKED, was.marked);
+    fs.writeFileSync(SW, was.worker);
+  }
+  expect(
+    cacheNameOf(fs.readFileSync(SW, "utf8")),
+    "dist is back to the release `build:client` produced",
+  ).toBe(firstName);
+  expect(fs.readFileSync(MARKED).equals(was.marked)).toBe(true);
+});
+
+test("a restore on a fresh profile lands four verdicts, and the cross-rev pair is LISTED with its reason", async ({
+  page,
+  context,
+}) => {
+  // This cell is about the envelope and not about the shell, so it costs no
+  // precache — the same flag the `./sw` fixture sets for every other spec.
+  await context.addInitScript(NO_SERVICE_WORKER);
+  const watch = watchForFaults(page);
+
+  await page.goto("/");
+  // Anti-vacuity: an empty profile, said by the screen itself. Without this,
+  // every row below could be a game some earlier cell left behind.
+  await expect(page.getByText("no game on this device yet")).toBeVisible();
+
+  const report = await restore(page, ENVELOPE);
+  expect([...report.keys()].sort(), "one row per game in the file").toEqual([
+    "local-242a5429453c593c",
+    "local-another-rev",
+    "local-at-the-deal",
+    "local-not-a-record",
+  ]);
+  expect(report.get("local-242a5429453c593c")).toBe("restored");
+  expect(report.get("local-at-the-deal"), "a game with a table and no record is a game").toBe(
+    "restored",
+  );
+  expect(report.get("local-another-rev")).toBe(
+    "restored, but it will not open here — saved at semantics rev 6; this app plays rev 7",
+  );
+  expect(report.get("local-not-a-record")).toContain("not restored — the record does not parse");
+
+  // **The LISTING is a different claim from the report** (spec §2.5). The
+  // report is what one restore said; this is what the door says on every visit
+  // afterwards, and it exists because the layer's own listing skips a document
+  // whose shape check fails — so without the compatibility row the game would
+  // be in no list at all.
+  const will = page.locator(".unplayable");
+  await expect(will.getByRole("heading", { name: "Will not open here" })).toBeVisible();
+  await expect(will.locator("li")).toHaveCount(1);
+  await expect(will.locator("li")).toContainText("local-another-rev");
+  await expect(will.locator("li")).toContainText("saved at semantics rev 6");
+
+  // …and it is listed ONCE: the playable rows are the two that open here.
+  await expect(page.locator(".on-this-device > ul > li")).toHaveCount(2);
+  await expect(
+    page.locator(".on-this-device > ul"),
+    "and it is listed ONCE: it is not also among the games that do open here",
+  ).not.toContainText("local-another-rev");
+
+  // **The finished game opens at game over**, which is what "restored" has to
+  // mean: the pair came out of a file, went into this browser's store, and the
+  // module read both.
+  await page.goto("/#/t/local-242a5429453c593c");
+  await expect(page.getByText("The game is over.")).toBeVisible();
+  await expect(page.locator("table.outcome tbody tr")).toHaveCount(2);
+
+  // **And the game restored from a TABLE DOCUMENT ALONE is played**, which is
+  // the half that says a record is genuinely optional in the envelope: this
+  // pair arrived with no record at all, and the module built a live game out of
+  // the setup the document carries.
+  //
+  // It opens at the GAME and not at the deal, which is the fixture and not a
+  // surprise: its `keeps` are already filled, so there is no card left to
+  // choose and the layer hands over a session. Written down because the
+  // document's `status` still reads `dealing` and a reader would expect the
+  // deal screen.
+  await page.goto("/#/t/local-at-the-deal");
+  await expect(atTheGame(page)).toBeVisible();
+  await expect(page.locator("header .meta").first()).toContainText("local-at-the-deal");
+  const played = await playSome(page, { id: "local-at-the-deal" }, rng(0x5245_5354), 3); // "REST"
+  expect(played, "a restored game takes moves like any other").toBe(3);
+  expect(watch.failures).toEqual([]);
+});
+
+test("the clash: the same bytes are already here, different bytes under one name are refused by row", async ({
+  page,
+  context,
+}) => {
+  await context.addInitScript(NO_SERVICE_WORKER);
+  const watch = watchForFaults(page);
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "yokohama-e2e-envelope-"));
+  try {
+    await page.goto("/");
+    const first = await restore(page, ENVELOPE);
+    expect(first.get("local-242a5429453c593c"), "the first restore lands it").toBe("restored");
+
+    // **Different BYTES under the same name, which is exactly what the rule
+    // compares** (spec §2.5): present and byte-identical is "already here",
+    // present and different is a refusal. A trailing newline is the smallest
+    // change that still leaves the record VALID — a corrupted one would be
+    // rejected by the validator and never reach the clash check at all, which
+    // is a different refusal and would prove nothing about this one.
+    const envelope = JSON.parse(fs.readFileSync(ENVELOPE, "utf8")) as {
+      games: { id: string; record: string | null }[];
+    };
+    const target = envelope.games.find((g) => g.id === "local-242a5429453c593c")!;
+    expect(target.record, "the game being mutated has a record to mutate").not.toBeNull();
+    target.record = `${target.record!}\n`;
+    const mutated = path.join(scratch, "mutated.json");
+    fs.writeFileSync(mutated, JSON.stringify(envelope, null, 2));
+
+    const second = await restore(page, mutated);
+    expect(
+      second.get("local-242a5429453c593c"),
+      "different bytes under a name this device holds are REFUSED, and the row says which",
+    ).toBe("not restored — a different game is already on this device under that name");
+    // **The contrast is inside ONE report**, which is what says the refusal is
+    // about the bytes: three games in the same file were not touched and read
+    // as already here.
+    expect(second.get("local-at-the-deal")).toBe("already on this device — nothing changed");
+    expect(second.get("local-another-rev")).toBe("already on this device — nothing changed");
+
+    // And the original file, run a third time, reads "already here" for the
+    // very game that clashed — so the answer follows the bytes and not the
+    // number of times a restore has been run.
+    const third = await restore(page, ENVELOPE);
+    expect(third.get("local-242a5429453c593c")).toBe("already on this device — nothing changed");
+    expect(watch.failures).toEqual([]);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("the outbox: a game finished before the archive was ever heard of waits, and coming back online sends it", async ({
+  page,
+  context,
+}) => {
+  // **The name is SEEDED rather than typed, and that is this cell's one
+  // deviation.** The sign-in screen stands on the lobby, and reaching the
+  // lobby is one of the three health read points — so typing into it would
+  // land the very answer whose ABSENCE the cell is about. What is being tested
+  // here is the outbox, not the door, and `signIn` has its own cells.
+  await context.addInitScript(
+    ([key, who]) => {
+      try {
+        window.localStorage.setItem(key!, who!);
+      } catch {
+        /* a browser that cannot store is the fault the assertions will name */
+      }
+    },
+    [CLAIMED_USER_KEY, WALKER],
+  );
+  const watch = watchForFaults(page);
+  const api = watchTheApi(page);
+
+  await page.goto("/");
+  await installed(page);
+  // **Nothing has been read from the server**, which is the state that makes
+  // "not yet known" reachable: the front door asks the API for nothing
+  // (R-6.5b2.7), so this browser has never been told whether the deployment
+  // keeps an archive.
+  expect(api.answered, "the door asked the server nothing").toEqual([]);
+
+  await context.setOffline(true);
+  const game = await startGame(page, { local: true, signedOut: true });
+  const moves = await playToOver(page, game, rng(0x4f55_5442)); // "OUTB"
+  expect(moves, "a whole game was finished with no connection").toBeGreaterThan(20);
+
+  // The row, on the door, in the words spec §4 gives it.
+  await page.goto("/#/");
+  await expect(page.getByRole("heading", { name: "Waiting to reach the archive" })).toBeVisible();
+  const row = page.locator(".outbox-row").filter({ hasText: game.id });
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("not yet known");
+  await expect(row, "and the reason is the row's own class, not only its words").toHaveClass(
+    /\bunknown\b/,
+  );
+
+  // **Whether the browser tells the page it is back**, observed rather than
+  // assumed. `setOffline(false)` is a devtools emulation and the `online` event
+  // is the trigger spec §2.6 names, so a run where it does not fire is a
+  // reading worth having rather than a silent fallback.
+  await page.evaluate(() => {
+    const w = window as unknown as { __wentOnline?: number };
+    w.__wentOnline = 0;
+    window.addEventListener("online", () => {
+      w.__wentOnline = (w.__wentOnline ?? 0) + 1;
+    });
+  });
+  const beforeOnline = api.answered.length;
+  expect(beforeOnline, "nothing had been sent while the network was off").toBe(0);
+
+  await context.setOffline(false);
+  const real = await page
+    .waitForFunction(() => ((window as unknown as { __wentOnline?: number }).__wentOnline ?? 0) > 0, {
+      timeout: 15_000,
+    })
+    .then(
+      () => true,
+      () => false,
+    );
+  if (!real) {
+    // eslint-disable-next-line no-console
+    console.log(
+      "OUTBOX: Chromium did NOT fire `online` in the page after setOffline(false); " +
+        "the event was dispatched by hand and the drain below is the one that trigger starts",
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  }
+
+  // **Nobody clicked anything.** The only thing that happened between the row
+  // being drawn and the assertion below is the network coming back: no control
+  // on this page was pressed, and the POST is the drain's.
+  await expect
+    .poll(() => api.answered.filter((c) => c.startsWith("POST /api/archive")), { timeout: 60_000 })
+    .toHaveLength(1);
+  expect(
+    api.answered.find((c) => c.startsWith("POST /api/archive")),
+    "and the server took it",
+  ).toMatch(/ 20[01]$/);
+
+  // The copy is on the server's disk, under the layout the archive chose from
+  // the record it replayed — nothing in the body said where it should go.
+  const at = path.join(archiveDir(), "browser", SEGMENT, REV, "over", `${game.id}.json`);
+  await expect.poll(() => fs.existsSync(at), { timeout: 30_000 }).toBe(true);
+  expect(fs.existsSync(at.replace(/\.json$/, ".table.json")), "the pair landed whole").toBe(true);
+
+  // …and the row is gone, because the receipt says it landed.
+  await expect(page.locator(".outbox")).toHaveCount(0);
+
+  // eslint-disable-next-line no-console
+  console.log(
+    `OUTBOX: ${game.id} finished offline in ${moves} clicks, waited as "not yet known", ` +
+      `and was sent by the ${real ? "browser's own `online` event" : "dispatched `online` event"} ` +
+      `in ${api.answered.length} API requests`,
+  );
+  expect(watch.failures).toEqual([]);
+});
+
+// ----------------------------------------------------- cell 3's own tools
+
+/** The release a built worker carries, read out of the generator's own banner
+ *  and the substituted constant. */
+function cacheNameOf(worker: string): string {
+  const found = new RegExp(`${CACHE_PREFIX}[0-9a-f]{16}`).exec(worker);
+  if (!found) throw new Error("no release name in dist/sw.js — was it built by precache.mjs?");
+  return found[0];
+}
+
+/** Put a marked copy of the manifest in `dist` and rebuild the worker over it,
+ *  which is a whole new release: the cache name is a digest over every file's
+ *  bytes, so one changed file is one changed name with nothing to bump. */
+function shipRelease(mark: number): string {
+  const manifest = JSON.parse(fs.readFileSync(MARKED, "utf8")) as Record<string, unknown>;
+  manifest["yokohama_e2e_release"] = mark;
+  fs.writeFileSync(MARKED, `${JSON.stringify(manifest, null, 2)}\n`);
+  execFileSync("node", ["scripts/precache.mjs"], { cwd: path.join(HERE, ".."), stdio: "pipe" });
+  return cacheNameOf(fs.readFileSync(SW, "utf8"));
+}
+
+/** Which release the PAGE is being served, read through whatever worker is
+ *  controlling it.
+ *
+ *  `cache: "no-store"` so an UNCONTROLLED page would read the server's current
+ *  bytes and fail loudly, rather than pass from the browser's own HTTP cache
+ *  while proving nothing about the worker. */
+const markOnScreen = (page: Page): Promise<number | null> =>
+  page.evaluate(async () => {
+    const r = await fetch("/manifest.webmanifest", { cache: "no-store" });
+    const body = (await r.json()) as { yokohama_e2e_release?: number };
+    return body.yokohama_e2e_release ?? null;
+  });
+
+/** Ask the browser to re-fetch `sw.js`. It is served `no-store`, so the check
+ *  is a real byte comparison rather than one against a cached copy. */
+const checkForUpdate = (page: Page): Promise<void> =>
+  page.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    await reg?.update();
+  });
