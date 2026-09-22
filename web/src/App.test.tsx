@@ -3387,8 +3387,15 @@ describe("a local game", () => {
     );
     await screen.findByText(/end triggers:/);
     // The premise: both controls are there while this tab is the writer.
+    //
+    // **AWAITED, because "Send to the archive" waits on a read.** The archive
+    // fact is fetched when the game ends (`ensureArchiveFact`, spec §2.2), so
+    // the control appears a tick after `end triggers:` does — and a synchronous
+    // `getByRole` here was a race this cell happened to win until M6.5b2 put
+    // another component on the door and it started losing. The claim is
+    // unchanged; only the wait is.
     expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+    await screen.findByRole("button", { name: "Send to the archive" });
 
     act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
 

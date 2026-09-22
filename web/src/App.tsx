@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Abandon } from "./Abandon";
+import { BackUpOne } from "./BackupControls";
 import {
   api,
   ApiError,
@@ -1814,6 +1815,7 @@ export function App() {
           <button
             type="button"
             className="ghost"
+            title="the record alone — the file the terminal loads"
             onClick={() =>
               void saveGameFile(state.id).catch((e) =>
                 setError(e instanceof ApiError ? e.message : String(e)),
@@ -1823,6 +1825,13 @@ export function App() {
             Save game file
           </button>
         ) : null}
+        {/* **A backup beside it, and the two say different things** (M6.5b2,
+            R-6.5b2.10). "Save game file" is the RECORD, which is what the
+            terminal loads; this is an envelope carrying the record AND the
+            table document, which is what this app restores. Offered on a local
+            game at any point, for "Save game file"'s own reason: the seed is
+            the player's own and is read off the Worker's side channel. */}
+        {isLocal(state.id) ? <BackUpOne id={state.id} /> : null}
         {/* **A tab that has LOST the lock writes nothing** (spec §4, review
             Important 2), so both controls below go the way the answer bar
             goes. The Worker fences a delete from a tab that does not hold the

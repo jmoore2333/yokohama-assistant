@@ -16,6 +16,9 @@
 import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
+import type { Envelope, ReportRow } from "../backup";
+import committedEnvelope from "../wire-script/backup-envelope.json";
+import committedReport from "../wire-script/backup-report.json";
 
 /** What a `call` is answered with: the module's two fields. `body` is given
  *  as a VALUE and stringified here, because that is what the Worker does. */
@@ -42,6 +45,47 @@ export interface FakeWorkerHooks {
   hold?: (id: string, steal: boolean) => boolean | "pending";
   /** Both documents of one game, as the `pair` message answers them. */
   pair?: (id: string) => { record?: string | null; table?: string | null } | undefined;
+  /** What the module's `restore_read` says about a file — the rows, or a
+   *  refusal about the FILE. A cell that is about ONE verdict sets this and
+   *  says so; everything else falls through to [`fakeVerdicts`]. */
+  restore?: (envelope: string) => ReportRow[] | { refused: string } | undefined;
+}
+
+/**
+ * **A FAKE, and not the validator.**
+ *
+ * The real `restore_read` is `crates/yokohama-web/src/backup.rs` compiled into
+ * the module, and it is pinned in three places that are not this one: that
+ * file's own cells, `crates/yokohama-wasm`'s native cell, and
+ * `web/src/backup.node.test.ts`, which runs the COMPILED module over the very
+ * fixture read below. Nothing in jsdom can run it — there is no `Worker` and no
+ * `.wasm` — so what the page cells assert is what the PAGE does with a verdict,
+ * never what the verdict should have been.
+ *
+ * The mapping is DERIVED from the committed pair of files rather than written
+ * out: a game's record text is looked up in the committed envelope and answered
+ * with the verdict the committed report gives for it. So the four arms a cell
+ * can reach are the four arms this build really produces, and a game whose
+ * record this fixture does not carry is `accepted` — the premise most cells
+ * want, and one they can override.
+ */
+function fakeVerdicts(envelope: string): ReportRow[] {
+  const env = JSON.parse(envelope) as Envelope;
+  const committed = committedEnvelope as unknown as Envelope;
+  const rows = committedReport as unknown as ReportRow[];
+  const NONE = "\u0000no record";
+  const byRecord = new Map(
+    committed.games.map((g, i) => [g.record ?? NONE, rows[i]!.verdict] as const),
+  );
+  return env.games.map((g) => ({
+    id: g.id,
+    verdict: byRecord.get(g.record ?? NONE) ?? {
+      kind: "accepted" as const,
+      players: 2,
+      events: 0,
+      over: false,
+    },
+  }));
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -102,6 +146,8 @@ export class FakeWorker {
    *  restart is counted by. */
   static instances: FakeWorker[] = [];
   static hooks: FakeWorkerHooks = {};
+  /** Every instance dies as soon as it is built (see the constructor). */
+  static broken = false;
 
   readonly posted: Req[] = [];
   terminated = false;
@@ -111,6 +157,11 @@ export class FakeWorker {
 
   constructor(readonly url?: unknown) {
     FakeWorker.instances.push(this);
+    // **The module will not load** ([`breakTheWorker`]). Raised on a
+    // microtask, because `client.ts`'s `start()` assigns `onerror` on the
+    // statement after `new Worker(...)` — a synchronous raise would reach
+    // nobody and the cell would hang instead of failing.
+    if (FakeWorker.broken) queueMicrotask(() => this.raise("the module would not load"));
   }
 
   postMessage(req: Req): void {
@@ -150,6 +201,16 @@ export class FakeWorker {
       case "release":
         reply = { released: true };
         break;
+      case "restore_read": {
+        const answer = hooks.restore?.(req.envelope) ?? fakeVerdicts(req.envelope);
+        reply = Array.isArray(answer)
+          ? { report: JSON.stringify(answer) }
+          : { refused: answer.refused };
+        break;
+      }
+      case "adopt":
+        reply = { adopted: req.ids.length };
+        break;
     }
     queueMicrotask(() => this.deliver({ seq: req.seq, ...reply }));
   }
@@ -183,8 +244,31 @@ export class FakeWorker {
 export function stubWorker(hooks: FakeWorkerHooks = {}): typeof FakeWorker {
   FakeWorker.instances = [];
   FakeWorker.hooks = hooks;
+  FakeWorker.broken = false;
   vi.stubGlobal("Worker", FakeWorker);
   return FakeWorker;
+}
+
+/** **The module will not load** — every Worker this page starts from now on
+ *  dies at once, which is the state a backup has to work in (spec §2.5).
+ *
+ *  Called after [`stubWorker`], which clears the flag. */
+export function breakTheWorker(): void {
+  FakeWorker.broken = true;
+}
+
+/** What the Worker's `pair` message answers for ONE game — the snapshot a
+ *  backup PREFERS over the database, because a move applied and not yet
+ *  written is the very move a recovery is for. */
+export function workerAnswersWith(
+  id: string,
+  pair: { record?: string | null; table?: string | null },
+): void {
+  const previous = FakeWorker.hooks.pair;
+  FakeWorker.hooks = {
+    ...FakeWorker.hooks,
+    pair: (asked) => (asked === id ? pair : previous?.(asked)),
+  };
 }
 
 /** The newest fake built, which is the one the page is talking to. */

@@ -56,6 +56,20 @@ export interface ServerFacts extends DeploymentFacts {
    *  all (R-6.5b2.4). The BUILD value is what the front door draws from; this
    *  is what the deployment actually serves. */
   multiplayer: boolean;
+  /** `Health.semantics_rev`, `Health.rules_hash` and `Health.server_version` —
+   *  the three EXPORTER-PROVENANCE fields a backup envelope carries (M6.5b2,
+   *  spec §2.5).
+   *
+   *  **Here rather than asked for at export time, and that is the point.** They
+   *  are facts only Rust knows, and the one control that must work with the
+   *  module dead is the backup — so a browser writes down what it was last
+   *  told and quotes that, instead of asking a Worker that may not answer.
+   *  `0` and `""` are the THIRD state `identity: ""` already is: nothing has
+   *  ever said. Nothing reads them for a decision; a restore re-derives every
+   *  verdict from the games themselves. */
+  semanticsRev: number;
+  rulesHash: string;
+  appVersion: string;
 }
 
 /** The module in this browser, and there is nothing to read it from.
@@ -89,6 +103,9 @@ const DEFAULTS: ServerFacts = {
   chatText: 500,
   identity: "",
   multiplayer: true,
+  semanticsRev: 0,
+  rulesHash: "",
+  appVersion: "",
 };
 
 /** Where the last health read is kept, so a reload does not have to ask again
@@ -168,6 +185,9 @@ export const rememberServerFacts = (h: Health, at: number = Date.now()): void =>
     chatText: h.chat_text,
     identity: h.identity,
     multiplayer: h.multiplayer,
+    semanticsRev: h.semantics_rev,
+    rulesHash: h.rules_hash,
+    appVersion: h.server_version,
   };
   takenAt = at;
   try {

@@ -35,7 +35,7 @@
 //    stored game that no longer rebuilds is not a trap either: both are
 //    ordinary replies.
 
-import { deletePair, openDb, readAll, takeGeneration, writeDocs } from "./db";
+import { deletePair, isModuleDoc, openDb, readAll, readPair, takeGeneration, writeDocs } from "./db";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -49,6 +49,11 @@ type Req = { seq: number } & (
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
   | { kind: "release"; id: string }
+  // **The backup half** (M6.5b2, R-6.5b2.10 – .12). `restore_read` is the
+  // module's one new export; `adopt` is the reconciliation after a restore has
+  // written — see [`adopt`] for why it is not a rebuild.
+  | { kind: "restore_read"; envelope: string }
+  | { kind: "adopt"; ids: string[] }
   // **The e2e build's trap hook, and it is the WORKER's alone** (spec §6.5).
   // It is not in `client.ts`'s mirror of this union because no page code sends
   // it: the browser walk posts it into this Worker itself, so the recovery it
@@ -118,6 +123,11 @@ async function rebuild(): Promise<void> {
   const rows = await readAll(db);
   const byId = new Map<string, { record?: string; table?: string }>();
   for (const r of rows) {
+    // **Only the module's own kinds** (M6.5b2): `docs` also holds this
+    // browser's compatibility rows, and the module refuses any kind but
+    // `record` and `table` — a `wasm.load("compat", …)` would throw and this
+    // whole rebuild is what every message waits on.
+    if (!isModuleDoc(r.doc)) continue;
     wasm.load(r.doc, r.id, r.text);
     byId.set(r.id, { ...byId.get(r.id), [r.doc]: r.text });
   }
@@ -218,6 +228,35 @@ async function persistCreate(id: string): Promise<Outcome> {
   } catch (e) {
     return { saved: "unsaved", reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Bring games a RESTORE has just written into this Worker's live store
+ * (M6.5b2, spec §2.5: "the Worker loads the new pair into its store and the
+ * listing refreshes").
+ *
+ * **A targeted `load` and deliberately NOT a [`rebuild`].** `rebuild` calls
+ * `wasm.init()`, which throws the store away — and with it any open
+ * `SubPrompt` in another game's `Repl`, which the spec says a restore must not
+ * reset. `load` is a CREATE that refuses a document already there, so the
+ * presence test below is what keeps this from being an exception path: a game
+ * this tab already knows is skipped rather than caught.
+ *
+ * The bytes come from IndexedDB rather than from the message, so a restore's
+ * records do not cross the boundary twice.
+ */
+async function adopt(ids: string[]): Promise<number> {
+  let taken = 0;
+  for (const id of ids) {
+    if (wasm.read("table", id) !== undefined) continue;
+    const pair = await readPair(db, id);
+    if (pair.table === null) continue;
+    wasm.load("table", id, pair.table);
+    if (pair.record !== null) wasm.load("record", id, pair.record);
+    lastWritten.set(id, cacheKey(pair.record ?? undefined, pair.table));
+    taken += 1;
+  }
+  return taken;
 }
 
 const isCreate = (req: Extract<Req, { kind: "call" }>): boolean =>
@@ -495,6 +534,25 @@ async function handle(req: Req): Promise<void> {
       post({ seq: req.seq, released: true });
       return;
     }
+    // **The module's validator, asked without touching the store** (M6.5b2,
+    // R-6.5b2.10). It reads a FILE and writes nothing, so it does not go near
+    // `GAMES` — but it still runs inside the serial queue, because everything
+    // that awaits `ready` does and a restore has no reason to be the exception.
+    case "restore_read": {
+      try {
+        post({ seq: req.seq, report: wasm.restore_read(req.envelope) });
+      } catch (err) {
+        // **A refusal by the VALIDATOR is an answer, not a trap** — the file is
+        // one this build cannot read, which is exactly what the page shows. A
+        // trap would be a throw from somewhere else, and this arm cannot tell
+        // the two apart, so it says what it knows: the module refused.
+        post({ seq: req.seq, refused: String(err) });
+      }
+      return;
+    }
+    case "adopt":
+      post({ seq: req.seq, adopted: await adopt(req.ids) });
+      return;
     // **A real trap, for the cell that has to survive one** (spec §6.5,
     // §4). `debug_trap` panics inside the module under a held lock, which
     // leaves it trapped: every later call throws and the PAGE starts a fresh

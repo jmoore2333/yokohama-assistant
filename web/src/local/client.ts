@@ -25,7 +25,11 @@ export type ReqBody =
   | { kind: "pair"; id: string }
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
-  | { kind: "release"; id: string };
+  | { kind: "release"; id: string }
+  /** The module's validator over a backup file (M6.5b2, R-6.5b2.10). */
+  | { kind: "restore_read"; envelope: string }
+  /** Bring restored games into this Worker's live store (spec §2.5). */
+  | { kind: "adopt"; ids: string[] };
 
 /** One numbered request. The number is added by [`ask`]; `Omit<Req, "seq">`
  *  would not do the job in its place, because `Omit` over a union collapses it
@@ -346,6 +350,35 @@ export const localPair = async (
   const r = await ask<{ record: string | null; table: string | null }>({ kind: "pair", id });
   return { record: r.record, table: r.table };
 };
+
+/**
+ * Ask the module what is in a backup file (M6.5b2, R-6.5b2.10 – .12).
+ *
+ * **The report as the module's own JSON string**, unparsed here: this module
+ * moves strings and knows no shape, and the page's `backup.ts` is the one
+ * reader. A file the validator refuses comes back as a REJECTION carrying its
+ * sentence — that is an answer about the file and not a fault, so it does not
+ * go through the trap path.
+ */
+export async function localRestoreRead(envelope: string): Promise<string> {
+  const r = await ask<{ report?: string; refused?: string }>({ kind: "restore_read", envelope });
+  if (typeof r.report === "string") return r.report;
+  throw new Error(r.refused ?? "the local host could not read this file");
+}
+
+/**
+ * Bring games a restore has just written into the Worker's live store, and tell
+ * every local listing to re-read (spec §2.5's "the running tab reconciles").
+ *
+ * The write handlers are fired HERE rather than by the Worker, for the reason
+ * `localCall` fires them: a listing re-reads because something local changed,
+ * and a restore is the one change that does not arrive through a call.
+ */
+export async function localAdopt(ids: string[]): Promise<number> {
+  const r = await ask<{ adopted: number }>({ kind: "adopt", ids });
+  for (const f of [...writeHandlers]) f();
+  return r.adopted;
+}
 
 /** Take this game for this tab: `false` means another tab has it open.
  *

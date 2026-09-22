@@ -31,6 +31,12 @@ wasm-bindgen = "=0.2.128"
 # call and its own scan says so.
 js-sys = "0.3"
 
+[dev-dependencies]
+# The backup report's shape, read by the one cell that asserts it (M6.5b2). A
+# DEV dependency: nothing in the module serializes JSON itself — the layer does
+# — so this never enters the built `.wasm`.
+serde_json = "1"
+
 [features]
 # The e2e build's trap hook (spec §6.5): a panic inside a held lock, so the
 # browser half can be driven through the recovery it claims. Never in the

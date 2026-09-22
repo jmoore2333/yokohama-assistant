@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
+import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
 import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { navigate } from "./route";
@@ -58,6 +59,11 @@ export function OnThisDevice() {
   // list drawn a minute ago would otherwise go on looking like the truth.
   useEffect(() => onLocalFault(setFault), []);
 
+  /** Bumped when a restore has landed, so the unplayable list re-reads
+   *  (R-6.5b2.12). The PLAYABLE list re-reads on its own: `localAdopt` fires
+   *  the write handlers this section already listens to. */
+  const [restored, setRestored] = useState(0);
+
   return (
     <section className="saved on-this-device">
       <h3>On this device</h3>
@@ -75,8 +81,17 @@ export function OnThisDevice() {
       ) : games.length === 0 ? (
         <p className="muted">no game on this device yet &mdash; play the bot here.</p>
       ) : (
-        <ul>{games.map((t) => lobbyRow(t))}</ul>
+        <ul>{games.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
       )}
+      {/* **Offered in EVERY state above, including the fault one** (spec §2.5):
+          a module that will not load is when you most need your games out, and
+          `backupEverything` reads IndexedDB from this page rather than through
+          the Worker for exactly that reason. */}
+      <div className="backup-controls">
+        <BackUpEverything />
+        <Restore onDone={() => setRestored((n) => n + 1)} />
+      </div>
+      <Unplayable reload={restored} />
     </section>
   );
 }

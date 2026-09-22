@@ -1,0 +1,32 @@
+[
+  {
+    "id": "local-242a5429453c593c",
+    "verdict": {
+      "events": 595,
+      "kind": "accepted",
+      "over": true,
+      "players": 2
+    }
+  },
+  {
+    "id": "local-at-the-deal",
+    "verdict": {
+      "kind": "dealing",
+      "players": 2
+    }
+  },
+  {
+    "id": "local-another-rev",
+    "verdict": {
+      "kind": "unplayable",
+      "reason": "saved at semantics rev 6; this app plays rev 7"
+    }
+  },
+  {
+    "id": "local-not-a-record",
+    "verdict": {
+      "kind": "rejected",
+      "reason": "the record does not parse: expected ident at line 1 column 2"
+    }
+  }
+]

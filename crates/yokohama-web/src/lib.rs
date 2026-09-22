@@ -56,6 +56,9 @@ pub mod assets;
 // ---- end server ----
 pub mod api;
 pub mod archive;
+/// The backup envelope and the validator the archive route shares with it
+/// (M6.5b2, R-6.5b2.10 – .12). NOT behind `server`: the browser host calls it.
+pub mod backup;
 pub mod chat;
 pub mod client;
 pub mod explain;
