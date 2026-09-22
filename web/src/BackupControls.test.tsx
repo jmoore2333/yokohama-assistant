@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
-import { buildEnvelope, restorePairs, type Envelope } from "./backup";
+import { buildEnvelope, listUnplayable, restorePairs, type Envelope } from "./backup";
 import { openDb, writeDocs } from "./local/db";
 import { resetLocalHostForTests } from "./local/client";
 import { resetFactsForTest } from "./local/facts";
@@ -217,12 +217,44 @@ describe("the games that will not open", () => {
       const out = JSON.parse(await readBlob(d.create.mock.calls[0]![0] as Blob)) as Envelope;
       expect(out.games[0]!.record).toBe(OTHER_RECORD);
 
-      // And removable, which is the only way to be rid of one.
-      await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+      // And removable, which is the only way to be rid of one — in TWO clicks,
+      // both naming the game (final review I-1).
+      await userEvent.click(screen.getByRole("button", { name: "remove local-old" }));
+      await userEvent.click(screen.getByRole("button", { name: "confirm removing local-old" }));
       await waitFor(() => expect(screen.queryByText("local-old")).not.toBeInTheDocument());
     } finally {
       d.restore();
     }
+  });
+
+
+  // **ONE click removes nothing** (final review I-1). This row's whole reason
+  // for existing is R-6.5b2.12 — a save this build cannot open is "kept, listed
+  // and downloadable, never erased" — and the control sat unfenced beside "Back
+  // up" on the same row, which is the shape M5's review found deleting the
+  // wrong game. `Abandon.tsx`'s header carries the reasoning; this cell is the
+  // claim for this row.
+  it("removes nothing on the first click, and names the game on both", async () => {
+    const env = JSON.parse(
+      buildEnvelope([{ id: "local-keep", record: OTHER_RECORD, table: tableFor("local-keep") }]),
+    ) as Envelope;
+    env.games[0]!.semantics_rev = 6;
+    await restorePairs(JSON.stringify(env));
+    render(<Unplayable />);
+    await screen.findByText("local-keep");
+
+    await userEvent.click(screen.getByRole("button", { name: "remove local-keep" }));
+    // The row is still drawn, and — the claim the screen cannot make on its own
+    // — the documents are still on the device.
+    expect(screen.getByText("local-keep")).toBeInTheDocument();
+    expect(await listUnplayable()).toEqual([
+      expect.objectContaining({ id: "local-keep" }),
+    ]);
+
+    // And the way out is the one this lane always offers beside a delete.
+    await userEvent.click(screen.getByRole("button", { name: "cancel removing local-keep" }));
+    expect(screen.queryByRole("button", { name: "confirm removing local-keep" })).toBeNull();
+    expect(await listUnplayable()).toHaveLength(1);
   });
 
   // Nothing to say, nothing drawn: a heading over an empty list would tell a

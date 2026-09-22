@@ -213,6 +213,71 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
 }
 
 /**
+ * "Remove", in the two-click shape `Abandon` uses and for `Abandon`'s reason
+ * (final review I-1).
+ *
+ * **The row it sits on is the one row where a stray click costs the only copy
+ * of a game.** R-6.5b2.12's whole claim is that a save this build cannot open
+ * is kept, listed and downloadable, never erased — and this control stood
+ * unfenced beside "Back up" on the same line, which is exactly the shape M5's
+ * final review found removing the game next to the one that was meant (see
+ * `Abandon.tsx`'s header). There is no undo: the pair is deleted from this
+ * device and nothing else has a copy.
+ *
+ * **Both buttons NAME the game**, so a confirmation can never be about a row
+ * other than the one that opened it — the same rule, in the same words, as the
+ * three buttons `Abandon` draws.
+ */
+function Forget({ id, onForget }: { id: string; onForget: (id: string) => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
+  /** One DELETE per confirmation. A ref and not state, for the reason every
+   *  other guard in this client is one: React batches, so two clicks in the
+   *  same tick both read a state flag as false. */
+  const inFlight = useRef(false);
+  const go = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      await onForget(id);
+      setConfirming(false);
+    } finally {
+      inFlight.current = false;
+    }
+  };
+  if (!confirming)
+    return (
+      <button
+        type="button"
+        className="ghost danger"
+        aria-label={`remove ${id}`}
+        onClick={() => setConfirming(true)}
+      >
+        Remove
+      </button>
+    );
+  return (
+    <>
+      <button
+        type="button"
+        className="ghost danger"
+        aria-label={`confirm removing ${id}`}
+        onClick={() => void go()}
+      >
+        confirm remove
+      </button>
+      <button
+        type="button"
+        className="ghost"
+        aria-label={`cancel removing ${id}`}
+        onClick={() => setConfirming(false)}
+      >
+        cancel
+      </button>
+    </>
+  );
+}
+
+/**
  * The games on this device this build cannot open (R-6.5b2.12).
  *
  * **Its own listing, because the module's cannot carry them**: the layer skips
@@ -264,9 +329,7 @@ export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode
                   : `saved at semantics rev ${g.note.semantics_rev}`)}
             </span>{" "}
             <BackUpOne id={g.id} />
-            <button type="button" className="ghost" onClick={() => void forget(g.id)}>
-              Remove
-            </button>
+            <Forget id={g.id} onForget={forget} />
           </li>
         ))}
       </ul>

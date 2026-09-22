@@ -20,13 +20,15 @@
 // strings from.
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   backupEverything,
   backupOne,
   buildEnvelope,
+  forgetUnplayable,
   listUnplayable,
   restorePairs,
+  unplayableIds,
   type Envelope,
 } from "./backup";
 import { deletePair, openDb, readPair, restoreOne, takeGeneration, writeDocs } from "./local/db";
@@ -474,5 +476,32 @@ describe("restoring", () => {
     ]);
     await expect(restorePairs(env)).rejects.toThrow(/envelope version 2/);
     expect(await readBack("local-c")).toEqual({ record: null, table: null });
+  });
+});
+
+// ---- the connections this module opens are given back (final review I-5) ---
+//
+// **`unplayableIds()` runs on EVERY local write** (`OnThisDevice`'s `read`),
+// so a 400-move game left 400 connections open for the life of the page. The
+// sibling module fixed exactly this shape in its own fix round (`outbox.ts`'s
+// `withStore`); this cell is that claim for this file, and its premise — more
+// than one open — is what keeps the equality from being two zeros.
+describe("the database handles", () => {
+  it("closes every connection it opens, across every public call", async () => {
+    await putPair("local-handles", RECORD_TEXT, tableFor("local-handles"));
+    const opens = vi.spyOn(indexedDB, "open");
+    const closes = vi.spyOn(IDBDatabase.prototype, "close");
+    try {
+      await backupEverything();
+      await backupOne("local-handles");
+      await unplayableIds();
+      await listUnplayable();
+      await forgetUnplayable("local-handles");
+      expect(opens.mock.calls.length, "the premise: these really do open connections").toBeGreaterThan(1);
+      expect(closes.mock.calls.length).toBe(opens.mock.calls.length);
+    } finally {
+      opens.mockRestore();
+      closes.mockRestore();
+    }
   });
 });

@@ -227,32 +227,58 @@ const deadlineOf = (ms: number): Deadline => {
   return { expired: () => Date.now() >= at, left: () => Math.max(0, at - Date.now()) };
 };
 
+/**
+ * Run `f` against this browser's database and GIVE THE CONNECTION BACK (final
+ * review I-5).
+ *
+ * **One connection per public call, closed in a `finally`.** Every function
+ * below used to `await openDb()` and keep the handle: [`unplayableIds`] runs on
+ * EVERY local write (`OnThisDevice`'s listing), so a 400-move game left 400
+ * connections open for the life of the page.
+ *
+ * **It is `outbox.ts`'s `withStore` shape with the refusals left ALONE**, and
+ * that difference is the whole reason this is a second helper rather than a
+ * shared one: the outbox answers a fallback because a browser with no usable
+ * store simply has no outbox, while these calls are a player's own click and
+ * every sentence they can meet — a store that will not open, a game that is not
+ * here, a file that is not a backup — belongs on the screen that asked.
+ */
+async function withDb<T>(f: (db: IDBDatabase) => Promise<T>): Promise<T> {
+  const db = await openDb();
+  try {
+    return await f(db);
+  } finally {
+    db.close();
+  }
+}
+
 /** Every game in this browser, as a file. */
 export async function backupEverything(): Promise<string> {
-  const db = await openDb();
-  const rows = await readAll(db);
-  const known = await knownRevisions(db);
-  const byId = new Map<string, { record: string | null; table: string | null }>();
-  for (const r of rows) {
-    // A compatibility row is this browser's own note and is NOT exported as a
-    // game: the receiving device re-derives its own verdict from the pair. What
-    // it DOES contribute is that game's revision, above.
-    if (r.doc === "compat") continue;
-    const at = byId.get(r.id) ?? { record: null, table: null };
-    byId.set(r.id, { ...at, [r.doc]: r.text });
-  }
-  const deadline = deadlineOf(WORKER_BOUND_MS);
-  const pairs: OutgoingGame[] = [];
-  for (const [id, stored] of byId) {
-    const both = await pairOf(id, stored, deadline);
-    // A game with no table document is not a game — half a pair on disk, from
-    // a write that did not complete. It is left where it is rather than
-    // exported as something a restore would refuse.
-    if (both.table === null) continue;
-    pairs.push({ id, record: both.record, table: both.table, ...revisionOf(known.get(id)) });
-  }
-  pairs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return buildEnvelope(pairs);
+  return withDb(async (db) => {
+    const rows = await readAll(db);
+    const known = await knownRevisions(db);
+    const byId = new Map<string, { record: string | null; table: string | null }>();
+    for (const r of rows) {
+      // A compatibility row is this browser's own note and is NOT exported as a
+      // game: the receiving device re-derives its own verdict from the pair. What
+      // it DOES contribute is that game's revision, above.
+      if (r.doc === "compat") continue;
+      const at = byId.get(r.id) ?? { record: null, table: null };
+      byId.set(r.id, { ...at, [r.doc]: r.text });
+    }
+    const deadline = deadlineOf(WORKER_BOUND_MS);
+    const pairs: OutgoingGame[] = [];
+    for (const [id, stored] of byId) {
+      const both = await pairOf(id, stored, deadline);
+      // A game with no table document is not a game — half a pair on disk, from
+      // a write that did not complete. It is left where it is rather than
+      // exported as something a restore would refuse.
+      if (both.table === null) continue;
+      pairs.push({ id, record: both.record, table: both.table, ...revisionOf(known.get(id)) });
+    }
+    pairs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return buildEnvelope(pairs);
+  });
 }
 
 /** What a compatibility row says about a game's revision, or nothing. */
@@ -263,14 +289,15 @@ const revisionOf = (note: CompatNote | undefined) => ({
 
 /** One game, as a file. */
 export async function backupOne(id: string): Promise<string> {
-  const db = await openDb();
-  const stored = await readPair(db, id);
-  const both = await pairOf(id, stored, deadlineOf(WORKER_BOUND_MS));
-  if (both.table === null) throw new Error(`there is no game named ${id} on this device`);
-  const known = await knownRevisions(db);
-  return buildEnvelope([
-    { id, record: both.record, table: both.table, ...revisionOf(known.get(id)) },
-  ]);
+  return withDb(async (db) => {
+    const stored = await readPair(db, id);
+    const both = await pairOf(id, stored, deadlineOf(WORKER_BOUND_MS));
+    if (both.table === null) throw new Error(`there is no game named ${id} on this device`);
+    const known = await knownRevisions(db);
+    return buildEnvelope([
+      { id, record: both.record, table: both.table, ...revisionOf(known.get(id)) },
+    ]);
+  });
 }
 
 /** The module's report, or a rejection carrying the validator's own sentence
@@ -329,62 +356,66 @@ export async function restorePairs(envelope: string): Promise<RestoreReport> {
     );
   }
   const byId = new Map(parsed.games.map((g) => [g.id, g]));
-  const db = await openDb();
   const games: RestoreReport["games"] = [];
   const landed: string[] = [];
-
-  for (const row of report) {
-    const game = byId.get(row.id);
-    if (game === undefined) {
-      // The module reported a game this file does not carry, which can only be
-      // a report and a file that are not the same file.
-      games.push({ id: row.id, outcome: "rejected", reason: "this file does not carry that game" });
-      continue;
+  // **The connection is given back before the tab is asked to reconcile**
+  // (final review I-5). `localAdopt` below is the WORKER reading the same
+  // database, and this page holding its own handle open across it is the
+  // shape that makes an upgrade wait on the tab that asked for it.
+  await withDb(async (db) => {
+    for (const row of report) {
+      const game = byId.get(row.id);
+      if (game === undefined) {
+        // The module reported a game this file does not carry, which can only be
+        // a report and a file that are not the same file.
+        games.push({ id: row.id, outcome: "rejected", reason: "this file does not carry that game" });
+        continue;
+      }
+      if (row.verdict.kind === "rejected") {
+        games.push({ id: row.id, outcome: "rejected", reason: row.verdict.reason });
+        continue;
+      }
+      // **The compatibility row, beside the two opaque documents** (R-6.5b2.12):
+      // an unplayable game lands, is listed with its reason, and can be saved out
+      // again. Its bytes are never rewritten, which is what "never migrated"
+      // means — this row is a note beside them.
+      const compat: CompatNote | null =
+        row.verdict.kind === "unplayable"
+          ? {
+              semantics_rev: game.semantics_rev ?? null,
+              rules_hash: game.rules_hash ?? null,
+              reason: row.verdict.reason,
+              restored_at: Math.floor(Date.now() / 1000),
+            }
+          : null;
+      try {
+        const outcome = await restoreOne(db, row.id, {
+          table: game.table,
+          ...(game.record === null ? {} : { record: game.record }),
+          ...(compat === null ? {} : { compat: JSON.stringify(compat) }),
+        });
+        if (outcome === "restored") landed.push(row.id);
+        games.push({
+          id: row.id,
+          // An unplayable game that LANDED says so, because "restored" would
+          // promise a game that opens. One that was already here, or clashed,
+          // says what happened to it — those answers are about this device.
+          outcome: outcome === "restored" && compat !== null ? "unplayable" : outcome,
+          ...(outcome === "clash"
+            ? { reason: "a different game is already on this device under that name" }
+            : compat !== null && outcome === "restored"
+              ? { reason: compat.reason }
+              : {}),
+        });
+      } catch (e) {
+        games.push({
+          id: row.id,
+          outcome: "rejected",
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
-    if (row.verdict.kind === "rejected") {
-      games.push({ id: row.id, outcome: "rejected", reason: row.verdict.reason });
-      continue;
-    }
-    // **The compatibility row, beside the two opaque documents** (R-6.5b2.12):
-    // an unplayable game lands, is listed with its reason, and can be saved out
-    // again. Its bytes are never rewritten, which is what "never migrated"
-    // means — this row is a note beside them.
-    const compat: CompatNote | null =
-      row.verdict.kind === "unplayable"
-        ? {
-            semantics_rev: game.semantics_rev ?? null,
-            rules_hash: game.rules_hash ?? null,
-            reason: row.verdict.reason,
-            restored_at: Math.floor(Date.now() / 1000),
-          }
-        : null;
-    try {
-      const outcome = await restoreOne(db, row.id, {
-        table: game.table,
-        ...(game.record === null ? {} : { record: game.record }),
-        ...(compat === null ? {} : { compat: JSON.stringify(compat) }),
-      });
-      if (outcome === "restored") landed.push(row.id);
-      games.push({
-        id: row.id,
-        // An unplayable game that LANDED says so, because "restored" would
-        // promise a game that opens. One that was already here, or clashed,
-        // says what happened to it — those answers are about this device.
-        outcome: outcome === "restored" && compat !== null ? "unplayable" : outcome,
-        ...(outcome === "clash"
-          ? { reason: "a different game is already on this device under that name" }
-          : compat !== null && outcome === "restored"
-            ? { reason: compat.reason }
-            : {}),
-      });
-    } catch (e) {
-      games.push({
-        id: row.id,
-        outcome: "rejected",
-        reason: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
+  });
 
   // **The running tab reconciles** (spec §2.5), and a failure to is not a
   // failure to restore: the games are on the device, and the next visit loads
@@ -409,23 +440,24 @@ export interface UnplayableGame {
  * in no listing at all. The compatibility row is what puts it in this one.
  */
 export async function listUnplayable(): Promise<UnplayableGame[]> {
-  const db = await openDb();
-  const rows = await readCompat(db);
-  const out: UnplayableGame[] = [];
-  for (const r of rows) {
-    try {
-      out.push({ id: r.id, note: JSON.parse(r.text) as CompatNote });
-    } catch {
-      // A note this build cannot read is still a game that will not open, and
-      // saying so with no reason beats dropping the row.
-      out.push({
-        id: r.id,
-        note: { semantics_rev: null, rules_hash: null, reason: "", restored_at: 0 },
-      });
+  return withDb(async (db) => {
+    const rows = await readCompat(db);
+    const out: UnplayableGame[] = [];
+    for (const r of rows) {
+      try {
+        out.push({ id: r.id, note: JSON.parse(r.text) as CompatNote });
+      } catch {
+        // A note this build cannot read is still a game that will not open, and
+        // saying so with no reason beats dropping the row.
+        out.push({
+          id: r.id,
+          note: { semantics_rev: null, rules_hash: null, reason: "", restored_at: 0 },
+        });
+      }
     }
-  }
-  out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return out;
+    out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return out;
+  });
 }
 
 /** The ids this device has a compatibility row for — the games that will NOT
@@ -437,8 +469,9 @@ export async function listUnplayable(): Promise<UnplayableGame[]> {
  *  not open here", with different controls on each. One game, one row, and the
  *  row that says why it will not open is the true one. */
 export async function unplayableIds(): Promise<Set<string>> {
-  const db = await openDb();
-  return new Set((await readCompat(db)).map((r) => r.id));
+  return withDb(async (db) => {
+    return new Set((await readCompat(db)).map((r) => r.id));
+  });
 }
 
 /** Remove an unplayable game from this device — all of [`GAME_DOCS`].
@@ -446,8 +479,9 @@ export async function unplayableIds(): Promise<Set<string>> {
  *  Unfenced, for `forgetGame`'s reason: a game the module never loaded is a
  *  game no tab holds. */
 export async function forgetUnplayable(id: string): Promise<void> {
-  const db = await openDb();
-  await forgetGame(db, id);
+  return withDb(async (db) => {
+    await forgetGame(db, id);
+  });
 }
 
 /**
