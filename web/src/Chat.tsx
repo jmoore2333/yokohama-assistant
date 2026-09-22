@@ -20,6 +20,7 @@ import { api, ApiError, chatText, displayName } from "./api";
 import { seatClass } from "./Cards";
 import { loadFolded, saveFolded } from "./chatFold";
 import type { ChatMessage, ChatPage, ChatScope, PlayerColor } from "./types";
+import { Refusal } from "./Refusal";
 
 export interface ChatProps {
   scope: ChatScope;
@@ -372,7 +373,7 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
             </li>
           ))}
         </ol>
-        {error && <div className="error">{error}</div>}
+        {error && <Refusal sentence={error} />}
         <form
           onSubmit={(e) => {
             e.preventDefault();

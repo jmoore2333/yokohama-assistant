@@ -1394,7 +1394,7 @@ export function App() {
         <div className="setup broken-save">
           <div className="who-strip">{who}</div>
           <h2>{broken.table.name ?? broken.id}</h2>
-          <div className="error">{broken.sentence}</div>
+          <Refusal sentence={broken.sentence} />
           <div className="field unlock-controls">
             <button
               type="button"

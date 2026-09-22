@@ -33,7 +33,7 @@
 // "live" would be a claim it cannot make yet.
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, isLocal, signalKind } from "./api";
+import { api, ApiError, isLocal, isSessionExpired, signalKind } from "./api";
 import { readStream } from "./sse";
 import type { Events } from "./types";
 
@@ -176,8 +176,15 @@ export interface End {
  * every 401 to the door from inside `call` (ruling R-7.1 of M6.1), so a
  * signed-out screen unmounts; a second handler here would be a second thing
  * racing to decide which screen this is. The STREAM's own 401 is not routed
- * there — `readStream` does not go through `call` — and does not need to be: it
- * lands on the ladder, and the next ordinary call takes the player to the door.
+ * there — `readStream` does not go through `call` — and does not need to be:
+ * the next ordinary call takes the player to the door.
+ *
+ * **The EDGE's 401 is the exception, and it is not a second door handler**
+ * (final review I-2): an expired Access session is not this API saying it does
+ * not know you, it is the turnstile in front of it, and nothing this hook can
+ * do reopens it. So it ENDS the reader with the sentence instead of climbing
+ * the ladder — the consumer draws it through `Refusal`, which is what puts
+ * `/enter` beside it.
  */
 export function usePolled<T>(
   source: Source<T> | null,
@@ -262,10 +269,12 @@ export function usePolled<T>(
         }
       } catch (e) {
         if (stopped) return;
-        if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
-          // The resource this stream is about is gone, or is not ours. The
-          // reader goes with it: a connection kept open to a table we may not
-          // read would deliver frames nothing can act on.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || isSessionExpired(e))) {
+          // The resource this stream is about is gone, is not ours, or the
+          // EDGE's session in front of it has expired. The reader goes with it:
+          // a connection kept open to a table we may not read would deliver
+          // frames nothing can act on, and an expired session is fixed by
+          // walking through `/enter` rather than by asking again.
           controller?.abort();
           ended.current?.({
             reason: e.status === 404 ? "gone" : "refused",
@@ -367,9 +376,18 @@ export function usePolled<T>(
         throw new Error("the stream closed");
       } catch (e) {
         if (stopped || mine.signal.aborted) return;
-        // **The two refusals that END this rather than slowing it down.** See
-        // `End`; nothing is scheduled after either line.
-        if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+        // **The THREE refusals that END this rather than slowing it down.** See
+        // `End`; nothing is scheduled after any of these lines.
+        //
+        // **The third is the EDGE's, and it was the review's Important 2**
+        // (final review, false sentence 1): `readStream` has classified
+        // Access's 401 since this cycle, but every status that was not 404 or
+        // 403 fell through to the ladder below — so a player holding a stream
+        // when their Access session expired read "reconnecting…" about a door
+        // they could have walked through. The consumers' `onEnd` puts the
+        // sentence on a screen that draws it through `Refusal`, which is where
+        // the link to `/enter` is.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || isSessionExpired(e))) {
           ended.current?.({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,

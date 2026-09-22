@@ -254,6 +254,18 @@ export function isAccessChallenge(res: Response): boolean {
  *  passing the turnstile is what mints the cookie every later request carries. */
 export const ACCESS_CHALLENGE = "Your session has expired.";
 
+/** Whether this refusal is the EDGE's expired session rather than anything this
+ *  API said — the one refusal a player can act on.
+ *
+ *  **A predicate and not a string compare at each site**, because there are now
+ *  two readers of it: [`Refusal`](../Refusal) draws the link beside the
+ *  sentence, and `usePolled` ENDS a held stream on it rather than climbing the
+ *  reconnect ladder about a door the player has to walk through themselves
+ *  (final review I-2). Both the status and the sentence are asked, since this
+ *  API's own 401 is a different refusal with a different answer. */
+export const isSessionExpired = (e: unknown): boolean =>
+  e instanceof ApiError && e.status === 401 && e.message === ACCESS_CHALLENGE;
+
 /** How long the SERVER is given to answer a read before this client acts on
  *  the silence.
  *

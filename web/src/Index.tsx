@@ -28,6 +28,7 @@ import type {
   PlayerColor,
   SpaceReward,
 } from "./types";
+import { Refusal } from "./Refusal";
 
 /** The group heading. `key` is serde's externally-tagged enum — `{Country: …}`
  *  for orders and techs, `{Category: …}` for goals, the bare string `"All"` for
@@ -303,7 +304,7 @@ export function IndexView({
           filter; leaving the previous answer beside a refusal says the screen
           is showing something it is not, which is the same class of defect as a
           number that means a different move. */}
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
       {!error && model.shown === 0 && <p className="muted">Nothing matches that.</p>}
       {/* Orders are the only kind whose face is a small thumbnail; the other
           three carry prose, chips or a progress table and need a cell wide

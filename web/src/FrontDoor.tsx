@@ -23,6 +23,7 @@
 
 import { OnThisDevice } from "./OnThisDevice";
 import type { ReadinessStatus } from "./swRegister";
+import { Refusal } from "./Refusal";
 
 /** Whether this BUILD offers the other channel.
  *
@@ -78,7 +79,7 @@ export function FrontDoor({
         <h1>Yokohama</h1>
         <p className="muted">The board game, played in this browser.</p>
       </header>
-      {notice && <div className="error">{notice}</div>}
+      {notice && <Refusal sentence={notice} />}
       {/* **The local channel, unchanged from M6.5b except for where it
           stands** (spec §2.1): the games in this browser, read from the module
           in this tab's own Worker, and the button that starts one. It is first

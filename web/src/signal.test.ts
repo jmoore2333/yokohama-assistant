@@ -26,7 +26,7 @@ import {
   type End,
   type Source,
 } from "./signal";
-import { api, setSignalKind } from "./api";
+import { ACCESS_CHALLENGE, api, setSignalKind } from "./api";
 import { fakeStream, flush, gate, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events, TableView } from "./types";
@@ -248,6 +248,35 @@ describe("the signal, over the stream", () => {
       expect(stub.matching("GET", "/stream")).toHaveLength(1);
       unmount();
     }
+  });
+
+  it("ends on the EDGE's expired session, with the sentence the door links from", async () => {
+    // **Important 2 of the whole-branch review, and the false sentence under
+    // it.** `readStream` classifies Access's 401 and throws `ACCESS_CHALLENGE`
+    // (`sse.ts`), but until this arm the only consumer treated every status
+    // that is not 404 or 403 as "the re-read failed" — so a player holding a
+    // stream when their Access session expired read **"reconnecting…"** for
+    // ever, which is the one word that says there is nothing to do. It ends
+    // here, with the sentence, and the sentence brings `/enter` with it
+    // wherever it is drawn (`Refusal`).
+    const ends: End[] = [];
+    const stub = stubApi((call) =>
+      call.path.endsWith("/stream")
+        ? new Response("<html>", {
+            status: 401,
+            headers: { "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/y"' },
+          })
+        : undefined,
+    );
+    renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence: ACCESS_CHALLENGE }]);
+    // And no trip round the ladder: passing the turnstile is what fixes this,
+    // and asking again cannot.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 3);
+    });
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
   });
 
   it("hands nothing over once it has been torn down", async () => {
@@ -522,6 +551,33 @@ describe("the two frame modes (R-7.1)", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
+  });
+
+  it("ends when a woken re-read meets an expired Access session", async () => {
+    // The same refusal from the other side: the stream is fine and the READ
+    // behind it met the edge. Before this arm it set "reconnecting" and waited
+    // for a frame that would only meet the same door.
+    const ends: End[] = [];
+    const { stream } = streamed(undefined, (call) =>
+      call.path.endsWith("/table")
+        ? new Response("<html>", {
+            status: 401,
+            headers: { "www-authenticate": "Cloudflare-Access" },
+          })
+        : undefined,
+    );
+    renderHook(() =>
+      usePolled<TableView>(
+        { key: "wire", once: () => api.table("wire"), stream: "/api/games/wire/stream" },
+        true,
+        () => {},
+        (e) => ends.push(e),
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("signal", at(1));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence: ACCESS_CHALLENGE }]);
   });
 
   it("says reconnecting when a woken re-read FAILS, keeps the stream, and recovers on the next frame", async () => {

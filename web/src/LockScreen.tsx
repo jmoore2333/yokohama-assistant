@@ -17,6 +17,7 @@
 import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { LockState } from "./local/useLocalHold";
+import { Refusal } from "./Refusal";
 
 /** Which side of the steal this is. `"none"` and `"held"` never reach here —
  *  the caller draws the game instead — so the prop is the narrower pair. */
@@ -95,7 +96,7 @@ export function LockScreen({
       <div className="decision locked-out" role="status">
         <span>{words.says}</span>
         {button}
-        {error && <div className="error">{error}</div>}
+        {error && <Refusal sentence={error} />}
       </div>
     );
   }
@@ -112,7 +113,7 @@ export function LockScreen({
           </button>
         )}
       </div>
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

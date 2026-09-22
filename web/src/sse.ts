@@ -14,6 +14,15 @@
 // reconnect after an expired Access session reporting an ordinary network
 // failure. `EventSource` could not have sent that header either.
 //
+// **The classification below reaches a SCREEN, which it did not until the
+// whole-branch review** (final review I-2, false sentence 1): `readStream`
+// threw the expired-session refusal and `usePolled` treated every status that
+// was not 404 or 403 as "the re-read failed", so the player read
+// "reconnecting…" — the ordinary network failure this header exists to tell
+// apart — until their next ordinary call. `signal.ts` now ENDS the reader on
+// it and the consumer draws the sentence through `Refusal`, which is what puts
+// the turnstile's link beside it.
+//
 // What is here is the transport and NOTHING about the signal: this module knows
 // `event:` and `data:` lines, and does not know that a `signal` frame carries an
 // `Events` or that an `end` frame means a table was deleted. That belongs to

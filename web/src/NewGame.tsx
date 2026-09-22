@@ -22,6 +22,7 @@ import {
 } from "./api";
 import { seatClass } from "./Cards";
 import type { PlayerColor, TableView } from "./types";
+import { Refusal } from "./Refusal";
 
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 
@@ -363,7 +364,7 @@ export function NewGame({
         {opensSeats ? "Open table" : "Deal"}
       </button>
 
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

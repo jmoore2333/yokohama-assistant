@@ -21,6 +21,7 @@ import { api, ApiError } from "./api";
 import { TableFacts } from "./TableFacts";
 import type { ReactNode } from "react";
 import type { TableView } from "./types";
+import { Refusal } from "./Refusal";
 
 export function Unlock({
   game,
@@ -110,7 +111,7 @@ export function Unlock({
           Lobby
         </button>
       </div>
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }
