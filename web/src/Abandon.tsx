@@ -169,7 +169,7 @@ export function Abandon({
       }
       await remove();
     } catch (e) {
-      onError(e instanceof ApiError ? e.message : String(e));
+      onError(e instanceof Error ? e.message : String(e));
     } finally {
       // **Released on failure as well**, so a refusal leaves a control that can
       // be tried again rather than one that has quietly stopped working.
@@ -209,7 +209,7 @@ export function Abandon({
     try {
       await remove();
     } catch (e) {
-      onError(e instanceof ApiError ? e.message : String(e));
+      onError(e instanceof Error ? e.message : String(e));
     } finally {
       inFlight.current = false;
     }

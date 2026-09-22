@@ -3558,6 +3558,30 @@ describe("a local game", () => {
     }
   });
 
+  // **And Abandon names it the same way** (PR #37 whole-branch review, M-1).
+  // "Abandon and save" reads the same pair before it sends, and its catch
+  // printed the rejection as `String(e)` — the one control left saying
+  // "Error: this browser's storage…" after the nit fixed the other three. The
+  // game is KEPT: the pair was never read, so nothing was sent and the delete
+  // never ran.
+  it("shows Abandon's storage refusal as its sentence, with no Error: prefix, and keeps the game", async () => {
+    rememberServerFacts({ ...wire.health, archive: "dir" });
+    const { user, stub } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      { archive: "dir", hooks: { pair: () => ({ unreadable: UNREADABLE }) } },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(screen.getByRole("button", { name: /^abandon / }));
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    expect(await screen.findByText(UNREADABLE)).toBeInTheDocument();
+    expect(screen.queryByText(/^Error: /)).toBeNull();
+    expect(stub.matching("POST", "/api/archive"), "nothing was sent").toHaveLength(0);
+    expect(
+      currentWorker().posted.filter((p) => p.kind === "call" && p.method === "DELETE"),
+      "and nothing was deleted",
+    ).toHaveLength(0);
+  });
+
   it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
     // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
     // own words — a REPLY, never a trap — so the trap recovery is not entered
