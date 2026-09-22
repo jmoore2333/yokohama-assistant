@@ -1,6 +1,6 @@
 // What every browser walk needs: a game, a console watch, and a click policy.
 
-import { expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
 
 /** A deterministic PRNG, so a failing walk reproduces from its seed alone.
@@ -75,6 +75,24 @@ export function watchForBreakage(
     }
   });
   return { failures };
+}
+
+/**
+ * The GAME screen's own heading, and why it is scoped.
+ *
+ * **The front door has an `<h1>Yokohama</h1>` of its own since M6.5b2** — the
+ * product, named on the first screen everyone sees (Task 3 review, Minor 5) —
+ * and Playwright matches an accessible name as a SUBSTRING by default. So a
+ * bare `getByRole("heading", { name: "Yokohama" })` is now satisfied by the
+ * DOOR, and a walk that never reached a game would pass the assertion that says
+ * it did. `header.banner` is the element the door does not draw.
+ *
+ * The deal screen draws one too (`Dealing.tsx`), which is deliberate and
+ * unchanged: every caller below either is already past the deal or is asserting
+ * the move from the deal into the game.
+ */
+export function atTheGame(page: Page): Locator {
+  return page.locator("header.banner").getByRole("heading", { level: 1, name: "Yokohama" });
 }
 
 /** What `startGame` hands back: enough to name a failure.
@@ -311,7 +329,7 @@ async function keepThroughTheDeal(page: Page, players: number): Promise<void> {
   if (kept !== humans) {
     throw new Error(`the deal took ${kept} keeps at ${players} players, expected ${humans}`);
   }
-  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(page)).toBeVisible();
 }
 
 /**

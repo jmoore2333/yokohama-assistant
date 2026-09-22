@@ -24,7 +24,11 @@
 // already holds, and `App`'s hand-over re-opens the id that is already on
 // screen.)
 
-import { expect, test } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, newContextWithoutWorker, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Screen } from "./harness";
@@ -59,8 +63,8 @@ function hasMove(s: Screen): boolean {
 test("a person holding only a link joins a locked open table and plays", async ({ browser }) => {
   test.setTimeout(5 * 60 * 1000);
   const started = Date.now();
-  const a = await (await browser.newContext()).newPage();
-  const b = await (await browser.newContext()).newPage();
+  const a = await (await newContextWithoutWorker(browser)).newPage();
+  const b = await (await newContextWithoutWorker(browser)).newPage();
   const watchA = watchForBreakage(a);
   // **B's wrong password is a 403 BY DESIGN**, and the watch counts every 4xx
   // from this origin as breakage — so this one refusal is opted into by name,

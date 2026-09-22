@@ -45,7 +45,12 @@
 // written to disk and shipped as documentation; they check that the thing being
 // photographed is on screen, not that it is correct.
 
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { act, readScreen, rng, startGame } from "./harness";
 

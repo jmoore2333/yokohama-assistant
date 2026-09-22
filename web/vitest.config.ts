@@ -31,7 +31,18 @@ export default mergeConfig(
       // It EXTENDS vitest's own defaults rather than replacing them: an
       // `exclude` given here wins outright, so a bare list would put
       // `node_modules` and `dist` back into the glob.
-      exclude: [...configDefaults.exclude, "src/local/*.node.test.ts"],
+      //
+      // **M6.5b2 adds the real-build cell** (`src/precache.node.test.ts`),
+      // which runs a real `vite build` into a temporary directory. It is the
+      // node project's for the same two reasons: it reads `node:os` and
+      // `node:child_process`-shaped APIs, and it needs the generated wasm glue
+      // that CI's toolchain-free `web-client` job does not build. Named
+      // separately because the `src/local/` pattern above does not reach it.
+      exclude: [
+        ...configDefaults.exclude,
+        "src/local/*.node.test.ts",
+        "src/precache.node.test.ts",
+      ],
       // DOM cleanup between tests is `cleanup()` in `src/test/setup.ts`, not
       // these — an earlier comment here claimed otherwise. What these three do
       // is undo what a test did to the ENVIRONMENT: `vi.fn` spies, `vi.stubEnv`

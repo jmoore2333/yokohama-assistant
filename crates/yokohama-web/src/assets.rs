@@ -143,7 +143,19 @@ fn serve_path(root: &Path, uri_path: &str) -> Response {
         return response;
     }
     if path.extension().is_some() {
-        return (StatusCode::NOT_FOUND, "no such asset").into_response();
+        let mut response = (StatusCode::NOT_FOUND, "no such asset").into_response();
+        // **A miss carries the same freshness rule the hit would have**
+        // (M6.5b2, Task 1's deferred Minor). Production ships `sw.js`, so the
+        // exposure is a deployment that removed it or served it from a root
+        // that has none: without this the 404 goes out with no header at all,
+        // a browser may heuristically cache it, and the release cannot be
+        // repaired until that window closes. Applied through
+        // [`cache_control`] rather than by naming `/sw.js` again, so the rule
+        // has one home.
+        if let Some(value) = cache_control(uri_path) {
+            response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+        }
+        return response;
     }
     match std::fs::read(root.join("index.html")) {
         Ok(bytes) => {
@@ -256,6 +268,30 @@ mod tests {
         assert_eq!(cached("/sw.js").as_deref(), Some("no-store"), "and it reaches the response");
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");
         assert_eq!(cached("/lobby"), None, "the same document through the SPA fallback");
+
+        // **And a MISS carries it too** (M6.5b2, Task 1's deferred Minor).
+        // Production ships the file, so the exposure is a deployment that
+        // removed it — where a heuristically cached 404 keeps the release
+        // un-updatable for as long as the browser chose. Read on a root that
+        // really has no `sw.js`, with the shape of the answer asserted as well
+        // as its header, because a 404 that had become the SPA fallback would
+        // carry no extension and take a different arm entirely.
+        let bare = root.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        let missed = serve_path(&bare, "/sw.js");
+        assert_eq!(missed.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            missed.headers().get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap()),
+            Some("no-store"),
+            "an absent worker must not be cached either"
+        );
+        let other = serve_path(&bare, "/assets/index-abc123.js");
+        assert_eq!(other.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            other.headers().get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap()),
+            Some("public, max-age=31536000, immutable"),
+            "the rule is `cache_control`'s and is not a second mention of /sw.js"
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

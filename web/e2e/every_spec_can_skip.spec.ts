@@ -20,6 +20,10 @@
 // same defect one level up — a second place to remember, drifting from the
 // first.
 //
+// **@yokohama-service-worker: none** — this spec opens no browser page at all,
+// so it takes no service-worker fixture and says so in the one place
+// `every_spec_declares_its_worker.spec.ts` reads (M6.5b2).
+//
 // **Why this one file does not carry the guard.** It asks the filesystem a
 // question and declares no `page`, `context` or `browser` fixture, and
 // Playwright builds fixtures lazily, so it needs neither a browser nor a

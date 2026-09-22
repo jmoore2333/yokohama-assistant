@@ -22,6 +22,7 @@
 // passing `/enter` is what mints the token every later request carries.
 
 import { OnThisDevice } from "./OnThisDevice";
+import type { ReadinessStatus } from "./swRegister";
 
 /** Whether this BUILD offers the other channel.
  *
@@ -39,6 +40,7 @@ export function multiplayerOffered(): boolean {
 export function FrontDoor({
   multiplayer,
   notice,
+  readiness,
 }: {
   /** Whether to draw the way on to the server. `multiplayerOffered()`'s answer,
    *  passed as a prop so this component is a screen and not a reader of the
@@ -51,9 +53,31 @@ export function FrontDoor({
    *  returned to a bare door would learn only that their link did nothing. The
    *  lobby carries the same sentence for a table of the server's. */
   notice?: string | null;
+  /** What the release's service worker is doing, from `useReadiness()`.
+   *
+   *  **A prop and not a hook call**, for `multiplayer`'s reason: this component
+   *  is a screen, so both halves of every state can be rendered in a cell. It
+   *  is OPTIONAL because "nothing to say" is a real answer — a development
+   *  build, a browser with no service workers, and a page the browser walk has
+   *  flagged all arrive here as `undefined` or `"none"`, and none of the three
+   *  is a failure. */
+  readiness?: ReadinessStatus;
 }) {
   return (
     <div className="setup front-door">
+      {/* **The product, named once, at the top of the document** (Task 3
+          review, Minor 5). Until this the landing screen's highest heading was
+          `OnThisDevice`'s `<h3>`: the heading hierarchy started at level 3 and
+          a stranger at `#/` was told nothing about what they had reached.
+
+          The game screen's own `<h1>Yokohama</h1>` lives in `header.banner`,
+          and the browser walk's "am I in a game" waits are scoped to that
+          element so this heading cannot satisfy them (`e2e/harness.ts`'s
+          `atTheGame`). */}
+      <header className="door-banner">
+        <h1>Yokohama</h1>
+        <p className="muted">The board game, played in this browser.</p>
+      </header>
       {notice && <div className="error">{notice}</div>}
       {/* **The local channel, unchanged from M6.5b except for where it
           stands** (spec §2.1): the games in this browser, read from the module
@@ -75,6 +99,45 @@ export function FrontDoor({
           <p className="muted">This deployment plays single player only.</p>
         )}
       </section>
+      <Readiness status={readiness} />
     </div>
+  );
+}
+
+/** The release's own line, and the update offer (spec §4, §2.3).
+ *
+ *  **Quiet, and last.** It is a report about the shell rather than a way on, so
+ *  it sits under both entries; the update is ONE line offering a reload, and
+ *  nothing switches until it is pressed — `skipWaiting` is registration-wide
+ *  and would otherwise put a new worker in front of a tab still playing on the
+ *  old bundle.
+ *
+ *  **Where a player sees the offer is the door**, deliberately: it is the
+ *  screen between games. A waiting worker that is never clicked activates by
+ *  itself once every page using the old one has closed, which is the platform's
+ *  ordinary behaviour and is safe precisely because nobody is playing on it. */
+function Readiness({ status }: { status?: ReadinessStatus }) {
+  if (!status || (status.readiness === "none" && !status.updateWaiting)) return null;
+  return (
+    <section className="saved offline-state">
+      {status.readiness === "installing" && <p className="muted">Preparing to play offline&hellip;</p>}
+      {status.readiness === "ready" && <p className="muted">Ready to play offline.</p>}
+      {status.readiness === "failed" && (
+        <p className="muted">
+          Could not prepare to play offline &mdash; {status.reason ?? "the install did not finish"}.{" "}
+          <button type="button" className="linkish" onClick={status.retry}>
+            Try again
+          </button>
+        </p>
+      )}
+      {status.updateWaiting && (
+        <p className="muted">
+          A new version is ready.{" "}
+          <button type="button" className="linkish" onClick={status.applyUpdate}>
+            Reload to use it
+          </button>
+        </p>
+      )}
+    </section>
   );
 }

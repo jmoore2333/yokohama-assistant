@@ -14,9 +14,13 @@
 // that the panel takes focus and Escape leaves it, and that a page carrying two
 // hundred candidate rows does not overflow sideways.
 
-import { expect, test } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
-import { signIn, WALKER, watchForBreakage } from "./harness";
+import { atTheGame, signIn, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -97,7 +101,7 @@ async function openPanel(page: import("@playwright/test").Page, game: string, la
   // of two matching buttons is the right one. `signIn` navigates, and the hash
   // survives it.
   await signIn(page, WALKER, `/#/t/${game}`);
-  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(page)).toBeVisible();
   await page.getByRole("button", { name: label, exact: true }).click();
   await expect(page.getByRole("dialog", { name: label })).toBeVisible();
   // **Wait for the ANSWER, not for the dialog.** These two panels are the only

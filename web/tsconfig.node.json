@@ -40,6 +40,7 @@
     "vitest.node.config.ts",
     "playwright.config.ts",
     "e2e",
-    "src/local/*.node.test.ts"
+    "src/local/*.node.test.ts",
+    "src/precache.node.test.ts"
   ]
 }

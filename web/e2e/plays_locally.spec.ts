@@ -21,9 +21,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Page, type Worker } from "@playwright/test";
+import { type Page, type Worker } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { archiveDir, BASE_URL, haveBrowser } from "../playwright.config";
-import { act, deadEnd, readScreen, rng, startGame, watchForBreakage, WALKER } from "./harness";
+import { act, atTheGame, deadEnd, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 import type { Affordance } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
@@ -398,7 +403,7 @@ test("a game closed before its first card is chosen comes back on reload with it
 
   // The setup is still playable: keeping one starts the game it was dealt for.
   await picks.first().click();
-  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(page)).toBeVisible();
   expect(await storedEvents(page, id)).toBeGreaterThanOrEqual(0);
   expect(watch.failures).toEqual([]);
 });
@@ -608,7 +613,7 @@ test("two tabs: B boots first, A plays, B takes over and sees A's moves; A goes 
   await expect(b.locator(".decision .chain")).toHaveCount(0);
 
   await b.getByRole("button", { name: "Take over" }).click();
-  await expect(b.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(b)).toBeVisible();
   await readScreen(b);
   expect(
     await b.locator(".decision .chain").first().innerText(),

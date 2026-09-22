@@ -11,10 +11,12 @@ import { defineConfig } from "vitest/config";
 //   cleanup, which a node project has nothing to do with — and it is the file
 //   that would drag `@testing-library` into a suite whose whole subject is a
 //   compiled Rust module.
-// - One file, `src/local/*.node.test.ts`, which `vitest.config.ts` EXCLUDES.
-//   So `npm test` keeps its meaning and its count, and the module built by
+// - TWO files since M6.5b2 — `src/local/*.node.test.ts` and
+//   `src/precache.node.test.ts` — both of which `vitest.config.ts` EXCLUDES. So
+//   `npm test` keeps its meaning and its count, and the module built by
 //   `npm run build:wasm` is a dependency of ONE command rather than of a
-//   per-edit gate.
+//   per-edit gate. The second runs a real `vite build`, so this project's wall
+//   is now seconds rather than under one.
 //
 // It does NOT merge `vite.config.ts`, unlike its sibling: there is no React
 // plugin, no alias and no browser resolution in play, and merging the build
@@ -22,6 +24,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/local/*.node.test.ts"],
+    // The real-build cell runs `vite build`, which on a cold cache is tens of
+    // seconds — well past vitest's 5 s default.
+    testTimeout: 180_000,
+    include: ["src/local/*.node.test.ts", "src/precache.node.test.ts"],
   },
 });

@@ -1,0 +1,28 @@
+{
+  // The SERVICE WORKER's own file (M6.5b2, spec §2.3): `web/src/sw.ts`, which
+  // runs as a `ServiceWorkerGlobalScope` and not on the page.
+  //
+  // A fourth project rather than more `include` in `tsconfig.json`, for exactly
+  // `tsconfig.worker.json`'s reason: `FetchEvent`, `ExtendableEvent` and
+  // `clients` are real here and `document` is not, and one program that had
+  // both would let a component reach for `self.skipWaiting` and type-check.
+  //
+  // It is NOT behind `scripts/typecheck-worker.mjs`'s guard, unlike its
+  // sibling: nothing here is generated, so a fresh checkout can check it and
+  // CI's toolchain-free `web-client` job does.
+  //
+  // `swRoute.ts`, `swInstall.ts` and `precache.ts` are compiled by BOTH this
+  // project and the app project — they are imported by the worker and by the
+  // component suite's cells — which is the same arrangement `src/local/db.ts`
+  // already has, and it is what keeps the tested decision and the running one
+  // the same code.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "WebWorker"],
+    "types": []
+  },
+  "include": ["src/sw.ts", "src/swRoute.ts", "src/swInstall.ts", "src/precache.ts"],
+  // `extends` inherits `exclude`, and the app project excludes `sw.ts` —
+  // which this project is entirely about.
+  "exclude": []
+}

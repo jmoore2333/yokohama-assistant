@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Yokohama's app mark, drawn in-repo (M6.5b2, R-6.5b2.9 / spec §2.4).
+
+     ORIGINAL, and never a crop of the card art: `ASSETS.md` carves the card
+     sheets out as carrying no grant of any kind, and an app icon is the most
+     distributed image a product has.
+
+     The mark is the board itself — the staggered pyramid of area tiles, rows of
+     four, three and two, brick-offset by centring, which is how `board_gen`
+     lays out a two-player board. The lit tile is the middle row's centre: one
+     place on the board, which is what a turn comes down to. The colours are the
+     stylesheet's own tokens (`--bg`, `--vp`, `--yen`), so the installed icon and
+     the running app are the same object.
+
+     THE MASKABLE VARIANT: the same mark at 62%, so the whole of it sits
+     inside the 80%-diameter safe circle a maskable icon promises, and the
+     ground bleeds to every edge for whatever shape the platform cuts.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0d1013"/>
+  <g>
+    <rect x="119.0" y="167.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.92"/>
+    <rect x="189.7" y="167.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.92"/>
+    <rect x="260.3" y="167.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.92"/>
+    <rect x="331.0" y="167.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.92"/>
+    <rect x="154.3" y="229.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.78"/>
+    <rect x="225.0" y="229.3" width="62.0" height="53.3" rx="8.7" fill="#ffd75f" fill-opacity="1"/>
+    <rect x="295.7" y="229.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.78"/>
+    <rect x="189.7" y="291.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.62"/>
+    <rect x="260.3" y="291.3" width="62.0" height="53.3" rx="8.7" fill="#5fa8ff" fill-opacity="0.62"/>
+  </g>
+</svg>

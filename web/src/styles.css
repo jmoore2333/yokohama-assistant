@@ -976,6 +976,32 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; text-decoration: none;
 }
 .front-door .with-others { margin-top: 1.6rem; }
+
+/* **The product, named once, at the top of the door** (M6.5b2; Task 3 review,
+   Minor 5). The game screen's own `<h1>` is `.banner h1` — 1.05rem, letter-spaced
+   small caps inside a fixed strip — and this one is a landing heading on a
+   `.setup` page, so it is set from `--display` rather than restating the
+   banner's treatment on a screen that has no banner. */
+.front-door .door-banner { margin-bottom: 1.4rem; }
+.front-door .door-banner h1 {
+  font-family: var(--display); font-size: 2rem; font-weight: 600;
+  letter-spacing: 0.02em; margin: 0;
+}
+.front-door .door-banner p { margin: 0.15rem 0 0; }
+
+/* The readiness line and the update offer (spec §4): a report about the shell,
+   so it sits under both entries and is set at the quiet size the other muted
+   lines use. */
+.front-door .offline-state { margin-top: 1.6rem; }
+.front-door .offline-state p { margin: 0.2rem 0; font-size: 12px; }
+/* A control inside a sentence, for `.log-jump`'s reason: it must be reachable
+   by keyboard and named by a role, and it must not look like a button sitting
+   in the middle of a line. */
+.linkish {
+  background: none; border: 0; padding: 0; margin: 0;
+  color: var(--vp); font: inherit; cursor: pointer; text-decoration: underline;
+}
+.linkish:hover { color: var(--fg); }
 /* The way back, for the same reason and in `button.ghost`'s box. */
 .lobby a.to-door {
   display: inline-block;

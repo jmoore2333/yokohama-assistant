@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
+import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
@@ -144,6 +145,14 @@ export function App() {
   // the front door needs no identity.
   const door = useMe(channel);
   const { refresh, signOut, signedOut } = door;
+  // **The release's worker, registered here and reported on the door**
+  // (M6.5b2, R-6.5b2.8). It is unconditional and belongs to the APP rather
+  // than to the door, because a player who arrived straight at a game should
+  // still get the release cached; what is door-only is the LINE about it. In a
+  // development build, in a browser with no service workers, and on a page the
+  // browser walk has flagged, `useReadiness` registers nothing and answers
+  // `"none"` — so this costs every existing cell one render and nothing else.
+  const readiness = useReadiness();
   // **Every 401 on this API routes here, and no screen has to remember to
   // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
   // refusal is thrown — so it reaches the door whatever the caller then does
@@ -1306,7 +1315,7 @@ export function App() {
    *  behind the sign-in gate below, and that is the whole product change: until
    *  this cycle the first screen belonged to the server. */
   const doorScreen = (notice?: string | null) => (
-    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} />
+    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} readiness={readiness} />
   );
 
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own

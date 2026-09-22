@@ -1,6 +1,10 @@
 // M5.5 C: the opponent's turn plays out on the table when the reply lands.
 
-import { expect, test } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { act, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
