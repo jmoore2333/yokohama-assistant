@@ -708,8 +708,8 @@ describe("a retry after the registration itself was refused", () => {
   // own sentence** (PR #37 F3 re-review, m1). After E1 this is the arm every
   // first-visit retry takes — a refused registration and a failed first
   // install alike — and a rejection it swallowed would leave the door on
-  // "Preparing to play offline…" for good, which `:410`'s cell forbids on the
-  // other arm.
+  // "Preparing to play offline…" for good, which the cell "goes back to failed
+  // when the retry itself is refused" forbids on the other arm.
   it("goes back to failed with the retry's own sentence when its register() is refused too", async () => {
     const registration = new FakeRegistration();
     const { host } = refusedOnce(registration, async () => {
