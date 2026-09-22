@@ -68,8 +68,11 @@ class FakeRegistration implements RegistrationLike {
    *  spec's `update()` step 3): a registration with no newest worker — which
    *  is what a failed FIRST install leaves — is refused with an
    *  `InvalidStateError`, the sentence Chromium was measured to give. A new
-   *  install sets `installing` before the promise resolves and fires
-   *  `updatefound`, which is the Install algorithm's order. */
+   *  install sets `installing` before the promise resolves, as the platform
+   *  does. The fake fires `updatefound` BEFORE resolving, where the platform
+   *  resolves the job promise first and queues `updatefound` after it on the
+   *  same task source; the hook reaches the same state either way, because
+   *  `settle` and the `watch` that `updatefound` adds commute. */
   async update(): Promise<void> {
     if (!this.installing && !this.waiting && !this.active) {
       throw new DOMException(
@@ -270,6 +273,41 @@ describe("the hook", () => {
     expect(host.register).toHaveBeenCalledTimes(2);
     expect(first.updates).toBe(0);
     expect(result.current.readiness).toBe("installing");
+    walkToActivated(second, worker, () => result.current.readiness);
+    expect(result.current.readiness).toBe("ready");
+  });
+
+  // **The dying worker's window** (PR #37, R-orch-5). The worker posts
+  // "install-failed" BEFORE its install rejects, so for a few milliseconds the
+  // page's copy of the registration still names the dying worker as
+  // `installing`. An `update()` taken there queues behind the failing install
+  // and is refused once that install has removed the registration; a
+  // `register()` queues the same way and then registers anew. So `installing`
+  // is no evidence of a registration worth updating — only a waiting or an
+  // active worker is.
+  it("registers, and does not update, while the only worker is the one still dying", async () => {
+    const first = new FakeRegistration();
+    first.installing = new FakeWorker("installing");
+    const second = new FakeRegistration();
+    const worker = new FakeWorker("installing");
+    second.installing = worker;
+    const { host, message } = fakeHost(first);
+    host.register = vi
+      .fn<SwHost["register"]>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    // The message has arrived; the install has not yet been failed.
+    act(() => message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" }));
+    expect(result.current.readiness).toBe("failed");
+    expect(first.installing, "the premise: the dying worker is still named").not.toBeNull();
+
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(first.updates).toBe(0);
+    expect(host.register).toHaveBeenCalledTimes(2);
     walkToActivated(second, worker, () => result.current.readiness);
     expect(result.current.readiness).toBe("ready");
   });
@@ -664,6 +702,32 @@ describe("a retry after the registration itself was refused", () => {
     expect(registration.listening).toBe(0);
     expect(worker.listening).toBe(0);
     expect(next.listening).toBe(0);
+  });
+
+  // **A retry whose own `register()` is refused goes back to FAILED, with its
+  // own sentence** (PR #37 F3 re-review, m1). After E1 this is the arm every
+  // first-visit retry takes — a refused registration and a failed first
+  // install alike — and a rejection it swallowed would leave the door on
+  // "Preparing to play offline…" for good, which `:410`'s cell forbids on the
+  // other arm.
+  it("goes back to failed with the retry's own sentence when its register() is refused too", async () => {
+    const registration = new FakeRegistration();
+    const { host } = refusedOnce(registration, async () => {
+      throw new Error("Failed to register a ServiceWorker: the retry was refused as well");
+    });
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toMatch(/503/);
+
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(host.register).toHaveBeenCalledTimes(2);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe(
+      "Failed to register a ServiceWorker: the retry was refused as well",
+    );
   });
 
   // A page that has gone adopts nothing. The late registration carries a

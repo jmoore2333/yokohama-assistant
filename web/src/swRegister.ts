@@ -323,22 +323,33 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
     failure.current = null;
     setReason(null);
     setReadiness("installing");
-    // **`update()` only while the registration still has a newest worker** —
-    // an UPDATE whose install failed, with the release before it still
-    // active. `update()` fetches the worker again, and a changed one installs
-    // again. One that installs nothing (the server's worker went back to the
-    // running one's bytes) resolves with no event at all, so the door is
-    // settled from the registration's shape rather than left on "installing".
+    // **`update()` only while the registration has a WAITING or an ACTIVE
+    // worker** — an UPDATE whose install failed, with the release before it
+    // still there. `update()` fetches the worker again, and a changed one
+    // installs again. One that installs nothing (the server's worker went back
+    // to the running one's bytes) resolves with no event at all, so the door
+    // is settled from the registration's shape rather than left on
+    // "installing".
     //
     // **Otherwise the retry REGISTERS, and adopts what that resolves to through
-    // the effect's own wiring** (PR #37 F3, R-F3 and E1). Two cases arrive
-    // here. Where the FIRST `register()` was refused, there is no registration
-    // at all. Where the FIRST install failed, the platform has marked the
-    // worker redundant, emptied the registration and removed it from the
-    // registration map, and `update()` on it is refused — measured in
+    // the effect's own wiring** (PR #37 F3, R-F3, E1 and R-orch-5). Three
+    // cases arrive here. Where the FIRST `register()` was refused, there is no
+    // registration at all. Where the FIRST install failed, the platform has
+    // marked the worker redundant, emptied the registration and removed it
+    // from the registration map, and `update()` on it is refused — measured in
     // Chromium: "The object is in an invalid state", on every click until a
-    // reload. Before F3 the retry registered and dropped the result, which
-    // left the door on "installing" after the worker activated.
+    // reload. And in the few milliseconds between those two — the worker posts
+    // "install-failed" BEFORE its install rejects — the page's copy still
+    // names the DYING worker as `installing`, which is why `installing` does
+    // not count: an `update()` taken then queues behind the failing install
+    // and is refused once that install has removed the registration, while a
+    // `register()` queues the same way and then registers anew. (Against an
+    // install really in progress, `register()` resolves with that same
+    // registration — Register's shortcut: the same script URL, a newest worker
+    // present — and adopting it again adds one more `updatefound` listener,
+    // removed at the unmount like the first.) Before F3 the retry registered
+    // and dropped the result, which left the door on "installing" after the
+    // worker activated.
     //
     // **A REJECTED retry goes back to failed rather than staying "installing"**
     // — that is the same defect the install's own deadline exists to prevent,
@@ -351,7 +362,7 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       setReadiness("failed");
     };
     const reg = registration.current;
-    if (reg && (reg.installing ?? reg.waiting ?? reg.active)) {
+    if (reg && (reg.waiting ?? reg.active)) {
       void reg
         .update()
         .then(() => lent.current?.settle())
