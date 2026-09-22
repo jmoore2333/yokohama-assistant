@@ -148,7 +148,10 @@ describe("call routes by host", () => {
     // The record's `seed` is a u64 that `JSON.parse` would round — the same
     // reason the hosted `recordText` never parses either.
     const record = '{"seed":18446744073709551615,"events":[]}';
-    stubWorker({ pair: (id) => (id === "local-1" ? { record, table: '{"schema":3}' } : {}) });
+    stubWorker({
+      pair: (id) =>
+        id === "local-1" ? { record, table: '{"schema":3}' } : { record: null, table: null },
+    });
     const parse = vi.spyOn(JSON, "parse");
     try {
       expect(await api.recordText("local-1")).toBe(record);

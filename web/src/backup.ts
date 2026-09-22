@@ -16,18 +16,20 @@
 // this page can open the same database. The Worker path is kept for the one
 // case the direct read gets wrong — a game with a move applied but not yet
 // written, which is the very move a recovery exists to rescue — so the control
-// PREFERS the snapshot of the Worker that OWNS the game, asked within a short
-// bound, and falls back to the database when the Worker does not answer.
+// PREFERS this tab's Worker's snapshot where that Worker owns the game, asked
+// within a short bound, and falls back to the database when the Worker does
+// not answer. An owner in ANOTHER tab is never asked: a backup made here does
+// not carry a move that tab has applied and not written.
 //
 // **"The Worker answers" is not "the Worker owns the game"** (PR #37 fix wave,
 // R-F1, amending spec §2.5 forward). Every tab's Worker loads a snapshot of
 // every game at its boot and writes back only the games it holds, so a tab
 // that does not own a game can hold a copy another tab has moved past. The
 // Worker's `pair` arm is where that is decided (`local/exportPair.ts`): its
-// memory where this tab holds the game at the current ownership generation,
-// the committed pair everywhere else. This page takes whatever it answers
-// WHOLE, and its own read whole when it does not — never one document from
-// each.
+// memory where this tab holds the game at the current ownership generation —
+// or holds it and the generation cannot be read — and the committed pair
+// everywhere else. This page takes whatever it answers WHOLE, and its own read
+// whole when it does not answer or refuses — never one document from each.
 //
 // ## What is decided here and what is decided in Rust
 //
@@ -111,8 +113,8 @@ export interface RestoreReport {
  *  ordering; review M-3).
  *
  *  **Short on purpose**: once the module is up the Worker answers a `pair`
- *  from memory or from one IndexedDB read (R-F1), so a wait longer than this
- *  is a module that is not coming.
+ *  from memory after one IndexedDB read, or from IndexedDB (R-F1), so a wait
+ *  longer than this is a module that is not coming.
  *  **And shared, not per game**: a Worker that STARTS and never initialises
  *  answers nothing at all, and a per-game bound would make "Back up everything"
  *  take this long times the number of games.

@@ -24,6 +24,11 @@
 // - this tab holds the game AT THE CURRENT OWNERSHIP GENERATION → its memory;
 // - anything else → the COMMITTED pair, read in one transaction.
 //
+// **And a store that cannot be read is not a trap** (fix round 1, review I-1):
+// a holder whose generation read fails answers its memory, and a committed
+// read that fails rejects as [`StoreUnreadable`], which the Worker answers as
+// an ordinary reply. Only a throw from the module itself goes the trap's way.
+//
 // **The generation decides, not `held` alone.** With Web Locks, `held` is
 // cleared by the steal's `AbortError`, which arrives asynchronously. Under the
 // no-Web-Locks fallback a steal NEVER clears it — nothing tells a tab without
@@ -50,10 +55,38 @@ export type PairSource = "memory" | "store";
  * @param held   the generation THIS tab took for the game, or `undefined` where
  *               it holds none
  * @param stored the generation IndexedDB holds now — `0` for a game no tab has
- *               ever held
+ *               ever held — or `null` where IndexedDB could not be read. A
+ *               holder then answers memory: the store cannot say anyone else
+ *               owns the game, this tab knows of no owner after itself, and
+ *               its memory is the only copy of anything the store refused
+ *               (fix round 1, review I-1).
  */
-export function pairSource(held: number | undefined, stored: number): PairSource {
-  return held !== undefined && held === stored ? "memory" : "store";
+export function pairSource(held: number | undefined, stored: number | null): PairSource {
+  if (held === undefined) return "store";
+  return stored === null || held === stored ? "memory" : "store";
+}
+
+/**
+ * The committed read failed: this browser's storage could not be read.
+ *
+ * **A type of its own so the Worker can tell it from a module fault** (fix
+ * round 1, review I-1; `worker.ts`'s rule 6). A trapped module is recovered by
+ * a fresh Worker, and that recovery throws the old Worker away — along with the
+ * one copy of any move the store refused to keep. A store that cannot be read is
+ * not a module that has trapped, so the Worker answers this as an ordinary
+ * reply and the page refuses the export with its sentence. Anything else that
+ * escapes [`exportPair`] — a `wasm.read` that throws — is still a trap.
+ */
+export class StoreUnreadable extends Error {
+  constructor(cause: unknown) {
+    // The MESSAGE, read by shape: IndexedDB rejects with a `DOMException`,
+    // which is not an `Error` in every realm a test runs in.
+    const message = (cause as { message?: unknown } | null | undefined)?.message;
+    const reason =
+      typeof message === "string" && message ? message : String(cause ?? "no reason given");
+    super(`this browser's storage could not be read — ${reason}`);
+    this.name = "StoreUnreadable";
+  }
 }
 
 /**
@@ -67,10 +100,14 @@ export function pairSource(held: number | undefined, stored: number): PairSource
  * generation's answer arrives.
  *
  * - A tab that holds nothing asks no generation: there is nothing to compare.
+ * - A holder whose generation read FAILS answers its memory (see
+ *   [`pairSource`]'s `null`).
  * - An owner whose module has NO TABLE for the id answers the store, because
  *   the page takes this answer WHOLE and two nulls would say "no such game".
  *   A table with no record is a whole pair — a game at the deal — and is
  *   answered as it stands.
+ * - A committed read that fails REJECTS with [`StoreUnreadable`]; a throw from
+ *   `memory` is passed through untouched, because that one is the module's.
  */
 export async function exportPair(
   held: number | undefined,
@@ -78,8 +115,21 @@ export async function exportPair(
   memory: () => Pair,
   committed: () => Promise<Pair>,
 ): Promise<Pair> {
-  if (held === undefined) return committed();
-  if (pairSource(held, await storedGeneration()) === "store") return committed();
+  const fromStore = async (): Promise<Pair> => {
+    try {
+      return await committed();
+    } catch (e) {
+      throw new StoreUnreadable(e);
+    }
+  };
+  if (held === undefined) return fromStore();
+  let stored: number | null;
+  try {
+    stored = await storedGeneration();
+  } catch {
+    stored = null;
+  }
+  if (pairSource(held, stored) === "store") return fromStore();
   const mine = memory();
-  return mine.table === null ? committed() : mine;
+  return mine.table === null ? fromStore() : mine;
 }

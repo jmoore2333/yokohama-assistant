@@ -11,7 +11,7 @@
 // it came back WHOLE.
 
 import { describe, expect, it } from "vitest";
-import { exportPair, pairSource, type Pair } from "./exportPair";
+import { exportPair, pairSource, StoreUnreadable, type Pair } from "./exportPair";
 
 /** This tab's module store: a move applied here and perhaps not yet written. */
 const MEMORY: Pair = { record: '{"events":[1,2,3]}', table: '{"id":"local-1","memory":true}' };
@@ -98,5 +98,88 @@ describe("where an export's pair comes from", () => {
     const dealing: Pair = { record: null, table: MEMORY.table };
     const { answer } = arm(3, 3, dealing);
     expect(await answer).toEqual(dealing);
+  });
+});
+
+// **An unreadable STORE is not a trap** (fix round 1, review I-1; `worker.ts`'s
+// rule 6). Before R-F1 this arm read only the module, so the only thing that
+// could throw here was a real module fault. It now reads IndexedDB too, and a
+// read the store refuses — a connection closed by another tab's upgrade, or
+// WebKit's "Connection to Indexed Database server lost" — went down the trap
+// path: the page terminated the Worker, and with it the one copy of a move
+// the store had already refused to keep. That is the move these exports exist
+// to rescue, lost by the click meant to rescue it.
+describe("when IndexedDB will not answer", () => {
+  /** [`arm`], with the named read REJECTING. */
+  function failing(which: "generation" | "store", held: number | undefined) {
+    const reads = { generation: 0, memory: 0, store: 0 };
+    const answer = exportPair(
+      held,
+      async () => {
+        reads.generation += 1;
+        if (which === "generation") {
+          throw new DOMException("The database connection is closing.", "InvalidStateError");
+        }
+        return held ?? 0;
+      },
+      () => {
+        reads.memory += 1;
+        return MEMORY;
+      },
+      async () => {
+        reads.store += 1;
+        if (which === "store") {
+          throw new DOMException("Connection to Indexed Database server lost.", "UnknownError");
+        }
+        return STORE;
+      },
+    );
+    return { answer, reads };
+  }
+
+  // The store cannot say who owns the game, and this tab is the last owner it
+  // knows of: a generation it TOOK. Its memory is also the only copy of
+  // anything the store refused — and in both cases the review names, a store
+  // that will not be read would not write either. So the owner answers memory,
+  // which is the answer this arm gave before R-F1, and does not ask the store
+  // that just failed.
+  it("a holder whose generation read fails answers its MEMORY, and never asks the store", async () => {
+    expect(pairSource(3, null), "no stored generation: the holder is the last known owner").toBe(
+      "memory",
+    );
+    const { answer, reads } = failing("generation", 3);
+    expect(await answer).toEqual(MEMORY);
+    expect(reads).toEqual({ generation: 1, memory: 1, store: 0 });
+  });
+
+  // A tab that does not hold the game has no copy it can vouch for, so an
+  // unreadable store is an answer it cannot give — and it is REFUSED as a
+  // storage failure by name, never as a module fault, so the Worker answers it
+  // as a reply and the page does not restart the host.
+  it("a non-holder whose committed read fails REJECTS as unreadable storage, and memory is never read", async () => {
+    expect(pairSource(undefined, null)).toBe("store");
+    const { answer, reads } = failing("store", undefined);
+    await expect(answer).rejects.toBeInstanceOf(StoreUnreadable);
+    await expect(answer).rejects.toThrow(
+      "this browser's storage could not be read — Connection to Indexed Database server lost.",
+    );
+    expect(reads).toEqual({ generation: 0, memory: 0, store: 1 });
+  });
+
+  // **A MODULE fault is still one** — the other half of the split, and the
+  // reason the rejection is typed rather than every failure being caught: a
+  // `wasm.read` that throws is a trapped module, and it must reach the trap
+  // path the page recovers from.
+  it("a module that throws while its memory is read is NOT reported as unreadable storage", async () => {
+    const trap = new Error("RuntimeError: unreachable executed");
+    const answer = exportPair(
+      3,
+      async () => 3,
+      () => {
+        throw trap;
+      },
+      async () => STORE,
+    );
+    await expect(answer).rejects.toBe(trap);
   });
 });

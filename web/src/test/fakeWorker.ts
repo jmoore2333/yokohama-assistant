@@ -34,6 +34,19 @@ export interface CallReply {
   trapped?: boolean;
 }
 
+/** One game's two documents as the Worker answers them — BOTH keys, always.
+ *
+ *  **Both required** (fix round 1, review M-2). The page takes this answer
+ *  WHOLE since R-F1, so a half answer would not be completed from the store:
+ *  it would be a pair with a `null` in it, which a cell writing `{ record }`
+ *  alone almost certainly did not mean. The real Worker sends both keys
+ *  whenever it answers with a pair, and this is the one pair shape a cell can
+ *  write. */
+export interface FakePair {
+  record: string | null;
+  table: string | null;
+}
+
 /** What a cell may answer for itself. `undefined` from any of them falls
  *  through to the committed-corpus table below. */
 export interface FakeWorkerHooks {
@@ -50,11 +63,14 @@ export interface FakeWorkerHooks {
    *  IndexedDB, where the cell has one — the real Worker's answer for a game
    *  it does not own (PR #37 fix wave, R-F1).
    *
+   *  `{ unreadable }` is the Worker's answer when IndexedDB would not be read
+   *  (fix round 1, review I-1): an ordinary reply, never a trap.
+   *
    *  `"pending"` answers NOTHING and leaves the read in flight — the `call`
    *  hook's own idiom, and how a cell arranges the OTHER half of "the module
    *  will not load": a Worker that started and whose module never came up
    *  answers no message at all (M6.5b2, review M-3). */
-  pair?: (id: string) => { record?: string | null; table?: string | null } | "pending" | undefined;
+  pair?: (id: string) => FakePair | { unreadable: string } | "pending" | undefined;
   /** What the module's `restore_read` says about a file — the rows, or a
    *  refusal about the FILE. A cell that is about ONE verdict sets this and
    *  says so; everything else falls through to [`fakeVerdicts`]. */
@@ -234,7 +250,10 @@ export class FakeWorker {
           void committedPair(req.id).then((pair) => this.deliver({ seq, ...pair }));
           return;
         }
-        reply = { record: both.record ?? null, table: both.table ?? null };
+        reply =
+          "unreadable" in both
+            ? { unreadable: both.unreadable }
+            : { record: both.record, table: both.table };
         break;
       }
       case "hold":
@@ -303,15 +322,12 @@ export function breakTheWorker(): void {
   FakeWorker.broken = true;
 }
 
-/** What the Worker's `pair` message answers for ONE game — standing for the
- *  snapshot of the Worker that OWNS the game, which a backup PREFERS over the
- *  database because a move applied and not yet written is the very move a
+/** What the Worker's `pair` message answers for ONE game — standing for THIS
+ *  tab's Worker's snapshot where it owns the game, which a backup PREFERS over
+ *  the database because a move applied and not yet written is the very move a
  *  recovery is for. Without it the fake answers the committed pair, which is
  *  what the real Worker answers for a game it does not own (R-F1). */
-export function workerAnswersWith(
-  id: string,
-  pair: { record?: string | null; table?: string | null },
-): void {
+export function workerAnswersWith(id: string, pair: FakePair): void {
   const previous = FakeWorker.hooks.pair;
   FakeWorker.hooks = {
     ...FakeWorker.hooks,

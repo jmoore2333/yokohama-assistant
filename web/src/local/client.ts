@@ -374,12 +374,20 @@ export async function localCall(
  * module is loaded at its Worker's boot and written back only for a game this
  * tab holds, so it can be a copy another tab has moved past. The answer is the
  * module's pair only where this tab OWNS the game at the current ownership
- * generation — the one place a move applied and not yet written can exist —
- * and the pair IndexedDB committed everywhere else. Every export goes through
- * here, so every export takes that rule: both backups, Save game file, Send to
- * the archive, Abandon and save, and the outbox. A caller takes the answer
- * WHOLE; a `null` in it is part of the answer, not a gap to fill from
+ * generation — the one place a move applied and not yet written is worth
+ * keeping — and the pair IndexedDB committed everywhere else. Every export goes
+ * through here, so every export takes that rule: both backups, Save game file,
+ * Send to the archive, Abandon and save, and the outbox. A caller takes the
+ * answer WHOLE; a `null` in it is part of the answer, not a gap to fill from
  * elsewhere.
+ *
+ * **A store that cannot be read REJECTS, and restarts nothing** (fix round 1,
+ * review I-1). The Worker answers that case `unreadable` rather than
+ * `trapped`, and this rejects with its sentence: a restart would terminate the
+ * Worker, and an owner's Worker is holding the one copy of any move the store
+ * refused. Each caller already names a rejection — the backups fall back to
+ * this page's own read, Abandon keeps the game, the outbox writes the sentence
+ * on the game's row, and Save game file and Send to the archive show it.
  *
  * **One message and not two**, which is the whole of why it exists. "Send to
  * the archive" sends the record and the table together and the server checks
@@ -395,7 +403,11 @@ export async function localCall(
 export const localPair = async (
   id: string,
 ): Promise<{ record: string | null; table: string | null }> => {
-  const r = await ask<{ record: string | null; table: string | null }>({ kind: "pair", id });
+  const r = await ask<{ record: string | null; table: string | null; unreadable?: string }>({
+    kind: "pair",
+    id,
+  });
+  if (typeof r.unreadable === "string") throw new Error(r.unreadable);
   return { record: r.record, table: r.table };
 };
 

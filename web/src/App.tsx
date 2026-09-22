@@ -1640,7 +1640,17 @@ export function App() {
     archiving.current = true;
     setError(null);
     try {
-      const pair = await localPair(state.id);
+      // **The pair's own failure is named as its own** (PR #37 fix wave, fix
+      // round 1, review I-1): a store this tab could not read rejects here
+      // with a sentence about the STORE, and the `catch` below would have
+      // called it an unreachable archive the request never went to.
+      let pair: { record: string | null; table: string | null };
+      try {
+        pair = await localPair(state.id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return;
+      }
       if (pair.record === null || pair.table === null) {
         setError("this game has no saved record on this device");
         return;

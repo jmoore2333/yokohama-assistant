@@ -3269,6 +3269,27 @@ describe("a local game", () => {
     expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
   });
 
+  // **A store that cannot be read is named as the STORE** (PR #37 fix wave,
+  // fix round 1, review I-1). The Worker answers that case as an ordinary
+  // `unreadable` reply and the pair read rejects with its sentence. This
+  // control used to answer EVERY failure "the archive could not be reached",
+  // which about a storage fault is a false sentence: the archive was never
+  // asked, and nothing was sent.
+  it("names a store it could not read as the store, sends nothing, and leaves the control live", async () => {
+    const sentence =
+      "this browser's storage could not be read — Connection to Indexed Database server lost.";
+    const { user, stub } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      { archive: "dir", hooks: { pair: () => ({ unreadable: sentence }) } },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.queryByText("the archive could not be reached")).toBeNull();
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+  });
+
   // **Dark unless the SERVER reported an archive** (spec §2.5). A deployment
   // that keeps none would answer the send with a 404, and a control that
   // promised a save it cannot make is the one thing the label rule forbids.

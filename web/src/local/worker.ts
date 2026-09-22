@@ -33,7 +33,9 @@
 //    trapped module holds its own mutex and traps again on `init()`, so there
 //    is nothing to recover in place. A STORAGE refusal is not a trap, and a
 //    stored game that no longer rebuilds is not a trap either: both are
-//    ordinary replies.
+//    ordinary replies. That includes a storage READ that fails inside the
+//    export arm (`pair`, which reads IndexedDB since the PR #37 fix wave) — a
+//    restart there would discard the very move the export exists to rescue.
 
 import {
   deletePair,
@@ -46,7 +48,7 @@ import {
   takeGeneration,
   writeDocs,
 } from "./db";
-import { exportPair } from "./exportPair";
+import { exportPair, StoreUnreadable, type Pair } from "./exportPair";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -543,10 +545,19 @@ async function handle(req: Req): Promise<void> {
       // a tab that booted with a snapshot of another tab's game, or that has
       // since been stolen from, hands over what IndexedDB COMMITTED rather than
       // what it was left holding.
+      //
+      // **An IndexedDB read that fails here is NOT a trap** (rule 6; fix round
+      // 1, review I-1). A holder whose generation read fails answers its
+      // memory, and a committed read that fails is answered as `unreadable`,
+      // a reply the page refuses the export with. Letting either escape would
+      // reach the queue's `catch` below, which answers `trapped` — and the
+      // page's restart would throw away this Worker and the one copy of any
+      // move the store has refused to keep. A `wasm.read` that throws is not
+      // caught here and still traps: that one is the module's.
       const id = req.id;
-      post({
-        seq: req.seq,
-        ...(await exportPair(
+      let pair: Pair;
+      try {
+        pair = await exportPair(
           held.get(id)?.generation,
           () => readGeneration(db, id),
           () => ({
@@ -554,8 +565,13 @@ async function handle(req: Req): Promise<void> {
             table: wasm.read("table", id) ?? null,
           }),
           () => readPair(db, id),
-        )),
-      });
+        );
+      } catch (err) {
+        if (!(err instanceof StoreUnreadable)) throw err;
+        post({ seq: req.seq, unreadable: err.message });
+        return;
+      }
+      post({ seq: req.seq, ...pair });
       return;
     }
     case "release": {

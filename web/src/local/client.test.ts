@@ -80,7 +80,10 @@ describe("the local host's wire", () => {
     // operations that a move can fall between, and "Send to the archive" sends
     // the pair to a server that checks they agree.
     stubWorker({
-      pair: (id) => (id === "local-1" ? { record: '{"seed":1}', table: '{"schema":3}' } : {}),
+      pair: (id) =>
+        id === "local-1"
+          ? { record: '{"seed":1}', table: '{"schema":3}' }
+          : { record: null, table: null },
     });
     expect(await localPair("local-1")).toEqual({ record: '{"seed":1}', table: '{"schema":3}' });
     expect(currentWorker().posted).toEqual([{ seq: 1, kind: "pair", id: "local-1" }]);
@@ -395,6 +398,29 @@ describe("the two failures that must never leave a pending list", () => {
     dead.onmessageerror!({ data: undefined } as MessageEvent<unknown>);
     await expect(waiting).rejects.toThrow(/could not read/);
     expect(dead.terminated).toBe(true);
+  });
+
+  // **And a store that cannot be READ is neither** (PR #37 fix wave, fix round
+  // 1, review I-1; `worker.ts`'s rule 6). The export arm reads IndexedDB, and a
+  // read it refuses is answered as an ordinary reply naming the storage. The
+  // page must refuse the export with that sentence and leave the host ALONE:
+  // a restart terminates the Worker, and the Worker is holding the one copy of
+  // any move the store has refused to keep — exactly what the export is for.
+  it("refuses an export whose storage could not be read, and does NOT restart the host", async () => {
+    const sentence = "this browser's storage could not be read — Connection lost.";
+    stubWorker({ pair: () => ({ unreadable: sentence }) });
+    const fault = vi.fn();
+    onLocalFault(fault);
+    expect(await hold("local-1")).toBe(true);
+    const host = currentWorker();
+
+    await expect(localPair("local-1")).rejects.toThrow(sentence);
+    expect(host.terminated, "the Worker holding the unsaved move is not thrown away").toBe(false);
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(fault, "and nothing reports the host as restarted").not.toHaveBeenCalled();
+    // The host is still the one this page talks to, and still answers.
+    expect((await localCall("GET", "/api/games/local-1")).status).toBe(200);
+    expect(currentWorker()).toBe(host);
   });
 });
 
