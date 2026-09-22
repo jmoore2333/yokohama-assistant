@@ -185,7 +185,15 @@ export class FakeWorker {
         reply = {
           status: answer.status,
           body: answer.body === undefined ? "" : JSON.stringify(answer.body),
-          ...(answer.saved ? { saved: answer.saved } : {}),
+          // **`saved` is always present, because the real Worker always sends
+          // it** (`worker.ts:304-322`: every arm of the call path returns an
+          // outcome). Omitting the key left `localCall` reading `undefined`,
+          // which is not `"saved"` — so every corpus-driven local move in this
+          // suite was reported to the page as APPLIED BUT NOT SAVED, and the
+          // default state of the fake was a failure the real host cannot
+          // produce. The field's own doc already said "omitted means saved";
+          // this is what makes that true.
+          saved: answer.saved ?? "saved",
           ...(answer.reason ? { reason: answer.reason } : {}),
           ...(answer.trapped ? { trapped: true } : {}),
         };

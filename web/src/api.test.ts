@@ -191,7 +191,12 @@ describe("call routes by host", () => {
       }),
     });
     const state = await api.input("local-1", "1");
-    expect(state.warnings).toEqual(["APPLIED BUT NOT SAVED — the quota is full"]);
+    // **The prefix and the reason verbatim, and one sentence more** (M6.5b2,
+    // spec §2.4): the quota failure's path is the backup control, pointed at
+    // rather than restated on a screen of its own.
+    expect(state.warnings).toHaveLength(1);
+    expect(state.warnings[0]).toMatch(/^APPLIED BUT NOT SAVED — the quota is full — /);
+    expect(state.warnings[0]).toContain("Back up");
     // The corpus fixture itself carries none, so the line came from here.
     expect(wire.options.warnings).toEqual([]);
   });

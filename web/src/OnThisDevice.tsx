@@ -18,7 +18,9 @@ import { unplayableIds } from "./backup";
 import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
 import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
+import { dismissInstall, promptInstall, useInstallState } from "./install";
 import { navigate } from "./route";
+import { humanBytes, storageReport, type StorageReport } from "./storage";
 import type { TableView } from "./types";
 
 export function OnThisDevice() {
@@ -107,15 +109,135 @@ export function OnThisDevice() {
       ) : (
         <ul>{playable.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
       )}
+      {/* **What the browser has promised, and how to get the games off it**
+          (R-6.5b2.9, spec §2.4). Both are statements ABOUT the rows above, so
+          they stand under them: a promise about storage read on another screen
+          would be a promise about nothing a player can see. */}
+      <StorageLine />
+      <InstallOffer />
       {/* **Offered in EVERY state above, including the fault one** (spec §2.5):
           a module that will not load is when you most need your games out, and
           `backupEverything` reads IndexedDB from this page rather than through
-          the Worker for exactly that reason. */}
+          the Worker for exactly that reason.
+
+          **And it is the control the install offer points at** (spec §2.4): an
+          installed iOS app has its own storage container, so the envelope is
+          the only bridge. `InstallOffer` sits immediately above for that
+          reason, and a cell asserts the adjacency rather than the presence. */}
       <div className="backup-controls">
         <BackUpEverything />
         <Restore onDone={() => setRestored((n) => n + 1)} />
       </div>
       <Unplayable reload={restored} />
     </section>
+  );
+}
+
+/**
+ * Whether this browser has promised to keep these games (R-6.5b2.9, spec §2.4).
+ *
+ * **Three states, and the third is not a synonym for the second.** A browser
+ * that says it has not promised has answered; a browser with no storage
+ * manager, or one in a private window that throws on the question, has not —
+ * and telling a player their games are unprotected on the strength of a
+ * question that was never answered is a different claim from the one the
+ * browser made.
+ *
+ * **No wording here claims safety** (spec §2.4). A grant means the browser
+ * will not clear this origin to reclaim space. It is not a copy: it does not
+ * survive a cleared browser, a lost device, or an iOS home-screen install,
+ * which gets a storage container of its own. So every state points at the
+ * backup control below rather than reassuring.
+ *
+ * **It asks two questions and never the third.** `persisted()` and
+ * `estimate()` are reads; `persist()` is the ASK, and the ask belongs at the
+ * first committed move (`local/client.ts`), never on a door a visitor who will
+ * not play is looking at.
+ */
+function StorageLine(): React.ReactNode {
+  const [report, setReport] = useState<StorageReport | null | "reading">("reading");
+  useEffect(() => {
+    let live = true;
+    void storageReport().then(
+      (r) => live && setReport(r),
+      // `storageReport` swallows its own failures, so this is a rejection no
+      // browser should produce. It still must not leave the line saying
+      // "reading" for ever.
+      () => live && setReport(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (report === "reading") return null;
+  const sizes =
+    report !== null && report.quota > 0
+      ? ` ${humanBytes(report.usage)} of ${humanBytes(report.quota)} is in use.`
+      : "";
+  return (
+    <p className="muted storage-line">
+      {report === null
+        ? "This browser does not say whether it will keep these games."
+        : report.persisted
+          ? `This browser has promised to keep these games.${sizes}`
+          : `This browser has not promised to keep these games and may clear them to make room.${sizes}`}{" "}
+      Back them up to hold a copy you can restore.
+    </p>
+  );
+}
+
+/**
+ * The way onto a home screen, or the one sentence that stands in for it
+ * (R-6.5b2.9, spec §2.4).
+ *
+ * **Never a modal, and never repeated.** It is a block in the flow with the
+ * games still on screen beside it, and the iOS instruction carries its own
+ * dismiss — remembered per browser, so a player who waves it away never sees
+ * it again on that browser.
+ *
+ * **The WebKit sentence is the load-bearing one.** An installed iOS app gets
+ * its own storage container and shares nothing with Safari, so the games
+ * played in the browser do not appear in it. Offering the install without
+ * saying so would send a player to a home screen that looks like their app and
+ * is empty. The backup control is the next element on the page for that
+ * reason, and the envelope is the only bridge across that boundary.
+ */
+function InstallOffer(): React.ReactNode {
+  // **The hook is what redraws after the dismissal.** `dismissInstall` writes
+  // to `localStorage`, which nothing in React watches — so the module tells
+  // its listeners, and this component is one of them through the hook. A piece
+  // of local state here would be a second mechanism doing the same job.
+  const state = useInstallState();
+
+  if (state === "available") {
+    return (
+      <div className="install-offer">
+        <button type="button" className="ghost install" onClick={() => void promptInstall()}>
+          Install
+        </button>
+        <p className="muted">
+          keep this app on your device, with the games it holds. They stay in this browser&rsquo;s
+          storage.
+        </p>
+      </div>
+    );
+  }
+  if (state !== "ios-instructions") return null;
+  return (
+    <div className="install-offer ios">
+      {/* Each sentence is ONE text node: a `<strong>` inside would split it,
+          and the cells match on the sentence a player reads. */}
+      <p className="muted">
+        To keep this app on your home screen: tap Share, then Add to Home Screen.
+      </p>
+      <p className="muted install-container-note">
+        An app added to the home screen keeps its own storage, so it will not see the games played
+        here in the browser. Back them up first and restore them there.
+      </p>
+      <button type="button" className="linkish install-dismiss" onClick={() => dismissInstall()}>
+        Dismiss
+      </button>
+    </div>
   );
 }

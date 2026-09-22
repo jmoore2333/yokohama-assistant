@@ -385,18 +385,38 @@ export async function ensureArchiveFact(opts?: {
   }
 }
 
+/** What a player can DO about a write this browser would not keep (M6.5b2,
+ *  R-6.5b2.9; spec §2.4).
+ *
+ *  **One sentence appended, and no second screen.** A quota failure already
+ *  had a path — the line below — and this cycle points that line at the
+ *  envelope rather than inventing a place to say it again.
+ *
+ *  **It names the control that is ALREADY IN FRONT OF THE PLAYER**: this
+ *  warning is drawn on the game screen, and `App.tsx:1834` puts `BackUpOne` on
+ *  a local game's own banner. The same words also name the one on the row on
+ *  the first screen, which is the same component; a sentence that said WHERE
+ *  would be wrong on one of the two screens it is read on. */
+const BACKUP_POINTER =
+  'back this game up \u2014 the "Back up" button on it writes a file this app can restore.';
+
 /** The move happened and the browser would not keep it (spec §4).
  *
  *  **The server's own wording, and the server's own place for it**
  *  (`api.rs:1105`): a warning on the applied reply, never a refusal — the move
  *  DID happen. One rule and one sentence across both hosts, so a player who
- *  has run out of quota reads the same line whichever host they are on. */
+ *  has run out of quota reads the same line whichever host they are on.
+ *
+ *  **The prefix and the reason are carried VERBATIM** (spec §4: "APPLIED BUT
+ *  NOT SAVED" is carried from M6.5b, not restated); what M6.5b2 adds is the
+ *  pointer after them, which is about this browser and so belongs only on this
+ *  host's arm. */
 function withUnsaved<T>(out: T, reason: string | null): T {
   const warned = out as { warnings?: unknown };
   if (out && typeof out === "object" && Array.isArray(warned.warnings)) {
     warned.warnings = [
       ...(warned.warnings as string[]),
-      `APPLIED BUT NOT SAVED — ${reason ?? "the browser refused the write"}`,
+      `APPLIED BUT NOT SAVED — ${reason ?? "the browser refused the write"} — ${BACKUP_POINTER}`,
     ];
   }
   return out;

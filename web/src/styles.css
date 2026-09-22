@@ -985,6 +985,31 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .restore-report { margin: 0.4rem 0 0; padding-left: 1.1rem; }
 .restore-report li { margin: 0.2rem 0; }
 .restore-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+/* ---- keeping the games (M6.5b2, R-6.5b2.9) ----------------------------- */
+/* The storage line and the install offer sit between the rows and the backup
+   controls, because both are statements ABOUT those rows. The rules here are
+   `.backup-controls`' own: wrapping and rhythm, not layout — a block of two
+   sentences and one control has nothing to lay out.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, and the door is
+   outside all of them, so this lands on the headed live review (the same note
+   the backup block carries). */
+.storage-line { margin: 0.8rem 0 0; }
+/* A real break above it, measured at 390px: the storage line and the two
+   install sentences are all `.muted` at the same size, and at the backup
+   block's 0.8rem they read as one wall of text rather than as two statements
+   about different things. */
+.install-offer { margin-top: 1.4rem; }
+.install-offer p { margin: 0.2rem 0; }
+/* A sentence with no spaces to break on — an id, a long word — must wrap
+   rather than push the page sideways at 390px. */
+.install-offer .install-container-note { overflow-wrap: anywhere; }
+.install-offer button.install { margin-bottom: 0.2rem; }
+/* The dismiss is a control inside a block of prose, so it takes `.linkish`'s
+   treatment and is set at the quiet size the lines above it use. */
+.install-offer .install-dismiss { font-size: 12px; }
+
 .unplayable { margin-top: 0.8rem; }
 .unplayable h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--fg-dim); }

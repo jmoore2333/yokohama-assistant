@@ -12,11 +12,12 @@
 // defects M2 found by clicking was a second request going out while the first
 // was in flight, and a stub that resolves immediately cannot see it.
 
-import { act, render } from "@testing-library/react";
-import { vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { expect, vi } from "vitest";
 import { App } from "../App";
 import { CLAIMED_USER_KEY } from "../api";
 import { wire } from "../wire/contract";
+import { currentWorker, stubWorker } from "./fakeWorker";
 import type { ClientState, GamesList } from "../types";
 
 /** What `GET /api/games` answers with, naming these games.
@@ -485,3 +486,52 @@ export function runRange(path: string): number[] | null {
  *  what the list of `/at/{k}` requests used to be, read off the run calls. */
 export const positionsWalked = (stub: ApiStub): number[] =>
   stub.matching("GET", "/at?").flatMap((c) => runRange(c.path) ?? []);
+
+/**
+ * The local host answering ONE playable game from the corpus (M6.5b2).
+ *
+ * **Call it BEFORE `render`**, like `stubWorker` itself: the door lists the
+ * games in this browser on its first paint, and a Worker installed afterwards
+ * is one the page has already given up asking.
+ *
+ * The state is `optionsMany` re-addressed to a local id — the corpus's own
+ * payload, the `fakeWorker` rule — because it is the fixture with a row a
+ * click can land on. Every input is answered with the SAME state, which is all
+ * a cell about the wiring needs: what is being read is which calls went out,
+ * not what the engine did with them.
+ */
+export function stubLocalGame(id = "local-1"): void {
+  const state = { ...wire.optionsMany, id };
+  stubWorker({
+    call: (req) => {
+      if (req.method === "GET" && req.path === `/api/games/${id}`) return { status: 200, body: state };
+      if (req.path === `/api/games/${id}/input`) return { status: 200, body: state };
+      return undefined;
+    },
+  });
+}
+
+/**
+ * Open the local game on the door and commit ONE move, the way a player does.
+ *
+ * A row, a click, an option, and the `/input` the click sends — asserted to
+ * have gone out, so a cell that then counts something downstream is counting
+ * from a move that really happened rather than from a click that landed on
+ * nothing. Pairs with [`stubLocalGame`].
+ */
+export async function playOneLocalMove(id = "local-1"): Promise<void> {
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("link", { name: id }));
+  // The banner strip: the one thing that exists only once a game is on screen.
+  await screen.findByText(/end triggers:/);
+  const prompt = wire.optionsMany.prompt;
+  if (prompt.kind !== "options") throw new Error("the corpus's optionsMany fixture moved");
+  const words = prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await user.click(screen.getByRole("button", { name: new RegExp(words) }));
+  await waitFor(() =>
+    expect(
+      currentWorker().posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+    ).toHaveLength(1),
+  );
+}

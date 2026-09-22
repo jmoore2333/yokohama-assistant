@@ -12,7 +12,7 @@
 // is what they got before when the read simply failed.
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnThisDevice } from "./OnThisDevice";
@@ -20,6 +20,9 @@ import { api } from "./api";
 import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
+import { resetInstallForTests } from "./install";
+import { resetPersistenceRequestForTests } from "./storage";
+import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
  *  this device (see `fakeWorker.ts`'s note about the one field a fixture is
@@ -142,5 +145,169 @@ describe("On this device", () => {
     const line = await screen.findByText(/could not be read/);
     expect(line).toHaveTextContent("the module failed to load");
     expect(screen.queryByText(/no game on this device yet/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M6.5b2: installable and persistent (R-6.5b2.9, spec §2.4).
+//
+// **The two offers live in the section the games are in**, which is the whole
+// of why they are here: a promise about storage and a way to carry the games
+// off this device are statements ABOUT these rows, and a player reading them
+// anywhere else would have to hold two screens in their head at once.
+
+describe("keeping the games on this device", () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+    resetLocalHostForTests();
+    resetInstallForTests();
+    resetPersistenceRequestForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetInstallForTests();
+    resetPersistenceRequestForTests();
+  });
+
+  /** The section drawn with the local host answering from the corpus. */
+  const draw = async () => {
+    stubWorker();
+    render(<OnThisDevice />);
+    await screen.findByRole("link", { name: LOCAL });
+  };
+
+  const offer = (): HTMLElement => document.querySelector<HTMLElement>(".install-offer")!;
+
+  // **The sentence that must be on the screen that offers the install** (spec
+  // §2.4): an installed iOS app gets its own storage container and shares
+  // nothing with Safari, so the games played in the browser do not travel.
+  it("says the installed app will not see these games, beside a way to carry them", async () => {
+    stubIosSafari();
+    await draw();
+    expect(screen.getByText(/will not see the games/i)).toBeInTheDocument();
+    // **Beside it, and that is asserted as ADJACENCY rather than as presence.**
+    // The backup controls are in this section whatever the platform, so
+    // "a button exists somewhere" would pass with the sentence at the other
+    // end of the page. The block that carries the sentence is the block the
+    // control sits next to.
+    const controls = offer().nextElementSibling as HTMLElement;
+    expect(controls).toHaveClass("backup-controls");
+    expect(within(controls).getByRole("button", { name: /back up/i })).toBeInTheDocument();
+  });
+
+  it("names Share and Add to Home Screen, and is not a modal", async () => {
+    stubIosSafari();
+    await draw();
+    const text = offer().textContent ?? "";
+    expect(text).toMatch(/Share/);
+    expect(text).toMatch(/Add to Home Screen/);
+    // Never a modal (spec §2.4): it is a block in the flow, so the games it is
+    // about are still on screen and still reachable.
+    expect(offer().closest("[role='dialog']")).toBeNull();
+    expect(screen.getByRole("link", { name: LOCAL })).toBeVisible();
+  });
+
+  it("stops offering the instruction once it is dismissed, and stays quiet on the next visit", async () => {
+    stubIosSafari();
+    await draw();
+    await userEvent.setup().click(within(offer()).getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => expect(document.querySelector(".install-offer")).toBeNull());
+
+    // The next VISIT: everything this page held is gone and only the browser's
+    // memory is left, which is what "remembered per browser" has to mean.
+    cleanup();
+    resetLocalHostForTests();
+    resetInstallForTests();
+    await draw();
+    expect(document.querySelector(".install-offer")).toBeNull();
+    // The anti-vacuity half: the section itself really did draw.
+    expect(screen.getByRole("button", { name: "Back up everything" })).toBeInTheDocument();
+  });
+
+  it("offers a real button where the browser offers one, and prompts with it", async () => {
+    await draw();
+    const event = new Event("beforeinstallprompt") as Event & { prompt?: () => Promise<void> };
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    event.prompt = prompt;
+    // The offer arrives AFTER the first paint, which is when Chromium fires it.
+    act(() => {
+      fireEvent(window, event);
+    });
+    const button = await screen.findByRole("button", { name: "Install" });
+    await userEvent.setup().click(button);
+    expect(prompt).toHaveBeenCalledTimes(1);
+    // And the iOS instruction is nowhere near it: the two are alternatives.
+    expect(screen.queryByText(/Add to Home Screen/)).toBeNull();
+  });
+
+  it("offers nothing at all on a browser that cannot install and is not iOS", async () => {
+    stubDesktopMac();
+    await draw();
+    expect(document.querySelector(".install-offer")).toBeNull();
+  });
+
+  // ---- what the browser has promised (spec §2.4) --------------------------
+
+  it("reports a grant, the usage and the quota", async () => {
+    stubStorage({
+      persisted: vi.fn().mockResolvedValue(true),
+      estimate: vi.fn().mockResolvedValue({ usage: 54_103, quota: 2_000_000_000 }),
+    });
+    await draw();
+    const line = await screen.findByText(/promised to keep/i);
+    expect(line).toHaveTextContent("54 KB of 2 GB");
+    // **No wording claims safety** (spec §2.4): a grant is useful and an export
+    // is still necessary, so the line does not say the games are safe or
+    // permanent.
+    expect(line.textContent ?? "").not.toMatch(/safe|permanent|for ?ever|guarantee/i);
+  });
+
+  it("says so when the browser has NOT promised", async () => {
+    stubStorage({
+      persisted: vi.fn().mockResolvedValue(false),
+      estimate: vi.fn().mockResolvedValue({ usage: 12_000, quota: 1_200_000_000 }),
+    });
+    await draw();
+    const line = await screen.findByText(/has not promised/i);
+    expect(line).toHaveTextContent("12 KB of 1.2 GB");
+  });
+
+  it("says the browser will not say, where there is no storage manager", async () => {
+    stubStorage(undefined);
+    await draw();
+    expect(await screen.findByText(/does not say/i)).toBeInTheDocument();
+  });
+
+  // **The report is never the reason a game cannot be reached.** It is drawn
+  // beside the rows and asks the browser two questions; a browser that throws
+  // on both must still list the games.
+  it("draws the games when every storage read throws", async () => {
+    stubStorage({
+      persisted: () => {
+        throw new Error("the operation is insecure");
+      },
+      estimate: () => {
+        throw new Error("the operation is insecure");
+      },
+    });
+    await draw();
+    expect(screen.getByRole("link", { name: LOCAL })).toBeInTheDocument();
+    expect(await screen.findByText(/does not say/i)).toBeInTheDocument();
+  });
+
+  // **Never at boot** (spec §2.4). The section reads the report, which is two
+  // questions; it must not ask for the grant, which is a PROMPT in some
+  // browsers and a decision a visitor who never plays has not been given a
+  // reason to make.
+  it("reads the report without asking for the grant", async () => {
+    const persist = vi.fn().mockResolvedValue(true);
+    stubStorage({
+      persist,
+      persisted: vi.fn().mockResolvedValue(false),
+      estimate: vi.fn().mockResolvedValue({ usage: 1, quota: 2 }),
+    });
+    await draw();
+    await screen.findByText(/has not promised/i);
+    expect(persist).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@
 // **Nothing here knows a rule, a route or a document's shape.** It moves
 // strings. The module in the Worker is the layer; this is a wire.
 
+import { requestPersistenceOnce } from "../storage";
 import { gameIdOf } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 
@@ -281,6 +282,27 @@ export async function localCall(
   // which only ever happens on the way into the screen that is about to draw
   // it anyway.
   if (method !== "GET") for (const f of [...writeHandlers]) f();
+
+  // **The browser is asked to KEEP these games at the first committed move,
+  // and never at boot** (M6.5b2, R-6.5b2.9; spec §2.4). A visitor who never
+  // plays is never asked; a player who has just committed a move has given the
+  // browser a reason to say yes, and in some browsers the answer is decided
+  // from exactly that kind of engagement.
+  //
+  // **Three conditions and each one is load-bearing.** `"saved"` alone, because
+  // a store that has just REFUSED a write is not a store to ask for a promise —
+  // that reply carries the backup line instead. `POST …/input` alone, because a
+  // create is a table and not yet a game, and a GET is a read. And
+  // `requestPersistenceOnce` holds the page flag, so a run of moves asks once.
+  //
+  // This is the one route this wire knows the meaning of, which the header's
+  // "nothing here knows a route" is otherwise true of — it sits here because
+  // this is the only place a COMMITTED local write is distinguishable from an
+  // applied-but-unsaved one, and `api.ts` sees the same reply with that
+  // distinction already flattened into a warning.
+  if (r.saved === "saved" && method === "POST" && p.endsWith("/input")) {
+    void requestPersistenceOnce();
+  }
 
   // **`not-held` is a lock loss when this page believed it held the game**
   // (review finding #4). The Worker posts its own unsolicited `lost` on the

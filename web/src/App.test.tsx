@@ -17,7 +17,9 @@ import {
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
-import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type ApiStub, type Reply } from "./test/harness";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, playOneLocalMove, positionsWalked, renderApp, runRange, signedOutReply, stubApi, stubLocalGame, type ApiCall, type ApiStub, type Reply } from "./test/harness";
+import { resetPersistenceRequestForTests } from "./storage";
+import { stubStorage } from "./test/platform";
 import { wire } from "./wire/contract";
 import type { ClientState, Events } from "./types";
 
@@ -3909,5 +3911,125 @@ describe("the option words", () => {
       await new Promise((r) => setTimeout(r, 20));
     });
     expect(askedLocally()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M6.5b2: persistence is asked for when a game is worth keeping (R-6.5b2.9,
+// spec §2.4).
+//
+// **The ask is at the FIRST COMMITTED MOVE and never at boot**, so a visitor
+// who never plays is never asked — which in some browsers is a prompt and in
+// all of them is a decision. These cells read the WHOLE path: `App` mounted at
+// the door, a game opened from the local section, one option clicked, and the
+// `persist()` the browser would have been asked for counted on either side of
+// it.
+
+describe("asking the browser to keep these games", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+    resetPersistenceRequestForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetPersistenceRequestForTests();
+    resetFactsForTest();
+  });
+
+  /** The door with no server behind it, which is the shape a local game is
+   *  played in: every boot read fails and the section draws from the Worker. */
+  const noServer = () =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+
+  it("asks for persistence at the first committed move and not at boot", async () => {
+    const persist = vi.fn().mockResolvedValue(true);
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) });
+    stubLocalGame();
+    noServer();
+
+    render(<App />);
+    await screen.findByText(/On this device/);
+    // The door drew, and read the REPORT — which is two questions and not the
+    // ask. A visitor who stops here has been asked nothing.
+    expect(persist).not.toHaveBeenCalled();
+
+    await playOneLocalMove();
+    await waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
+  });
+
+  // **A move the store REFUSED is not a reason to ask.** The ask is for a game
+  // worth keeping, and the browser has just said it is not keeping this one:
+  // the answer to that is the backup line the reply already carries.
+  it("does not ask when the move was applied and not saved", async () => {
+    const persist = vi.fn().mockResolvedValue(true);
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) });
+    const state = { ...wire.optionsMany, id: "local-1" };
+    stubWorker({
+      call: (req) => {
+        if (req.method === "GET" && req.path === "/api/games/local-1")
+          return { status: 200, body: state };
+        if (req.path === "/api/games/local-1/input")
+          return { status: 200, body: state, saved: "unsaved" as const, reason: "the quota is full" };
+        return undefined;
+      },
+    });
+    noServer();
+
+    render(<App />);
+    await playOneLocalMove();
+    // The move is on screen and the browser was never asked to keep it.
+    expect(await screen.findByText(/APPLIED BUT NOT SAVED/)).toBeInTheDocument();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  // **The quota failure's path is the backup control** (spec §2.4): this cycle
+  // points the existing line at it rather than inventing a second screen.
+  it("points a refused write at the way to keep the game", async () => {
+    stubStorage({ persisted: vi.fn().mockResolvedValue(false) });
+    const state = { ...wire.optionsMany, id: "local-1" };
+    stubWorker({
+      call: (req) => {
+        if (req.method === "GET" && req.path === "/api/games/local-1")
+          return { status: 200, body: state };
+        if (req.path === "/api/games/local-1/input")
+          return { status: 200, body: state, saved: "unsaved" as const, reason: "the quota is full" };
+        return undefined;
+      },
+    });
+    noServer();
+
+    render(<App />);
+    await playOneLocalMove();
+    const warning = await screen.findByText(/APPLIED BUT NOT SAVED/);
+    // The server's own wording, carried verbatim, with the reason it gave.
+    expect(warning).toHaveTextContent("APPLIED BUT NOT SAVED — the quota is full");
+    // And one sentence more, naming the control that gets the game off this
+    // browser — which is the only thing a player can actually do about it.
+    expect(warning).toHaveTextContent(/back/i);
+  });
+
+  // The ask is once per PAGE, not once per game: a player who declines on
+  // their first move is not asked again on their second.
+  it("asks once across two moves", async () => {
+    const persist = vi.fn().mockResolvedValue(true);
+    stubStorage({ persist, persisted: vi.fn().mockResolvedValue(false) });
+    stubLocalGame();
+    noServer();
+
+    render(<App />);
+    await playOneLocalMove();
+    await waitFor(() => expect(persist).toHaveBeenCalledTimes(1));
+    await userEvent.setup().click(firstOptionButton());
+    await waitFor(() =>
+      expect(
+        currentWorker().posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+      ).toHaveLength(2),
+    );
+    expect(persist).toHaveBeenCalledTimes(1);
   });
 });
