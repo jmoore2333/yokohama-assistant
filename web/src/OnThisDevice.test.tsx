@@ -16,7 +16,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnThisDevice } from "./OnThisDevice";
-import { api } from "./api";
+import { api, rememberServerFacts } from "./api";
+import { resetFactsForTest } from "./local/facts";
+import { enqueue, resetOutboxForTests } from "./outbox";
+import { stubApi } from "./test/harness";
+import { wire } from "./wire/contract";
 import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
@@ -362,5 +366,121 @@ describe("keeping the games on this device", () => {
     const withRows = await screen.findByText(/has not promised/i);
     expect(withRows).toHaveTextContent("these games");
     expect(withRows).toHaveTextContent("Back them up");
+  });
+});
+
+// ---- the outbox on the door (M6.5b2, R-6.5b2.13; spec §2.6) ----------------
+//
+// **This is the only screen the queue is visible on**, and that is the point:
+// the send is attempted when nobody is watching — at the end of a game, on an
+// `online` event, at the next launch — so the row a player comes back to is
+// what tells them it did not land and why.
+describe("the games waiting to reach the archive", () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+    resetLocalHostForTests();
+    resetOutboxForTests();
+    resetFactsForTest();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetOutboxForTests();
+    resetFactsForTest();
+  });
+
+  /** The section, once its rows have been read out of the store. */
+  const waiting = async (): Promise<HTMLElement> =>
+    (await screen.findByRole("heading", { name: "Waiting to reach the archive" })).closest(
+      "div",
+    ) as HTMLElement;
+
+  // The ordinary state is the empty one, and a heading over an empty list would
+  // be a permanent reminder of a mechanism that is working.
+  it("draws nothing at all when nothing is waiting", async () => {
+    stubWorker();
+    render(<OnThisDevice />);
+    await screen.findByRole("link", { name: LOCAL });
+    expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull();
+  });
+
+  it("names the game and says which of the four reasons it is", async () => {
+    stubWorker();
+    await enqueue(LOCAL, "offline");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    expect(within(box).getByText(LOCAL)).toBeInTheDocument();
+    expect(within(box).getByText("no connection")).toBeInTheDocument();
+  });
+
+  it("says not yet known for a game finished before any health answer", async () => {
+    stubWorker();
+    await enqueue(LOCAL, "unknown");
+    render(<OnThisDevice />);
+    expect(within(await waiting()).getByText("not yet known")).toBeInTheDocument();
+  });
+
+  // **"Not signed in" names BOTH doors under `claimed`** (spec §2.6): passing
+  // the turnstile mints the Access cookie, and `POST /api/archive` then still
+  // refuses in this API's own shape until the in-app sign-in has supplied the
+  // claimed user. Two steps, and the row says so.
+  it("names both doors under claimed, and one under cf-access", async () => {
+    stubWorker();
+    await enqueue(LOCAL, "signed-out");
+    rememberServerFacts({ ...wire.health, identity: "claimed" });
+    render(<OnThisDevice />);
+    let box = await waiting();
+    expect(within(box).getByText("not signed in")).toBeInTheDocument();
+    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toHaveAttribute(
+      "href",
+      "/enter",
+    );
+    expect(within(box).getByText(/then sign in here/i)).toBeInTheDocument();
+
+    cleanup();
+    rememberServerFacts({ ...wire.health, identity: "cf-access" });
+    render(<OnThisDevice />);
+    box = await waiting();
+    // The turnstile is the whole of it. A second step named here would send a
+    // player looking for a form this deployment does not have.
+    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toBeInTheDocument();
+    expect(within(box).queryByText(/then sign in here/i)).toBeNull();
+  });
+
+  // **A permanent refusal carries the server's own sentence and offers no
+  // retry**: these bytes will be refused the same way for ever, and a button
+  // that only asks again would be a button that never works.
+  it("carries the server's sentence on a refusal, and offers no Send now", async () => {
+    stubWorker();
+    await enqueue(LOCAL, "refused", "a different record is archived under this id");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    expect(
+      within(box).getByText("a different record is archived under this id"),
+    ).toBeInTheDocument();
+    expect(within(box).queryByRole("button", { name: /send .* now/i })).toBeNull();
+  });
+
+  // The third trigger (spec §2.6): the player's own button.
+  it("sends the pair on the player's own button, and the row goes", async () => {
+    const posts: unknown[] = [];
+    stubWorker({ pair: () => ({ record: '{"seed":1,"events":[]}', table: "{}" }) });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") {
+        posts.push(call.body);
+        return wire.archivePost;
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await enqueue(LOCAL, "offline");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    await userEvent.setup().click(
+      within(box).getByRole("button", { name: `send ${LOCAL} to the archive now` }),
+    );
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
+    );
   });
 });

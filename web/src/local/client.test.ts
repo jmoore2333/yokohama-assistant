@@ -397,3 +397,34 @@ describe("the two failures that must never leave a pending list", () => {
     expect(dead.terminated).toBe(true);
   });
 });
+
+// ---- a notice, which is not a fault (M6.5b2, spec §2.6) --------------------
+//
+// **The distinction is whether anything is settled.** A fault means this host
+// cannot answer and everything waiting on it is rejected; a notice means it is
+// still working on it and here is why it is slow. The storage version's blocked
+// open is the first of the second kind, and a client that routed it through
+// `fail` would have turned a wait that ends by itself — the other tab closes —
+// into a screenful of refusals on a page that then had nothing left to retry.
+describe("an unsolicited notice", () => {
+  it("reaches the fault line without settling anything in flight", async () => {
+    stubWorker({ call: (req) => (req.path.endsWith("/log") ? "pending" : undefined) });
+    const fault = vi.fn();
+    onLocalFault(fault);
+    const inFlight = localCall("GET", "/api/games/local-1/log");
+    let settled = false;
+    void inFlight.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+
+    currentWorker().emit({ kind: "notice", sentence: "another tab is holding this open" });
+    await tick();
+    expect(fault).toHaveBeenCalledWith("another tab is holding this open");
+    // The call is STILL waiting, which is the whole difference from a fault.
+    expect(settled).toBe(false);
+    // And the Worker was not thrown away: a notice is not a restart.
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(currentWorker().terminated).toBe(false);
+  });
+});

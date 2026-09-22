@@ -19,6 +19,8 @@ import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupContro
 import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
+import { serverFacts } from "./local/facts";
+import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
 import { navigate } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
 import type { TableView } from "./types";
@@ -109,6 +111,7 @@ export function OnThisDevice() {
       ) : (
         <ul>{playable.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
       )}
+      <Outbox />
       {/* **What the browser has promised, and how to get the games off it**
           (R-6.5b2.9, spec §2.4). Both are statements ABOUT the rows above, so
           they stand under them: a promise about storage read on another screen
@@ -251,5 +254,87 @@ function InstallOffer(): React.ReactNode {
         Dismiss
       </button>
     </div>
+  );
+}
+
+/**
+ * The games that have finished here and have not reached the archive
+ * (M6.5b2, R-6.5b2.13; spec §2.6).
+ *
+ * **On the door, under the games it is about.** A game waiting to be sent is a
+ * fact about a row above, and this cycle's whole reason for the queue is that
+ * the send is attempted when nobody is watching — so the one place it can be
+ * seen is the screen the player comes back to.
+ *
+ * **It draws NOTHING when nothing is waiting**, which is the ordinary state: a
+ * heading over an empty list would be a permanent reminder of a mechanism that
+ * is working.
+ */
+function Outbox(): React.ReactNode {
+  const rows = useOutbox();
+  if (rows.length === 0) return null;
+  return (
+    <div className="outbox">
+      <h4>Waiting to reach the archive</h4>
+      <ul>
+        {rows.map((r) => (
+          <OutboxRow key={r.id} row={r} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function OutboxRow({ row }: { row: Pending }): React.ReactNode {
+  const [sending, setSending] = useState(false);
+  // **A `refused` row has nothing to retry** (spec §2.6): a 400 or a
+  // non-`identical` 409 is about these bytes and will answer the same way for
+  // ever, so the row says what the server said and offers no button that would
+  // only ask again.
+  const retryable = row.reason !== "refused";
+  return (
+    <li className={`outbox-row ${row.reason}`}>
+      <span className="name">{row.id}</span>
+      <span className="muted why">{reasonWords(row.reason, row.sentence)}</span>
+      {row.reason === "signed-out" ? <Remedy /> : null}
+      {retryable ? (
+        <button
+          type="button"
+          className="ghost"
+          aria-label={`send ${row.id} to the archive now`}
+          disabled={sending}
+          onClick={() => {
+            setSending(true);
+            void sendNow(row.id).finally(() => setSending(false));
+          }}
+        >
+          Send now
+        </button>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * What to DO about "not signed in" — and under `claimed` it is two steps, not
+ * one (spec §2.6).
+ *
+ * **Read off the door's own name.** Passing `/enter` gets the Access cookie;
+ * `POST /api/archive` then still refuses in this API's own JSON shape until the
+ * in-app sign-in has supplied `X-Yokohama-Claimed-User`. Under `cf-access` and
+ * `worker` the turnstile is the whole of it, and a second step named there
+ * would send a player looking for a form that does not exist.
+ *
+ * **A door this browser has never been told about gets the turnstile alone**,
+ * which is the first step under every mode: it is the instruction that is true
+ * whatever the answer turns out to be.
+ */
+function Remedy(): React.ReactNode {
+  const claimed = serverFacts().identity === "claimed";
+  return (
+    <span className="muted remedy">
+      <a href="/enter">Sign in at the door</a>
+      {claimed ? ", then sign in here with your email." : "."}
+    </span>
   );
 }

@@ -14,8 +14,29 @@
 // say.
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
+import { waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { deletePair, openDb, readAll, readGeneration, takeGeneration, writeDocs } from "./db";
+import {
+  DB_NAME,
+  deleteOutboxRow,
+  deletePair,
+  forgetGame,
+  openDb,
+  putOutboxRow,
+  readAll,
+  readGeneration,
+  readOutbox,
+  readOutboxRow,
+  retryingStart,
+  takeGeneration,
+  writeDocs,
+} from "./db";
+
+/** Let every already-queued microtask run, with no timer advanced — what a
+ *  cell asserting that a promise has NOT settled has to wait out. */
+const flushMicrotasks = async (): Promise<void> => {
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+};
 
 beforeEach(() => {
   // A FRESH database per cell. `fake-indexeddb/auto` installs one factory for
@@ -147,5 +168,158 @@ describe("the local document store", () => {
     expect(await takeGeneration(db, "local-new")).toBe(1);
     expect(await takeGeneration(db, "local-other")).toBe(1);
     expect(await readGeneration(db, "local-new")).toBe(1);
+  });
+});
+
+// ---- the storage version, and an upgrade that can be BLOCKED (M6.5b2 §2.6) --
+//
+// **The obvious cell is not the real case.** Opening version 1, closing it and
+// then opening version 2 tests nothing that matters: a real M6.5b tab holds its
+// connection for the Worker's whole life and has NO `versionchange` handler to
+// close it — that code is shipped and cannot be retrofitted. So the cells below
+// arrange that holder by hand, with a raw `indexedDB.open(DB_NAME, 1)` that
+// installs no handler at all, which is what the shipped code is.
+describe("the outbox store's version bump", () => {
+  /** An M6.5b-shaped holder: version 1, no `versionchange` handler, held open
+   *  exactly as the shipped Worker holds it. */
+  const holdVersionOne = (): Promise<IDBDatabase> =>
+    new Promise((resolve, reject) => {
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains("docs"))
+          db.createObjectStore("docs", { keyPath: ["doc", "id"] });
+        if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "id" });
+      };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+
+  it("creates the outbox store on a FRESH database", async () => {
+    const db = await openDb();
+    expect(db.version).toBe(2);
+    expect([...db.objectStoreNames].sort()).toEqual(["docs", "meta", "outbox"]);
+  });
+
+  // The upgrade path, which is the one every browser that has played a local
+  // game takes: the two stores are already there with documents in them, and
+  // the bump adds a store beside them WITHOUT touching a document's shape.
+  it("adds the outbox store to a version-1 database and keeps its documents", async () => {
+    const one = await holdVersionOne();
+    await new Promise<void>((resolve, reject) => {
+      const t = one.transaction("docs", "readwrite");
+      t.objectStore("docs").put({ doc: "record", id: "local-1", text: "R" });
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+    });
+    one.close();
+
+    const db = await openDb();
+    expect(db.version).toBe(2);
+    expect([...db.objectStoreNames].sort()).toEqual(["docs", "meta", "outbox"]);
+    expect((await readAll(db)).map((r) => r.text)).toEqual(["R"]);
+  });
+
+  it("says what is blocking it, and recovers when that tab goes", async () => {
+    const held = await holdVersionOne();
+    const blocked = vi.fn();
+    const open = openDb({ onBlocked: blocked });
+    await waitFor(() => expect(blocked).toHaveBeenCalled());
+    // The sentence names the other tab, because that is the thing the player
+    // can do something about — clearing site data is not the remedy.
+    expect(blocked.mock.calls[0]![0]).toMatch(/open in another tab/i);
+    // **And it has NOT rejected**: a rejection here is what made the Worker
+    // cache a permanent failure, so the open waits instead.
+    let settled = false;
+    void open.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    held.close();
+    const db = await open;
+    expect(db.version).toBe(2);
+  });
+
+  // **This is the LAST upgrade that can be blocked this way**, and that is the
+  // difference between the old code and the new: every connection this module
+  // hands out closes itself when another tab asks for a newer version.
+  it("closes its own connection on versionchange, so the NEXT upgrade is never blocked", async () => {
+    const mine = await openDb();
+    expect(mine.version).toBe(2);
+    const blocked = vi.fn();
+    const three = await new Promise<IDBDatabase>((resolve, reject) => {
+      const r = indexedDB.open(DB_NAME, 3);
+      r.onupgradeneeded = () => undefined;
+      r.onblocked = blocked;
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+    expect(blocked).not.toHaveBeenCalled();
+    expect(three.version).toBe(3);
+    three.close();
+  });
+
+  // **A start that fails is not the host's permanent answer** (spec §2.6). The
+  // Worker's startup promise is cached for the life of the Worker, so a single
+  // rejection used to make every later message fail for a reason that had gone
+  // away. A resolved start IS cached — it is what "start once" means.
+  it("caches a start that worked and RETRIES one that did not", async () => {
+    let attempts = 0;
+    const start = retryingStart(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("blocked");
+      return attempts;
+    });
+    await expect(start()).rejects.toThrow("blocked");
+    await expect(start()).resolves.toBe(2);
+    await expect(start()).resolves.toBe(2);
+    expect(attempts).toBe(2);
+  });
+
+  it("runs the start ONCE for callers that arrive together", async () => {
+    let attempts = 0;
+    const start = retryingStart(async () => {
+      attempts += 1;
+      return attempts;
+    });
+    expect(await Promise.all([start(), start(), start()])).toEqual([1, 1, 1]);
+    expect(attempts).toBe(1);
+  });
+});
+
+// ---- a game's rows are ONE list, and the outbox is now one of them ----------
+describe("the outbox rows of a game", () => {
+  it("writes, reads back and removes one row", async () => {
+    const db = await openDb();
+    expect(await readOutbox(db)).toEqual([]);
+    await putOutboxRow(db, { id: "local-1", state: "pending", reason: "offline", lastTried: 7 });
+    expect(await readOutboxRow(db, "local-1")).toEqual({
+      id: "local-1",
+      state: "pending",
+      reason: "offline",
+      lastTried: 7,
+    });
+    await deleteOutboxRow(db, "local-1");
+    expect(await readOutboxRow(db, "local-1")).toBeNull();
+  });
+
+  // **[`GAME_DOCS`]'s rule, widened** (review I-1's lesson): a game's rows are
+  // one list, and the two deletes must not disagree about what a game's rows
+  // ARE. An outbox row left behind after a delete is a row naming a game that
+  // is gone, and the door would list it as waiting to be sent for ever.
+  it("goes with the game through BOTH deletes", async () => {
+    const db = await openDb();
+    await writeDocs(db, "local-1", 0, { record: "R", table: "T" });
+    await putOutboxRow(db, { id: "local-1", state: "pending", reason: "offline", lastTried: 0 });
+    expect(await deletePair(db, "local-1", 0)).toBe("deleted");
+    expect(await readOutbox(db)).toEqual([]);
+
+    await writeDocs(db, "local-2", 0, { record: "R", table: "T" });
+    await putOutboxRow(db, { id: "local-2", state: "sent", at: 1, fingerprint: "1:2" });
+    await forgetGame(db, "local-2");
+    expect(await readOutbox(db)).toEqual([]);
   });
 });

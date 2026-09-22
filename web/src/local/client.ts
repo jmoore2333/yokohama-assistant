@@ -132,8 +132,22 @@ function start(): Worker {
   w.onerror = (e: ErrorEvent) =>
     drop(`the local host failed to start: ${e.message || "the Worker reported an error"}`);
   w.onmessageerror = () => drop("the local host sent something this page could not read");
-  w.onmessage = (e: MessageEvent<Reply & { kind?: string; id?: string; trapped?: boolean }>) => {
+  w.onmessage = (
+    e: MessageEvent<Reply & { kind?: string; id?: string; sentence?: string; trapped?: boolean }>,
+  ) => {
     const data = e.data;
+    // **Unsolicited, and NOT a failure** (M6.5b2, spec §2.6). The Worker has
+    // something to say about its own state while it is still working on it —
+    // today, that another tab is holding the old storage version open and this
+    // one is waiting for it to go. It reaches the same handlers a fault does,
+    // because it is the same line on the same screen; what it must NOT do is
+    // settle the pending calls, which is what `fail` would have done and which
+    // would have turned a wait that ends by itself into a screenful of
+    // refusals.
+    if (data.kind === "notice" && typeof data.sentence === "string") {
+      for (const f of [...faultHandlers]) f(data.sentence);
+      return;
+    }
     if (data.kind === "lost" && typeof data.id === "string") {
       // **Unsolicited**: the lock this tab held was stolen. The page turns the
       // screen read-only; it is told BEFORE the in-flight reply that goes with

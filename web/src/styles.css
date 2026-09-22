@@ -1022,6 +1022,33 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .unplayable li .meta { overflow-wrap: anywhere; }
 
+/* ---- the outbox (M6.5b2, R-6.5b2.13) ----------------------------------- */
+/* **`.unplayable`'s rules, for `.unplayable`'s reason.** The two blocks are the
+   same shape — a heading over a list whose rows put an id, a sentence and a
+   control on one line — and the sentence here can be the SERVER's own, which
+   is the longest text on the door and has no length rule. So the row wraps at
+   the width it stops fitting rather than scrolling the page at 390px.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, so this lands on the
+   headed live review, exactly as the backup and storage blocks above say. */
+.outbox { margin-top: 0.8rem; }
+.outbox h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fg-dim); }
+.outbox ul { margin: 0; padding-left: 1.1rem; }
+.outbox li {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.4rem; margin: 0.3rem 0;
+}
+.outbox li .name { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.outbox li .why, .outbox li .remedy { overflow-wrap: anywhere; }
+
+/* The refusal face of the abandon control (R-6.5b2.13): a question and two
+   answers, on a header that is already a row of controls. It wraps for the
+   header's own reason and is set at the quiet size every other sentence beside
+   a control in this client uses. */
+.abandon-ask { overflow-wrap: anywhere; font-size: 12px; }
+
 /* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
 /* Two ways on, and the second is a LINK rather than a button: Access answers a
    navigation with a redirect to another origin, which a `fetch` follows and

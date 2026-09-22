@@ -35,7 +35,16 @@
 //    stored game that no longer rebuilds is not a trap either: both are
 //    ordinary replies.
 
-import { deletePair, isModuleDoc, openDb, readAll, readPair, takeGeneration, writeDocs } from "./db";
+import {
+  deletePair,
+  isModuleDoc,
+  openDb,
+  readAll,
+  readPair,
+  retryingStart,
+  takeGeneration,
+  writeDocs,
+} from "./db";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -103,12 +112,24 @@ const serial = <T>(f: () => Promise<T>): Promise<T> => {
 /** The module, IndexedDB, and the store loaded from it — before anything is
  *  answered. Awaited by every message; there is no readiness probe, because
  *  every message already runs after it (R-6.5b.12 leaves `/api/health` with no
- *  local caller in the page). */
-const ready: Promise<void> = (async () => {
+ *  local caller in the page).
+ *
+ *  **A FUNCTION since M6.5b2, and not a promise built at module scope** (spec
+ *  §2.6). The startup was cached whatever it settled as, so one failure was
+ *  this Worker's answer for its whole life — and the failure the storage
+ *  version bump introduces is exactly the recoverable kind: another tab
+ *  holding version 1 open. [`retryingStart`] keeps a start that WORKED and
+ *  lets one that did not be tried again by the next message.
+ *
+ *  **The blocked open is reported and waited out** rather than failed: the
+ *  page is told in one sentence naming the other tab, and this promise settles
+ *  by itself when that tab goes. The notice rides its own unsolicited message,
+ *  so it costs no pending call its answer. */
+const ready = retryingStart(async () => {
   await init();
-  db = await openDb();
+  db = await openDb({ onBlocked: (sentence) => post({ kind: "notice", sentence }) });
   await rebuild();
-})();
+});
 
 /** A FRESH `Games` from the committed documents, and the write cache reseeded
  *  from them.
@@ -486,7 +507,7 @@ const hasLocks = (): boolean =>
  *  queued part is inside [`hold`], where it belongs. */
 async function acquisition(req: Extract<Req, { kind: "hold" | "takeover" }>): Promise<void> {
   try {
-    await ready;
+    await ready();
     post({ seq: req.seq, held: await hold(req.id, req.kind === "takeover") });
   } catch (err) {
     post(trapped(req.seq, err));
@@ -501,7 +522,7 @@ const trapped = (seq: number, err: unknown): Record<string, unknown> => ({
 });
 
 async function handle(req: Req): Promise<void> {
-  await ready;
+  await ready();
   switch (req.kind) {
     case "call":
       post({ seq: req.seq, ...(await call(req)) });

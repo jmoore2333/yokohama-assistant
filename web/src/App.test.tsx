@@ -10,10 +10,10 @@ import {
   chatText,
   lobbyChat,
   rememberServerFacts,
-  resetFactsForTest,
   setChatText,
   setLobbyChat,
 } from "./api";
+import { resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
@@ -4031,5 +4031,81 @@ describe("asking the browser to keep these games", () => {
       ).toHaveLength(2),
     );
     expect(persist).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- what this page asks the server about itself (M6.5b2, review M-1) ------
+//
+// **The latch is about a read that FAILED.** Entering the multiplayer channel
+// is the first of the three read points, and it is asked once per page — but a
+// read that never landed recorded nothing, and leaving the latch set kept the
+// transport, the chat caps, the door's name and the archive at their defaults
+// for the life of the page, even after the server came back and the listings
+// started landing again.
+describe("the facts this page asks the server for", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+    resetFactsForTest();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetFactsForTest();
+  });
+
+  it("asks again after a read that failed, and not after one that landed", async () => {
+    let fail = true;
+    const healths: number[] = [];
+    const listings: number[] = [];
+    stubWorker();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) {
+        healths.push(1);
+        if (fail) throw new TypeError("Failed to fetch");
+        return wire.health;
+      }
+      if (isGamesList(call, "mine")) listings.push(1);
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/lobby";
+    render(<App />);
+    await screen.findByRole("heading", { name: "Lobby" });
+    await waitFor(() => expect(healths).toHaveLength(1));
+
+    // The server comes back, and the player goes to the door and returns.
+    fail = false;
+    act(() => {
+      window.location.hash = "#/";
+    });
+    await screen.findByRole("heading", { name: "On this device" });
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
+    await screen.findByRole("heading", { name: "Lobby" });
+    await waitFor(() => expect(healths).toHaveLength(2));
+
+    // **And THIS one landed**, so a third visit asks nothing: the latch is
+    // about a failure and not about the channel. Without this half the cell
+    // would pass against a page that asked on every visit to the lobby.
+    act(() => {
+      window.location.hash = "#/";
+    });
+    await screen.findByRole("heading", { name: "On this device" });
+    const listed = listings.length;
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
+    await screen.findByRole("heading", { name: "Lobby" });
+    // **The anti-vacuity half**: the lobby really did re-enter the multiplayer
+    // channel and read its listings again, so "no third health read" is a
+    // statement about the latch and not about a screen that never came up.
+    await waitFor(() => expect(listings.length).toBeGreaterThan(listed));
+    expect(healths).toHaveLength(2);
   });
 });

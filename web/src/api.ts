@@ -23,13 +23,15 @@ import type {
   TableView,
   WhyResponse,
 } from "./types";
+import { useSyncExternalStore } from "react";
 import { localCall, localPair } from "./local/client";
 import {
+  archiveAnswer,
   facts,
+  onServerFacts,
   patchServerFacts,
   recallServerFacts,
   rememberServerFacts,
-  resetFactsForTest,
   serverFacts,
   serverFactsTakenAt,
   type ArchiveKind,
@@ -52,9 +54,11 @@ export type { ArchiveKind, Host };
  *  a page reader takes what it knows about the server from this module, and
  *  `local/facts.ts` is where the record and its timestamp live. `App` records a
  *  landed health read with `rememberServerFacts`; `recallServerFacts` is what
- *  reads it back without asking; `resetFactsForTest` puts a cell's module state
- *  back without touching what is written down. */
-export { recallServerFacts, rememberServerFacts, resetFactsForTest };
+ *  reads it back without asking.
+ *
+ *  **`resetFactsForTest` is NOT among them** (review M-3): it is a test hook,
+ *  and a cell that wants it imports it from `./local/facts` where it lives. */
+export { recallServerFacts, rememberServerFacts };
 
 /** A refusal from the server, carrying the sentence it refused with — and the
  *  STATUS it arrived with, because one caller has to branch on which refusal
@@ -324,23 +328,28 @@ export const setChatText = (n: number): void => {
   patchServerFacts({ chatText: n });
 };
 
-/** Which archive this deployment writes finished and abandoned games to
- *  (M6.5a, R-6.5a.13); `"off"` until a health read has landed.
+/**
+ * Which archive this deployment writes finished and abandoned games to, as
+ * THIS BROWSER last heard it — or `"unknown"` (M6.5a R-6.5a.13; M6.5b2
+ * R-6.5b2.13).
  *
- *  **One named CROSS-READ** (spec §2.3): a LOCAL game's Abandon label reads
- *  this — the server's — because "Abandon and save" sends the pair to the
- *  server's archive. Every other fact a local screen reads is
- *  `facts("local")`'s.
+ * **One named CROSS-READ** (spec §2.3): a LOCAL game's Abandon label reads
+ * this — the server's — because "Abandon and save" sends the pair to the
+ * server's archive. Every other fact a local screen reads is `facts("local")`'s.
  *
- *  **Since M6.5b2 the read that fills it is [`ensureArchiveFact`] and no longer
- *  a boot read**, because the door asks the server nothing (R-6.5b2.7). This
- *  accessor is the SYNCHRONOUS value a render reads; a caller that is deciding
- *  something asks that one. */
-export const archiveKind = (): ArchiveKind => facts("server").archive;
-
-export const setArchiveKind = (k: ArchiveKind): void => {
-  patchServerFacts({ archive: k });
-};
+ * **A HOOK, and it is the only synchronous reader left** (review M-9). The
+ * fact is filled at three moments a render has already happened at
+ * (`ensureArchiveFact`), so a module value read during render would leave the
+ * send control and the Abandon label drawing whatever they mounted with — and
+ * a second accessor beside `App`'s own state was two readers kept in step by
+ * hand. `onServerFacts` is what re-renders them.
+ *
+ * **`"unknown"` is not `"off"`**, which is the whole of R-6.5b2.13: `"off"` is
+ * a claim about the deployment and a browser that has never asked has no
+ * grounds for it.
+ */
+export const useArchiveFact = (): ArchiveKind | "unknown" =>
+  useSyncExternalStore(onServerFacts, archiveAnswer, archiveAnswer);
 
 /** How long a remembered health answer is trusted without asking again. */
 const FACTS_FRESH_MS = 3_600_000;
@@ -369,7 +378,11 @@ export async function ensureArchiveFact(opts?: {
   force?: boolean;
 }): Promise<ArchiveKind | "unknown"> {
   const at = serverFactsTakenAt();
-  const fresh = at !== null && Date.now() - at < FACTS_FRESH_MS;
+  // **`Math.abs`, because a clock can move BACKWARDS** (review M-7). A
+  // `takenAt` in the future read as fresh for ever, so a device whose clock had
+  // jumped never revalidated — and never learned that the archive had been
+  // turned on.
+  const fresh = at !== null && Math.abs(Date.now() - at) < FACTS_FRESH_MS;
   if (fresh && !opts?.force) return facts("server").archive;
   try {
     // **Through `api.health`, and bounded by the same number the words are**: a

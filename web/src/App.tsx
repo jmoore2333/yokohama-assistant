@@ -4,18 +4,17 @@ import { BackUpOne } from "./BackupControls";
 import {
   api,
   ApiError,
-  archiveKind,
   bounded,
   BOUND_MS,
-  ensureArchiveFact,
   isLocal,
   isSignedOut,
   LOCAL_USER,
   onUnauthorized,
   rememberServerFacts,
   RUN_CAP,
-  type ArchiveKind,
+  useArchiveFact,
 } from "./api";
+import { noteGameOver, recordLanded, startOutbox } from "./outbox";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { useReadiness } from "./swRegister";
@@ -166,16 +165,16 @@ export function App() {
   }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
-  /** What the SERVER keeps, as this screen last read it (M6.5b2, spec §2.2).
+  /** What the SERVER keeps, as this browser last heard it (M6.5b2, spec §2.2).
    *
-   *  **State and not `archiveKind()` at the point of use**, because the fact is
-   *  no longer read at boot: `ensureArchiveFact` fills it at a moment a render
-   *  has already happened, and a module value that changes triggers none. It is
-   *  seeded from the module's — which is the remembered answer, on a reload —
-   *  so a browser that has been told `"dir"` draws the control before it asks
-   *  again. `"unknown"` is what nothing-has-ever-answered looks like, and is
-   *  deliberately not `"off"`. */
-  const [archive, setArchive] = useState<ArchiveKind | "unknown">(() => archiveKind());
+   *  **The HOOK, and no state of its own** (review M-9). The fact is filled at
+   *  moments a render has already happened at, so it has to re-render the
+   *  screens that read it — and a `useState` here beside `Abandon`'s own module
+   *  read was two accessors for one fact, kept in agreement only because both
+   *  read points happened to write it down. `useArchiveFact` is the one reader;
+   *  `onServerFacts` is what redraws. `"unknown"` is what nothing-has-ever-
+   *  answered looks like, and is deliberately not `"off"`. */
+  const archive = useArchiveFact();
   /** Whether `GET /api/health` LANDED — the one thing this client asks about
    *  the server's reachability, as opposed to about its answers (M6.5b,
    *  R-6.5b.2).
@@ -864,12 +863,18 @@ export function App() {
         setServerUp(true);
         // Held in memory AND written down with the time it was taken, so the
         // next page load starts from the answer rather than from the guesses.
+        // The screens that read it redraw through `useArchiveFact`.
         rememberServerFacts(h);
-        setArchive(h.archive);
       })
-      // Handled by the bounded chain below; swallowed here so a refusal is not
-      // an unhandled rejection as well as a state.
-      .catch(() => {});
+      // **The latch is RELEASED on a failure** (review M-1). The ref is set
+      // before the read so two renders cannot both ask; leaving it set after a
+      // read that never landed left the transport, the chat caps, the door's
+      // name and the archive at their defaults for the life of the page, even
+      // after the server came back and the listings started landing. A read
+      // that failed recorded nothing, so there is nothing to keep.
+      .catch(() => {
+        askedFacts.current = false;
+      });
     // **Only from `null`** (whole-branch review, Minor #2). The bound answers
     // the question "has anything come back yet?", and a LISTING that landed
     // is an answer: `Lobby`'s `onReached` sets this true the moment one does,
@@ -890,12 +895,21 @@ export function App() {
     // It is at most one request per browser, at the end of a game, for a
     // player who has already decided to keep something.
     if (!state?.over || !isLocal(state.id)) return;
-    let live = true;
-    void ensureArchiveFact().then((k) => live && setArchive(k));
-    return () => {
-      live = false;
-    };
+    // **The hook is `noteGameOver`, and the read is inside it** (M6.5b2, spec
+    // §2.6). It asks what this deployment keeps, offers the game to the archive
+    // where there is one, and writes the reason down where the send could not
+    // be made or could not yet be attempted. It is idempotent against a reload
+    // — the game is still over on the next visit and this fires again — and
+    // the receipt is what makes it so.
+    void noteGameOver(state.id);
   }, [state?.over, state?.id]);
+
+  // **The outbox's three triggers** (spec §2.6): the browser's `online` event,
+  // this launch, and the player's own button on the door. Mounted here rather
+  // than at module load, for the reason every other listener in this client is:
+  // a module that wired a window listener when it was imported could never take
+  // it off again.
+  useEffect(() => startOutbox(), []);
 
   const arrive = useCallback(
     async (e: Events) => {
@@ -1619,6 +1633,10 @@ export function App() {
         ...a,
         [state.id]: `${r.identical ? "already archived" : "archived"} under ${r.path}`,
       }));
+      // **A landed send is a landed send, wherever it was made from** (spec
+      // §2.6): the outbox's receipt goes down, any row this game was waiting on
+      // is cleared, and the game-over hook does not offer the same bytes again.
+      await recordLanded(state.id, pair.record);
     } catch (e) {
       // The server's own sentence where it gave one; spec §4's words where the
       // request never reached it. Nothing was sent, so nothing is claimed.

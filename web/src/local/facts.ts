@@ -123,23 +123,58 @@ interface FactsRecord {
   facts: ServerFacts;
 }
 
+/** The archive kinds, as VALUES — so a record read back from storage can be
+ *  checked against them rather than trusted (review M-8). */
+const ARCHIVE_KINDS: readonly string[] = ["off", "dir", "r2"];
+
+/** One stored record, with every field it carries checked against the type it
+ *  is declared as (review M-8).
+ *
+ *  **A missing field falls back to its default and a WRONG one does too**,
+ *  which is the half the first draft left open: a hand-edited record could put
+ *  a non-union `archive` straight into a render condition, and `"dir "` with a
+ *  trailing space would have read as an archive that keeps games. What is
+ *  written under this key is only ever this client's own last health read, so
+ *  this costs nothing in the ordinary case and closes the one that is not
+ *  ordinary. */
+function sane(parsed: Partial<ServerFacts> | undefined): ServerFacts {
+  const p = parsed ?? {};
+  const str = (v: unknown, d: string) => (typeof v === "string" ? v : d);
+  const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  return {
+    signal: p.signal === "held" || p.signal === "sse" ? p.signal : DEFAULTS.signal,
+    archive: ARCHIVE_KINDS.includes(p.archive as string)
+      ? (p.archive as ServerFacts["archive"])
+      : DEFAULTS.archive,
+    lobbyChat: typeof p.lobbyChat === "boolean" ? p.lobbyChat : DEFAULTS.lobbyChat,
+    chatText: num(p.chatText, DEFAULTS.chatText),
+    identity: str(p.identity, DEFAULTS.identity),
+    multiplayer: typeof p.multiplayer === "boolean" ? p.multiplayer : DEFAULTS.multiplayer,
+    semanticsRev: num(p.semanticsRev, DEFAULTS.semanticsRev),
+    rulesHash: str(p.rulesHash, DEFAULTS.rulesHash),
+    appVersion: str(p.appVersion, DEFAULTS.appVersion),
+  };
+}
+
 /** The record in storage, or `null`. A storage that throws — a private window,
  *  a blocked site — reads as nothing remembered and never as an error, the
- *  `claimedUser` idiom; so does a value that is not this record's shape. */
-export function recallServerRecord(): FactsRecord | null {
+ *  `claimedUser` idiom; so does a value that is not this record's shape.
+ *
+ *  **Module-private since M6.5b2** (review M-8): the record's TIMESTAMP is
+ *  this module's own business, and [`recallServerFacts`] is what a reader
+ *  outside asks. */
+function recallServerRecord(): FactsRecord | null {
   try {
     if (typeof localStorage === "undefined") return null;
     const raw = localStorage.getItem(FACTS_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<FactsRecord>;
     if (typeof parsed?.takenAt !== "number" || !parsed.facts) return null;
-    // **A MISSING field falls back to its default** — a record written by an
-    // older release is missing whatever that release did not know about, and
-    // the fields have been added to twice already. Read that at its size: a
-    // field that is PRESENT is taken as it is written, so this fills gaps and
-    // does not type-check the record. What is written here is only ever this
-    // client's own last health read.
-    return { takenAt: parsed.takenAt, facts: { ...DEFAULTS, ...parsed.facts } };
+    // **A missing field falls back to its default, and so does a wrong one**
+    // (review M-8): a record written by an older release is missing whatever
+    // that release did not know about, and one edited by hand can carry
+    // anything at all.
+    return { takenAt: parsed.takenAt, facts: sane(parsed.facts) };
   } catch {
     return null;
   }
@@ -170,6 +205,43 @@ export const serverFacts = (): ServerFacts => server;
  *  reader. */
 export const serverFactsTakenAt = (): number | null => takenAt;
 
+/**
+ * What this browser KNOWS about the deployment's archive (M6.5b2, spec §2.6).
+ *
+ * **Three answers, and the third is the whole of R-6.5b2.13.** `"off"` is a
+ * claim about the deployment; a browser that has never been told anything has
+ * no grounds for it, and the difference is exactly `takenAt`. Before this
+ * existed, the default `"off"` and a real `"off"` were the same value — which
+ * is how a first-visit Abandon deleted a local game without ever trying to
+ * save it (spec §0.3).
+ *
+ * **The ONE synchronous reader** (review M-9): `App`'s screen and `Abandon`'s
+ * label both go through the hook over this, so the fact has one accessor
+ * rather than two kept in step by hand.
+ */
+export const archiveAnswer = (): ArchiveKind | "unknown" =>
+  takenAt === null ? "unknown" : server.archive;
+
+/** Whoever is drawing something off these facts.
+ *
+ *  **A listener and not a poll**, because the fact is read at three moments a
+ *  render has already happened at (spec §2.2): a module value that changes
+ *  triggers no re-render, and the screens that care — the send control, the
+ *  Abandon label — would otherwise go on drawing the answer they mounted
+ *  with. */
+const listeners = new Set<() => void>();
+
+export const onServerFacts = (f: () => void): (() => void) => {
+  listeners.add(f);
+  return () => {
+    listeners.delete(f);
+  };
+};
+
+const announce = (): void => {
+  for (const f of [...listeners]) f();
+};
+
 /** Everything ONE health read says, in one statement — held in memory AND
  *  written down with the time it was taken (M6.5b2, spec §2.2).
  *
@@ -195,6 +267,7 @@ export const rememberServerFacts = (h: Health, at: number = Date.now()): void =>
   } catch {
     /* storage refused: this page keeps the facts, the next one asks again */
   }
+  announce();
 };
 
 /** One of them, for the named setters `api.ts` keeps exporting and for the
@@ -204,6 +277,7 @@ export const rememberServerFacts = (h: Health, at: number = Date.now()): void =>
  *  of one value, not evidence that the server said anything. */
 export const patchServerFacts = (p: Partial<ServerFacts>): void => {
   server = { ...server, ...p };
+  announce();
 };
 
 /** Put this module back where a fresh page load finds it, WITHOUT clearing
@@ -213,4 +287,5 @@ export const patchServerFacts = (p: Partial<ServerFacts>): void => {
 export const resetFactsForTest = (): void => {
   server = DEFAULTS;
   takenAt = null;
+  announce();
 };
