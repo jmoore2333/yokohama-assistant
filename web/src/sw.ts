@@ -14,21 +14,43 @@
 // fetch may read are `swInstall.ts`; both are pure and tested in the component
 // suite without a browser. What this file holds is the plumbing those
 // decisions drive — the half a browser must run to check, so the less of it
-// the better — together with the update policy's worker half (`skipWaiting()`
-// only on the player's message, never `clients.claim()`), R-F2's order for a
-// path this release does not list (a retained generation before the network,
-// nothing written), and these one-line guards beside the plumbing they
-// protect:
+// the better — and the rules below, which it makes on its own.
 //
+// **These are pinned by `sw.node.test.ts`**, which bundles this file and RUNS
+// it; each was checked by mutating it and watching a cell there fail:
+//
+// - the request filter: GET only, and same-origin only — the caller's question,
+//   as `swRoute.ts` says, asked here where `self.location` is real — with the
+//   request's cache mode handed to `swRoute` for its `only-if-cached` rule;
+// - the install is all-or-nothing: one failed entry fails it, and the door is
+//   told why;
+// - every entry is fetched in parallel lanes with `cache: "reload"` and
+//   `redirect: "error"`, its head checked and its body's digest CALLED;
 // - a failed install deletes its generation only where the install CREATED it
 //   (`alreadyThere`), never the one a running worker serves under the same name;
 // - a re-install of the same generation keeps the `activatedAt` it finds (R-F5);
-// - `markActivated` writes nothing where the install's stamp is absent, so it
-//   never brings an evicted generation back into being;
+// - the update policy's worker half: `skipWaiting()` only on the player's
+//   message, never `clients.claim()`;
+// - `activate` stamps its own generation `activatedAt`, keeping `createdAt`
+//   (R-F5), and writes nothing where the install's stamp is absent — reading it
+//   without opening the cache — so it never brings an evicted generation back;
+// - the release's own cache: a failed open is not remembered, and a request it
+//   cannot answer falls through to the network;
+// - R-F2's order for a path this release does not list: a retained generation
+//   before the network, one `try` per generation, nothing written;
 // - `fromRetained` never serves the stamp (`META_PATH`).
 //
-// `sw.node.test.ts` bundles this file and RUNS it, and pins each of those with
-// a cell of its own.
+// **And these are made here and pinned by NO cell** — the same mutations, each
+// of which every cell survived:
+//
+// - on a failed install the other lanes are ABORTED and AWAITED before the
+//   delete. The abort cell does not see its own mutation: the per-fetch timeout
+//   aborts the held lane instead, fifteen seconds later, and the cell passes;
+// - the per-fetch timeout and the whole-install deadline themselves;
+// - `credentials: "same-origin"` on every install fetch;
+// - the stamp written FIRST, before any entry;
+// - a failed install telling uncontrolled pages too (`includeUncontrolled`),
+//   and a timeout worded "took too long".
 
 /// <reference lib="webworker" />
 
@@ -245,11 +267,12 @@ self.addEventListener("activate", (event) => {
  *  `activatedAt`, so it ranks BELOW every activated generation, and at the
  *  NEXT activation the sweep can keep an older activated one and delete this
  *  one while tabs still run it — R-F5's defect, for one release, on the device
- *  whose write failed. It is accepted because that device has just stored
- *  this whole release, about ten megabytes, and the stamp is about a hundred
- *  bytes; and the guard that would cover it — keep an unactivated generation
- *  installed after the newest activation — would also keep every replaced
- *  waiting release for a release. */
+ *  whose write failed. It is accepted because that device has stored this
+ *  whole release, about ten megabytes, and the activation stamp's `cache.put`
+ *  REPLACES an entry of about the same size — a hundred bytes or so — so it
+ *  adds almost nothing to the quota; and the guard that would cover it — keep
+ *  an unactivated generation installed after the newest activation — would
+ *  also keep every replaced waiting release for a release. */
 async function markActivated(): Promise<void> {
   try {
     const { createdAt } = await stampIn(CACHE_NAME);

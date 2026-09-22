@@ -623,8 +623,9 @@ test("a store that will not even be READ still exports the move it refused, and 
 // one produces it from the real Worker. A tab on the door holds nothing, so
 // its host answers every export with the COMMITTED pair — and when it cannot
 // read that, it must say so as an ordinary reply. Before fix round 1 the
-// failed read was a trap: the page terminated this host and started another,
-// for an export the page's own read could have answered all along.
+// failed read was a trap: the page terminated this host, for an export the
+// page's own read could have answered all along. (The restart re-holds nothing
+// here, so another host starts only when something asks again.)
 test("a tab whose host cannot read IndexedDB still backs everything up, and its host is not restarted", async ({
   page: a,
   context,
