@@ -1461,6 +1461,243 @@ NAS.**
 
 ---
 
+### 3.15 M6.5b2 is live — the twelfth deployment, 2026-09-22 (a record, not a plan)
+
+The cycle's RELEASE, where §3.14 was the mid-cycle door. M6.5b2's remaining work is in:
+the module is on `release-wasm` + `wasm-opt -Oz`, the site installs and runs offline behind a
+service worker, the help pictures are WebP, the two text fonts are served from `/assets/` with
+their OFL grants beside them, a game can be backed up and restored as a file, and a local game
+that could not reach the archive queues in an outbox and sends itself later. Built at `43d54a5`
+(the fix-wave head, whose mutation battery read 22 of 22 caught), tree clean. What changed for a
+player is above; what changed for the operator is that the client is now a PRECACHED release —
+`dist/sw.js` names one content-keyed cache generation, and a deploy that half-lands is a deploy
+that fails its own install.
+
+- **Build:** `web-room-m6.5b2` at `43d54a5`. The musl cross-compile per §1: `Finished release in
+  5.71s` (warm cache); the binary is `ELF 64-bit LSB pie executable, x86-64, static-pie linked`,
+  **6,591,376 bytes** — **50,904 bytes SMALLER than §3.14's 6,642,280**, which is the direction a
+  reader will not expect from a cycle that added `backup.rs` and two routes, and is recorded
+  because it was checked rather than assumed: the binary carries this release's strings
+  (`application/manifest+json`, `text/plain; charset=utf-8`, `YOKOHAMA_WEB_MULTIPLAYER` all
+  present), and `[profile.release]` did not move this cycle (the new `release-wasm` section is
+  its own profile and nothing selects it without `--profile release-wasm`).
+- **The client build was `npm run build`** — the RELEASE module. §1's preflight `grep -c
+  debug_trap web/src/local/wasm/yokohama_wasm.js` read **0**, and vite's own `"debug_trap" is not
+  exported by "src/local/wasm/yokohama_wasm.js"` warning is the same fact from the other side.
+  `wasm-opt version 132` reported **1,783,361 → 1,175,223 B (−34.1%)** over both emitted modules
+  (the web glue and the Node glue), which is the figure the root `Cargo.toml`'s `release-wasm`
+  comment carries and this build reproduces. `web/dist/assets/` carries `index-BEMfPcF1.js`
+  **358,444 B**, `index-CaXbZR8U.css` **37,738 B**, `worker-CI3Vv9s2.js` **14,809 B**,
+  `fraunces-latin-BOz5zopO.woff2` **67,388 B**, `jetbrains-mono-latin-Db4Uuiha.woff2` **31,340
+  B**, and **`yokohama_wasm_bg-Cf0j0Dq2.wasm` 1,175,223 B (456,054 B under `gzip -9`; vite
+  printed 457.96 kB, the hashed filename in its own gzip header being the difference), sha256
+  `277aa0c4e184a9b0313b7018b7957eb281d302fdcf85ff52e89a5ea49a09b9dc`**; outside `assets/`,
+  `index.html` 2,387 B, `manifest.webmanifest` 696 B, `sw.js` 27,220 B and the two OFL texts
+  under `dist/fonts/` at 4,391 and 4,399 B. **The raw figure is byte-for-byte the one the
+  root `Cargo.toml`'s `release-wasm` comment carries; the gzip figure is 6 bytes over its
+  456,048**, which is ordinary `gzip -9` variance and not a change in the module — the two
+  readings are of the same 1,175,223 bytes, and they are recorded together here so a later reader
+  does not take them for a contradiction.
+- **The precache generator's own four lines, verbatim**, because they are the release budget and
+  the cache identity in one place:
+
+  ```
+  precache: 153 entries, 9,935,340 B (release total ceiling 11,900,000 B)
+  precache: module 1,175,223 B at /assets/yokohama_wasm_bg-Cf0j0Dq2.wasm (release module ceiling 1,400,000 B; release 1,400,000, debug 3,200,000)
+  precache: module 1,175,223 · bundle 410,991 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327
+  precache: yokohama-release-19e8532f977bcba2 -> dist/sw.js (27,220 B), 131 art files
+  ```
+
+  **The RELEASE ceilings applied, both of them** — 11,900,000 B total and 1,400,000 B for the
+  module, not the debug 3,200,000 — which is what proves the release module was the one walked.
+  The cache name **`yokohama-release-19e8532f977bcba2`** is the generation this deployment
+  installs, and it is read back off the wire below rather than trusted from here.
+- **Delivery:** context tarball **11,274,574 B**, sha256
+  `d0b0b30e189377f65d38aa59cc45e26d6f47b2d71367f4391adad4c757eed8ff`, cut at **19:07:35Z** — a
+  **3.59 MB drop** from §3.14's 14,866,798 B, which is the module's 1.67 MB and the help
+  pictures' PNG→WebP (4.21 MB → 764,742 B) arriving together. Served by `python3 -m http.server
+  8899 --bind 0.0.0.0` on the workstation at 192.168.1.16 from **19:07:43Z**; the NAS
+  (192.168.1.173) fetched it in **one GET at 19:07:52Z**; the file server was stopped at
+  **19:08:12Z** and a probe after it read connection refused.
+- **Image:** `yokohama-web:0.5.0-m6.5b2`, Id
+  `sha256:c802a036c2cb51a2360a7cddf30c795ce31c5823b66943dc0572a3b5657bc8b9`, **24,466,536 B**
+  (§3.14's 29,446,020 − 4.98 MB, the same two savings), created **19:08:03.31Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.5b2&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2). **This is the first release image SMALLER than the one before it.**
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.5b2-rc1` container (`08e036107e74…`,
+  created 2026-09-21T22:19:40.24Z) → `DELETE /containers/yokohama-web` →
+  `POST /containers/create?name=yokohama-web` with §3's body — **both `Env` entries**
+  (`YOKOHAMA_WEB_IDENTITY=claimed`, `YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive`) and
+  **`YOKOHAMA_WEB_MULTIPLAYER` deliberately UNSET, so it defaults to `on`**, the two labels,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data` — → container Id
+  `58ac45ba478a57185c1753a55e9f7d800defac1648d7a9fc31c88b5b3fa09f37`, created **19:08:24.59Z**,
+  started **19:08:27.10Z**, `healthy` on the probe eight minutes later. Same address on
+  `cf-internal` (**172.21.0.4**), so the container itself needed nothing from cloudflared; the
+  named volume rode across. **Downtime is a BOUND and not a reading**: the stop was issued after
+  the file server stopped at 19:08:12Z and the new process was up at 19:08:27.10Z, so **under
+  15.1 s**, and the stop's own timestamp was never read off a log. Nobody was playing.
+
+#### The tunnel config re-sync — the owner item §3.14 left, now closed
+
+§3.14 recorded that the repo's `deploy/cloudflared-config.yml` and the NAS's live `config.yml`
+had drifted apart by reworded COMMENTS after that record's fix round, and that whoever next
+restarted `cloudflared-nas` should close the gap. The owner authorized a restart at any time
+(2026-09-21, mid-session), so it rode this deploy.
+
+1. **Both files hashed first, and both matched §3.14's recorded values**: the NAS's
+   `/volume1/docker/cloudflared/config/config.yml` 5,770 B sha256
+   `b6f8ecafb71764fa36ff308959f5b03bf63eeba91cf3c7c6117c467e9966df4a`, the repo's 5,936 B sha256
+   `e487c6aaaabebbf0411580b11fac1543c7f62cb1d0485322d740af93a9a0946f`. So the NAS file had not
+   been touched since the move.
+2. **The diff was taken ON THE NAS, under a guard that would have refused a non-comment change.**
+   The repo copy was fetched by a throwaway container over the same LAN file server the context
+   used, its sha256 checked against `e487c6aa…` before anything was compared, and the write was
+   made conditional on every added-or-removed line matching `^[[:space:]]*(#.*)?$`. It printed
+   `guard passed: every changed line is a comment or blank`. **The diff is exactly TWO hunks**,
+   both comment prose: the recipe's step 4 now says the `yokohama` application carries three
+   names of which only two are routed here, and the path-scoped paragraph now notes that spec
+   §3.2's own heading says FIVE and then lists six. **The ingress blocks are byte-identical**,
+   which is what §3.14 claimed and this is the check of it.
+3. **Backup then write:** the old file is `config.yml.bak-2026-09-22` (5,770 B, `b6f8ecaf…`) and
+   `config.yml` is now 5,936 B, `e487c6aa…`. **One incidental change worth naming:** the file's
+   owner moved from `1026:users` to `root:root`, the mode staying `rwxr-xr-x`; cloudflared runs as
+   65532 and reads it world-readable, which the tunnel coming back is the proof of. The three
+   earlier backups on the NAS are root-owned for the same reason.
+4. **Restart** issued **19:16:09Z**; the tunnel server stopped at **19:16:11Z**, `Starting tunnel`
+   at **19:16:13Z** on cloudflared 2026.3.0, and **four connections registered by 19:16:15.75Z**
+   (connIndex 0–3, ewr13 / ewr15 / ewr14 / ewr05, protocol quic) with **no ingress error**.
+5. **Re-hashed after the restart: `config.yml` reads `e487c6aa…`, equal to the repo's.** The two
+   agree byte for byte again, and this time the agreement was verified by a diff rather than by a
+   pair of hashes that happened to match a record.
+
+#### Verified through the tunnel — and the vantage, which bit before it helped
+
+**Every reading below was taken from the WARP-enrolled workstation, which means each one is the
+APPLICATION's answer to an authenticated caller** (§3.14's MEASUREMENT VANTAGE: with WARP on,
+this machine IS the owner and cannot take a "no session" reading at all). Two passes, **19:11:27Z**
+before the tunnel restart and **19:16:25Z** after it, identical in every row; the User-Agent was
+set (§3.12's gotcha).
+
+**§3.2's "this check needs WARP active" has a second half this deployment had to learn.** At
+**19:08:37Z**, minutes after the swap, every path on `yokohama-nas.moore.nyc` read **302** to
+`bdvc.cloudflareaccess.com` with the body `Please authenticate via the warp client` — and
+`warp-cli status` read `Connected`, `Network: healthy`, registration intact. The challenge's own
+meta JWT decoded to `is_warp: true, is_gateway: true, auth_status: NONE`: WARP was up and its
+**Access session had lapsed**, which is not something `warp-cli` can renew — the GUI is the only
+way back, and the owner re-authenticated. **An enrolled machine with a lapsed Access session reads
+exactly like an unenrolled one**, so "curl got a 302" is not by itself evidence about the
+deployment, the door, or WARP being off. While it was down the application's own answers were read
+from INSIDE the container (`docker exec` to `127.0.0.1:8080`); when the tunnel readings arrived
+they agreed with that pass field for field, including every `Cache-Control` and every media type,
+which is worth knowing next time: the origin read is a faithful stand-in for everything except
+whether the edge is routing.
+
+```
+GET /api/health          200  {"server_version":"0.5.0","semantics_rev":7,
+                               "rules_hash":"d85445c479cb1ead","identity":"claimed",
+                               "signal":"sse","archive":"dir","lobby_chat":true,
+                               "chat_keep":500,"chat_text":500,"multiplayer":true}
+GET /sw.js               200  text/javascript; charset=utf-8 · cache-control: no-store
+                               · content-length: 27220 · cf-cache-status: BYPASS
+                               · cache name off the wire: yokohama-release-19e8532f977bcba2
+GET /manifest.webmanifest 200 application/manifest+json · content-length: 696
+GET /assets/yokohama_wasm_bg-Cf0j0Dq2.wasm
+                         200  application/wasm · public, max-age=31536000, immutable
+                               · content-length: 1175223
+GET /assets/fraunces-latin-BOz5zopO.woff2
+                         200  font/woff2 · public, max-age=31536000, immutable
+                               · content-length: 67388 · cf-cache-status: HIT
+GET /fonts/fraunces/OFL.txt
+                         200  text/plain; charset=utf-8 · content-length: 4391
+GET /art/areas/Church.webp
+                         200  image/webp · public, max-age=3600 · content-length: 51118
+GET /help/strips.webp    200  image/webp · content-length: 133332
+GET /enter               302  location: /#/lobby
+GET /api/games           401
+GET /api/me              200  {"mode":"claimed","user":null}
+GET /                    200  serving index-BEMfPcF1.js and index-CaXbZR8U.css,
+                               which exist only in this build
+```
+
+**The three rows that are this cycle's and could not have read this way a day ago**: `/sw.js`
+answering `no-store` with the generation name the build printed, `manifest.webmanifest` answering
+`application/manifest+json` (the installer checks it), and `/fonts/<family>/OFL.txt` answering
+`text/plain` rather than `application/octet-stream`. **The last one is why the server and `dist`
+ship together and always will**: the service worker's install verifies content types, the `.txt`
+arm lives in the binary and the OFL files live in `dist`, so a split deploy fails the install on
+exactly those two files. They are one image, which is what makes the coupling safe rather than
+merely true.
+
+**The other two hostnames, same pass:** `yokohama-cli.moore.nyc` reads **200** (the second ingress
+block survived the rewrite), and `yokohama.moore.nyc/api/health` reads **404** from the catch-all —
+still HELD FOR THE WORKER, unchanged by this deploy.
+
+#### A finding about §2's recipe, pre-existing and cosmetic
+
+**The image contains AppleDouble sidecars**, because macOS `tar czf` writes a `._name` entry for
+every file carrying an extended attribute and §2's recipe is a plain `tar czf` on a Mac. The
+running container holds **141** of them under `/srv/assets/art` and **28** under `/srv/web/dist`,
+beside the **132** real art files and **22** real dist files. **Nothing is broken and nothing is
+served wrongly**: the precache list is generated from the workstation's `web/dist`, where these
+files do not exist on disk at all (hence `153 entries` and `131 art files`), and the server serves
+by name, so no client ever asks for one. The cost is a few kilobytes of image. This has been true
+of **every deployment cut from this workstation since §3.5** and is recorded now only because it
+was looked at; the fix, whenever §2 is next edited, is `COPYFILE_DISABLE=1 tar czf …`.
+
+#### Rollback — and this one IS a schema rollback, on the BROWSER side
+
+`yokohama-web:0.5.0-m6.5b2-rc1` and `yokohama-web:0.5.0-m6.5b.1` both stay on the NAS; recreate
+from either with §3's body. **The server-side store schema did NOT move this cycle** —
+`TABLE_SCHEMA` stays 3, the record format is fenced — so on the volume this is an ordinary
+rollback and every table reads under the older binary.
+
+**But rolling back across this release is a BROWSER-SIDE SCHEMA ROLLBACK, and nothing on the
+server will tell you so.** `web/src/local/db.ts` moves the IndexedDB database `yokohama-local` to
+**version 2** in this release, for the outbox store. A browser that has loaded `0.5.0-m6.5b2` has
+a version-2 database; served `0.5.0-m6.5b.1` or earlier afterwards, that client opens it at
+version 1, IndexedDB answers **`VersionError`**, the Worker's module-scope startup promise rejects
+and is cached for the page's life, and **every local game in that browser reads "the games on this
+device could not be read" until this release is served again**. Nothing is deleted — the rows are
+all still there and the next newer client reads them — but the games are unreachable meanwhile and
+a player cannot fix it from their end. **It cannot be rolled back at all, only rolled forward**,
+because it is the browser's store and no image or backup here touches it, and its blast radius is
+every browser that has loaded this release rather than one table. **§5 carries this as its own
+bullet; read it there before rolling anything back**, and read §3.14's "NOT a schema rollback"
+as the true statement it is — that was `553e3ee`, the mid-cycle build, which carried no version
+bump at all. The bump arrived with the backup and outbox work after it.
+
+A rollback also loses the service worker, and that is its own kind of sticky: a browser that
+installed the `yokohama-release-19e8532f977bcba2` generation keeps serving this release's shell
+from Cache Storage until an older deployment's own `sw.js` activates over it. **The hostname is a
+separate rollback** and is unchanged by this deploy (§3.14 step 4). **Nineteen tags now sit on the
+NAS.**
+
+#### What this deployment does NOT claim
+
+- **Nothing about the public paths, and nothing about the path-scoped Access design.** Under the
+  hostname-wide application every path is behind the door, so spec §3.2's "public paths answer 200
+  with no session" readings **stay DEFERRED BY OWNER DECISION** (2026-09-21) exactly as §3.14
+  recorded them. The zero-login single-player claim is not shown live this cycle.
+- **No unenrolled vantage was used here at all.** §3.14's 302/401 loops from a throwaway container
+  on the NAS were not re-run, because nothing about the door changed: no DNS record, no Access
+  application, no ingress block moved. The claim that the door is shut rests on §3.14's readings
+  and on the ingress being byte-identical across the re-sync, which the guard above proved.
+- **The headed walk of the deployed site was not performed**, and neither was §3.14's clean-browser
+  single-audience reading. Both remain **OWNER-OWED from §3.14**; the blocker is the same one, the
+  Claude-in-Chrome extension reporting no connected browser (`list_connected_browsers` returned an
+  empty list). M6.4's §4.5 is why no headless substitute is offered in its place — four headless
+  reviews called a page clean that a headed one found asking for a favicon.
+- **Nothing about a phone.** The iPhone exit (install to the home screen, airplane mode, play,
+  close the browser entirely, reopen, resume, finish, export; then an update and a restore on a
+  fresh profile) is the owner's by R-6.5b2.17, and the Android reading is the owner's own handset
+  by his ruling of 2026-09-22. **Both are recorded as OPENING ITEMS for M6.5c**, not as gates of
+  this cycle — so "the site installs and runs offline" is a claim this release's tests make and
+  this deployment does not.
+- **Nothing was played on the deployed build.** No smoke table was created, no local game was
+  opened, no archive round trip was exercised through this container. The readings above are
+  statuses, media types, cache headers and one health body.
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
@@ -1535,7 +1772,9 @@ measurement says it should go on doing so.
   - §3.14's "a rollback across it is NOT a schema rollback" is TRUE as written:
     it is about the SERVER's stored documents (`TABLE_SCHEMA` stays 3), and it
     was recorded for `553e3ee`, the mid-cycle release, which carried no version
-    bump at all. The bump arrived with the backup and outbox work after it.
+    bump at all. The bump arrived with the backup and outbox work after it. **§3.15
+    is the deployment record that shipped the bump**, and says this in its own
+    rollback paragraph.
   - Told here because §3.12's `TABLE_SCHEMA` sentence is the shape a reader
     looks for, and a rollback that takes every local game off the screen has to
     be as easy to find as one that drops a lobby row.
