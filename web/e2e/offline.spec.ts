@@ -22,11 +22,14 @@
 // with the same string the fixture uses: a ten-megabyte precache per context
 // that no assertion reads is wall nobody is buying anything with.
 //
-// **Cell 3 MUTATES `web/dist` in place** and puts it back in a `finally`, with
-// the restored worker's cache name asserted equal to the one the cell started
-// with. `dist` is what the walk's server serves per request, so a cell that
-// left it changed would hand every spec after it a release the build did not
-// produce.
+// **Cell 3 MUTATES `web/dist` in place**, puts it back in a `finally`, and
+// CHECKS the restoration there too — the files' own bytes and the restored
+// worker's cache name, read back from disk. `dist` is what the walk's server
+// serves per request, so a cell that left it changed would hand every spec
+// after it a release the build did not produce; the check therefore has to run
+// on the failing path, which is where it matters most. **`git status` is not
+// evidence for any of this**: `web/dist/` is gitignored, so it is clean whether
+// the build was restored or not.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -229,10 +232,28 @@ function watchForFaults(page: Page): { failures: string[] } {
   return { failures };
 }
 
-/** The restore report on screen, as {id → what it says}. */
-const reportRows = async (page: Page): Promise<Map<string, string>> =>
-  new Map(
-    await page.locator(".restore-report li").evaluateAll((els) =>
+/**
+ * Hand the file input a path and wait for THIS restore's report, and read it as
+ * {id → what the row says}.
+ *
+ * **The previous report is marked before the file goes in**, because a bare
+ * wait for `.restore-report li` is already satisfied by the one still on screen
+ * — cell 5 restores three times, and a read taken a moment too early would be a
+ * read of the last answer. `Restore` clears its report before it awaits
+ * anything (`BackupControls.tsx`'s `take`), so the list really is unmounted and
+ * the one that comes back is a new element that carries no mark: the wait is
+ * race-free in both directions, where a wait for the old list to VANISH would
+ * time out whenever the new one arrived first.
+ */
+async function restore(page: Page, file: string): Promise<Map<string, string>> {
+  await page.evaluate(() => {
+    document.querySelector(".restore-report")?.setAttribute("data-e2e-stale", "");
+  });
+  const fresh = page.locator(".restore-report:not([data-e2e-stale])");
+  await page.getByLabel("Restore from a backup").setInputFiles(file);
+  await expect(fresh.locator("li").first()).toBeVisible({ timeout: 60_000 });
+  return new Map(
+    await fresh.locator("li").evaluateAll((els) =>
       els.map(
         (el) =>
           [
@@ -242,12 +263,6 @@ const reportRows = async (page: Page): Promise<Map<string, string>> =>
       ),
     ),
   );
-
-/** Hand the file input a path and wait for the report to be drawn. */
-async function restore(page: Page, file: string): Promise<Map<string, string>> {
-  await page.getByLabel("Restore from a backup").setInputFiles(file);
-  await expect(page.locator(".restore-report li").first()).toBeVisible({ timeout: 60_000 });
-  return reportRows(page);
 }
 
 // ------------------------------------------------------------------ cells
@@ -396,6 +411,9 @@ test("the update: a second release waits, nothing switches until the click, and 
   const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
   const firstName = cacheNameOf(was.worker.toString("utf8"));
   const watch = watchForFaults(page);
+  /** Whatever the cell itself threw, held so the `finally` can restore AND
+   *  check before anything propagates. */
+  let failure: unknown = null;
   try {
     await page.goto("/");
     const one = await installed(page);
@@ -481,17 +499,42 @@ test("the update: a second release waits, nothing switches until the click, and 
     // eslint-disable-next-line no-console
     console.log(`UPDATE: ${one} -> ${two} -> ${three}; release 1 swept, release 2 retained`);
     expect(watch.failures).toEqual([]);
+  } catch (e) {
+    // Held rather than thrown, so the restoration below runs and is CHECKED on
+    // the failing path too — which is the path where it matters most.
+    failure = e;
   } finally {
-    // **The build goes back byte for byte**, because `dist` is what the walk's
-    // server serves and every spec after this one reads it.
+    // **The build goes back byte for byte, and the restoration is proven HERE**,
+    // inside the `finally`, because `dist` is what the walk's server serves and
+    // every spec after this one reads it. A check placed after the `try` would
+    // be skipped by the very failure that makes it urgent: a cell that died
+    // after `shipRelease(3)` would hand the rest of the run a release the build
+    // never produced, with nothing saying so.
+    //
+    // **And `git status` is no evidence for any of this** — `web/dist/` is
+    // gitignored (`.gitignore:50`), so it is clean whether the build was put
+    // back or not. The evidence is these two reads of the files themselves.
+    //
+    // `scripts/precache.mjs` writes only `dist/sw.js`, so these two files are
+    // the whole footprint of what this cell changes.
     fs.writeFileSync(MARKED, was.marked);
     fs.writeFileSync(SW, was.worker);
+    const back = cacheNameOf(fs.readFileSync(SW, "utf8"));
+    const same = fs.readFileSync(MARKED).equals(was.marked);
+    if (back !== firstName || !same) {
+      // Thrown rather than asserted, and it REPLACES the cell's own failure on
+      // purpose: a poisoned `dist` breaks every spec that follows, so it is the
+      // more urgent fact. The original is carried in the sentence so neither is
+      // lost.
+      throw new Error(
+        `dist was NOT restored: sw.js names ${back} (expected ${firstName}), ` +
+          `manifest.webmanifest ${same ? "is" : "is NOT"} its original bytes. ` +
+          `Rebuild with \`npm run build:client\` before trusting any later spec.` +
+          (failure ? ` The cell itself had already failed: ${String(failure)}` : ""),
+      );
+    }
   }
-  expect(
-    cacheNameOf(fs.readFileSync(SW, "utf8")),
-    "dist is back to the release `build:client` produced",
-  ).toBe(firstName);
-  expect(fs.readFileSync(MARKED).equals(was.marked)).toBe(true);
+  if (failure) throw failure;
 });
 
 test("a restore on a fresh profile lands four verdicts, and the cross-rev pair is LISTED with its reason", async ({
@@ -503,12 +546,16 @@ test("a restore on a fresh profile lands four verdicts, and the cross-rev pair i
   await context.addInitScript(NO_SERVICE_WORKER);
   const watch = watchForFaults(page);
 
+  const t0 = Date.now();
   await page.goto("/");
   // Anti-vacuity: an empty profile, said by the screen itself. Without this,
   // every row below could be a game some earlier cell left behind.
   await expect(page.getByText("no game on this device yet")).toBeVisible();
+  const doorAt = Date.now() - t0;
 
+  const t1 = Date.now();
   const report = await restore(page, ENVELOPE);
+  const restoreAt = Date.now() - t1;
   expect([...report.keys()].sort(), "one row per game in the file").toEqual([
     "local-242a5429453c593c",
     "local-another-rev",
@@ -559,11 +606,31 @@ test("a restore on a fresh profile lands four verdicts, and the cross-rev pair i
   // choose and the layer hands over a session. Written down because the
   // document's `status` still reads `dealing` and a reader would expect the
   // deal screen.
+  //
+  // **Which screen it is has to be asked of something only ONE of them has.**
+  // `atTheGame` and the banner's `.meta` are both satisfied by the deal screen
+  // too — `Dealing.tsx` renders the same `header.banner`, the same `<h1>` and
+  // the same id — so they say the page loaded and nothing more. The two reads
+  // below are exclusive in both directions: the game root is the one `.app`
+  // without `setup-table` (`harness.ts`'s own "am I in a game" locator), and
+  // "Choose your card" is the deal's own heading. **The WITNESS that it is
+  // playable is the move loop underneath them**: the deal screen has no option
+  // rows and no pickable tiles, so `act` would answer `null` and `deadEnd`
+  // would throw.
   await page.goto("/#/t/local-at-the-deal");
   await expect(atTheGame(page)).toBeVisible();
+  await expect(page.locator(".app:not(.setup-table)")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose your card" })).toHaveCount(0);
   await expect(page.locator("header .meta").first()).toContainText("local-at-the-deal");
   const played = await playSome(page, { id: "local-at-the-deal" }, rng(0x5245_5354), 3); // "REST"
-  expect(played, "a restored game takes moves like any other").toBe(3);
+  expect(played, "and a restored game takes moves like any other").toBe(3);
+
+  // **RECORDED, never gated** — and recorded because this cell's whole wall
+  // reads as a fraction of a second and that is surprising enough to be worth
+  // decomposing. Four games validated by the module, a 595-event strict replay
+  // among them, and it is the page load that dominates.
+  // eslint-disable-next-line no-console
+  console.log(`RESTORE: the door was up in ${doorAt} ms, the four-game restore took ${restoreAt} ms`);
   expect(watch.failures).toEqual([]);
 });
 
@@ -574,9 +641,19 @@ test("the clash: the same bytes are already here, different bytes under one name
   await context.addInitScript(NO_SERVICE_WORKER);
   const watch = watchForFaults(page);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "yokohama-e2e-envelope-"));
+  const walls: number[] = [];
+  /** One restore, with its own wall RECORDED — see the printed line below. */
+  const timed = async (file: string) => {
+    const at = Date.now();
+    const rows = await restore(page, file);
+    walls.push(Date.now() - at);
+    return rows;
+  };
   try {
+    const t0 = Date.now();
     await page.goto("/");
-    const first = await restore(page, ENVELOPE);
+    const first = await timed(ENVELOPE);
+    const doorAndFirst = Date.now() - t0;
     expect(first.get("local-242a5429453c593c"), "the first restore lands it").toBe("restored");
 
     // **Different BYTES under the same name, which is exactly what the rule
@@ -594,7 +671,7 @@ test("the clash: the same bytes are already here, different bytes under one name
     const mutated = path.join(scratch, "mutated.json");
     fs.writeFileSync(mutated, JSON.stringify(envelope, null, 2));
 
-    const second = await restore(page, mutated);
+    const second = await timed(mutated);
     expect(
       second.get("local-242a5429453c593c"),
       "different bytes under a name this device holds are REFUSED, and the row says which",
@@ -608,8 +685,19 @@ test("the clash: the same bytes are already here, different bytes under one name
     // And the original file, run a third time, reads "already here" for the
     // very game that clashed — so the answer follows the bytes and not the
     // number of times a restore has been run.
-    const third = await restore(page, ENVELOPE);
+    const third = await timed(ENVELOPE);
     expect(third.get("local-242a5429453c593c")).toBe("already on this device — nothing changed");
+
+    // **RECORDED, never gated.** This cell's wall reads as a fifth of a second
+    // and that is worth decomposing rather than leaving as a figure a reader
+    // cannot believe: the door and the first restore together are most of it,
+    // and the two restores after it are the same four games judged again by a
+    // module that is already up.
+    // eslint-disable-next-line no-console
+    console.log(
+      `CLASH: the door and the first restore took ${doorAndFirst} ms; ` +
+        `the three restores themselves ${walls.join(" / ")} ms`,
+    );
     expect(watch.failures).toEqual([]);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
@@ -684,12 +772,18 @@ test("the outbox: a game finished before the archive was ever heard of waits, an
       () => true,
       () => false,
     );
+  // **Recorded where the REPORTER carries it**, and not only in a console line
+  // nobody scans: if this run's drain was started by the test rather than by
+  // the browser, the reader of the run has to be able to see that without
+  // grepping stdout.
+  test.info().annotations.push({
+    type: "outbox-online-trigger",
+    description: real
+      ? "Chromium fired `online` in the page after setOffline(false); the drain is the browser's"
+      : "Chromium did NOT fire `online` after setOffline(false) — the event was DISPATCHED BY HAND, " +
+        "so this run does not witness the browser's own trigger",
+  });
   if (!real) {
-    // eslint-disable-next-line no-console
-    console.log(
-      "OUTBOX: Chromium did NOT fire `online` in the page after setOffline(false); " +
-        "the event was dispatched by hand and the drain below is the one that trigger starts",
-    );
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
   }
 
@@ -712,6 +806,16 @@ test("the outbox: a game finished before the archive was ever heard of waits, an
 
   // …and the row is gone, because the receipt says it landed.
   await expect(page.locator(".outbox")).toHaveCount(0);
+
+  // **"Exactly one" is re-read at the END, which is what makes it exactly
+  // one.** The poll above stops the instant the count reaches 1, so a second
+  // POST arriving during the file check and the row-gone wait would never have
+  // been looked at — and a drain that posted the same bytes twice is precisely
+  // what the receipt exists to prevent.
+  expect(
+    api.answered.filter((c) => c.startsWith("POST /api/archive")),
+    "still exactly one archive POST, now that the row has gone and the copy is on disk",
+  ).toHaveLength(1);
 
   // eslint-disable-next-line no-console
   console.log(
