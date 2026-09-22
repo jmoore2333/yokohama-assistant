@@ -31,23 +31,41 @@ WORKDIR /src
 
 # `cargo build` needs no C toolchain for this workspace today (no build.rs
 # anywhere, checked), but pkg-config and a linker are cheap insurance and this
-# stage is not in the final image.
-#
-# **`binaryen` is not insurance — it is a prerequisite** (M6.5b2, R-6.5b2.15).
+# stage is not in the final image. `curl` is here for the step below and for
+# nothing else.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# **`wasm-opt` is not insurance — it is a prerequisite** (M6.5b2, R-6.5b2.15).
 # The module is built with `--profile release-wasm` and then run through
 # `wasm-opt -Oz`, which is 1.78 MB -> 1.17 MB; `npm run build:wasm` refuses
 # outright when it is absent, and this stage runs the same steps by hand.
-# Debian trixie's package is `120-4` (`wasm-opt version 120`, read off an
-# `apt-cache policy` in this very base image) against the workstation's and
-# CI's 132. That difference is measured, not assumed: this stage's module is
-# **1,174,709 B** where the workstation's is 1,169,222 B, 5,487 bytes and
-# 0.47% apart — within build noise for a release budget, and worth apt's
-# pin-free simplicity here. **A ceiling on the module must clear the LARGER of
-# the two**, because this is the build a deployment ships. CI pins the upstream
-# 132 binary instead, since that is where the recorded byte counts are taken.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config binaryen \
- && rm -rf /var/lib/apt/lists/*
+#
+# **Pinned to the SAME upstream binary the workflow installs, not to apt.**
+# Debian trixie ships `binaryen 120-4` (`wasm-opt version 120`, read off an
+# `apt-cache policy` in this very base image) where the workstation and CI run
+# 132, and that was a measured difference and not a theoretical one: over the
+# same input, apt's 120 emitted 1,174,709 B where 132 emits 1,173,055 B. The
+# image is `linux/amd64`, so the workflow's own asset applies byte for byte.
+# One static binary out of a 22-entry release; `libbinaryen` is a static
+# archive, so nothing else needs unpacking.
+#
+# **What pinning the optimizer did NOT close, measured rather than assumed.**
+# This stage's module is **1,173,055 B** against the workstation's
+# **1,169,222 B** — 3,833 B, 0.33% — with the SAME `wasm-opt 132` on both. The
+# optimizer is converged (running 132 again over this stage's output shaves
+# 620 B), so the residue is in what `cargo` and `wasm-bindgen` emit on an
+# x86_64-linux build host versus an aarch64-darwin one. Recorded, not
+# diagnosed; `-Oz` is semantics-preserving and the corpus replay passes on the
+# workstation's. **A ceiling on the module must clear the LARGER figure**,
+# because this stage is what a deployment ships.
+RUN curl -fsSL -o /tmp/binaryen.tar.gz \
+      https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+ && tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt \
+ && install -m 0755 /tmp/binaryen-version_132/bin/wasm-opt /usr/local/bin/wasm-opt \
+ && rm -rf /tmp/binaryen.tar.gz /tmp/binaryen-version_132 \
+ && wasm-opt --version
 
 # **The pin first, and the target onto the pinned toolchain.** `rustup target
 # add` applies to whichever toolchain rustup resolves at that moment, so this
@@ -120,10 +138,13 @@ COPY crates/yokohama-web/assets/art /crates/yokohama-web/assets/art
 # The generated glue, from the stage that has the toolchain. It lands where
 # `npm run build:wasm` would have written it — `web/src/local/wasm/`, a source
 # directory, so Vite bundles the loader and emits the `.wasm` as a hashed asset
-# (a static import from `public/` fails Rollup's resolution). The
-# `.dockerignore` keeps a developer's own copy out of the context, so this is
-# the only way it arrives — which is what makes the module in the image the one
-# the stage above built.
+# (a static import from `public/` fails Rollup's resolution).
+# **`deploy/Dockerfile.dockerignore`** keeps a developer's own copy out of the
+# context, so this is the only way it arrives — which is what makes the module
+# in the image the one the stage above built. It is named for the Dockerfile
+# rather than sitting at the context root because BuildKit prefers
+# `<dockerfile>.dockerignore` when it exists; a root `.dockerignore` beside it
+# would be read by nothing and would drift in silence.
 COPY --from=server /out/wasm ./src/local/wasm
 # `build:client`, not `build`: the module is already here, and running
 # `build:wasm` in this stage is exactly what has no toolchain to run it.

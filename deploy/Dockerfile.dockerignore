@@ -9,6 +9,13 @@ web/test-results/
 web/playwright-report/
 web/tsconfig.tsbuildinfo
 
+# M6.5b2's help-panel INTERMEDIATES. `shots.spec.ts` writes PNG here because
+# Playwright has no WebP encoder, and `docs/tools/mkhelpart.py` cuts the
+# committed `web/public/help/*.webp` from them. 4.2 MB of input to a step this
+# build never runs — and MEASURED in the image before this line existed, which
+# is the same way the two lines below were found.
+web/help-shots/
+
 # M6.5b's generated glue, both targets. These are BUILD OUTPUT of
 # `npm run build:wasm` and are gitignored — but a .gitignore governs git and
 # not a build context, so without these two lines a developer's own module

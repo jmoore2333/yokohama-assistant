@@ -47,6 +47,11 @@ regions: the explanation chart's feature rows (11px mono with coloured
 arithmetic beside it) and the pyramid's `A00`/`A01` id badges and printed power
 ladders (8.5px over card art). q95 buys nothing visible and costs 43% more.
 
+`--check` RE-ENCODES and compares bytes, so it answers "would this script,
+running here, produce what is committed" and not "is the committed picture
+right". A Pillow or libwebp bump can therefore report `DRIFTED` for pictures
+nobody touched; that is a re-cut to take deliberately, not a defect to chase.
+
 WHAT THIS DOES NOT PROVE. That the pictures are still the pictures the words
 beside them describe. `web/src/Help.tsx` gives each shot an `alt` and a
 `caption`, two of them are in `README.md`, and the server draws the game's seed
@@ -113,6 +118,11 @@ def main() -> int:
             "    cd web && npm run build && "
             "YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts"
         )
+
+    # The output directory is tracked, so a clone has it — but the INPUT side
+    # refuses absence with a named command and the output side should take the
+    # same care rather than raise a `FileNotFoundError` from a write.
+    HELP.mkdir(parents=True, exist_ok=True)
 
     drift = 0
     before = after = 0

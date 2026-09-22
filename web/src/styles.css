@@ -40,6 +40,15 @@
  * declared, and the weight RANGE below is what tells the browser to use that
  * axis rather than synthesise a bold.
  *
+ * **The `url()` is RELATIVE and the files live under `src/`, which is what puts
+ * them through Vite's hashed pipeline** (spec §2.7). A font is the most
+ * cacheable thing in the release — the same bytes on every visit for a year —
+ * and `assets.rs` grants `immutable` to `/assets/` alone, so a copy served from
+ * `public/` under its own name would be revalidated on every load for want of a
+ * hash in its name. The licence text sits in the same directory as the font it
+ * covers; `dist/` carries the font bytes and `NOTICE`, `ASSETS.md` and these
+ * two directories carry the grant.
+ *
  * The latin-ext, greek, cyrillic and vietnamese subsets are deliberately not
  * here. They would add 71 KB to a release that is precached WHOLE on every
  * version, for characters this instrument shows only if a player types one into
@@ -55,14 +64,14 @@
   font-style: normal;
   font-weight: 500 700;
   font-display: swap;
-  src: url("/fonts/fraunces/fraunces-latin.woff2") format("woff2");
+  src: url("./fonts/fraunces/fraunces-latin.woff2") format("woff2");
 }
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
-  src: url("/fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
+  src: url("./fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
 }
 
 :root {
