@@ -2,8 +2,9 @@
 //
 // **Why this is a build PREREQUISITE and not a nicety** (M6.5b2, R-6.5b2.15).
 // Measured on the workstation, the same pair `Cargo.toml`'s profile comment
-// carries: with `--profile release-wasm` the module is 1,782,864 B, this pass
-// takes it to 1,169,222 B, and 452,820 B is what a phone actually downloads.
+// carries and re-measured with it at the fix-wave head (2026-09-22): with
+// `--profile release-wasm` the module is 1,783,361 B, this pass takes it to
+// 1,175,223 B, and 456,048 B is what a phone actually downloads.
 // That is the single largest file in the release and the one a cold start
 // compiles before anything is playable, so a build that quietly skipped the
 // pass would ship a module 53% larger than the one every recorded figure and
@@ -48,7 +49,7 @@ if (probe.error || probe.status !== 0) {
     console.log(
       "wasm-opt: NOT RUN — this build produced an UNOPTIMIZED module.\n" +
         "  wasm-opt is absent and YOKOHAMA_WASM_OPT_OPTIONAL=1.\n" +
-        "  The module is roughly 1.8 MB instead of 1.17 MB; do not deploy it.",
+        "  The module is roughly 1.8 MB instead of 1.18 MB; do not deploy it.",
     );
     process.exit(0);
   }

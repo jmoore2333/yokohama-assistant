@@ -101,9 +101,11 @@ on plain `--release`) for `wasm32-unknown-unknown`, reading it from
 `target/wasm32-unknown-unknown/release-wasm/`, and runs `wasm-bindgen` twice:
 the web glue INTO `web/src/local/wasm/` (gitignored; Vite bundles it and emits
 the module as a hashed asset, `web/dist/assets/yokohama_wasm_bg-<hash>.wasm`,
-**1,169,222 B raw / 452,820 B gzip since M6.5b2** — it was ~2.8 MB raw /
-~760 KB gzip — served `immutable` since the M6.5b fix wave) and the Node glue
-into `web/wasm-node/` for `npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
+**1,175,223 B raw / 456,048 B gzip since M6.5b2** — it was ~2.8 MB raw / ~760 KB
+gzip — served `immutable` since the M6.5b fix wave; the figures are measured in
+ONE place, the `release-wasm` comment in the root `Cargo.toml`, and re-measured
+at each release) and the Node glue into `web/wasm-node/` for
+`npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
 module (`build:wasm:debug`, which carries the `debug_trap` export the trap cell
 needs) and leaves it in `web/src/local/wasm/` AND `web/dist/` — so a deploy cut
 after an e2e run ships a debug module unless `npm run build` is run again; the
@@ -1261,9 +1263,11 @@ step 3 before the name was left routed.
 2. **Ingress, transitional.** `/volume1/docker/cloudflared/config/config.yml` backed up as
    **`config.yml.bak-2026-09-21`** (2,770 B, sha256 `00ecb105f3043cbdaa3dbc4f72c63fe7919fcedd42026dd30c225e36696176a0`)
    and rewritten with the new block ABOVE the catch-all and the old block KEPT — the writing
-   container was created at **22:22:17Z** — then `POST /containers/cloudflared-nas/restart`, issued
-   at **≈22:22:29Z**. That figure is BOUNDED and not read off a log: it sits between the config
-   write at 22:22:17Z and a reading taken at 22:22:41Z, twelve seconds after the call returned.
+   container was created at **22:22:17Z** — then `POST /containers/cloudflared-nas/restart`, whose
+   time was never read off a log. **All that is known is the interval**: the restart was issued
+   after the config write at **22:22:17Z** and before a reading taken at **22:22:41Z**. An earlier
+   draft split that interval into an estimate of ≈22:22:29Z and a twelve-second gap after it, which
+   is the same unmeasured quantity stated twice as if one of them had been read.
 3. **The protection reading, taken before leaving it routed.** From a vantage with **no session**,
    `https://yokohama-nas.moore.nyc/` read **302 → `https://bdvc.cloudflareaccess.com/cdn-cgi/access/login/yokohama-nas.moore.nyc?kid=5fa7a989…`**
    — not 200. **One earlier reading, and the sequence is worth getting right.** At **22:23:16Z** an
@@ -1306,9 +1310,9 @@ from it at all** — every `curl` from it is the owner, and the app's own answer
 The unenrolled vantage used for every 302/401 below was a **throwaway `alpine` container on the NAS
 itself** (`NetworkMode: bridge`, egress the house IP, no WARP and no cookie), driven through
 Portainer's Docker proxy. **Nine such containers were created across this deployment** — five
-probes, one DNS diagnostic, one config read and two config writes — **and all nine were deleted.** Both vantages are recorded because they answer
-different questions: the unenrolled one says whether the door is shut, the enrolled one says what the
-application does once you are through it.
+probes, one DNS diagnostic, one config read and two config writes — **and all nine were deleted.**
+Both vantages are recorded because they answer different questions: the unenrolled one says whether
+the door is shut, the enrolled one says what the application does once you are through it.
 
 **A second wrinkle, recorded because it will look like a failure to the next reader, and because
 it is a cost of taking a NEW hostname rather than an existing one.** Two caching resolvers on this
@@ -1428,7 +1432,8 @@ The headed walk of the deployed site (the door draws at `#/`; "Play on this devi
 game with no sign-in; "Play with others" goes through `/enter` to the lobby; a signed-in hosted game
 still plays) was **not performed** and is not claimed. No authenticated browser was available to the
 session: **the Claude-in-Chrome extension was not connected**, which is the blocker on its own. The
-workstation's resolver would also not return the new name's **A** record for the reasons below — a
+workstation's resolver would also not return the new name's **A** record for the reasons recorded
+above, under THE MEASUREMENT VANTAGE — a
 `curl` from this machine read `Could not resolve host` throughout — but that is a weaker statement
 than the one an earlier draft made: **no browser was tried here**, and the same resolvers did return
 the **AAAA** records, so whether a browser on an IPv6-capable path would have loaded the site is
@@ -1492,8 +1497,9 @@ measurement says it should go on doing so.
   2026-09-02 file, which still says this origin has "NO authentication of any
   kind" (§3.14's drift note). So either restore re-routes correctly and
   re-introduces a comment that has been false since M6.1; the accurate text is
-  `deploy/cloudflared-config.yml` in this repo. `config.yml.bak-2026-09-01`
-  (1,890 B) is older still.
+  `deploy/cloudflared-config.yml` in this repo. `config.yml.bak-2026-09-01` is
+  older still (its size was never read; the figure that stood here was not one
+  any record carries).
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
 - **The previous build:** every earlier tag is still an image on the NAS (§3.9
@@ -1512,6 +1518,27 @@ measurement says it should go on doing so.
   `0.5.0-m6.5a` or later is a schema-3 document, and every binary before it refuses
   one (§3.12): the lobby drops the row and its reads fail until the newer binary is
   back. Tables from before that release keep their schema and are unaffected.
+- **Across `0.5.0-m6.5b2` the rollback is a BROWSER-SIDE schema rollback, and
+  nothing on the server says so.** `web/src/local/db.ts` moves the IndexedDB
+  database `yokohama-local` to **version 2** in that release (the outbox store).
+  A rolled-back `0.5.0-m6.5b.1` client opens it at version 1 against a version-2
+  database, IndexedDB answers `VersionError`, the M6.5b Worker's module-scope
+  startup promise rejects and is cached for the page's life, and **every game in
+  that browser reads "the games on this device could not be read" until the
+  newer client is redeployed**. Nothing is deleted and nothing is lost: the rows
+  are all still there and the next newer client reads them. But the games are
+  unreachable meanwhile, and a player cannot fix it from their end.
+  - It is the browser's store and not this volume, so no image and no backup
+    here changes it, and it cannot be rolled back at all — only rolled forward.
+  - Its blast radius is every browser that has loaded the newer client, not one
+    table. A player who never opened the release is unaffected.
+  - §3.14's "a rollback across it is NOT a schema rollback" is TRUE as written:
+    it is about the SERVER's stored documents (`TABLE_SCHEMA` stays 3), and it
+    was recorded for `553e3ee`, the mid-cycle release, which carried no version
+    bump at all. The bump arrived with the backup and outbox work after it.
+  - Told here because §3.12's `TABLE_SCHEMA` sentence is the shape a reader
+    looks for, and a rollback that takes every local game off the screen has to
+    be as easy to find as one that drops a lobby row.
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.
