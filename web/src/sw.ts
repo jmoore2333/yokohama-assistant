@@ -41,10 +41,18 @@ const CACHE_NAME = __CACHE_NAME__;
 const ENTRIES = __PRECACHE__;
 const PRECACHED: ReadonlySet<string> = new Set(ENTRIES.map((e) => e.path));
 
-/** The cache handle, opened once rather than per request. */
+/** The cache handle, opened once rather than per request.
+ *
+ *  **A rejection is not remembered.** `??=` alone caches the rejected promise
+ *  for the life of the worker, so one transient failure to open the cache would
+ *  turn every later navigation into a network fetch until the worker was
+ *  replaced — which offline means a broken page rather than a slow one. */
 let opened: Promise<Cache> | null = null;
 function releaseCache(): Promise<Cache> {
-  opened ??= caches.open(CACHE_NAME);
+  opened ??= caches.open(CACHE_NAME).catch((error: unknown) => {
+    opened = null;
+    throw error;
+  });
   return opened;
 }
 
@@ -74,6 +82,8 @@ async function installRelease(): Promise<void> {
 
   const deadline = new AbortController();
   const overdue = setTimeout(() => deadline.abort(), INSTALL_DEADLINE_MS);
+  /** The fetch-and-put lanes, held so the failure path can wait for them. */
+  let lanes: Promise<void>[] = [];
   try {
     const cache = await caches.open(CACHE_NAME);
     // The stamp the sweep orders generations by. Written FIRST, so a generation
@@ -86,20 +96,28 @@ async function installRelease(): Promise<void> {
     );
 
     const queue = ENTRIES.slice();
-    const lanes = Math.max(1, Math.min(INSTALL_CONCURRENCY, queue.length));
-    await Promise.all(
-      Array.from({ length: lanes }, async () => {
-        for (;;) {
-          const entry = queue.shift();
-          if (!entry) return;
-          await installOne(cache, entry, deadline.signal);
-        }
-      }),
-    );
+    const width = Math.max(1, Math.min(INSTALL_CONCURRENCY, queue.length));
+    lanes = Array.from({ length: width }, async () => {
+      for (;;) {
+        const entry = queue.shift();
+        if (!entry) return;
+        await installOne(cache, entry, deadline.signal);
+      }
+    });
+    await Promise.all(lanes);
   } catch (error) {
     const reason = deadline.signal.aborted
       ? `the install did not finish inside ${INSTALL_DEADLINE_MS} ms`
       : messageOf(error);
+    // **Stop the other lanes, and WAIT for them, before deleting.**
+    // `Promise.all` rejects on the FIRST failure and leaves its siblings
+    // running: without the abort they would go on downloading a release that
+    // has already failed, and without the wait the delete below could land
+    // while one of them was still inside `cache.put`. `allSettled` never
+    // rejects, and every lane is already handled by the `Promise.all` above,
+    // so neither call can raise an unhandled rejection.
+    deadline.abort();
+    await Promise.allSettled(lanes);
     if (!alreadyThere) await caches.delete(CACHE_NAME).catch(() => undefined);
     await tellTheClients(reason);
     // Rethrown, which is what FAILS the install: the browser marks this worker

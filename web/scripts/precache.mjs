@@ -78,6 +78,7 @@ const {
   buildPrecache,
   artFilesFrom,
   ceilingsFor,
+  checkSubstitution,
   RELEASE_MODULE_CEILING,
   DEBUG_MODULE_CEILING,
 } = await loadPure();
@@ -117,8 +118,10 @@ const release = buildPrecache({
 
 // **The worker, bundled with the release written into it.** A `define` that
 // found no identifier to replace would leave the worker reading a global that
-// does not exist, so the output is checked for the values rather than the
-// build merely being checked for success.
+// does not exist — a `ReferenceError` before the first handler is registered —
+// so the output is checked for values only the SUBSTITUTED release can carry
+// (`checkSubstitution`, which has its own cells), and not merely for a build
+// that succeeded.
 const worker = await build({
   entryPoints: [join(web, "src", "sw.ts")],
   bundle: true,
@@ -137,14 +140,13 @@ const worker = await build({
   },
 });
 const text = worker.outputFiles[0].text;
-for (const needle of [JSON.stringify(release.cacheName), JSON.stringify("/index.html")]) {
-  if (!text.includes(needle)) {
-    throw new Error(
-      `precache: the built worker does not carry ${needle}. The generator writes the release in ` +
-        `through esbuild's \`define\` on \`__CACHE_NAME__\` and \`__PRECACHE__\`; renaming either ` +
-        `in src/sw.ts leaves the worker reading a global that does not exist.`,
-    );
-  }
+const wrong = checkSubstitution(text, release);
+if (wrong) {
+  throw new Error(
+    `precache: ${wrong}. The generator writes the release in through esbuild's \`define\` on ` +
+      `\`__CACHE_NAME__\` and \`__PRECACHE__\`; renaming either in src/sw.ts leaves the worker ` +
+      `reading a global that does not exist.`,
+  );
 }
 writeFileSync(join(dist, "sw.js"), text);
 

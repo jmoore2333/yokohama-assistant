@@ -49,10 +49,5 @@
   // needs the generated wasm glue that CI's `web-client` job does not build.
   // The `src/local/*.node.test.ts` pattern above does not reach it, so it is
   // named here.
-  "exclude": [
-    "src/local/worker.ts",
-    "src/local/*.node.test.ts",
-    "src/sw.ts",
-    "src/precache.node.test.ts"
-  ]
+  "exclude": ["src/local/worker.ts", "src/**/*.node.test.ts", "src/sw.ts"]
 }

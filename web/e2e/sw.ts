@@ -17,9 +17,10 @@
 //
 // **`browser.newContext()` does not get the fixture**, because the override
 // below replaces the `context` FIXTURE and a context a spec makes for itself is
-// not that one. Three specs make their own; [`newContextWithoutWorker`] is what
-// they use, and the guard cannot see the difference — so it is written down
-// here and in each of those specs.
+// not that one. TWO specs make their own — `joins_by_link` and `two_browsers`,
+// five sites between them — and [`newContextWithoutWorker`] is what they use.
+// `every_spec_declares_its_worker.spec.ts` checks that too: it names any spec
+// whose source contains `browser.newContext(`.
 
 import { test as base, type Browser, type BrowserContext, type BrowserContextOptions } from "@playwright/test";
 

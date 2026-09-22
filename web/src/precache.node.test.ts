@@ -58,6 +58,22 @@ function walk(dir: string): string[] {
   return out;
 }
 
+if (!existsSync(glue)) {
+  // **A skip that SAYS it checked nothing**, the house shape
+  // (`YOKOHAMA_WEB_E2E_OPTIONAL`, `scripts/typecheck-worker.mjs`, the BGA
+  // capture corpus). The throw above is the default; this line is only reached
+  // under the opt-out, and without it a green run and a run that inventoried no
+  // build would look the same.
+  // `process.stdout` and not `console`: vitest intercepts console output and
+  // attributes it to a TEST, so a line written at module scope by a file whose
+  // only suite is then skipped is swallowed — measured.
+  process.stdout.write(
+    "\nprecache: the REAL-BUILD cell was SKIPPED and inventoried NOTHING — " +
+      "src/local/wasm/yokohama_wasm.js is absent and YOKOHAMA_WASM_OPTIONAL=1.\n" +
+      "  Run `npm run build:wasm` to check it.\n\n",
+  );
+}
+
 describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
   it("lists the module, the worker chunk and the stylesheet from a real build", async () => {
     const { build } = await import("vite");

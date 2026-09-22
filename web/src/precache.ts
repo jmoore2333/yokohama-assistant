@@ -23,12 +23,16 @@
 // re-cut card changes no filename and a scheme keyed on names alone would never
 // reach a browser that had already cached the old picture.
 //
-// **This file is import-free on purpose.** `scripts/precache.mjs` bundles it
-// with esbuild and imports the result, and it is also compiled into the app
-// project by `tsconfig.json` and the service-worker project by
-// `tsconfig.sw.json`. A `node:crypto` import here would be a node dependency in
-// a file three programs compile, so the hash is INJECTED (`sha256Hex`) and the
-// only thing this module knows about hashing is that the answer is hex.
+// **This file imports nothing but its sibling `swRoute.ts`, on purpose.**
+// `scripts/precache.mjs` bundles it with esbuild and imports the result, and it
+// is also compiled into the app project by `tsconfig.json` and the
+// service-worker project by `tsconfig.sw.json`. A `node:crypto` import here
+// would be a node dependency in a file three programs compile, so the hash is
+// INJECTED (`sha256Hex`) and the only thing this module knows about hashing is
+// that the answer is hex. `swRoute.ts` is safe in all three for the same
+// reason it is safe in the worker: it is `URL`, `Set` and string comparison.
+
+import { isServerPath } from "./swRoute";
 
 /** One entry the worker installs. */
 export interface PrecacheEntry {
@@ -258,15 +262,6 @@ function classOf(path: string): string {
   return "shell";
 }
 
-/** Paths the worker REFUSES to serve from a cache (spec §2.3, rule 1).
- *
- *  A list here and a list in `swRoute.ts` would be two rules; this is the one,
- *  re-asked at build time so a release can never name a path its own worker
- *  would bypass. */
-function isBypassed(path: string): boolean {
-  return path === "/enter" || path === "/api" || path.startsWith("/api/");
-}
-
 /**
  * The list, the digests and the name of one release.
  *
@@ -301,7 +296,7 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
   for (const path of paths) {
     if (seen.has(path)) throw new Error(`precache: ${path} is listed twice`);
     seen.add(path);
-    if (isBypassed(path)) {
+    if (isServerPath(path)) {
       throw new Error(
         `precache: ${path} is a path the service worker never intercepts, so a release must ` +
           `not name it`,
@@ -363,4 +358,50 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
     CACHE_PREFIX + sha256Hex(entries.map((e) => `${e.path} ${e.digest}`).join("\n")).slice(0, 16);
 
   return { cacheName, entries, totalBytes, moduleBytes, modulePath, byClass };
+}
+
+/**
+ * Whether the bundled worker really carries this release, or the sentence
+ * saying what is missing.
+ *
+ * **The first version of this check was half-vacuous and that is the point of
+ * the shape here** (review, Important 2). It looked for the cache name and for
+ * the literal `"/index.html"` — but `sw.ts` contains `"/index.html"` in its own
+ * source, at `fromCache("/index.html", request)`, so a RENAMED `__PRECACHE__`
+ * passed it and shipped a worker whose top-level `ENTRIES = __PRECACHE__`
+ * throws `ReferenceError` before a single handler is registered.
+ *
+ * So the check asks for something only the SUBSTITUTED list can contain: one
+ * `digest: "…"` per entry, and the first entry's digest by value. Neither
+ * appears anywhere in `sw.ts`'s source, and a define that replaced nothing
+ * produces zero of them.
+ *
+ * And both placeholders must be GONE. esbuild writes a `// <define:NAME>`
+ * banner above each substitution, which is a mention and not a reference, so
+ * those lines are dropped before the search — a banner is exactly the evidence
+ * that the define fired, and leaving it in would make the absence check
+ * impossible to state.
+ */
+export function checkSubstitution(built: string, release: Precache): string | null {
+  const body = built.replace(/^\s*\/\/ <define:[^>]*>\s*$/gm, "");
+  for (const placeholder of ["__PRECACHE__", "__CACHE_NAME__"]) {
+    if (body.includes(placeholder)) {
+      return (
+        `${placeholder} is still in the built worker, so esbuild's \`define\` replaced nothing ` +
+        `and the worker reads a global that does not exist`
+      );
+    }
+  }
+  if (!body.includes(JSON.stringify(release.cacheName))) {
+    return `the built worker does not name the release ${release.cacheName}`;
+  }
+  const digests = body.match(/digest: "/g)?.length ?? 0;
+  if (digests !== release.entries.length) {
+    return `the built worker carries ${digests} digests, not this release's ${release.entries.length}`;
+  }
+  const first = release.entries[0];
+  if (first && !body.includes(JSON.stringify(first.digest))) {
+    return `the built worker does not carry ${first.path}'s digest`;
+  }
+  return null;
 }

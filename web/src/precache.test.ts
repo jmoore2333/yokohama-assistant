@@ -14,6 +14,7 @@ import {
   artFilesFrom,
   buildPrecache,
   CACHE_PREFIX,
+  checkSubstitution,
   ceilingsFor,
   DEBUG_MODULE_CEILING,
   DEBUG_MODULE_MARKER,
@@ -259,5 +260,63 @@ describe("which ceilings a build is judged by", () => {
     const bytes = new TextEncoder().encode(`\u0000\u0001${DEBUG_MODULE_MARKER}\u0002`);
     expect(ceilingsFor(bytes).label).toBe("debug");
     expect(ceilingsFor(new TextEncoder().encode("\u0000\u0001plain\u0002")).label).toBe("release");
+  });
+});
+
+// **Whether the built worker really carries the release** (review, Important 2).
+//
+// The first version of this guard looked for the cache name and for the literal
+// `"/index.html"` — and `sw.ts` contains `"/index.html"` in its own source, at
+// `fromCache("/index.html", request)`. So a RENAMED `__PRECACHE__` passed it and
+// shipped a worker whose top-level `ENTRIES = __PRECACHE__` throws a
+// `ReferenceError` before a single handler is registered.
+describe("the substitution check", () => {
+  const release = buildPrecache(fixture);
+  /** What esbuild really emits: the define banner, the substituted list, and
+   *  `sw.ts`'s own `"/index.html"`. */
+  const built =
+    `// <define:__PRECACHE__>\n` +
+    `var define_PRECACHE_default = [${release.entries
+      .map((e) => `{ path: ${JSON.stringify(e.path)}, digest: ${JSON.stringify(e.digest)}, type: ${JSON.stringify(e.type)} }`)
+      .join(", ")}];\n` +
+    `var CACHE_NAME = ${JSON.stringify(release.cacheName)};\n` +
+    `fromCache("/index.html", request);\n`;
+
+  it("accepts a worker the define really wrote the release into", () => {
+    expect(checkSubstitution(built, release)).toBeNull();
+  });
+
+  // **The defect itself**, and the anti-vacuity half is what makes it a
+  // finding: the text the check now refuses is one the OLD check accepted,
+  // because both of its needles are still in it.
+  it("refuses a worker whose list was never substituted", () => {
+    const renamed = built.replace(/var define_PRECACHE_default = \[.*\];/s, "");
+    expect(renamed).toContain('"/index.html"');
+    expect(renamed).toContain(JSON.stringify(release.cacheName));
+    expect(checkSubstitution(renamed, release)).toMatch(/digests/);
+  });
+
+  it("refuses a worker still carrying either placeholder", () => {
+    expect(checkSubstitution(built + "\nENTRIES = __PRECACHE__;", release)).toMatch(/__PRECACHE__/);
+    expect(checkSubstitution(built + "\nvar n = __CACHE_NAME__;", release)).toMatch(/__CACHE_NAME__/);
+  });
+
+  // The `// <define:NAME>` banner is esbuild's evidence that the define FIRED,
+  // so it must not read as a leftover placeholder — which is the whole reason
+  // those lines are dropped before the search rather than the search being
+  // softened.
+  it("does not mistake esbuild's own banner for a leftover placeholder", () => {
+    expect(built).toContain("// <define:__PRECACHE__>");
+    expect(checkSubstitution(built, release)).toBeNull();
+  });
+
+  it("refuses a worker that names a different release", () => {
+    expect(checkSubstitution(built.replace(release.cacheName, "yokohama-release-elsewhere"), release))
+      .toMatch(/does not name the release/);
+  });
+
+  it("refuses a worker carrying the wrong number of digests", () => {
+    const short = built.replace(JSON.stringify(release.entries[0]!.digest), '"xx"');
+    expect(checkSubstitution(short, release)).toMatch(/does not carry/);
   });
 });

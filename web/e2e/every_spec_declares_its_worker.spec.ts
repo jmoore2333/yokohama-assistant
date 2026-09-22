@@ -21,11 +21,14 @@
 //
 // Anything else must import `test` from `./sw`.
 //
-// **What this guard CANNOT see**: a context a spec builds with
-// `browser.newContext()` never passes through the fixture, because the fixture
-// overrides `context` and that is a different object. `e2e/sw.ts` exports
-// `newContextWithoutWorker` for those, and the three specs that make their own
-// contexts use it — a fact held by reading, not by this file.
+// **And the second half is checked too**, because it was the easier one to get
+// wrong: a context a spec builds with `browser.newContext()` never passes
+// through the fixture, since the fixture overrides `context` and that is a
+// different object. `e2e/sw.ts` exports `newContextWithoutWorker` for those,
+// and the two specs that make their own contexts — `joins_by_link` and
+// `two_browsers`, five sites between them — use it. An earlier draft of this
+// file said that fact was "held by reading"; it is held by the second
+// expectation below.
 
 import { expect, test } from "@playwright/test";
 import { readFileSync, readdirSync } from "node:fs";
@@ -40,6 +43,12 @@ const FIXTURE = /import\s*\{[^}]*\btest\b[^}]*\}\s*from\s*"\.\/sw"/;
 
 /** …or an explicit declaration that this spec does something else. */
 const MARKER = /@yokohama-service-worker:\s*(on|none)\b/;
+
+/** A context built by the spec itself, which the fixture cannot reach.
+ *
+ *  `newContextWithoutWorker(browser)` does not contain this text, so the
+ *  helper's callers are not flagged by it. */
+const OWN_CONTEXT = /browser\.newContext\(/;
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -85,4 +94,19 @@ test("every browser spec says what it does about the service worker", () => {
       "`@yokohama-service-worker:` marker, so each of their contexts registers the release's " +
       "worker and starts a precache — import { test, expect } from \"./sw\" instead",
   ).toEqual([]);
+
+  // **The fixture reaches the fixture's context and no other.** A spec that
+  // calls `browser.newContext()` gets a context the override never touched, so
+  // its pages register the worker however carefully the spec imported `test`.
+  const ownContext = checked.filter(([, src]) => OWN_CONTEXT.test(src)).map(([f]) => f);
+  expect(
+    ownContext,
+    "these specs build their own context with `browser.newContext(`, which the `context` fixture " +
+      "cannot reach — use `newContextWithoutWorker(browser)` from \"./sw\" instead",
+  ).toEqual([]);
+  // Anti-vacuity for that half: the helper it points at has to exist and has to
+  // be the thing that flags nobody.
+  expect(fixture, "e2e/sw.ts exports no newContextWithoutWorker").toContain(
+    "export async function newContextWithoutWorker",
+  );
 });
