@@ -617,13 +617,88 @@ test("a store that will not even be READ still exports the move it refused, and 
   expect(watch.failures).toEqual([]);
 });
 
+// **The same refusal in a tab that does NOT hold the game** (fix round 2,
+// re-review N-1). The cell above reaches only the holder's branch, which
+// answers from memory and never produces the Worker's `unreadable` reply; this
+// one produces it from the real Worker. A tab on the door holds nothing, so
+// its host answers every export with the COMMITTED pair — and when it cannot
+// read that, it must say so as an ordinary reply. Before fix round 1 the
+// failed read was a trap: the page terminated this host and started another,
+// for an export the page's own read could have answered all along.
+test("a tab whose host cannot read IndexedDB still backs everything up, and its host is not restarted", async ({
+  page: a,
+  context,
+}) => {
+  const watchA = watchForBreakage(a);
+  const game = await startGame(a, { local: true });
+  const pick = rng(0x444f_4f52); // "DOOR"
+  await playSome(a, game, pick, 6);
+  await playUntilAnswerable(a, game, pick);
+  expect(await storedEvents(a, game.id), "A committed a played game").toBeGreaterThan(0);
+
+  const b = await context.newPage();
+  const watchB = watchForBreakage(b);
+  let startedB = 0;
+  b.on("worker", () => {
+    startedB += 1;
+  });
+  await b.goto("/");
+  await expect(b.locator(`.on-this-device a[href="#/t/${game.id}"]`)).toBeVisible();
+  const hostB = await localHost(b);
+  const hostsB = startedB;
+
+  // **Every transaction B's host asks for is refused**, and everything it posts
+  // is copied aside so the cell can see which reply the export met — by its
+  // SENTENCE, never by restating the key the two sides share.
+  await hostB.evaluate(() => {
+    IDBDatabase.prototype.transaction = function () {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    };
+    const posted: unknown[] = [];
+    (self as unknown as { __posted: unknown[] }).__posted = posted;
+    const send = self.postMessage.bind(self);
+    self.postMessage = ((m: unknown) => {
+      posted.push(m);
+      send(m);
+    }) as typeof self.postMessage;
+  });
+
+  const all = await downloaded(b, () =>
+    b.getByRole("button", { name: "Back up everything", exact: true }).click(),
+  );
+  // The premise: B's host was asked, and answered the refusal as a REPLY.
+  const replies = await hostB.evaluate(() =>
+    JSON.stringify((self as unknown as { __posted: unknown[] }).__posted),
+  );
+  expect(replies, "B's host answered the export with the storage refusal").toContain(
+    "this browser's storage could not be read",
+  );
+
+  // **The file is still whole and right**: the page's own read, from a page
+  // whose IndexedDB is fine, is what a refused Worker falls back to.
+  const backed = backedUp(all.text, game.id);
+  const stored = await storedPair(b, game.id);
+  expect(backed.record, "the backup's record is IndexedDB's, byte for byte").toBe(stored.record);
+  expect(backed.table, "and its table").toBe(stored.table);
+
+  // **And nothing was restarted.**
+  expect(startedB, "B started no second local host").toBe(hostsB);
+  expect(b.workers()).toContain(hostB);
+  await expect(b.getByText("the local host restarted")).toHaveCount(0);
+  expect(watchA.failures).toEqual([]);
+  expect(watchB.failures).toEqual([]);
+});
+
 test("a real trap is recovered by a fresh local host, and play continues from the last committed move", async ({
   page,
 }) => {
   const watch = watchForBreakage(page);
   let started = 0;
-  page.on("worker", () => {
+  /** Every host this tab has started, newest last. */
+  const hosts: Worker[] = [];
+  page.on("worker", (w) => {
     started += 1;
+    hosts.push(w);
   });
   const game = await startGame(page, { local: true });
   const worker = await localHost(page);
@@ -664,7 +739,33 @@ test("a real trap is recovered by a fresh local host, and play continues from th
   // pairs and re-acquired the game, so the screen is answerable again and the
   // next move is committed like any other.
   await expect(page.getByText("This game was opened in another tab")).toHaveCount(0);
-  await playUntilCommitted(page, game, pick, committed);
+  const resumed = await playUntilCommitted(page, game, pick, committed);
+
+  // **And a trap met by an EXPORT is still a trap** (PR #37 fix wave, fix
+  // round 2, re-review N-1). Since fix round 1 the export arm answers a STORAGE
+  // refusal as an ordinary reply, and it must not answer a MODULE fault the
+  // same way: `wasm.read` on a trapped module throws, and that is recovered by
+  // a fresh host like any other trap — the export refused, nothing downloaded,
+  // and the game playable again from what was committed.
+  const second = hosts[hosts.length - 1]!;
+  expect(second, "the host that recovered the first trap").not.toBe(worker);
+  let downloads = 0;
+  page.on("download", () => {
+    downloads += 1;
+  });
+  await second.evaluate(() => {
+    (self as unknown as { onmessage: (e: { data: unknown }) => void }).onmessage({
+      data: { seq: 987_655, kind: "debug_trap" },
+    });
+  });
+  await page.getByRole("button", { name: "Save game file" }).click();
+  await expect
+    .poll(() => started, { message: "the export met the trap, and the page started a third host" })
+    .toBe(3);
+  expect(downloads, "a trapped module's export is refused, not saved").toBe(0);
+  expect(await storedEvents(page, game.id)).toBe(resumed);
+  await expect(page.getByText("This game was opened in another tab")).toHaveCount(0);
+  await playUntilCommitted(page, game, pick, resumed);
 
   // The trap itself is a refused call, not a page error: the one console
   // channel a player would call broken stays empty.
