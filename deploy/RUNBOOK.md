@@ -84,7 +84,16 @@ brew install binaryen                                       # M6.5b2: wasm-opt, 
 `PATH`, naming `brew install binaryen` and `apt-get install binaryen`.
 `YOKOHAMA_WASM_OPT_OPTIONAL=1` turns that into a build that prints, out loud,
 that it produced an UNOPTIMIZED module — **do not cut a deploy from one**: it is
-1.78 MB instead of 1.17 MB. The workstation reading is `wasm-opt version 132`.
+1.78 MB instead of 1.17 MB.
+
+**Which version, and where it matters.** The workstation reading is `wasm-opt
+version 132`, and every byte figure in this document was taken with it; CI and
+`deploy/Dockerfile` install that exact binary from the upstream release tarball,
+pinned by SHA-256. `apt-get install binaryen` on Debian or Ubuntu gives **120**,
+which emits a different module (1,174,709 B against 132's 1,173,055 B on the
+same input). That is fine for developing on a Linux box and it is NOT the build
+to read a recorded figure or a release budget off. The script prints the version
+it used on every run.
 
 `build:wasm` compiles `crates/yokohama-wasm` with **`--profile release-wasm`**
 (M6.5b2: `opt-level = "z"`, fat LTO, one codegen unit — the server binary stays

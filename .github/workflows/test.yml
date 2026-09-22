@@ -82,6 +82,13 @@ jobs:
       # see and a difference nobody could reproduce locally. The tarball is one
       # static binary; the cache key carries the version, so a bump here
       # invalidates the cache rather than restoring the old one.
+      #
+      # **The download is CHECKSUMMED before anything is unpacked.** The URL
+      # promises a name, not bytes, and what comes back is then RUN over the
+      # module this job ships. `sha256sum -c` fails the step loudly on a
+      # mismatch. Measured 2026-09-21 over 117,057,408 bytes, agreed by three
+      # independent downloads; `deploy/Dockerfile` pins the same hash for the
+      # same file, and a binaryen bump changes BOTH.
       - uses: actions/cache@v4
         with:
           path: ~/.local/bin/wasm-opt
@@ -92,6 +99,7 @@ jobs:
           if [ ! -x ~/.local/bin/wasm-opt ]; then
             curl -fsSL -o /tmp/binaryen.tar.gz \
               https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz
+            echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c -
             # One member out of twenty-two: the release ships the whole suite
             # and a static `libbinaryen.a`, so `wasm-opt` needs nothing beside
             # it and unpacking the rest would cost 100 MB of runner disk.
@@ -141,7 +149,11 @@ jobs:
       # (`claimed_parses_only_where_the_development_feature_is_compiled_in`)
       # takes its refusing branch only here; the other four prove the module
       # still works without the feature.
-      - run: cargo test -p yokohama-web --no-default-features --features server --lib identity::
+      # QUOTED, and it has to be: a plain YAML scalar ending in `:` is read as
+      # a mapping key, so the unquoted form made this WHOLE FILE fail to parse
+      # (confirmed with two independent YAML parsers) and GitHub would have
+      # reported an invalid workflow rather than running anything.
+      - run: "cargo test -p yokohama-web --no-default-features --features server --lib identity::"
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.
       # It runs AFTER `wire_fixtures`, which is what re-derives the committed
       # corpus and the walk's request script from the real router — a replay

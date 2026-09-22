@@ -15,6 +15,16 @@
 // and the BGA capture corpus already use, and for the same reason: a silent
 // skip is a green build that means something different from what it says.
 //
+// **The VERSION matters for a figure and not for a build.** Every byte count
+// here was taken with `wasm-opt 132`, and that is what CI and
+// `deploy/Dockerfile` install, both from the same checksum-pinned upstream
+// tarball. Debian and Ubuntu package binaryen 120, which emits a different
+// module (measured: 1,174,709 B where 132 emits 1,173,055 B on the same input)
+// — fine for developing against, not the build a recorded figure or a release
+// budget should be read off. The refusal below names apt because that is the
+// fastest way for a Linux developer to get going; it prints the version it
+// used on every run, so nobody has to remember which they have.
+//
 // A named file that is ABSENT is also a refusal. This script is handed the
 // paths `build:wasm` just wrote, so a missing one means the `wasm-bindgen` step
 // above it did not produce what the next step will read, and carrying on would
@@ -45,7 +55,9 @@ if (probe.error || probe.status !== 0) {
   console.error(
     "wasm-opt: absent, and the release module is not built without it.\n" +
       "  macOS:  brew install binaryen\n" +
-      "  Debian: apt-get install binaryen\n" +
+      "  Debian: apt-get install binaryen   (version 120 — fine to develop on,\n" +
+      "          but the recorded figures and the release budget are version 132,\n" +
+      "          which CI and deploy/Dockerfile install from a pinned tarball)\n" +
       "  Set YOKOHAMA_WASM_OPT_OPTIONAL=1 to build an UNOPTIMIZED module anyway.",
   );
   process.exit(1);

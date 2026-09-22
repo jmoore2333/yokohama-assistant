@@ -44,8 +44,8 @@ as an answer.
 
 | Path | Contents | Scale | License and provenance |
 |------|----------|-------|------------------------|
-| `web/src/fonts/fraunces/` | The browser client's display typeface, latin subset, as a variable `woff2` | 1 `.woff2` (67 KiB) + `OFL.txt` | **SIL Open Font License 1.1.** Fraunces v38, copyright 2018 The Fraunces Project Authors (https://github.com/undercasetype/Fraunces). The `woff2` is the latin subset Google Fonts serves for `Fraunces:opsz,wght@9..144,500;9..144,700`; the `OFL.txt` is verbatim from https://github.com/googlefonts/fraunces |
-| `web/src/fonts/jetbrains-mono/` | The browser client's monospace typeface, latin subset, as a variable `woff2` | 1 `.woff2` (31 KiB) + `OFL.txt` | **SIL Open Font License 1.1.** JetBrains Mono v24, copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono). The `woff2` is the latin subset Google Fonts serves for `JetBrains+Mono:wght@400;500;700`; the `OFL.txt` is verbatim from that repository |
+| `web/src/fonts/fraunces/` (+ `web/public/fonts/fraunces/OFL.txt`) | The browser client's display typeface, latin subset, as a variable `woff2` | 1 `.woff2` (67 KiB) + `OFL.txt`, and a byte-identical copy of that text in `public/` so the BUILT bundle carries it | **SIL Open Font License 1.1.** Fraunces v38, copyright 2018 The Fraunces Project Authors (https://github.com/undercasetype/Fraunces). The `woff2` is the latin subset Google Fonts serves for `Fraunces:opsz,wght@9..144,500;9..144,700`; the `OFL.txt` is verbatim from https://github.com/googlefonts/fraunces |
+| `web/src/fonts/jetbrains-mono/` (+ `web/public/fonts/jetbrains-mono/OFL.txt`) | The browser client's monospace typeface, latin subset, as a variable `woff2` | 1 `.woff2` (31 KiB) + `OFL.txt`, and a byte-identical copy of that text in `public/` so the BUILT bundle carries it | **SIL Open Font License 1.1.** JetBrains Mono v24, copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono). The `woff2` is the latin subset Google Fonts serves for `JetBrains+Mono:wght@400;500;700`; the `OFL.txt` is verbatim from that repository |
 
 Both were downloaded on 2026-09-21 and are the **same bytes the page already
 fetched** from `fonts.gstatic.com` — self-hosting them changed where they come
@@ -60,16 +60,22 @@ here sells a font by itself. `NOTICE` names both families, their copyright
 holders and the path to each license, which is the file an Apache-2.0
 redistributor is required to carry forward.
 
-**They are under `web/src/` rather than `web/public/` because the browser build
-content-hashes what it finds there**, emitting each as
-`dist/assets/<name>-<hash>.woff2` — and `crates/yokohama-web/src/assets.rs`
-grants a year of `immutable` to `/assets/` alone, so a font served from
-`public/` under its own name would be revalidated on every visit for want of a
-hash. The consequence worth stating: the built bundle carries the font bytes and
-not the license text. The grant travels with the SOURCE, which is what this
-repository redistributes and what these two directories, `NOTICE` and this table
-record; a deployment that wants the text served alongside can copy either
-`OFL.txt` into `web/public/`.
+**The font FILES are under `web/src/` because the browser build content-hashes
+what it finds there**, emitting each as `dist/assets/<name>-<hash>.woff2` — and
+`crates/yokohama-web/src/assets.rs` grants a year of `immutable` to `/assets/`
+alone, so a font served from `public/` under its own name would be revalidated
+on every visit for want of a hash.
+
+**The license text is in BOTH trees, and the second copy is the one that ships.**
+`web/src/fonts/<family>/OFL.txt` sits beside the font it covers, so a copy of
+that directory carries its own grant — that is what "the license travels with
+the files" means for the source. But a hashed emit only carries what a `url()`
+referenced, so the SOURCE copy never reaches `dist/`: a byte-identical copy lives
+at `web/public/fonts/<family>/OFL.txt`, which Vite copies verbatim into
+`dist/fonts/<family>/OFL.txt`, so the built bundle — the thing a deployment hands
+to a browser and an image pushes to a registry — carries the grant with the
+bytes. The two copies are checked identical when either is changed; a re-download
+updates both.
 
 ## Whose they are
 

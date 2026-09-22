@@ -51,6 +51,16 @@ RUN apt-get update \
 # One static binary out of a 22-entry release; `libbinaryen` is a static
 # archive, so nothing else needs unpacking.
 #
+# **The download is CHECKSUMMED before anything is unpacked from it.** A release
+# asset is mutable in the sense that matters here — the URL is a promise about a
+# name, not about bytes — and this one is fetched over the network into a stage
+# that then RUNS it. `sha256sum -c` fails the layer loudly on any mismatch, so a
+# replaced asset stops the build instead of optimizing the module with whatever
+# arrived. The hash was measured on 2026-09-21 over 117,057,408 bytes, by two
+# independent downloads on this workstation and a third elsewhere, all three
+# agreeing. `.github/workflows/test.yml` pins the same hash for the same file;
+# a binaryen bump changes BOTH.
+#
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
 # This stage's module is **1,173,055 B** against the workstation's
 # **1,169,222 B** — 3,833 B, 0.33% — with the SAME `wasm-opt 132` on both. The
@@ -62,6 +72,7 @@ RUN apt-get update \
 # because this stage is what a deployment ships.
 RUN curl -fsSL -o /tmp/binaryen.tar.gz \
       https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+ && echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt \
  && install -m 0755 /tmp/binaryen-version_132/bin/wasm-opt /usr/local/bin/wasm-opt \
  && rm -rf /tmp/binaryen.tar.gz /tmp/binaryen-version_132 \
