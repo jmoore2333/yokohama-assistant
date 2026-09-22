@@ -142,8 +142,8 @@ export interface Generation {
  * "installed" over a cache that is gone. Before R-F5 the same race kept it as
  * the newest install. It is practically unreachable: Handle Fetch holds every
  * navigation while the active worker is `activating`, so a navigation cannot
- * start that install inside the sweep, and only a page calling `update()`
- * during `activate` could.
+ * start that install inside the sweep, and only a page calling `update()`, or
+ * a retry's `register()`, during `activate` could.
  */
 export function generationsToDelete(mine: string, generations: readonly Generation[]): string[] {
   const others = generations

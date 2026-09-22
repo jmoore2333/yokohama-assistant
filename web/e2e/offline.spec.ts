@@ -648,7 +648,11 @@ test("the tab that did not click: handed to release 2's worker still running rel
   const oldName = chunks[0]!;
   const oldPath = `/assets/${oldName}`;
   const newPath = `/assets/${RENAMED}`;
-  expect(fs.existsSync(path.join(ASSETS, RENAMED)), "the new name is not already taken").toBe(false);
+  expect(
+    fs.existsSync(path.join(ASSETS, RENAMED)),
+    `the new name is not already taken — an interrupted earlier run left ${RENAMED} behind. ` +
+      `Rebuild with \`npm run build:client\` before trusting any later spec.`,
+  ).toBe(false);
   const referrers = [...before.keys()].filter(
     (f) => f !== "sw.js" && fs.readFileSync(path.join(DIST, f)).includes(oldName),
   );
@@ -1257,7 +1261,8 @@ test("a failed FIRST install: one file answers 503 once, the release fails whole
   expect(await releaseCaches(page), "and no half-release in the cache").toEqual([]);
 
   // Before the fix this line read "…with script ('Unknown'): The object is in
-  // an invalid state. Try again", on every click until a reload.
+  // an invalid state.. Try again" (measured at 0a4f7223, two periods, the
+  // door's own defect as well), on every click until a reload.
   expect(await retried(page)).toBe("Ready to play offline.");
   const release = await installed(page);
   expect(scripts, "the retry REGISTERED — it fetched the worker again").toBe(2);
