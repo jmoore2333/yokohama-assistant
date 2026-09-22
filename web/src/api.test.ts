@@ -194,9 +194,15 @@ describe("call routes by host", () => {
     // **The prefix and the reason verbatim, and one sentence more** (M6.5b2,
     // spec §2.4): the quota failure's path is the backup control, pointed at
     // rather than restated on a screen of its own.
-    expect(state.warnings).toHaveLength(1);
-    expect(state.warnings[0]).toMatch(/^APPLIED BUT NOT SAVED — the quota is full — /);
-    expect(state.warnings[0]).toContain("Back up");
+    //
+    // **By VALUE, the whole line** (review M-2): a prefix regex plus a
+    // `toContain` left the pointer's own wording pinned nowhere, and this line
+    // is read by a player at the worst moment they will have — it is worth a
+    // test that fails when somebody rewrites it without meaning to.
+    expect(state.warnings).toEqual([
+      'APPLIED BUT NOT SAVED — the quota is full — back this game up — the "Back up" button on ' +
+        "it writes a file this app can restore.",
+    ]);
     // The corpus fixture itself carries none, so the line came from here.
     expect(wire.options.warnings).toEqual([]);
   });

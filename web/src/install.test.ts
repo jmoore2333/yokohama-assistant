@@ -7,7 +7,7 @@
 
 import { fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { stubDesktopMac, stubIosSafari, stubIpadOs, stubStandalone } from "./test/platform";
+import { stubDesktopMac, stubIosSafari, stubIpadOs, stubStandalone, stubStorage } from "./test/platform";
 import {
   DISMISSED_KEY,
   captureInstallPrompt,
@@ -16,6 +16,20 @@ import {
   promptInstall,
   resetInstallForTests,
 } from "./install";
+
+/** A `localStorage` whose every access raises, which is what iOS Safari with
+ *  "Block All Cookies" and a sandboxed iframe both do. DIFFERENT from an
+ *  absent one, and both paths are covered below. */
+function throwingStorage(): void {
+  vi.stubGlobal("localStorage", {
+    getItem: () => {
+      throw new Error("the operation is insecure");
+    },
+    setItem: () => {
+      throw new Error("the operation is insecure");
+    },
+  });
+}
 
 describe("the install offer", () => {
   beforeEach(() => {
@@ -63,6 +77,42 @@ describe("the install offer", () => {
     expect(installState()).toBe("none");
   });
 
+  // **An iOS WEBVIEW has no Share sheet to tap** (review M-4). Each of these
+  // passes the platform test and has no `onbeforeinstallprompt`, so without an
+  // exclusion it is handed an instruction naming a control it does not have —
+  // the failure the list exists to prevent.
+  const webviews: [string, string][] = [
+    ["Facebook's in-app browser", "[FBAN/FBIOS;FBAV/450.0.0.38.108;FBBV/1;FBDV/iPhone14,2]"],
+    ["Instagram's", "Instagram 300.0.0.29.110 (iPhone14,2; iOS 17_0; en_US)"],
+    ["Line's", "Line/13.14.0 LIAF"],
+    // The generic shape, and the reason it is the general rule: Safari on iOS
+    // carries a `Safari/` token and a bare WKWebView embed does not.
+    ["a bare WKWebView embed", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"],
+  ];
+  for (const [what, ua] of webviews) {
+    it(`says nothing in ${what}`, () => {
+      stubIosSafari();
+      vi.stubGlobal("navigator", {
+        userAgent: `Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 ${ua}`,
+        platform: "iPhone",
+        maxTouchPoints: 5,
+      });
+      expect(installState()).toBe("none");
+    });
+  }
+
+  // **The platform survives a later stub** (review M-3). `stubStorage` adds a
+  // storage manager to whatever `navigator` currently is, and a spread that
+  // copied nothing would silently drop the UA and the platform — so a cell
+  // that stubs a browser and then its storage would be asserting about jsdom
+  // again without saying so. This is that ordering, read through the one
+  // answer that depends on the UA.
+  it("keeps the platform when a later stub adds storage to it", () => {
+    stubIosSafari();
+    stubStorage({ persisted: async () => false });
+    expect(installState()).toBe("ios-instructions");
+  });
+
   it("never shows it again once dismissed", () => {
     stubIosSafari();
     dismissInstall();
@@ -83,17 +133,54 @@ describe("the install offer", () => {
   // The storage this runs in is the chat fold's: one key, and every access
   // wrapped, because a private window throws on the very first read.
   it("offers the instruction anyway when storage throws", () => {
-    vi.stubGlobal("localStorage", {
-      getItem: () => {
-        throw new Error("the operation is insecure");
-      },
-      setItem: () => {
-        throw new Error("the operation is insecure");
-      },
-    });
+    throwingStorage();
     stubIosSafari();
     expect(installState()).toBe("ios-instructions");
     expect(() => dismissInstall()).not.toThrow();
+  });
+
+  // **A browser with NO `localStorage` is not a browser that has dismissed
+  // anything** (review I-1). The two unavailable paths are different paths: a
+  // `getItem` that THROWS lands in a catch, and an ABSENT storage short-
+  // circuits the read to `undefined` — which `!== null` answers true to, so a
+  // browser with cookies blocked read as already-dismissed and neither
+  // affordance was ever drawn. Only the throwing path had a cell.
+  it("offers the instruction when there is no storage at all", () => {
+    vi.stubGlobal("localStorage", undefined);
+    stubIosSafari();
+    expect(installState()).toBe("ios-instructions");
+  });
+
+  // **And the dismissal still works this visit** (review I-2). Where nothing
+  // can be written, the module remembers in memory for the life of the page —
+  // which in a private window is the whole of the session — so the control a
+  // player clicks changes the screen rather than doing nothing at all.
+  it("takes the instruction down this visit even when nothing can be stored", () => {
+    vi.stubGlobal("localStorage", undefined);
+    stubIosSafari();
+    expect(installState()).toBe("ios-instructions");
+    dismissInstall();
+    expect(installState()).toBe("none");
+  });
+
+  it("takes it down this visit when the write THROWS", () => {
+    throwingStorage();
+    stubIosSafari();
+    dismissInstall();
+    expect(installState()).toBe("none");
+  });
+
+  // The in-memory half is a PAGE's memory and not a browser's: with nothing
+  // written, a reload offers the instruction again. That is the smaller
+  // failure the module's doc names, and it is now a mechanism rather than a
+  // claim.
+  it("offers it again on the next visit when nothing could be stored", () => {
+    vi.stubGlobal("localStorage", undefined);
+    stubIosSafari();
+    dismissInstall();
+    resetInstallForTests();
+    captureInstallPrompt();
+    expect(installState()).toBe("ios-instructions");
   });
 
   it("writes the dismissal under one key", () => {
@@ -161,5 +248,34 @@ describe("the install offer", () => {
     const prevent = vi.spyOn(event, "preventDefault");
     fireEvent(window, event);
     expect(prevent).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The stubs themselves (review M-3).
+//
+// **A helper whose name promises to keep the browser it found has to be held
+// to it.** `stubStorage` and `stubStandalone` ADD one field to whatever
+// `navigator` currently is, and a spread over a real `Navigator` copies
+// nothing — its properties live on the prototype — so against a real browser
+// both helpers silently dropped the UA, the platform and the touch points.
+// Harmless in the cells as they stand, and a trap for the next ordering that
+// needs both.
+
+describe("the platform stubs", () => {
+  it("adds storage to the navigator it finds rather than replacing it", () => {
+    const ua = navigator.userAgent;
+    // The premise, asserted: jsdom really does have a UA to lose.
+    expect(ua).not.toBe("");
+    stubStorage({ persisted: async () => false });
+    expect(navigator.userAgent).toBe(ua);
+    expect((navigator as unknown as { storage?: unknown }).storage).toBeDefined();
+  });
+
+  it("adds the standalone flag to the navigator it finds", () => {
+    const ua = navigator.userAgent;
+    stubStandalone();
+    expect(navigator.userAgent).toBe(ua);
+    expect((navigator as unknown as { standalone?: boolean }).standalone).toBe(true);
   });
 });

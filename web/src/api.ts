@@ -404,13 +404,17 @@ const BACKUP_POINTER =
  *
  *  **The server's own wording, and the server's own place for it**
  *  (`api.rs:1105`): a warning on the applied reply, never a refusal — the move
- *  DID happen. One rule and one sentence across both hosts, so a player who
- *  has run out of quota reads the same line whichever host they are on.
+ *  DID happen.
  *
- *  **The prefix and the reason are carried VERBATIM** (spec §4: "APPLIED BUT
- *  NOT SAVED" is carried from M6.5b, not restated); what M6.5b2 adds is the
- *  pointer after them, which is about this browser and so belongs only on this
- *  host's arm. */
+ *  **One rule and one sentence across both hosts, up to the pointer** (review
+ *  M-1, correcting a sentence that had claimed the whole line was identical).
+ *  The prefix and the reason are carried VERBATIM (spec §4: "APPLIED BUT NOT
+ *  SAVED" is carried from M6.5b, not restated), so a player who has run out of
+ *  room reads the same refusal whichever host they are on. What M6.5b2 adds
+ *  after them is a fact about THIS BROWSER and a control only this browser
+ *  has, so it rides this arm alone — and this function has no other caller:
+ *  `call`'s server branch never reaches it, because a hosted game's write is
+ *  the server's problem and has the server's own remedy. */
 function withUnsaved<T>(out: T, reason: string | null): T {
   const warned = out as { warnings?: unknown };
   if (out && typeof out === "object" && Array.isArray(warned.warnings)) {

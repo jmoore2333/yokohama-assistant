@@ -21,7 +21,7 @@ import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { resetInstallForTests } from "./install";
-import { resetPersistenceRequestForTests } from "./storage";
+import { requestPersistence, resetPersistenceRequestForTests } from "./storage";
 import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
@@ -309,5 +309,58 @@ describe("keeping the games on this device", () => {
     await draw();
     await screen.findByText(/has not promised/i);
     expect(persist).not.toHaveBeenCalled();
+  });
+
+  // **The line moves when the grant does** (review M-5). The ask happens at
+  // the first committed move, which is on another screen; a report read once
+  // at mount would still say "has not promised" when the player came back to
+  // the door inside the same page session. `requestPersistence` tells its
+  // listeners, and this is the one subscriber.
+  it("re-reads the report when the grant has been asked for", async () => {
+    let granted = false;
+    stubStorage({
+      persist: vi.fn(async () => {
+        granted = true;
+        return true;
+      }),
+      persisted: vi.fn(async () => granted),
+      estimate: vi.fn().mockResolvedValue({ usage: 1_000, quota: 1_000_000 }),
+    });
+    await draw();
+    expect(await screen.findByText(/has not promised/i)).toBeInTheDocument();
+
+    await act(async () => {
+      await requestPersistence();
+    });
+    expect(await screen.findByText(/has promised to keep/i)).toBeInTheDocument();
+    expect(screen.queryByText(/has not promised/i)).toBeNull();
+  });
+
+  // **"These games" is a false subject with no rows** (review M-6). The line
+  // is about what the browser will do with games played here, and the backup
+  // instruction has nothing to be about until there is something to back up.
+  it("words itself for a device with no games on it", async () => {
+    stubStorage({
+      persisted: vi.fn().mockResolvedValue(false),
+      estimate: vi.fn().mockResolvedValue({ usage: 0, quota: 1_000_000_000 }),
+    });
+    stubWorker({
+      call: (req) =>
+        req.path === "/api/games" && req.method === "GET"
+          ? { status: 200, body: { games: [], next: null } }
+          : undefined,
+    });
+    render(<OnThisDevice />);
+    await screen.findByText(/no game on this device yet/);
+    const line = await screen.findByText(/has not promised/i);
+    expect(line.textContent ?? "").not.toMatch(/these games/i);
+    expect(line.textContent ?? "").not.toMatch(/back them up/i);
+    // The anti-vacuity half: with a game listed the same line says both.
+    cleanup();
+    resetLocalHostForTests();
+    await draw();
+    const withRows = await screen.findByText(/has not promised/i);
+    expect(withRows).toHaveTextContent("these games");
+    expect(withRows).toHaveTextContent("Back them up");
   });
 });

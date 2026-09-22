@@ -34,6 +34,7 @@
 // dismissal must still show the instruction rather than take the door down.
 
 import { useEffect, useState } from "react";
+import { readItem, writeItem } from "./browserStorage";
 
 /** The one key this module writes, `chatFold.ts`'s single-key idiom. */
 export const DISMISSED_KEY = "yokohama.install.dismissed";
@@ -63,21 +64,25 @@ const notify = (): void => {
   for (const f of [...listeners]) f();
 };
 
-/** `localStorage`, or nothing — `chatFold.ts`'s own accessor. */
-function browserStorage(): Storage | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage;
-  } catch {
-    return null;
-  }
-}
+/** Dismissed on THIS PAGE, whether or not the browser would remember it.
+ *
+ *  **The half that makes the control work where nothing can be written**
+ *  (review I-2). `dismissInstall` used to write, swallow the failure and tell
+ *  its listeners — who re-read a storage that had stored nothing and drew the
+ *  instruction again. A player clicked a control and the page did not change.
+ *  In a private window the life of this flag IS the life of the session. */
+let dismissedInPage = false;
 
+/** Whether the offer has been waved away, by either memory.
+ *
+ *  **`readItem` and not `storage?.getItem(…) !== null`** (review I-1): an
+ *  absent storage short-circuits the member expression to `undefined`, and
+ *  `undefined !== null` is TRUE — so a browser with cookies blocked read as a
+ *  browser that had already dismissed the offer, and neither affordance was
+ *  ever drawn. The shared accessor answers `null` for every unreadable
+ *  storage, which is the answer "nothing is stored under that key". */
 function dismissed(): boolean {
-  try {
-    return browserStorage()?.getItem(DISMISSED_KEY) !== null;
-  } catch {
-    return false;
-  }
+  return dismissedInPage || readItem(DISMISSED_KEY) !== null;
 }
 
 /** `navigator`, whatever this browser has, as something safe to read from.
@@ -124,7 +129,18 @@ function iosSafari(): boolean {
     // iPadOS 13+: a Mac platform with a touchscreen is an iPad.
     (platform === "MacIntel" && touch > 1);
   if (!ios) return false;
+  // **Another browser's iOS app**: each has its own menu and its own wording,
+  // and an instruction naming the wrong control is worse than none.
   if (/CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser|DuckDuckGo/.test(ua)) return false;
+  // **An in-app WEBVIEW has no share sheet at all** (review M-4), so an
+  // instruction there names a control that does not exist. Named first, then
+  // the general rule.
+  if (/FBAN|FBAV|FBIOS|Instagram|\bLine\/|MicroMessenger|Twitter|Snapchat/i.test(ua)) return false;
+  // **The general rule, and the reason it is this one**: Safari on iOS carries
+  // a `Safari/` token and a bare `WKWebView` embed does not. A home-screen web
+  // app drops the token too — and is already answered `"installed"` above, so
+  // the only thing left here without it is an embed.
+  if (!/Safari\//.test(ua)) return false;
   // The structural half: a browser that HAS this property is Chromium and will
   // offer a button of its own.
   return !("onbeforeinstallprompt" in globalThis);
@@ -195,14 +211,17 @@ export function installState(): InstallState {
   return "none";
 }
 
-/** Never again, on this browser. */
+/** Never again, on this browser — and never again on this PAGE whatever the
+ *  browser does with the write.
+ *
+ *  A browser that will not remember shows the line again on the next visit,
+ *  which is a smaller failure than a door that did not draw. That sentence is
+ *  now a mechanism rather than a claim: the flag is what holds the dismissal
+ *  when the write does not land, and it is a page's memory, so a reload really
+ *  does offer it again. */
 export function dismissInstall(): void {
-  try {
-    browserStorage()?.setItem(DISMISSED_KEY, "1");
-  } catch {
-    // A browser that will not remember shows the line again next visit, which
-    // is a smaller failure than a door that did not draw.
-  }
+  dismissedInPage = true;
+  writeItem(DISMISSED_KEY, "1");
   notify();
 }
 
@@ -265,5 +284,6 @@ export function resetInstallForTests(): void {
   undo = [];
   captured = null;
   installedSeen = false;
+  dismissedInPage = false;
   listeners.clear();
 }

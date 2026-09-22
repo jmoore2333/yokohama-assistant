@@ -20,7 +20,7 @@ import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
 import { navigate } from "./route";
-import { humanBytes, storageReport, type StorageReport } from "./storage";
+import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
 import type { TableView } from "./types";
 
 export function OnThisDevice() {
@@ -113,7 +113,7 @@ export function OnThisDevice() {
           (R-6.5b2.9, spec §2.4). Both are statements ABOUT the rows above, so
           they stand under them: a promise about storage read on another screen
           would be a promise about nothing a player can see. */}
-      <StorageLine />
+      <StorageLine hasGames={(games?.length ?? 0) > 0} />
       <InstallOffer />
       {/* **Offered in EVERY state above, including the fault one** (spec §2.5):
           a module that will not load is when you most need your games out, and
@@ -154,23 +154,35 @@ export function OnThisDevice() {
  * first committed move (`local/client.ts`), never on a door a visitor who will
  * not play is looking at.
  */
-function StorageLine(): React.ReactNode {
+function StorageLine({ hasGames }: { hasGames: boolean }): React.ReactNode {
   const [report, setReport] = useState<StorageReport | null | "reading">("reading");
   useEffect(() => {
     let live = true;
-    void storageReport().then(
-      (r) => live && setReport(r),
-      // `storageReport` swallows its own failures, so this is a rejection no
-      // browser should produce. It still must not leave the line saying
-      // "reading" for ever.
-      () => live && setReport(null),
-    );
+    const read = () =>
+      void storageReport().then(
+        (r) => live && setReport(r),
+        // `storageReport` swallows its own failures, so this is a rejection no
+        // browser should produce. It still must not leave the line saying
+        // "reading" for ever.
+        () => live && setReport(null),
+      );
+    read();
+    // **And again once the browser has been ASKED** (review M-5). The ask is
+    // at the first committed move, on the game screen; without this the line
+    // here reported the answer as it stood when this section last mounted.
+    const stop = onPersistenceAsked(read);
     return () => {
       live = false;
+      stop();
     };
   }, []);
 
   if (report === "reading") return null;
+  // **The subject is what there is** (review M-6): with no rows, "these games"
+  // names nothing on screen and "back them up" instructs about nothing. The
+  // line is still worth drawing — it says what this browser will do with the
+  // game a visitor is about to start.
+  const them = hasGames ? "these games" : "games played here";
   const sizes =
     report !== null && report.quota > 0
       ? ` ${humanBytes(report.usage)} of ${humanBytes(report.quota)} is in use.`
@@ -178,11 +190,11 @@ function StorageLine(): React.ReactNode {
   return (
     <p className="muted storage-line">
       {report === null
-        ? "This browser does not say whether it will keep these games."
+        ? `This browser does not say whether it will keep ${them}.`
         : report.persisted
-          ? `This browser has promised to keep these games.${sizes}`
-          : `This browser has not promised to keep these games and may clear them to make room.${sizes}`}{" "}
-      Back them up to hold a copy you can restore.
+          ? `This browser has promised to keep ${them}.${sizes}`
+          : `This browser has not promised to keep ${them} and may clear them to make room.${sizes}`}
+      {hasGames ? " Back them up to hold a copy you can restore." : ""}
     </p>
   );
 }

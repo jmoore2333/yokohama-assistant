@@ -12,10 +12,41 @@
 
 import { vi } from "vitest";
 
-/** Whatever `navigator` currently is, as a plain object to add a field to. */
-const navigatorNow = (): Record<string, unknown> => ({
-  ...(globalThis.navigator as unknown as Record<string, unknown>),
-});
+/**
+ * Whatever `navigator` currently is, as a plain object to add a field to.
+ *
+ * **Walks the PROTOTYPE CHAIN, because a spread would copy nothing** (review
+ * M-3). A real `Navigator` exposes `userAgent`, `platform` and
+ * `maxTouchPoints` as accessors on its prototype, so `{ ...navigator }` is
+ * `{}` — and `stubStorage`/`stubStandalone` called against a real browser
+ * silently dropped every one of them while their names promise to keep what
+ * they found. A stub replaced by one of these helpers is a plain object and
+ * spreads fine either way; the chain walk is what makes the two cases the
+ * same.
+ *
+ * Each read is guarded: an accessor on `Navigator.prototype` may throw in a
+ * restricted context, and losing one property is better than losing the stub.
+ */
+function navigatorNow(): Record<string, unknown> {
+  const n = globalThis.navigator as unknown as Record<string, unknown> | undefined;
+  if (!n) return {};
+  const out: Record<string, unknown> = {};
+  for (
+    let o: object | null = n;
+    o !== null && o !== Object.prototype;
+    o = Object.getPrototypeOf(o) as object | null
+  ) {
+    for (const key of Object.getOwnPropertyNames(o)) {
+      if (key === "constructor" || key in out) continue;
+      try {
+        out[key] = n[key];
+      } catch {
+        /* an accessor that refuses in this context */
+      }
+    }
+  }
+  return out;
+}
 
 /** jsdom has no `matchMedia` at all, so every cell that cares supplies one. */
 export function stubDisplayMode(standalone: boolean): void {

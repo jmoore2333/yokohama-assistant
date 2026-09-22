@@ -64,7 +64,29 @@ export async function requestPersistence(): Promise<void> {
   } catch {
     /* a browser that will not be asked is a browser that has not agreed */
   }
+  // **Whatever it answered**, because the door's line is built from
+  // `persisted()` and not from this call: the only thing known here is that
+  // the standing answer may have moved, and re-reading is how anyone finds
+  // out. Told after the await, so a subscriber that re-reads gets the new
+  // answer and not the old one.
+  for (const f of [...askedListeners]) f();
 }
+
+/** Told once the browser has been ASKED to keep this origin, whichever way it
+ *  answered — the cue to read the report again (review M-5).
+ *
+ *  The ask happens at the first committed move, on the game screen; the line
+ *  that reports it is on the door. Without this, a grant obtained mid-session
+ *  did not reach the line until the section remounted, so a player coming back
+ *  to the door could still read "has not promised" about a browser that had.
+ *
+ *  Returns its own removal. */
+export function onPersistenceAsked(f: () => void): () => void {
+  askedListeners.add(f);
+  return () => askedListeners.delete(f);
+}
+
+const askedListeners = new Set<() => void>();
 
 /** Asked once on this page already. A module flag, because the caller is a
  *  move and there are many moves. */

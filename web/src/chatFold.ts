@@ -3,24 +3,23 @@
 // per table — newest 64 kept. Folded is the default everywhere (the panel is a
 // bonus and play is the main attraction), so a storage that throws reads as
 // folded and loses nothing.
+//
+// **The accessor moved to `browserStorage.ts` (M6.5b2, review M-8)**: this
+// file's copy and `install.ts`'s were the same four lines and had diverged, so
+// there is one of them now and the null handling travels with it.
+
+import { browserStorage, readItem, writeItem } from "./browserStorage";
 
 export const OPEN_KEY = "yokohama.chat.open";
 const KEEP = 64;
 
-function browserStorage(): Storage | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage;
-  } catch {
-    return null;
-  }
-}
-
 function openSet(storage: Storage | null): string[] {
   try {
-    const raw = storage?.getItem(OPEN_KEY);
+    const raw = readItem(OPEN_KEY, storage);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : [];
   } catch {
+    // Garbage under the key: the panel opens folded, which is the default.
     return [];
   }
 }
@@ -35,11 +34,10 @@ export function saveFolded(
   folded: boolean,
   storage: Storage | null = browserStorage(),
 ): void {
-  try {
-    const set = openSet(storage).filter((s) => s !== scope);
-    if (!folded) set.push(scope);
-    storage?.setItem(OPEN_KEY, JSON.stringify(set.slice(-KEEP)));
-  } catch {
-    // A per-browser convenience; losing it loses nothing.
-  }
+  const set = openSet(storage).filter((s) => s !== scope);
+  if (!folded) set.push(scope);
+  // A per-browser convenience; losing it loses nothing, so the write's answer
+  // is not read here. `install.ts` reads it, because a dismissal that did not
+  // land still has to change the screen.
+  writeItem(OPEN_KEY, JSON.stringify(set.slice(-KEEP)), storage);
 }
