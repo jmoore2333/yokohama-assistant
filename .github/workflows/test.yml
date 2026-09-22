@@ -160,11 +160,21 @@ jobs:
       # green check — the class this lane keeps finding, a test that never runs.
       # `set -o pipefail` is not enough on its own here, so the output is
       # captured, printed, and then read.
+      # NO `set -e` around the capture. Under it a failing `cargo` aborts the
+      # step INSIDE the command substitution, before the `echo` — so the one
+      # reading a person needs, the compiler's error or the cell's own failure,
+      # never reaches the log and the step reports only its exit code. The
+      # status is taken by hand and the output is printed on BOTH paths.
       - name: the refusing build, and that its five identity cells really ran
         run: |
-          set -euo pipefail
+          set -uo pipefail
           out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
+          status=$?
           echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the refusing build did not pass — R-6.5b2.3's only CI witness; its output is above"
+            exit "$status"
+          fi
           echo "$out" | grep -q "test result: ok. 5 passed" || {
             echo "::error::the identity:: filter did not run five cells — R-6.5b2.3's only CI witness"
             exit 1

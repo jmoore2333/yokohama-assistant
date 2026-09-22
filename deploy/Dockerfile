@@ -62,14 +62,22 @@ RUN apt-get update \
 # a binaryen bump changes BOTH.
 #
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
-# This stage's module is **1,173,055 B** against the workstation's
-# **1,169,222 B** — 3,833 B, 0.33% — with the SAME `wasm-opt 132` on both. The
-# optimizer is converged (running 132 again over this stage's output shaves
-# 620 B), so the residue is in what `cargo` and `wasm-bindgen` emit on an
-# x86_64-linux build host versus an aarch64-darwin one. Recorded, not
-# diagnosed; `-Oz` is semantics-preserving and the corpus replay passes on the
-# workstation's. **A ceiling on the module must clear the LARGER figure**,
-# because this stage is what a deployment ships.
+# With the SAME `wasm-opt 132` on both hosts, this stage's module and the
+# workstation's differ: the pair measured at M6.5b2 Task 5 was **1,173,055 B**
+# here against **1,169,222 B** there — 3,833 B, 0.33%. The optimizer is
+# converged (running 132 again over this stage's output shaves 620 B), so the
+# residue is in what `cargo` and `wasm-bindgen` emit on an x86_64-linux build
+# host versus an aarch64-darwin one. Recorded, not diagnosed; `-Oz` is
+# semantics-preserving and the corpus replay passes on the workstation's.
+#
+# **Both of those are Task-5 readings of a module that has since GROWN** (Task
+# 8's `restore_read`), and **this stage has not been re-measured since**. The
+# current figures are measured in ONE place and every other document cites it:
+# the `release-wasm` comment in the root `Cargo.toml` — 1,175,223 B raw /
+# 456,048 B gzipped on the workstation at the M6.5b2 close. **A ceiling on the
+# module must clear the LARGER host's figure**, because this stage is what a
+# deployment ships, and the cross-host gap is the thing to re-measure before
+# any ceiling is tightened.
 RUN curl -fsSL -o /tmp/binaryen.tar.gz \
       https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
  && echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c - \
