@@ -13,8 +13,14 @@
 // for `controllerchange` before it reloads, rather than reloading straight
 // after posting and racing activation; and a `controllerchange` this tab did
 // not ask for — another tab clicked, and `skipWaiting` is registration-wide —
-// reloads nothing. The worker's half is `sw.ts`: no `clients.claim()`, and
-// `activate` retains the previous generation.
+// reloads nothing. The worker's half is `sw.ts`: no `clients.claim()`;
+// `activate` retains the previous generation; and the fetch handler SERVES
+// out of that generation a path this release does not list, which is what a
+// tab that did not click asks for (PR #37, R-F2 and R-F5). That last is what
+// keeps such a tab working, and nothing on this side could: `skipWaiting()`
+// hands every tab the old worker controlled to the new one whatever this page
+// does, so the tab that reloads nothing is in front of the NEW worker, still
+// asking for the OLD release's hashed files.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -168,6 +174,14 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
   const asked = useRef(false);
   /** Cleared by the retry, so a failure the worker named does not outlive it. */
   const failure = useRef<string | null>(null);
+  /** What a successful `register()` runs, set by the effect and cleared by its
+   *  cleanup. The retry reaches the SAME wiring through it, so a page whose
+   *  first registration was refused adopts the one "Try again" produces
+   *  exactly as it would have adopted the first. A retry that resolves after
+   *  the unmount finds nothing to call — though the wiring's own `live` check
+   *  is the guard that holds on both paths; the clear only lets go of a dead
+   *  effect's closure. */
+  const adopt = useRef<((reg: RegistrationLike) => void) | null>(null);
 
   useEffect(() => {
     const swHost = hostRef.current;
@@ -208,27 +222,33 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
     undo.push(
       swHost.onControllerChange(() => {
         // **Only the tab that clicked reloads.** `skipWaiting` is
-        // registration-wide, so this fires in every tab of the origin.
+        // registration-wide, so this fires in every tab the old worker
+        // controlled.
         if (live && asked.current) swHost.reload();
       }),
     );
 
+    /** Store the registration, watch its workers, wire `updatefound`, and say
+     *  what it means — every listener onto `undo`, whichever path got here. */
+    const adoptRegistration = (reg: RegistrationLike) => {
+      if (!live) return;
+      registration.current = reg;
+      watch(reg.installing);
+      watch(reg.waiting);
+      const onUpdateFound = () => {
+        watch(reg.installing);
+        settle();
+      };
+      reg.addEventListener("updatefound", onUpdateFound);
+      undo.push(() => reg.removeEventListener("updatefound", onUpdateFound));
+      settle();
+    };
+    adopt.current = adoptRegistration;
+
     setReadiness("installing");
     void swHost
       .register(SW_URL)
-      .then((reg) => {
-        if (!live) return;
-        registration.current = reg;
-        watch(reg.installing);
-        watch(reg.waiting);
-        const onUpdateFound = () => {
-          watch(reg.installing);
-          settle();
-        };
-        reg.addEventListener("updatefound", onUpdateFound);
-        undo.push(() => reg.removeEventListener("updatefound", onUpdateFound));
-        settle();
-      })
+      .then(adoptRegistration)
       .catch((error: unknown) => {
         if (!live) return;
         const said = error instanceof Error ? error.message : String(error);
@@ -239,6 +259,7 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
 
     return () => {
       live = false;
+      adopt.current = null;
       for (const off of undo) off();
     };
   }, []);
@@ -263,6 +284,12 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
     // has no newest worker, so the update algorithm's byte-for-byte shortcut
     // does not apply and it really does install again.
     //
+    // **Where the FIRST `register()` was refused there is no registration to
+    // update**, so the retry registers, and what that resolves to is ADOPTED
+    // through the effect's own wiring (PR #37 F3, R-F3). Registering and
+    // dropping the result left the door on "installing" after the worker had
+    // activated, and no later update was ever offered in that page.
+    //
     // **A REJECTED retry goes back to failed rather than staying "installing"**
     // — that is the same defect the install's own deadline exists to prevent,
     // one level up: a door that says "Preparing to play offline" for ever has
@@ -274,8 +301,14 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       setReadiness("failed");
     };
     const reg = registration.current;
-    if (reg) void reg.update().catch(said);
-    else void hostRef.current.register(SW_URL).catch(said);
+    if (reg) {
+      void reg.update().catch(said);
+      return;
+    }
+    void hostRef.current
+      .register(SW_URL)
+      .then((next) => adopt.current?.(next))
+      .catch(said);
   }, []);
 
   return { readiness, reason, updateWaiting, applyUpdate, retry };

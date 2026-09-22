@@ -36,6 +36,11 @@ class FakeWorker implements WorkerLike {
   postMessage(message: unknown): void {
     this.posted.push(message);
   }
+  /** The `statechange` listeners attached now — what an unmount must bring back
+   *  to zero. */
+  get listening(): number {
+    return this.listeners.size;
+  }
   /** Drive the lifecycle the way a browser does. */
   become(state: string): void {
     this.state = state;
@@ -57,6 +62,10 @@ class FakeRegistration implements RegistrationLike {
   }
   async update(): Promise<void> {
     this.updates += 1;
+  }
+  /** The `updatefound` listeners attached now. */
+  get listening(): number {
+    return this.found.size;
   }
   /** A new worker appears for this registration. */
   updateFound(worker: FakeWorker): void {
@@ -319,5 +328,177 @@ describe("the hook", () => {
     await act(async () => undefined);
     expect(result.current.readiness).toBe("failed");
     expect(result.current.reason).toMatch(/SecurityError/);
+  });
+
+  // The first `register()` and the retry's reach ONE wiring, so its own `live`
+  // check is what stops a registration that resolves after the unmount from
+  // being adopted on either path; this is that check on the first one.
+  it("adopts nothing when the first registration resolves after the page has gone", async () => {
+    const registration = new FakeRegistration();
+    const waiting = new FakeWorker("installed");
+    registration.installing = new FakeWorker("installing");
+    registration.waiting = waiting;
+    registration.active = new FakeWorker("activated");
+    let resolve: (registration: RegistrationLike) => void = () => undefined;
+    const { host } = fakeHost(registration);
+    host.register = vi.fn<SwHost["register"]>(
+      () =>
+        new Promise<RegistrationLike>((settle) => {
+          resolve = settle;
+        }),
+    );
+    const { result, unmount } = renderHook(() => useReadiness(host));
+    const { applyUpdate } = result.current;
+
+    unmount();
+    await act(async () => {
+      resolve(registration);
+    });
+    expect(registration.listening).toBe(0);
+    applyUpdate();
+    expect(waiting.posted).toEqual([]);
+  });
+});
+
+// **A "Try again" whose own `register()` succeeds is ADOPTED** (PR #37 F3,
+// R-F3). When the FIRST `register()` is refused there is no registration to
+// `update()`, so the retry registers again — and until this fix it discarded
+// what that resolved to: never stored, no worker watched, no `updatefound`
+// wired. The worker went on to activate while the door said "Preparing to play
+// offline" until a reload, and a later update was never offered in that page.
+describe("a retry after the registration itself was refused", () => {
+  /** The browser's shape for the reviewer's script, whose first `/sw.js`
+   *  answers 503 and every later one the real file. */
+  const refused = () =>
+    new Error("Failed to register a ServiceWorker: a bad HTTP response code (503) was received");
+
+  /** A host whose first `register()` is refused and whose next one answers
+   *  `next`. */
+  function refusedOnce(registration: FakeRegistration, next: () => Promise<RegistrationLike>) {
+    const fake = fakeHost(registration);
+    fake.host.register = vi
+      .fn<SwHost["register"]>()
+      .mockRejectedValueOnce(refused())
+      .mockImplementationOnce(next);
+    return fake;
+  }
+
+  /** Refused, retried, and walked through a first install to `activated` —
+   *  each step announced by `statechange`, the way a browser moves the one
+   *  worker from `installing` through `waiting` to `active`. */
+  async function retriedToReady() {
+    const registration = new FakeRegistration();
+    const worker = new FakeWorker("installing");
+    registration.installing = worker;
+    const { host } = refusedOnce(registration, async () => registration);
+    const hook = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(hook.result.current.readiness).toBe("failed");
+    expect(hook.result.current.reason).toMatch(/503/);
+
+    await act(async () => {
+      hook.result.current.retry();
+    });
+    expect(host.register).toHaveBeenCalledTimes(2);
+    expect(host.register).toHaveBeenLastCalledWith(SW_URL);
+    expect(hook.result.current.readiness).toBe("installing");
+    expect(hook.result.current.reason).toBeNull();
+
+    act(() => {
+      registration.installing = null;
+      registration.waiting = worker;
+      worker.become("installed");
+    });
+    expect(hook.result.current.readiness).toBe("ready");
+    act(() => {
+      registration.waiting = null;
+      registration.active = worker;
+      worker.become("activating");
+    });
+    act(() => worker.become("activated"));
+    return { registration, worker, ...hook };
+  }
+
+  // The cell the review's browser reading turns into: the worker `activated`
+  // and the door still "installing".
+  it("reaches ready once the worker the retry registered has activated", async () => {
+    const { result } = await retriedToReady();
+    expect(result.current.readiness).toBe("ready");
+    expect(result.current.reason).toBeNull();
+    expect(result.current.updateWaiting).toBe(false);
+  });
+
+  // **Stored, not merely watched**: the click reaches the worker waiting on the
+  // registration the RETRY resolved to, which `applyUpdate` can only find
+  // through `registration.current`.
+  it("offers a later update, and the click reaches the worker waiting behind it", async () => {
+    const { registration, result } = await retriedToReady();
+    const next = new FakeWorker("installing");
+    act(() => registration.updateFound(next));
+    expect(result.current.updateWaiting).toBe(false);
+    act(() => {
+      registration.installing = null;
+      registration.waiting = next;
+      next.become("installed");
+    });
+    expect(result.current.updateWaiting).toBe(true);
+    expect(result.current.readiness).toBe("ready");
+
+    act(() => result.current.applyUpdate());
+    expect(next.posted).toEqual([{ yokohama: "skip-waiting" }]);
+  });
+
+  it("removes every listener the retry attached when it unmounts", async () => {
+    const { registration, worker, unmount } = await retriedToReady();
+    const next = new FakeWorker("installing");
+    act(() => registration.updateFound(next));
+    // The premise, without which zero below would say nothing: the retry's
+    // wiring really is on the registration and on both of its workers.
+    expect(registration.listening).toBeGreaterThan(0);
+    expect(worker.listening).toBeGreaterThan(0);
+    expect(next.listening).toBeGreaterThan(0);
+
+    unmount();
+    expect(registration.listening).toBe(0);
+    expect(worker.listening).toBe(0);
+    expect(next.listening).toBe(0);
+  });
+
+  // A page that has gone adopts nothing. The late registration carries a
+  // worker waiting behind a running one, so a registration STORED after the
+  // unmount would show through `applyUpdate` even with no listener attached.
+  it("adopts nothing when the retry resolves after the page has gone", async () => {
+    const late = new FakeRegistration();
+    const installing = new FakeWorker("installing");
+    const waiting = new FakeWorker("installed");
+    late.installing = installing;
+    late.waiting = waiting;
+    late.active = new FakeWorker("activated");
+    let resolve: (registration: RegistrationLike) => void = () => undefined;
+    const { host } = refusedOnce(
+      late,
+      () =>
+        new Promise<RegistrationLike>((settle) => {
+          resolve = settle;
+        }),
+    );
+    const { result, unmount } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(result.current.readiness).toBe("failed");
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(host.register).toHaveBeenCalledTimes(2);
+    const { applyUpdate } = result.current;
+
+    unmount();
+    await act(async () => {
+      resolve(late);
+    });
+    expect(late.listening).toBe(0);
+    expect(installing.listening).toBe(0);
+    expect(waiting.listening).toBe(0);
+    applyUpdate();
+    expect(waiting.posted).toEqual([]);
   });
 });

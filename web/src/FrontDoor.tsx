@@ -109,9 +109,14 @@ export function FrontDoor({
  *
  *  **Quiet, and last.** It is a report about the shell rather than a way on, so
  *  it sits under both entries; the update is ONE line offering a reload, and
- *  nothing switches until it is pressed — `skipWaiting` is registration-wide
- *  and would otherwise put a new worker in front of a tab still playing on the
- *  old bundle.
+ *  nothing switches until it is pressed. **Pressing it switches EVERY open tab,
+ *  not only this one**: `skipWaiting` is registration-wide, so the new worker
+ *  takes over each tab the old one controlled — a tab still playing on the old
+ *  bundle included — and only this tab reloads. What keeps that other tab
+ *  working is the worker, not the click: `activate` retains the previous
+ *  generation, and the fetch handler answers the old bundle's requests for
+ *  files the new release no longer lists out of it (PR #37, R-F2 and R-F5).
+ *  What the click decides is WHEN.
  *
  *  **Where a player sees the offer is the door**, deliberately: it is the
  *  screen between games. A waiting worker that is never clicked activates by
