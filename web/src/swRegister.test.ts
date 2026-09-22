@@ -53,6 +53,10 @@ class FakeRegistration implements RegistrationLike {
   waiting: WorkerLike | null = null;
   active: WorkerLike | null = null;
   updates = 0;
+  /** What the server's worker does when `update()` fetches it: `undefined` is
+   *  the byte-for-byte shortcut, which installs nothing; a cell that wants a
+   *  new install passes the worker it starts. */
+  nextInstall: FakeWorker | undefined;
   private readonly found = new Set<() => void>();
   addEventListener(_type: "updatefound", listener: () => void): void {
     this.found.add(listener);
@@ -60,8 +64,29 @@ class FakeRegistration implements RegistrationLike {
   removeEventListener(_type: "updatefound", listener: () => void): void {
     this.found.delete(listener);
   }
+  /** **The platform's `update()`, including its refusal** (the Service Worker
+   *  spec's `update()` step 3): a registration with no newest worker — which
+   *  is what a failed FIRST install leaves — is refused with an
+   *  `InvalidStateError`, the sentence Chromium was measured to give. A new
+   *  install sets `installing` before the promise resolves and fires
+   *  `updatefound`, which is the Install algorithm's order. */
   async update(): Promise<void> {
+    if (!this.installing && !this.waiting && !this.active) {
+      throw new DOMException(
+        "Failed to update a ServiceWorker for scope ('http://127.0.0.1/') with script ('Unknown'): The object is in an invalid state.",
+        "InvalidStateError",
+      );
+    }
     this.updates += 1;
+    if (this.nextInstall) this.updateFound(this.nextInstall);
+  }
+  /** **An install that failed**, in the platform's order: the worker goes
+   *  `redundant` (its `statechange` fires while `installing` still names it),
+   *  then `installing` is emptied. A first install leaves all three empty. */
+  installFailed(): void {
+    const worker = this.installing as FakeWorker;
+    worker.become("redundant");
+    this.installing = null;
   }
   /** The `updatefound` listeners attached now. */
   get listening(): number {
@@ -78,9 +103,13 @@ function fakeHost(registration: FakeRegistration, wanted = true) {
   let onController: (() => void) | null = null;
   let onMessage: ((data: unknown) => void) | null = null;
   const reloads: number[] = [];
-  const host: SwHost & { reloads: number[] } = {
+  const host: SwHost & { reloads: number[]; isControlled: boolean } = {
     wanted,
     reloads,
+    // A returning player's page, which is what every update cell below is
+    // about unless it says otherwise.
+    isControlled: true,
+    controlled: () => host.isControlled,
     register: vi.fn(async () => registration as RegistrationLike),
     onControllerChange(listener) {
       onController = listener;
@@ -103,6 +132,25 @@ function fakeHost(registration: FakeRegistration, wanted = true) {
     controllerChange: () => onController?.(),
     message: (data: unknown) => onMessage?.(data),
   };
+}
+
+/** A first install walked `installing → installed → activating → activated`,
+ *  each step announced by `statechange` the way a browser moves the one worker
+ *  from `installing` through `waiting` to `active` — and the door read as
+ *  ready once it has installed, which is when the release is whole. */
+function walkToActivated(registration: FakeRegistration, worker: FakeWorker, readiness: () => string) {
+  act(() => {
+    registration.installing = null;
+    registration.waiting = worker;
+    worker.become("installed");
+  });
+  expect(readiness()).toBe("ready");
+  act(() => {
+    registration.waiting = null;
+    registration.active = worker;
+    worker.become("activating");
+  });
+  act(() => worker.become("activated"));
 }
 
 describe("whether this build registers a worker at all", () => {
@@ -189,21 +237,97 @@ describe("the hook", () => {
 
   // The install is all-or-nothing, so one bad file is a FAILED door with a
   // retry — never a door that says "installing" for ever.
-  it("names the failure the worker reported and retries on the control", async () => {
-    const registration = new FakeRegistration();
+  //
+  // **And the retry must be able to SUCCEED** (PR #37 F3, E1). A failed FIRST
+  // install leaves the registration with no newest worker and removes it from
+  // the registration map, so `update()` on it is refused on every click — the
+  // door went back to failed with "The object is in an invalid state", measured
+  // in Chromium. The retry registers again and adopts what that resolves to.
+  it("names the failure the worker reported, and a retry after a failed FIRST install registers again and reaches ready", async () => {
+    const first = new FakeRegistration();
+    first.installing = new FakeWorker("installing");
+    const second = new FakeRegistration();
     const worker = new FakeWorker("installing");
-    registration.installing = worker;
+    second.installing = worker;
+    const { host, message } = fakeHost(first);
+    host.register = vi
+      .fn<SwHost["register"]>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    act(() => {
+      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      first.installFailed();
+    });
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe("/art/orders/O01.webp answered 404");
+
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(result.current.reason).toBeNull();
+    expect(host.register).toHaveBeenCalledTimes(2);
+    expect(first.updates).toBe(0);
+    expect(result.current.readiness).toBe("installing");
+    walkToActivated(second, worker, () => result.current.readiness);
+    expect(result.current.readiness).toBe("ready");
+  });
+
+  // **Where the release before it is still ACTIVE, the retry updates**: an
+  // UPDATE whose install failed leaves a newest worker, so `update()` fetches
+  // the worker again and a changed one installs again.
+  it("retries a failed UPDATE through update(), which installs again", async () => {
+    const registration = new FakeRegistration();
+    registration.active = new FakeWorker("activated");
+    registration.installing = new FakeWorker("installing");
     const { host, message } = fakeHost(registration);
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
-    act(() => message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" }));
+    act(() => {
+      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      registration.installFailed();
+    });
     expect(result.current.readiness).toBe("failed");
-    expect(result.current.reason).toBe("/art/orders/O01.webp answered 404");
+
+    const next = new FakeWorker("installing");
+    registration.nextInstall = next;
     await act(async () => {
       result.current.retry();
     });
     expect(registration.updates).toBe(1);
+    expect(host.register).toHaveBeenCalledTimes(1);
     expect(result.current.readiness).toBe("installing");
+    act(() => {
+      registration.installing = null;
+      registration.waiting = next;
+      next.become("installed");
+    });
+    expect(result.current.readiness).toBe("ready");
+    expect(result.current.updateWaiting).toBe(true);
+  });
+
+  // **An `update()` that installs nothing still settles the door.** The
+  // byte-for-byte shortcut — the server's worker went back to the running
+  // one's bytes between the failure and the click — resolves with no new
+  // worker and no event, and the retry had already said "installing".
+  it("reads the registration again when the retry's update() installs nothing", async () => {
+    const registration = new FakeRegistration();
+    registration.active = new FakeWorker("activated");
+    registration.installing = new FakeWorker("installing");
+    const { host, message } = fakeHost(registration);
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    act(() => {
+      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      registration.installFailed();
+    });
+    expect(result.current.readiness).toBe("failed");
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(registration.updates).toBe(1);
+    expect(result.current.readiness).toBe("ready");
     expect(result.current.reason).toBeNull();
   });
 
@@ -285,6 +409,7 @@ describe("the hook", () => {
   // shape, and a rejected retry is the same shape one level up.
   it("goes back to failed when the retry itself is refused", async () => {
     const registration = new FakeRegistration();
+    registration.active = new FakeWorker("activated");
     registration.installing = new FakeWorker("installing");
     registration.update = async () => {
       throw new Error("NetworkError: the script could not be fetched");
@@ -292,13 +417,103 @@ describe("the hook", () => {
     const { host, message } = fakeHost(registration);
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
-    act(() => message({ yokohama: "install-failed", reason: "/index.html answered 502" }));
+    act(() => {
+      message({ yokohama: "install-failed", reason: "/index.html answered 502" });
+      registration.installFailed();
+    });
     expect(result.current.readiness).toBe("failed");
     await act(async () => {
       result.current.retry();
     });
     expect(result.current.readiness).toBe("failed");
     expect(result.current.reason).toMatch(/NetworkError/);
+  });
+
+  // **A tab nothing controls hears no `controllerchange`** (PR #37 F3, E2).
+  // `skipWaiting` hands the new worker only the tabs the old one CONTROLLED —
+  // a first visit is not one, since nothing calls `clients.claim()`, and nor is
+  // a page whose first registration was retried — so such a tab that clicks
+  // reloads when the worker it asked reaches `activated`. Before this it
+  // reloaded nothing, and the offer vanished with the tab still on the old
+  // bundle.
+  it("reloads an UNCONTROLLED tab that clicked once the worker it asked has activated", async () => {
+    const registration = new FakeRegistration();
+    const next = new FakeWorker("installed");
+    registration.active = new FakeWorker("activated");
+    registration.waiting = next;
+    const { host } = fakeHost(registration);
+    host.isControlled = false;
+    const { result, unmount } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(result.current.updateWaiting).toBe(true);
+    const watching = next.listening;
+
+    act(() => result.current.applyUpdate());
+    expect(next.posted).toEqual([{ yokohama: "skip-waiting" }]);
+    act(() => {
+      registration.waiting = null;
+      registration.active = next;
+      next.become("activating");
+    });
+    // Not at `activating`: the worker is not in charge until it has activated.
+    expect(host.reloads).toEqual([]);
+    act(() => next.become("activated"));
+    expect(host.reloads.length).toBe(1);
+
+    // The listener the click attached is the effect's to remove, like every
+    // other: one more than the hook was already watching with, and none after.
+    expect(next.listening).toBe(watching + 1);
+    unmount();
+    expect(next.listening).toBe(0);
+  });
+
+  // A controlled tab hears BOTH events — its controller changes AND the worker
+  // it asked activates — so which one it reloads on is decided once, at the
+  // click, or it would reload twice.
+  it("reloads a CONTROLLED tab that clicked on controllerchange, and not again on activated", async () => {
+    const registration = new FakeRegistration();
+    const next = new FakeWorker("installed");
+    registration.active = new FakeWorker("activated");
+    registration.waiting = next;
+    const { host, controllerChange } = fakeHost(registration);
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+
+    act(() => result.current.applyUpdate());
+    act(() => {
+      registration.waiting = null;
+      registration.active = next;
+      next.become("activating");
+    });
+    act(() => controllerChange());
+    expect(host.reloads.length).toBe(1);
+    act(() => next.become("activated"));
+    expect(host.reloads.length).toBe(1);
+  });
+
+  // **Another tab's click reloads nothing here, controlled or not.** The
+  // uncontrolled half is the one the E2 fix could break: this tab also sees the
+  // waiting worker activate, and it did not ask.
+  it("reloads neither a controlled nor an uncontrolled tab that did not click", async () => {
+    for (const controlled of [true, false]) {
+      const registration = new FakeRegistration();
+      const next = new FakeWorker("installed");
+      registration.active = new FakeWorker("activated");
+      registration.waiting = next;
+      const { host, controllerChange } = fakeHost(registration);
+      host.isControlled = controlled;
+      const { unmount } = renderHook(() => useReadiness(host));
+      await act(async () => undefined);
+      act(() => {
+        registration.waiting = null;
+        registration.active = next;
+        next.become("activating");
+      });
+      if (controlled) act(() => controllerChange());
+      act(() => next.become("activated"));
+      expect(host.reloads, controlled ? "controlled" : "uncontrolled").toEqual([]);
+      unmount();
+    }
   });
 
   // **A click with nothing waiting must not arm the reload.** Otherwise the
@@ -383,9 +598,7 @@ describe("a retry after the registration itself was refused", () => {
     return fake;
   }
 
-  /** Refused, retried, and walked through a first install to `activated` —
-   *  each step announced by `statechange`, the way a browser moves the one
-   *  worker from `installing` through `waiting` to `active`. */
+  /** Refused, retried, and walked through a first install to `activated`. */
   async function retriedToReady() {
     const registration = new FakeRegistration();
     const worker = new FakeWorker("installing");
@@ -404,18 +617,7 @@ describe("a retry after the registration itself was refused", () => {
     expect(hook.result.current.readiness).toBe("installing");
     expect(hook.result.current.reason).toBeNull();
 
-    act(() => {
-      registration.installing = null;
-      registration.waiting = worker;
-      worker.become("installed");
-    });
-    expect(hook.result.current.readiness).toBe("ready");
-    act(() => {
-      registration.waiting = null;
-      registration.active = worker;
-      worker.become("activating");
-    });
-    act(() => worker.become("activated"));
+    walkToActivated(registration, worker, () => hook.result.current.readiness);
     return { registration, worker, ...hook };
   }
 

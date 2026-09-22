@@ -151,6 +151,29 @@ describe("the door's readiness line", () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
+  // **One sentence, one full stop.** The browser's own registration sentence
+  // ends in a period and the line appends one, so a refused `/sw.js` read
+  // "…fetching the script.. Try again" (measured, PR #37's retry script). A
+  // worker-reported reason carries no period and must keep the line's own.
+  it("ends the failure line in ONE period whether or not the reason brings its own", () => {
+    const line = (reason: string) => {
+      const { container, unmount } = render(
+        <FrontDoor multiplayer readiness={status({ readiness: "failed", reason })} />,
+      );
+      const text = container.querySelector(".offline-state p")?.textContent ?? "";
+      unmount();
+      return text;
+    };
+    expect(
+      line("A bad HTTP response code (503) was received when fetching the script."),
+    ).toBe(
+      "Could not prepare to play offline — A bad HTTP response code (503) was received when fetching the script. Try again",
+    );
+    expect(line("/art/orders/O01.webp answered 404")).toBe(
+      "Could not prepare to play offline — /art/orders/O01.webp answered 404. Try again",
+    );
+  });
+
   // "none" is a development build, a browser without service workers, or a page
   // the walk has flagged — three ways of having nothing to say, none of which
   // is a failure and none of which should read as one.

@@ -105,18 +105,28 @@ export function FrontDoor({
   );
 }
 
+/** A reason without its own final period, because the line supplies one: the
+ *  browser's registration sentence ends in a period ("…when fetching the
+ *  script.") and a worker-reported reason does not, and the door read
+ *  "script.. Try again" until this. ONE period is taken, never more. */
+function oneStop(reason: string): string {
+  return reason.endsWith(".") ? reason.slice(0, -1) : reason;
+}
+
 /** The release's own line, and the update offer (spec §4, §2.3).
  *
  *  **Quiet, and last.** It is a report about the shell rather than a way on, so
  *  it sits under both entries; the update is ONE line offering a reload, and
- *  nothing switches until it is pressed. **Pressing it switches EVERY open tab,
- *  not only this one**: `skipWaiting` is registration-wide, so the new worker
- *  takes over each tab the old one controlled — a tab still playing on the old
- *  bundle included — and only this tab reloads. What keeps that other tab
- *  working is the worker, not the click: `activate` retains the previous
- *  generation, and the fetch handler answers the old bundle's requests for
- *  files the new release no longer lists out of it (PR #37, R-F2 and R-F5).
- *  What the click decides is WHEN.
+ *  nothing switches until it is pressed. **Pressing it switches every open tab
+ *  the old worker controls, not only this one**: `skipWaiting` is
+ *  registration-wide, so the new worker takes over each of them — a tab still
+ *  playing on the old bundle included — and of all the open tabs only the one
+ *  that clicked reloads, whether or not the old worker controlled it
+ *  (`applyUpdate`'s two events). What keeps the other tabs working is the
+ *  worker, not the click: `activate` retains the previous generation, and the
+ *  fetch handler answers the old bundle's requests for files the new release
+ *  no longer lists out of it (PR #37, R-F2 and R-F5). What the click decides
+ *  is WHEN.
  *
  *  **Where a player sees the offer is the door**, deliberately: it is the
  *  screen between games. A waiting worker that is never clicked activates by
@@ -130,7 +140,8 @@ function Readiness({ status }: { status?: ReadinessStatus }) {
       {status.readiness === "ready" && <p className="muted">Ready to play offline.</p>}
       {status.readiness === "failed" && (
         <p className="muted">
-          Could not prepare to play offline &mdash; {status.reason ?? "the install did not finish"}.{" "}
+          Could not prepare to play offline &mdash;{" "}
+          {oneStop(status.reason ?? "the install did not finish")}.{" "}
           <button type="button" className="linkish" onClick={status.retry}>
             Try again
           </button>
