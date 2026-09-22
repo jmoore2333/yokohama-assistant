@@ -1,5 +1,5 @@
-// **The six offline cells: where this cycle's claims actually live** (M6.5b2,
-// spec §6.3).
+// **The seven offline cells: where this cycle's claims actually live** (M6.5b2,
+// spec §6.3's six, and PR #37's seventh).
 //
 // Every other instrument in this cycle stops short of the thing the milestone
 // is about. `swRoute.ts` and `swInstall.ts` are pure functions with cells;
@@ -227,7 +227,7 @@ function watchTheApi(page: Page): { answered: string[]; failed: string[] } {
  *
  * **`watchForBreakage` cannot be used here and the reason is the subject.**
  * Chromium logs every failed resource load as a console error, and four of
- * these six cells take the network away on purpose — so the shared watch would
+ * these seven cells take the network away on purpose — so the shared watch would
  * report the very state the cell arranged. What is still worth watching is a
  * page that THREW, which no amount of offline explains.
  */
@@ -416,7 +416,7 @@ test("close and reopen: the profile keeps the release and the game, and both com
   }
 });
 
-test("the update: a second release waits, nothing switches until the click, and the previous generation is kept", async ({
+test("the update: a second release waits, nothing switches until the click, and the previous generation is kept — past a waiting one another replaced", async ({
   page,
 }) => {
   const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
@@ -507,8 +507,64 @@ test("the update: a second release waits, nothing switches until the click, and 
       .poll(() => releaseCaches(page), { timeout: 30_000 })
       .toEqual([two, three].sort());
 
+    // ---- releases 4 and 5: a WAITING release replaced before any click ----
+    //
+    // **PR #37's R-F5, and the case install-time ranking got wrong.** Release 4
+    // installs and waits; release 5 ships before anyone clicks, and the platform
+    // puts it in 4's place — 4's worker redundant, its cache left behind with
+    // the NEWEST install stamp and no activation. The click then activates 5,
+    // and "previous" has to mean the release this page was RUNNING, 3 — not 4,
+    // which nothing ever ran. Ranked by install time, the sweep kept 4 and
+    // deleted 3.
+    const four = shipRelease(4);
+    await checkForUpdate(page);
+    await expect(page.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    expect(
+      await page.evaluate(async () => {
+        const w = window as unknown as { __four?: ServiceWorker | null };
+        w.__four = (await navigator.serviceWorker.getRegistration())?.waiting ?? null;
+        return w.__four !== null;
+      }),
+      "release 4's worker is the one waiting",
+    ).toBe(true);
+    const five = shipRelease(5);
+    expect(new Set([one, two, three, four, five]).size, "five releases, five names").toBe(5);
+    await checkForUpdate(page);
+    // **5 has taken 4's place**, read off the platform rather than assumed: the
+    // worker that was waiting is redundant, and the one waiting now is another,
+    // installed whole.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(async () => {
+            const was = (window as unknown as { __four?: ServiceWorker | null }).__four ?? null;
+            const now = (await navigator.serviceWorker.getRegistration())?.waiting ?? null;
+            return (
+              was?.state === "redundant" && now !== null && now !== was && now.state === "installed"
+            );
+          }),
+        { timeout: INSTALL_WAIT_MS },
+      )
+      .toBe(true);
+    expect(
+      await releaseCaches(page),
+      "release 4's cache is left behind, never activated, beside release 5's",
+    ).toEqual([two, three, four, five].sort());
+    await Promise.all([
+      page.waitForEvent("load"),
+      page.getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    expect(await markOnScreen(page), "the reloaded page is served release 5").toBe(5);
+    await expect
+      .poll(() => releaseCaches(page), { timeout: 30_000 })
+      .toEqual([three, five].sort());
+
     // eslint-disable-next-line no-console
-    console.log(`UPDATE: ${one} -> ${two} -> ${three}; release 1 swept, release 2 retained`);
+    console.log(
+      `UPDATE: ${one} -> ${two} -> ${three}; release 1 swept, release 2 retained; ` +
+        `${four} replaced waiting by ${five}, then clicked: release 3 (last ACTIVE) retained, ` +
+        `2 and 4 swept`,
+    );
     expect(watch.failures).toEqual([]);
   } catch (e) {
     // Held rather than thrown, so the restoration below runs and is CHECKED on
@@ -552,15 +608,18 @@ test("the tab that did not click: handed to release 2's worker still running rel
   page: a,
   context,
 }) => {
-  // **The platform behaviour the first design misread** (PR #37 F2). Spec §2.3
-  // reasoned that because nothing calls `clients.claim()`, a tab that did not
-  // click the update stays with the OLD worker. It does not: `skipWaiting()` is
-  // registration-wide, so the click in tab A hands tab B to the NEW worker too —
-  // with B still running release 1's bundle and asking for release 1's hashed
-  // names, which release 2 does not list. `activate` retains release 1's
-  // generation for exactly that tab; this cell is the first thing that asks
-  // whether anything READS it, at the moment it matters most: B's local host
-  // restarting, offline, after the origin has dropped the file.
+  // **What the design knew, and the rule it lacked** (PR #37 F2). Spec §2.3
+  // KNEW the handover (lines 333–335): `skipWaiting()` is registration-wide, so
+  // the click in tab A puts tab B in front of the NEW worker too — with B still
+  // running release 1's bundle and asking for release 1's hashed names, which
+  // release 2 does not list. It retained release 1's generation for exactly
+  // that tab (lines 337–339). What it lacked was a fetch rule that READS that
+  // generation: rule 3 (line 326) sent every unlisted path to the network. The
+  // misreading was the CODE's — its comments said that because nothing calls
+  // `clients.claim()`, such a tab stays with the old worker. This cell is the
+  // first thing that asks whether anything reads the retained generation, at
+  // the moment it matters most: B's local host restarting, offline, after the
+  // origin has dropped the file.
   //
   // **Cell 3 could not see this, and not for want of trying.** Its releases
   // differ in the stable-named manifest, so every name release 1's bundle knows

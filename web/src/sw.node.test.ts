@@ -102,6 +102,9 @@ class FakeCaches {
   /** Make the NEXT `open` fail, once — the transient the worker must recover
    *  from rather than remember. */
   failNextOpen = false;
+  /** A generation whose `match` REJECTS — a storage fault in one cache, which
+   *  must not keep the worker from reading the next one. */
+  failMatchIn: string | null = null;
   async open(name: string): Promise<FakeCache> {
     if (this.failNextOpen) {
       this.failNextOpen = false;
@@ -120,6 +123,9 @@ class FakeCaches {
    *  arm is here so a worker that dropped the name would be READING the other
    *  caches in this fake, which is the mutation the prefix cell exists for. */
   async match(key: string, options: { cacheName?: string } = {}): Promise<Response | undefined> {
+    if (options.cacheName !== undefined && options.cacheName === this.failMatchIn) {
+      throw new Error(`UnknownError: ${options.cacheName} could not be read`);
+    }
     if (options.cacheName !== undefined) return this.generations.get(options.cacheName)?.match(key);
     for (const cache of this.generations.values()) {
       const hit = await cache.match(key);
@@ -140,7 +146,7 @@ interface Harness {
   skipWaiting: ReturnType<typeof vi.fn>;
   claim: ReturnType<typeof vi.fn>;
   posted: unknown[];
-  /** Every install fetch, as (path, init). */
+  /** Every fetch the worker makes, at install or at fetch time, as (path, init). */
   asked: { path: string; init: RequestInit }[];
   install(): Promise<void>;
   activate(): Promise<void>;
@@ -150,8 +156,9 @@ interface Harness {
   /** `method` defaults to GET. It is a parameter because the worker's own
    *  first line is `if (request.method !== "GET") return;` and a harness that
    *  hard-coded the verb could not drive it (whole-branch review, false
-   *  sentence 7). */
-  request(url: string, mode: string, method?: string): Promise<Response | null>;
+   *  sentence 7). `cache` defaults to `"default"`, and is a parameter for the
+   *  same reason: the `only-if-cached` guard reads it. */
+  request(url: string, mode: string, method?: string, cache?: string): Promise<Response | null>;
 }
 
 /** Build the worker and wire it to fakes.
@@ -235,10 +242,10 @@ async function boot(
     install: () => drive("install"),
     activate: () => drive("activate"),
     message: (data) => handlers.get("message")!({ data } as never),
-    request: async (url, mode, method = "GET") => {
+    request: async (url, mode, method = "GET", cache = "default") => {
       let answered: Promise<Response> | null = null;
       handlers.get("fetch")!({
-        request: { url, mode, method },
+        request: { url, mode, method, cache },
         respondWith: (p: Promise<Response>) => (answered = p),
       } as never);
       return answered === null ? null : await answered;
@@ -347,8 +354,10 @@ describe("the worker's install", () => {
   });
 
   // **spec §6.5: "`clients.claim()` added".** Claiming would put this worker in
-  // front of pages still running the old bundle — the exact mixture the matched
-  // cache generation exists to prevent.
+  // front of pages NO worker served — the first visit among them, whose bundle
+  // came from the network rather than from this release's cache. (The pages the
+  // previous worker controlled are handed to this one by `skipWaiting()`
+  // itself, claim or no claim; `sw.ts`'s activate comment says so.)
   it("never claims a client", async () => {
     const worker = await boot();
     await worker.install();
@@ -377,6 +386,61 @@ describe("the worker's activate", () => {
     expect((await worker.caches.keys()).sort()).toEqual(
       [CACHE_NAME, "someone-elses-cache", "yokohama-release-previous"].sort(),
     );
+  });
+
+  /** One generation's stamp, as the worker left it. */
+  const stampOf = async (worker: Harness, name: string) =>
+    (await (await worker.caches.generations.get(name)!.match(META_PATH))!.json()) as {
+      createdAt?: number;
+      activatedAt?: number;
+    };
+
+  // **R-F5, the half that WRITES** (PR #37): `activate` stamps its own
+  // generation with when it activated, and keeps the install time it found —
+  // the next release's sweep ranks by both.
+  it("stamps its own generation activatedAt and keeps its createdAt", async () => {
+    const worker = await boot();
+    await worker.install();
+    const installed = await stampOf(worker, CACHE_NAME);
+    expect(installed.activatedAt, "installed, not yet activated").toBeUndefined();
+    await worker.activate();
+    const activated = await stampOf(worker, CACHE_NAME);
+    expect(activated.createdAt, "the install time is kept").toBe(installed.createdAt);
+    expect(typeof activated.activatedAt).toBe("number");
+    expect(activated.activatedAt!).toBeGreaterThanOrEqual(installed.createdAt!);
+  });
+
+  // **R-F5, the half that READS, through `sweep()` itself.** N was active; N+1
+  // installed and waited and was replaced before anyone clicked, so it carries
+  // the NEWEST install stamp and no activation. This release's sweep keeps N —
+  // the generation the open tabs are running — and deletes N+1.
+  it("keeps the generation activated last, not the one installed last", async () => {
+    const worker = await boot();
+    const seed = async (name: string, stamp: { createdAt: number; activatedAt?: number }) => {
+      const cache = await worker.caches.open(name);
+      await cache.put(META_PATH, new Response(JSON.stringify(stamp)));
+    };
+    await seed("yokohama-release-n", { createdAt: 200, activatedAt: 250 });
+    await seed("yokohama-release-n-plus-1", { createdAt: 300 });
+    await seed("yokohama-release-n-minus-1", { createdAt: 100, activatedAt: 150 });
+    await worker.install();
+    await worker.activate();
+    expect((await worker.caches.keys()).sort()).toEqual([CACHE_NAME, "yokohama-release-n"].sort());
+  });
+
+  // **A re-install of the SAME generation keeps its activation.** A code-only
+  // change to `sw.ts` ships a new worker under the same cache name; the install
+  // rewrites the stamp, and a stamp rewritten without `activatedAt` would rank
+  // the running generation below an older activated one — so a release that
+  // replaced this waiting worker would sweep the bytes every open tab runs.
+  it("keeps the activation through a re-install of the same generation", async () => {
+    const worker = await boot();
+    const same = await worker.caches.open(CACHE_NAME);
+    await same.put(META_PATH, new Response(JSON.stringify({ createdAt: 5, activatedAt: 7 })));
+    await worker.install();
+    const stamp = await stampOf(worker, CACHE_NAME);
+    expect(stamp.activatedAt, "the running generation's activation survived").toBe(7);
+    expect(stamp.createdAt, "and the install time is this install's").toBeGreaterThan(5);
   });
 });
 
@@ -438,6 +502,44 @@ describe("the worker's fetch", () => {
     expect(
       await (await worker.request("https://yokohama.test/index.html", "cors"))!.text(),
     ).toBe(BODIES["/index.html"]!.body);
+  });
+
+  // **Cloudflare's `/cdn-cgi/` is left to the browser** (PR #37, R-F6). Access's
+  // return from the identity provider is a NAVIGATION to
+  // `/cdn-cgi/access/authorized`, the hop that sets `CF_Authorization` on this
+  // hostname — and every other navigation is answered with the cached shell,
+  // which here would swallow the login.
+  it("does not answer Cloudflare's /cdn-cgi/, the login hop above all", async () => {
+    const worker = await boot();
+    await worker.install();
+    const before = worker.asked.length;
+    expect(
+      await worker.request("https://yokohama.test/cdn-cgi/access/authorized?token=abc", "navigate"),
+    ).toBeNull();
+    expect(await worker.request("https://yokohama.test/cdn-cgi/access/get-identity", "cors")).toBeNull();
+    expect(worker.asked.length, "and the worker fetched neither itself").toBe(before);
+    // Anti-vacuity: a navigation one character away IS answered with the shell.
+    expect(await (await worker.request("https://yokohama.test/cdn-cgiX", "navigate"))!.text()).toBe(
+      BODIES["/index.html"]!.body,
+    );
+  });
+
+  // **DevTools' `only-if-cached` probes are the browser's.** Outside
+  // `same-origin` mode such a Request cannot be handed to `fetch()` — the
+  // constructor throws — so a worker that answered one through the network
+  // fall-through would print a network error for a request the page never made.
+  it("leaves an only-if-cached request outside same-origin mode to the browser", async () => {
+    const worker = await boot();
+    await worker.install();
+    const listed = "https://yokohama.test/assets/app-abc.js";
+    expect(await worker.request(listed, "no-cors", "GET", "only-if-cached")).toBeNull();
+    expect(
+      await worker.request("https://yokohama.test/assets/unlisted.js", "cors", "GET", "only-if-cached"),
+    ).toBeNull();
+    // Anti-vacuity: in `same-origin` mode the same request is legal and served.
+    expect(
+      await (await worker.request(listed, "same-origin", "GET", "only-if-cached"))!.text(),
+    ).toBe(BODIES["/assets/app-abc.js"]!.body);
   });
 });
 
@@ -514,6 +616,23 @@ describe("the worker's fetch, for a path its own release does not list", () => {
       NOT_ON_THE_ORIGIN,
     );
     expect(worker.asked.slice(before).map((a) => a.path)).toEqual([OLD]);
+  });
+
+  // **One generation that will not answer does not skip the next.** A storage
+  // fault in the first retained generation is that generation's; the second,
+  // which holds the path, still answers — and the network is not asked.
+  it("reads past a generation whose read fails to the one that holds the path", async () => {
+    const worker = await boot();
+    await worker.install();
+    const broken = await worker.caches.open("yokohama-release-broken");
+    await broken.put(OLD, new Response("never read"));
+    const holding = await worker.caches.open(PREVIOUS);
+    await holding.put(OLD, new Response(OLD_BODY));
+    worker.caches.failMatchIn = "yokohama-release-broken";
+    const before = worker.asked.length;
+    const answered = await worker.request(`https://yokohama.test${OLD}`, "cors");
+    expect(await answered!.text(), "the second generation answered").toBe(OLD_BODY);
+    expect(worker.asked.length, "and the network was not asked").toBe(before);
   });
 
   // **And never the stamp**, which is the one entry every generation holds that

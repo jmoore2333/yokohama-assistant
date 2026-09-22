@@ -61,7 +61,57 @@ describe("a digest as the build wrote it", () => {
 
 describe("which cache generations activate deletes", () => {
   const g = (name: string, createdAt: number) => ({ name: CACHE_PREFIX + name, createdAt });
+  /** A generation a worker ACTIVATED from, at `activatedAt` (R-F5). */
+  const on = (name: string, createdAt: number, activatedAt: number) => ({
+    ...g(name, createdAt),
+    activatedAt,
+  });
   const mine = CACHE_PREFIX + "new";
+
+  // **R-F5's case, and the reason the stamp exists** (PR #37). N was active
+  // with a game tab open; N+1 installed and waited; N+2 installed later and
+  // took its place, so N+1 was never activated and carries the NEWEST install
+  // stamp. Ranking by install time kept N+1 and deleted N — the generation the
+  // open tab is running. The previously ACTIVE one is what "previous" means.
+  it("keeps the generation activated last, not the one installed last", () => {
+    const out = generationsToDelete(mine, [
+      g("new", 300),
+      on("n", 100, 150),
+      g("n-plus-1", 200),
+    ]);
+    expect(out).toEqual([CACHE_PREFIX + "n-plus-1"]);
+  });
+
+  // With no activation stamp anywhere — every generation installed before R-F5
+  // — the install order stands exactly as it did. The cells below this one are
+  // that case too; this is it said out loud.
+  it("with no activation stamp anywhere, keeps the newest install, as before R-F5", () => {
+    const out = generationsToDelete(mine, [g("new", 300), g("prev", 200), g("older", 100)]);
+    expect(out).toEqual([CACHE_PREFIX + "older"]);
+  });
+
+  // **The transition, and a mix.** Any generation that ever activated outranks
+  // every one that never did, however new; among the activated, the newest
+  // activation wins even over a newer install. And a generation stamped
+  // before R-F5 is kept by its install time when nothing activated outranks it
+  // — which is how R-F5's first activation keeps the release it replaces.
+  it("ranks every activated generation above every unactivated one, newest activation first", () => {
+    const out = generationsToDelete(mine, [
+      g("new", 900),
+      g("legacy", 800),
+      g("replaced", 700),
+      on("activated-early", 600, 610),
+      on("activated-late", 100, 650),
+    ]);
+    expect(out.sort()).toEqual(
+      [CACHE_PREFIX + "activated-early", CACHE_PREFIX + "legacy", CACHE_PREFIX + "replaced"].sort(),
+    );
+    expect(generationsToDelete(mine, [g("new", 900), g("legacy-active", 800)])).toEqual([]);
+    expect(
+      generationsToDelete(mine, [on("new", 900, 950), g("legacy-active", 800), g("older", 100)]),
+      "R-F5's first activation keeps the pre-stamp generation it replaces",
+    ).toEqual([CACHE_PREFIX + "older"]);
+  });
 
   // **`activate` retains the PREVIOUS generation** (spec §2.3), because an open
   // tab still running the old bundle asks for its own hashed module by name.

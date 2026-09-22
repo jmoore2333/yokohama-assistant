@@ -32,18 +32,35 @@ export type Route = "bypass" | "cache" | "navigate" | "network";
  *  carries gets minted. A cached answer for either is a stale game state, or a
  *  door, served as if it were live.
  *
+ *  **And `/cdn-cgi` and everything under it** (PR #37, R-F6): Cloudflare's
+ *  reserved prefix on the app's OWN hostname. Access's return from the identity
+ *  provider is a NAVIGATION to `/cdn-cgi/access/authorized`, the hop that sets
+ *  `CF_Authorization` — and rule 2 answers every navigation with the cached
+ *  shell, so a worker that reached it would swallow the login: the cookie is
+ *  never set and `/enter` loops. The app serves nothing there, so the bypass
+ *  costs nothing.
+ *
  *  The comparison is `=== "/api"` OR `startsWith("/api/")` and never
- *  `startsWith("/api")`, which would also claim `/apiary.json`. */
+ *  `startsWith("/api")`, which would also claim `/apiary.json` — and the same
+ *  for `/cdn-cgi`. */
 export function isServerPath(pathname: string): boolean {
-  return pathname === "/enter" || pathname === "/api" || pathname.startsWith("/api/");
+  return (
+    pathname === "/enter" ||
+    pathname === "/api" ||
+    pathname.startsWith("/api/") ||
+    pathname === "/cdn-cgi" ||
+    pathname.startsWith("/cdn-cgi/")
+  );
 }
 
 /**
  * Spec §2.3's three rules, in the one order that makes them true.
  *
- * 1. `/api/*` and `/enter` are never intercepted — asked FIRST, so a release
- *    that somehow listed one still cannot have it served from a cache, and a
- *    NAVIGATION to `/enter` is not answered with the cached shell.
+ * 1. `/api/*`, `/enter` and `/cdn-cgi/*` are never intercepted — asked FIRST,
+ *    so a release that somehow listed one still cannot have it served from a
+ *    cache, and a NAVIGATION to `/enter` or to Access's
+ *    `/cdn-cgi/access/authorized` is not answered with the cached shell (R-F6
+ *    amends spec §2.3's rule 1 forward).
  * 2. A navigation is answered with the shell, whatever path it names: the
  *    client routes on the hash, so every address is `index.html`.
  * 3. A precached path is served from the cache.

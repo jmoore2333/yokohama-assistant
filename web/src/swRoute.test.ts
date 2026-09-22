@@ -66,4 +66,19 @@ describe("what the worker does with a request", () => {
   it("bypasses the bare API root", () => {
     expect(swRoute(new URL("/api", "https://h"), "cors", PRE)).toBe("bypass");
   });
+
+  // **Cloudflare's `/cdn-cgi/` is the server's too** (PR #37, R-F6). Access's
+  // return from the identity provider is a NAVIGATION to
+  // `/cdn-cgi/access/authorized`, the hop that sets `CF_Authorization` on this
+  // hostname; answered with the shell, the login is swallowed and `/enter`
+  // loops. `/cdn-cgiX` is not the prefix, which is the same slash rule as
+  // `/apiary.json`.
+  it("bypasses Cloudflare's /cdn-cgi/, the login hop above all", () => {
+    const hop = new URL("/cdn-cgi/access/authorized?token=abc&redirect_url=%2F", "https://h");
+    expect(swRoute(hop, "navigate", PRE)).toBe("bypass");
+    expect(swRoute(new URL("/cdn-cgi/access/get-identity", "https://h"), "cors", PRE)).toBe("bypass");
+    expect(swRoute(new URL("/cdn-cgi", "https://h"), "navigate", PRE)).toBe("bypass");
+    expect(swRoute(new URL("/cdn-cgiX", "https://h"), "navigate", PRE)).toBe("navigate");
+    expect(swRoute(new URL("/cdn-cgiX/y.js", "https://h"), "cors", PRE)).toBe("network");
+  });
 });

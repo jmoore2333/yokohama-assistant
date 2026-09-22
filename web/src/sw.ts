@@ -9,10 +9,14 @@
 // comparison of this file and a heuristically cached copy delays every update
 // by however long the browser chose to keep it.
 //
-// **Every DECISION here is somewhere else, and on purpose.** The routing rule
-// is `swRoute.ts`; the install's verification, the sweep's retention rule and
-// which retained generations a fetch may read are `swInstall.ts`; and both are
-// tested in the component suite without a browser.
+// **Every DECISION here is somewhere else, and on purpose — with TWO small
+// exceptions.** The routing rule is `swRoute.ts`; the install's verification,
+// the sweep's retention rule and which retained generations a fetch may read
+// are `swInstall.ts`; and both are tested in the component suite without a
+// browser. The exceptions are `fromRetained`'s refusal to serve the stamp
+// (`META_PATH`) and the install's keeping of an `activatedAt` it finds on a
+// re-install of the same generation (R-F5) — each one line beside the plumbing
+// it guards, and each pinned by its own cell in `sw.node.test.ts`.
 // What is left in this file is the plumbing those decisions drive — which is
 // the half a browser must run to check, so the less of it there is the better.
 
@@ -90,12 +94,19 @@ async function installRelease(): Promise<void> {
     const cache = await caches.open(CACHE_NAME);
     // The stamp the sweep orders generations by. Written FIRST, so a generation
     // that exists at all can be placed in time.
-    await cache.put(
-      META_PATH,
-      new Response(JSON.stringify({ createdAt: Date.now() }), {
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    //
+    // **A re-install of the SAME generation keeps the activation it carries**
+    // (R-F5). A code-only change to this file ships a new worker under the same
+    // name, and while it waits the generation is still the one the running
+    // worker serves; a stamp rewritten without its `activatedAt` would rank it
+    // below an older activated generation at the next sweep, and a release that
+    // replaced this waiting worker would then delete the bytes every open tab
+    // is running.
+    const kept = alreadyThere ? (await stampIn(CACHE_NAME)).activatedAt : undefined;
+    await writeStamp(cache, {
+      createdAt: Date.now(),
+      ...(kept === undefined ? {} : { activatedAt: kept }),
+    });
 
     const queue = ENTRIES.slice();
     const width = Math.max(1, Math.min(INSTALL_CONCURRENCY, queue.length));
@@ -193,44 +204,80 @@ async function tellTheClients(reason: string): Promise<void> {
 
 // --------------------------------------------------------------- activate
 
-// **`activate` retains the PREVIOUS generation** and deletes only ones older
-// than that (spec §2.3), because an open tab still running the old bundle asks
-// for its own hashed module by name — and `fromRetained` below is what answers
-// it from there (PR #37 F2).
+// **`activate` stamps its own generation, then retains the PREVIOUS one** and
+// deletes the rest (spec §2.3; PR #37, R-F5). "Previous" is the generation
+// ACTIVATED most recently before this one, because that is what the open tabs
+// are running — and `fromRetained` below is what answers them from it (PR #37
+// F2). The stamp is what lets the NEXT release's sweep tell that generation
+// from a waiting one that was replaced before anyone clicked.
 //
 // **And it does NOT call `clients.claim()`.** Claiming would put this worker in
-// front of pages NO worker served — the visit that installed it among them,
-// whose bundle came from the network. A page gets this release by reloading,
-// which is what the update offer's click does. **What not claiming does NOT
-// buy, and what the first design misread:** the pages the previous worker
+// front of pages NO worker served — the first visit among them, whose bundle
+// came from the network. A page gets this release by reloading, which is what
+// the update offer's click does. **What not claiming does NOT buy, and what the
+// first version of this comment misread:** the pages the previous worker
 // controlled are handed to this one by `skipWaiting()` itself, which is
 // registration-wide — so a tab that did not click is in front of this worker,
 // still running the old bundle, whether or not anything claims it.
 self.addEventListener("activate", (event) => {
-  event.waitUntil(sweep());
+  event.waitUntil(markActivated().then(sweep));
 });
+
+/** Write `activatedAt` into this release's own stamp, keeping `createdAt`.
+ *
+ *  **Only where the install's stamp is already there**: the install writes it
+ *  first, so a generation without one is not a release this worker installed —
+ *  and `caches.open` on a generation evicted since would bring an empty one
+ *  back into being, which the next sweep would then keep as "previous". A
+ *  stamp that cannot be written leaves this generation ranked by its install
+ *  time, as every generation was before R-F5. */
+async function markActivated(): Promise<void> {
+  try {
+    const { createdAt } = await stampIn(CACHE_NAME);
+    if (createdAt === undefined) return;
+    await writeStamp(await caches.open(CACHE_NAME), { createdAt, activatedAt: Date.now() });
+  } catch {
+    // ranked by `createdAt` alone, as before R-F5
+  }
+}
 
 async function sweep(): Promise<void> {
   const generations: Generation[] = [];
   for (const name of await caches.keys()) {
     if (!name.startsWith(CACHE_PREFIX)) continue;
-    generations.push({ name, createdAt: await stampOf(name) });
+    const { createdAt, activatedAt } = await stampIn(name);
+    generations.push({
+      name,
+      createdAt: createdAt ?? 0,
+      ...(activatedAt === undefined ? {} : { activatedAt }),
+    });
   }
   for (const name of generationsToDelete(CACHE_NAME, generations)) {
     await caches.delete(name).catch(() => undefined);
   }
 }
 
-async function stampOf(name: string): Promise<number> {
+/** A generation's stamp, each field present only where it is a number. Read
+ *  with `caches.match` and a `cacheName`, which never creates the cache. */
+async function stampIn(name: string): Promise<{ createdAt?: number; activatedAt?: number }> {
   try {
-    const cache = await caches.open(name);
-    const stamp = await cache.match(META_PATH);
-    if (!stamp) return 0;
-    const meta = (await stamp.json()) as { createdAt?: unknown };
-    return typeof meta.createdAt === "number" ? meta.createdAt : 0;
+    const stamp = await caches.match(META_PATH, { cacheName: name });
+    if (!stamp) return {};
+    const meta = (await stamp.json()) as { createdAt?: unknown; activatedAt?: unknown };
+    return {
+      ...(typeof meta.createdAt === "number" ? { createdAt: meta.createdAt } : {}),
+      ...(typeof meta.activatedAt === "number" ? { activatedAt: meta.activatedAt } : {}),
+    };
   } catch {
-    return 0;
+    return {};
   }
+}
+
+function writeStamp(cache: Cache, stamp: { createdAt: number; activatedAt?: number }): Promise<void> {
+  return cache.put(
+    META_PATH,
+    new Response(JSON.stringify(stamp), { headers: { "content-type": "application/json" } }),
+  );
 }
 
 // ---------------------------------------------------------------- message
@@ -247,6 +294,9 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   // A POST to `/api/...` is the server's anyway, and a cache holds only GETs.
   if (request.method !== "GET") return;
+  // DevTools' `only-if-cached` probes: outside `same-origin` mode such a Request
+  // cannot be handed to `fetch()` at all (it throws), so they are the browser's.
+  if (request.cache === "only-if-cached" && request.mode !== "same-origin") return;
   let url: URL;
   try {
     url = new URL(request.url);
@@ -261,7 +311,8 @@ self.addEventListener("fetch", (event) => {
   // `bypass` is answered by NOT answering — no `respondWith`, so the browser
   // makes exactly the request it would have made with no worker installed,
   // which is what rule 1 means by "never intercepted". It is asked FIRST, in
-  // `swRoute`, so nothing below can reach the API or the turnstile.
+  // `swRoute`, so nothing below can reach the API, the turnstile or
+  // Cloudflare's `/cdn-cgi/` (R-F6).
   //
   // **`network` IS answered** (PR #37 F2, R-F2): from a retained generation
   // that holds the path, else from the network. It used to be left alone like
@@ -309,13 +360,21 @@ async function fromCache(path: string, request: Request): Promise<Response> {
  *  than an empty cache brought back into being. */
 async function fromRetained(path: string, request: Request): Promise<Response> {
   if (path !== META_PATH) {
+    let names: string[] = [];
     try {
-      for (const name of retainedGenerations(CACHE_NAME, await caches.keys())) {
+      names = retainedGenerations(CACHE_NAME, await caches.keys());
+    } catch {
+      // fall through: a Cache Storage that will not list leaves the network
+    }
+    for (const name of names) {
+      // One `try` per generation, so one that will not answer does not skip
+      // the one after it that would.
+      try {
         const hit = await caches.match(path, { cacheName: name });
         if (hit) return hit;
+      } catch {
+        // the next generation, and then the network
       }
-    } catch {
-      // fall through: a Cache Storage that will not answer leaves the network
     }
   }
   return fetch(request);

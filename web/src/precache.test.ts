@@ -172,7 +172,7 @@ describe("what a release may not be", () => {
   // A build that named a path its own worker never intercepts would be a
   // release disagreeing with `swRoute`. One rule, asked twice.
   it("refuses to list a path the worker bypasses", () => {
-    for (const bad of ["api/health", "enter", "api/games/x/input"]) {
+    for (const bad of ["api/health", "enter", "api/games/x/input", "cdn-cgi/access/authorized"]) {
       expect(() => buildPrecache({ ...fixture, distFiles: [...fixture.distFiles, bad] })).toThrow(
         /never intercepts/,
       );

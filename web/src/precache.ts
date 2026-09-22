@@ -92,12 +92,16 @@ export interface PrecacheInputs {
  *  caches from anything else the origin holds and delete only its own. */
 export const CACHE_PREFIX = "yokohama-release-";
 
-/** The reserved path inside a generation holding when it was created.
+/** The reserved path inside a generation holding when it was created and,
+ *  once a worker serving it has activated, when that was.
  *
  *  `activate` retains the PREVIOUS generation (spec §2.3) and deleting "older
  *  than that" needs an order; the caches themselves carry no timestamp, so each
- *  generation writes one into itself at install. It is under a path no server
- *  serves, so it can never shadow a real entry. */
+ *  generation writes `createdAt` into itself at install, and its worker adds
+ *  `activatedAt` at activation — the order the sweep actually keeps by, since
+ *  "previous" means previously ACTIVE (PR #37, R-F5). It is under a path no
+ *  server serves, so it can never shadow a real entry, and the fetch handler
+ *  never serves it from a retained generation. */
 export const META_PATH = "/__release__";
 
 /** The string a DEBUG module carries and a release one does not.

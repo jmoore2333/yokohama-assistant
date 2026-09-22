@@ -92,11 +92,30 @@ export interface Generation {
    *  generation written before that stamp existed — which reads as the oldest,
    *  which is what it is. */
   readonly createdAt: number;
+  /** When a worker serving it last ACTIVATED, from the stamp `activate` writes
+   *  into its own generation (PR #37, R-F5). ABSENT for a generation that was
+   *  installed and never activated — a waiting release another one replaced
+   *  before anyone clicked — and for one stamped before R-F5 existed. */
+  readonly activatedAt?: number;
 }
 
 /**
- * Which generations `activate` deletes: everything of OURS older than the
- * previous one.
+ * Which generations `activate` deletes: everything of OURS except this
+ * release's own and the PREVIOUS one — the generation ACTIVATED most recently
+ * before it (PR #37, R-F5).
+ *
+ * **"Previous" means previously ACTIVE, and not newest-INSTALLED**, which is
+ * what this ranked by until R-F5. A waiting release that is REPLACED before
+ * anyone clicks — N active with a game tab open, N+1 installed and waiting, N+2
+ * installed later and taking its place — leaves N+1's cache behind with the
+ * newest install stamp, and ranking by that kept N+1 and deleted N: the very
+ * generation the open tab is running. So a generation that ever activated
+ * outranks every one that never did, newest activation first; and among those
+ * carrying no activation — the never-activated, and generations stamped before
+ * R-F5 — the install order stands as it always did. That last clause is what
+ * keeps the generation active when R-F5 first ships, which predates the stamp:
+ * with nothing activated to outrank it, it is kept by its install time exactly
+ * as before.
  *
  * **The previous generation is RETAINED** (spec §2.3), because an open tab
  * still running the old bundle asks for its own hashed module by name and
@@ -116,10 +135,19 @@ export interface Generation {
 export function generationsToDelete(mine: string, generations: readonly Generation[]): string[] {
   const others = generations
     .filter((g) => g.name.startsWith(CACHE_PREFIX) && g.name !== mine)
-    // Newest first, and by NAME on a tie so two runs of the sweep agree about
-    // which one survived.
-    .sort((a, b) => b.createdAt - a.createdAt || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    .sort(byRetention);
   return others.slice(1).map((g) => g.name);
+}
+
+/** The sweep's order, the one to keep first: activated before never-activated,
+ *  newest activation first, then newest install, and by NAME on a tie so two
+ *  runs of the sweep agree about which one survived. */
+function byRetention(a: Generation, b: Generation): number {
+  const aOn = a.activatedAt !== undefined;
+  const bOn = b.activatedAt !== undefined;
+  if (aOn !== bOn) return aOn ? -1 : 1;
+  if (aOn && bOn && a.activatedAt !== b.activatedAt) return b.activatedAt! - a.activatedAt!;
+  return b.createdAt - a.createdAt || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 
 /**
