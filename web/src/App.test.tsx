@@ -3508,6 +3508,56 @@ describe("a local game", () => {
     await screen.findByRole("heading", { name: "On this device" });
   });
 
+  // **Save game file names a refusal the way Send to the archive does** (PR #37
+  // fix wave, fix round 2, the re-review's nit). Both controls read the same
+  // pair and can meet the same storage sentence; one printed it as it is and
+  // the other as `String(e)`, "Error: this browser's storage…", on one screen.
+  // Both Save game file sites are held here: the game's header, and the
+  // screen for a save that no longer rebuilds.
+  const UNREADABLE =
+    "this browser's storage could not be read — Connection to Indexed Database server lost.";
+  it("shows Save game file's storage refusal as its sentence, with no Error: prefix", async () => {
+    const caught = catchDownload();
+    try {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        { hooks: { pair: () => ({ unreadable: UNREADABLE }) } },
+      );
+      await screen.findByText(/end triggers:/);
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      expect(await screen.findByText(UNREADABLE)).toBeInTheDocument();
+      expect(screen.queryByText(/^Error: /)).toBeNull();
+      expect(caught.clicks, "and nothing was downloaded").toHaveLength(0);
+    } finally {
+      caught.restore();
+    }
+  });
+
+  it("does the same on the screen for a save that no longer rebuilds", async () => {
+    const caught = catchDownload();
+    try {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            pair: () => ({ unreadable: UNREADABLE }),
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}` && req.method === "GET"
+                ? { status: 500, body: { error: "this save cannot be resumed" } }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByText("this save cannot be resumed");
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      expect(await screen.findByText(UNREADABLE)).toBeInTheDocument();
+      expect(screen.queryByText(/^Error: /)).toBeNull();
+      expect(caught.clicks).toHaveLength(0);
+    } finally {
+      caught.restore();
+    }
+  });
+
   it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
     // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
     // own words — a REPLY, never a trap — so the trap recovery is not entered

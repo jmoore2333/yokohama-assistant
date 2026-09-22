@@ -1406,7 +1406,7 @@ export function App() {
               className="ghost"
               onClick={() =>
                 void saveGameFile(broken.id).catch((e) =>
-                  setError(e instanceof ApiError ? e.message : String(e)),
+                  setError(e instanceof Error ? e.message : String(e)),
                 )
               }
             >
@@ -1863,7 +1863,7 @@ export function App() {
             title="the record alone — the file the terminal loads"
             onClick={() =>
               void saveGameFile(state.id).catch((e) =>
-                setError(e instanceof ApiError ? e.message : String(e)),
+                setError(e instanceof Error ? e.message : String(e)),
               )
             }
           >

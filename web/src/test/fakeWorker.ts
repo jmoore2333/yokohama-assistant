@@ -17,6 +17,7 @@ import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
 import { openDb, readPair } from "../local/db";
+import type { UnreadableReply } from "../local/exportPair";
 import type { Envelope, ReportRow } from "../backup";
 import committedEnvelope from "../wire-script/backup-envelope.json";
 import committedReport from "../wire-script/backup-report.json";
@@ -70,7 +71,7 @@ export interface FakeWorkerHooks {
    *  hook's own idiom, and how a cell arranges the OTHER half of "the module
    *  will not load": a Worker that started and whose module never came up
    *  answers no message at all (M6.5b2, review M-3). */
-  pair?: (id: string) => FakePair | { unreadable: string } | "pending" | undefined;
+  pair?: (id: string) => FakePair | UnreadableReply | "pending" | undefined;
   /** What the module's `restore_read` says about a file — the rows, or a
    *  refusal about the FILE. A cell that is about ONE verdict sets this and
    *  says so; everything else falls through to [`fakeVerdicts`]. */
@@ -250,10 +251,9 @@ export class FakeWorker {
           void committedPair(req.id).then((pair) => this.deliver({ seq, ...pair }));
           return;
         }
-        reply =
-          "unreadable" in both
-            ? { unreadable: both.unreadable }
-            : { record: both.record, table: both.table };
+        // Told apart by the PAIR's key, so this fake never restates the
+        // refusal's: that key is spelled once, in `exportPair.ts`.
+        reply = "record" in both ? { record: both.record, table: both.table } : { ...both };
         break;
       }
       case "hold":

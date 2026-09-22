@@ -89,6 +89,29 @@ export class StoreUnreadable extends Error {
   }
 }
 
+/** The Worker's reply when an export's committed read failed — an ordinary
+ *  reply, never `trapped`.
+ *
+ *  **ONE spelling of the key for both sides of the `postMessage`** (fix round
+ *  2, re-review N-1). The Worker writes it with [`unreadableReply`] and the
+ *  page reads it with [`unreadableOf`]; the two cannot share `worker.ts` or
+ *  `client.ts`, and a key restated on each side is one that can be misspelled
+ *  on one — the page would then read `{record: undefined, table: undefined}`
+ *  as an answer and take it whole. */
+export interface UnreadableReply {
+  unreadable: string;
+}
+
+/** The reply for a [`StoreUnreadable`], as the Worker posts it (beside `seq`). */
+export const unreadableReply = (e: StoreUnreadable): UnreadableReply => ({ unreadable: e.message });
+
+/** The sentence an unreadable reply carries, or `null` for any other reply —
+ *  a pair included, which is why it takes any object. */
+export function unreadableOf(reply: object): string | null {
+  const said = (reply as Partial<Record<keyof UnreadableReply, unknown>>).unreadable;
+  return typeof said === "string" ? said : null;
+}
+
 /**
  * The Worker's `pair` answer, assembled from [`pairSource`].
  *

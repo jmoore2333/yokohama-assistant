@@ -11,7 +11,14 @@
 // it came back WHOLE.
 
 import { describe, expect, it } from "vitest";
-import { exportPair, pairSource, StoreUnreadable, type Pair } from "./exportPair";
+import {
+  exportPair,
+  pairSource,
+  StoreUnreadable,
+  unreadableOf,
+  unreadableReply,
+  type Pair,
+} from "./exportPair";
 
 /** This tab's module store: a move applied here and perhaps not yet written. */
 const MEMORY: Pair = { record: '{"events":[1,2,3]}', table: '{"id":"local-1","memory":true}' };
@@ -181,5 +188,21 @@ describe("when IndexedDB will not answer", () => {
       async () => STORE,
     );
     await expect(answer).rejects.toBe(trap);
+  });
+});
+
+// **The reply, and its ONE spelling** (fix round 2, re-review N-1). The Worker
+// writes it and the page reads it through the two functions below, so the key
+// is stated once; this is the round trip between them, and the reading of an
+// ordinary pair as not-a-refusal.
+describe("the unreadable reply", () => {
+  it("carries the refusal's sentence from the Worker's side to the page's", () => {
+    const refusal = new StoreUnreadable(new Error("Connection lost."));
+    const posted = { seq: 7, ...unreadableReply(refusal) };
+    expect(unreadableOf(posted)).toBe("this browser's storage could not be read — Connection lost.");
+  });
+  it("reads an ordinary pair, with or without a record, as no refusal at all", () => {
+    expect(unreadableOf({ ...STORE })).toBeNull();
+    expect(unreadableOf({ record: null, table: null })).toBeNull();
   });
 });

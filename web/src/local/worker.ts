@@ -31,11 +31,17 @@
 //    already running.
 // 6. **A trap is answered, and the PAGE starts a fresh Worker** (R5). A
 //    trapped module holds its own mutex and traps again on `init()`, so there
-//    is nothing to recover in place. A STORAGE refusal is not a trap, and a
-//    stored game that no longer rebuilds is not a trap either: both are
-//    ordinary replies. That includes a storage READ that fails inside the
-//    export arm (`pair`, which reads IndexedDB since the PR #37 fix wave) — a
-//    restart there would discard the very move the export exists to rescue.
+//    is nothing to recover in place. A stored game that no longer rebuilds is
+//    not a trap: it is the module's own 500, an ordinary reply. Nor are TWO
+//    storage failures, both answered as ordinary replies: a WRITE the store
+//    refuses (`persist`'s `unsaved`, R4), and a READ that fails inside the
+//    export arm (`pair`, which reads IndexedDB since the PR #37 fix wave — a
+//    restart there would discard the very move the export exists to rescue).
+//    **Every other storage failure still goes the trap's way — named here,
+//    not fixed** (PR #37 fix wave, re-review N-2): a generation or a read that
+//    fails during a hold's acquisition (`takeGeneration`, `rebuild`), during
+//    the startup `ready` runs, or in `adopt` after a restore is answered
+//    `trapped`, and the page restarts the host.
 
 import {
   deletePair,
@@ -48,7 +54,7 @@ import {
   takeGeneration,
   writeDocs,
 } from "./db";
-import { exportPair, StoreUnreadable, type Pair } from "./exportPair";
+import { exportPair, StoreUnreadable, unreadableReply, type Pair } from "./exportPair";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -568,7 +574,7 @@ async function handle(req: Req): Promise<void> {
         );
       } catch (err) {
         if (!(err instanceof StoreUnreadable)) throw err;
-        post({ seq: req.seq, unreadable: err.message });
+        post({ seq: req.seq, ...unreadableReply(err) });
         return;
       }
       post({ seq: req.seq, ...pair });

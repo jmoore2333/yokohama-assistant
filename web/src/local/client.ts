@@ -16,6 +16,7 @@
 // strings. The module in the Worker is the layer; this is a wire.
 
 import { requestPersistenceOnce } from "../storage";
+import { unreadableOf, type UnreadableReply } from "./exportPair";
 import { gameIdOf } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 
@@ -403,11 +404,12 @@ export async function localCall(
 export const localPair = async (
   id: string,
 ): Promise<{ record: string | null; table: string | null }> => {
-  const r = await ask<{ record: string | null; table: string | null; unreadable?: string }>({
+  const r = await ask<{ record: string | null; table: string | null } & Partial<UnreadableReply>>({
     kind: "pair",
     id,
   });
-  if (typeof r.unreadable === "string") throw new Error(r.unreadable);
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) throw new Error(unreadable);
   return { record: r.record, table: r.table };
 };
 
