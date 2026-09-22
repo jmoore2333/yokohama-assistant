@@ -734,7 +734,15 @@ what the reviews and the deploy added.
 
 ### 8.1 Into M6.5c "the objects" — the opening items this cycle hands over
 
-The entry artifact for M6.5c is **this document**. Its plan and spec take these first:
+**The entry artifact for M6.5c is `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`** — a
+separate document on the M6.5b2 handover's shape, written 2026-09-22 at the owner's request ("and
+the handover for m6.5c?"), which is what every prior cycle handed the next one at its close. **§8
+was re-pointed at it the same day**; the eight items below STAY as the summary they are, and the
+handover carries them with their provenance beside what was measured, what M6.5c inherits as
+requirements, the decisions its spec takes first, and the traps not to re-derive. Where the two
+differ in detail, the handover is the fuller record and this section is the shorter one.
+
+Its plan and spec take these first:
 
 1. **The two phone readings** (§6.3 item 3), which are the owner's and are the only WebKit evidence
    this lane will have: the iPhone exit as R-6.5b2.17 words it, and the Android handset as the

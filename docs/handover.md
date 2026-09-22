@@ -190,7 +190,7 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and this cycle's close is its entry artifact**
+## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and its entry artifact is [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)**
 
 **M6.5b2 — DONE (2026-09-22).** The record of record is the close
 `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`: §1 what shipped by task in execution order,
@@ -201,7 +201,11 @@ wave, the scoped re-review, the battery at 22 of 22, the deploy), **§5 every ru
 behalf with its cost** — including the six commits mis-attributed to the orchestrator's model by the
 orchestrator's own dispatch and left unamended, and the interim state the mid-cycle deploy knowingly shipped — §6
 the LEAVE list, the **nine OWNER ITEMS** and the two frozen-spec sentences recorded as amendments,
-§7 what the cycle does NOT claim, and §8 the eight opening items for M6.5c.
+§7 what the cycle does NOT claim, and §8 the eight opening items for M6.5c. **The next cycle starts
+from [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)** (written at this close,
+2026-09-22, on the M6.5b2 handover's shape): what HEAD is, what was measured, the umbrella rulings
+M6.5c inherits with the owner's words quoted, your opening items with their provenance, the
+decisions its spec takes first, and the traps not to re-derive.
 
 **What wants YOU, shortest first.** (1) **The phone**: install to the home screen, airplane mode,
 play, close the browser entirely, reopen, resume, finish, export — then an update and a restore on
