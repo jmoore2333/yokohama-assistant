@@ -14,9 +14,11 @@
 /** What the worker does with one request.
  *
  *  `bypass` and `network` are deliberately DISTINCT values: `bypass` is a RULE
- *  — the API and the turnstile are never read and never written, whatever a
- *  release lists, and `sw.ts` answers it by NOT answering, so the browser makes
- *  the request it would have made with no worker installed at all — while
+ *  — the API, the turnstile and Cloudflare's `/cdn-cgi/` are never read and
+ *  never written, whatever a release lists, and neither is a DevTools
+ *  `only-if-cached` probe outside `same-origin` mode, which `fetch()` refuses
+ *  outright; `sw.ts` answers it by NOT answering, so the browser makes the
+ *  request it would have made with no worker installed at all — while
  *  `network` is merely a path this release does not list. **`sw.ts` DOES answer
  *  that one** (PR #37 F2, R-F2): from a retained generation of ours that holds
  *  the path, else from the network, and it caches nothing. Which generation
@@ -60,7 +62,11 @@ export function isServerPath(pathname: string): boolean {
  *    so a release that somehow listed one still cannot have it served from a
  *    cache, and a NAVIGATION to `/enter` or to Access's
  *    `/cdn-cgi/access/authorized` is not answered with the cached shell (R-F6
- *    amends spec §2.3's rule 1 forward).
+ *    amends spec §2.3's rule 1 forward). Nor is DevTools' `only-if-cached`
+ *    probe outside `same-origin` mode: such a Request cannot be handed to
+ *    `fetch()` at all — the constructor throws — so a worker that answered one
+ *    through the network would print an error for a request the page never
+ *    made. It is the browser's, as it was before any worker existed.
  * 2. A navigation is answered with the shell, whatever path it names: the
  *    client routes on the hash, so every address is `index.html`.
  * 3. A precached path is served from the cache.
@@ -72,9 +78,16 @@ export function isServerPath(pathname: string): boolean {
  * @param url       the request's URL, already known to be same-origin
  * @param mode      `request.mode` — `"navigate"` for a document load
  * @param precached the release's paths, as the worker holds them
+ * @param cache     `request.cache` — `"only-if-cached"` is the one value read
  */
-export function swRoute(url: URL, mode: string, precached: ReadonlySet<string>): Route {
+export function swRoute(
+  url: URL,
+  mode: string,
+  precached: ReadonlySet<string>,
+  cache: string = "default",
+): Route {
   if (isServerPath(url.pathname)) return "bypass";
+  if (cache === "only-if-cached" && mode !== "same-origin") return "bypass";
   if (mode === "navigate") return "navigate";
   if (precached.has(url.pathname)) return "cache";
   return "network";

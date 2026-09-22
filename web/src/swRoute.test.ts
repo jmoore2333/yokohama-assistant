@@ -81,4 +81,21 @@ describe("what the worker does with a request", () => {
     expect(swRoute(new URL("/cdn-cgiX", "https://h"), "navigate", PRE)).toBe("navigate");
     expect(swRoute(new URL("/cdn-cgiX/y.js", "https://h"), "cors", PRE)).toBe("network");
   });
+
+  // **DevTools' `only-if-cached` probes are the browser's** (PR #37 F2 review,
+  // N3). Outside `same-origin` mode such a Request cannot be handed to
+  // `fetch()` — the constructor throws — so answering one through the network
+  // would print an error for a request the page never made. A navigation is
+  // not `same-origin` mode either, so it is not answered with the shell.
+  it("bypasses an only-if-cached request outside same-origin mode, and only that", () => {
+    const listed = new URL("/assets/index-abc.js", "https://h");
+    expect(swRoute(listed, "no-cors", PRE, "only-if-cached")).toBe("bypass");
+    expect(swRoute(new URL("/unknown.js", "https://h"), "cors", PRE, "only-if-cached")).toBe("bypass");
+    expect(swRoute(new URL("/t/x", "https://h"), "navigate", PRE, "only-if-cached")).toBe("bypass");
+    // Anti-vacuity: legal in `same-origin` mode, and routed as any other request.
+    expect(swRoute(listed, "same-origin", PRE, "only-if-cached")).toBe("cache");
+    // And any other cache mode is routed as it always was.
+    expect(swRoute(listed, "no-cors", PRE, "no-store")).toBe("cache");
+    expect(swRoute(listed, "no-cors", PRE)).toBe("cache");
+  });
 });

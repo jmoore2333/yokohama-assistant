@@ -428,6 +428,37 @@ describe("the worker's activate", () => {
     expect((await worker.caches.keys()).sort()).toEqual([CACHE_NAME, "yokohama-release-n"].sort());
   });
 
+  // **`markActivated` writes nothing where the install's stamp is absent**
+  // (PR #37 F2 re-review, N-N3). A generation evicted between install and
+  // activate must stay gone: `caches.open` would bring an empty one back into
+  // being, and the next release's sweep would keep it as "previous".
+  it("does not bring an evicted generation back into being when it activates", async () => {
+    const worker = await boot();
+    await worker.install();
+    await worker.caches.delete(CACHE_NAME);
+    await worker.activate();
+    expect(await worker.caches.keys(), "the evicted generation stays gone").not.toContain(CACHE_NAME);
+  });
+
+  // **A failed install deletes only a generation it CREATED.** The cache name is
+  // a digest over the list, so a code-only change to `sw.ts` installs under the
+  // name the running worker serves from; a failure there that deleted the
+  // generation would take out every open tab's release.
+  it("leaves the running generation in place when a re-install of it fails", async () => {
+    const worker = await boot((path) =>
+      path === "/art/orders/O01.webp"
+        ? { status: 404, body: "no such art", type: "text/plain" }
+        : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type },
+    );
+    const running = await worker.caches.open(CACHE_NAME);
+    await running.put(META_PATH, new Response(JSON.stringify({ createdAt: 5, activatedAt: 7 })));
+    await running.put("/index.html", new Response(BODIES["/index.html"]!.body));
+    await expect(worker.install()).rejects.toThrow(/answered 404/);
+    expect(await worker.caches.keys(), "the generation the running worker serves is still there").toContain(
+      CACHE_NAME,
+    );
+  });
+
   // **A re-install of the SAME generation keeps its activation.** A code-only
   // change to `sw.ts` ships a new worker under the same cache name; the install
   // rewrites the stamp, and a stamp rewritten without `activatedAt` would rank
@@ -524,10 +555,10 @@ describe("the worker's fetch", () => {
     );
   });
 
-  // **DevTools' `only-if-cached` probes are the browser's.** Outside
-  // `same-origin` mode such a Request cannot be handed to `fetch()` — the
-  // constructor throws — so a worker that answered one through the network
-  // fall-through would print a network error for a request the page never made.
+  // **DevTools' `only-if-cached` probes are the browser's.** The RULE is
+  // `swRoute`'s and has its cells there; this is the worker honouring it, which
+  // needs `sw.ts` to hand `request.cache` to the route — a call that dropped
+  // the argument would route every probe as an ordinary request.
   it("leaves an only-if-cached request outside same-origin mode to the browser", async () => {
     const worker = await boot();
     await worker.install();

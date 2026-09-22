@@ -95,7 +95,11 @@ export interface Generation {
   /** When a worker serving it last ACTIVATED, from the stamp `activate` writes
    *  into its own generation (PR #37, R-F5). ABSENT for a generation that was
    *  installed and never activated — a waiting release another one replaced
-   *  before anyone clicked — and for one stamped before R-F5 existed. */
+   *  before anyone clicked — for one stamped before R-F5 existed, and for one
+   *  whose activation stamp could not be written. That last one ranks below
+   *  every activated generation, so the next sweep can delete it while tabs
+   *  still run it: a known gap, accepted rather than guarded, and `sw.ts`'s
+   *  `markActivated` says why. */
   readonly activatedAt?: number;
 }
 
@@ -131,6 +135,15 @@ export interface Generation {
  * It names only caches under [`CACHE_PREFIX`]. The Cache Storage of an origin
  * is shared, so a sweep written as "delete everything that is not mine" would
  * take out anything else the origin ever put there.
+ *
+ * **A named limit: a sweep racing an install still in progress.** Such a
+ * generation carries `createdAt` and no activation, so it ranks last and is
+ * deleted whenever an activated generation exists — leaving its worker
+ * "installed" over a cache that is gone. Before R-F5 the same race kept it as
+ * the newest install. It is practically unreachable: Handle Fetch holds every
+ * navigation while the active worker is `activating`, so a navigation cannot
+ * start that install inside the sweep, and only a page calling `update()`
+ * during `activate` could.
  */
 export function generationsToDelete(mine: string, generations: readonly Generation[]): string[] {
   const others = generations

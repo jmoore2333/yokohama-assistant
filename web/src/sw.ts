@@ -9,16 +9,26 @@
 // comparison of this file and a heuristically cached copy delays every update
 // by however long the browser chose to keep it.
 //
-// **Every DECISION here is somewhere else, and on purpose — with TWO small
-// exceptions.** The routing rule is `swRoute.ts`; the install's verification,
-// the sweep's retention rule and which retained generations a fetch may read
-// are `swInstall.ts`; and both are tested in the component suite without a
-// browser. The exceptions are `fromRetained`'s refusal to serve the stamp
-// (`META_PATH`) and the install's keeping of an `activatedAt` it finds on a
-// re-install of the same generation (R-F5) — each one line beside the plumbing
-// it guards, and each pinned by its own cell in `sw.node.test.ts`.
-// What is left in this file is the plumbing those decisions drive — which is
-// the half a browser must run to check, so the less of it there is the better.
+// **Where the decisions live.** The routing rule is `swRoute.ts`; the install's
+// verification, the sweep's retention rule and which retained generations a
+// fetch may read are `swInstall.ts`; both are pure and tested in the component
+// suite without a browser. What this file holds is the plumbing those
+// decisions drive — the half a browser must run to check, so the less of it
+// the better — together with the update policy's worker half (`skipWaiting()`
+// only on the player's message, never `clients.claim()`), R-F2's order for a
+// path this release does not list (a retained generation before the network,
+// nothing written), and these one-line guards beside the plumbing they
+// protect:
+//
+// - a failed install deletes its generation only where the install CREATED it
+//   (`alreadyThere`), never the one a running worker serves under the same name;
+// - a re-install of the same generation keeps the `activatedAt` it finds (R-F5);
+// - `markActivated` writes nothing where the install's stamp is absent, so it
+//   never brings an evicted generation back into being;
+// - `fromRetained` never serves the stamp (`META_PATH`).
+//
+// `sw.node.test.ts` bundles this file and RUNS it, and pins each of those with
+// a cell of its own.
 
 /// <reference lib="webworker" />
 
@@ -228,16 +238,26 @@ self.addEventListener("activate", (event) => {
  *  **Only where the install's stamp is already there**: the install writes it
  *  first, so a generation without one is not a release this worker installed —
  *  and `caches.open` on a generation evicted since would bring an empty one
- *  back into being, which the next sweep would then keep as "previous". A
- *  stamp that cannot be written leaves this generation ranked by its install
- *  time, as every generation was before R-F5. */
+ *  back into being, which the next sweep would then keep as "previous".
+ *
+ *  **A stamp that cannot be written is a known gap, accepted rather than
+ *  guarded** (the PR #37 fix wave's ruling). The generation then carries no
+ *  `activatedAt`, so it ranks BELOW every activated generation, and at the
+ *  NEXT activation the sweep can keep an older activated one and delete this
+ *  one while tabs still run it — R-F5's defect, for one release, on the device
+ *  whose write failed. It is accepted because that device has just stored
+ *  this whole release, about ten megabytes, and the stamp is about a hundred
+ *  bytes; and the guard that would cover it — keep an unactivated generation
+ *  installed after the newest activation — would also keep every replaced
+ *  waiting release for a release. */
 async function markActivated(): Promise<void> {
   try {
     const { createdAt } = await stampIn(CACHE_NAME);
     if (createdAt === undefined) return;
     await writeStamp(await caches.open(CACHE_NAME), { createdAt, activatedAt: Date.now() });
   } catch {
-    // ranked by `createdAt` alone, as before R-F5
+    // The gap named above: unstamped, this generation ranks below every
+    // activated one at the next sweep.
   }
 }
 
@@ -294,9 +314,6 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   // A POST to `/api/...` is the server's anyway, and a cache holds only GETs.
   if (request.method !== "GET") return;
-  // DevTools' `only-if-cached` probes: outside `same-origin` mode such a Request
-  // cannot be handed to `fetch()` at all (it throws), so they are the browser's.
-  if (request.cache === "only-if-cached" && request.mode !== "same-origin") return;
   let url: URL;
   try {
     url = new URL(request.url);
@@ -307,12 +324,13 @@ self.addEventListener("fetch", (event) => {
   // never serve another origin's response out of this origin's cache.
   if (url.origin !== self.location.origin) return;
 
-  const route = swRoute(url, request.mode, PRECACHED);
+  const route = swRoute(url, request.mode, PRECACHED, request.cache);
   // `bypass` is answered by NOT answering — no `respondWith`, so the browser
   // makes exactly the request it would have made with no worker installed,
   // which is what rule 1 means by "never intercepted". It is asked FIRST, in
   // `swRoute`, so nothing below can reach the API, the turnstile or
-  // Cloudflare's `/cdn-cgi/` (R-F6).
+  // Cloudflare's `/cdn-cgi/` (R-F6) — nor a DevTools `only-if-cached` probe
+  // outside `same-origin` mode, which `fetch()` would refuse outright.
   //
   // **`network` IS answered** (PR #37 F2, R-F2): from a retained generation
   // that holds the path, else from the network. It used to be left alone like
