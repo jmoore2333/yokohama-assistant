@@ -1,5 +1,5 @@
-// **The seven offline cells: where this cycle's claims actually live** (M6.5b2,
-// spec §6.3's six, and PR #37's seventh).
+// **The nine offline cells: where this cycle's claims actually live** (M6.5b2,
+// spec §6.3's six, and PR #37's seventh, eighth and ninth).
 //
 // Every other instrument in this cycle stops short of the thing the milestone
 // is about. `swRoute.ts` and `swInstall.ts` are pure functions with cells;
@@ -27,6 +27,16 @@
 // the new worker still running the old bundle, restarting its local host with
 // the network off. It sits beside cell 3 because it is cell 3's machinery with
 // a second tab and a genuinely renamed file.
+//
+// **Cells 8 and 9 are PR #37's F3** (R-F3, and the F3 task review's E1): a
+// "Try again" that has to SUCCEED, in the two ways the first attempt can fail.
+// Cell 8 refuses the first `/sw.js`, so the REGISTRATION fails; cell 9 lets it
+// through and refuses one precache file once, so the FIRST INSTALL fails —
+// which empties the registration and removes it from the map, so `update()`
+// on it is refused. Both refuse through `context.route`, which at Playwright
+// 1.62.1 intercepts the registration's own script fetch AND the worker's
+// precache fetches (measured before either cell was written): the refusal is
+// one request, and every other byte is the real server's.
 //
 // **Cells 3 and 7 MUTATE `web/dist` in place**, put it back in a `finally`, and
 // CHECK the restoration there too — the files' own bytes and the restored
@@ -227,7 +237,7 @@ function watchTheApi(page: Page): { answered: string[]; failed: string[] } {
  *
  * **`watchForBreakage` cannot be used here and the reason is the subject.**
  * Chromium logs every failed resource load as a console error, and four of
- * these seven cells take the network away on purpose — so the shared watch would
+ * these nine cells take the network away on purpose — so the shared watch would
  * report the very state the cell arranged. What is still worth watching is a
  * page that THREW, which no amount of offline explains.
  */
@@ -1162,6 +1172,128 @@ test("the outbox: a game finished before the archive was ever heard of waits, an
   );
   expect(watch.failures).toEqual([]);
 });
+
+test("a refused registration: the first /sw.js answers 503, the door names it in ONE sentence, and Try again makes the release ready", async ({
+  page,
+  context,
+}) => {
+  const watch = watchForFaults(page);
+  let scripts = 0;
+  await context.route("**/sw.js", async (route) => {
+    scripts += 1;
+    if (scripts === 1) await route.fulfill({ status: 503, body: "temporary" });
+    else await route.continue();
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible({
+    timeout: INSTALL_WAIT_MS,
+  });
+  const refused = await doorLine(page);
+  // **The browser's own sentence, and ONE full stop**: Chromium's ends in a
+  // period and the door appends one, which read "…the script.. Try again"
+  // until the fix round (measured, the review's own script).
+  expect(refused).toContain("Could not prepare to play offline — Failed to register a ServiceWorker");
+  expect(refused).toContain("(503)");
+  expect(refused).toMatch(/[^.]\. Try again$/);
+  expect(scripts, "the refusal really was the registration's own script fetch").toBe(1);
+
+  // **The retry REGISTERS, and what that resolves to is adopted**: the door
+  // leaves "Preparing…" for "Ready…" and the release is whole in the cache.
+  expect(await retried(page)).toBe("Ready to play offline.");
+  const release = await installed(page);
+  expect(scripts, "the retry fetched the worker again").toBe(2);
+
+  // eslint-disable-next-line no-console
+  console.log(`REFUSED REGISTRATION: retried into ${release} after "${refused}"`);
+  // **Chromium logs the arranged refusal itself** as a console error, in the
+  // same words the door carries — so that ONE sentence is this cell's own
+  // doing, and is the only line let through; the shared watch's network filter
+  // is left as it is for the cells it was written for.
+  const arranged = "console.error: A bad HTTP response code (503) was received when fetching the script.";
+  expect(
+    watch.failures.filter((f) => f !== arranged),
+    "the page threw nothing while it failed and retried",
+  ).toEqual([]);
+});
+
+test("a failed FIRST install: one file answers 503 once, the release fails whole, and Try again registers again and makes it ready", async ({
+  page,
+  context,
+}) => {
+  const watch = watchForFaults(page);
+  // A file the door never draws, so the one refusal is the WORKER's fetch and
+  // not the page's; asserted to be in this release's list, so a renamed art
+  // file fails here by name rather than as an install that never failed.
+  const refusedPath = "/art/achievements/Copper5.webp";
+  expect(fs.readFileSync(SW, "utf8"), "the refused file is one the release precaches").toContain(
+    JSON.stringify(refusedPath),
+  );
+  let asks = 0;
+  await context.route(`**${refusedPath}`, async (route) => {
+    asks += 1;
+    if (asks === 1) await route.fulfill({ status: 503, body: "temporary" });
+    else await route.continue();
+  });
+  let scripts = 0;
+  await context.route("**/sw.js", async (route) => {
+    scripts += 1;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible({
+    timeout: INSTALL_WAIT_MS,
+  });
+  const failed = await doorLine(page);
+  expect(failed).toBe(`Could not prepare to play offline — ${refusedPath}: answered 503. Try again`);
+  // **E1's premise, read off the platform**: a failed FIRST install leaves no
+  // newest worker, so the registration is gone from the map — which is why
+  // `update()` on the page's copy of it is refused.
+  expect(
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()) === undefined),
+    "the failed first install left no registration behind",
+  ).toBe(true);
+  expect(await releaseCaches(page), "and no half-release in the cache").toEqual([]);
+
+  // Before the fix this line read "…with script ('Unknown'): The object is in
+  // an invalid state. Try again", on every click until a reload.
+  expect(await retried(page)).toBe("Ready to play offline.");
+  const release = await installed(page);
+  expect(scripts, "the retry REGISTERED — it fetched the worker again").toBe(2);
+  expect(asks, "and fetched the refused file again").toBe(2);
+
+  // eslint-disable-next-line no-console
+  console.log(`FAILED FIRST INSTALL: retried into ${release} after "${failed}"`);
+  expect(watch.failures, "the page threw nothing while it failed and retried").toEqual([]);
+});
+
+// ----------------------------------------------------- cells 8 and 9's tools
+
+/** The door's readiness line as it reads now. */
+const doorLine = (page: Page): Promise<string> => page.locator(".offline-state p").first().innerText();
+
+/**
+ * Press "Try again" and answer the line the door SETTLES on — ready, or failed
+ * again — so a retry that fails names its sentence at once instead of timing
+ * out on "Ready…" two and a half minutes later.
+ *
+ * **The line on screen is marked before the click**, for `restore`'s reason:
+ * every readiness state is its own `<p>`, so the failed line is unmounted and
+ * the one that comes back is a new element carrying no mark — a wait that
+ * could otherwise read the failure it is retrying.
+ */
+async function retried(page: Page): Promise<string> {
+  await page.evaluate(() => {
+    document.querySelector(".offline-state p")?.setAttribute("data-e2e-stale", "");
+  });
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  const fresh = page.locator(".offline-state p:not([data-e2e-stale])").first();
+  await expect(fresh).toHaveText(/^(Ready to play offline\.|Could not prepare to play offline)/, {
+    timeout: INSTALL_WAIT_MS,
+  });
+  return fresh.innerText();
+}
 
 // ----------------------------------------------------- cell 3's own tools
 
