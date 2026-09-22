@@ -16,6 +16,7 @@
 import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
+import { openDb, readPair } from "../local/db";
 import type { Envelope, ReportRow } from "../backup";
 import committedEnvelope from "../wire-script/backup-envelope.json";
 import committedReport from "../wire-script/backup-report.json";
@@ -44,6 +45,10 @@ export interface FakeWorkerHooks {
    *  it. */
   hold?: (id: string, steal: boolean) => boolean | "pending";
   /** Both documents of one game, as the `pair` message answers them.
+   *
+   *  `undefined` falls through to the COMMITTED pair in this page's
+   *  IndexedDB, where the cell has one — the real Worker's answer for a game
+   *  it does not own (PR #37 fix wave, R-F1).
    *
    *  `"pending"` answers NOTHING and leaves the read in flight — the `call`
    *  hook's own idiom, and how a cell arranges the OTHER half of "the module
@@ -91,6 +96,23 @@ function fakeVerdicts(envelope: string): ReportRow[] {
       over: false,
     },
   }));
+}
+
+/** What this page's IndexedDB COMMITTED for `id` — the real Worker's `pair`
+ *  answer for a game it does not own (PR #37 fix wave, R-F1).
+ *
+ *  Two nulls where the cell has no database at all: jsdom has no IndexedDB,
+ *  and a cell that wants one imports `fake-indexeddb`. A read that FAILS is
+ *  left to reject, so it surfaces as the unhandled rejection it is rather than
+ *  as a game that is not there. */
+async function committedPair(id: string): Promise<{ record: string | null; table: string | null }> {
+  if (typeof indexedDB === "undefined") return { record: null, table: null };
+  const db = await openDb();
+  try {
+    return await readPair(db, id);
+  } finally {
+    db.close();
+  }
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -200,8 +222,18 @@ export class FakeWorker {
         break;
       }
       case "pair": {
-        const both = hooks.pair?.(req.id) ?? {};
+        const both = hooks.pair?.(req.id);
         if (both === "pending") return;
+        if (both === undefined) {
+          // **The committed pair, by default** (PR #37 fix wave, R-F1). This
+          // fake holds no game at any generation, and the real Worker's answer
+          // for a game it does not own is what IndexedDB committed — so that is
+          // what a cell that says nothing gets, rather than two nulls the page
+          // would now take WHOLE as "no such game".
+          const seq = req.seq;
+          void committedPair(req.id).then((pair) => this.deliver({ seq, ...pair }));
+          return;
+        }
         reply = { record: both.record ?? null, table: both.table ?? null };
         break;
       }
@@ -271,9 +303,11 @@ export function breakTheWorker(): void {
   FakeWorker.broken = true;
 }
 
-/** What the Worker's `pair` message answers for ONE game — the snapshot a
- *  backup PREFERS over the database, because a move applied and not yet
- *  written is the very move a recovery is for. */
+/** What the Worker's `pair` message answers for ONE game — standing for the
+ *  snapshot of the Worker that OWNS the game, which a backup PREFERS over the
+ *  database because a move applied and not yet written is the very move a
+ *  recovery is for. Without it the fake answers the committed pair, which is
+ *  what the real Worker answers for a game it does not own (R-F1). */
 export function workerAnswersWith(
   id: string,
   pair: { record?: string | null; table?: string | null },

@@ -40,11 +40,13 @@ import {
   isModuleDoc,
   openDb,
   readAll,
+  readGeneration,
   readPair,
   retryingStart,
   takeGeneration,
   writeDocs,
 } from "./db";
+import { exportPair } from "./exportPair";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -527,18 +529,35 @@ async function handle(req: Req): Promise<void> {
     case "call":
       post({ seq: req.seq, ...(await call(req)) });
       return;
-    case "pair":
+    case "pair": {
       // **BOTH documents, read inside ONE queued operation** (spec §2.2's
       // "the record and table are read for export as one snapshot"; review
       // finding #6). Two messages would be two operations a move can fall
       // between, and "Send to the archive" would send a table the server finds
       // does not match the record.
+      //
+      // **And from ONE source, which is this tab's memory only where this tab
+      // OWNS the game** (PR #37 fix wave, R-F1; `exportPair.ts` holds the rule
+      // and its cells). Every export reads through here — both backups, Save
+      // game file, Send to the archive, Abandon and save, and the outbox — so
+      // a tab that booted with a snapshot of another tab's game, or that has
+      // since been stolen from, hands over what IndexedDB COMMITTED rather than
+      // what it was left holding.
+      const id = req.id;
       post({
         seq: req.seq,
-        record: wasm.read("record", req.id) ?? null,
-        table: wasm.read("table", req.id) ?? null,
+        ...(await exportPair(
+          held.get(id)?.generation,
+          () => readGeneration(db, id),
+          () => ({
+            record: wasm.read("record", id) ?? null,
+            table: wasm.read("table", id) ?? null,
+          }),
+          () => readPair(db, id),
+        )),
       });
       return;
+    }
     case "release": {
       // **The page's intent first**, so an acquisition still in flight drops
       // the lock when it lands rather than holding it for ever (see [`hold`]).

@@ -134,6 +134,13 @@ describe("backing up", () => {
   // And the Worker is still PREFERRED when it answers, because a game with a
   // move applied but not yet written is exactly what reading the database alone
   // would omit — the move the recovery exists to rescue.
+  //
+  // **What the Worker answers is no longer "its memory, whatever it is"**
+  // (PR #37 fix wave, R-F1): it is its memory only where this tab OWNS the game
+  // at the current generation, and the committed pair everywhere else
+  // (`local/exportPair.ts`, whose own cells hold that rule). So an answer here
+  // stands for the owner's snapshot, and the page still takes it — the page
+  // cannot tell the two apart and does not need to.
   it("prefers the Worker's snapshot when the Worker answers", async () => {
     await putPair("local-3", RECORD_TEXT, tableFor("local-3"));
     workerAnswersWith("local-3", {
@@ -142,6 +149,32 @@ describe("backing up", () => {
     });
     const games = JSON.parse(await backupEverything()).games as Envelope["games"];
     expect(games[0]!.record).toBe(RECORD_WITH_ONE_MORE_MOVE);
+  });
+
+  // **One pair from ONE source** (R-F1; review F1's second half). The export
+  // used to complete the Worker's answer field by field from the database —
+  // `live?.record ?? stored.record` — so a Worker saying "this game is at the
+  // deal, with no record" beside a store holding a played record came out as
+  // that record paired with the DEALING table: two snapshots of one game
+  // stitched into a pair neither of them ever was. The answer is taken whole.
+  it("takes the Worker's pair WHOLE, never one document from each", async () => {
+    await putPair("local-4", RECORD_TEXT, tableFor("local-4"));
+    workerAnswersWith("local-4", { record: null, table: DEALING_TABLE_TEXT });
+
+    const every = (JSON.parse(await backupEverything()) as Envelope).games;
+    expect(every).toHaveLength(1);
+    expect(every[0], "Back up everything").toMatchObject({
+      id: "local-4",
+      record: null,
+      table: DEALING_TABLE_TEXT,
+    });
+
+    const one = (JSON.parse(await backupOne("local-4")) as Envelope).games;
+    expect(one[0], "Back up, for one game").toMatchObject({
+      id: "local-4",
+      record: null,
+      table: DEALING_TABLE_TEXT,
+    });
   });
 
   // **M-3: the Worker's budget is ONE deadline for the whole export.** The
@@ -175,11 +208,16 @@ describe("backing up", () => {
     expect(bounds, "one bound is armed for the whole export, not one per game").toBe(1);
     // And the export is COMPLETE: the database's copies are what a silent
     // Worker falls back to, which is the whole point of the fallback.
-    expect((JSON.parse(text) as Envelope).games.map((g) => g.id)).toEqual([
-      "local-a",
-      "local-b",
-      "local-c",
-    ]);
+    const games = (JSON.parse(text) as Envelope).games;
+    expect(games.map((g) => g.id)).toEqual(["local-a", "local-b", "local-c"]);
+    // **And each one is the stored pair WHOLE** (R-F1): with no answer from the
+    // Worker there is one source left, and both documents come from it.
+    for (const g of games) {
+      expect({ record: g.record, table: g.table }, g.id).toEqual({
+        record: RECORD_TEXT,
+        table: tableFor(g.id),
+      });
+    }
   });
 
   it("backs up ONE game, and refuses a name this device does not have", async () => {

@@ -16,8 +16,18 @@
 // this page can open the same database. The Worker path is kept for the one
 // case the direct read gets wrong — a game with a move applied but not yet
 // written, which is the very move a recovery exists to rescue — so the control
-// PREFERS the Worker's snapshot when the Worker answers within a short bound
-// and falls back to the database when it does not.
+// PREFERS the snapshot of the Worker that OWNS the game, asked within a short
+// bound, and falls back to the database when the Worker does not answer.
+//
+// **"The Worker answers" is not "the Worker owns the game"** (PR #37 fix wave,
+// R-F1, amending spec §2.5 forward). Every tab's Worker loads a snapshot of
+// every game at its boot and writes back only the games it holds, so a tab
+// that does not own a game can hold a copy another tab has moved past. The
+// Worker's `pair` arm is where that is decided (`local/exportPair.ts`): its
+// memory where this tab holds the game at the current ownership generation,
+// the committed pair everywhere else. This page takes whatever it answers
+// WHOLE, and its own read whole when it does not — never one document from
+// each.
 //
 // ## What is decided here and what is decided in Rust
 //
@@ -100,8 +110,9 @@ export interface RestoreReport {
  *  snapshots before the export falls back to reading IndexedDB (spec §2.5's
  *  ordering; review M-3).
  *
- *  **Short on purpose**: the Worker answers a `pair` from memory once the
- *  module is up, so a wait longer than this is a module that is not coming.
+ *  **Short on purpose**: once the module is up the Worker answers a `pair`
+ *  from memory or from one IndexedDB read (R-F1), so a wait longer than this
+ *  is a module that is not coming.
  *  **And shared, not per game**: a Worker that STARTS and never initialises
  *  answers nothing at all, and a per-game bound would make "Back up everything"
  *  take this long times the number of games.
@@ -203,7 +214,17 @@ async function knownRevisions(db: IDBDatabase): Promise<Map<string, CompatNote>>
   return out;
 }
 
-/** One game's two documents, the Worker's snapshot PREFERRED.
+/** One game's two documents: the Worker's answer WHOLE when it answers inside
+ *  the bound, this page's own read WHOLE when it does not.
+ *
+ *  **One pair from one source** (PR #37 fix wave, R-F1). This used to complete
+ *  the Worker's answer field by field from the database — `live?.record ??
+ *  stored.record` — which could pair one snapshot's record with another's
+ *  table: a Worker saying "at the deal, no record" beside a store holding a
+ *  played record came out as that record and the DEALING table, a pair neither
+ *  source ever held. What the Worker answers is already the right source (its
+ *  own memory where it owns the game, the committed pair otherwise — see
+ *  `local/exportPair.ts`), so a `null` in it is an answer and not a gap.
  *
  *  `deadline` is shared by a whole export (review M-3): a Worker that STARTS
  *  but whose module never initialises leaves every `ask` unanswered, and a
@@ -214,11 +235,9 @@ async function pairOf(
   id: string,
   stored: { record: string | null; table: string | null },
   deadline: Deadline,
-) {
+): Promise<{ record: string | null; table: string | null }> {
   const live = deadline.expired() ? null : await withinBound(localPair(id), deadline.left());
-  const record = live?.record ?? stored.record;
-  const table = live?.table ?? stored.table;
-  return { record, table };
+  return live ?? stored;
 }
 
 /** A budget for the Worker across ONE export. */

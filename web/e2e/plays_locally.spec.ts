@@ -25,8 +25,9 @@ import { type Page, type Worker } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
-// keeps that from being a convention anybody has to remember.
-import { expect, test } from "./sw";
+// keeps that from being a convention anybody has to remember. A context a cell
+// builds for itself is flagged by `newContextWithoutWorker`, for the same reason.
+import { expect, newContextWithoutWorker, test } from "./sw";
 import { archiveDir, BASE_URL, haveBrowser } from "../playwright.config";
 import { act, atTheGame, deadEnd, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 import type { Affordance } from "./harness";
@@ -127,6 +128,39 @@ async function storedEvents(page: Page, id: string): Promise<number> {
   const { record } = await storedPair(page, id);
   if (record === null) return -1;
   return (JSON.parse(record) as { events: unknown[] }).events.length;
+}
+
+/** How many events a record carries. */
+const eventsOf = (record: string): number =>
+  (JSON.parse(record) as { events: unknown[] }).events.length;
+
+/** One game in a backup file — `backup.ts`'s `BackupGame`, restated rather
+ *  than imported because that module would drag the page's whole local client
+ *  into the node project. Only the three fields read here. */
+interface BackedUp {
+  id: string;
+  record: string | null;
+  table: string;
+}
+
+/** Click something that downloads, and answer the file: its text, and where
+ *  Playwright put it (a restore takes a PATH). */
+async function downloaded(
+  page: Page,
+  click: () => Promise<void>,
+): Promise<{ text: string; file: string }> {
+  const [download] = await Promise.all([page.waitForEvent("download"), click()]);
+  const file = (await download.path())!;
+  return { text: fs.readFileSync(file, "utf8"), file };
+}
+
+/** The one game `id` in a backup file, or a failure naming what the file did
+ *  carry. */
+function backedUp(envelope: string, id: string): BackedUp {
+  const games = (JSON.parse(envelope) as { games: BackedUp[] }).games;
+  const game = games.find((g) => g.id === id);
+  if (!game) throw new Error(`the backup carries no ${id}: ${games.map((g) => g.id).join(", ")}`);
+  return game;
 }
 
 /** Play `n` moves, or until the game ends. What every cell below opens with,
@@ -476,6 +510,25 @@ test("a quota failure is APPLIED BUT NOT SAVED, and the game stays exportable", 
     record.events.length,
     "the exported record carries the move the browser would not keep",
   ).toBeGreaterThan(committed);
+
+  // **And so does the BACKUP** (PR #37 fix wave, R-F1) — the constraint the
+  // fix for a stale export must not break. A backup now takes this tab's memory
+  // only where this tab OWNS the game at the current generation, and the
+  // committed pair everywhere else; this tab does own it (the refusal was the
+  // documents' store, and the generation still reads this tab's), so the move
+  // that exists nowhere but in the module is in the file. An export that simply
+  // read IndexedDB would hand back `committed` events here and lose it.
+  const backup = await downloaded(page, () =>
+    page.getByRole("button", { name: "Back up", exact: true }).click(),
+  );
+  const backed = backedUp(backup.text, game.id);
+  expect(backed.record, "the backup carries the Save game file's record, byte for byte").toBe(
+    saved,
+  );
+  expect(
+    eventsOf(backed.record!),
+    "the backup carries the move the browser would not keep",
+  ).toBeGreaterThan(committed);
   expect(watch.failures).toEqual([]);
 });
 
@@ -644,5 +697,131 @@ test("two tabs: B boots first, A plays, B takes over and sees A's moves; A goes 
   await expect(a.getByText("This game was opened in another tab")).toBeVisible();
   await expect(a.getByRole("button", { name: "Take back" })).toBeVisible();
   await expect(a.locator("button.option")).toHaveCount(0);
+  expect(watchA.failures).toEqual([]);
+});
+
+// **The two cells below are PR #37's F1** (`docs/plans/2026-09-22-web-frontend-
+// m6.5b2-pr37-fixes.md`, R-F1): an export took the Worker's memory whenever the
+// Worker answered, and a tab's memory is a snapshot from its own boot that only
+// the tab HOLDING the game ever writes to. The review measured a backup one
+// event short of IndexedDB, both describing a playing game. The rule now is one
+// whole pair from one source, and the Worker's memory is that source only where
+// this tab owns the game at the current ownership generation.
+
+test("a tab that booted with a snapshot of a game backs up what was COMMITTED since, and the file restores it", async ({
+  page: a,
+  context,
+  browser,
+}) => {
+  const watchA = watchForBreakage(a);
+  const game = await startGame(a, { local: true });
+  const pick = rng(0x5354_414c); // "STAL"
+  await playSome(a, game, pick, 6);
+  await playUntilAnswerable(a, game, pick);
+
+  // **B boots AFTER the game has moves, and that is the whole precondition.**
+  // The two-tab cell above boots B first, so B's store knows nothing of the
+  // game and there is no snapshot to be stale — which is why it could never
+  // have seen this. Here B's Worker loads every stored pair at its boot, this
+  // game among them, and lists it on the door.
+  const b = await context.newPage();
+  const watchB = watchForBreakage(b);
+  await b.goto("/");
+  await expect(b.locator(`.on-this-device a[href="#/t/${game.id}"]`)).toBeVisible();
+  await localHost(b);
+  // Nothing moves in A while it waits on an answerable screen, so what is
+  // committed now is what B's store was loaded with.
+  const booted = await storedEvents(a, game.id);
+  expect(booted, "B's Worker booted with a snapshot of a PLAYED game").toBeGreaterThan(0);
+
+  // A plays on, and commits past B's snapshot.
+  const now = await playUntilCommitted(a, game, pick, booted);
+  expect(now, "A committed at least one move B's snapshot does not have").toBeGreaterThan(booted);
+
+  const all = await downloaded(b, () =>
+    b.getByRole("button", { name: "Back up everything", exact: true }).click(),
+  );
+  const backed = backedUp(all.text, game.id);
+  const stored = await storedPair(b, game.id);
+  expect(backed.record, "the backup's record is IndexedDB's, byte for byte").toBe(stored.record);
+  expect(backed.table, "and its table is IndexedDB's — one pair, from one source").toBe(
+    stored.table,
+  );
+  expect(eventsOf(backed.record!), "with every event A committed after B booted").toBe(now);
+
+  // **And the file does what a backup is for**: on a profile that has never
+  // seen this game, it restores to the same game, move for move.
+  const fresh = await newContextWithoutWorker(browser);
+  try {
+    const f = await fresh.newPage();
+    const watchF = watchForBreakage(f);
+    await f.goto("/");
+    // Anti-vacuity: an empty profile, said by the screen itself.
+    await expect(f.getByText("no game on this device yet")).toBeVisible();
+    await f.getByLabel("Restore from a backup").setInputFiles(all.file);
+    const row = f.locator(".restore-report li").filter({
+      has: f.locator(".restore-id", { hasText: game.id }),
+    });
+    await expect(row.locator(".meta")).toHaveText("restored", { timeout: 60_000 });
+    expect(await storedEvents(f, game.id), "the restored game has every committed event").toBe(
+      now,
+    );
+    expect((await storedPair(f, game.id)).record, "and it is the backed-up record").toBe(
+      backed.record,
+    );
+    // It opens as a game, which is what "restored" has to mean.
+    await f.goto(`/#/t/${game.id}`);
+    await expect(f.locator(".app:not(.setup-table)")).toBeVisible();
+    await readScreen(f);
+    expect(watchF.failures).toEqual([]);
+  } finally {
+    await fresh.close();
+  }
+  expect(watchA.failures).toEqual([]);
+  expect(watchB.failures).toEqual([]);
+});
+
+test("a tab that lost the game exports what the new owner COMMITTED, not its own memory", async ({
+  page: a,
+  context,
+}) => {
+  const watchA = watchForBreakage(a);
+  const game = await startGame(a, { local: true });
+  const pick = rng(0x4f57_4e52); // "OWNR"
+  await playSome(a, game, pick, 6);
+  await playUntilAnswerable(a, game, pick);
+  const left = await storedEvents(a, game.id);
+  expect(left, "A played a real run of moves before it lost the game").toBeGreaterThan(0);
+
+  // B takes the game over, the two-tab cell's own flow.
+  const b = await context.newPage();
+  await b.goto(`/#/t/${game.id}`);
+  await expect(b.getByText("This game is open in another tab")).toBeVisible();
+  await b.getByRole("button", { name: "Take over" }).click();
+  await expect(atTheGame(b)).toBeVisible();
+  await readScreen(b);
+  await expect(a.getByText("This game was opened in another tab")).toBeVisible();
+
+  // **B commits past what A's memory holds.** A's module store stopped at
+  // `left` when the lock went: nothing writes to a tab's memory but that tab's
+  // own calls, and A may no longer make one.
+  const now = await playUntilCommitted(b, game, rng(0x5441_4b45), left); // "TAKE"
+  expect(now).toBeGreaterThan(left);
+  const stored = await storedPair(a, game.id);
+
+  // A, read-only, exports both ways the game screen offers — and both are the
+  // committed pair B built, not the snapshot A was left holding.
+  const file = await downloaded(a, () =>
+    a.getByRole("button", { name: "Save game file" }).click(),
+  );
+  expect(file.text, "Save game file is B's committed record, byte for byte").toBe(stored.record);
+  expect(eventsOf(file.text)).toBe(now);
+
+  const one = await downloaded(a, () =>
+    a.getByRole("button", { name: "Back up", exact: true }).click(),
+  );
+  const backed = backedUp(one.text, game.id);
+  expect(backed.record, "the backup is B's committed record, byte for byte").toBe(stored.record);
+  expect(backed.table, "and B's committed table").toBe(stored.table);
   expect(watchA.failures).toEqual([]);
 });

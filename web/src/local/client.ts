@@ -365,9 +365,21 @@ export async function localCall(
 }
 
 /**
- * BOTH of a game's stored documents, read as ONE SNAPSHOT inside the Worker's
- * queue (spec §2.2; review finding #6) — each the store's exact bytes, or
- * `null` where there is none.
+ * BOTH of a game's documents, read as ONE SNAPSHOT inside the Worker's queue
+ * (spec §2.2; review finding #6) — each the exact bytes, or `null` where there
+ * is none.
+ *
+ * **Which snapshot is the Worker's to decide, and it is not "whatever this
+ * tab's module holds"** (PR #37 fix wave, R-F1; `exportPair.ts`). A tab's
+ * module is loaded at its Worker's boot and written back only for a game this
+ * tab holds, so it can be a copy another tab has moved past. The answer is the
+ * module's pair only where this tab OWNS the game at the current ownership
+ * generation — the one place a move applied and not yet written can exist —
+ * and the pair IndexedDB committed everywhere else. Every export goes through
+ * here, so every export takes that rule: both backups, Save game file, Send to
+ * the archive, Abandon and save, and the outbox. A caller takes the answer
+ * WHOLE; a `null` in it is part of the answer, not a gap to fill from
+ * elsewhere.
  *
  * **One message and not two**, which is the whole of why it exists. "Send to
  * the archive" sends the record and the table together and the server checks

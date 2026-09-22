@@ -241,10 +241,13 @@ export const readAll = (db: IDBDatabase): Promise<DocRow[]> =>
 
 /** What generation this game is on, or `0` for a game no tab has ever held.
  *
- *  **No production caller**: the Worker never needs to ask, because every
- *  write carries the generation it took and re-reads the stored one inside its
- *  own transaction. It exists so `db.test.ts` can read the fence's own state,
- *  the way `resetLocalHostForTests` exists for the cells. */
+ *  **No WRITE asks it**: every write carries the generation it took and
+ *  re-reads the stored one inside its own transaction, which is what makes that
+ *  check a fence. **Its one production caller is a READ** — the Worker's `pair`
+ *  arm (PR #37 fix wave, R-F1; `exportPair.ts`), which asks whether this tab
+ *  still OWNS a game before it hands out its memory as the game's export. A
+ *  read needs no fence, only the answer. `db.test.ts` also reads the fence's
+ *  own state through it. */
 export const readGeneration = async (db: IDBDatabase, id: string): Promise<number> => {
   const row = await done(
     db.transaction(META, "readonly").objectStore(META).get(id) as IDBRequest<
