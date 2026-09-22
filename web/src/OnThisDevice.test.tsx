@@ -5,12 +5,20 @@
 // stubbed `fetch` would prove nothing about the guarantee it exists for — that
 // the games on this device are reachable with the API unreachable.
 
+// **`fake-indexeddb` since M6.5b2**, because the section now reads the
+// compatibility rows straight from this browser's database to decide which
+// rows to hide (review M-2). Installed at module scope, as `db.test.ts` does;
+// the cells that are not about it get an empty store and hide nothing, which
+// is what they got before when the read simply failed.
+import "fake-indexeddb/auto";
+import { IDBFactory } from "fake-indexeddb";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnThisDevice } from "./OnThisDevice";
 import { api } from "./api";
 import { resetLocalHostForTests } from "./local/client";
+import { openDb, restoreOne } from "./local/db";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
@@ -23,6 +31,7 @@ const section = (): HTMLElement =>
 
 describe("On this device", () => {
   beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
     resetLocalHostForTests();
   });
   afterEach(() => {
@@ -49,6 +58,42 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     await screen.findByRole("link", { name: LOCAL });
     expect(within(section()).queryByRole("button", { name: /abandon/i })).toBeNull();
+  });
+
+  // **One game, one row** (review M-2). A restored cross-rev pair whose TABLE
+  // document parses is a row the layer's own listing builds happily — the
+  // mechanism spec §2.5 describes is for the case the listing SKIPS a document,
+  // and the common case is the other one. So the door drew the same game twice,
+  // once as playable and once under "Will not open here", with different
+  // controls on each. The row that says why it will not open is the true one.
+  //
+  // **Its anti-vacuity partner is the first cell in this file**, which is this
+  // arrangement WITHOUT the compatibility row and finds the link: the absence
+  // below is a hidden row and not an empty listing, and the listing's own
+  // request is asserted to have happened as well.
+  it("hides a playable row for a game this device cannot open", async () => {
+    const db = await openDb();
+    await restoreOne(db, LOCAL, {
+      table: "{}",
+      compat: JSON.stringify({
+        semantics_rev: 6,
+        rules_hash: null,
+        reason: "saved at semantics rev 6; this app plays rev 7",
+        restored_at: 0,
+      }),
+    });
+    stubWorker();
+    render(<OnThisDevice />);
+    await waitFor(() =>
+      expect(
+        currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
+      ).toHaveLength(1),
+    );
+    await waitFor(() => expect(screen.queryByRole("link", { name: LOCAL })).toBeNull());
+    // **And it does NOT say there is nothing here.** The game is on this device
+    // and is listed below with the reason it will not open; "no game on this
+    // device yet" would be a false sentence about a game the player can see.
+    expect(within(section()).queryByText(/no game on this device yet/)).toBeNull();
   });
 
   it("re-reads when something local is written", async () => {

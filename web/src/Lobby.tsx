@@ -57,14 +57,21 @@ import type { GamesList, TableView } from "./types";
  *  declaration is hoisted, which is what keeps the cycle safe whichever side
  *  the bundler evaluates first.
  *
- *  `abandon` is the control the CREATOR's own listing draws beside a row, and
- *  nothing else passes one: Open tables and Games in progress withhold it
- *  because a table of yours that is playing is listed twice (M6.2 ruling #13),
- *  and a LOCAL row withholds it because a local game is abandoned on its own
- *  screen, where the tab holds it (P-6). It is a node and not a flag: the
- *  control's `onDone` and `onError` are the lobby's own listing and error
- *  strip, which a row builder knows nothing about. */
-export function lobbyRow(t: TableView, abandon?: ReactNode): ReactNode {
+ *  `extra` is whatever the CALLING listing puts beside a row, and each one
+ *  decides for itself — the row builder knows nothing about it, which is the
+ *  point of it being a node rather than a flag (a control's `onDone` and
+ *  `onError` belong to the listing that drew it). Today there are two:
+ *
+ *    - the LOBBY's own Your-games rows pass the creator's Abandon (M6.2 ruling
+ *      #13); Open tables and Games in progress pass nothing, because a table of
+ *      yours that is playing is listed twice;
+ *    - "On this device" passes a Back up control (M6.5b2, R-6.5b2.10), and NOT
+ *      an abandon — a local game is abandoned on its own screen, where the tab
+ *      holds its lock (P-6).
+ *
+ *  It was called `abandon` until M6.5b2 and its doc said a local row withheld
+ *  one, which the second caller made false the day it landed (review M-1). */
+export function lobbyRow(t: TableView, extra?: ReactNode): ReactNode {
   return (
     <li key={t.id}>
       <a className="ghost row-link" href={hashOf({ kind: "table", id: t.id })}>
@@ -80,7 +87,7 @@ export function lobbyRow(t: TableView, abandon?: ReactNode): ReactNode {
           🔒
         </span>
       )}
-      {abandon}
+      {extra}
     </li>
   );
 }

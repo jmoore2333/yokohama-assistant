@@ -35,6 +35,16 @@ export type DocKind = "record" | "table" | "compat";
  *  browser's own and is never loaded. */
 export const MODULE_DOCS = ["record", "table"] as const;
 
+/** **Every row a game has, in ONE place** (M6.5b2, review I-1).
+ *
+ *  Both deletes remove exactly these, and they used to disagree: `deletePair`
+ *  took the pair and the generation while `forgetGame` took the compatibility
+ *  row too, so abandoning a restored cross-rev game through the fenced path
+ *  left a row in "Will not open here" with no documents behind it — listed,
+ *  with a Back up that threw. The list is the rule, and a fifth kind is added
+ *  here rather than at two call sites. */
+export const GAME_DOCS = [...MODULE_DOCS, "compat"] as const;
+
 /** Is this a document the module can be handed? A type guard, so a caller that
  *  narrows with it may pass the result to `wasm.load` without a cast. */
 export const isModuleDoc = (d: DocKind): d is "record" | "table" =>
@@ -193,7 +203,7 @@ export function writeDocs(
 }
 
 /**
- * Remove a game from this device: both documents and its generation, in one
+ * Remove a game from this device: [`GAME_DOCS`] and its generation, in one
  * transaction — and ONLY if `generation` is still the stored one.
  *
  * **The same fence as [`writeDocs`], and for a worse case** (spec §2.2, R2;
@@ -223,8 +233,9 @@ export function deletePair(
         return;
       }
       const docs = t.objectStore(DOCS);
-      docs.delete(["record", id]);
-      docs.delete(["table", id]);
+      // **[`GAME_DOCS`] and not two names**: the compatibility row is one of a
+      // game's rows, and leaving it behind is review finding I-1.
+      for (const doc of GAME_DOCS) docs.delete([doc, id]);
       t.objectStore(META).delete(id);
     };
     t.oncomplete = () => resolve("deleted");
@@ -357,7 +368,7 @@ export const readCompat = (db: IDBDatabase): Promise<DocRow[]> =>
   );
 
 /**
- * Remove a game the module cannot open: all three rows and its generation.
+ * Remove a game the module cannot open: [`GAME_DOCS`] and its generation.
  *
  * **Unfenced, and that is the difference from [`deletePair`]** — the fence is
  * about a tab that HOLDS the game, and a game the module never loaded is a game
@@ -368,9 +379,7 @@ export function forgetGame(db: IDBDatabase, id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const t = db.transaction([DOCS, META], "readwrite");
     const docs = t.objectStore(DOCS);
-    docs.delete(["record", id]);
-    docs.delete(["table", id]);
-    docs.delete(["compat", id]);
+    for (const doc of GAME_DOCS) docs.delete([doc, id]);
     t.objectStore(META).delete(id);
     t.oncomplete = () => resolve();
     t.onabort = () => reject(t.error ?? new Error("the game could not be forgotten"));

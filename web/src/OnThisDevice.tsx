@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
+import { unplayableIds } from "./backup";
 import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
 import { lobbyRow } from "./Lobby";
 import { onLocalFault, onLocalWrite } from "./local/client";
@@ -32,12 +33,25 @@ export function OnThisDevice() {
    *  (a private window, a blocked worker, a bad build). */
   const [fault, setFault] = useState<string | null>(null);
 
+  /** The ids this device cannot open, so a game is listed ONCE (review M-2).
+   *
+   *  **A separate read from the listing's**, because it comes from a different
+   *  place: the layer builds a row from the TABLE document, which a restored
+   *  cross-rev pair may have in a shape this build reads perfectly well, while
+   *  the thing that says the game will not open is this browser's own
+   *  compatibility row. A failure to read it is not a failure to list — the
+   *  games are still there — so it falls back to hiding nothing. */
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+
   const read = useCallback(
     () =>
-      api
-        .list("mine", undefined, "local")
-        .then((l) => {
+      Promise.all([
+        api.list("mine", undefined, "local"),
+        unplayableIds().catch(() => new Set<string>()),
+      ])
+        .then(([l, cannot]) => {
           setGames(l.games);
+          setHidden(cannot);
           setFault(null);
         })
         .catch((e: unknown) => setFault(e instanceof ApiError ? e.message : String(e))),
@@ -64,6 +78,10 @@ export function OnThisDevice() {
    *  the write handlers this section already listens to. */
   const [restored, setRestored] = useState(0);
 
+  /** The rows a player can actually open. A game with a compatibility row is
+   *  drawn by `Unplayable` below instead, with the reason it will not. */
+  const playable = (games ?? []).filter((t) => !hidden.has(t.id));
+
   return (
     <section className="saved on-this-device">
       <h3>On this device</h3>
@@ -80,8 +98,14 @@ export function OnThisDevice() {
         <p className="muted">loading&hellip;</p>
       ) : games.length === 0 ? (
         <p className="muted">no game on this device yet &mdash; play the bot here.</p>
+      ) : playable.length === 0 ? (
+        /* **Games, but none this build can open.** "No game on this device yet"
+           would be false — they are here and they are listed, under "Will not
+           open here" below with the reason. So this draws nothing and lets that
+           section be the answer, rather than saying there is nothing. */
+        null
       ) : (
-        <ul>{games.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
+        <ul>{playable.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
       )}
       {/* **Offered in EVERY state above, including the fault one** (spec §2.5):
           a module that will not load is when you most need your games out, and

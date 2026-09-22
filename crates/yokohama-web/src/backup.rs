@@ -125,12 +125,18 @@ pub enum Verdict {
 }
 
 /// What a valid pair turns out to be. The archive route reads `over` off this
-/// to choose its leaf; a restore reads the rest into the row it reports.
+/// to choose its leaf; a restore reads `players`, `events` and `over` into the
+/// row it reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairFacts {
     pub players: u8,
     pub events: usize,
     pub over: bool,
+    /// **This build's own constant, and it can hold nothing else** (review
+    /// M-5): [`check_pair`] returns `Ok` only where the record's revision
+    /// EQUALS `SEMANTICS_REV`, so this is never news. It is the caller's
+    /// convenience — a row can be reported without reaching for the constant —
+    /// and is NOT the record's, which a later reader should not assume.
     pub semantics_rev: u32,
 }
 
@@ -155,17 +161,37 @@ pub struct RestoreRow {
 /// `api::tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
 /// which was written and run BEFORE these checks moved here.
 ///
-/// **It builds its own [`Rules`](yokohama_core::Rules)**, which is the one cost
-/// the extraction adds: `archive_post` used to pass `games.rules()`. A
-/// `Rules::standard()` is a handful of static registries and is noise beside
-/// the strict replay in the next line, and a second entry point taking rules
-/// would make "one function two callers use" false.
+/// **It builds a [`Rules`](yokohama_core::Rules) for the caller that has none.**
+/// `AppState`'s own doc states this crate's discipline — "`Rules::standard()` is
+/// not cheap and is immutable once built, so it is constructed once per process
+/// and shared by reference" — and an earlier draft departed from it, paying one
+/// per archive POST and one per record-carrying game in a restore (review M-4).
+/// So [`check_pair_with`] is the body and takes the rules; this is the ONE
+/// public entry, for a caller that has no `Games` to borrow them from. The two
+/// in-crate callers pass what they already hold: `archive_post` the process's
+/// shared rules, `restore_read` one built per ENVELOPE rather than per game.
 pub fn check_pair(record: &str, table: &str) -> Result<PairFacts, String> {
-    let rules = yokohama_core::Rules::standard();
+    check_pair_with(record, table, &yokohama_core::Rules::standard())
+}
+
+/// [`check_pair`]'s body, over rules the caller already holds. One function,
+/// two callers — the claim R-6.5b2.10 makes — with the construction of the
+/// rules left to whoever is in a position not to repeat it.
+pub(crate) fn check_pair_with(
+    record: &str,
+    table: &str,
+    rules: &yokohama_core::Rules,
+) -> Result<PairFacts, String> {
     let rec: yokohama_core::GameRecord =
         serde_json::from_str(record).map_err(|e| format!("the record does not parse: {e}"))?;
     match rec.semantics_rev {
         Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
+        // **This sentence's audience is the ARCHIVE ROUTE** (review M-8): a
+        // restore never produces it, because `verdict_of` reads the revision
+        // before it calls this and answers `Unplayable` instead — refusing a
+        // cross-rev record here would strand the only copy of a game. A future
+        // caller reaching this function directly from the browser would read a
+        // server's words on a device, which is the reason to say so here.
         Some(rev) => {
             return Err(format!(
                 "this record is at semantics rev {rev}; this server archives rev {}",
@@ -184,7 +210,7 @@ pub fn check_pair(record: &str, table: &str) -> Result<PairFacts, String> {
         // engine that one day accepted a record with no provenance would take
         // the local host down rather than refuse the file.
         None => {
-            return Err(match yokohama_core::replay_strict(&rec, &rules) {
+            return Err(match yokohama_core::replay_strict(&rec, rules) {
                 Err(e) => e.message,
                 Ok(_) => "the record carries no semantics provenance".to_string(),
             })
@@ -193,7 +219,7 @@ pub fn check_pair(record: &str, table: &str) -> Result<PairFacts, String> {
     if rec.terminal_digest.is_none() {
         return Err("the record carries no terminal digest".to_string());
     }
-    let state = yokohama_core::replay_strict(&rec, &rules).map_err(|e| {
+    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
         format!("the record does not replay: at event {}, {}", e.event_index, e.message)
     })?;
     let doc: crate::table::TableDoc = serde_json::from_str(table)
@@ -277,7 +303,7 @@ fn check_table_alone(table: &str) -> Result<u8, String> {
     Ok(doc.players)
 }
 
-fn verdict_of(game: &BackupGame) -> Verdict {
+fn verdict_of(game: &BackupGame, rules: &yokohama_core::Rules) -> Verdict {
     if let Err(reason) = check_addressable(&game.id, &game.table) {
         return Verdict::Rejected { reason };
     }
@@ -301,7 +327,7 @@ fn verdict_of(game: &BackupGame) -> Verdict {
             };
         }
     }
-    match check_pair(record, &game.table) {
+    match check_pair_with(record, &game.table, rules) {
         Ok(f) => Verdict::Accepted { players: f.players, events: f.events, over: f.over },
         Err(reason) => Verdict::Rejected { reason },
     }
@@ -339,7 +365,9 @@ pub fn restore_read(envelope: &str) -> Result<Vec<(String, Verdict)>, String> {
             return Err(format!("duplicate game {:?} in one backup", g.id));
         }
     }
-    Ok(env.games.iter().map(|g| (g.id.clone(), verdict_of(g))).collect())
+    // **ONE `Rules` for the whole file** (review M-4), not one per game.
+    let rules = yokohama_core::Rules::standard();
+    Ok(env.games.iter().map(|g| (g.id.clone(), verdict_of(g, &rules))).collect())
 }
 
 /// [`restore_read`] as the JSON the module hands the page: a list of
@@ -452,11 +480,33 @@ mod tests {
         assert!(matches!(report[1].1, Verdict::Rejected { .. }), "not a record at all: {:?}", report[1].1);
     }
 
+    /// **A game may say NOTHING about its own revision**, which is what the
+    /// client writes for a game this device can open (review I-2): the browser
+    /// knows only what a COMPATIBILITY ROW records, and a game that opens here
+    /// has none. Both fields are `Option`, and this is the cell that says the
+    /// wire really carries `null` rather than the field being absent by luck.
+    #[test]
+    fn a_game_that_says_nothing_about_its_revision_reads() {
+        let (record, table) = committed_browser_played_pair();
+        let env = envelope_of(&[(PLAYED_ID, &record, &table)]);
+        assert!(
+            env.contains("\"semantics_rev\":null") && env.contains("\"rules_hash\":null"),
+            "the wire carries nulls, not absences: {}",
+            &env[..env.len().min(400)],
+        );
+        assert!(
+            matches!(restore_read(&env).unwrap()[0].1, Verdict::Accepted { .. }),
+            "and they are read back without complaint",
+        );
+    }
+
     /// The envelope's own shape is checked before any game is. A future version
     /// is refused as a whole rather than half-read.
     #[test]
     fn an_envelope_of_another_version_is_refused_whole() {
-        let env = envelope_of(&[]).replace("\"envelope\":1", "\"envelope\":2");
+        let original = envelope_of(&[]);
+        let env = original.replace("\"envelope\":1", "\"envelope\":2");
+        assert_ne!(env, original, "the mutation must actually change the envelope");
         let err = restore_read(&env).expect_err("a version this build does not know");
         assert!(err.contains("envelope"), "{err}");
     }

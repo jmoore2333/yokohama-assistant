@@ -964,6 +964,39 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .on-this-device { margin-top: 0.6rem; }
 .on-this-device .local-fault { color: var(--fg-dim); }
 
+/* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
+/* **The minimum that keeps a row from overflowing a phone**, and no more
+   (review M-9). Every one of these blocks is a few controls and a line of
+   text, so the rules are about WRAPPING rather than about layout: the
+   unplayable row puts an id, a reason and two buttons on one line, which is
+   the widest thing on the door and the one that had no wrapping rule at all.
+   `.field` next door gets `flex-wrap` at three call sites for the same reason.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, and the door is
+   outside all of them, so this lands on the headed live review. */
+.backup-controls { margin-top: 0.8rem; }
+.backup-controls .backup-note { margin: 0.3rem 0 0.6rem; }
+.backup-controls .backup-error { display: block; margin: 0.3rem 0; }
+.restore .restore-field { flex-wrap: wrap; }
+/* A file input is as wide as its button plus its "no file chosen" text and
+   does not shrink on its own, which is what pushes a 390px page sideways. */
+.restore .restore-field input[type="file"] { max-width: 100%; font-size: 12px; }
+.restore-report { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+.restore-report li { margin: 0.2rem 0; }
+.restore-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.unplayable { margin-top: 0.8rem; }
+.unplayable h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fg-dim); }
+.unplayable ul { margin: 0; padding-left: 1.1rem; }
+/* The row that had to be fixed: four things on one line, wrapping at the
+   width they stop fitting rather than scrolling the page. */
+.unplayable li {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.4rem; margin: 0.3rem 0;
+}
+.unplayable li .meta { overflow-wrap: anywhere; }
+
 /* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
 /* Two ways on, and the second is a LINK rather than a button: Access answers a
    navigation with a redirect to another origin, which a `fetch` follows and

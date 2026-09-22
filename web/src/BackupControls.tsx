@@ -243,7 +243,12 @@ export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode
     }
   };
 
-  if (error !== null) return <p className="error">{error}</p>;
+  // **Wrapped, not the bare exception** (review M-10). A browser that cannot
+  // open IndexedDB already draws `OnThisDevice`'s own fault line; a second,
+  // unlabelled `indexedDB is not defined` beside it says nothing about which
+  // read failed or what it was for.
+  if (error !== null)
+    return <p className="error">the games that will not open could not be read &mdash; {error}</p>;
   if (rows === null || rows.length === 0) return null;
   return (
     <div className="unplayable">

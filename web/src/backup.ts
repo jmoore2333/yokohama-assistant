@@ -96,11 +96,15 @@ export interface RestoreReport {
   games: { id: string; outcome: Outcome; reason?: string }[];
 }
 
-/** How long the Worker is given to answer with its snapshot before the export
- *  falls back to reading IndexedDB (spec §2.5's ordering).
+/** How long the Worker is given, ACROSS ONE EXPORT, to answer with its
+ *  snapshots before the export falls back to reading IndexedDB (spec §2.5's
+ *  ordering; review M-3).
  *
  *  **Short on purpose**: the Worker answers a `pair` from memory once the
- *  module is up, so a wait longer than this is a module that is not coming. */
+ *  module is up, so a wait longer than this is a module that is not coming.
+ *  **And shared, not per game**: a Worker that STARTS and never initialises
+ *  answers nothing at all, and a per-game bound would make "Back up everything"
+ *  take this long times the number of games. */
 const WORKER_BOUND_MS = 1_500;
 
 /** Settle with `null` if `p` has not answered in `ms`.
@@ -124,16 +128,42 @@ function withinBound<T>(p: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
+/** One game on its way into a file: the two strings, and what THIS DEVICE
+ *  knows about which revision they are at. */
+export interface OutgoingGame {
+  id: string;
+  record: string | null;
+  table: string;
+  /** **What this device knows about THIS GAME**, and `null` where it knows
+   *  nothing — never the exporter's own rev and hash. See [`buildEnvelope`]. */
+  semantics_rev?: number | null;
+  rules_hash?: string | null;
+}
+
 /**
  * Wrap pairs into a file. **Strings in, string out, nothing parsed.**
  *
- * The exporter provenance — the rev, the hash and the version — is what this
- * browser was last TOLD (`local/facts.ts`), not what it asks for now: the one
- * source that is still there with the module dead. Where it has never been
- * told, the file says `0` and `""` rather than a guess, and nothing reads
- * those for a decision: a restore re-derives every verdict from the games.
+ * **Two different provenances, which is the whole reason there are two places
+ * to put one** (spec §2.5; review I-2):
+ *
+ * - The HEADER's rev, hash and version are the EXPORTER's — what this browser
+ *   was last TOLD (`local/facts.ts`), not what it asks for now, because the one
+ *   source that is still there with the module dead is the one already written
+ *   down. Where it has never been told, the file says `0` and `""` rather than
+ *   a guess. It says only what wrote the file.
+ * - EACH GAME's pair is what this device knows about that game, and `null`
+ *   where it knows nothing. The only thing it ever knows is a COMPATIBILITY
+ *   ROW — this device could not open that game, and the row records the
+ *   revision the file it came from claimed. A game that opens here is at this
+ *   build's revision by construction, and saying so would be restating the
+ *   header; saying the header's value about a game the header is not about is
+ *   what an earlier draft did, and it stamped a re-exported rev-6 game rev 7.
+ *
+ * Nothing reads either for a decision: a restore re-derives every verdict from
+ * the records themselves (`backup.rs`'s `verdict_of`). They are there so a row
+ * that will not open can say what it was written at.
  */
-export function buildEnvelope(pairs: { id: string; record: string | null; table: string }[]): string {
+export function buildEnvelope(pairs: OutgoingGame[]): string {
   const f = serverFacts();
   const env: Envelope = {
     kind: ENVELOPE_KIND,
@@ -147,53 +177,100 @@ export function buildEnvelope(pairs: { id: string; record: string | null; table:
       id: p.id,
       record: p.record,
       table: p.table,
-      semantics_rev: f.semanticsRev,
-      rules_hash: f.rulesHash,
+      semantics_rev: p.semantics_rev ?? null,
+      rules_hash: p.rules_hash ?? null,
     })),
   };
   return JSON.stringify(env, null, 2) + "\n";
 }
 
-/** One game's two documents, the Worker's snapshot PREFERRED. */
-async function pairOf(id: string, stored: { record: string | null; table: string | null }) {
-  const live = await withinBound(localPair(id), WORKER_BOUND_MS);
+/** What this device knows about each game it could not open, by id — the ONE
+ *  source of a per-game revision (see [`buildEnvelope`]). */
+async function knownRevisions(db: IDBDatabase): Promise<Map<string, CompatNote>> {
+  const out = new Map<string, CompatNote>();
+  for (const row of await readCompat(db)) {
+    try {
+      out.set(row.id, JSON.parse(row.text) as CompatNote);
+    } catch {
+      /* a note this build cannot read says nothing about the revision */
+    }
+  }
+  return out;
+}
+
+/** One game's two documents, the Worker's snapshot PREFERRED.
+ *
+ *  `deadline` is shared by a whole export (review M-3): a Worker that STARTS
+ *  but whose module never initialises leaves every `ask` unanswered, and a
+ *  per-game bound would cost 1.5 s times the number of games with nothing on
+ *  screen saying so. Once it has passed, the database's copy is taken without
+ *  asking again. */
+async function pairOf(
+  id: string,
+  stored: { record: string | null; table: string | null },
+  deadline: Deadline,
+) {
+  const live = deadline.expired() ? null : await withinBound(localPair(id), deadline.left());
   const record = live?.record ?? stored.record;
   const table = live?.table ?? stored.table;
   return { record, table };
 }
 
+/** A budget for the Worker across ONE export. */
+interface Deadline {
+  expired: () => boolean;
+  left: () => number;
+}
+
+const deadlineOf = (ms: number): Deadline => {
+  const at = Date.now() + ms;
+  return { expired: () => Date.now() >= at, left: () => Math.max(0, at - Date.now()) };
+};
+
 /** Every game in this browser, as a file. */
 export async function backupEverything(): Promise<string> {
   const db = await openDb();
   const rows = await readAll(db);
+  const known = await knownRevisions(db);
   const byId = new Map<string, { record: string | null; table: string | null }>();
   for (const r of rows) {
-    // A compatibility row is this browser's own note and is NOT exported: the
-    // receiving device re-derives its own verdict from the pair.
+    // A compatibility row is this browser's own note and is NOT exported as a
+    // game: the receiving device re-derives its own verdict from the pair. What
+    // it DOES contribute is that game's revision, above.
     if (r.doc === "compat") continue;
     const at = byId.get(r.id) ?? { record: null, table: null };
     byId.set(r.id, { ...at, [r.doc]: r.text });
   }
-  const pairs: { id: string; record: string | null; table: string }[] = [];
+  const deadline = deadlineOf(WORKER_BOUND_MS);
+  const pairs: OutgoingGame[] = [];
   for (const [id, stored] of byId) {
-    const both = await pairOf(id, stored);
+    const both = await pairOf(id, stored, deadline);
     // A game with no table document is not a game — half a pair on disk, from
     // a write that did not complete. It is left where it is rather than
     // exported as something a restore would refuse.
     if (both.table === null) continue;
-    pairs.push({ id, record: both.record, table: both.table });
+    pairs.push({ id, record: both.record, table: both.table, ...revisionOf(known.get(id)) });
   }
   pairs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return buildEnvelope(pairs);
 }
 
+/** What a compatibility row says about a game's revision, or nothing. */
+const revisionOf = (note: CompatNote | undefined) => ({
+  semantics_rev: note?.semantics_rev ?? null,
+  rules_hash: note?.rules_hash ?? null,
+});
+
 /** One game, as a file. */
 export async function backupOne(id: string): Promise<string> {
   const db = await openDb();
   const stored = await readPair(db, id);
-  const both = await pairOf(id, stored);
+  const both = await pairOf(id, stored, deadlineOf(WORKER_BOUND_MS));
   if (both.table === null) throw new Error(`there is no game named ${id} on this device`);
-  return buildEnvelope([{ id, record: both.record, table: both.table }]);
+  const known = await knownRevisions(db);
+  return buildEnvelope([
+    { id, record: both.record, table: both.table, ...revisionOf(known.get(id)) },
+  ]);
 }
 
 /** The module's report, or a rejection carrying the validator's own sentence
@@ -351,7 +428,20 @@ export async function listUnplayable(): Promise<UnplayableGame[]> {
   return out;
 }
 
-/** Remove an unplayable game from this device — all three rows.
+/** The ids this device has a compatibility row for — the games that will NOT
+ *  open here (M6.5b2, review M-2).
+ *
+ *  **What "On this device" hides a row for.** A restored cross-rev pair whose
+ *  TABLE document parses is a row the layer's own listing builds happily, so
+ *  the door listed the same game twice: once as playable and once under "Will
+ *  not open here", with different controls on each. One game, one row, and the
+ *  row that says why it will not open is the true one. */
+export async function unplayableIds(): Promise<Set<string>> {
+  const db = await openDb();
+  return new Set((await readCompat(db)).map((r) => r.id));
+}
+
+/** Remove an unplayable game from this device — all of [`GAME_DOCS`].
  *
  *  Unfenced, for `forgetGame`'s reason: a game the module never loaded is a
  *  game no tab holds. */

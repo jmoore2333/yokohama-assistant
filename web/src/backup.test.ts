@@ -29,7 +29,7 @@ import {
   restorePairs,
   type Envelope,
 } from "./backup";
-import { openDb, readPair, restoreOne, writeDocs } from "./local/db";
+import { deletePair, openDb, readPair, restoreOne, takeGeneration, writeDocs } from "./local/db";
 import { rememberServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { breakTheWorker, stubWorker, workerAnswersWith } from "./test/fakeWorker";
@@ -59,6 +59,35 @@ function tableFor(id: string): string {
   const out = TABLE_TEXT.replace(`"${PLAYED_ID}"`, `"${id}"`);
   if (out === TABLE_TEXT) throw new Error("the re-address changed nothing — the fixture moved");
   return out;
+}
+
+/** **A file ANOTHER DEVICE wrote**, with each game's own revision on it.
+ *
+ *  Built as an object rather than by editing `buildEnvelope`'s output, because
+ *  that is what it stands for: this device has never seen these games, so
+ *  nothing here could have told our own builder what revision they are at. The
+ *  cells that assert what OUR builder produces call `backupOne` instead
+ *  (review I-2). */
+function fileFromAnotherDevice(
+  games: { id: string; record: string | null; table: string; rev?: number; hash?: string }[],
+): string {
+  const env: Envelope = {
+    kind: "yokohama-backup",
+    envelope: 1,
+    created_at: 1_789_000_000,
+    origin: "another.device",
+    app_version: "0.0.0-elsewhere",
+    semantics_rev: 6,
+    rules_hash: "deadbeefdeadbeef",
+    games: games.map((g) => ({
+      id: g.id,
+      record: g.record,
+      table: g.table,
+      semantics_rev: g.rev ?? null,
+      rules_hash: g.hash ?? null,
+    })),
+  };
+  return JSON.stringify(env, null, 2) + "\n";
 }
 
 async function putPair(id: string, record: string | null, table: string): Promise<void> {
@@ -110,6 +139,34 @@ describe("backing up", () => {
     });
     const games = JSON.parse(await backupEverything()).games as Envelope["games"];
     expect(games[0]!.record).toBe(RECORD_WITH_ONE_MORE_MOVE);
+  });
+
+  // **M-3: the Worker's budget is ONE deadline for the whole export.** The
+  // failure this is about is not a Worker that DIES — that rejects at once and
+  // was already fast — but one that STARTS and whose module never initialises,
+  // so every `ask` sits unanswered. Per game, "Back up everything" would then
+  // cost the bound times the number of games, with nothing on screen saying so.
+  //
+  // Two assertions, and the COUNT is the discriminating one: once the first
+  // game has spent the budget, the others are not asked at all.
+  it("spends the Worker's budget once for the whole export", async () => {
+    for (const id of ["local-a", "local-b", "local-c"]) {
+      await putPair(id, RECORD_TEXT, tableFor(id));
+    }
+    const worker = stubWorker({ pair: () => "pending" }); // the module never came up
+    const started = Date.now();
+    const text = await backupEverything();
+    const spent = Date.now() - started;
+    const asked = worker.instances.flatMap((w) => w.posted).filter((r) => r.kind === "pair").length;
+    expect(asked, "one game spends the budget; the rest are not asked").toBe(1);
+    expect(spent, "one bound, not three").toBeLessThan(3_000);
+    // And the export is COMPLETE: the database's copies are what a silent
+    // Worker falls back to, which is the whole point of the fallback.
+    expect((JSON.parse(text) as Envelope).games.map((g) => g.id)).toEqual([
+      "local-a",
+      "local-b",
+      "local-c",
+    ]);
   });
 
   it("backs up ONE game, and refuses a name this device does not have", async () => {
@@ -217,12 +274,10 @@ describe("restoring", () => {
   // cannot carry. Its bytes are stored exactly as the file had them.
   it("keeps an unplayable game, with a row saying why", async () => {
     const table = tableFor("local-old");
-    const env = JSON.parse(
-      buildEnvelope([{ id: "local-old", record: OTHER_RECORD, table }]),
-    ) as Envelope;
-    env.games[0]!.semantics_rev = 6;
-    env.games[0]!.rules_hash = "deadbeefdeadbeef";
-    const r = await restorePairs(JSON.stringify(env));
+    const env = fileFromAnotherDevice([
+      { id: "local-old", record: OTHER_RECORD, table, rev: 6, hash: "deadbeefdeadbeef" },
+    ]);
+    const r = await restorePairs(env);
     expect(r.games[0]).toMatchObject({ id: "local-old", outcome: "unplayable" });
     expect(r.games[0]!.reason).toMatch(/semantics rev 6/);
     expect(await readBack("local-old")).toEqual({ record: OTHER_RECORD, table });
@@ -239,9 +294,84 @@ describe("restoring", () => {
     // Twice is still harmless for an unplayable game too — the compatibility
     // row makes the id PRESENT, so the second run reads the pair as identical
     // and writes nothing rather than stacking a second note on it.
-    const again = await restorePairs(JSON.stringify(env));
+    const again = await restorePairs(env);
     expect(again.games[0]!.outcome).toBe("already-here");
     expect((await listUnplayable()).map((g) => g.id)).toEqual(["local-old"]);
+  });
+
+  // **The per-game revision is what THIS DEVICE knows about THAT GAME** (spec
+  // §2.5, review I-2), and this is the cell that could not exist before: the
+  // builder PRODUCES the rev-6 pair, from the compatibility row, with nothing
+  // in the cell setting it after the fact. The header stays the exporter's.
+  it("re-exports a cross-rev game at ITS revision, not at this build's", async () => {
+    rememberServerFacts(wire.health); // this browser is at rev 7
+    await restorePairs(
+      fileFromAnotherDevice([
+        {
+          id: "local-old",
+          record: OTHER_RECORD,
+          table: tableFor("local-old"),
+          rev: 6,
+          hash: "deadbeefdeadbeef",
+        },
+      ]),
+    );
+    const out = JSON.parse(await backupOne("local-old")) as Envelope;
+    expect(out.semantics_rev).toBe(wire.health.semantics_rev); // the header: who wrote the file
+    expect(out.games[0]!.semantics_rev).toBe(6); // the game: what it is
+    expect(out.games[0]!.rules_hash).toBe("deadbeefdeadbeef");
+
+    // And through "Back up everything", which is the other builder caller.
+    const all = JSON.parse(await backupEverything()) as Envelope;
+    expect(all.games[0]!.semantics_rev).toBe(6);
+  });
+
+  // A game this device CAN open knows nothing special about itself — it is at
+  // this build's revision by construction — so it says nothing rather than
+  // repeating the header about a game the header is not about.
+  it("says nothing per game where there is no compatibility row", async () => {
+    rememberServerFacts(wire.health);
+    await putPair("local-fine", RECORD_TEXT, tableFor("local-fine"));
+    const out = JSON.parse(await backupOne("local-fine")) as Envelope;
+    expect(out.games[0]!.semantics_rev).toBeNull();
+    expect(out.games[0]!.rules_hash).toBeNull();
+    // The HEADER still says who wrote it, which is the field that has an answer.
+    expect(out.semantics_rev).toBe(wire.health.semantics_rev);
+  });
+
+  // **I-1: a game's rows are ONE list, and both deletes remove all of them.**
+  // The path is ordinary: a cross-rev pair whose TABLE parses lists as a
+  // playable row too, opening it hits the broken-save screen, and its one
+  // control is Abandon — the fenced delete. With the compatibility row left
+  // behind, "Will not open here" kept a row with no documents under it whose
+  // Back up threw.
+  it("takes the compatibility row with the game when the game is deleted", async () => {
+    await restorePairs(
+      fileFromAnotherDevice([
+        { id: "local-old", record: OTHER_RECORD, table: tableFor("local-old"), rev: 6 },
+      ]),
+    );
+    expect((await listUnplayable()).map((g) => g.id)).toEqual(["local-old"]);
+
+    const db = await openDb();
+    expect(await deletePair(db, "local-old", 0)).toBe("deleted");
+    expect(await listUnplayable()).toEqual([]);
+    expect(await readBack("local-old")).toEqual({ record: null, table: null });
+  });
+
+  // And the fence still holds: a STALE delete removes nothing at all, the
+  // compatibility row included.
+  it("a stale delete leaves every row of the game alone", async () => {
+    await restorePairs(
+      fileFromAnotherDevice([
+        { id: "local-old", record: OTHER_RECORD, table: tableFor("local-old"), rev: 6 },
+      ]),
+    );
+    const db = await openDb();
+    await takeGeneration(db, "local-old"); // another tab took it
+    expect(await deletePair(db, "local-old", 0)).toBe("stale");
+    expect((await listUnplayable()).map((g) => g.id)).toEqual(["local-old"]);
+    expect((await readBack("local-old")).record).toBe(OTHER_RECORD);
   });
 
   // A compatibility row is this browser's own note and is NOT a document the

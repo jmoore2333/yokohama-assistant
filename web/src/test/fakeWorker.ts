@@ -43,8 +43,13 @@ export interface FakeWorkerHooks {
    *  window in which a Worker has been asked for a game and does not yet hold
    *  it. */
   hold?: (id: string, steal: boolean) => boolean | "pending";
-  /** Both documents of one game, as the `pair` message answers them. */
-  pair?: (id: string) => { record?: string | null; table?: string | null } | undefined;
+  /** Both documents of one game, as the `pair` message answers them.
+   *
+   *  `"pending"` answers NOTHING and leaves the read in flight — the `call`
+   *  hook's own idiom, and how a cell arranges the OTHER half of "the module
+   *  will not load": a Worker that started and whose module never came up
+   *  answers no message at all (M6.5b2, review M-3). */
+  pair?: (id: string) => { record?: string | null; table?: string | null } | "pending" | undefined;
   /** What the module's `restore_read` says about a file — the rows, or a
    *  refusal about the FILE. A cell that is about ONE verdict sets this and
    *  says so; everything else falls through to [`fakeVerdicts`]. */
@@ -188,6 +193,7 @@ export class FakeWorker {
       }
       case "pair": {
         const both = hooks.pair?.(req.id) ?? {};
+        if (both === "pending") return;
         reply = { record: both.record ?? null, table: both.table ?? null };
         break;
       }

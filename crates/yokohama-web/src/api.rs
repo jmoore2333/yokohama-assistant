@@ -1910,10 +1910,10 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     // this route's own and did not move — pinned through `dispatch` by
     // `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
     // which was written and green BEFORE the extraction.
-    let facts =
-        crate::backup::check_pair(&req.record, &req.table).map_err(ApiError::bad_request)?;
+    let facts = crate::backup::check_pair_with(&req.record, &req.table, games.rules())
+        .map_err(ApiError::bad_request)?;
     // The document again, for the strip and the path. **Unreachable as a
-    // refusal** — `check_pair` parsed this very string a line ago — and written
+    // refusal** — `check_pair_with` parsed this very string a line ago — and written
     // as one anyway rather than as an `expect`, because a panic inside a route
     // takes the process out and this costs a parse of 500 bytes.
     let doc: crate::table::TableDoc = serde_json::from_str(&req.table)
@@ -1949,6 +1949,11 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
 /// route does is pinned by
 /// [`tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`],
 /// which drives [`dispatch`].
+///
+/// It goes through the PUBLIC [`check_pair`](crate::backup::check_pair), which
+/// builds a `Rules::standard()`, while the route passes `games.rules()` — the
+/// same registries either way, since `Rules::standard()` is a pure function of
+/// the generated data.
 ///
 /// **Not `#[cfg(test)]`**, although its only callers are cells: the layer's
 /// `platform_calls_stay_behind_the_server_feature` scan cuts each file at its
