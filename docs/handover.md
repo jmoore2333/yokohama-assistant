@@ -6,7 +6,25 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-22 (ninth session, the M6.5b2 EXECUTION, end to end): the session executed all
+**Updated:** 2026-09-22, tenth session: **the PR #37 review's three defects are FIXED, but not yet pushed or deployed.** The Codex review of PR #37
+(`docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-review.md`) found three defects in the live
+M6.5b2, and all three reproduced:
+- "Back up everything" in a tab that did not own a game could omit that game's committed moves;
+- an update taken in one tab stranded the other tab's release files;
+- a successful "Try again" was never adopted.
+
+The session answered them in a fix wave on the same branch. The fix wave's reviews and rounds went as follows:
+- The reviews found three more defects of the same kind, and the wave fixed those too:
+  - the sweep deleted the old tab's files when a waiting release was replaced;
+  - the service worker could swallow the Access login hop at `/cdn-cgi/access/authorized`;
+  - a failed FIRST install could never be retried. This last one was measured in a browser before it was changed.
+- Each task was reviewed by Opus, with fix rounds, then the whole branch by Fable (**SHIP**).
+- The mutation battery read **16 of 16 caught**.
+- Every gate was run in one sequence: npm test 1024/55, e2e 61/11, yokohama-web 289.
+
+**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8 is what wants you: the point release `0.5.0-m6.5b2.1` and its deploy, and the push to PR #37. The branch is eighteen commits ahead of the PR, ending `13dc65f`.
+
+The previous update, 2026-09-22 (ninth session, the M6.5b2 EXECUTION, end to end): the session executed all
 eleven tasks of `docs/plans/2026-09-21-web-frontend-m6.5b2-plan.md` under your ruling that EVERY
 task go subagent-driven with Opus the floor, took the Fable whole-branch review through ONE fix
 wave and a scoped re-review, ran the spec's mutation battery (**22 of 22 caught, 0 survived**),
@@ -191,6 +209,12 @@ rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
 ## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and its entry artifact is [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)**
+
+**The PR #37 fix wave is DONE and LOCAL (2026-09-22, tenth session).** It is eighteen commits over the close, ending `13dc65f`, with no Rust touched. Its authority and its record are both [the fix-wave document](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md). Four sections matter most:
+- §5.7: what the wave does NOT claim. It carries E2's and R-F6's browser readings, the six unpinned `sw.ts` rules, and the storage reads that still trap. These join the M6.5c opening items below.
+- §5.8: your three items, which are the point release and deploy, the push, and those readings.
+- §5.4: every ruling taken on your behalf.
+- §5.5: the corrections to its own §1.
 
 **M6.5b2 — DONE (2026-09-22).** The record of record is the close
 `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`: §1 what shipped by task in execution order,

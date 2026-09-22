@@ -22,9 +22,9 @@
 
 ## 1. Rulings (each with its cost if wrong)
 
-- **R-F1 — an export takes ONE WHOLE PAIR from ONE source, and the Worker's memory is that source only where this tab's Worker HOLDS the game AT THE CURRENT OWNERSHIP GENERATION.** Otherwise the Worker answers the COMMITTED pair, read from IndexedDB in one transaction inside the same queued operation. The page takes the Worker's answer whole when the Worker answers inside the bound, and its own IndexedDB pair whole when it does not — never one document from each. **This AMENDS spec §2.5 lines 457–463 forward**: "prefers the Worker's snapshot when the Worker answers" becomes "prefers the snapshot of the Worker that owns the game". The generation check, not `held` alone, is what decides, because `held` is cleared by the steal's `AbortError` asynchronously and never at all under the no-Web-Locks fallback (`worker.ts:397–409`), while the generation is advanced inside IndexedDB by every acquisition. The rule lives in the Worker's `pair` arm, so all five callers take it — the two backups, Save game file, Send to the archive, Abandon and save, and the outbox. **The recovery property is kept, and a cell holds it**: the holding tab's applied-but-not-saved move is still exported (`plays_locally.spec.ts:430`'s quota cell, widened in §3). *Cost if wrong:* an export from the holding tab under a stolen lock reads the store rather than memory — which is the committed state the new owner is building on.
+- **R-F1 — an export takes ONE WHOLE PAIR from ONE source, and the Worker's memory is that source only where this tab's Worker HOLDS the game AT THE CURRENT OWNERSHIP GENERATION.** Otherwise the Worker answers the COMMITTED pair, read from IndexedDB in one transaction inside the same queued operation. The page takes the Worker's answer whole when the Worker answers inside the bound, and its own IndexedDB pair whole when it does not — never one document from each. **This AMENDS spec §2.5 lines 457–463 forward**: "prefers the Worker's snapshot when the Worker answers" becomes "prefers the snapshot of the Worker that owns the game". The generation check, not `held` alone, is what decides, because `held` is cleared by the steal's `AbortError` asynchronously and never at all under the no-Web-Locks fallback (`worker.ts:397–409`), while the generation is advanced inside IndexedDB by every acquisition. The rule lives in the Worker's `pair` arm, so all five callers take it — the two backups, Save game file, Send to the archive, Abandon and save, and the outbox. **The recovery property is kept, and a cell holds it**: the holding tab's applied-but-not-saved move is still exported (`plays_locally.spec.ts:430`'s quota cell, widened in §3). *Cost if wrong:* an export from the holding tab under a stolen lock reads the store rather than memory — which is the committed state the new owner is building on. **[Refined in execution — §5.4 R-F1′: a holder whose generation cannot be READ answers memory, and an unreadable store is a refusal, never a trap.]**
 - **R-F2 — the worker answers a same-origin GET its own release does not list from a RETAINED generation of OURS when one holds the path, before the network; nothing is written at fetch time.** Rule 1 (`/api/*` and `/enter` never intercepted) stays FIRST; navigations still get THIS release's `index.html`; a path this release lists is still served from this release's cache; only a cache under `CACHE_PREFIX` is ever read (the origin's Cache Storage is shared, `swInstall.ts:107–109`). **This AMENDS spec §2.3 lines 322–326 forward** — rule 3, "Everything else goes to the network and is not cached", becomes "…goes to a retained generation that holds it, else the network, and is never cached" — and it is what makes lines 337–339 true. `swInstall.ts`'s retention doc is corrected in the same task: the old tab exists, controlled by the NEW worker. *Cost if wrong:* a path an older release precached and the current one dropped is served from the retained copy for one more release; the only paths a generation can hold are ones a precache listed, and the generator refuses `/api` and `/enter` (`precache.mjs`).
-- **R-F5 — the sweep keeps the previously ACTIVATED generation, not the newest-INSTALLED one** (added 2026-09-22 from the F2 task review's escalation E1). `generationsToDelete` (`swInstall.ts:111–118`) keeps the other generation with the newest `createdAt` — the time it was INSTALLED. A waiting release that is REPLACED before anyone clicks (release N active with a game tab open, N+1 installed and waiting, N+2 installed later and replacing it, then a click) leaves N+1's cache behind with the newest stamp, so N+2's sweep keeps N+1 and deletes N — the generation the open tab is running — and R-F2's failure returns. So a worker stamps its OWN generation `activatedAt` when it activates, and the sweep keeps the other generation with the newest `activatedAt`; a generation with no `activatedAt` ranks below every one that has it, and among those the old `createdAt` order stands — which is what keeps the currently active `0.5.0-m6.5b2` generation, stamped before this rule existed, on this release's first activation. **This AMENDS nothing in the spec's words**: §2.3 lines 337–339 say "retains the PREVIOUS generation", and this is what "previous" has to mean for the reason those lines give. *Cost if wrong:* one more generation's bytes kept for one release in the transition case.
+- **R-F5 — the sweep keeps the previously ACTIVATED generation, not the newest-INSTALLED one** (added 2026-09-22 from the F2 task review's escalation E1). `generationsToDelete` (`swInstall.ts:111–118`) keeps the other generation with the newest `createdAt` — the time it was INSTALLED. A waiting release that is REPLACED before anyone clicks (release N active with a game tab open, N+1 installed and waiting, N+2 installed later and replacing it, then a click) leaves N+1's cache behind with the newest stamp, so N+2's sweep keeps N+1 and deletes N — the generation the open tab is running — and R-F2's failure returns. So a worker stamps its OWN generation `activatedAt` when it activates, and the sweep keeps the other generation with the newest `activatedAt`; a generation with no `activatedAt` ranks below every one that has it, and among those the old `createdAt` order stands — which is what keeps the currently active `0.5.0-m6.5b2` generation, stamped before this rule existed, on this release's first activation. **This AMENDS nothing in the spec's words**: §2.3 lines 337–339 say "retains the PREVIOUS generation", and this is what "previous" has to mean for the reason those lines give. *Cost if wrong:* one more generation's bytes kept for one release in the transition case. **[Both this sentence and "AMENDS nothing in the spec's words" above are CORRECTED in §5.5.]**
 - **R-F6 — `/cdn-cgi/` is a server path, never intercepted** (added 2026-09-22 from the F2 task review's note on files F2 did not touch). Rule 2 answers EVERY same-origin navigation with the cached shell. `/cdn-cgi/` is Cloudflare's reserved prefix on the app's OWN hostname — the documentation places `/cdn-cgi/access/get-identity` and `/cdn-cgi/access/logout` on the protected domain, and Access's return from the identity provider is a navigation to `/cdn-cgi/access/authorized`, the hop that sets `CF_Authorization` there. A controlled page answering that hop with the shell would swallow the login: the cookie is never set and `/enter` loops. Under the NAS's hostname-wide application that is reachable on any session expiry in a browser the worker controls. `isServerPath` gains `/cdn-cgi` and everything under it; the app serves nothing there, so the bypass costs nothing. **This AMENDS spec §2.3 rule 1 (line 324) forward** — "`/api/*` and `/enter`" becomes "`/api/*`, `/enter` and `/cdn-cgi/*`". *Cost if wrong:* none — a bypassed path is the request the browser would have made with no worker installed.
 - **R-F3 — a successful retry adopts its registration exactly as the initial success does**: stored, its installing and waiting workers watched, `updatefound` wired, settled, and every listener removed at unmount — one wiring, reached from both paths, rather than a second copy. No spec sentence changes; §2.3's *"a hang is a FAILED install with a visible line and a retry"* is what this makes true. *Cost if wrong:* none beyond the hook.
 - **R-F4 — process.** SDD for all three tasks with Opus the floor for implementers and reviewers (the owner's PF-1 of 2026-09-21, `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md` §5), run in the order F1 → F2 → F3 in ONE tree with one Playwright run at a time (R-F5 and R-F6 join Task F2's fix round, and F3 carries two comment corrections the F2 review found in files F2 did not touch); a whole-branch Fable review, one fix wave if it finds anything, a mutation battery mapped to named catchers, the per-edit suites counted at the wave's head, and the reviewer's three scripts re-run against the fixed build as the browser-level reading. **The point release `0.5.0-m6.5b2.1`, its deploy and the push to PR #37 are the owner's call** and are asked at the end, not assumed. *Cost if wrong:* wall-clock.
@@ -60,6 +60,152 @@ Each task is TDD (a failing cell first, written against the defect as reproduced
 
 **The battery**, at the reviewed head, each mutation reverted after its run: (F1) the chooser answers memory whenever `held` has the id, ignoring the generation; `pairOf` restored to field-by-field `??`; the Worker's `pair` arm restored to memory always; (F2) the retained lookup reads ANY cache (drop the prefix filter); the retained lookup placed before rule 1; the retained lookup removed; (R-F5) the sweep ranks by `createdAt` alone again; (R-F6) `/cdn-cgi` dropped from the server-path rule; (F3) the retry discards the resolved registration again; the retry stores it but wires no `updatefound`. Each must be CAUGHT by a named cell; a survivor is recorded with its disposition.
 
-## 5. Record
+## 5. Record (written at the close of the wave, 2026-09-22)
 
-*(Written at the close of the wave.)*
+### 5.1 What landed
+
+Eighteen commits over `672c604`, ending `13dc65f`, on `web-room-m6.5b2`. They cover 29 files and **no Rust**: `git diff --stat 672c604..13dc65f -- crates/ Cargo.toml Cargo.lock` is empty. So the five fenced crates, the CLI, the web server crate and the wasm crate are byte-identical, `SEMANTICS_REV` is 7, the wire corpus under `web/src/wire/` is untouched, and no bot behaviour moved. **Nothing was pushed or deployed** (§5.8).
+
+| Task | Commits | What it did |
+|---|---|---|
+| (docs) | `a4d7e4e`, `d8bc2d3` | the review committed and this document; R-F5 and R-F6 added mid-wave |
+| F1 | `984dfee`, then fix rounds `c213f67`, `b9b75c4`, `1d5ee71`, `84430eb` | R-F1: a pure chooser `web/src/local/exportPair.ts` that the Worker imports; the `pair` arm answers memory only for the owner at the current generation, else the committed pair; `pairOf` takes one pair whole; an unreadable store is a typed refusal (`UnreadableReply`, one compile-checked spelling) rather than a trap; rule 6 of `worker.ts` scoped to what is true; Send to the archive no longer calls a storage failure "the archive could not be reached"; Save game file and Abandon show the sentence bare |
+| F2 | `134fae1`, then `60a0026`, `4666180`, and the comment round `0a4f722` | R-F2: `fromRetained` answers an unlisted path from a retained generation of OURS (`retainedGenerations`, pure); R-F5: an activation stamp and `byRetention`, with a same-generation re-install keeping its stamp; R-F6: `/cdn-cgi` bypassed; `only-if-cached` moved into `swRoute`; `sw.ts`'s header lists every decision it makes, pinned and unpinned |
+| F3 | `506073a`, then `11a7c39`, `6c443a2` | R-F3: ONE wiring (`adoptRegistration`, lent through a ref) reached by both the first registration and the retry. E1 (escalated by the review, MEASURED before it was changed): a failed FIRST install removes the registration and `update()` is refused, so the retry now registers anew. E2: a tab the old worker did not control reloads when the worker it asked reaches `activated`. The door's double period. The two misread comments in `swRegister.ts` and `FrontDoor.tsx` |
+| final fix wave | `008c6c4`, `48695c3`, `a8afbdf`, and the orchestrator's `13dc65f` | R-orch-5 (below); the retry's refused `register()` pinned; Abandon's bare sentence; three wording fixes and a test-message remedy |
+
+### 5.2 The readings (at `a8afbdf`, one uninterrupted sequence, 712 s, this Mac)
+
+`13dc65f` is a comment-only change to one test file, re-run as 29/29 plus typecheck.
+
+| Gate | Reading | Was, at `672c604` |
+|---|---|---|
+| `npm run typecheck` (four projects) | clean | clean |
+| `npm test` | **1024 passed in 55 files** | 988 in 54 |
+| `npm run test:wasm` | **32 passed in 4 files** | 17 in 4 |
+| `npm run e2e`, whole, one run | **61 passed in 11 files, 9.5 min, no retry** (`plays_locally` 12, `offline` 9) | 53 in 11 (`plays_locally` 7, `offline` 6) |
+| `cargo test -p yokohama-web` | **289** (275 lib + 2 `browser_played_pin` + 2 whole-game gate, both arms in 26.4 s + 10 `wire_fixtures`) | 289 |
+| `cargo test -p yokohama-wasm` | 5 | 5 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean. This is a CACHED reading, because no Rust changed | clean |
+| `npm run build` (release) | 153 entries, 9,936,972 B; module 1,175,223 B; `debug_trap` 0 | 153 entries |
+| The reviewer's three scripts (§0) against the release `dist` | F1 `diskEvents: 1, backupEvents: 1`; F2 `fetchFromUnreloadedTab: "release 1"`; F3 the door reads "Ready to play offline." | 1/0; `TypeError: Failed to fetch`; "Preparing to play offline…" |
+
+### 5.3 The battery (§4's rows, widened, run at `a8afbdf`)
+
+**16 of 16 CAUGHT, 0 survived.**
+
+| # | Mutation | Catcher(s) |
+|---|---|---|
+| 1 | the chooser ignores the generation | `exportPair.test.ts:73` and the no-Web-Locks e2e cell `plays_locally.spec.ts:1064` |
+| 2 | `pairOf` completes one document from each source | `backup.test.ts:160` |
+| 3 | the `pair` arm answers memory always | `plays_locally.spec.ts:898` and `:971` |
+| 4 | an unreadable store traps | `plays_locally.spec.ts:629` |
+| 5 | the refusal catch drops `instanceof` | the trap cell's export extension, `:693` |
+| 6 | the retained lookup removed | `sw.node.test.ts` (a) and `offline.spec.ts` cell 7 |
+| 7 | the prefix filter dropped | node (c) and `swInstall.test.ts:191` |
+| 8 | the lookup before rule 1 | node (d) and three more cells |
+| 9 | the sweep by install time | `swInstall.test.ts:76` and `:98`, node `:417`, and the e2e update cell (4→5) |
+| 10 | `/cdn-cgi` dropped | `swRoute.test.ts:76`, node `:543`, `precache.test.ts:174` |
+| 11 | the retry discards its registration | three `swRegister` cells and `offline.spec.ts` cell 8 |
+| 12 | the retry wires no `updatefound` | `swRegister.test.ts:674` |
+| 13 | always `update()` | `swRegister.test.ts:249` and cell 9 |
+| 14 | no `activated` path for an uncontrolled tab | `swRegister.test.ts:477` |
+| 15 | the retry's `.catch(said)` swallowed | `swRegister.test.ts:713` |
+| 16 | `installing` restored to the retry's condition | `swRegister.test.ts:288` |
+
+**Two facts the battery found about its own instruments.**
+
+- The unit cell `client.test.ts:409` is NOT a catcher for row 4. It drives the fake Worker and reads 21/21 under the mutation. So **the real Worker's trap/refusal split (rows 4 and 5) is pinned by the e2e alone.**
+- F1's first report said no browser cell caught row 1. That stopped being true once the no-Web-Locks cell existed: it catches row 1 as well.
+
+Every implementer also mutation-checked its own cells at its own head. Those readings are in the task reports, and one of them SURVIVED a first draft: F2's cell (c) before it gained a retained generation beside the foreign cache.
+
+### 5.4 The reviews, and the rulings taken during execution
+
+**Reviews.**
+
+- **F1:** CHANGES REQUIRED (1 Important). Then two re-reviews: APPROVED WITH MINORS, then APPROVED.
+- **F2:** APPROVED WITH MINORS. Plus E1, a defect outside its brief, and a note about Access. Two re-reviews, both APPROVED WITH MINORS, then a comment-only round.
+- **F3:** APPROVED WITH MINORS. Plus two escalations, E1 (Important) and E2. One re-review: APPROVED WITH MINORS.
+- **Whole-branch review (Fable):** **SHIP**, 0 Critical / 0 Important / 5 Minor / 4 new false-or-stale sentences.
+- **Scoped re-review of the final fix wave (Fable):** **APPROVED**, one nit (`13dc65f`).
+
+Every report is a file in the wave's workspace, beside its ledger `progress.md`.
+
+**R-F1′ — the refinement of R-F1** (F1 review I-1). The `pair` arm now awaits IndexedDB, and the first build posted a failed READ there as a module TRAP. The page restarted the Worker and lost the very unsaved move the export exists to rescue. So:
+
+- a holder whose generation cannot be read answers MEMORY: the store is unreadable, and this tab is the last known owner;
+- a committed read that fails is an ordinary `{unreadable}` reply, which the five callers each name as the storage sentence;
+- a module fault still traps.
+
+The storage reads that STILL trap are named in `worker.ts` rule 6 and not fixed: a hold's acquisition, startup, and `adopt`.
+
+**R-F5 and R-F6** were added to §1 mid-wave (`d8bc2d3`), from the F2 review.
+
+- **R-F5.** The activate sweep kept the newest-INSTALLED other generation. So a waiting release replaced before any click deleted the generation an open tab was running, and R-F2's failure came back.
+- **R-F6.** The worker answered Access's `/cdn-cgi/access/authorized` NAVIGATION with the cached shell. That hop is the one that sets `CF_Authorization` on the app's hostname, and the Cloudflare documentation places `/cdn-cgi/access/*` on the protected domain. Under the NAS's hostname-wide application this was reachable on any session expiry in a controlled browser. It is **reasoned, not measured live** (§5.7).
+
+**The orchestrator's rulings**, each in the ledger with its reason and cost:
+
+- **R-orch-1.** A failed ACTIVATION STAMP is documented, not hardened against. The guard that would cover it would also keep every replaced waiting release (about 10 MB) for a release, to cover a ~100-byte write failing right after a 10 MB install succeeded.
+- **R-orch-2.** The browser cell for the refused `/sw.js` and the door's double period were added. They had been offered as optional.
+- **R-orch-3.** The six `sw.ts` rules the comment round found UNPINNED are carried, not pinned in this wave (§5.7).
+- **R-orch-4.** E1 and E2 were folded into F3 rather than recorded forward, E1 only after a browser measurement confirmed the spec reading.
+- **R-orch-5.** The retry takes `update()` only when the registration has a WAITING or ACTIVE worker. In the milliseconds between the worker's `install-failed` message and the registration's removal, `installing` still names the dying worker. A `register()` there queues behind it and registers anew, and against an install really in progress it resolves with the same registration (Register's shortcut).
+
+**Deviations the ledger accepted:**
+
+- one commit per task, rather than a failing-first commit followed by a fix — the red readings are in the reports instead, which departs from the repository's strictly-TDD history and is said here out loud;
+- the fake Worker's default `pair` is the committed pair;
+- a same-generation re-install keeps `activatedAt`;
+- two extra guard cells: `alreadyThere`, and the first registration's after-unmount `live`.
+
+### 5.5 Corrections to §0–§4 (recorded here; the text above is left as ruled)
+
+- **R-F5 DOES amend the spec's words.** Spec §2.3 line 338 reads "deletes only generations older than that". R-F5 deletes a never-activated generation that is NEWER by install time. So line 338 is amended forward too: "older" is now read in ACTIVATION order.
+- **R-F5's cost sentence described the wrong case.** The residual is this: a pre-R-F5 build that was WAITING and was REPLACED before this release first activates leaves both candidates unstamped. The first activation then sweeps by install time and can delete the generation the open tabs run. That is the original defect, once, in that transition. A second residual is the same defect for one release on a device whose activation stamp could not be written (R-orch-1).
+- **R-F1 is refined** (§5.4 R-F1′).
+- **§0–§3's file:line references are at the base HEAD `672c604`**, not at the close. At the close the quota cell is `plays_locally.spec.ts:465` and the `!hasLocks()` arm is `worker.ts:407–419`. The refusal of `/api`, `/enter` and now `/cdn-cgi` in a release lives in `precache.ts`'s `buildPrecache`, through `isServerPath`, and not in `precache.mjs`.
+- **§1 R-F2's "the only paths a generation can hold are ones a precache listed"** holds for served paths only. Every generation also holds its stamp, `META_PATH`, which `fromRetained` never serves; a cell pins that.
+
+### 5.6 The platform, as this wave found it
+
+The pre-fix comments misread the platform in two ways.
+
+1. **The handover.** `skipWaiting()` hands EVERY client the old worker controlled to the new worker. Not calling `clients.claim()` changes only pages NO worker controlled. Spec §2.3 knew this (lines 333–335); what it lacked was a fetch rule that reads the retained generation. The misreading "not claiming keeps the old tab on the old worker" was in the CODE comments.
+2. **The update after a failed first install.** The platform removes a registration whose FIRST install failed, and `update()` on the page's dead copy is refused. This was measured in Chromium through Playwright 1.62.1: the door read "…The object is in an invalid state" and `/sw.js` was never fetched again.
+
+Two harness facts were measured and are worth keeping:
+
+- **A warm HTTP cache hides F2's defect.** The release-1 install writes the chunk into the HTTP cache (`cache: "reload"`), and the chunk is `immutable`. Cell 7 passed against the pre-fix worker until CDP's `Network.clearBrowserCache` was added.
+- **`context.route` reaches the worker's own fetches**, both the registration's `/sw.js` and the precache entries. That is what made cells 8 and 9 cheap.
+
+### 5.7 What this wave does NOT claim, and what it carries to M6.5c
+
+- **E2 is pinned by unit cells only.** No browser measured an uncontrolled tab's click.
+- **R-F6 is reasoned from Cloudflare's documentation and the Service Worker specification, and was not measured live.** The live check is one login after a session expiry in a browser the worker controls. It belongs with the M6.5c handover's §4 items 3 and 5, the clean-browser reading and `cf-access`.
+- **The real Worker's trap/refusal split (§5.3 rows 4 and 5) has no unit or node catcher.** Only the e2e pins it.
+- **`Abandon.tsx:212` (`abandonAnyway`'s catch) has no catcher.** The same mutation there leaves every cell green.
+- **Six `sw.ts` decisions have no catcher** (R-orch-3; the header's "unpinned" list names them):
+  - the whole-install deadline;
+  - the per-fetch timeout;
+  - `credentials: "same-origin"`;
+  - the stamp written first;
+  - `includeUncontrolled`;
+  - the "took too long" wording.
+
+  The claim "the other lanes are ABORTED" is satisfied in its cell by the per-fetch timeout fifteen seconds later, not by the abort. The smallest instrument is a fake-timer cell asserting the abort lands BEFORE `FETCH_TIMEOUT_MS`.
+- **Storage reads that fail outside the export arm still trap:** a hold's acquisition, startup, and `adopt`.
+- **`backupEverything` iterates the STORE's ids.** A game whose create was refused by quota is listed on the door but absent from "Back up everything", while "Back up" on the game exports it from the holder's memory.
+- **The two transition residuals of §5.5.**
+- **Nothing on a phone was measured.** Nothing was deployed; nothing was pushed.
+
+These join the M6.5c entry artifact's §4, `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`. That document is not edited: this section is the forward record, and the board (`docs/handover.md`) points at it.
+
+### 5.8 Owner items
+
+1. **The point release.** Build and deploy `yokohama-web:0.5.0-m6.5b2.1` from `13dc65f` to the NAS by `deploy/RUNBOOK.md` §1–§2, recorded as a §3.16 deployment record. The live `0.5.0-m6.5b2` carries all three defects.
+   - All three fixes are client-side. A player gets them once they take the update offer, or once every tab on the old release has closed.
+   - The first activation over the live generation keeps that generation (§5.5).
+2. **The push.** The eighteen commits are local; PR #37 does not have them yet.
+3. **The E2 and R-F6 browser readings**, carried as §5.7 says.
