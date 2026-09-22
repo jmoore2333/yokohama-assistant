@@ -292,6 +292,10 @@ function Forget({ id, onForget }: { id: string; onForget: (id: string) => Promis
  *
  * `reload` is a number the caller bumps after a restore, so the list re-reads
  * without this component owning a subscription of its own.
+ *
+ * **A row can outlive its reason across a `SEMANTICS_REV` bump**, and the note
+ * for whoever makes that bump is on `restoreOne` in `local/db.ts`, which is the
+ * function it is about (whole-branch review, Minor 1).
  */
 export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode {
   const [rows, setRows] = useState<UnplayableGame[] | null>(null);

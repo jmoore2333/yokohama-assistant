@@ -406,6 +406,19 @@ export type RestoreOutcome = "restored" | "already-here" | "clash";
  * Put one restored game on this device — **the check and BOTH writes in ONE
  * `readwrite` transaction** (spec §2.5).
  *
+ * **A NOTE FOR THE NEXT `SEMANTICS_REV` BUMP** (whole-branch review, Minor 1),
+ * because this is the function it will be about. `already-here` answers on
+ * identical bytes and writes NOTHING, so a game restored at rev N as
+ * "unplayable" — its record being a rev N+1 one — keeps its compatibility row
+ * after this device moves to rev N+1: the module opens the game happily, and
+ * `OnThisDevice` still hides it from the playable list and lists it under "Will
+ * not open here" with a reason that has stopped being true. Only "Remove" and a
+ * fresh restore clear it. The fix, when that bump comes, is one of two: delete
+ * the compat row inside this transaction on an `already-here` whose verdict is
+ * not `unplayable`, or have the listing re-derive the verdict rather than trust
+ * the row. It is deliberately NOT done now — today no rev N+1 record exists to
+ * restore, so there is no way to reach the state and no way to test the fix.
+ *
  * Reading for absence and writing afterwards is two operations, and two tabs
  * restoring at once fall between them; IndexedDB serialises overlapping
  * `readwrite` transactions over the same store, so the loser reads what the

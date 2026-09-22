@@ -298,6 +298,14 @@ pub struct Health {
     /// [`Host::multiplayer_offered`] and never `serves_games`: the browser host
     /// serves every game route — a local game is played through them — and
     /// reports `false` here, because there is no one else at the table.
+    ///
+    /// **A deployment reporting `false` still SERVES `/api/me` and this route**
+    /// (whole-branch review, Minor 12). Spec §2.1 lists `/api/me` among the
+    /// protected paths and §3.1 lists what the switch removes — the game, chat
+    /// and stream rows — and the two lists disagree about this one. §3.1 is
+    /// what is built, deliberately: the identity read is how a browser learns
+    /// there is nobody to be, and answering it costs nothing a single-player
+    /// deployment wants to hide.
     pub multiplayer: bool,
 }
 
