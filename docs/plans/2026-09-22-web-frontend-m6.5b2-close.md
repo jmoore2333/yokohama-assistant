@@ -30,7 +30,9 @@ learning that Access exists. The five fenced crates and the CLI are byte-identic
 since 2026-09-22 19:08:27.10Z at `yokohama-nas.moore.nyc` — the NAS's new hostname, taken mid-cycle
 at Task 4 (`0.5.0-m6.5b2-rc1`) under the hostname-wide Access application the owner ruled to keep
 during development. `deploy/RUNBOOK.md` §3.14 (the mid-cycle release and the hostname move) and
-§3.15 (this release) are the deployment records.
+§3.15 (this release) are the deployment records. The branch is **PR #37** against `web-room-m6.5b`
+(https://github.com/jmoore2333/yokohama-assistant/pull/37), the seventh of an unmerged stack whose
+**merge order is the owner's**.
 
 ---
 

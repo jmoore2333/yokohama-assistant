@@ -100,7 +100,7 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   site found — and the point release fixed — what four headless reviews could not see. **SEVEN pull
   requests now**, a stack, nothing merged and **merge order is yours**: `web-room` PR #31 against
   master, `web-room-m6.2` #32, `web-room-m6.3` #33, `web-room-m6.4` #34, `web-room-m6.5` #35,
-  `web-room-m6.5b` #36 against `web-room-m6.5`, and `web-room-m6.5b2` PR-NUMBER-HERE against
+  `web-room-m6.5b` #36 against `web-room-m6.5`, and `web-room-m6.5b2` **#37** against
   `web-room-m6.5b`. **M6.5 (the hosting move) was
   RE-CHARTERED on 2026-09-19 as WebAssembly + Durable Objects** — its authority is the umbrella spec
   `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` on branch `web-room-m6.5` (stacked on
@@ -190,7 +190,7 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; its PR open against `web-room-m6.5b`); **M6.5c "the objects" is next, and this cycle's close is its entry artifact**
+## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and this cycle's close is its entry artifact**
 
 **M6.5b2 — DONE (2026-09-22).** The record of record is the close
 `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`: §1 what shipped by task in execution order,
