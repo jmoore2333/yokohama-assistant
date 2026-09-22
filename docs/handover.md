@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-22, tenth session: **the PR #37 review's three defects are FIXED, but not yet pushed or deployed.** The Codex review of PR #37
+**Updated:** 2026-09-22, tenth session: **the PR #37 review's three defects are FIXED, PUSHED, and LIVE as `yokohama-web:0.5.0-m6.5b2.1`** (RUNBOOK §3.16; you authorized the push and the deploy). The Codex review of PR #37
 (`docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-review.md`) found three defects in the live
 M6.5b2, and all three reproduced:
 - "Back up everything" in a tab that did not own a game could omit that game's committed moves;
@@ -22,7 +22,7 @@ The session answered them in a fix wave on the same branch. The fix wave's revie
 - The mutation battery read **16 of 16 caught**.
 - Every gate was run in one sequence: npm test 1024/55, e2e 61/11, yokohama-web 289.
 
-**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8 is what wants you: the point release `0.5.0-m6.5b2.1` and its deploy, and the push to PR #37. The branch is ahead of the PR by the wave's eighteen commits, ending `13dc65f`, plus the record's docs commits.
+**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8's first two items are DONE, and the M6.5c handover now carries the wave's open items as its §4 items 19–27. **One new item from the deploy is worth your eye:** the edge's JavaScript detections rewrite `index.html` (RUNBOOK §3.16). The service worker's install was measured to succeed regardless, but the zone setting should be read before the Worker joins that zone.
 
 The previous update, 2026-09-22 (ninth session, the M6.5b2 EXECUTION, end to end): the session executed all
 eleven tasks of `docs/plans/2026-09-21-web-frontend-m6.5b2-plan.md` under your ruling that EVERY
@@ -210,9 +210,9 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 
 ## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and its entry artifact is [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)**
 
-**The PR #37 fix wave is DONE and LOCAL (2026-09-22, tenth session).** It is eighteen commits over the close, ending `13dc65f`, with no Rust touched. Its authority and its record are both [the fix-wave document](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md). Four sections matter most:
+**The PR #37 fix wave is DONE, PUSHED and LIVE as `0.5.0-m6.5b2.1` (2026-09-22, tenth session; RUNBOOK §3.16).** It is eighteen commits over the close, ending `13dc65f`, with no Rust touched. Its authority and its record are both [the fix-wave document](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md). Four sections matter most:
 - §5.7: what the wave does NOT claim. It carries E2's and R-F6's browser readings, the six unpinned `sw.ts` rules, and the storage reads that still trap. These join the M6.5c opening items below.
-- §5.8: your three items, which are the point release and deploy, the push, and those readings.
+- §5.8: your items. The point release, the deploy and the push are DONE; the browser readings for E2 and R-F6 remain.
 - §5.4: every ruling taken on your behalf.
 - §5.5: the corrections to its own §1.
 

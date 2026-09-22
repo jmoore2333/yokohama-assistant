@@ -8,36 +8,57 @@ the objects design depends on, and of the requirements as the owner already stat
 NOT a spec: every product decision below is the brainstorm's to take**, and where it and a frozen
 artifact disagree, the artifact wins.
 
+**Updated 2026-09-22 (tenth session), after the PR #37 fix wave and its point release
+`0.5.0-m6.5b2.1`.** The update touches these places and nothing else; the rest is as written at
+the close:
+- read-order item 2;
+- §1's HEAD and LIVE lines;
+- §2's service-worker, release and e2e bullets;
+- §4 items 19–27;
+- §6 items 13–16.
+
+The wave is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md`.
+
 ---
 
 ## 0. Read order
 
 1. **This file.**
-2. The umbrella spec `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` — **§1's thirteen
+2. **The PR #37 fix wave** `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md`. Read these parts of it:
+   - §1's six rulings, R-F1 … R-F6. They amend M6.5b2 spec §2.3 and §2.5 forward.
+   - **§5.4–§5.7.** These are the rulings taken in execution, the corrections to its own §1, the platform facts it MEASURED, and what it does NOT claim. The M6.5b2 close is frozen and predates all of it.
+3. The umbrella spec `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` — **§1's thirteen
    rulings R-6.5.1–R-6.5.13** (owner direction, not re-litigated inside a sub-cycle), §2.2–§2.6 (the
    route-to-object map, the table object, the house object, the client's transport seam), §3.3 (the
    M6.5c charter and its exit), §4 (the mutations M6.5c's battery must catch), §5 (the deployment,
    written before Workers FREE), §6.1 (the OPEN list, O-1 … O-12).
-3. The M6.5b2 close `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md` — **§5** (every ruling with
+4. The M6.5b2 close `docs/plans/2026-09-22-web-frontend-m6.5b2-close.md` — **§5** (every ruling with
    its cost), **§6.2/§6.3** (the LEAVE list and the nine OWNER ITEMS), **§6.4** (two frozen-spec
    amendments), **§7** (what that cycle does NOT claim), §8 (which now points here).
-4. The M6.5b close `docs/plans/2026-09-21-web-frontend-m6.5b-close.md` **§8's "Into M6.5c"
+5. The M6.5b close `docs/plans/2026-09-21-web-frontend-m6.5b-close.md` **§8's "Into M6.5c"
    paragraph** — quoted verbatim in §3 below — and its §6.3 owner items.
-5. `CLAUDE.md` — the operating facts and every gate command. **Re-count every suite at your own
+6. `CLAUDE.md` — the operating facts and every gate command. **Re-count every suite at your own
    HEAD**; the close §2 table is a reading, not a promise.
-6. `deploy/RUNBOOK.md` §3.15 (the twelfth deployment, the release M6.5c inherits) and §3.14 (the
+7. `deploy/RUNBOOK.md` §3.16 (the thirteenth deployment, the point release M6.5c inherits), §3.15 (the twelfth deployment, the cycle's release) and §3.14 (the
    hostname move), plus §5 (rollback: M6.5a's schema sentence, and now M6.5b2's browser-side one).
-7. The M6.5b2 spec `docs/plans/2026-09-21-web-frontend-m6.5b2-offline-spec.md` **§8 "Carried to
+8. The M6.5b2 spec `docs/plans/2026-09-21-web-frontend-m6.5b2-offline-spec.md` **§8 "Carried to
    M6.5c"** and §7; §0.3 is what that cycle measured and none of it is to be re-derived.
 
 ---
 
 ## 1. Where things stand
 
-- **Branch `web-room-m6.5b2`**, HEAD `74396ee`, `git status` clean; the cycle's diff base is
-  `369a1f2` and the release was built from `43d54a5` (the fix-wave head whose battery read 22 of 22).
-- **LIVE: `yokohama-web:0.5.0-m6.5b2`**, image `sha256:c802a036c2cb…` (24,466,536 B), container
-  `58ac45ba478a…` started **2026-09-22 19:08:27.10Z**, at **`yokohama-nas.moore.nyc`** — the NAS's
+- **Branch `web-room-m6.5b2`**, HEAD is the commit that carries this update, over the deploy record `f87b4d4` (pushed), `git status` clean. The cycle's diff base
+  is `369a1f2`, and the cycle's release was built from `43d54a5`, the fix-wave head whose battery read
+  22 of 22. The close HEAD was `74396ee`. **The PR #37 fix wave then added eighteen commits,
+  `a4d7e4e..13dc65f`, with no Rust touched**, and after them the record and the deploy record
+  (`f87b4d4`).
+- **LIVE: `yokohama-web:0.5.0-m6.5b2.1`**, the fix wave's point release (RUNBOOK §3.16).
+  - Image `sha256:fba5779df002…` (24,442,446 B).
+  - Container `d2d66681d449…`, started **2026-09-22 23:47:19.89Z**.
+  - It replaced `0.5.0-m6.5b2`: image `sha256:c802a036c2cb…`, container `58ac45ba478a…`,
+    started 2026-09-22 19:08:27.10Z. That image stays on the NAS for rollback.
+  - The site is served at **`yokohama-nas.moore.nyc`** — the NAS's
   new hostname, taken mid-cycle at Task 4 (RUNBOOK §3.14) — behind the **HOSTNAME-WIDE** Access
   application `yokohama` (id `11cbcf68-96cd-4310-baee-f2ade812155d`, audience `5fa7a989…`, three
   destinations, two allow policies, `session_duration` 730h). Health reads `identity: claimed`,
@@ -76,7 +97,9 @@ artifact disagree, the artifact wins.
   aarch64-darwin, recorded and not diagnosed, and **not re-measured since Task 5**. **A ceiling must
   clear the larger host**; the release ceiling in force is **1,400,000 B** (debug 3,200,000).
   *RUNBOOK §3.15; close §2 and §7; ledger Task 5.*
-- **The release.** The precache generator's own lines: **153 entries, 9,935,340 B** (total ceiling
+- **The release, at the point release** (RUNBOOK §3.16): **153 entries, 9,936,972 B**; `sw.js`
+  29,045 B; cache name **`yokohama-release-d62d6763649a749f`**, read off the wire. The cycle's release figures follow.
+- **The release at the M6.5b2 close.** The precache generator's own lines: **153 entries, 9,935,340 B** (total ceiling
   11,900,000 B); module 1,175,223 · bundle 410,991 · fonts 98,728 · shell 11,873 · icons 19,456 ·
   help 764,742 · art 7,454,327; **131 art files** plus `manifest.json` (the "132 WebP" in older
   docs counted the manifest); `sw.js` 27,220 B; cache name **`yokohama-release-19e8532f977bcba2`**,
@@ -84,7 +107,19 @@ artifact disagree, the artifact wins.
   Fraunces (67,388 B) and JetBrains Mono (31,340 B) are self-hosted woff2 through the HASHED
   `/assets/` pipeline, with OFL copies shipped at `dist/fonts/<family>/OFL.txt` (4,391 / 4,399 B)
   served `text/plain; charset=utf-8`. *RUNBOOK §3.15.*
-- **The service worker's rules.** Install is all-or-nothing with `cache: "reload"` and a per-body
+- **The service worker's rules, as the PR #37 fix wave left them** (these supersede the close's
+  account below; fix wave §1, §5.4–§5.6):
+  - `activate` stamps its own generation `activatedAt` and keeps the previously ACTIVATED
+    generation, not the newest installed (R-F5).
+  - A same-origin GET that this release does not list is answered from a retained generation of OURS
+    before the network (R-F2). That is what serves a tab that did not click the update, because
+    `skipWaiting()` hands EVERY controlled tab to the new worker.
+  - `/api/*`, `/enter`, **`/cdn-cgi/*`** (R-F6), and an `only-if-cached` probe outside
+    `same-origin` mode are never intercepted.
+  - A retry after a failed FIRST install registers again, because the platform removes that
+    registration and `update()` is refused (measured).
+  - An uncontrolled tab reloads on `activated`.
+  - The close's account: Install is all-or-nothing with `cache: "reload"` and a per-body
   digest; **nothing calls `skipWaiting()` by itself and `clients.claim()` is never called**;
   `activate` **RETAINS the previous generation** and deletes only what is older; `/api/*` and
   `/enter` are **never intercepted**, asked FIRST (`web/src/swRoute.ts:34`, `:40-42`); `/sw.js` is
@@ -115,7 +150,8 @@ artifact disagree, the artifact wins.
   item 7.*
 - **A finished game is small.** 54,103 B of record and 554 B of table document for 595 events —
   about **91 B per event**, against a SQLite row cap of 2 MB (umbrella §2.3). *Spec §0.3.*
-- **The e2e.** **53 cells in 11 spec files, 7.4 min of tests / 450 s wall**, seed-dependent; it runs
+- **The e2e.** **61 cells in 11 spec files, 9.5 min in one run** at the PR #37 fix wave's head
+  (fix wave §5.2). It was 53 cells, 7.4 min of tests / 450 s wall, at the close. Seed-dependent; it runs
   Chromium on one machine and stays local. *Close §2.*
 - **The vantage.** This workstation is **WARP-enrolled: every curl from it is an authenticated
   read**, so unenrolled readings were taken from a throwaway alpine container on the NAS. A lapsed
@@ -240,6 +276,51 @@ handover" (close §5.1). Each below names where it came from.
     **livelock** on some OS-entropy seeds (it fired three times this cycle and read `2 passed` alone
     at the same commit in 24–26 s).
 
+19. **From the PR #37 fix wave (§5.7): R-F6 is not measured live.** The service worker bypasses
+    `/cdn-cgi/` because Access's `/cdn-cgi/access/authorized` login hop is a NAVIGATION that sets
+    `CF_Authorization` on the app's hostname. That is reasoned from Cloudflare's documentation and
+    the Service Worker specification, and nobody has logged in again after a session expiry in a
+    browser the worker controls. It rides with items 3 and 5. **On the Worker host it must be
+    re-proven, not assumed.**
+20. **E2 is unit-tested only**: an uncontrolled tab that clicks the update offer reloads on
+    `activated`. No browser has measured it.
+21. **Six `sw.ts` decisions have no catcher.** The comment round's mutations found them, and
+    `sw.ts`'s header lists them:
+    - the whole-install deadline;
+    - the per-fetch timeout;
+    - `credentials: "same-origin"`;
+    - the stamp written first;
+    - `includeUncontrolled`;
+    - the "took too long" wording.
+
+    The "other lanes are ABORTED" cell passes on the per-fetch timeout fifteen seconds later, not on
+    the abort. The smallest instrument is a fake-timer cell.
+22. **The real Worker's trap/refusal split is pinned by the e2e alone.** No unit or node cell can
+    see `worker.ts`: the fake Worker stands in for it (fix wave §5.3 rows 4–5). Likewise
+    `Abandon.tsx:212` (`abandonAnyway`'s catch) has no catcher.
+23. **Storage reads that fail outside the export still TRAP**: a hold's acquisition, startup, and
+    `adopt`. `worker.ts` rule 6 names them and does not fix them.
+24. **`backupEverything` iterates the STORE's ids.** A game whose create was refused by quota is
+    listed on the door but absent from "Back up everything", while "Back up" on the game exports it
+    from the holder's memory.
+25. **Two transition residuals of R-F5** (fix wave §5.5), each the original defect once:
+    - a pre-R-F5 waiting build replaced before this release's first activation sweeps by install
+      time;
+    - a device whose activation stamp could not be written ranks its running generation below an
+      older activated one.
+26. **The process deviation.** Each fix-wave task landed as one commit with its red readings in the
+    reports, not as a failing-first commit followed by a fix. The M6.5c plan should say which shape it
+    wants.
+27. **The edge REWRITES `index.html`** (RUNBOOK §3.16's finding, first read at the point release).
+    Cloudflare's JavaScript detections inject a `/cdn-cgi/challenge-platform/…/jsd/main.js` snippet
+    before `</body>`. Every curl GET of `/` or `/index.html` through the tunnel returns 3,325 B
+    instead of 2,387 B, with a different sha256 on each request; the origin serves the build's bytes.
+    The service worker precaches `/index.html` under a SHA-256 check, **yet its install was measured
+    to SUCCEED**: the cached copy is the clean 2,387 B, and why the worker's fetch escapes the
+    injection is NOT identified. When the injection began is unknown. **Read the zone's JavaScript
+    detections setting before M6.5c puts the Worker on the same zone**, and let the iPhone exit
+    (item 1) be the Safari reading.
+
 ---
 
 ## 5. The decisions the M6.5c spec takes FIRST (questions, not answers)
@@ -301,6 +382,20 @@ handover" (close §5.1). Each below names where it came from.
     by a fresh spawn, and a reviewed SHA is never amended.
 12. **A headed live review beats four headless ones** (M6.4 close §4.5): the first headed pass found
     a 404 on every screen four headless passes had called clean.
+13. **A warm HTTP cache HIDES service-worker routing defects** (fix wave §5.6). The PR #37 F2
+    cell passed against the broken worker until it cleared the HTTP cache through CDP
+    (`Network.clearBrowserCache`). The install's `cache: "reload"` writes the HTTP cache, and
+    `/assets/` is `immutable`.
+14. **`skipWaiting()` hands EVERY tab the old worker controlled to the new one.**
+    `clients.claim()` only adds pages NO worker controlled. So "not claiming" protects nothing, and
+    the retained generation has to be READ by the fetch handler. The pre-fix code comments misread
+    this.
+15. **A failed FIRST install removes the registration, and `update()` on the page's copy is refused
+    with `InvalidStateError`.** This was measured in Chromium. A retry must register again.
+16. **`context.route` reaches a service worker's own fetches in Playwright 1.62.1.** That covers
+    both the registration's `/sw.js` and the precache entries, which is what makes a refused-install
+    cell cheap. Ask every task reviewer for **escalations outside the brief** as well: three of this
+    wave's six defects came from there.
 
 ---
 

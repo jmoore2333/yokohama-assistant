@@ -204,6 +204,14 @@ These join the M6.5c entry artifact's §4, `docs/plans/2026-09-22-web-frontend-m
 
 ### 5.8 Owner items
 
+**Items 1 and 2 are DONE (2026-09-22, owner-authorized in session):**
+- The branch was pushed to PR #37 at `c612797`, and the PR description gained a fix-wave section.
+- `yokohama-web:0.5.0-m6.5b2.1` is LIVE on the NAS: container `d2d66681d449…`, started 23:47:19.89Z, cache generation `yokohama-release-d62d6763649a749f`. `deploy/RUNBOOK.md` §3.16 is its record. That record includes a finding for M6.5c: the edge's JavaScript detections rewrite `index.html`, yet the service worker's precache of it was measured clean.
+- The M6.5c handover was updated in place with the wave's carried items (its §4 items 19–27).
+
+The list as written before those steps:
+
+
 1. **The point release.** Build and deploy `yokohama-web:0.5.0-m6.5b2.1` from `13dc65f` to the NAS by `deploy/RUNBOOK.md` §1–§2, recorded as a §3.16 deployment record. The live `0.5.0-m6.5b2` carries all three defects.
    - All three fixes are client-side. A player gets them once they take the update offer, or once every tab on the old release has closed.
    - The first activation over the live generation keeps that generation (§5.5).
