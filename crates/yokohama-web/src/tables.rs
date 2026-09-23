@@ -359,7 +359,10 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// which refuses, and [`Games::list_for`], which skips and says so. Both, because
 /// the listing deliberately does not go through `read_table` — one unreadable
 /// file must not take the other nineteen tables off the lobby.
-pub(crate) fn check_shape(doc: &TableDoc) -> Result<(), String> {
+///
+/// `pub` since M6.5c (R-6.5c.8): a host that cannot hear the layer's
+/// `eprintln!` refuses a copy its lobby would drop.
+pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     if doc.schema > TABLE_SCHEMA {
         return Err(format!(
             "schema {} — this server reads up to {TABLE_SCHEMA}; a newer server wrote it",
