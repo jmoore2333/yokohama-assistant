@@ -21,7 +21,8 @@
 //! - **After a 200 `POST …/input` that left the record's bytes unchanged**, a
 //!   picker still open appends the line as `(user, line, expect)`, and a closed
 //!   one clears the list.
-//! - **The 65th line clears the list**, so nothing partial is ever re-fed.
+//! - **The 65th line clears the list**, and nothing more is recorded until
+//!   that picker closes, so nothing partial is ever re-fed.
 //!
 //! **A list is only ever re-fed at the exact record it was built at.** The row
 //! carries that record's SHA-256, and a restore at any other record clears the
@@ -41,6 +42,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use yokohama_cli::repl::SubPrompt;
 use yokohama_web::api::{self, ApiRequest, ApiResponse};
@@ -188,14 +190,15 @@ fn cleared(prior: Picker) -> Option<String> {
 /// **It ALWAYS builds the table's handle first.** That is the replay, so a
 /// record that cannot be replayed fails here, at the wake; and a handle rebuilt
 /// with a bot to move pumps that move and persists it before any row is read.
-/// It answers through [`from_the_layer`], the drain `dispatch` answers through,
+/// It answers through `from_the_layer`, the drain `dispatch` answers through,
 /// so that pump's bumps are in this reply.
 ///
 /// Then the row decides, and the answer is a 200 with no body:
 ///
 /// - **no row**: nothing to restore, and `picker` is `None`;
-/// - **a row that is not a list** — not JSON, not the list's object, a key the
-///   list does not have, no lines, or more than a list holds — is NO list:
+/// - **a row that is not a list** — not JSON, not the list's object (serde's
+///   positional array form is not), a key the list does not have, no lines,
+///   or more than a list holds — is NO list:
 ///   `picker` is `"[]"`, so the shell deletes it. A malformed row is never a
 ///   panic: a lost picker costs a stale click a 409, and must never poison the
 ///   table (the orchestrator's ruling I-21);
@@ -222,9 +225,9 @@ pub fn restore_picker_inner(id: &str, row: &str) -> ReplyData {
 
 /// The row's verdict, once `id`'s handle is built: `Reply.picker`.
 fn restore(games: &Games, id: &str, row: &str) -> Option<String> {
-    let list = match serde_json::from_str::<Option<PickerList>>(row) {
-        Ok(None) => return None,
-        Ok(Some(list)) => Some(list),
+    let list = match serde_json::from_str::<Value>(row) {
+        Ok(Value::Null) => return None,
+        Ok(value) => as_list(value),
         Err(_) => None,
     };
     let record = record_of(games, id);
@@ -244,6 +247,20 @@ fn restore(games: &Games, id: &str, row: &str) -> Option<String> {
             Some(CLEARED.to_string())
         }
     }
+}
+
+/// `value` as a [`PickerList`], read ONLY from the object form `Reply.picker`
+/// writes, every line an object too. serde's derived `Deserialize` also reads a
+/// struct from a positional ARRAY, a form `deny_unknown_fields` does not
+/// govern, so an array is refused here before serde reads it — `create.rs`'s
+/// precedent for a create body.
+fn as_list(value: Value) -> Option<PickerList> {
+    let object_form = matches!(&value, Value::Object(row)
+        if row.get("lines").and_then(Value::as_array).is_some_and(|lines| lines.iter().all(Value::is_object)));
+    if !object_form {
+        return None;
+    }
+    serde_json::from_value(value).ok()
 }
 
 /// Re-feed one line through the layer's own `api::input`, as its user, the
@@ -541,7 +558,10 @@ mod tests {
         let refusal = body(&r)["error"].as_str().unwrap().to_string();
         assert!(refusal.starts_with(r#"this game is asking "options", not "place_a""#), "{refusal}");
 
-        // With it, the client's same click commits the placement the player chose.
+        // With it, the client's clicks go on: the restored list grows, still at
+        // the record it was built at, and a SECOND hibernation of the same
+        // picker re-feeds the grown list whole. Then `confirm` commits the
+        // placement the player chose.
         fresh("wake", &stored_table, &stored);
         let r = restore_picker_inner("wake", &row);
         assert_eq!(
@@ -549,6 +569,18 @@ mod tests {
             (200, None, "[]"),
             "the list is kept — its row unchanged — and nothing moved",
         );
+        let mut grown = String::new();
+        for want in [vec!["1", "A09", "A09"], vec!["1", "A09", "A09", "A09"]] {
+            let r = input(RED, "wake", "A09", Some("place_a"));
+            assert_eq!(lines(&r), want, "the restored list grows");
+            grown = r.picker.expect("the grown row");
+            let built_at = serde_json::from_str::<Value>(&grown).unwrap()["record"].clone();
+            assert_eq!(built_at, json!(digest_of(&stored)), "still the record the list was built at");
+        }
+        fresh("wake", &stored_table, &stored);
+        let r = restore_picker_inner("wake", &grown);
+        assert_eq!((r.status, r.picker.as_deref()), (200, None), "the grown list is kept");
+        assert_eq!(body(&call(RED, "GET", "/api/games/wake", None))["prompt"]["selected"], json!([9]));
         let r = input(RED, "wake", "confirm", Some("place_a"));
         let s = body(&r);
         assert_eq!((r.status, &s["events"]), (200, &json!(2)), "{}", r.body);
@@ -624,11 +656,13 @@ mod tests {
     /// losing a picker costs a 409 on a stale click and must never poison a
     /// table. Nothing is re-fed or bumped, and the record is untouched.
     ///
-    /// The last three rows are the list's own shape, at THIS record, with one
-    /// thing wrong each: a key the list does not have, 65 lines — more than a
-    /// list ever holds — and no lines at all. The final check is their
-    /// anti-vacuity partner: the same line, in a row with nothing wrong, IS
-    /// re-fed and kept.
+    /// The last five rows are at THIS record, each with one thing wrong: no
+    /// lines at all; a key the list does not have; 65 lines, more than a list
+    /// ever holds; and the list, or its line, in serde's POSITIONAL array form,
+    /// which a derived `Deserialize` reads and `Reply.picker` never writes. The
+    /// final checks are their anti-vacuity partners: the same line, in a row
+    /// with nothing wrong, IS re-fed and kept, and so is the longest list
+    /// `after_input` writes, 64 lines.
     #[test]
     fn a_row_that_is_not_a_list_is_cleared_and_nothing_is_refed() {
         let _s = serial();
@@ -646,6 +680,8 @@ mod tests {
             json!({ "record": at, "lines": [] }).to_string(),
             json!({ "record": at, "lines": [one], "extra": 1 }).to_string(),
             json!({ "record": at, "lines": vec![one.clone(); 65] }).to_string(),
+            json!([at, [[RED, "1", null]]]).to_string(),
+            json!({ "record": at, "lines": [[RED, "1", null]] }).to_string(),
         ];
         for row in &rows {
             fresh("junk", &stored_table, &stored);
@@ -660,6 +696,14 @@ mod tests {
         let r = restore_picker_inner("junk", &json!({ "record": at, "lines": [one] }).to_string());
         assert_eq!((r.status, r.picker.as_deref()), (200, None));
         assert_eq!(body(&call(RED, "GET", "/api/games/junk", None))["prompt"]["kind"], json!("place_a"));
+        // And the longest list `after_input` writes — `1`, then `A09` 63 times — is a list.
+        let mut longest = vec![one.clone()];
+        longest.extend(vec![json!({ "user": RED, "line": "A09", "expect": null }); 63]);
+        fresh("junk", &stored_table, &stored);
+        let r = restore_picker_inner("junk", &json!({ "record": at, "lines": longest }).to_string());
+        assert_eq!((r.status, r.picker.as_deref()), (200, None), "64 lines are kept");
+        let prompt = body(&call(RED, "GET", "/api/games/junk", None))["prompt"].clone();
+        assert_eq!((&prompt["kind"], &prompt["selected"]), (&json!("place_a"), &json!([9])), "all 64 re-fed");
     }
 
     /// A re-fed line that FAILS, or that leaves the picker CLOSED, clears the
