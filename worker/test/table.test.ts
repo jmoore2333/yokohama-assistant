@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import compiled from "../gen/yokohama_worker_bg.wasm";
-import { createModule } from "../gen/factory.js";
+import { createModule, type Exports } from "../gen/factory.js";
 import * as alarmModule from "../src/alarm";
 import * as configModule from "../src/config";
 import { Instance, readReply } from "../src/module";
@@ -61,10 +61,11 @@ describe("the table object (spec §2.4)", () => {
     expect(await runInDurableObject(stub, (_o, state) => state.storage.getAlarm())).toBeNull();
   });
 
-  // Mutants: a batch per document (batches 2+); a write outside the
-  // transaction; `written_at` in the module's seconds rather than `Date.now()`
-  // (the orchestrator's ruling I-43); the create not pinned to P-2's reading
-  // (the pool's is `frozen:1789000000`; unpinned, the module reads the wall).
+  // Mutants: the tables created in a batch of their own (batches 2); a write
+  // outside the transaction; `written_at` in the module's seconds rather than
+  // `Date.now()` (the orchestrator's ruling I-43); the create not pinned to
+  // P-2's reading (the pool's is `frozen:1789000000`; unpinned, the module
+  // reads the wall).
   it("a create persists its table in one batch, and the object knows its own name", async () => {
     const stub = tableStub("fresh");
     const batches = await watchBatches(stub);
@@ -296,6 +297,119 @@ describe("the table object (spec §2.4)", () => {
     expect(await traps()).toEqual([]);
   });
 
+  // Spec §2.4: "Any successful load resets the count" — so a load that
+  // succeeds resets it even when the call after it traps. The trapped call
+  // persists no document; the reset goes in a batch of its own (the
+  // orchestrator's ruling, Task 9 fix round 1). Two load traps with a good
+  // load between them are not consecutive, and must not poison. Mutant: the
+  // reset written only by the commit, which a trapped call never reaches — the
+  // second trap counts 2, and the table is poisoned.
+  it("a load that succeeds resets the count even when its call then traps", async () => {
+    const stub = await seedPlaying("reset-then-trap");
+    const traps = () => sqlOf(stub, "SELECT k, v FROM meta WHERE k IN ('load_traps', 'poison') ORDER BY k");
+    const original = Instance.prototype.get;
+    // `get` patched for ONE call — the wake's — handing `f` the module it built.
+    const once = (f: (mod: Exports) => void) => {
+      Instance.prototype.get = function (this: Instance) {
+        Instance.prototype.get = original;
+        const got = original.call(this);
+        f(got.mod);
+        return got;
+      };
+    };
+    const loadTrap = (mod: Exports) => {
+      mod.restore_picker = () => {
+        throw new WebAssembly.RuntimeError("unreachable");
+      };
+    };
+    try {
+      // A load trap: the count is 1.
+      once(loadTrap);
+      await evictDurableObject(stub);
+      expect((await logsDuring(() => call(stub, RED, "GET", "/api/games/reset-then-trap"))).result.status).toBe(500);
+      expect(await traps()).toEqual([
+        { k: "load_traps", v: "1" },
+        { k: "poison", v: "record" },
+      ]);
+      // A load that succeeds, and a call that traps.
+      const docs = (await storedRows(stub)).docs;
+      once((mod) => {
+        mod.dispatch = () => mod.debug_trap!();
+      });
+      await evictDurableObject(stub);
+      const trapped = await logsDuring(() => call(stub, RED, "GET", "/api/games/reset-then-trap"));
+      expect(trapped.result.status).toBe(500);
+      expect(trapped.lines).toEqual([
+        { event: "trap", id: "reset-then-trap", call: "dispatch", error: "RuntimeError: unreachable" },
+      ]);
+      expect(await traps(), "the load succeeded, so the count is reset").toEqual([]);
+      expect((await storedRows(stub)).docs, "the trapped call persisted no document").toEqual(docs);
+      // Another load trap: the count starts again at 1.
+      once(loadTrap);
+      await evictDurableObject(stub);
+      expect((await logsDuring(() => call(stub, RED, "GET", "/api/games/reset-then-trap"))).result.status).toBe(500);
+      expect(await traps()).toEqual([
+        { k: "load_traps", v: "1" },
+        { k: "poison", v: "record" },
+      ]);
+    } finally {
+      Instance.prototype.get = original;
+    }
+    expect((await call(stub, RED, "GET", "/api/games/reset-then-trap")).status, "not poisoned").toBe(200);
+  });
+
+  // The poison names the kind whose LOAD trapped. Every other trapping cell
+  // traps in `restore_picker`, the record's replay; this one traps loading the
+  // TABLE. Mutant: the kind written as `record` whatever trapped.
+  it("the poison names the kind whose load trapped", async () => {
+    const stub = await seedPlaying("poisoned-table");
+    const original = Instance.prototype.get;
+    Instance.prototype.get = function (this: Instance) {
+      const got = original.call(this);
+      if (got.fresh) {
+        const load = got.mod.load;
+        got.mod.load = (kind, id, text) => {
+          if (kind === "table") throw new WebAssembly.RuntimeError("unreachable");
+          load(kind, id, text);
+        };
+      }
+      return got;
+    };
+    try {
+      for (const traps of [1, 2]) {
+        await evictDurableObject(stub);
+        const { lines } = await logsDuring(() => call(stub, RED, "GET", "/api/games/poisoned-table"));
+        expect(lines).toEqual([
+          { event: "load-trap", id: "poisoned-table", kind: "table", traps, error: "RuntimeError: unreachable" },
+        ]);
+      }
+      const { result: res } = await logsDuring(() => call(stub, RED, "GET", "/api/games/poisoned-table"));
+      expect([res.status, await res.json()]).toEqual([500, { error: "this table's stored table cannot be loaded" }]);
+    } finally {
+      Instance.prototype.get = original;
+    }
+  });
+
+  // An object the platform gives no name writes nothing, by construction: no
+  // alarm could ever serve what it stored, because the guard skips a nameless
+  // alarm. The object is reached only through `idFromString` — production's
+  // nameless case, which the shell never makes — and the request names an id
+  // the layer ACCEPTS, so only that rule keeps the table out of storage. The
+  // reply is still the layer's, for the id the request names (the
+  // orchestrator's ruling, Task 9 fix round 1). Mutant: a nameless object's
+  // batch written.
+  it("a nameless object answers for the id the request names, and writes nothing", async () => {
+    const name = "nameless-create";
+    const stub = env.TABLE.get(env.TABLE.idFromString(env.TABLE.idFromName(name).toString()));
+    expect(await runInDurableObject(stub, (_o, state) => state.id.name), "premise: no name").toBeUndefined();
+    const res = await call(stub, RED, "POST", "/api/games", CREATE_BODY, name);
+    const body = new TextEncoder().encode(CREATE_BODY);
+    const created = readReply(referenceModule().create(RED, body, name, "application/json"));
+    expect(created.status, "premise: the layer accepts this id").toBe(201);
+    expect([res.status, await res.text()]).toEqual([created.status, created.body]);
+    expect(await sqlOf(stub, "SELECT count(*) AS n FROM sqlite_master")).toEqual([{ n: 0 }]);
+  });
+
   // The orchestrator's ruling R-09: the plan's "ctx.id.name inside alarm()"
   // cell replaced the code under test and could not fail. This one replaces
   // the EXPORTED guard at module scope (pool fact 4), so `alarm()` passes only
@@ -344,9 +458,9 @@ describe("the table object (spec §2.4)", () => {
   // for an object once reached BY NAME. One reached only through
   // `idFromString` has none, in `fetch` and in `alarm()` alike — production's
   // case (pool fact 8) — so here the PLATFORM delivers the nameless alarm, and
-  // nothing is patched. Its rows are the owed-pump pair, so a wake in the
-  // alarm's path would change the record. Mutant: `alarm()` handing `onAlarm`
-  // anything but `ctx.id.name`.
+  // nothing is patched. Its rows are the owed-pump pair, so a wake and its
+  // commit in the alarm's path would change the stored record. Mutant:
+  // `alarm()` handing `onAlarm` anything but `ctx.id.name`.
   it("an alarm the platform delivers with no name is skipped, logged, and touches nothing", async () => {
     const stub = env.TABLE.get(env.TABLE.idFromString(env.TABLE.idFromName("nameless-platform").toString()));
     await runInDurableObject(stub, async (_o, state) => {
@@ -457,10 +571,13 @@ describe("the table object (spec §2.4)", () => {
   // missing name passed on as `undefined` (the object throws) or `""` (the
   // create's answer differs).
   it.each([
-    ["a name the store refuses", "bad!name"],
-    ["a name over 1,024 bytes, which the platform does not report", "a".repeat(1100)],
-  ])("a probe at %s answers as the layer does and writes nothing", async (_what, name) => {
+    ["a name the store refuses", "bad!name", "bad!name"],
+    ["a name over 1,024 bytes, which the platform does not report", "a".repeat(1100), undefined],
+  ])("a probe at %s answers as the layer does and writes nothing", async (_what, name, reported) => {
     const stub = tableStub(name);
+    expect(await runInDurableObject(stub, (_o, state) => state.id.name), "premise: the name the platform reports").toBe(
+      reported,
+    );
     const get = await call(stub, RED, "GET", `/api/games/${name}/table`);
     const direct = readReply(referenceModule().dispatch(RED, "GET", `/api/games/${name}/table`, "", undefined, new Uint8Array()));
     expect([get.status, await get.text()]).toEqual([direct.status, direct.body]);

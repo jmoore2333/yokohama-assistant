@@ -51,7 +51,8 @@ export interface BatchParts {
    *  holds a table, with `YOKOHAMA_WEB_COUNT_WAKES` on. */
   countWake: boolean;
   /** This request's wake succeeded after a load trap: `load_traps` and
-   *  `poison` are cleared. */
+   *  `poison` are cleared — by the commit, or, when the call then traps, by a
+   *  batch that holds only that. */
   clearTraps: boolean;
 }
 
@@ -142,9 +143,10 @@ export class Table extends DurableObject<Env> {
       log("poison", { id, kind, traps });
       return respond(500, errorBody(`this table's stored ${kind} cannot be loaded`));
     }
-    // A configuration the shell refuses builds no module. Spec §2.3 has the
-    // Worker refuse it before it forwards; the object answers the same
-    // refusal itself. Configuration, not data, so never a load trap (the
+    // A configuration the shell refuses builds no module. Spec §2.6 has every
+    // `/api/*` answer 500 naming the variable, and the plan's Task 11 has the
+    // Worker do so (its step 2) before it forwards; the object answers the
+    // same refusal itself. Configuration, not data, so never a load trap (the
     // orchestrator's ruling I-29).
     const config = this.config;
     if ("error" in config) {
@@ -156,7 +158,14 @@ export class Table extends DurableObject<Env> {
       const woken = this.wake(id, instance, config, traps);
       if (woken instanceof Response) return woken;
       const called = this.call(incoming, instance);
-      if (called instanceof Response) return called;
+      if (called instanceof Response) {
+        // The call trapped, so it persists nothing. But the wake's load
+        // succeeded, and spec §2.4 resets the count on ANY successful load:
+        // the reset is written alone, as the request's one batch (the
+        // orchestrator's ruling, Task 9 fix round 1).
+        if (woken.clearTraps) this.batch(clearLoadTraps);
+        return called;
+      }
       this.commit(called, woken);
       return respond(called.reply.status, called.reply.body);
     } catch (e) {
@@ -228,8 +237,7 @@ export class Table extends DurableObject<Env> {
       if (!(e instanceof WebAssembly.RuntimeError)) throw e;
       instance.drop();
       const count = traps + 1;
-      this.ctx.storage.transactionSync(() => {
-        ensureTables(sql);
+      this.batch((sql) => {
         setMeta(sql, "load_traps", String(count));
         setMeta(sql, "poison", kind);
       });
@@ -282,9 +290,8 @@ export class Table extends DurableObject<Env> {
    *   wake's, and `"[]"` deletes it (the orchestrator's ruling I-21);
    * - the wake's `wakes` count, and its clearing of a load trap.
    *
-   * Every write goes in ONE `transactionSync`, which also creates the tables,
-   * and a request with nothing to write runs none — so a probe creates
-   * nothing.
+   * Every write goes in ONE `batch`, and a request with nothing to write runs
+   * none — so a probe creates nothing.
    */
   private commit(called: Called, parts: BatchParts): void {
     const sql = this.ctx.storage.sql;
@@ -304,16 +311,29 @@ export class Table extends DurableObject<Env> {
     if (parts.countWake) {
       writes.push(() => setMeta(sql, "wakes", String(Number(getMeta(sql, "wakes") ?? "0") + 1)));
     }
-    if (parts.clearTraps) {
-      writes.push(() => {
-        deleteMeta(sql, "load_traps");
-        deleteMeta(sql, "poison");
-      });
-    }
+    if (parts.clearTraps) writes.push(() => clearLoadTraps(sql));
     if (writes.length === 0) return;
+    this.batch(() => {
+      for (const write of writes) write();
+    });
+  }
+
+  /**
+   * A write batch: `writes` inside ONE `transactionSync`, which first creates
+   * the tables. Every write this object makes goes through here.
+   *
+   * An object the platform gives no name writes NOTHING, whatever it is asked
+   * (the orchestrator's ruling, Task 9 fix round 1): no alarm could ever serve
+   * what it stored, because the guard skips a nameless alarm
+   * (`guardAlarmName`). So the rule holds here, by construction, and not
+   * through what the layer happens to refuse.
+   */
+  private batch(writes: (sql: SqlStorage) => void): void {
+    if (this.ctx.id.name === undefined) return;
+    const sql = this.ctx.storage.sql;
     this.ctx.storage.transactionSync(() => {
       ensureTables(sql);
-      for (const write of writes) write();
+      writes(sql);
     });
   }
 
@@ -337,10 +357,12 @@ export class Table extends DurableObject<Env> {
 /**
  * The id a request names — a create's `X-Yokohama-Table-Id`, percent-decoded,
  * or the path's segment after `/api/games/` — standing in for the object's
- * name only where the platform reports none. Measured in the pool for a name
- * over 1,024 bytes, which is what spec §2.3's routing makes of a path's
- * segment, or a create body's `id`, that long. The layer's ids are at most 64
- * bytes, so it answers its own refusal for the id, and nothing is written.
+ * name only where the platform reports none, so that the reply is the layer's
+ * answer for that id. The pool reports none, measured, for a name over 1,024
+ * bytes — what spec §2.3's routing makes of a path's segment, or a create
+ * body's `id`, that long — and for an object reached only through
+ * `idFromString`. A nameless object writes nothing, whatever the layer answers
+ * (`batch`).
  */
 function requestedId(path: string, headers: Headers, create: boolean): string {
   if (create) return decodeURIComponent(headers.get(TABLE_ID_HEADER) ?? "");
@@ -364,6 +386,12 @@ function readLayerDocs(mod: Exports, id: string): Map<LayerDoc, string | undefin
     }
   }
   return docs;
+}
+
+/** A load trap forgotten: the count, and the kind whose load trapped. */
+function clearLoadTraps(sql: SqlStorage): void {
+  deleteMeta(sql, "load_traps");
+  deleteMeta(sql, "poison");
 }
 
 /** A reply as the plan's Task 9 writes it (step 7): a body is JSON, and an
