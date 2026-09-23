@@ -4,8 +4,9 @@
 //! The house object is a second layer instance whose store holds a SCRUBBED
 //! COPY of every table's document. `GET /api/games?scope=…` on it is the
 //! layer's own `Games::list` and `TableDoc::view` over those copies, the code
-//! the NAS runs over the originals — so every row the NAS lists, the house
-//! lists byte for byte.
+//! the NAS runs over the originals. [`house_copy_inner`] makes a copy of
+//! exactly the documents that listing would read rather than skip, and a copy
+//! lists as its original does, byte for byte.
 //!
 //! **The scrub** ([`house_copy_inner`]) replaces the document's three secrets
 //! with placeholders that a listing reads exactly as it reads the originals:
@@ -23,18 +24,23 @@
 //! Everything else is as stored — `unlocked` included, which `can_watch`
 //! reads.
 //!
-//! **A copy `check_shape` rejects is REFUSED, with its reason**, which the
-//! shell logs (spec §2.8). The house's `list` would drop that copy, and would
-//! say so only through the layer's `eprintln!`, which is mute on this host. So
-//! a scrub defect is loud here, at the source, rather than a row that silently
-//! leaves the lobby.
+//! **`check_shape` runs twice, and either refusal carries its reason**, which
+//! the shell logs (spec §2.8). The house's `list` would drop a document it
+//! rejects, and would say so only through the layer's `eprintln!`, which is
+//! mute on this host. So each defect is loud here, at the source, rather than
+//! a row that silently leaves the lobby:
 //!
-//! The check reads the COPY, which is what the house's listing reads. A stored
-//! document `check_shape` rejects for a field the scrub keeps, such as a
-//! `schema` above the layer's, is refused. One it rejects only for a field the
-//! scrub REPLACES — a keep outside 1 and 2, or a lock of the right lengths that
-//! is not hex — makes an acceptable copy, which the house lists and the NAS
-//! would not. The layer writes neither.
+//! - **on the stored ORIGINAL, first**: a defect in the table's own document.
+//!   The NAS's listing drops such an original, and the scrub would repair two
+//!   of its defects — a keep outside 1 and 2 becomes `1`, and a lock of the
+//!   right lengths that is not hex becomes zeros. A check on the copy alone
+//!   would accept both and hand the house a table the NAS drops, so the
+//!   original is checked before the scrub (the orchestrator's ruling on
+//!   Task 5's concern 2);
+//! - **on the COPY, after the scrub**: a defect in the scrub itself. A correct
+//!   scrub turns every document the first check accepts into a copy the second
+//!   accepts, so this check fires only on a scrub defect, and no stored
+//!   document reaches it.
 //!
 //! The shell calls [`house_copy_inner`] on a TABLE object's instance, over the
 //! table's own stored document, and [`put_copy_inner`], [`remove_copy_inner`]
@@ -57,14 +63,20 @@ use crate::STORE;
 /// - a stored document that does not parse. Never `None`, which says that no
 ///   table is stored here, when one is (`Games::read_table`'s rule for the same
 ///   case);
-/// - a copy `check_shape` rejects, which the house's listing would drop. Its
-///   reason is `check_shape`'s own sentence.
+/// - a stored document `check_shape` rejects, which the NAS's listing drops.
+///   It is checked BEFORE the scrub, which could repair it (the module doc);
+/// - a copy `check_shape` rejects: a scrub defect, which the house's listing
+///   would drop.
+///
+/// Each of the last two carries `check_shape`'s own sentence.
 pub fn house_copy_inner(id: &str) -> Result<Option<String>, String> {
     let Some((stored, _)) = store().read(Doc::Table, id)? else {
         return Ok(None);
     };
     let original: TableDoc =
         serde_json::from_str(&stored).map_err(|e| format!("{id:?}'s table document does not parse: {e}"))?;
+    check_shape(&original)
+        .map_err(|why| format!("{id:?}'s table document is malformed, so the house would not list it: {why}"))?;
     let copy = scrubbed(original);
     check_shape(&copy).map_err(|why| format!("{id:?}'s house copy is malformed, so the house would not list it: {why}"))?;
     Ok(Some(serde_json::to_string(&copy).expect("a table document serializes")))
@@ -447,9 +459,11 @@ mod tests {
     /// rejects is refused with its reason, never listed.
     ///
     /// The document is a table the layer wrote, with `"schema": 99` its ONE
-    /// change: the scrub leaves `schema` as stored, so the copy carries the 99,
-    /// and the refusal carries `check_shape`'s own sentence for it. The same
-    /// document at the schema the layer wrote has a copy.
+    /// change. The scrub keeps `schema`, so the copy would carry the 99 too,
+    /// but the check on the stored original refuses it first, with
+    /// `check_shape`'s own sentence. (The module doc says why the check on the
+    /// copy has no cell that reaches it.) The same document at the schema the
+    /// layer wrote has a copy.
     #[test]
     fn house_copy_refuses_a_copy_that_check_shape_rejects() {
         let _s = serial();
@@ -466,6 +480,64 @@ mod tests {
         assert!(err.contains("schema"), "{err}");
         let why = check_shape(&serde_json::from_str::<TableDoc>(&future).unwrap()).unwrap_err();
         assert!(err.contains(&why), "`check_shape`'s own reason, verbatim — {why:?} in {err:?}");
+    }
+
+    /// **A stored document `check_shape` rejects is refused, even where its
+    /// copy would pass** (the orchestrator's ruling on Task 5's concern 2). The
+    /// scrub REPLACES the keeps and the lock, so it repairs a keep outside 1
+    /// and 2, and a lock of the right lengths that is not hex. A check on the
+    /// copy alone would hand the house a table that the NAS's listing drops.
+    ///
+    /// Each document is a locked table the layer wrote, with red's keep of
+    /// card 2 in, stored under its own id with ONE field the scrub replaces
+    /// made malformed, and written back as the layer writes a table
+    /// (`to_string_pretty`). Two premises hold both halves of the case for
+    /// each: `check_shape` rejects the document, and accepts the copy the scrub
+    /// makes of it. The refusal is the check on the ORIGINAL, in its own words,
+    /// carrying `check_shape`'s sentence. And the layer's own listing on this
+    /// instance, the NAS's code, drops every one of them.
+    #[test]
+    fn house_copy_refuses_a_stored_document_check_shape_rejects_even_where_its_copy_would_pass() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let mut body = two_seats(SEED, json!({ "user": BLUE }));
+        body["password"] = json!(PASSWORD);
+        create("kept", body);
+        post(RED, "kept", "keep", json!({ "seat": 0, "card": 2 }));
+        assert!(house_copy_inner("kept").unwrap().is_some(), "premise: the document as written has a copy");
+        let written: TableDoc = serde_json::from_str(&read_inner("table", "kept").unwrap().unwrap()).unwrap();
+        assert!(written.keeps == [Some(2), None] && written.lock.is_some(), "premise: a keep of 2, and a lock");
+
+        /// Make one field of a document malformed, in place.
+        type Malform = fn(&mut TableDoc);
+        let malformed: [(&str, Malform); 4] = [
+            ("a keep of 0", |doc| doc.keeps[0] = Some(0)),
+            ("a keep of 3", |doc| doc.keeps[0] = Some(3)),
+            ("a salt that is not hex", |doc| {
+                let lock = doc.lock.as_mut().unwrap();
+                lock.salt = "g".repeat(lock.salt.len());
+            }),
+            ("a hash that is not hex", |doc| {
+                let lock = doc.lock.as_mut().unwrap();
+                lock.hash = "g".repeat(lock.hash.len());
+            }),
+        ];
+        for (n, (what, malform)) in malformed.into_iter().enumerate() {
+            let id = format!("kept-{n}");
+            let mut doc = written.clone();
+            doc.id = id.clone();
+            malform(&mut doc);
+            let why = check_shape(&doc).expect_err(&format!("premise: `check_shape` rejects {what}"));
+            assert!(check_shape(&super::scrubbed(doc.clone())).is_ok(), "premise: with {what}, the copy alone passes");
+            load_inner("table", &id, &serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+            let refusal = format!("{id:?}'s table document is malformed, so the house would not list it: {why}");
+            assert_eq!(house_copy_inner(&id), Err(refusal), "{what}");
+        }
+        let mine = listing(RED, "mine");
+        assert!(row_in(&mine, "kept").is_some(), "premise: the listing lists the table as the layer wrote it");
+        for n in 0..4 {
+            assert!(row_in(&mine, &format!("kept-{n}")).is_none(), "premise: the listing drops kept-{n}");
+        }
     }
 
     /// **`house_frame` is the NAS's lobby frame, byte for byte** (spec §2.5): the
