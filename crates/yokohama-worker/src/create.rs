@@ -52,6 +52,7 @@ const MISROUTED: &str = "the create's id does not name the table it was routed t
 ///   ([`with_id`]), and the body goes on.
 pub fn create_inner(user: Option<&str>, body: &[u8], id: &str, content_type: Option<&str>) -> ReplyData {
     let forward = |body: &[u8]| dispatch_inner(user, "POST", "/api/games", "", content_type, body);
+    // Caller first, as the layer's dispatch orders it: no caller gets its 401, never a host sentence (spec §4).
     if identity_of(user).is_err() {
         return forward(body);
     }

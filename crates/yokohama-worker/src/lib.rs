@@ -765,11 +765,16 @@ mod tests {
     /// caller-less create 401, and spec §4 makes a host-written sentence a NAMED
     /// exception, never the default. Two probes, each carrying two defects, each
     /// answered exactly as `dispatch` answers the same body — the layer's own
-    /// 401, byte for byte — with nothing stored.
+    /// 401, byte for byte — with nothing stored under ANY id. Neither body names
+    /// this object (`"id": null` reads as absent, and the array has no id
+    /// element), so a table either made would sit under an id the layer drew,
+    /// which a read of the object's name cannot see.
     #[test]
     fn a_callerless_create_is_the_layers_401_before_any_host_refusal() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
+        // Read through the `Games`, so this is the store every create writes.
+        let stored = |doc| GAMES.lock().unwrap().as_ref().unwrap().store().list(doc).unwrap();
         let null_id = CREATE.replacen('{', r#"{"id":null,"#, 1);
         let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
         for (what, body) in [("no caller AND a null id", null_id.as_str()), ("no caller AND an array body", array)] {
@@ -777,8 +782,12 @@ mod tests {
             let direct = dispatch_inner(None, "POST", "/api/games", "", Some("application/json"), body.as_bytes());
             assert_eq!(r.status, 401, "{what}: the caller before the body — {}", r.body);
             assert_eq!((r.status, r.body), (direct.status, direct.body), "{what}: the layer's own 401");
-            assert!(read_inner("table", "sim-0000000000000a11").unwrap().is_none(), "{what}: nothing stored");
+            assert!(stored(Doc::Table).is_empty() && stored(Doc::Record).is_empty(), "{what}: nothing stored");
         }
+        // Anti-vacuity: the same listing names a table the moment one IS stored.
+        let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-0000000000000a11", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(stored(Doc::Table), ["sim-0000000000000a11"]);
     }
 
     /// The handler's ORDER, pinned by probes that each carry TWO defects — a
