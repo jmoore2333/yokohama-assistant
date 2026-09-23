@@ -394,8 +394,13 @@ be wrong is testable under `cargo test`:
   `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`; `archive` the `ReceiptArchive`'s
   plan when a put was deferred (§2.6); `picker` the lines to persist (§2.4).
 - `events(id, user, query)`: `api::parse_query::<EventsQuery>` then `api::events_at`, serialized —
-  the transport routes' payload, byte-identical to the axum host's `events` route and SSE frame. A
-  refusal's body is `error_response`'s shape RESTATED here — `{"error": …}`, plus `"status"` when
+  the transport routes' payload, byte-identical to the axum host's `events` route and SSE frame. **The
+  `wait` cap is NOT the layer's**: axum's `events` handler refuses a `wait` above 25 itself
+  (`lib.rs:586-590`, behind `server`, sentence `"a request can be held for at most 25 seconds, not
+  {wait}"`), so this export restates that check and its sentence, in the handler's order — the
+  identity, the query's parse, the cap, then `events_at`. A missing identity is
+  `identity::resolve`'s own `worker`-mode sentence (`identity.rs:157-172`), since the objects read
+  `X-Yokohama-User`. A refusal's body is `error_response`'s shape RESTATED here — `{"error": …}`, plus `"status"` when
   `table_status` is set — because that builder is `pub(crate)` and making it public would be a layer
   change for convenience (§0.2); a cell pins the restatement equal to `dispatch`'s body for the same
   refusal.
@@ -452,7 +457,8 @@ intent, its sentence (`lib.rs:734-740`); the first deploy reads the NAS's actual
 the Worker's to it. The Worker reads the body once, so a forwarded body is the bytes it bounded.
 
 **The transport routes' parity** (§0.2): `GET …/events` parses its query through the layer's own
-`parse_query`, so an unknown key and a `wait` above 25 are the layer's 400s, and it answers AT ONCE —
+`parse_query`, so an unknown key is the layer's 400, and a `wait` above 25 is the axum handler's 400
+restated in the module (§2.2); it answers AT ONCE —
 `wait` is validated and never held. The client DOES send it: the game and deal sources' `once()` is
 `api.events(game, undefined, 25)` (`web/src/signal.ts:476`), and §2.7's probe calls `once()`; an
 immediate answer is what that probe needs, and a held request would keep an object invocation open
@@ -515,7 +521,9 @@ turn-based table this runs on almost every move (R-6.5c.7's premise).
 
 **The request path, the gates, and the alarm.** A request's read → dispatch → write stretch contains
 NO `await`: `sql.exec` is synchronous and so is the module. Every write the request makes, and
-**every `setAlarm` its writes make due, go in ONE synchronous batch** — so a platform shutdown
+**every `setAlarm` its writes make due, go in ONE synchronous batch** — the SQL inside one
+`ctx.storage.transactionSync`, the `setAlarm` issued beside it in the same turn before any `await`
+(§6 says what that rests on) — so a platform shutdown
 between the batch and a side channel's outcome (a deploy, which the lifecycle page says stops an
 object "immediately") leaves the alarm to finish the work. The side channels follow the batch: frames
 (the output gate holds them until the batch is durable, §0.4); then the house push and the archive
@@ -965,8 +973,11 @@ names. For this host:
   (the layer's 400s are axum's word for word since M6.5a) — for a duplicate key, an unknown field, a
   missing field (at the original column), a non-string `id`, a non-object and an unparseable body; a
   `u64` seed exact.
-- **`events`**: an unknown key and a `wait` above 25 are the layer's 400s; a refusal's body equals
-  `dispatch`'s body for the same refusal (the restated `error_response`, §2.2).
+- **`events`**: an unknown key is the layer's 400 and a `wait` above 25 the axum handler's, restated
+  (§2.2) — each byte-identical to what the axum host answers — and in the handler's ORDER, pinned by
+  adjacent-pair probes carrying two defects each (no identity AND an unknown key; an unknown key AND
+  `wait=26`; `wait=26` AND an unknown id); a refusal's body equals `dispatch`'s body for the same
+  refusal (the restated `error_response`, §2.2).
 - **The chat variables** (defaults; a bad value refused naming it) and **the crate's platform scan**
   (`yokohama-wasm`'s `this_host_makes_no_platform_call_but_the_clock` shape).
 - **In the layer**: `archive_over_retry` stamps a finished game whose first put failed, does nothing
@@ -1075,11 +1086,15 @@ node replay does.
     it, so they lead every page, and no walk row sends a cursor for the replay to rewrite (§0.2).
   - **`created_at` and cursors** normalized as `freeze_clock` normalizes them — the clock cannot be
     frozen live.
-  - **`archive-walk.json`'s first send** answers `archive_post.json` (201) the first time the bucket
-    sees it and `archive_identical.json` (200) on every later run — the same request answered by the
-    once-rule, as its own second send is — and the replay accepts exactly those two committed
-    payloads for that one row; every other row compares as in the pool. The game-over put of `wire`
-    is `Identical` on a re-run, because a record carries no clock and the walk seats no bot (§0.2).
+  - **`archive-walk.json`'s two FIRST sends** — the finished record (`archive_post.json`, 201,
+    `"identical": false`) and the partial one (`archive_post_abandoned.json`, 201, `leaf:
+    "abandoned"`) — land only the first time the bucket sees them; on every later run the once-rule
+    answers each with **200 and the same body but `"identical": true`** (for the first, that is
+    `archive_post_identical.json` exactly; the second has no committed file for it). The replay
+    accepts, for those two rows only, either the committed 201 or that 200 — every other field
+    compared — and every other row compares as in the pool (`archive_post_identical.json` and
+    `archive_409.json` are the same on every run). The game-over put of `wire` is `Identical` on a
+    re-run, because a record carries no clock and the walk seats no bot (§0.2).
   - Every save lands under the `test/` root (§2.6).
 
 ### 5.4 Playwright — the multiplayer specs against the LIVE Worker
@@ -1182,6 +1197,12 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 - **The frame-after-write property rests on the output gate's documented sentence** ("any new
   outgoing network messages … held back until the write has completed"); the rules page's example
   names responses and fetches, not WebSocket sends by name, and no cell can observe it.
+- **The alarm's atomicity with its batch rests on the platform's write coalescing.** The SQL writes
+  go in one `transactionSync` and the `setAlarm` beside it in the same synchronous turn, with no
+  `await` between; the storage page says writes issued without an intervening `await` "will
+  automatically be submitted atomically" and that `setAlarm` takes `put`'s options, but it does not
+  name a `transactionSync` and an alarm together. The pool's `abortAllDurableObjects` cell reads
+  workerd's local behaviour; no cell can read a production crash.
 - **Hibernation's wake cost grows with the record.** Measured at 595 events; the e2e's own games reach
   1,700 applied moves, an estimate of ~3× until the exit reads it.
 - **The untrusted record on `POST /api/archive`** (handover §4 item 9) is BOUNDED — one instance of
@@ -1302,7 +1323,7 @@ the rest addressed; and twenty-two new findings, all accepted. Its report is in 
 
 | finding | what changed here |
 |---|---|
-| 1 HIGH — the live replay could not run twice: the cleanup left 90-day markers on its fixed ids, and `archive-walk.json`'s first send assumes an empty bucket | §2.9's `?force` leaves no marker and clears one; §5.3 forces the three ids before and after each run and accepts `archive_post.json` or `archive_identical.json` for the first send; R-6.5c.16; §6; also the lobby filter's `next` rule, found while fixing it |
+| 1 HIGH — the live replay could not run twice: the cleanup left 90-day markers on its fixed ids, and `archive-walk.json`'s first send assumes an empty bucket | §2.9's `?force` leaves no marker and clears one; §5.3 forces the three ids before and after each run and accepts the once-rule's 200 for the first sends (corrected at §9.3); R-6.5c.16; §6; also the lobby filter's `next` rule, found while fixing it |
 | 2 MEDIUM — `"id": null` answered 201 for a table no object held (measured) | §2.2 `create` parses as the layer's `NewGame` first and refuses `"id": null` 400; §4; battery 34 |
 | 3 MEDIUM — battery 25's cell was vacuous: `evictDurableObject` drains the push | §5.2's `abortAllDurableObjects` cell; battery 25 re-pointed |
 | 4 MEDIUM — `Games::expire`'s reason was false: `config_of` forbids a creator without a seat | R-6.5c.4 now TWO layer changes; expiry is the creator's own `delete` (§2.2's host-local `expire`, §2.4 step 1); the unreachable cell removed |
@@ -1326,3 +1347,14 @@ the rest addressed; and twenty-two new findings, all accepted. Its report is in 
 | 22 — no route for an unidentified `POST /api/archive` | §2.3 routes it to the house (the layer's 401) |
 | found while fixing — a body's id reaches a header, which carries only Latin-1 | §2.3's create row percent-encodes it; the path id is bound raw, as the layer binds it |
 | found while fixing — a create while a removal is unacknowledged would overwrite it | §2.4's 409 rule; battery 36 |
+
+### 9.3 Found while writing the plan (after `cf86c0e`)
+
+Read against the code while the plan was drafted; each is a sentence of this document that was false
+or incomplete, corrected here.
+
+| finding | what changed here |
+|---|---|
+| The `wait` cap was called the layer's 400: it is axum's `events` HANDLER's (`lib.rs:586-590`, behind `server`), so `parse_query` never refuses `wait=26` | §2.2's `events` restates the cap, its sentence and the handler's order; §2.3; §5.1's cell pins the order by adjacent-pair probes |
+| The live archive rule named `archive_identical.json`, which does not exist (the file is `archive_post_identical.json`), and missed that the walk's SECOND first send — the partial record, `archive_post_abandoned.json` — also turns into the once-rule's 200 on a re-run, with no committed file for that answer | §5.3's rule covers both first sends: the committed 201, or the same body at 200 with `"identical": true`; §9.2 row 1 |
+| §2.4's "one synchronous batch" did not say how an alarm joins SQL writes, and nothing recorded what that rests on | §2.4 names `transactionSync` plus a `setAlarm` in the same turn; §6 records the reliance on write coalescing |
