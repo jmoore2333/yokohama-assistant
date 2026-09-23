@@ -25,13 +25,15 @@
 
 export type DocKind = "record" | "table" | "chat" | "picker" | "house";
 
-/** Every key `meta` holds: spec §2.4's, and `poison`, the kind whose load
- *  trapped (the plan's Task 9). */
+/** Every key `meta` holds: spec §2.4's; `poison`, the kind whose load
+ *  trapped (the plan's Task 9); and `copy_owed`, the `house_copy` traps in a
+ *  row while a copy is owed (the orchestrator's ruling on Task 12's review). */
 export type MetaKey =
   | "generation"
   | "revision"
   | "slot"
   | "acked"
+  | "copy_owed"
   | "archive_owed"
   | "marker"
   | "held"

@@ -84,8 +84,10 @@ export function advances(acked: Ack | null, g: Generation, r: number): boolean {
   return order > 0 || (order === 0 && r > acked.revision);
 }
 
-/** The retries' backoff (spec §2.4), in milliseconds, for a slot whose pushes
- *  have failed `attempt` times: 30 s, 2 min, 10 min, then hourly. */
+/** The retries' backoff (spec §2.4), in milliseconds: the retry after the
+ *  (`attempt` + 1)-th failure in a row — 30 s after the first, 2 min after
+ *  the second, 10 min after the third, then hourly. A slot's failed pushes
+ *  and an owed copy's traps both climb it. */
 export function nextRetry(attempt: number): number {
   return [30_000, 120_000, 600_000][attempt] ?? 3_600_000;
 }

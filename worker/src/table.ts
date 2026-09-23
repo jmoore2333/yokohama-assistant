@@ -242,8 +242,10 @@ export class Table extends DurableObject<Env> {
    *   the pushed copy's digest — acknowledgements can arrive out of order, and
    *   a regressed `acked` would make a later change back to an older copy look
    *   already delivered;
-   * - the alarm is re-armed to the next deadline — the slot still waiting's
-   *   retry — or deleted when nothing is due.
+   * - the alarm: when the slot is cleared, re-armed to what is still due — a
+   *   copy still owed (`copy_owed`), at its rung from now — or deleted when
+   *   nothing is; while a newer slot still waits, left where that slot's own
+   *   batch or failure put it (one convention for the rung, `nextRetry`'s).
    *
    * An acknowledgement that clears nothing and advances nothing writes
    * nothing. And the batch is written ONLY while the object still holds its
@@ -284,7 +286,7 @@ export class Table extends DurableObject<Env> {
         if (holds) deleteMeta(sql, "slot");
         if (advance) setMeta(sql, "acked", JSON.stringify(acked));
       },
-      holds ? null : retryDue(state.slot),
+      holds ? copyRetryDue(copyOwedOf(sql)) : undefined,
     );
   }
 
@@ -315,12 +317,15 @@ export class Table extends DurableObject<Env> {
    * The alarm's half of the orchestrator's ruling I-42: the house copy
    * recomputed from the STORED table document on a module of its own, and a
    * slot written — with its alarm, in one batch — when it differs from the one
-   * last put in motion. A copy that trapped in its request is delivered so. A
-   * trap or a refusal here is logged and arms nothing: the next change to the
-   * table recomputes it, and a trap that repeated would otherwise re-arm the
-   * alarm forever. A poisoned table is never re-instantiated (spec §2.4), and
-   * nor is anything built for an object that holds no table document; a
-   * configuration the shell refuses is logged, as every request logs it.
+   * last put in motion. A copy that trapped in its request is delivered so.
+   * A trap here too is counted in `copy_owed` and re-armed on the backoff
+   * (`nextRetry`: 30 s, 2 min, 10 min, then hourly — the ceiling a failing
+   * push has), and every request computes the copy while it is owed
+   * (`commit`): spec §2.4's "retries on the alarm or the next request". A
+   * refusal is logged and arms nothing: it would repeat. A poisoned table is
+   * never re-instantiated (spec §2.4), and nor is anything built for an
+   * object that holds no table document; a configuration the shell refuses is
+   * logged, as every request logs it.
    */
   private recopy(id: string): void {
     const sql = this.ctx.storage.sql;
@@ -335,12 +340,9 @@ export class Table extends DurableObject<Env> {
     const owed = this.owed(id, table, nextReading(config.clock));
     const writes = this.owedWrites(id, owed);
     if (writes.length === 0) return;
-    this.batch(
-      () => {
-        for (const write of writes) write();
-      },
-      owed.slot === undefined ? undefined : Date.now() + nextRetry(0),
-    );
+    this.batch(() => {
+      for (const write of writes) write();
+    }, owedDue(owed));
   }
 
   /**
@@ -659,11 +661,12 @@ export class Table extends DurableObject<Env> {
    *   `"[]"` for a table it deletes with a list open (Task 4);
    * - the wake's `wakes` count, and its clearing of a load trap;
    * - **what the house is owed** (spec §2.5, `owed`), when the table
-   *   document changed: the table's first generation, and the slot with its
-   *   revision — the new copy, or a REMOVAL when the layer deleted the table
-   *   — with its alarm at +30 s set beside the batch. A copy `house_copy`
-   *   trapped on arms that alarm too, for a fresh module to recompute (the
-   *   orchestrator's ruling I-42).
+   *   document changed or a copy is still owed (`copy_owed`): the table's
+   *   first generation, and the slot with its revision — the new copy, or a
+   *   REMOVAL when the layer deleted the table — with its alarm at +30 s set
+   *   beside the batch. A copy `house_copy` traps on is counted in
+   *   `copy_owed` and arms the alarm at its rung, for a fresh module to
+   *   recompute (the orchestrator's ruling I-42).
    *
    * Every write goes in ONE `batch`, and a request with nothing to write runs
    * none — so a probe creates nothing. Answers whether the batch wrote a
@@ -695,13 +698,14 @@ export class Table extends DurableObject<Env> {
     // Computed BEFORE the batch, from the documents already read out of the
     // module (the orchestrator's ruling I-42), and written LAST in it, so the
     // slot's size and last activity count the documents this batch writes.
-    const owed = after === before ? undefined : this.owed(id, after, called.at);
+    // A copy still owed is computed by every request until it is made (spec
+    // §2.4: a side channel's trap "retries on the alarm or the next request").
+    const owed = after !== before || copyOwedOf(sql) > 0 ? this.owed(id, after, called.at) : undefined;
     if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
     if (writes.length === 0) return false;
-    const due = owed !== undefined && (owed.slot !== undefined || owed.trapped) ? now + nextRetry(0) : undefined;
     this.batch(() => {
       for (const write of writes) write();
-    }, due);
+    }, owed === undefined ? undefined : owedDue(owed));
     return owed?.slot !== undefined;
   }
 
@@ -718,13 +722,16 @@ export class Table extends DurableObject<Env> {
    *   REMOVAL. One `house_copy` refuses is logged — its sentence VERBATIM —
    *   and owes nothing: the house keeps listing the last copy it received, a
    *   state only a corrupted store reaches, whose path is the operator's force
-   *   (Task 5's escalation 1, ruled). One that TRAPS is logged, owes no slot,
-   *   and is `trapped`.
+   *   (Task 5's escalation 1, ruled). One that TRAPS — or fails in any other
+   *   way than a refusal (`copyOf`) — is logged, owes no slot, and is still
+   *   owed: `traps` counts it on the `copy_owed` before it. Any other outcome
+   *   owes no copy, and `traps` is 0.
    * - **The slot** is owed when the copy DIFFERS from the one last put in
    *   motion (`differs`), at the next revision.
    */
   private owed(id: string, table: string | undefined, at: number): Owed {
-    const state = slotState(this.ctx.storage.sql);
+    const sql = this.ctx.storage.sql;
+    const state = slotState(sql);
     const draw = state.generation === undefined ? drawGeneration(at) : undefined;
     const generation = state.generation ?? (draw as Generation);
     let copy: string | null = null;
@@ -732,29 +739,32 @@ export class Table extends DurableObject<Env> {
       const made = this.copyOf(id, table);
       if ("refused" in made) {
         log("copy-refused", { id, error: made.refused });
-        return { draw, trapped: false };
+        return { draw, traps: 0 };
       }
       if ("trapped" in made) {
         log("trap", { id, call: "house_copy", error: made.trapped });
-        return { draw, trapped: true };
+        return { draw, traps: copyOwedOf(sql) + 1 };
       }
       // `house_copy` answers `undefined` only where no table is stored, and
       // the module it ran on was handed one.
-      if (made.copy === undefined) return { draw, trapped: false };
+      if (made.copy === undefined) return { draw, traps: 0 };
       copy = made.copy;
     }
-    if (!differs(state, copy)) return { draw, trapped: false };
-    return { draw, slot: { generation, revision: state.revision + 1, copy }, trapped: false };
+    if (!differs(state, copy)) return { draw, traps: 0 };
+    return { draw, slot: { generation, revision: state.revision + 1, copy }, traps: 0 };
   }
 
-  /** The writes `owed` asks of a batch: its generation, then its slot and
-   *  revision — the slot's last activity and size read INSIDE the batch,
+  /** The writes `owed` asks of a batch: its generation; `copy_owed` — the
+   *  new count while the copy is owed, deleted once it is not; then its slot
+   *  and revision, the slot's last activity and size read INSIDE the batch,
    *  after every document write before it. */
   private owedWrites(id: string, owed: Owed): Array<() => void> {
     const sql = this.ctx.storage.sql;
     const writes: Array<() => void> = [];
-    const { draw, slot: next } = owed;
+    const { draw, slot: next, traps } = owed;
     if (draw !== undefined) writes.push(() => setMeta(sql, "generation", JSON.stringify(draw)));
+    if (traps > 0) writes.push(() => setMeta(sql, "copy_owed", String(traps)));
+    else if (copyOwedOf(sql) > 0) writes.push(() => deleteMeta(sql, "copy_owed"));
     if (next !== undefined) {
       writes.push(() => {
         const slot: Slot = {
@@ -779,7 +789,9 @@ export class Table extends DurableObject<Env> {
    * adapted in Task 12). A trap there discards THAT instance, so this
    * object's own — which the request's frames read next — is never emptied
    * by it: an emptied module reads this table as a 404, which would end every
-   * live socket (`sendFrames`).
+   * live socket (`sendFrames`). Every throw but a refusal answers `trapped`,
+   * building the instance included: the copy is a side channel, and must
+   * never cost the request its reply.
    *
    * **What the second instance costs**, and when:
    *
@@ -816,7 +828,12 @@ export class Table extends DurableObject<Env> {
     } catch (e) {
       // `load` or `house_copy` refusing, with its sentence thrown as a string.
       if (typeof e === "string") return { refused: e };
-      throw e;
+      // Anything else — the instance could not be built (a `RangeError` when
+      // its memory cannot be allocated), or any throw that is not the
+      // module's — fails the side channel as a trap does, never the request
+      // (the orchestrator's ruling on Task 12's review); `String(e)` keeps the
+      // error's class for the log line.
+      return { trapped: String(e) };
     }
   }
 
@@ -929,9 +946,10 @@ interface Owed {
   /** The slot this batch writes: a copy, or `null` — a REMOVAL — at its
    *  revision. */
   slot?: { generation: Generation; revision: number; copy: string | null };
-  /** `house_copy` trapped: the copy is still owed. `commit` arms the alarm
-   *  to recompute it; `recopy`, which the alarm runs, arms nothing. */
-  trapped: boolean;
+  /** The `copy_owed` this batch leaves: the `house_copy` traps in a row,
+   *  this one counted — the copy still owed, for the alarm (at the rung
+   *  after them) and every request to recompute — or 0, nothing owed. */
+  traps: number;
 }
 
 /** The table's slot state, as `meta` holds it (spec §2.4) — each value this
@@ -991,8 +1009,29 @@ function samePush(a: Ack, b: Ack): boolean {
   return cmpGen(a.generation, b.generation) === 0 && a.revision === b.revision;
 }
 
-/** When a waiting slot is next retried — `nextRetry` of its failures from
- *  now — or `null`, nothing due, with no slot. */
-function retryDue(slot: Slot | undefined): number | null {
-  return slot === undefined ? null : Date.now() + nextRetry(slot.attempt);
+/** When `slot` is next retried after a push of it failed, from now:
+ *  `slot.attempt` counts the failures BEFORE this one, so `nextRetry` of it
+ *  is the rung after this failure — 30 s after the first. */
+function retryDue(slot: Slot): number {
+  return Date.now() + nextRetry(slot.attempt);
+}
+
+/** `meta.copy_owed`: the `house_copy` traps in a row — 0 when no copy is
+ *  owed. */
+function copyOwedOf(sql: SqlStorage): number {
+  return Number(getMeta(sql, "copy_owed") ?? "0");
+}
+
+/** An owed copy's retry, from now, at the rung after its `traps`-th trap in
+ *  a row — `null` when none is owed. */
+function copyRetryDue(traps: number): number | null {
+  return traps > 0 ? Date.now() + nextRetry(traps - 1) : null;
+}
+
+/** When the alarm must run for what `owed` leaves due: a new slot's first
+ *  retry (30 s), or an owed copy's retry — `undefined`, the alarm left where
+ *  it is, when it leaves nothing due. */
+function owedDue(owed: Owed): number | undefined {
+  if (owed.slot !== undefined) return Date.now() + nextRetry(0);
+  return copyRetryDue(owed.traps) ?? undefined;
 }

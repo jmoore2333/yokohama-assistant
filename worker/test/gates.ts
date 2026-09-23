@@ -1,12 +1,16 @@
+import { runInDurableObject } from "cloudflare:test";
+import type { Env } from "../src/env";
 import { House } from "../src/house";
 import type { Slot } from "../src/slot";
+import type { Table } from "../src/table";
 
 /**
  * **The pool facts' technique, in one place** (the plan's pool facts 1 and 2):
- * a house push held, or failed once, by patching `House.prototype.apply` — the
- * PROTOTYPE, which the pool's RPC resolver reads through. An instance's own
- * property makes every RPC to it THROW rather than hang, which is how the
- * first two battery-25 cells were vacuous.
+ * a house push held by patching `House.prototype.apply` — the PROTOTYPE, which
+ * the pool's RPC resolver reads through. An instance's own property makes
+ * every RPC to it THROW rather than hang, which is how the SECOND battery-25
+ * text was vacuous; the first used `evictDurableObject`, which drains the
+ * push. A push FAILED is made on the table's side instead (`failPushes`).
  *
  * Every cell restores its patch in a `finally`, and BEFORE any
  * `runDurableObjectAlarm` that follows an abort: a module-level patch survives
@@ -103,22 +107,42 @@ export function holdApply(only?: Array<[id: string, revision: number]>): Hold {
   };
 }
 
-/** The house refuses the NEXT push — it throws, as an unreachable house's RPC
- *  does — and puts its own `apply` back as it does. The table receives the
- *  rejection and logs `slot-failed`; workerd ALSO prints each refusal on
- *  stderr as an "uncaught exception", raised at the pool's RPC wrapper
- *  (`@cloudflare/vitest-plugin`'s `test-internal.mjs`) — measured the same
- *  for a synchronous throw — so each refusal a cell arranges costs one such
- *  line. */
-export function failApplyOnce(): { restore(): void } {
-  const original = House.prototype.apply;
-  House.prototype.apply = async function (this: House): Promise<Ack> {
-    House.prototype.apply = original;
-    throw new Error("the house refused this push (failApplyOnce)");
-  };
+/**
+ * The next `times` pushes `stub`'s table makes FAIL, on the TABLE's side: its
+ * `env` is swapped, inside the object, for a copy whose `HOUSE` answers
+ * `apply` with a rejection — what an unreachable house's RPC gives the table
+ * (`push`'s catch, then `failed`). Pushes after those reach the real house.
+ *
+ * Why not the house's side: an `apply` that throws inside workerd's RPC
+ * dispatch prints an "uncaught exception" on stderr for every refusal, at the
+ * pool's RPC wrapper and beyond the reach of vitest's capture (measured), so
+ * the run would not be quiet. The object's `env` is REPLACED by a copy, never
+ * written to, so nothing else that holds the original sees the swap; an
+ * eviction discards the copy with the instance (pool fact 4), and `restore()`
+ * puts the original back.
+ */
+export async function failPushes(stub: DurableObjectStub<Table>, times: number): Promise<{ restore(): Promise<void> }> {
+  let left = times;
+  let own: Env | undefined;
+  await runInDurableObject(stub, (table: Table) => {
+    own = table["env"];
+    const house = own.HOUSE;
+    const unreachable = {
+      idFromName: (name: string) => house.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const real = house.get(id);
+        return {
+          apply: (slot: Slot) =>
+            left-- > 0 ? Promise.reject(new Error("the house is unreachable (failPushes)")) : real.apply(slot),
+        };
+      },
+    };
+    table["env"] = { ...own, HOUSE: unreachable as unknown as Env["HOUSE"] };
+  });
   return {
-    restore() {
-      House.prototype.apply = original;
-    },
+    restore: () =>
+      runInDurableObject(stub, (table: Table) => {
+        if (own !== undefined) table["env"] = own;
+      }),
   };
 }

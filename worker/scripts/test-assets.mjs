@@ -27,7 +27,9 @@
 //    `walk-host.json`, each as its TEXT. The replay derives its third column
 //    from this listing exactly as the node replay derives its own from
 //    `readdirSync`, and it parses each file itself, as the node replay does.
-//    A file of its own, because only the replay and its driver import it.
+//    A file of its own, imported by the replay, its driver, and the Worker's
+//    `/api/art` cell, which compares its answer with the committed
+//    `art_manifest.json`.
 
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
