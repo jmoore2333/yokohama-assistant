@@ -1,0 +1,39 @@
+// **The Worker `yokohama-web`** (spec §3.1) — the PRODUCTION configuration,
+// the one `npm run deploy` ships once `scripts/deploy-guard.mjs` passes. The
+// pool reads `wrangler.test.jsonc` instead.
+//
+// It holds the Worker's facts and its static assets. The Durable Object
+// bindings and their migration, the custom domain, the variables and the
+// bucket are added with the code that reads them.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yokohama-web",
+  "main": "src/index.ts",
+  // Pinned (spec §3.1); on or after 2026-02-24, so `deleteAll()` deletes an
+  // object's alarm too.
+  "compatibility_date": "2026-09-15",
+  // No `workers.dev` URL and no preview (Version) URLs: the Worker answers
+  // only where its own routes put it. Both are set rather than left out,
+  // because absent is not off, and the deploy guard refuses either one that is
+  // not `false`.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // The module is imported as a compiled `WebAssembly.Module`, which the
+  // factory instantiates anew on every call (spec §2.2).
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // Spec §2.3, exactly as the spike proved it (§0.3 row 7): no HTML handling,
+  // so `/index.html` answers 200 rather than a redirect the service worker's
+  // install would refuse; no not-found fallback, so a missing file reaches the
+  // Worker and answers 404 rather than `index.html`; and the Worker first for
+  // `/api/*` and `/enter`. `npm run build:assets` assembles the directory and
+  // verifies it against the release's precache list. The deploy guard checks
+  // this block, and the pool's copy, against spec §2.3.
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*", "/enter"]
+  }
+}

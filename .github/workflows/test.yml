@@ -111,11 +111,17 @@ jobs:
       # Printed so the log says which optimizer produced the module, rather than
       # leaving a reader to infer it from a cache key.
       - run: wasm-opt --version
+      # M6.5c: BOTH lock files key the npm cache — `web/` and `worker/` are two
+      # packages (P-3). A key read off one lock alone still matches after the
+      # other lock changes, and a matched key is never saved again, so that
+      # package's new downloads would never reach the cache.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: |
+            web/package-lock.json
+            worker/package-lock.json
       - run: npm ci
         working-directory: web
       - run: npm run build:wasm
@@ -126,6 +132,40 @@ jobs:
       # this is the one place the Worker's own sources are checked at all.
       - run: npm run typecheck
         working-directory: web
+      # M6.5c: the Cloudflare Worker's package (`worker/`), its own npm package
+      # with its own lock. `npm ci` installs the pinned toolchain, workerd among
+      # it — the pool runs the shell's cells inside the Workers runtime.
+      - run: npm ci
+        working-directory: worker
+      # The module the pool loads, and the one `typecheck` reads the factory's
+      # declarations from: the DEBUG build, because the trap cells call
+      # `debug_trap`, which the release module does not export. It runs BEFORE
+      # both because neither builds one, and a clean checkout has none.
+      - run: npm run build:module:debug
+        working-directory: worker
+      # Both TypeScript projects: the shell with the pool's cells (the Workers
+      # runtime's globals), and the two vitest configs (node's). Its
+      # `pretypecheck` hook writes `test/fixtures.gen.ts` first — the pool's
+      # cells import it, and a clean checkout has none until a hook has run.
+      - run: npm run typecheck
+        working-directory: worker
+      # The node half: the build scripts' cells (the factory transform, the
+      # asset assembly, the deploy guard — whose checks of the two committed
+      # wrangler configurations make a drifted `assets` block red here) and
+      # the shell's pure modules.
+      - run: npm run test:scripts
+        working-directory: worker
+      # The pool: the shell's cells inside workerd, over the module built above.
+      - run: npm test
+        working-directory: worker
+      # The module's own cells, native: every export is a thin wrapper over a
+      # pure-Rust `_inner` function, and the cells call those.
+      - run: cargo test -p yokohama-worker
+      # The module as it DEPLOYS compiles: the `release-wasm` profile, for the
+      # target, without the `debug` feature. The module built above is the
+      # debug one and the cells above are native, so no other step builds that
+      # combination.
+      - run: cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-worker
       - run: cargo test -p yokohama-web --lib --test wire_fixtures
       # M6.5b's fix wave: the browser host's own crate. It is host code with
       # four cells — among them the scan that holds its platform calls to the

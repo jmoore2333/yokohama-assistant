@@ -1,0 +1,27 @@
+{
+  "name": "yokohama-worker",
+  "private": true,
+  "version": "0.5.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build:module": "node scripts/build-module.mjs",
+    "build:module:debug": "node scripts/build-module.mjs --debug",
+    "build:assets": "node scripts/assemble-assets.mjs",
+    "build": "npm run build:module && npm run build:assets",
+    "pretypecheck": "node scripts/test-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "pretest": "node scripts/test-assets.mjs",
+    "test": "vitest run",
+    "test:scripts": "vitest run -c vitest.scripts.config.ts",
+    "deploy": "node scripts/deploy-guard.mjs && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.2.3",
+    "@cloudflare/workers-types": "^5.20260921.1",
+    "jsonc-parser": "^3.3.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11",
+    "wrangler": "4.136.3"
+  }
+}
