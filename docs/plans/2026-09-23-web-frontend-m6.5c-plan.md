@@ -15,7 +15,7 @@
 - **Tests:** Cloudflare's Workers Vitest integration (`@cloudflare/vitest-plugin` 1.2.3, or its older name `@cloudflare/vitest-pool-workers` 0.22.0; `vitest` 4.1), running inside workerd.
 - **Web and live:** React, vitest and jsdom in `web/`; Playwright 1.62.1 against the live Worker; Cloudflare Access with a Service Auth credential.
 
-**Spec:** `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at **`cca0aed`** (R-6.5c.1–16). §0 is what is TRUE at HEAD with citations, §2 the mechanism, §5 the instruments every task below ends in, §5.7 the battery, §6 what is not claimed, and §9.1–§9.3 what three reviews changed. **The umbrella is `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`**, and the entry artifact is `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`. **The spike readings** are `docs/temp/m6.5c-spike-readings-2026-09-22.md` (gitignored). **The spike's throwaway source**, if the scratchpad still has it, is a shape to start from and never an authority.
+**Spec:** `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at **`92592f2`** (R-6.5c.1–16). §0 is what is TRUE at HEAD with citations, §2 the mechanism, §5 the instruments every task below ends in, §5.7 the battery, §6 what is not claimed, and §9.1–§9.4 what the reviews changed. **The umbrella is `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`**, and the entry artifact is `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`. **The spike readings** are `docs/temp/m6.5c-spike-readings-2026-09-22.md` (gitignored). **The spike's throwaway source**, if the scratchpad still has it, is a shape to start from and never an authority.
 
 ---
 
@@ -42,7 +42,7 @@
   Each task's reviewer checks its task's lines.
 - **`web/` changes are only these:**
   - the WebSocket arm (`web/src/ws.ts` is new; `signal.ts`, `api.ts`, `types.ts` and `local/facts.ts` are widened by the `"ws"` value);
-  - the outbox's 404 branch (`web/src/outbox.ts`);
+  - the outbox's 404 branch (`web/src/outbox.ts`), with its one writer `rememberArchiveOff` in `web/src/local/facts.ts`;
   - the tests of both (Task 8);
   - the live configuration of two Playwright specs (Task 15).
   Nothing else in `web/` moves.
@@ -59,6 +59,8 @@
   - **One test-only variable this plan adds: `YOKOHAMA_WEB_TEST_CLOCK`.** It is `frozen:<n>` or `tick:<n>`, and it is set ONLY in `worker/wrangler.test.jsonc`. RUNBOOK §6 names it "never set in production".
 - **Secrets:** `.dev.vars` holds the `yokohama-worker` Service Auth credential (gitignored since `952a68c`).
   - **Never print it, never commit it, never paste it into a report.** Scripts read it from the file.
+  - **Its two keys are named `CF-Access-Client-Id` and `CF-Access-Client-Secret`** — the header names Access expects. The lines are `KEY=VALUE`. The names are stated here so nobody has to open the file to learn them.
+  - **A shell command presents it WITHOUT putting the secret on argv or on screen.** A one-off `node -e` reads `.dev.vars` and writes a header file of two `Name: value` lines into the session scratchpad, `chmod 600`. Then `curl -H @<that file> …`, and the file is deleted afterwards.
   - **`YOKOHAMA_WEB_ADMINS` is set with `wrangler secret put`**, so the owner's address never enters a committed file (a plan ruling, see Ruling P-1 below).
 - **Live actions on the owner's account are the ORCHESTRATOR's and never a subagent's**: `wrangler deploy`, the bucket, variables and secrets, `wrangler tail`, and the live Playwright and replay runs.
   - Each is recorded in RUNBOOK §6 with its readings.
@@ -87,11 +89,12 @@
 ### Rulings this plan takes (each is recorded in the ledger at the task that meets it)
 
 - **P-1 — `YOKOHAMA_WEB_ADMINS` is a `wrangler secret`, not a `vars` entry.** The spec (§3.1) lists it among the variables and says "no secrets". Its VALUE is not secret, but it is the owner's email address, and `worker/wrangler.jsonc` is committed to a repository headed for open source. A secret binding reads as an environment variable exactly as a var does, so no code differs. RUNBOOK §6 says so.
-- **P-2 — the SHELL pins the module's clock before EVERY dispatch**, and records the reading it pinned. That is how the shell always knows the reading a plan was made at (spec §2.6: `archive_owed` is "the plan and its clock reading"), game over included, where the move's dispatch is not re-run.
+- **P-2 — the SHELL pins the module's clock before EVERY module call that can reach the layer's clock** — `create`, `dispatch`, `events`, `restore_picker`, `stamp_archive` and `expire` — and records the reading it pinned. `events` and `restore_picker` belong on that list because a handle rebuild can pump an owed bot move, persist it, and reach the game-over archive site. That is how the shell always knows the reading a plan was made at (spec §2.6: `archive_owed` is "the plan and its clock reading"), game over included, where the move's dispatch is not re-run.
   - The reading is `Math.floor(Date.now() / 1000)` in production.
   - `YOKOHAMA_WEB_TEST_CLOCK=frozen:<n>` gives `n` for every dispatch. That is the corpus replay's arrangement: the node replay's `1_789_000_000`.
   - `tick:<n>` gives `n`, `n+1`, … one per dispatch. That is what the archive cells need: an unpinned re-dispatch must stamp a DIFFERENT `archived_at` (spec §5.2). workerd's `Date.now()` does not advance while code runs, so a wall clock cannot give them that.
   - The receipt loop's re-dispatch and `stamp_archive` pin the RECORDED reading instead of a fresh one. That is the whole of the clock-pin rule, and battery 17 is its mutant.
+  - **ANY reply's `archive` plan is committed as `archive_owed`** in that request's batch, with the reading pinned for the call that made it: the wake's `restore_picker`, a GET's `dispatch`, a move's. It is never only a move's (plan review M4).
   - The module's own `Date.now()` arm is only a fallback for a caller that pinned nothing.
 - **P-3 — `worker/` is its own npm package.** It has its own `package-lock.json` and the Cloudflare toolchain as dev dependencies. `web/`'s package gains nothing from this cycle.
 
@@ -131,6 +134,43 @@ The spec does not name these five inputs, and no task's tests would meet them un
 
 ---
 
+## Pool facts (MEASURED by the plan's review; every pool cell obeys them)
+
+The plan's review built a minimal project on the pinned pool and ran it: `@cloudflare/vitest-plugin` 1.2.3, `vitest` 4.1.11, `wrangler` 4.136.3, and workerd 2026-09-21 at `compatibility_date` 2026-09-15. The report is `.superpowers/sdd/2026-09-23-web-frontend-m6.5c-plan/review-plan.md`, and its scratch project is `…/scratchpad/plan-review/pool/`. These are its findings, and each one changes how a cell must be written.
+
+1. **To hold, fail or observe an RPC method, patch the PROTOTYPE, never the instance.** The pool's RPC resolver refuses an own property: `if (Object.hasOwn(instance, key)) throw new TypeError("The RPC receiver does not implement the method …")` (`@cloudflare/vitest-plugin/dist/worker/lib/cloudflare/test-internal.mjs:510-521`).
+   - So a `runInDurableObject(house, h => { h.apply = … })` makes every call THROW. It never hangs, and that made the first battery-25 cell vacuous a second time: correct code and mutant both answered `true`.
+   - Patch `House.prototype.apply`, imported from `../src/house`, and keep the original.
+   - **To HOLD a call**, await a gate the cell resolves: `let release!: () => void; const gate = new Promise<void>(r => (release = r));`. **To hold ONE revision**, key a `Map<number, Promise<void>>` by `slot.revision`. **To fail once**, a patch that restores itself and throws.
+2. **Restore every patch in a `finally`**, and BEFORE any `runDurableObjectAlarm` that follows an abort. A module-level patch SURVIVES `abortAllDurableObjects()` and `evictDurableObject()`, so an unrestored never-settling gate hangs the alarm's own delivery.
+3. **A stub taken before `abortAllDurableObjects()` is dead.** Using it fails with `Application called abortAllDurableObjects().`. Take a FRESH `env.TABLE.get(env.TABLE.idFromName(name))` afterwards.
+4. **An eviction discards everything on the live instance.** `evictDurableObject` and `abortAllDurableObjects` both re-run the constructor, so an `Instance`, a config or a field replaced on the live object through `runInDurableObject` is GONE at the wake the cell is about.
+   - A cell that must survive an eviction patches at MODULE scope: `Instance.prototype`, or a function exported from `../src/module`, restored in `finally`.
+   - For configuration, set the variable in `wrangler.test.jsonc`.
+5. **Storage is isolated per FILE, not per test.** Durable Object storage and R2 persist across the tests of one file (measured: test 2 read test 1's put), and `idFromName("house")` is one object for the whole file. So:
+   - every cell uses ids and callers of its own, e.g. `${cellName}-t`;
+   - every house listing a cell asserts on is filtered to that cell's own ids;
+   - `reset()` from `cloudflare:test` in an `afterEach` is the alternative, where a file wants it.
+6. **A WebSocket close reason longer than 123 UTF-8 bytes THROWS** (`websocket_close_reason_byte_limit`, on by default since 2026-03-03 and so at this compatibility date). `close(4404, <136 bytes>)` raised `SyntaxError` and left the socket open. Every close reason is truncated at a UTF-8 boundary to 123 bytes; the `end` frame before it carries the meaning.
+7. **Measured to work as the plan uses them:**
+   - `cloudflareTest({ wrangler: { configPath } })` in `plugins`;
+   - a `CompiledWasm` import in a test file;
+   - the `ASSETS` binding (`/index.html` → 200, a missing file → 404 under `html_handling: "none"`);
+   - calling an exported `handle()` directly;
+   - a WebSocket upgrade through `stub.fetch` (101);
+   - `evictDurableObject` hibernating a socket with its attachment intact;
+   - `abortAllDurableObjects()` closing sockets 1006;
+   - `runDurableObjectAlarm`'s true and false;
+   - `sql.databaseSize`;
+   - `transactionSync` with `setAlarm` in one turn;
+   - `ctx.waitUntil` in a Durable Object;
+   - `blockConcurrencyWhile` around awaited R2 I/O;
+   - R2's `onlyIf: new Headers({ "If-None-Match": "*" })` returning `null` on a present key;
+   - Durable Object to Durable Object RPC.
+8. **`ctx.id.name` is the object's name inside the object**, in `fetch` and `alarm` alike (Cloudflare, 2026). The plan uses it, and `meta` does not store an `id`. Task 9's cell asserts it inside `alarm()`. If that cell fails, fall back to `meta.id`, and record a ruling.
+
+---
+
 ## Names shared across tasks
 
 An implementer sees only its own task. The names below are the contract between tasks and are used verbatim.
@@ -147,7 +187,7 @@ An implementer sees only its own task. The names below are the contract between 
 | `identity(user)` | `(user: string \| undefined) => Reply`. 200 `{"user":"<normalized>"}`, or 401 carrying `identity::resolve`'s `worker`-mode sentence in the layer's error shape. It is what the house's `/api/stream` admits with: that route is the axum ROUTER's and not in the layer's table, so `dispatch` would answer it 404. | 2 |
 | `create(user, body, id, contentType)` | `=> Reply` | 3 |
 | `events(id, user, query)` | `=> Reply` (status + body; `bumps` is always `[]`) | 3 |
-| `restore_picker(id, row)` | `(id: string, row: string) => Reply`. `row` is the stored `picker` row's JSON, or `"null"` when there is none. It ALWAYS builds the table's handle first, which is the replay, and that is what makes a record that traps a LOAD trap (Task 9). `Reply.picker` is `"[]"` when the list was cleared and absent when it was kept; `Reply.bumps` carries an owed bot pump the rebuild made. | 4 |
+| `restore_picker(id, row)` | `(id: string, row: string) => Reply`. `row` is the stored `picker` row's JSON, or `"null"` when there is none. It ALWAYS builds the table's handle first, which is the replay, and that is what makes a record that traps a LOAD trap (Task 9). `Reply.picker` is `"[]"` when the list was cleared and absent when it was kept; `Reply.bumps` carries an owed bot pump the rebuild made, and `Reply.archive` the plan that pump's game-over put deferred (plan review M4 — it is drained exactly as `dispatch` drains it). At an open or dealing table, where `handle()` answers `Err(Open \| Dealing)`, it answers 200 with nothing to report, and the wake treats that as normal (m13). | 4 |
 | `house_copy(id)` | `=> string \| undefined` — throws `check_shape`'s reason | 5 |
 | `put_copy(id, json)` / `remove_copy(id)` | the house's store, replace / remove | 5 |
 | `house_frame(seq, chat)` | `(seq: number, chat: number) => string`. The crate's own two-field struct, serialized; a cell compares it with the SSE frame's `format!` at `lib.rs:699-701` (spec §2.2). | 5 |
@@ -187,7 +227,7 @@ An implementer sees only its own task. The names below are the contract between 
 - `frame(event, data)` in `frames.ts` (Task 10);
 - the slot's ordering helpers in `slot.ts` (Task 12);
 - `executePlan(bucket, plan)` in `r2.ts` (Task 13);
-- `markerSentence(marker, now)` in `marker.ts` (Task 14);
+- `markerSentence(m: Marker)` in `marker.ts` (Task 14);
 - the classes `Table` (`table.ts`), `House` (`house.ts`) and `Archive` (`archive.ts`), exported from `index.ts`.
 
 **Internal headers the Worker sets and the objects trust** (every client `x-yokohama-*` header is stripped first, spec §2.3):
@@ -218,7 +258,10 @@ An implementer sees only its own task. The names below are the contract between 
   - `live-replay.mjs` (Task 15);
   - and their `*.test.mjs`.
 - `worker/src/` — `env.ts`, `config.ts`, `module.ts`, `index.ts`, `identity.ts`, `route.ts`, `storage.ts`, `frames.ts`, `table.ts`, `house.ts`, `archive.ts`, `slot.ts`, `r2.ts`, `marker.ts`, `admin.ts`
-- `worker/test/` — the pool cells and `helpers.ts`, `corpus.test.ts` (Task 12)
+- `worker/test/` — the pool cells, and:
+  - `helpers.ts` (Task 9);
+  - `gates.ts` and `walk.ts` (Task 12), and `corpus.test.ts` (Task 12);
+  - `fixtures/owed-pump.{table.json,json}` (Task 2) and `fixtures/owed-game-over.{table.json,json}` (Task 6) — Rust-made, committed.
 - `web/src/ws.ts` and `web/src/ws.test.ts`
 - `web/src/wire-script/walk-host.json` and `archive-walk.json` — generated at Task 1, committed
 - `web/e2e/live.ts` — the live target's context helper (Task 15)
@@ -231,7 +274,7 @@ An implementer sees only its own task. The names below are the contract between 
 - `web/src/signal.ts`, `api.ts`, `types.ts`, `local/facts.ts`, `outbox.ts` (and their tests)
 - `web/e2e/two_browsers.spec.ts`, `joins_by_link.spec.ts`, `web/playwright.config.ts` (Task 15)
 - `.github/workflows/test.yml` (Task 7)
-- `.gitignore` (`worker/gen/`, `worker/assets/`, `worker/.test-assets/`, `worker/node_modules/`, `worker/.wrangler/`)
+- `.gitignore` (`worker/gen/`, `worker/assets/`, `worker/.test-assets/`, `worker/node_modules/`, `worker/.wrangler/`, `worker/test/fixtures.gen.ts`)
 - `deploy/RUNBOOK.md` (§6 new from Task 11; §4 rewritten at Task 11)
 - `CLAUDE.md`, `docs/handover.md` (Task 16)
 
@@ -257,7 +300,7 @@ The order runs from the layer outward, so that each task's tests stand on someth
 1 ─► 2 ─► 3 ─► 4 ─► 5 ─► 6 ─► 7 ─► 8 ─► 9 ─► 10 ─► 11 (deploy) ─► 12 (deploy) ─► 13 (deploy) ─► 14 (deploy) ─► 15 ─► 16
 ```
 
-Task 8 depends only on the spec and may run beside Tasks 2–7. It must merge before Task 11.
+Task 8 depends only on the spec. It runs in sequence like every other task: the standing rule is that nothing runs in a tree while an implementer works there. The one exception is a separate git worktree (superpowers:using-git-worktrees), made by the orchestrator. It must merge before Task 11.
 
 ---
 
@@ -269,7 +312,7 @@ Task 8 depends only on the spec and may run beside Tasks 2–7. It must merge be
   - add its cells in the file's test module (the `RecordingArchive` double is at `:1865`, `play_to_the_end` at `:1911`).
 - Modify: `crates/yokohama-web/src/tables.rs:362` — `pub(crate) fn check_shape` becomes `pub fn check_shape`.
 - Modify: `crates/yokohama-web/tests/wire_fixtures.rs`:
-  - `struct Walk` (`:725`), `walk_with`'s return (`:1738-1741`), `corpus()` (`:2084`) and the writer test (`:2738`);
+  - `struct Walk` (`:725`), `walk_with`'s return (`:1738-1741`), `corpus()` (`:2071`) and the writer test (`:2738`);
   - the `hosts_own` filter at `:2131` keeps its meaning.
 - Create (generated, committed): `web/src/wire-script/walk-host.json`, `web/src/wire-script/archive-walk.json`.
 
@@ -308,6 +351,12 @@ fn archive_over_retry_completes_a_game_over_put_that_failed() {
 
     let archive = RecordingArchive::recording();
     let games = games.with_archive(archive.clone());
+    // `play_to_the_end` drives a SECOND, bot-seated `Repl`: the table's own
+    // resident handle is still at the opening, so without this eviction the
+    // retry reads a game that is not over and the cell fails for the right
+    // code (measured by the plan's review). In production the resident handle
+    // IS the game, so the function itself must not evict.
+    games.evict_for_test("late");
     games.archive_over_retry("late").expect("the retry");
     let stored = games.store().read(Doc::Record, "late").unwrap().unwrap().0;
     {
@@ -327,16 +376,21 @@ fn archive_over_retry_completes_a_game_over_put_that_failed() {
 #[test]
 fn archive_over_retry_does_nothing_for_an_unfinished_game_or_an_archive_that_is_off() {
     let archive = RecordingArchive::recording();
-    let games = games().with_archive(archive.clone());
-    one_move_in(&games, "mid");
-    games.archive_over_retry("mid").expect("an unfinished game is not an error");
+    let running = games().with_archive(archive.clone());
+    one_move_in(&running, "mid");
+    running.evict_for_test("mid");
+    running.archive_over_retry("mid").expect("an unfinished game is not an error");
     assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 
-    let games = games(); // NoArchive
-    play_to_the_end(&games, "off");
-    games.archive_over_retry("off").expect("an archive that is off is not an error");
-    assert_eq!(games.read_table("off").unwrap().unwrap().0.archived_at, None);
-    assert!(matches!(games.archive_over_retry("nobody"), Err(GameError::NotFound(_))));
+    // NoArchive. The eviction is what makes this half NON-VACUOUS: without it
+    // the stale resident handle reads "not over", and the cell would stay green
+    // even under a mutant that dropped the archive-off check.
+    let off = games();
+    play_to_the_end(&off, "off");
+    off.evict_for_test("off");
+    off.archive_over_retry("off").expect("an archive that is off is not an error");
+    assert_eq!(off.read_table("off").unwrap().unwrap().0.archived_at, None);
+    assert!(matches!(off.archive_over_retry("nobody"), Err(GameError::NotFound(_))));
 }
 
 /// The stamp's version-conflict retry is the layer's code, and this is the one
@@ -365,6 +419,7 @@ fn archive_over_retry_stamps_through_a_concurrent_table_write_and_keeps_it() {
     play_to_the_end(&games, "raced");
     let store = Arc::clone(games.store());
     let games = games.with_archive(Arc::new(Meddling { store }));
+    games.evict_for_test("raced"); // the resident handle is the opening's — see the first cell
     games.archive_over_retry("raced").expect("the retry");
     let (doc, _) = games.read_table("raced").unwrap().unwrap();
     assert!(doc.archived_at.is_some(), "the stamp was retried over the concurrent write");
@@ -504,7 +559,10 @@ git commit -m "feat(web): the layer's two M6.5c changes, and the corpus's host a
 ### Task 2: `crates/yokohama-worker` — the core: `init`, `dispatch`, the recording signal, the side channel, the clock (spec §2.2)
 
 **Files:**
-- Modify: `Cargo.toml` (root) — `members` gains `crates/yokohama-worker`.
+- Modify: `Cargo.toml` (root):
+  - `members` gains `crates/yokohama-worker`;
+  - the `[profile.release-wasm]` comment says "The browser host's module, and NOTHING else", which becomes false at this task. It now names both hosts' modules, and keeps the M6.5b2 figures as the BROWSER module's (plan review m11).
+- Create: `worker/test/fixtures/owed-pump.table.json` and `owed-pump.json` — generated, committed (below).
 - Create: `crates/yokohama-worker/Cargo.toml`, `src/lib.rs`, `src/signal.rs`, `src/config.rs`.
 
 **Interfaces:**
@@ -620,7 +678,7 @@ The signal cell comes next, and the planner's warning goes with it.
   - create → `{"bump": id}` (`tables.rs:776`);
   - join filling the last seat → `{"bump": id}` (`:1409`);
   - the first keep → `{"bump_table": id}` (`:1511`);
-  - the last keep, which finalizes → `{"bump": id}` (`:1262`, `flip_to_playing`);
+  - the last keep, which finalizes → `{"bump_table": id}` then `{"bump": id}` (`:1507-1511`, then `:1262`'s `flip_to_playing`);
   - an applied `input` → `{"bump": id}` (`games.rs:668`, `persist`);
   - a table chat post → `{"bump_table": id}` (`:958`);
   - a house chat post → `{"bump_house_chat": null}` (`:972`);
@@ -633,8 +691,8 @@ The signal cell comes next, and the planner's warning goes with it.
   - house chat `{"name": "Red", "text": "…"}`.
   - For the input, read the frame's first option number off `GET /api/games/{id}` as the mover, and post `{"line": "<n>"}`.
 - **Assert each reply's `bumps` EXACTLY, in order.** Then the cold pump:
-  - The pump arrangement: a vs-bot table whose record ends with the bot to move. The layer's `bring_alive` cells are the way to arrange it: grep `bring_alive` in `crates/yokohama-web/src`.
-  - Then `init` afresh, `load` both documents, and send a request that builds the handle and THEN refuses. `GET …/record` answers 409 while the game runs; verify at `api.rs`'s record route that it builds the handle first.
+  - The pump arrangement is the COMMITTED fixture `worker/test/fixtures/owed-pump.{table.json,json}`: a vs-bot table whose record's human moves were applied through `Session` with no pump, until the bot is to move. The layer's finalize itself pumps (`tables.rs:1211`), so no API sequence leaves a bot owed. Generate it once, as the first cell below says.
+  - `init` afresh, `load` both documents, and send a request that builds the handle and THEN refuses: `GET …/record` answers 409 while the game runs, after `Games::handle` (`api.rs:1839-1850`).
   - Assert the reply carries `{"bump": id}`: the pump happened, and it is recorded because it happened (`lib.rs:520-538`).
 
 ```rust
@@ -661,7 +719,14 @@ fn every_bump_site_arrives_in_the_reply_tagged_and_in_order() {
     let r = call("red@t.test", "POST", "/api/games/b/keep", Some(r#"{"seat":0,"card":1}"#));
     assert_eq!((r.status, tagged(&r).as_str()), (200, r#"[{"bump_table":"b"}]"#), "a keep that does not finalize");
     let r = call("blue@t.test", "POST", "/api/games/b/keep", Some(r#"{"seat":1,"card":1}"#));
-    assert_eq!((r.status, tagged(&r).as_str()), (200, r#"[{"bump":"b"}]"#), "the last keep finalizes");
+    // TWO bumps, in this order (tables.rs:1507-1511): the keep's own write bumps the
+    // table, and the finalize it then runs is a second write — `flip_to_playing`
+    // bumps the house. A recorder that merged them would change what the table frames on.
+    assert_eq!(
+        (r.status, tagged(&r).as_str()),
+        (200, r#"[{"bump_table":"b"},{"bump":"b"}]"#),
+        "the last keep finalizes",
+    );
     let r = call("red@t.test", "POST", "/api/games/b/input", Some(r#"{"line":"1"}"#));
     let state: serde_json::Value = serde_json::from_str(&r.body).unwrap();
     assert!(state["events"].as_u64().unwrap() > 0, "premise: line 1 APPLIED a move at the first prompt");
@@ -674,44 +739,71 @@ fn every_bump_site_arrives_in_the_reply_tagged_and_in_order() {
     assert_eq!((r.status, tagged(&r).as_str()), (204, r#"[{"end":"b"}]"#), "the creator's delete");
 }
 
+/// **The owed-pump FIXTURE** (plan review M3). Task 9's pool cell needs the SAME
+/// bytes — a record whose last events leave the bot to move — and only Rust can
+/// make them. They cannot be re-derived byte-identically, because the finalize
+/// draws the bot seat's agent seed from OS entropy. So they are GENERATED once,
+/// under `UPDATE_WORKER_FIXTURES=1`, COMMITTED, and loaded by both cells.
+/// Without the variable this cell asserts the committed pair's premise instead.
+#[test]
+fn the_owed_pump_fixture_owes_the_bot_a_move() {
+    let _s = serial();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../worker/test/fixtures");
+    if std::env::var_os("UPDATE_WORKER_FIXTURES").is_some() {
+        init_inner(&config("off")).unwrap();
+        let prior = set_clock(Some(1_789_000_000.0));
+        let create = r#"{"id":"owed","players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,
+                         "seats":[{"user":"red@t.test"},{"bot":true}]}"#;
+        assert_eq!(call("red@t.test", "POST", "/api/games", Some(create)).status, 201);
+        assert_eq!(call("red@t.test", "POST", "/api/games/owed/keep", Some(r#"{"seat":0,"card":1}"#)).status, 200);
+        let table = read_inner("table", "owed").unwrap().unwrap();
+        let record: yokohama_core::GameRecord =
+            serde_json::from_str(&read_inner("record", "owed").unwrap().unwrap()).unwrap();
+        let mut session =
+            yokohama_cli::session::Session::from_record(record, yokohama_core::Rules::standard()).unwrap();
+        let bot = yokohama_core::PlayerId::new(1);
+        while session.state().current_player != bot {
+            let mv = session.legal()[0].clone();
+            session.apply(mv, vec![]).unwrap();
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("owed-pump.table.json"), &table).unwrap();
+        std::fs::write(dir.join("owed-pump.json"), session.to_record_json().unwrap()).unwrap();
+        set_clock(prior);
+    }
+    let record: yokohama_core::GameRecord =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("owed-pump.json")).expect("the committed fixture")).unwrap();
+    let session = yokohama_cli::session::Session::from_record(record, yokohama_core::Rules::standard()).unwrap();
+    assert_eq!(session.state().current_player, yokohama_core::PlayerId::new(1), "premise: the bot is owed a move");
+}
+
 /// **A GET can write** (`lib.rs:520-538`): a cold handle rebuilt with a bot to
 /// move pumps that move and persists it — and the bump is in the reply even
 /// though the request it rode in on is then REFUSED, because it happened. The
 /// shell (Task 9) relies on this: it compares documents after EVERY dispatch.
-///
-/// The layer's finalize already pumps (`tables.rs:1211`), so a stored record
-/// that OWES a bot move is built here on purpose: the human's moves are applied
-/// through `Session` with no pump, until the bot is to move.
+/// The record route builds the handle before it refuses (`api.rs:1839-1850`,
+/// measured by the plan's review).
 #[test]
 fn a_cold_handles_owed_bot_move_is_recorded_before_a_later_refusal() {
     let _s = serial();
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../worker/test/fixtures");
+    let table = std::fs::read_to_string(dir.join("owed-pump.table.json")).expect("the committed fixture");
+    let owed = std::fs::read_to_string(dir.join("owed-pump.json")).expect("the committed fixture");
     init_inner(&config("off")).unwrap();
-    let create = r#"{"id":"v","players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,
-                     "seats":[{"user":"red@t.test"},{"bot":true}]}"#;
-    assert_eq!(call("red@t.test", "POST", "/api/games", Some(create)).status, 201);
-    assert_eq!(call("red@t.test", "POST", "/api/games/v/keep", Some(r#"{"seat":0,"card":1}"#)).status, 200);
-    let table = read_inner("table", "v").unwrap().unwrap();
-    let record: yokohama_core::GameRecord =
-        serde_json::from_str(&read_inner("record", "v").unwrap().unwrap()).unwrap();
-    let mut session = yokohama_cli::session::Session::from_record(record, yokohama_core::Rules::standard()).unwrap();
-    let bot = yokohama_core::PlayerId::new(1);
-    while session.state().current_player != bot {
-        let mv = session.legal()[0].clone();
-        session.apply(mv, vec![]).unwrap();
-    }
-    let owed = session.to_record_json().unwrap();
-
-    init_inner(&config("off")).unwrap();
-    load_inner("table", "v", &table).unwrap();
-    load_inner("record", "v", &owed).unwrap();
-    let r = call("red@t.test", "GET", "/api/games/v/record", None);
+    load_inner("table", "owed", &table).unwrap();
+    load_inner("record", "owed", &owed).unwrap();
+    let r = call("red@t.test", "GET", "/api/games/owed/record", None);
     assert_eq!(r.status, 409, "premise: the record route refuses a running game — AFTER the handle is built");
-    assert_eq!(tagged(&r), r#"[{"bump":"v"}]"#, "the owed pump happened, so its bump is recorded");
-    assert_ne!(read_inner("record", "v").unwrap().unwrap(), owed, "and the pump was persisted");
+    assert_eq!(tagged(&r), r#"[{"bump":"owed"}]"#, "the owed pump happened, so its bump is recorded");
+    assert_ne!(read_inner("record", "owed").unwrap().unwrap(), owed, "and the pump was persisted");
 }
 ```
 
-If the record route turns out to refuse BEFORE building the handle (read `api.rs`'s record route first), use another read that builds it — `GET /api/games/v/ports` builds it and answers 200 — and name the change in the cell's doc.
+Generate the fixture ONCE, before the cells are expected to pass. Commit both files, and do not regenerate them unless the engine's replay of them breaks:
+
+```bash
+UPDATE_WORKER_FIXTURES=1 cargo test -p yokohama-worker the_owed_pump_fixture
+```
 
 - [ ] **Step 3: Add the crate's platform scan**, copied from `yokohama-wasm`'s `this_host_makes_no_platform_call_but_the_clock` with the same eight patterns and both anti-vacuity partners. It reads EVERY `src/*.rs` of THIS crate.
 
@@ -730,7 +822,7 @@ If the record route turns out to refuse BEFORE building the handle (read `api.rs
     - `init_inner(config: &str) -> Result<(), String>` builds a FRESH `Arc<MemStore>`, a fresh `Arc<RecordingSignal>` and `Games::with_parts(Arc::new(Rules::standard()), store.clone(), chat, signal.clone(), Arc::new(now), Arc::new(NoArchive))`, and stores all three statics. It is a rebuild, never a once.
     - `identity_of` builds an `http::HeaderMap` holding `x-yokohama-user` when a value is given and calls `identity::resolve(IdentityMode::Worker, &headers)`. A value that is not a valid header is `User::parse`'s sentence.
     - `dispatch_inner` resolves the identity as an `api::Identity`: `Ok(&user)`, or `Err(sentence)` carried into `dispatch` exactly as `yokohama-wasm` does. It dispatches, then drains the signal into `bumps`.
-    - `load_inner` / `read_inner` go through `Games::load_document` / `read_document`, over `record | table | chat | house`. At THIS task, `"house"` maps to `Doc::House` and every other name is refused.
+    - `load_inner` / `read_inner` go through `Games::load_document` / `read_document`. The four names `record`, `table`, `chat` and `house` map to `Doc::Record`, `Doc::Table`, `Doc::Chat` and `Doc::House`, and every other name is refused. The house chat's one id is `chat::HOUSE` (`"house"`), which `Store` enforces.
   - **The clock is `yokohama-wasm`'s shape**: `FROZEN_ON` / `FROZEN`, `Date.now()` on `wasm32` and a ticking counter natively. `set_clock` returns the prior `Option<f64>`.
   - **`Reply`** is a `#[wasm_bindgen] pub struct` with getters for `status`, `body`, `bumps` (the list serialized), `archive` and `picker` (both `Option<String>`).
 
@@ -739,7 +831,7 @@ If the record route turns out to refuse BEFORE building the handle (read `api.rs
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add Cargo.toml Cargo.lock crates/yokohama-worker
+git add Cargo.toml Cargo.lock crates/yokohama-worker worker/test/fixtures/owed-pump.table.json worker/test/fixtures/owed-pump.json
 git commit -m "feat(worker): the per-object module's core — init, dispatch with recorded bumps, the side channel and the clock"
 ```
 
@@ -762,9 +854,10 @@ git commit -m "feat(worker): the per-object module's core — init, dispatch wit
   - `pub(crate) fn error_body(e: &ApiError) -> String` — `error_response`'s shape RESTATED: `{"error": …}`, plus `"status"` when `table_status` is set.
 
 **The create rule (spec §2.2), in order:**
-1. **Parse the body as the layer's `NewGame` through the layer's `parse_json`.** A body the layer would refuse is dispatched UNCHANGED, and the layer's own 400 answers it byte for byte. That covers a duplicate key, an unknown field, a missing field, a non-string `id`, a missing content type, a non-object and an unparseable body.
+1. **Parse the body as the layer's `NewGame` through the layer's `parse_json`.** A body the layer would refuse is dispatched UNCHANGED, and the layer's own 400 answers it byte for byte. That covers a duplicate key, an unknown field, a missing field, a non-string `id`, a missing content type, an unparseable body, and a non-object the layer refuses (e.g. `[1,2]`).
+1b. **A body that PARSES but is not a JSON object** — serde's derived `Deserialize` accepts a struct as a positional ARRAY, and the plan's review measured `[2,["Red","Blue"],0,null,[…]]` answering 201 on the layer directly — is refused **400** `"a game must be created from a JSON object"` (host-written; spec §4 at §9.4). The Worker's router reads `id` only from an object, so a positional id could name a table no object holds. The layer's own acceptance of arrays is a pre-existing quirk of the NAS too, and is LEAVE-listed for the cleanup cycle.
 2. **`id: Some(s)`**: `s` is the name the Worker routed by. Dispatch unchanged.
-   - `s != id` cannot happen through the Worker: both parse the same text, and a body the two parsers read differently fails the layer's parse. It is still refused **500** `"the create's id does not name the table it was routed to"`, so that a routing defect is loud instead of a 201 for an object that holds nothing.
+   - `s != id` cannot happen through the Worker once 1b holds: an object body is read the same way by both parsers, and one they read differently fails the layer's parse. It is still refused **500** `"the create's id does not name the table it was routed to"`, so that a routing defect is loud instead of a 201 for an object that holds nothing.
    - It is host-written, and spec §4 lists it (added at §9.3).
 3. **`id: None` and the body carries an `id` key** (`"id": null`): refuse **400** `"a game id, when given, must be a string"` (host-written, spec §4). Asking whether the key is present is a second parse into `serde_json::Map`, and it only decides.
 4. **`id: None` and no key**: insert `,"id":<serde_json::to_string(id)>` TEXTUALLY immediately before the object's FINAL `}`, then dispatch. Find that brace as the last byte that is not JSON whitespace (space, tab, `\n`, `\r`). A body that parsed always has a member before it, since `seats` is required.
@@ -867,6 +960,25 @@ fn a_u64_seed_is_stored_exactly() {
     assert!(read_inner("table", "sim-00000000000000dd").unwrap().unwrap().contains("18446744073709551615"));
 }
 
+/// A positional ARRAY body the layer itself would accept (plan review m3) is
+/// refused here: this host names its object from an object's `id` only.
+#[test]
+fn an_array_body_the_layer_would_accept_is_refused() {
+    let _s = serial();
+    init_inner(&config("off")).unwrap();
+    // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-180) — adjust the array to
+    // that order until the premise below holds; the review's measured body was
+    // `[2,["Red","Blue"],0,null,[…]]`.
+    let body = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+    let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
+    assert_eq!(direct.status, 201, "premise: the LAYER accepts this array positionally — {}", direct.body);
+    init_inner(&config("off")).unwrap();
+    let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ff", Some("application/json"));
+    assert_eq!(r.status, 400, "{}", r.body);
+    assert_eq!(r.body, r#"{"error":"a game must be created from a JSON object"}"#);
+    assert!(read_inner("table", "sim-00000000000000ff").unwrap().is_none());
+}
+
 /// Unreachable through the Worker, and loud if it ever is not (spec §2.2, §4).
 #[test]
 fn a_string_id_that_is_not_the_objects_name_is_a_routing_defect() {
@@ -965,40 +1077,54 @@ git commit -m "feat(worker): create names its object textually and refuses a nul
   - Otherwise it re-feeds each line through `api::input` as its user, discarding the replies. A line that fails, changes the record, or leaves `sub` closed clears the list.
 
 - [ ] **Step 1: The failing cells.**
-  - **The arrangement** follows the walk: rows 47–51 of `walk.json` are `1`, `2`, `A09`, `confirm` on a 2P table from seed 20260831. Here, one move in, `2` opens the `place_a` picker. Assert that as a PREMISE (`prompt.kind == "place_a"`) rather than trusting this sentence.
-  - **Write a helper `at_place_a(id)`** in the test module. It creates the table as Task 2's signal cell does, joins, keeps both, posts `1`, posts `2`, and asserts the premise.
+  - **The arrangement is MEASURED** (the plan's review, seed 20260831, through `dispatch`). On a 2P table from Task 2's create body, joined and both kept, as red:
+    - `1` APPLIES the opening move, AdditionalActionFirst → Placement, so `events` becomes 1;
+    - `1` opens the **PlaceA** picker (`prompt.kind == "place_a"`, `selected: []`) — at that prompt `1` is Option A, `2` Option B and `3` "Place no assistants";
+    - `A09` TOGGLES Customs (A09) into `selected` (`[9]`), and a second `A09` toggles it out;
+    - `confirm` places: "Red: 1 assistant placed in Customs (A09)", and `events` becomes 2.
+  - **Do not follow the walk's `2` here.** It opens PlaceB (`walk.json` rows 49–50 name `place_b` and `place_b_selected`). Assert every premise above as the cell runs: the kind, the `selected` list and the event counts.
+  - **Write a helper `at_place_a(id)`** in the test module that creates, joins, keeps both, posts `1`, posts `1`, and asserts `place_a` with `selected: []`.
   - **The cells:**
 
 ```rust
 #[test]
-fn an_open_picker_grows_the_list_and_a_move_clears_it() { /* at_place_a; the reply to `2` carries picker [2];
-    `A09` → picker [2, A09]; `confirm` applies — the record changed — and the reply carries picker "[]" */ }
+fn an_open_picker_grows_the_list_and_a_move_clears_it() { /* at_place_a — the reply to the second `1` carries
+    picker ["1"]; `A09` → picker ["1","A09"] and selected [9]; `confirm` applies (events 1 → 2, the record changed)
+    and its reply carries picker "[]" */ }
 
 #[test]
-fn a_chat_post_between_two_clicks_leaves_the_list() { /* `2`; POST chat (its reply's picker is None);
-    `A09` → picker [2, A09] — battery 21's native catcher */ }
+fn a_chat_post_between_two_clicks_leaves_the_list() { /* at_place_a; POST …/chat (its reply's picker is None);
+    `A09` → picker ["1","A09"] — battery 21's native catcher */ }
 
 #[test]
-fn the_sixty_fifth_line_clears_the_list() { /* `2`, then `A09` toggled on and off: 64 lines in the list,
-    the 65th reply carries "[]" */ }
+fn the_sixty_fifth_line_clears_the_list() { /* at_place_a (1 line), then `A09` 63 times — the picker stays open,
+    each a 200, toggling — for 64 lines; the next `A09` is the 65th and its reply carries "[]" */ }
 
 /// Umbrella §4's H-4 acceptance, natively: a PlaceA picker mid-selection
 /// survives a new instance, and the next line commits the move the player
 /// intended.
 #[test]
-fn restore_picker_rebuilds_a_place_a_picker_so_confirm_commits_the_intended_move() { /* `2`, `A09`; capture
-    the row, the table and the record; init() afresh (a new instance); load both; restore_picker(row) keeps the
-    list (picker None); `confirm` → the record grows by the PlaceA placement naming A09; and the CONTROL: the same
-    arrangement WITHOUT restore_picker leaves `confirm` refused (a 400 from the grammar or a 409 from `expect`) */ }
+fn restore_picker_rebuilds_a_place_a_picker_so_confirm_commits_the_intended_move() { /* at_place_a; `A09`
+    (selected [9]); capture the picker row, the table and the record; init() afresh (a new instance); load both;
+    restore_picker(row) keeps the list (its picker None); `confirm` → events 2, the placement names A09.
+    THE CONTROL: the same arrangement WITHOUT restore_picker — `confirm` answers 200 with "Unrecognized input" and
+    the record UNCHANGED (events stays 1); and `confirm` sent WITH `"expect":"place_a"`, as the client sends it,
+    answers 409 "this game is asking \"options\", not \"place_a\" …" (both measured by the plan's review) */ }
 
 #[test]
 fn a_list_built_at_another_record_is_cleared_without_being_refed() { /* a row whose `record` digest is not
     the current record's → Reply.picker "[]", the record untouched, no bump */ }
+
+#[test]
+fn restore_picker_at_a_table_with_no_session_answers_200_and_does_nothing() { /* an open table and a dealing
+    one: handle() is Err(Open | Dealing); restore_picker(id, "null") answers 200 with no picker, no bumps and no
+    archive (plan review m13) */ }
 ```
 
-  These five cells follow the same structure as Tasks 2 and 3: `call(...)`, `tagged(...)`, and assertions on `ReplyData.picker`. Every step of their arrangements is named above; write them in full.
+  These cells follow the same structure as Tasks 2 and 3: `call(...)`, `tagged(...)`, and assertions on `ReplyData.picker`. Every step of their arrangements is named above; write them in full.
   - **A body comment is not a placeholder here.** Each one names every request and every assertion, and nothing is left to decide.
   - **The CONTROL half of the restore cell is load-bearing.** Without it, the cell would pass even if `restore_picker` did nothing.
+  - `restore_picker_inner` drains `archive` exactly as `dispatch_inner` does (plan review M4): a rebuild whose owed pump reaches game over carries its plan out.
 
 - [ ] **Step 2: Watch them fail.**
 
@@ -1044,7 +1170,7 @@ git commit -m "feat(worker): an open picker survives a new instance by re-fed li
     - Open: unlocked, and locked with `"password":"sesame"`.
     - Dealing: one keep in, so a keep of card **2** is present.
     - Playing, and over.
-    - An over table is the COMMITTED finished pair, `load`ed as-is: `crates/yokohama-web/tests/fixtures/browser-played-2p.json` and `.table.json`, 595 events, against the bot, with `turn.over` true.
+    - An over table is the COMMITTED finished pair, `load`ed as-is and **under its own id, `local-242a5429453c593c`**: `crates/yokohama-web/tests/fixtures/browser-played-2p.json` and `.table.json`, 595 events, against the bot, with `turn.over` true. `write_table` keys by the document's `id` (`tables.rs:810-813`), so under any other key a later write would make a phantom document and conflict (plan review m12).
       - Do not try to play a game to its end through the API with a naive policy. The layer's own whole-game gate livelocks on some seeds for exactly that reason.
     - One table is named `"Café ☕ 東京"` with `"display_name": "Zoë"` (**Review Focus 4**).
   - **For every viewer kind** (a seat holder, the creator, a stranger, a stranger on the `unlocked` roster after a correct `unlock`), capture `GET /api/games` for `scope=mine`, `open` and `playing`.
@@ -1057,13 +1183,17 @@ fn the_scrubbed_copies_list_exactly_what_the_originals_list_for_every_viewer() {
        and that the non-ASCII name and display name appear verbatim in both (Review Focus 4) */
 }
 
-/// The value pin (battery 3) and its anti-vacuity partner: no copy carries
-/// this run's seed (decimal AND hex), the password, the salt, the hash, or any
-/// keep other than 1 — while the ORIGINAL documents carry every one of them.
+/// The value pin (battery 3) and its anti-vacuity partner (plan review M6):
+/// the ORIGINAL stored document carries the decimal seed, the lock's salt and
+/// hash, and a keep of 2 — and no copy carries any of them. The PASSWORD and the
+/// seed in HEX are absence-only needles: the stored document never holds either
+/// (the lock is `Lock { salt, hash }`, and the seed is a decimal JSON number), so
+/// they are searched for in the copy and never claimed present in the original.
 #[test]
-fn no_house_copy_carries_a_secret_that_its_original_does() { /* per table: parse the ORIGINAL's seed, salt,
-    hash and keeps; assert each needle is IN the original's text (the partner) and NOT in the copy's; for the keeps,
-    parse the copy and assert every entry is 1 or null, with the original carrying a 2 */ }
+fn no_house_copy_carries_a_secret_that_its_original_does() { /* per table: read the ORIGINAL's decimal seed,
+    salt, hash and keeps out of its stored text (a keep of 2 is arranged on the dealing table); assert each of those
+    needles IS in the original's text and is NOT in the copy's; assert the password "sesame" and the seed's hex
+    are absent from the copy; parse the copy and assert every keep is 1 or null */ }
 
 /// A scrub defect is loud at the source (R-6.5c.8): a copy `check_shape`
 /// rejects is refused with its reason, never listed.
@@ -1088,6 +1218,7 @@ git commit -m "feat(worker): the house copy — a scrub the layer's own list rea
 **Files:**
 - Create: `crates/yokohama-worker/src/receipt.rs`
 - Modify: `crates/yokohama-worker/src/config.rs` (`"r2"` becomes the `ReceiptArchive`), `src/lib.rs` (the exports, and `ReplyData.archive`)
+- Create: `worker/test/fixtures/owed-game-over.json` and `owed-game-over.table.json` — generated once with `UPDATE_WORKER_FIXTURES=1 cargo test -p yokohama-worker the_owed_game_over_fixture`, committed, and drift-checked on every run
 
 **Interfaces:**
 - Consumes:
@@ -1145,16 +1276,31 @@ fn the_test_root_reads_the_full_address_never_the_truncated_segment() { /* creat
 /// Game over defers too, and the stamp completes it (spec §2.6's game-over
 /// site): the move answers 200, `archived_at` stays unset, the plan rides out;
 /// the receipt then `stamp_archive` at the plan's reading stamps it.
+/// **The owed-game-over FIXTURE** (plan review M3): the committed finished pair,
+/// cut back to the START of its trailing run of bot moves, so a cold rebuild
+/// pumps the game to its END. Task 13's pool cell needs these exact bytes, and
+/// only Rust can cut them (`state_at`, `stamp_terminal_digest` — the seed and the
+/// bot's agent seed are both above 2^53, so no TypeScript may touch them). The
+/// cut IS deterministic, so this cell is a DRIFT check: it rebuilds the partial
+/// and compares it with the committed file, and writes it only under
+/// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, unchanged,
+/// under its OWN id `local-242a5429453c593c` (plan review m12).
 #[test]
-fn game_over_defers_its_put_and_stamp_archive_completes_it() { /* the COMMITTED finished pair
-    (tests/fixtures/browser-played-2p.json + .table.json), its record cut back to the START of its trailing run of
-    bot moves — the partial built as wire_fixtures.rs's `partial_of` builds one (truncate, `state_at`,
-    `stamp_terminal_digest`; copy those eight lines into this test module), with the premise asserted that the bot is
-    the mover at the cut and every later event is the bot's; load the table and the partial; `GET …/record` rebuilds
-    the handle, whose owed pump plays the bot's run to the END and persists it — the game-over site meets the
-    deferred put: the reply's archive is a plan with why Over and archived_at stays unset; receipt(landed);
-    stamp_archive(id) with the clock pinned to the reading the plan was made at → archived_at set; a second
-    stamp_archive puts nothing */ }
+fn the_owed_game_over_fixture_is_the_committed_pair_cut_at_its_last_bot_run() { /* read
+    crates/yokohama-web/tests/fixtures/browser-played-2p.json; find the largest n such that the state at n has the
+    bot (seat 1) to move and every event from n to the end is the bot's (assert it as the premise); build the partial
+    exactly as wire_fixtures.rs's `partial_of` does — truncate, `yokohama_core::state_at`,
+    `GameRecord::stamp_terminal_digest`, `serde_json::to_string` — (copy those eight lines into this test module);
+    under UPDATE_WORKER_FIXTURES write it to worker/test/fixtures/owed-game-over.json and copy the committed
+    .table.json beside it as owed-game-over.table.json; always assert both committed files equal what was built */ }
+
+#[test]
+fn game_over_defers_its_put_and_stamp_archive_completes_it() { /* load worker/test/fixtures/owed-game-over.table.json
+    and .json under the id local-242a5429453c593c; `GET …/record` rebuilds the handle, whose owed pump plays the
+    bot's run to the END and persists it — the game-over site meets the deferred put: the reply's archive is a plan
+    with why Over (keys under rev7/over/, no test/ root — the pair's creator is local@browser) and archived_at stays
+    unset; receipt(landed); stamp_archive(id) with the clock pinned to the reading the plan was made at → archived_at
+    set; a second stamp_archive puts nothing */ }
 
 /// `expire` IS the creator's own delete: same reply, same plan, same leaf, at
 /// every status (open, dealing, playing with and without moves, over).
@@ -1169,7 +1315,7 @@ fn expire_answers_exactly_as_the_creators_delete_at_every_status() { /* for each
 fn a_conflict_receipt_refuses_the_abandon_and_leaves_game_over_unstamped() { /* as named */ }
 ```
 
-  **Write the six in full**, from the arrangements their comments name.
+  **Write the seven in full**, from the arrangements their comments name.
 
 - [ ] **Step 2: Watch them fail. Step 3: implement.**
 
@@ -1178,7 +1324,7 @@ fn a_conflict_receipt_refuses_the_abandon_and_leaves_game_over_unstamped() { /* 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add crates/yokohama-worker
+git add crates/yokohama-worker worker/test/fixtures/owed-game-over.json worker/test/fixtures/owed-game-over.table.json
 git commit -m "feat(worker): the receipt archive, the pinned-reading stamp, and expire as the creator's own delete"
 ```
 
@@ -1220,7 +1366,7 @@ git commit -m "feat(worker): the receipt archive, the pinned-reading stamp, and 
     - `typecheck`; `pretest` (runs `test-assets.mjs`), `test` (the pool), `test:scripts` (node);
     - `deploy` (`node scripts/deploy-guard.mjs && wrangler deploy`).
 
-**Pins** (P-3): `wrangler` **4.136.3**, `@cloudflare/vitest-plugin` **1.2.3**, `vitest` **^4.1.11** (the web's), `typescript` **^5.7.0**, and `@cloudflare/workers-types` at the version wrangler 4.136.3 pulls in.
+**Pins** (P-3): `wrangler` **4.136.3**, `@cloudflare/vitest-plugin` **1.2.3**, `vitest` **^4.1.11** (the web's), `typescript` **^5.7.0**, and `@cloudflare/workers-types` **^5.20260921.1**. That last one is an explicit devDependency: it is only an OPTIONAL peer of wrangler 4.136.3, and installing wrangler pulls none in (plan review m9).
 - `Env` is written BY HAND in `src/env.ts` from the Global Constraints' list; `wrangler types` is not used.
 - The test pool's config entry is `cloudflareTest(options)`, a Vite plugin, in 1.2.3's `dist/pool/index.d.mts:87`. **Read the pinned version's README and types before writing the config; do not copy an older `defineWorkersConfig` example.**
 
@@ -1296,13 +1442,15 @@ describe("the factory transform (spec §2.2, §0.3 row 4)", () => {
 / /index.html 200
 ```
 
-- [ ] **Step 3: The deploy guard, test-first** (`scripts/deploy-guard.test.mjs`, node). `deploy-guard.mjs` refuses unless all four hold, naming the one that failed:
+- [ ] **Step 3: The deploy guard, test-first** (`scripts/deploy-guard.test.mjs`, node). `deploy-guard.mjs` refuses unless all five hold, naming the one that failed:
   - `gen/factory.js` exists and does NOT contain `debug_trap(` — the release module, M6.5b's `grep -c debug_trap` rule;
   - `worker/assets/sw.js` exists and `verifyTree` passes over it;
   - `wrangler.jsonc` has `"workers_dev": false` and `"preview_urls": false`;
-  - no `YOKOHAMA_WEB_TEST_CLOCK` appears in `wrangler.jsonc`.
+  - no `YOKOHAMA_WEB_TEST_CLOCK` appears in `wrangler.jsonc`;
+  - **`wrangler.jsonc`'s `assets` block is EXACTLY spec §2.3's**: `"html_handling": "none"`, `"not_found_handling": "none"` and `"run_worker_first": ["/api/*", "/enter"]`. The same check runs over `wrangler.test.jsonc`, so the pool's copy cannot drift from what ships.
+    - **Why this cell carries battery rows 13 and 14** (plan review M5): the pool reads only `wrangler.test.jsonc`. An asset-layer SPA fallback answers a missing file WITHOUT invoking the Worker, so no pool cell and no `handle` call can see a mutated production block. This check is the per-commit catcher, and the live reading at each deploy is the second.
 
-  One cell per refusal, plus the passing case.
+  One cell per refusal, plus the passing case. It reads both configs as JSONC: strip `//` comments before `JSON.parse`, since configs carry no seed.
 
 - [ ] **Step 4: `config.ts`, test-first** (`src/config.unit.test.ts`, run by `test:scripts` in node — `config.ts` imports nothing Workers-specific). The cells:
   - `YOKOHAMA_WEB_ARCHIVE`:
@@ -1353,14 +1501,18 @@ describe("the factory (spec §2.2, §0.3 row 4)", () => {
     - `main: "src/index.ts"`, `compatibility_date: "2026-09-15"`;
     - the `CompiledWasm` rule over `**/*.wasm`;
     - `assets` over `./.test-assets` with spec §2.3's handling;
-    - `vars`: `ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com"`, `ACCESS_AUD: "test-aud"`, `DEV_DOOR_CLIENT_ID: "test-client.access"`, `YOKOHAMA_DEV_DOOR: "on"`, `YOKOHAMA_WEB_ARCHIVE: "off"`, `YOKOHAMA_WEB_TEST_CLOCK: "frozen:1789000000"`.
-  - `test-assets.mjs` (the `pretest` hook) builds `worker/.test-assets/` from a one-line `index.html` and a COPY of `crates/yokohama-web/assets/art/manifest.json` under `art/`, so `/api/art` compares against the real manifest (Task 12).
+    - `vars`: `ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com"`, `ACCESS_AUD: "test-aud"`, `DEV_DOOR_CLIENT_ID: "test-client.access"`, `YOKOHAMA_DEV_DOOR: "on"`, `YOKOHAMA_WEB_ARCHIVE: "off"`, `YOKOHAMA_WEB_TEST_CLOCK: "frozen:1789000000"`, `YOKOHAMA_WEB_COUNT_WAKES: "on"`.
+    - `COUNT_WAKES` is on in the pool: the pool facts say a live-instance override dies at the eviction a wake cell performs, and the spec's qualifier keeps a probe from writing anything even with it on (plan review M2).
+  - `test-assets.mjs` (the `pretest` hook) does two things:
+    - it builds `worker/.test-assets/` from a one-line `index.html` and a COPY of `crates/yokohama-web/assets/art/manifest.json` under `art/`, so `/api/art` compares against the real manifest (Task 12);
+    - it writes `worker/test/fixtures.gen.ts` (gitignored), exporting each file under `worker/test/fixtures/` as its TEXT: `export const OWED_PUMP_JSON = <JSON.stringify(text)>;` and so on.
+  - That module is how the pool reaches the Rust-made fixtures (Tasks 2, 6) as strings. A JSON import would parse them, and their seeds are above 2^53.
   - `src/index.ts` at this task is the honest minimum: `export default { fetch: () => new Response(null, { status: 404 }) } satisfies ExportedHandler<Env>;`. Task 11 replaces it.
 
 - [ ] **Step 6: Watch everything fail, then build and pass it.**
 
 ```bash
-cd worker && npm ci
+cd worker && npm install      # the FIRST time only: this creates package-lock.json, which is committed; npm ci afterwards
 npm run test:scripts          # the factory, the assembly, the guard, the config — red, then green
 npm run build:module:debug    # the module the pool loads
 npm test                      # the factory cells in workerd
@@ -1374,7 +1526,7 @@ cd ../web && npm run build && cd ../worker && npm run build:assets   # a real as
   - Then at the repository root: `cargo test -p yokohama-worker` and `cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-worker`.
   - Comment each step with its reason, in the file's own style.
   - Run the parse check: `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" .github/workflows/test.yml`.
-  - `.gitignore` gains `worker/gen/`, `worker/assets/`, `worker/.test-assets/`, `worker/node_modules/`, `worker/.wrangler/`.
+  - `.gitignore` gains `worker/gen/`, `worker/assets/`, `worker/.test-assets/`, `worker/node_modules/`, `worker/.wrangler/` and `worker/test/fixtures.gen.ts`.
 
 - [ ] **Step 8: The per-edit gates** — the new `worker/` commands join them from here on.
 
@@ -1399,7 +1551,7 @@ git commit -m "feat(worker): the package, a per-instance glue factory, an asset 
   - `web/src/signal.test.ts`, `web/src/outbox.ts` (`offer` and the drain's send site), `web/src/outbox.test.ts`.
 
 **Interfaces:**
-- Consumes: `serverHeaders()`, `call` and `isSessionExpired` (`api.ts:245-267`); `Frame` (`sse.ts:37`); `BACKOFF_MS` / `nextDelay`; `patchServerFacts` and the remembered-facts writer the health read uses (`local/facts.ts`); `forget` (`outbox.ts:272`).
+- Consumes: `serverHeaders()`, `call` (`api.ts:467`) and `isSessionExpired` (`api.ts:245-267`); `Frame` (`sse.ts:37`); `BACKOFF_MS` / `nextDelay`; `patchServerFacts`, `rememberServerFacts` (`local/facts.ts:252`), `recallServerFacts` (`:186`) and `resetFactsForTest` (`:287`); `forget` (`outbox.ts:272`).
 - Produces: `readSocket(path: string, signal: AbortSignal, onFrame: (f: Frame) => void, onOpen?: () => void): Promise<"ended" | "closed">` in `ws.ts`, and `PING_MS = 30_000`.
 
 **The arm** (spec §2.7), inside `open()`'s `try` and beside `readStream`:
@@ -1432,7 +1584,9 @@ if (signalKind() === "ws") {
 - A socket that errors before `open` fires `close` too, so it resolves `"closed"`.
 
 **The outbox branch** (spec §2.6):
-- A 404 from `api.archive` — the layer's "this server keeps no archive" — makes the remembered archive fact `off`, through the SAME writer the health read uses (so the next launch starts from `off`), and `forget`s the row.
+- A 404 from `api.archive` — the layer's "this server keeps no archive" — calls a NEW `rememberArchiveOff(): void` in `local/facts.ts`, and `forget`s the row.
+  - `rememberArchiveOff` rewrites the STORED server record's `archive` to `"off"`, KEEPING its `takenAt`: the other fields are no fresher than before, so their age must not change. It also patches the in-memory facts.
+  - Neither of the existing functions does this. `rememberServerFacts` (`:252`) needs a whole `Health` and restamps `takenAt`, and `patchServerFacts` persists nothing (plan review m2).
 - **It branches on the STATUS, never the sentence** (`reasonFor`'s own rule).
 - It covers every site that sends: `offer`, and any drain path that calls `api.archive`.
 
@@ -1455,7 +1609,7 @@ if (signalKind() === "ws") {
     - a new socket opens after `BACKOFF_MS[0]`, and nothing is lost.
   - An `end {"reason":"deleted"}` frame then a `4404` close calls `onEnd` exactly once.
 
-  In `outbox.test.ts` (**battery 28**): a send answered `404 {"error":"this server keeps no archive"}` leaves NO pending row. The remembered archive fact reads `off`, and does so again after `resetForTests()` — the remembered copy is what changed, not just the in-memory one.
+  In `outbox.test.ts` (**battery 28**): a send answered `404 {"error":"this server keeps no archive"}` leaves NO pending row. `archiveAnswer()` reads `off`, and after `resetFactsForTest()` (`:287`, which keeps storage) `recallServerFacts()` still reads `archive: "off"` with the prior `takenAt`. The remembered copy is what changed, not only the in-memory one. A cell in `local/facts.test.ts` pins `rememberArchiveOff` itself: `takenAt` kept, `archive` off, and every other field untouched.
 
 - [ ] **Step 2: Watch them fail.**
 
@@ -1478,7 +1632,7 @@ cd web && npm run typecheck && npm test && npm run test:wasm && npm run e2e
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add web/src/ws.ts web/src/ws.test.ts web/src/signal.ts web/src/signal.test.ts web/src/api.ts web/src/types.ts web/src/local/facts.ts web/src/outbox.ts web/src/outbox.test.ts
+git add web/src/ws.ts web/src/ws.test.ts web/src/signal.ts web/src/signal.test.ts web/src/api.ts web/src/types.ts web/src/local/facts.ts web/src/local/facts.test.ts web/src/outbox.ts web/src/outbox.test.ts
 git commit -m "feat(web client): a WebSocket arm that probes an unexplained close, and an archive route's 404 read as no archive"
 ```
 
@@ -1496,31 +1650,31 @@ git commit -m "feat(web client): a WebSocket arm that probes an unexplained clos
   - `class Table extends DurableObject<Env>`, whose `fetch(req)` answers every `/api/games/{id}…` request and the create, with the caller in `X-Yokohama-User` and a create's name in `X-Yokohama-Table-Id` (percent-encoded).
   - Methods later tasks extend:
     - `private commit(id: string, reply: Replied, extra: BatchParts): void` — ONE `transactionSync` plus the `setAlarm` in the same turn;
-    - `private wake(id: string): Replied | null` — the wake path's own reply, whose bumps and picker ride into the request's commit;
+    - `private wake(id: string): Replied | null` — the wake path's own reply, whose bumps, picker and `archive` plan ride into the request's commit;
     - `private reading(): number` — P-2's pinned reading;
-    - `private id(): string | null` — from `meta.id`.
+    - the object's name is `this.ctx.id.name` (pool fact 8), in `fetch` and `alarm` alike.
   - (`Replied` and `readReply` are Task 7's.)
   - In `storage.ts`: `hasTables`, `ensureTables`, `readDocs`, `upsertDoc`, `deleteDoc`, `getMeta`, `setMeta` and `deleteMeta`.
 
 **Storage** (spec §2.4, verbatim):
 - `docs(kind TEXT PRIMARY KEY, json TEXT NOT NULL, written_at INTEGER NOT NULL)` holds `record`, `table`, `chat` and `picker`.
-- `meta(k TEXT PRIMARY KEY, v TEXT NOT NULL)` holds `id` (this plan's addition: the alarm has no request to read the id from), `generation`, `revision`, `slot`, `acked`, `archive_owed`, `marker`, `held`, `load_traps`, `poison` (the kind whose load trapped) and `wakes`.
+- `meta(k TEXT PRIMARY KEY, v TEXT NOT NULL)` holds `generation`, `revision`, `slot`, `acked`, `archive_owed`, `marker`, `held`, `load_traps`, `poison` (the kind whose load trapped) and `wakes`. It holds no `id`: the object's name is `ctx.id.name`.
 - **Both are CREATED INSIDE THE FIRST WRITE BATCH, never in the constructor.** A read before any write asks `sqlite_master` and treats absence as empty.
 
 **The request path**, in this order:
-1. Read `X-Yokohama-User`, and the id: the path's segment, or for a create `decodeURIComponent(X-Yokohama-Table-Id)`.
-2. Poison check: `meta.load_traps >= 2` answers **500** `{"error":"this table's stored <meta.poison> cannot be loaded"}`.
-3. The wake, if this instance has not loaded yet:
+1. Read `X-Yokohama-User`, and the id: `ctx.id.name`, which equals the path's segment or a create's decoded `X-Yokohama-Table-Id`.
+2. **The body, read once (`arrayBuffer`). This is the LAST `await` before the reply**, and it comes BEFORE the wake. A wake done before an await lets another request interleave between the wake and the dispatch, before the wake's reply is committed (plan review m4). From here to the reply, wake → dispatch → commit is ONE synchronous turn, as spec §2.4 says.
+3. Poison check: `meta.load_traps >= 2` answers **500** `{"error":"this table's stored <meta.poison> cannot be loaded"}`.
+4. The wake, if this instance has not loaded yet:
    - `Instance.get()`; `load` each present `docs` row of `record`, `table` and `chat`;
-   - `restore_picker(id, <picker row> ?? "null")`;
+   - `restore_picker(id, <picker row> ?? "null")`, with P-2's pin;
    - with `countWakes` AND a table present, `meta.wakes += 1` in this request's batch.
    - A `WebAssembly.RuntimeError` during the wake increments `meta.load_traps`, sets `meta.poison = "record"` in its own batch, drops the instance and answers the trap's 500. A wake that succeeds resets `load_traps` if it was set.
-4. The body, read once (`arrayBuffer`). **This is the last `await` before the reply.**
 5. **P-2's pin**: `set_clock(reading)`. Then `create` or `dispatch` under `Instance.guarded`. A trap answers **500** `{"error":"the table's engine stopped — try again"}` and COMMITS NOTHING.
 6. `commit`:
    - For each of `record`, `table` and `chat`, compare `read(kind, id)` with the stored mirror and upsert (with `written_at` = the reading) or delete what differs.
    - **This compare runs after EVERY dispatch, whatever the method**: a GET can pump an owed bot move and persist it (Task 2's cold-pump cell).
-   - Also: the `picker` row from `Reply.picker` (the wake's first, then the request's), `meta.id` on the first write, and `wakes`. Every write goes in ONE `ctx.storage.transactionSync(() => …)`, and any `setAlarm` beside it in the same turn (spec §2.4, §6).
+   - Also: the `picker` row from `Reply.picker` (the wake's first, then the request's), and `wakes`. ANY reply's `archive` plan — the wake's or the call's — is Task 13's `archive_owed` (P-2). At this task the pool's archive is `off`, so none arrives. Every write goes in ONE `ctx.storage.transactionSync(() => …)`, and any `setAlarm` beside it in the same turn (spec §2.4, §6).
 7. The reply: `new Response(body || null, { status, headers: body ? { "content-type": "application/json" } : {} })`.
 8. The side channels, which Tasks 10, 12 and 13 fill.
 
@@ -1545,30 +1699,40 @@ describe("the table object (spec §2.4)", () => {
     expect(await runInDurableObject(stub, (_o, state) => state.storage.getAlarm())).toBeNull();
   });
 
-  it("a create persists its table and its id in one batch", async () => {
+  it("a create persists its table in one batch, and the object knows its own name", async () => {
     const stub = tableStub("fresh");
     const res = await call(stub, "red@t.test", "POST", "/api/games", CREATE_BODY, "fresh");
     expect(res.status).toBe(201);
     expect(await sqlOf(stub, "SELECT kind FROM docs ORDER BY kind")).toEqual([{ kind: "table" }]);
-    expect(await sqlOf(stub, "SELECT v FROM meta WHERE k = 'id'")).toEqual([{ v: "fresh" }]);
+    // Pool fact 8: ctx.id.name inside the object — and the cell that proves it in alarm() is below.
+    expect(await runInDurableObject(stub, (_o, state) => state.id.name)).toBe("fresh");
   });
 
   // The shell compares documents after EVERY dispatch: a GET's owed pump is persisted.
-  it("a GET that pumps an owed bot move writes the record", async () => { /* Task 2's cold-pump arrangement, its two
-     documents written straight into docs through runInDurableObject, then evictDurableObject; GET …/record; the
-     docs.record row now differs from the owed record */ });
+  it("a GET that pumps an owed bot move writes the record", async () => { /* the COMMITTED owed-pump fixture's TEXT,
+     from test/fixtures.gen.ts (OWED_PUMP_TABLE_JSON, OWED_PUMP_JSON — never JSON.parse'd, pool fact and Global
+     Constraints), written straight into docs through runInDurableObject under the object named "owed"; then
+     evictDurableObject; GET …/record → 409; the docs.record row now differs from the owed record */ });
 
   // Battery 9 and 21 in the pool: evictions between the clicks, a chat post between them too.
-  it("an open picker survives an eviction and a chat post", async () => { /* seedPlaying; `2`; evictDurableObject;
-     POST …/chat; evictDurableObject; `A09`; `confirm` — the record's last placement names A09 */ });
+  it("an open picker survives an eviction and a chat post", async () => { /* seedPlaying (whose `1` is the opening
+     move); `1` opens PlaceA (Task 4's measured path); evictDurableObject; POST …/chat; evictDurableObject; `A09`;
+     `confirm` — the record's last placement names A09 */ });
 
   it("a trapped dispatch persists nothing and answers 500", async () => { /* seedPlaying; runInDurableObject replaces
      the live Instance's module `dispatch` with one that calls its own `debug_trap()`; a move answers 500 with the
      sentence; the docs rows are byte-identical to before */ });
 
-  it("two traps during the wake poison the table, named", async () => { /* seedPlaying; twice: replace the object's
-     Instance with one whose restore_picker throws new WebAssembly.RuntimeError("unreachable"), evict, request →
-     500; the third request is 500 "this table's stored record cannot be loaded" without instantiating anything */ });
+  it("two traps during the wake poison the table, named", async () => { /* seedPlaying; patch at MODULE scope (pool
+     facts 2, 4) — `Instance.prototype.get` from ../src/module, wrapped so the module it returns has a
+     `restore_picker` that throws new WebAssembly.RuntimeError("unreachable"), the original kept; evict, request →
+     500; evict, request → 500; the third request is 500 "this table's stored record cannot be loaded" and the
+     patched `get` was NOT called for it; restore the original in `finally` */ });
+
+  it("ctx.id.name is the object's name inside alarm()", async () => { /* a table; set an alarm through
+     runInDurableObject; patch Table.prototype.alarm at module scope to record this.ctx.id.name, restored in
+     finally; runDurableObjectAlarm → the recorded name equals the table's id. If this fails, fall back to a
+     meta `id` row written in the create's batch, and record a ruling (pool fact 8) */ });
 
   // Battery 1 (the shell half; "before the record is read" rests on the native M6.3 sweep).
   it("a spectator's move is refused", async () => { /* a playing unlocked table; a stranger POSTs input → 403;
@@ -1594,7 +1758,7 @@ git commit -m "feat(worker): the table object — one batch per request, a wake 
 ### Task 10: The table's sockets and transport routes (R-6.5c.6; spec §2.4 "Sockets" and "The framing"; Review Focus 3, 5)
 
 **Files:**
-- Create: `worker/src/frames.ts`, `worker/test/sockets.test.ts`
+- Create: `worker/src/frames.ts`, `worker/src/frames.unit.test.ts`, `worker/test/sockets.test.ts`
 - Modify: `worker/src/table.ts`
 
 **Interfaces:**
@@ -1608,12 +1772,17 @@ git commit -m "feat(worker): the table object — one batch per request, a wake 
 - `…/stream`: a non-`GET` is **405**; a `GET` that is not an upgrade is **426** `{"error":"this host streams over WebSocket"}`.
 - An upgrade is admitted by `events(id, user, "")`:
   - on **200**, `ctx.acceptWebSocket(server, ["t"])`, `serializeAttachment({ user })`, and send `frame("signal", body)` at once;
-  - on **403 or 404**, ACCEPT, send `frame("end", '{"reason":"gone"}')`, and close with **4403** or **4404**, the layer's sentence as the reason;
-  - on **401**, answer the 401 unupgraded (a browser cannot read it, and §2.7's probe does).
+  - on **403 or 404**, ACCEPT, send `frame("end", '{"reason":"gone"}')`, and close with **4403** or **4404**, the layer's sentence as the reason, passed through `closeReason` (below). A reason over 123 UTF-8 bytes makes `close()` throw and leaves the socket open (pool fact 6);
+  - on **401**, answer the 401 unupgraded (a browser cannot read it, and §2.7's probe does);
+  - on ANY other status (an unusable id's refusal, a 500), answer it unupgraded, exactly as the layer answered it.
+  - `closeReason(sentence: string): string` in `frames.ts` truncates at a UTF-8 boundary to at most 123 bytes. Every close goes through it.
+    - Today no real 403 or 404 sentence reaches that length: a safe id is at most 64 ASCII characters (`store.rs:173-178`), so `no game named "<id>"` is at most 80 bytes. The bound costs one function and keeps a longer future sentence from leaving a socket open (pool fact 6).
+    - Its cell is a node unit test (`frames.unit.test.ts`): a 200-byte ASCII sentence, one that ends in a multibyte character straddling byte 123, and a short one kept whole.
 
 **Frames on bumps:**
-- For each `bump` or `bump_table` naming this table, and for every socket (`ctx.getWebSockets()`), take its attachment's `user` and compute `events(id, user, "")`. A 200 is sent as `signal`; a 403/404 is `end {"reason":"gone"}` plus a 4403/4404 close; anything else sends NOTHING (the SSE's comment arm).
-- An `end` bump sends `end {"reason":"deleted"}` and closes **4404**.
+- **Coalesced: ONE frame per socket per REPLY**, however many bumps the reply carries. A finalizing keep carries `bump_table` then `bump` (Task 2), and two identical frames would each wake a screen (plan review m5). `end` wins over any other bump in the same reply.
+- If the reply's bumps name this table (`bump` or `bump_table`), then for every socket (`ctx.getWebSockets()`), take its attachment's `user` and compute `events(id, user, "")` — P-2's pin applies, since `events` can reach the clock. A 200 is sent as `signal`; a 403/404 is `end {"reason":"gone"}` plus a 4403/4404 close; anything else sends NOTHING (the SSE's comment arm).
+- An `end` bump sends `end {"reason":"deleted"}` and closes **4404** (a short fixed reason).
 - `webSocketMessage` ignores everything: a socket carries no move. `setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"))` is set in the constructor.
 
 - [ ] **Step 1: The failing pool cells.** An upgrade in the pool is `stub.fetch(url, { headers: { Upgrade: "websocket", "X-Yokohama-User": user } })`; then `res.webSocket!.accept()`, and messages collected into an array.
@@ -1623,8 +1792,13 @@ describe("the table's sockets (spec §2.4)", () => {
   it("the first frame on accept is the events route's answer, framed", async () => { /* seedPlaying; open as red;
      the first message equals frame("signal", <the body of GET …/events as red>) BYTE for byte */ });
 
-  it("one frame per socket per bump, each for its own viewer", async () => { /* red and blue each hold a socket;
-     red moves; red's frame says your_turn false and blue's says true (or as the seat that is to move) */ });
+  it("one frame per socket per reply, each for its own viewer", async () => { /* red and blue each hold a socket;
+     red makes the opening move; each socket receives exactly ONE signal frame, computed for its own viewer: its
+     your_turn matches whether that viewer's seat is to move */ });
+
+  it("a finalizing keep's two bumps are ONE frame per socket", async () => { /* a dealing table; red's socket open;
+     red keeps, then blue's keep finalizes — the reply carries bump_table then bump — and red's socket receives ONE
+     signal frame for it, not two (plan review m5) */ });
 
   // Review Focus 5.
   it("one person with two tabs gets every frame on both", async () => { /* two sockets as red; blue moves; both
@@ -1639,7 +1813,9 @@ describe("the table's sockets (spec §2.4)", () => {
      dealing table; a stranger's upgrade → end gone then close 4403 with the layer's sentence as the reason; an
      unknown id → 4404 */ });
 
-  it("a delete ends every socket as deleted, 4404", async () => { /* … */ });
+  it("a delete ends every socket as deleted, 4404", async () => { /* a playing table; sockets as red and as blue;
+     red, the creator, DELETEs (204); each socket receives exactly {"event":"end","data":{"reason":"deleted"}} and
+     then a close with code 4404; no signal frame arrives after it */ });
 
   it("a socket message is never a move", async () => { /* send '{"line":"1"}' and "1"; the record row unchanged */ });
 
@@ -1661,9 +1837,12 @@ describe("the table's sockets (spec §2.4)", () => {
        receives the frame computed for BLUE; meta.wakes rose by one */ });
 
   // Review Focus 3, the object's half.
-  it("an abort with sockets open loses no acknowledged move", async () => { /* red moves (200); both sockets open;
-     abortAllDurableObjects(); the sockets report close; a new socket as red receives a first frame whose events
-     count includes the move; red's next move answers 200 */ });
+  it("an abort with sockets open loses no acknowledged move", async () => { /* red moves (200); sockets open as red
+     and blue; abortAllDurableObjects(); both sockets report close 1006; take a FRESH stub (pool fact 3 — the old one
+     is dead); a new socket as red receives a first frame whose events count includes the move; red's next move
+     answers 200 */ });
+
+
 });
 ```
 
@@ -1696,9 +1875,9 @@ git commit -m "feat(worker): the table's hibernatable sockets — SSE's frames i
 
 **Interfaces:**
 - Produces:
-  - `handle(req: Request, env: Env, ctx: ExecutionContext, keys: () => Promise<JwkSet>): Promise<Response>`, and `default { fetch: (req, env, ctx) => handle(req, env, ctx, () => teamKeys(env.ACCESS_TEAM_DOMAIN)) }`;
-  - `resolveIdentity(headers: Headers, keys: JwkSet, c: IdentityConfig): Promise<Identity>`, where `Identity = { kind: "person"; email } | { kind: "dev"; email } | { kind: "none" }`;
-  - `teamKeys(teamDomain)` — the certs, cached per isolate, fetched again once on an unknown `kid`;
+  - `handle(req: Request, env: Env, ctx: ExecutionContext, keys: (refresh: boolean) => Promise<JwkSet>): Promise<Response>`, and `default { fetch: (req, env, ctx) => handle(req, env, ctx, (refresh) => teamKeys(env.ACCESS_TEAM_DOMAIN, { refresh })) }`;
+  - `resolveIdentity(headers: Headers, keys: JwkSet, c: IdentityConfig): Promise<Identity>`, where `Identity = { kind: "person"; email } | { kind: "dev"; email } | { kind: "none"; unknownKid?: true }`;
+  - `teamKeys(teamDomain, { refresh?: boolean })` — the certs, cached per isolate. `handle` calls `resolveIdentity`; on `{ kind: "none", unknownKid: true }` it fetches the keys again with `refresh: true`, AT MOST once a minute, and resolves once more. That is how a key rotation is survived without letting a forged `kid` force a fetch per request (plan review m14);
   - `route(method, pathname): Target` — `missing | enter | art | not-allowed | create | table{name} | archive | admin{rest} | house`;
   - `class House`, `class Archive`;
   - `const BODY_LIMIT = 2 * 1024 * 1024`, and `BODY_LIMIT_SENTENCE` (Step 7 pins it).
@@ -1706,7 +1885,10 @@ git commit -m "feat(worker): the table's hibernatable sockets — SSE's frames i
 **The identity function** — security-critical, so it is given here in full:
 
 ```ts
-export type Identity = { kind: "person"; email: string } | { kind: "dev"; email: string } | { kind: "none" };
+export type Identity =
+  | { kind: "person"; email: string }
+  | { kind: "dev"; email: string }
+  | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }
 export interface IdentityConfig {
   teamDomain: string; aud: string; devDoorClientId: string; devDoor: boolean; nowSeconds: number;
@@ -1734,7 +1916,7 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
   }
   if (head.alg !== "RS256") return { kind: "none" };
   const jwk = keys.keys.find((k) => k.kid === head.kid);
-  if (!jwk) return { kind: "none" };
+  if (!jwk) return { kind: "none", unknownKid: true }; // the caller may refresh the keys once
   const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
   const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
   if (!(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, bytes(parts[2]!), signed))) return { kind: "none" };
@@ -1785,15 +1967,16 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
     - a person's token WITH a client `X-Yokohama-Claimed-User` answers `person`, and the header is ignored;
     - the credential's token (`common_name` = the client id, no `email`) with the door on and a claimed header answers `dev`;
     - the same with the door off, or with no claimed header, answers `none`;
-    - another `aud`, another `iss`, an expired `exp`, a future `nbf`, a forged signature (signed by a second key under the first key's `kid`), an unknown `kid`, `alg: "none"`, and a token that is not three parts each answer `none` (**battery 15**).
+    - another `aud`, another `iss`, an expired `exp`, a future `nbf`, a forged signature (signed by a second key under the first key's `kid`), `alg: "none"`, and a token that is not three parts each answer `none` (**battery 15**);
+    - an unknown `kid` answers `none` WITH `unknownKid: true`, and a `handle` cell shows one refetch and then `none` when the refetched set still lacks the `kid`.
   - `route.unit.test.ts`: every row of spec §2.3's table, including the empty segment, non-GET `/api/art` and `/enter`, `GET /api/games` as `house`, and `POST /api/games` as `create`.
 
 - [ ] **Step 2: The failing pool cells** (`test/worker.test.ts`), which call `handle` directly with a TEST key source, so no network and no backdoor is involved:
-  - a missing file answers **404** with an empty body, and never `index.html` (**battery 14**'s shell half);
+  - a missing file that reaches the Worker answers **404** with an empty body, and never `index.html`. This is the Worker's own answer. Battery 14's mutant lives in the asset layer's `not_found_handling`, which answers without invoking the Worker; Task 7's deploy guard catches it, and the live reading at each deploy reads it (plan review M5);
   - `/enter` answers 302;
   - a body of 2 MiB + 1 answers 400 with the sentence;
   - a bad `YOKOHAMA_WEB_ARCHIVE` answers 500 naming it on `/api/health`, and `/` is untouched — it never reaches `handle`, and the asset layer answers it;
-  - **(battery 2)** a person's assertion PLUS client `x-yokohama-user: evil@x.test` and `x-yokohama-claimed-user: evil@x.test` gives `GET /api/me` the PERSON's address;
+  - **(battery 2)** a person's assertion PLUS client `x-yokohama-user: evil@x.test`, `x-yokohama-claimed-user: evil@x.test`, `x-yokohama-operator: evil@x.test` and `x-yokohama-table-id: elsewhere` gives `GET /api/me` the PERSON's address. The same forged four on a create land it at the body's own id, not at `elsewhere`, and never reach an operator route — those are exactly the names the objects trust (plan review m16);
   - a `dev` identity gives `/api/me` the claimed address;
   - no identity gives `/api/me` `user: null`, and `POST /api/archive` the layer's 401;
   - a create with no body `id` lands at a `sim-` + 16 hex object, and answers 201 naming it;
@@ -1845,14 +2028,14 @@ git commit -m "feat(worker): the Worker — Access validated, the dev door, the 
 ### Task 12: The house and the slot — and from here the pool replays the whole corpus (R-6.5c.8; spec §2.5, §5.3's pool half; Review Focus 4)
 
 **Files:**
-- Create: `worker/src/slot.ts`, `worker/src/slot.unit.test.ts`, `worker/test/slot.test.ts`, `worker/test/corpus.test.ts`
+- Create: `worker/src/slot.ts`, `worker/src/slot.unit.test.ts`, `worker/test/gates.ts`, `worker/test/walk.ts`, `worker/test/slot.test.ts`, `worker/test/corpus.test.ts`
 - Modify: `worker/src/table.ts` (the generation, the slot, `deliverSlot`, the removal and the create's 409), `worker/src/house.ts` (the copies, `apply`, the lobby frames)
 
 **Interfaces:**
 - Consumes: `house_copy`, `put_copy`, `remove_copy` and `house_frame` (Task 5); `frame` (Task 10); `route` and `handle` (Task 11).
 - Produces:
   - In `slot.ts`, all pure:
-    - `type Generation = { at: number; rand: string }` — `at` is the table's `created_at`, `rand` 16 hex drawn once at create;
+    - `type Generation = { at: number; rand: string }` — `at` is the create's P-2 reading (equal to the table's `created_at`, which the layer stamps from that same pinned clock; the shell never parses the table document for it), and `rand` is 16 hex drawn once at create;
     - `cmpGen(a, b): number`;
     - `type Slot = { id: string; generation: Generation; revision: number; copy: string | null /* null = REMOVAL */; last_active: number; bytes: number; attempt: number }`;
     - `type HouseRow = { current: { generation: Generation; revision: number } | null; retired: Generation[] }`;
@@ -1886,39 +2069,77 @@ git commit -m "feat(worker): the Worker — Access validated, the dev door, the 
   - `advances` holds for a newer revision and for a newer generation, and not for an equal or older one.
   - `nextRetry` answers 30 000, 120 000, 600 000, 3 600 000 and 3 600 000.
 
-- [ ] **Step 2: The failing pool cells** (`test/slot.test.ts`):
+- [ ] **Step 2: Two test helpers, then the failing pool cells.**
+  - **`test/gates.ts`** — the pool facts' technique, in one place:
+    - `holdApply(byRevision?: number[]): { release(rev?: number): void; restore(): void }` wraps `House.prototype.apply` (imported from `../src/house`, the original kept). A held call awaits a gate; with `byRevision`, only those revisions are held, in a `Map<number, Promise<void>>` keyed by `slot.revision`.
+    - `failApplyOnce(): { restore(): void }` — a prototype patch that throws once, then restores itself.
+    - Every cell calls `restore()` in `finally`, and before any `runDurableObjectAlarm` that follows an abort (pool fact 2).
+  - **`test/walk.ts`** — the corpus replay's driver, shared with the battery-35 cell. It replays `walk.json` (and, when asked, `walk-host.json` merged by `after`) against the objects, as Step 3 describes, and calls `onRow(index, row, reply)` after each row. Step 3's replay is its main client.
+  - **Every cell uses ids of its own**, and filters every house listing it asserts on to them (pool fact 5).
 
 ```ts
 describe("the durable slot (spec §2.5)", () => {
-  it("a create's copy reaches the house and the lobby lists it", async () => { /* create; deliverSlot via
-     runInDurableObject; GET /api/games?scope=open as a stranger through the house → the row */ });
+  it("a create's copy reaches the house and the lobby lists it", async () => { /* create "slot-a"; deliverSlot via
+     runInDurableObject; GET /api/games?scope=open as a stranger through the house → a row for "slot-a" */ });
+
   it("a lower revision after a higher one leaves the row at the higher (battery 5)", async () => { /* push r2 then r1
-     straight into House.apply; the copy is r2's */ });
+     straight into the house's apply through runInDurableObject for id "slot-b"; the stored copy is r2's */ });
+
   it("a stale ack of r after the slot was rewritten to r+1 — or to a REMOVAL — leaves the slot (battery 6, 22)", async () => {
-     /* hold the house's apply pending (patch the house instance's apply through runInDurableObject to await a
-        promise the cell resolves), write r+1 meanwhile, release the r ack: the slot still holds r+1 */ });
-  it("acked never regresses: an ack of r after r+1's, then an undo back to r's copy, is still delivered (battery 35)", async () => {
-     /* … */ });
-  it("a failed push is retried by the alarm", async () => { /* the house's apply throws once; runDurableObjectAlarm
-     on the table delivers it */ });
-  // Battery 25 — the cell the re-review found vacuous under evictDurableObject.
+     /* holdApply([r]) where r is the create's revision on "slot-c"; the create's push is held; a join changes the
+        copy → slot r+1 (its push is not held, so r+1 is applied and acked, clearing the slot); release(r): r's late ack
+        arrives — the slot is EMPTY and must stay empty, acked stays r+1. Then the REMOVAL arm: holdApply([r+2]); red's
+        keep changes the copy (a keep's presence is in the scrub) at r+2, held; the creator deletes the dealing table
+        → slot = REMOVAL (r+3); release(r+2): its ack does not clear the removal; deliverSlot delivers the removal and
+        the house drops the row */ });
+
+  it("acked never regresses, so a copy that returns to an earlier value is still delivered (battery 35)", async () => {
+     /* the natural case, needing no undo: with two humans the scrubbed copy alternates, because `turn.to_move`
+        flips — seat 1 is to move (copy X), then seat 0 (copy Y), then seat 1 again (copy X, BYTE-equal to the first
+        when nothing else in the table document changed).
+        Arrange with test/walk.ts on the walk's own table `wire`, in a stretch AFTER its last unlock and join, watching
+        meta.slot at each row: when a row puts copy X in motion at revision r, holdApply([r]); let the next turn change
+        put copy Y (r+1) through, applied and acked; release(r) — its ack arrives LATE; let the walk run to the next
+        change back to X (r+2), asserting the premise that r+2's copy is byte-equal to r's; deliver; the house's row
+        for `wire` shows `turn.to_move` == 1.
+        Under the mutant — `acked` recorded without the advance check — r's late ack regresses `acked` to X's digest,
+        r+2's copy equals it, no push is made, and the row still shows to_move 0 */ });
+
+  it("a failed push is retried by the alarm", async () => { /* failApplyOnce(); a create on "slot-e"; the push fails;
+     runDurableObjectAlarm on the table is true; the house lists it */ });
+
+  // Battery 25. The FIRST text used evictDurableObject, which drains the push (vacuous); the SECOND patched the
+  // instance, which makes the RPC THROW rather than hang (vacuous again — measured true/true by the plan's review).
   it("the alarm is set IN the batch: an abort mid-push is finished by the alarm", async () => {
-    /* patch the live house instance's apply to never settle; a move that changes the copy; abortAllDurableObjects()
-       — which, unlike evictDurableObject, does NOT drain in-flight work; runDurableObjectAlarm(tableStub) is TRUE and
-       the fresh house lists the new copy. Under the mutant ("armed only after a failure") the push neither failed nor
-       succeeded, so no alarm exists and runDurableObjectAlarm returns FALSE. */ });
-  it("a move that leaves the copy alone writes no slot and leaves the alarm where it was", async () => { /* … */ });
+    /* const held = holdApply(); a move that changes the copy on "slot-f" (its push hangs on the gate, neither failing
+       nor succeeding); abortAllDurableObjects() — no drain; held.restore() BEFORE anything else (pool fact 2);
+       take FRESH stubs (pool fact 3); runDurableObjectAlarm(freshTable) is TRUE and the house lists the new copy.
+       Under the mutant ("armed only after a failure") no alarm exists: FALSE — measured by the plan's review. */ });
+
+  it("a move that leaves the copy alone writes no slot and leaves the alarm where it was", async () => {
+     /* a playing two-human table "slot-g" after its first delivery (slot empty; read getAlarm() → A); red's opening
+        `1` applies a move that keeps seat 0 to move, so the copy is unchanged; meta.slot is still absent, revision is
+        unchanged, and getAlarm() is still A */ });
+
   it("a create while a removal is unacknowledged is 409; after the ack the object is gone and the id is free", async () => {
-     /* delete with the house's apply held; create → 409 with the sentence; release; deliverSlot; sqlite_master empty;
-        create → 201 (battery 36) */ });
+     /* tick clock on this object (set through runInDurableObject before its first request) so the re-created
+        generation orders after the retired one (plan review m7); holdApply(); the creator deletes "slot-h" (removal
+        held); create at "slot-h" → 409 with the sentence; held.release(); deliverSlot; sqlite_master empty;
+        create → 201 and the house lists the NEW table (battery 36) */ });
+
   // Review Focus 4, through the objects.
-  it("a non-ASCII table name and display name list exactly as created", async () => { /* create "Café ☕ 東京" with
-     display_name "Zoë"; deliver; GET /api/games as the creator and as a stranger: the characters verbatim */ });
-  it("the lobby socket is silent on connect and hears every applied copy", async () => { /* … */ });
+  it("a non-ASCII table name and display name list exactly as created", async () => { /* create "slot-i" named
+     "Café ☕ 東京" with display_name "Zoë"; deliver; GET /api/games as the creator and as a stranger: the
+     characters verbatim */ });
+
+  it("the lobby socket is silent on connect and hears every applied copy", async () => {
+     /* open /api/stream on the house as red; wait until a second, unrelated request to the house has answered —
+        nothing has arrived; create "slot-j" and deliver: exactly ONE message arrives,
+        {"event":"house","data":{"seq":<n>,"chat":<m>}} with the data byte-equal to house_frame(n, m) */ });
 });
 ```
 
-- [ ] **Step 3: The failing corpus replay** (`test/corpus.test.ts`). Its shape is `web/src/local/corpus.node.test.ts`'s, and **read that file first**.
+- [ ] **Step 3: The failing corpus replay** (`test/corpus.test.ts`), driven by `test/walk.ts`. Its shape is `web/src/local/corpus.node.test.ts`'s, and **read that file first**. It is ONE file whose objects no other file shares (pool fact 5), and the walk's own ids are fixed, so nothing else may create `wire`, `wire2` or `wire4` in it.
   - **The rows:** `walk.json`'s rows, with `walk-host.json`'s rows run each after the walk row its `after` names (the art row first). Each goes to the object `route` names, with `X-Yokohama-User` set to the row's `who`, as the Worker would set it. A create's `X-Yokohama-Table-Id` is its body's `id`; the art row goes through `handle`.
   - **Before any row the house answers,** `deliverSlot()` is flushed on every table touched since the last such row. That flush is how the pool models "the push landed", and nothing else about the order is changed.
   - **Assertions:**
@@ -1974,7 +2195,7 @@ git commit -m "feat(worker): the house over scrubbed copies, a durable ordered s
   2. If its `archive` plan is present: `executePlan`, `receipt(plan.key, outcome)`, and the SAME request dispatched AGAIN at the SAME reading, whose answer is the answer.
   3. `set_clock(prior)` restores the pin in a `finally`.
   4. A delete that owes no save completes in its first dispatch.
-- **Game over** is the move's `Replied.archive`. `meta.archive_owed = { plan, reading, attempt: 0 }` and its alarm (+30 s) go IN THE MOVE'S BATCH. After the reply comes `executePlan`:
+- **Game over**: ANY reply's `Replied.archive` — the wake's `restore_picker`, a GET's, an `events` call's, a move's — whose plan the layer did NOT re-dispatch. Its `meta.archive_owed = { plan, reading, attempt: 0 }` and alarm (+30 s) go IN THAT REQUEST'S BATCH, with the reading pinned for the call that made it (P-2; plan review M4). After the reply comes `executePlan`:
   - on `landed` or `identical`: `receipt` then `stamp_archive(id)` at the RECORDED reading, and the stamped table row, the cleared `archive_owed` and the slot the changed copy owes land in ONE batch;
   - on `failed`: the alarm retries by `nextRetry(attempt)`, re-planning at the recorded reading after an eviction;
   - on `conflict`: logged, and `archive_owed` cleared ("final at every site").
@@ -1989,20 +2210,23 @@ git commit -m "feat(worker): the house over scrubbed copies, a durable ordered s
   - the create-if-absent losing a race to identical bytes (`identical`) and to different ones (`conflict`);
   - a `put` that throws (`failed`, with its message).
 
-- [ ] **Step 2: The failing pool cells** (`test/archive.test.ts`). The archive cells run with `tick:<n>` (P-2), set through `runInDurableObject` on the live instance, so that an unpinned re-dispatch really does stamp a different `archived_at`.
-  - An abandon whose put FAILS — the fake is made to fail by pointing the object at a bucket binding the cell breaks — leaves the object, its storage and the layer's refusal in place (**battery 10**).
+- [ ] **Step 2: The failing pool cells** (`test/archive.test.ts`).
+  - **The archive cells run with `tick:<n>`** (P-2), set through `runInDurableObject` on the live instance before its first request, so that an unpinned re-dispatch really does stamp a different `archived_at`. An eviction returns the object to the config's `frozen` clock (pool fact 4); the retry cells rely only on the RECORDED reading, which is stored.
+  - **Every cell uses its own table ids and callers** (pool fact 5).
+  - An abandon whose put FAILS leaves the object, its storage and the layer's refusal in place (**battery 10**). The failure is arranged by replacing `this.env` on the LIVE instance with a copy whose `ARCHIVE.put` throws. The replacement lasts until an eviction, and this cell performs none.
   - An abandon whose put lands deletes. Its keys are `test/rev7/abandoned/<id>.json` and `.table.json`, the record's bytes equal the stored record's, and the re-dispatch's `archived_at` equals the first's (**battery 17**).
   - A half pair, then a second abandon, LANDS.
   - A landed-but-unstamped game-over copy retried at a NEW reading answers `identical`, and stamps.
-  - **Game over** (Task 6's committed-pair arrangement, written into `docs` through `runInDurableObject`), in order:
-    1. `archive_owed` is written in the move's batch;
+  - **Game over**, from the COMMITTED owed-game-over fixture: `OWED_GAME_OVER_TABLE_JSON` and `OWED_GAME_OVER_JSON` from `test/fixtures.gen.ts`, TEXT only, written into `docs` through `runInDurableObject` under the object named **`local-242a5429453c593c`**, its own id (plan review m12). Its first request's wake pumps the bot's run to the end (plan review M4). In order:
+    1. `archive_owed` is written in THAT request's batch (the wake's plan);
     2. the upload happens after the reply;
     3. the receipt, then the stamped row with `archive_owed` cleared;
     4. a failing put is retried by `runDurableObjectAlarm`;
     5. a retry after `evictDurableObject` happens at the RECORDED reading;
     6. the "no longer over" clear (an undo at a one-person table).
   - A browser save through the Archive object answers the layer's 201, 200 `identical` and 409.
-  - A chat post arriving during a slow R2 put lands. Hold the put with a gate the cell releases.
+  - **A chat post arriving during a slow R2 put lands.** It must be the GAME-OVER upload, which runs after the reply outside any `blockConcurrencyWhile`; an abandon's put runs under it, so nothing can land during that one (plan review m6). Hold the put with a gate on a patched `ARCHIVE.put` the cell releases.
+  - **A chat post arriving during a slow HOUSE push lands** (spec §5.2's other half): `holdApply()` (Task 12's helper), a move that changes the copy, a chat post that answers 201 while the push is held, then `release()` and deliver.
   - **The switch:**
     - `off` answers health `off`; game over puts nothing and arms nothing; an abandon deletes without a put; the route is the layer's 404;
     - an owed save is not retried while off (**battery 27**) and resumes when on.
@@ -2100,7 +2324,7 @@ git commit -m "feat(worker): the R2 archive as a receipt in DirArchive's order, 
     - with the variable absent, the layer's 404;
     - the listing includes a dealing table;
     - expire;
-    - **force** on a poisoned, a `held`, a live and a marker-only object — each leaving no marker and an empty `sqlite_master`, and a create at the id then answering 201;
+    - **force** on a poisoned, a `held`, a live and a marker-only object — each leaving no marker and an empty `sqlite_master`, and a create at the id then answering 201. The re-create's object runs with `tick:` set before its first request, so the new generation orders after the retired one; under the frozen clock the two tie and the house drops the new one about half the time (plan review m7);
     - force on an empty object is 204 with nothing written;
     - force with the house's push failing answers 503, a create meanwhile is 409, and the alarm finishes it.
 
@@ -2136,12 +2360,15 @@ git commit -m "feat(worker): tables expire as their creator's abandon, a 90-day 
 - Produces:
   - In `web/e2e/live.ts`:
     - `LIVE: boolean` — `process.env.YOKOHAMA_WEB_E2E_TARGET === "live"`;
-    - `credential(): { id: string; secret: string }` — read from the repository root's `.dev.vars` by path, throwing a sentence that names the FILE and never a value when it is absent;
+    - `credential(): { id: string; secret: string }` — the lines `CF-Access-Client-Id=…` and `CF-Access-Client-Secret=…` of the repository root's `.dev.vars` (Global Constraints), read by path. When the file or a key is absent it throws a sentence that names the FILE and the KEY, and never a value;
     - `identityHeaders(email: string): Record<string, string>` — the claimed header, plus the two `CF-Access-Client-*` headers when `LIVE`.
   - In `live-replay.mjs`, exported pure functions `freezeClock(value)`, `filterLobby(name, committed, got, ids)`, `normalizeHouseChat(name, got, base, identities)` and `firstSendAccepts(committed, status, got)`, plus a CLI main.
 
 **Playwright, live** (spec §5.4):
-- With `LIVE`, the config's `baseURL` is `https://yokohama.moore.nyc`, it has no `webServer`, `testMatch` is only the two specs, and `workers: 1`.
+- With `LIVE`:
+  - **the exported `BASE_URL` constant itself** (`playwright.config.ts:32`) is `https://yokohama.moore.nyc`, and so is the config's `baseURL`. `watchForBreakage` flags only responses whose URL starts with `BASE_URL` (`harness.ts:73`), and `two_browsers.spec.ts:292` requests `${BASE_URL}/api/…`. Changing only the option would leave the breakage watch watching nothing and send those requests to a refused localhost (plan review M9);
+  - it has no `webServer`, `testMatch` is only the two specs, and `workers: 1`;
+  - the two-browser game's budget (`two_browsers.spec.ts:102`, 20 minutes) is DOUBLED. Every request crosses the edge, and the local run already took 457 s. The ledger records the choice and the live wall (plan review m15).
 - Each context takes `extraHTTPHeaders: identityHeaders(<its person>)` at `@e2e.test`. §0.4 measured context headers reaching a page-opened WebSocket upgrade.
 - The service-worker declaration each spec carries (`every_spec_declares_its_worker`) is kept.
 - Each spec abandons the tables it created, in a `finally`, as their creator (`page.request.delete`).
@@ -2174,6 +2401,10 @@ cd web && npm run e2e
 ```
 
 - [ ] **Step 5: RUN LIVE — the ORCHESTRATOR.**
+  - **FIRST, the owner's zone decision** (spec §7, moved here by the plan's review, H3). Both live specs assert that no console error occurred (`two_browsers.spec.ts:479-481`, `joins_by_link.spec.ts:463-464`), and the zone's Web Analytics beacon logs a CORS error on every page load (spike row 8). Ask the owner:
+    - to turn Web Analytics' auto-install off for this hostname; or
+    - to accept it, in which case the LIVE branch allow-lists exactly that beacon's CORS error by its URL (`static.cloudflareinsights.com/beacon.min.js`), as a recorded host fact.
+    JavaScript detections and Bot Fight Mode can wait for Task 16: they did not challenge the harness. Record the answer in the ledger BEFORE running a live game.
 
 ```bash
 cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link
@@ -2203,11 +2434,11 @@ This task is the **close checklist**. Every box is a gate, and the close cites e
 - [ ] **0. The whole-branch review.**
   - **Fable reviews the whole branch** against `2621fbe`, with the spec and this plan. Its brief is the lane's method: try the mechanism a sentence promises rather than re-reading the sentence. Ask for "escalations outside the brief".
   - **Then ONE fix wave, then a scoped re-review.** The fix wave's head is the reviewed head for everything below.
-- [ ] **1. The mutation battery** (spec §5.7, **39 rows at `cca0aed`** — enumerate from the spec AT EXECUTION, never from this count). Each mutation is applied at the fix-wave head, shown to fail by NAME, reverted, and mapped to its catcher.
+- [ ] **1. The mutation battery** (spec §5.7, **39 rows at `92592f2`** — enumerate from the spec AT EXECUTION, never from this count). Each mutation is applied at the fix-wave head, shown to fail by NAME, reverted, and mapped to its catcher.
   - Row 4 is RECORDED as uncatchable by the platform's guarantee.
   - A mutation that stays green is a FINDING that gets a cell, or a disposition the owner rules on.
   - Write the report to the ledger.
-- [ ] **2. The owner's zone decisions**, BEFORE the headed walk (spec §7): Web Analytics auto-install, JavaScript detections, and Bot Fight Mode. A "zero console errors" reading needs the first decided.
+- [ ] **2. The owner's remaining zone decisions**, BEFORE the headed walk (spec §7): JavaScript detections and Bot Fight Mode. Web Analytics was decided before Task 15's live run, and the headed walk inherits that answer.
 - [ ] **3. THE EXIT, in a window with NO deploy** (spec §5.5) — the ORCHESTRATOR. First deploy with `YOKOHAMA_WEB_COUNT_WAKES=on`; that deploy opens the window. Then:
   - **Two people play a whole game and a third watches, HEADED**: three Playwright contexts with `identityHeaders`, or the owner and two contexts. The table object is observed HIBERNATING between moves: `wakes` rises across pauses longer than the object's idle eviction.
   - **The move-to-other-screen wall**, measured as M6.3 measured it, with the cold path's CPU beside it off `wrangler tail`.
@@ -2294,7 +2525,7 @@ Every §5 group has a home:
 | 10 | 13 |
 | 11 | 14 |
 | 12 | 7 |
-| 13–14 | 7, 11, and the live reading |
+| 13–14 | 7 (the deploy guard's exact `assets` block — the per-commit catcher, since the pool never reads the production config), and the live reading at each deploy |
 | 15 | 11 |
 | 16 | 9 |
 | 17 | 13 |
@@ -2330,7 +2561,7 @@ Every §5 group has a home:
 
 **The riskiest task is 12**, because its failure mode is invisible: a lobby that is merely stale looks healthy. Its abort cell (battery 25) and the corpus replay are what can see it.
 
-**Placeholder scan.** Cells whose arrangement is long are given as named arrangements in their bodies' comments. Each names every request, every premise and every assertion — the house style M6.5b2's Task 10 used — and each carries an instruction to write it in full. Nothing says "add error handling", "similar to", or TBD.
+**Placeholder scan.** Cells whose arrangement is long are given as named arrangements in their bodies' comments. Each names every request, every premise and every assertion — the house style M6.5b2's Task 10 used — and each carries an instruction to write it in full. The first text of this plan left four bodies as a bare `/* … */`, battery 35's only catcher among them, while this paragraph claimed otherwise. The plan's review found them (M8), and the fix wave specified all four. Nothing says "add error handling", "similar to", or TBD.
 
 **Type consistency.** The module's exports and the shell's names are defined ONCE, in §"Names shared across tasks", and each task's Interfaces block quotes them. Three of those names moved while this plan was drafted:
 - `restore_picker` returns a `Reply`, because the wake's replay can pump;
@@ -2340,3 +2571,59 @@ All three were changed at the table, which is where an executor reads them.
 
 **Review Focus.** Five lines, each with its cell in its owning task, marked "(Review Focus N)".
 
+
+---
+
+## Revision, 2026-09-23: what the plan's adversarial review changed
+
+One Opus review read this plan against the spec and the code. It MEASURED rather than reasoned:
+Task 1's code and Tasks 2–3's cells ran verbatim in a scratch copy of the repository, and a minimal
+project on the pinned pool ran the platform APIs the plan leans on. It returned **0 CRITICAL / 4 HIGH /
+10 MEDIUM / 16 MINOR**; its report is `.superpowers/sdd/2026-09-23-web-frontend-m6.5c-plan/review-plan.md`.
+Every finding was accepted, the orchestrator spot-checked the two that change an expected value
+(`tables.rs:1507-1511`'s two bumps, `evict_for_test`), and one fix wave applied them all. The design
+half is the spec's §9.4.
+
+**The four HIGH:**
+- **H1 — battery 25's catcher was vacuous a second time.** A method patched on a live instance makes the pool's RPC THROW (the resolver refuses an own property), so correct code and mutant both answered `true`. It is now the §"Pool facts" section, binding on every pool cell: prototype gates, restored before the alarm, and fresh stubs after an abort (measured `true`/`false`). Task 12's stale-ack cell uses revision-keyed gates for the same reason.
+- **H2 — Task 1's three cells could not go green.** One did not compile: a local binding shadowed the `games()` helper. The other two failed against the right code, because `play_to_the_end` drives a second `Repl` and leaves the resident handle at the opening. They now evict it first — never inside `archive_over_retry`, which in production reads the real handle — and the eviction is also what makes the archive-off half non-vacuous.
+- **H3 — the live Playwright tier would fail on the zone's analytics beacon.** Both specs assert that no console error occurred, and the beacon logs one on every page load. The Web Analytics decision now comes BEFORE Task 15's live run.
+- **H4 — Task 2 asserted one bump for the finalizing keep.** The layer emits `bump_table` and then `bump`. The cell says so; Task 10 coalesces the frames to one per socket per reply, and the spec's §5.2 now says the same.
+
+**The MEDIUM:**
+- **M1:** Task 4 opened PlaceB, not PlaceA. The measured path is `1`, `1`, `A09`, `confirm`, and a bare `confirm` is a 200 that applies nothing, not a refusal.
+- **M2:** two pool cells defeated themselves with live-instance patches an eviction discards. They now patch at module scope, and `COUNT_WAKES` is on in the test config.
+- **M3:** two pool arrangements needed bytes only Rust can make. They are committed fixtures now: the owed pump, generated once, since its bot seed is entropy; and the owed game over, drift-checked. The pool reaches them as TEXT through a generated module.
+- **M4:** game over can be reached by ANY reply — the wake's, a GET's, `events`' — not only a move's. P-2 now pins before every module call that can reach the clock, and any reply's plan becomes `archive_owed`.
+- **M5:** batteries 13 and 14 had no per-commit catcher. The deploy guard now pins the production `assets` block exactly.
+- **M6:** the value pin's partner claimed needles the stored document never holds.
+- **M7:** the credential file's key NAMES are stated, with a header-file recipe that keeps the secret off argv.
+- **M8:** four `/* … */` placeholders are now specified, battery 35's natural alternating-copy race among them, and the self-review's sentence about placeholders is corrected.
+- **M9:** under `LIVE` the exported `BASE_URL` constant must move, or the breakage watch watches nothing.
+- **M10:** pool storage is per FILE, so every cell takes its own ids.
+
+**The MINOR** are applied where they fell:
+- close reasons bounded at 123 bytes (a platform rule at this compatibility date), and any other admission status answered unupgraded;
+- a persisting `rememberArchiveOff` for the outbox;
+- a non-object create body refused (the layer accepts a positional array);
+- the body read before the wake;
+- one frame per reply;
+- a ticking clock for any cell that re-creates an id;
+- `markerSentence(m)`;
+- the `workers-types` pin, and `npm install` before a lock exists;
+- Task 8 sequenced;
+- the `release-wasm` comment;
+- the committed pair under its own id;
+- `restore_picker` at a table with no session;
+- a key-refresh reason out of `resolveIdentity`;
+- the live game's budget;
+- battery 2's cell forging all four internal headers.
+
+Two simplifications were also taken: `ctx.id.name` replaces a stored `meta.id`, and the generation's time is the create's pinned reading.
+
+**What the review verified TRUE, and this wave did not touch:**
+- the whole Rust surface the plan names, compiled for both targets, and every symbol public as cited;
+- Task 3's seven cells, passing verbatim;
+- Task 5's listing equality — 25 listings byte-equal;
+- the real glue's shape;
+- the pool's `cloudflareTest` entry, `CompiledWasm`, `ASSETS`, WebSocket upgrades, hibernation with the attachment intact, `runDurableObjectAlarm`, `sql.databaseSize`, `ctx.waitUntil`, `blockConcurrencyWhile` around R2 I/O, and R2's `If-None-Match: *`.
