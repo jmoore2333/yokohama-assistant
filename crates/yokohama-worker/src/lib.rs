@@ -22,8 +22,10 @@
 mod config;
 mod create;
 mod events;
+mod picker;
 pub mod signal;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -37,6 +39,7 @@ use yokohama_web::ApiError;
 
 pub use crate::create::create_inner;
 pub use crate::events::events_inner;
+pub use crate::picker::restore_picker_inner;
 use crate::signal::{Bump, RecordingSignal};
 
 /// The one `Games`.
@@ -124,9 +127,9 @@ const HOST: Host =
     Host { identity_name: "cf-access", signal_kind: "ws", serves_games: true, multiplayer_offered: true };
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the `Games`, its store and its signal together. A refused
-/// configuration changes nothing, and its refusal names the variable (spec
-/// §2.2).
+/// one — the `Games`, its store and its signal together, and an empty
+/// `picker::PICKERS`. A refused configuration changes nothing, and its refusal
+/// names the variable (spec §2.2).
 pub fn init_inner(config: &str) -> Result<(), String> {
     let chat = config::parse(config)?;
     let store = Arc::new(MemStore::default());
@@ -141,6 +144,7 @@ pub fn init_inner(config: &str) -> Result<(), String> {
     );
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
+    *picker::PICKERS.lock().expect("the host's pickers") = Some(HashMap::new());
     *GAMES.lock().expect("the host's games") = Some(games);
     Ok(())
 }
@@ -162,8 +166,9 @@ pub struct ReplyData {
     /// The receipt archive's deferred plan (spec §2.6). `None` from every call
     /// in this build, which has no receipt archive.
     pub archive: Option<String>,
-    /// The table's picker list to persist (spec §2.4). `None` from every call
-    /// in this build, which keeps no picker.
+    /// The table's `picker` row (spec §2.4): the list's JSON when it grew, and
+    /// `"[]"` when a list existed and was cleared, which the shell reads as
+    /// "delete the row". `None` when neither happened (`picker.rs`).
     pub picker: Option<String>,
 }
 
@@ -203,6 +208,8 @@ impl Reply {
         self.data.archive.clone()
     }
 
+    /// The row as JSON when the list grew, `[]` when it was cleared, and
+    /// `undefined` when neither happened.
     #[wasm_bindgen(getter)]
     pub fn picker(&self) -> Option<String> {
         self.data.picker.clone()
@@ -281,7 +288,9 @@ pub fn identity(user: Option<String>) -> Reply {
 /// a caller refuses in the `worker` mode's own words.
 ///
 /// It answers through [`from_the_layer`], so the signal is drained while the
-/// `Games` is still held.
+/// `Games` is still held — and with spec §2.4's picker step around the layer's
+/// call (`picker::around`), which reads the record before and after it and
+/// answers `Reply.picker`.
 pub fn dispatch_inner(
     user: Option<&str>,
     method: &str,
@@ -297,8 +306,9 @@ pub fn dispatch_inner(
     };
     let req = ApiRequest { method, path, query, content_type, body };
     from_the_layer(|games| {
-        let res = api::dispatch(games, &HOST, identity, &req);
-        (res.status, res.body)
+        let (res, picker) =
+            picker::around(games, &req, caller.as_ref().ok(), || api::dispatch(games, &HOST, identity, &req));
+        (res.status, res.body, picker)
     })
 }
 
@@ -326,19 +336,31 @@ pub fn events(id: &str, user: Option<String>, query: &str) -> Reply {
     events_inner(id, user.as_deref(), query).into()
 }
 
+/// [`restore_picker_inner`] for the shell: `row` is the stored `picker` row's
+/// JSON, or `"null"` when there is none.
+#[wasm_bindgen]
+pub fn restore_picker(id: &str, row: &str) -> Reply {
+    restore_picker_inner(id, row).into()
+}
+
 /// One call into the layer under the held `GAMES`, answered with what the layer
 /// signalled DURING it.
+///
+/// `call` answers the status, the body and `Reply.picker` — which only the two
+/// calls that can change a picker compute (`picker.rs`); every other call
+/// answers `None`.
 ///
 /// **The signal is drained while the `Games` is still held**, so the list is
 /// this call's alone — including a cold handle's bot pump that persisted before
 /// the request was refused, which is recorded because it happened (spec §5.1).
-/// [`dispatch_inner`] and [`events_inner`] both answer through here (plan
-/// re-review m-c), so the two cannot drain differently.
-pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String)) -> ReplyData {
+/// [`dispatch_inner`], [`events_inner`] and [`restore_picker_inner`] all answer
+/// through here (plan re-review m-c; plan review M4), so no two can drain
+/// differently.
+pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<String>)) -> ReplyData {
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
-    let (status, body) = call(games);
-    ReplyData { status, body, bumps: drain_bumps(), archive: None, picker: None }
+    let (status, body, picker) = call(games);
+    ReplyData { status, body, bumps: drain_bumps(), archive: None, picker }
 }
 
 /// Everything the layer signalled since the last drain.
@@ -412,11 +434,15 @@ mod tests {
 
     /// A poisoned `SERIAL` would fail every later cell with the wrong message,
     /// so the guard is taken through the poison rather than unwrapped.
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
+    ///
+    /// Every cell that touches `GAMES` or the clock takes it — `picker.rs`'s
+    /// too, through `crate::`, because the orchestrator's ruling M-5 puts each
+    /// later task's cells in that task's own file.
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
         SERIAL.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn config(archive: &str) -> String {
+    pub(crate) fn config(archive: &str) -> String {
         format!(r#"{{"archive":"{archive}","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}}"#)
     }
 
@@ -539,11 +565,11 @@ mod tests {
         assert_eq!(set_clock(None), Some(1_789_000_500.0));
     }
 
-    fn call(user: &str, method: &str, path: &str, body: Option<&str>) -> ReplyData {
+    pub(crate) fn call(user: &str, method: &str, path: &str, body: Option<&str>) -> ReplyData {
         let bytes = body.map(|b| b.as_bytes().to_vec()).unwrap_or_default();
         dispatch_inner(Some(user), method, path, "", body.map(|_| "application/json"), &bytes)
     }
-    fn tagged(r: &ReplyData) -> String {
+    pub(crate) fn tagged(r: &ReplyData) -> String {
         serde_json::to_string(&r.bumps).unwrap()
     }
 
@@ -641,7 +667,7 @@ mod tests {
         assert_ne!(read_inner("record", "owed").unwrap().unwrap(), owed, "and the pump was persisted");
     }
 
-    const CREATE: &str = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"open":true}]}"#;
+    pub(crate) const CREATE: &str = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"open":true}]}"#;
 
     fn created_id(r: &ReplyData) -> String {
         serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["id"].as_str().unwrap().to_string()

@@ -63,7 +63,7 @@ pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
         }
     }
     from_the_layer(|games| match api::events_at(games, id, &user) {
-        Ok(events) => (200, serde_json::to_string(&events).expect("an Events serializes")),
-        Err(e) => (e.status.as_u16(), error_body(&e)),
+        Ok(events) => (200, serde_json::to_string(&events).expect("an Events serializes"), None),
+        Err(e) => (e.status.as_u16(), error_body(&e), None),
     })
 }

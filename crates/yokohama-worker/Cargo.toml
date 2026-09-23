@@ -38,8 +38,9 @@ serde_json.workspace = true
 # The header map `identity::resolve` reads — the module hands the layer the
 # `worker` mode's one header rather than restating its rule.
 http = "1"
-# For the receipt archive's plan key (spec §2.6: a SHA-256 over the plan's four
-# parts), which this build does not have yet.
+# SHA-256: the picker row's record digest (spec §2.4), and the receipt
+# archive's plan key (spec §2.6: a SHA-256 over the plan's four parts), which
+# this build does not have yet.
 sha2 = "0.10"
 
 [features]
