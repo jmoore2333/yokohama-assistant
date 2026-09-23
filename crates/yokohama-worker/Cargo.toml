@@ -39,8 +39,7 @@ serde_json.workspace = true
 # `worker` mode's one header rather than restating its rule.
 http = "1"
 # SHA-256: the picker row's record digest (spec §2.4), and the receipt
-# archive's plan key (spec §2.6: a SHA-256 over the plan's four parts), which
-# this build does not have yet.
+# archive's plan key (spec §2.6: a SHA-256 over the plan's four parts).
 sha2 = "0.10"
 
 [features]

@@ -680,9 +680,9 @@ mod tests {
 
     /// **Everything else as stored** (spec §2.5). The listing cell cannot see a
     /// field no row reads: `schema`, or `archived_at`, whose stamp changes the
-    /// copy with no visible change to a row. This build archives nothing, so no
-    /// table the layer builds here is stamped, and the finished pair is stamped
-    /// by hand for the second half.
+    /// copy with no visible change to a row. This cell runs with the archive
+    /// off, so no table the layer builds here is stamped, and the finished pair
+    /// is stamped by hand for the second half.
     #[test]
     fn the_scrub_replaces_the_seed_the_lock_and_the_keeps_and_nothing_else() {
         let _s = serial();

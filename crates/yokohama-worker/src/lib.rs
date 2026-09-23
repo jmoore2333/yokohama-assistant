@@ -1,6 +1,7 @@
 //! **The per-object host** (M6.5c, spec §2.2): the table layer compiled to
 //! WebAssembly for the Durable Objects — ONE `Games` over a `MemStore`, the
-//! [`signal::RecordingSignal`], `NoArchive` and a settable clock, behind
+//! [`signal::RecordingSignal`], the archive the switch names (`NoArchive`, or
+//! under `r2` the receipt archive, `receipt.rs`) and a settable clock, behind
 //! `wasm-bindgen` exports built for the objects' shell (spec §2.2).
 //!
 //! **`crates/yokohama-wasm`'s shape, for that crate's reason**: it is a HOST and
@@ -24,6 +25,7 @@ mod create;
 mod events;
 mod house;
 mod picker;
+mod receipt;
 pub mod signal;
 
 use std::collections::HashMap;
@@ -32,7 +34,7 @@ use std::sync::{Arc, Mutex};
 
 use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
-use yokohama_web::archive::NoArchive;
+use yokohama_web::archive::{Archive, NoArchive};
 use yokohama_web::games::Games;
 use yokohama_web::identity::{resolve, IdentityMode, User, WORKER_HEADER};
 use yokohama_web::store::{Doc, MemStore};
@@ -42,6 +44,8 @@ pub use crate::create::create_inner;
 pub use crate::events::events_inner;
 pub use crate::house::{house_copy_inner, house_frame_inner, put_copy_inner, remove_copy_inner};
 pub use crate::picker::restore_picker_inner;
+pub use crate::receipt::{expire_inner, receipt_inner, stamp_archive_inner};
+use crate::receipt::ReceiptArchive;
 use crate::signal::{Bump, RecordingSignal};
 
 /// The one `Games`.
@@ -129,24 +133,37 @@ const HOST: Host =
     Host { identity_name: "cf-access", signal_kind: "ws", serves_games: true, multiplayer_offered: true };
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the `Games`, its store and its signal together, and an empty
-/// `picker::PICKERS`. A refused configuration changes nothing, and its refusal
-/// names the variable (spec §2.2).
+/// one — the `Games`, its store, its signal and its archive together, an empty
+/// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
+/// with no receipt and no pending plan, under `off` none. A refused
+/// configuration changes nothing, and its refusal names what it refused (spec
+/// §2.2). The clock is not reset: [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
-    let chat = config::parse(config)?;
+    let config::Config { chat, archive } = config::parse(config)?;
     let store = Arc::new(MemStore::default());
     let signal = Arc::new(RecordingSignal::default());
+    // The SAME `Arc` the layer holds, kept so a receipt reaches the archive the
+    // layer puts through, and so its pending plan can be drained into a reply.
+    let receipts = match archive {
+        config::Switch::Off => None,
+        config::Switch::R2 { caller } => Some(Arc::new(ReceiptArchive::new(caller))),
+    };
+    let layer_archive: Arc<dyn Archive> = match &receipts {
+        Some(receipts) => receipts.clone(),
+        None => Arc::new(NoArchive),
+    };
     let games = Games::with_parts(
         Arc::new(yokohama_core::Rules::standard()),
         store.clone(),
         chat,
         signal.clone(),
         Arc::new(now),
-        Arc::new(NoArchive),
+        layer_archive,
     );
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
     *picker::PICKERS.lock().expect("the host's pickers") = Some(HashMap::new());
+    *receipt::RECEIPTS.lock().expect("the host's receipts") = receipts;
     *GAMES.lock().expect("the host's games") = Some(games);
     Ok(())
 }
@@ -165,8 +182,10 @@ pub struct ReplyData {
     pub body: String,
     /// The layer's signal calls during this call, in call order.
     pub bumps: Vec<Bump>,
-    /// The receipt archive's deferred plan (spec §2.6). `None` from every call
-    /// in this build, which has no receipt archive.
+    /// The receipt archive's deferred plan (spec §2.6), as JSON
+    /// (`receipt::Plan`): a put during this call met no receipt, and the shell
+    /// owes the upload. `None` when no put was deferred — always, with the
+    /// archive `off`.
     pub archive: Option<String>,
     /// The table's `picker` row (spec §2.4): the list's JSON when it grew, and
     /// `"[]"` when a list existed and was cleared, which the shell reads as
@@ -364,6 +383,25 @@ pub fn remove_copy(id: &str) -> Result<(), JsValue> {
     remove_copy_inner(id).map_err(|e| JsValue::from_str(&e))
 }
 
+/// [`receipt_inner`] for the shell: `outcome` is the outcome's JSON, and a
+/// refusal is thrown as its sentence.
+#[wasm_bindgen]
+pub fn receipt(plan_key: &str, outcome: &str) -> Result<(), JsValue> {
+    receipt_inner(plan_key, outcome).map_err(|e| JsValue::from_str(&e))
+}
+
+/// [`stamp_archive_inner`] for the shell.
+#[wasm_bindgen]
+pub fn stamp_archive(id: &str) -> Reply {
+    stamp_archive_inner(id).into()
+}
+
+/// [`expire_inner`] for the shell.
+#[wasm_bindgen]
+pub fn expire(id: &str) -> Reply {
+    expire_inner(id).into()
+}
+
 /// [`house_frame_inner`] for the shell, which passes each counter as a JS
 /// `number`: the parameters are `u32` because `wasm-bindgen` types a `u64`
 /// parameter `bigint` (the orchestrator's ruling I-22), and they widen to the
@@ -374,23 +412,25 @@ pub fn house_frame(seq: u32, chat: u32) -> String {
 }
 
 /// One call into the layer under the held `GAMES`, answered with what the layer
-/// signalled DURING it.
+/// signalled DURING it, and the plan of any put it deferred.
 ///
 /// `call` answers the status, the body and `Reply.picker` — which only the two
 /// calls that can change a picker compute (`picker.rs`); every other call
 /// answers `None`.
 ///
-/// **The signal is drained while the `Games` is still held**, so the list is
-/// this call's alone — including a cold handle's bot pump that persisted before
-/// the request was refused, which is recorded because it happened (spec §5.1).
-/// [`dispatch_inner`], [`events_inner`] and [`restore_picker_inner`] all answer
-/// through here (plan re-review m-c; plan review M4), so no two can drain
-/// differently.
+/// **The signal and the pending plan are drained while the `Games` is still
+/// held**, so each is this call's alone — including a cold handle's bot pump
+/// that persisted before the request was refused, which is recorded because it
+/// happened (spec §5.1), and the game-over put that pump deferred.
+/// [`dispatch_inner`] (and so `create`), [`events_inner`],
+/// [`restore_picker_inner`], [`stamp_archive_inner`] and [`expire_inner`] all
+/// answer through here (plan re-review m-c; plan review M4), so no two can
+/// drain differently.
 pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<String>)) -> ReplyData {
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
     let (status, body, picker) = call(games);
-    ReplyData { status, body, bumps: drain_bumps(), archive: None, picker }
+    ReplyData { status, body, bumps: drain_bumps(), archive: receipt::drain_plan(), picker }
 }
 
 /// Everything the layer signalled since the last drain.
