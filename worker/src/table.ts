@@ -4,7 +4,8 @@ import { guardAlarmName } from "./alarm";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
-import { Instance, readReply, type Replied } from "./module";
+import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
+import { Instance, readReply, type Bump, type Replied } from "./module";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
@@ -18,6 +19,28 @@ const TRAP = "the table's engine stopped — try again";
 /** `Reply.picker` for a list the module cleared: the row is deleted (the
  *  orchestrator's ruling I-21). */
 const CLEARED = "[]";
+
+/** The 426 a `GET …/stream` that is not an upgrade answers (spec §2.3;
+ *  host-written, §4). */
+const NOT_AN_UPGRADE = "this host streams over WebSocket";
+
+/** The close reason of a deleted table's sockets: short and fixed, because
+ *  the `end` frame before the close carries the meaning. */
+const DELETED_REASON = "this table was deleted";
+
+/** The tag every table socket is accepted under (the plan's Task 10). */
+const SOCKET_TAG = "t";
+
+/** The two transport routes this object answers itself rather than through
+ *  `dispatch`, whose route table has no row for either (spec §2.3). */
+type Transport = "events" | "stream";
+
+/** What a socket carries across hibernation: the caller it was admitted as,
+ *  exactly as `X-Yokohama-User` named them — the viewer every frame it is
+ *  sent is computed for. */
+interface Attachment {
+  user: string | undefined;
+}
 
 /** The layer's documents a table object stores, in the order the wake loads
  *  them (spec §2.4). The fourth `docs` kind, `picker`, is the host's own. */
@@ -65,6 +88,9 @@ interface Incoming {
   query: string;
   contentType: string | undefined;
   create: boolean;
+  /** `…/events` (a GET) or `…/stream` (an upgrade), answered through the
+   *  module's `events`; absent on every other request. */
+  transport?: Transport;
   body: Uint8Array;
 }
 
@@ -86,11 +112,22 @@ export class Table extends DurableObject<Env> {
     super(ctx, env);
     // Nothing is written here: the first write batch creates the tables.
     this.config = shellConfig(env);
+    // The client's keep-alive (spec §2.7): every `ping` a socket sends is
+    // answered `pong` by the platform, and never reaches `webSocketMessage`.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const create = req.method === "POST" && url.pathname === "/api/games";
+    const transport = transportOf(url.pathname);
+    // The transport routes' own refusals (spec §2.3), answered before the
+    // table is read, as a router answers them. A non-`GET` is 405 with an
+    // empty body, the layer's own 405 shape. (axum's `get` serves a HEAD
+    // through the GET handler; the spec rules 405 for every non-`GET`, and
+    // no client sends a HEAD here.)
+    if (transport !== undefined && req.method !== "GET") return respond(405, "");
+    if (transport === "stream" && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
     const incoming: Incoming = {
       id: this.ctx.id.name ?? requestedId(url.pathname, req.headers, create),
       user: req.headers.get(USER_HEADER) ?? undefined,
@@ -99,6 +136,7 @@ export class Table extends DurableObject<Env> {
       query: url.search.slice(1),
       contentType: req.headers.get("content-type") ?? undefined,
       create,
+      transport,
       // The body, read once: the LAST await before the reply. The wake, the
       // call and the batch all run after it, in `answer`'s one synchronous
       // turn, so no other request interleaves between a wake and the dispatch
@@ -126,9 +164,10 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * The request path (spec §2.4; the plan's Task 9, steps 3 to 7), in one
-   * synchronous turn: the poison check, the wake, the call, the ONE batch, and
-   * the reply.
+   * The request path (spec §2.4; the plan's Task 9, steps 3 to 7, and Task
+   * 10), in one synchronous turn: the poison check, the wake, the call, the
+   * ONE batch, the frames, and the reply — or, for a `…/stream` upgrade, the
+   * admission (`admit`).
    */
   private answer(incoming: Incoming): Response {
     const { id } = incoming;
@@ -154,6 +193,8 @@ export class Table extends DurableObject<Env> {
       return respond(500, errorBody(config.error));
     }
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, null)));
+    let reply: Replied;
+    let bumps: Bump[];
     try {
       const woken = this.wake(id, instance, config, traps);
       if (woken instanceof Response) return woken;
@@ -167,7 +208,11 @@ export class Table extends DurableObject<Env> {
         return called;
       }
       this.commit(called, woken);
-      return respond(called.reply.status, called.reply.body);
+      reply = called.reply;
+      // Every bump the request's calls made: the wake's — `restore_picker`'s,
+      // a cold rebuild's owed bot move among them — and the call's own (the
+      // orchestrator's ruling, Task 9's review).
+      bumps = [...(woken.restored?.reply.bumps ?? []), ...reply.bumps];
     } catch (e) {
       // A throw that is not a trap — a document the module refuses to load, a
       // reply the shell cannot read, a batch that did not commit — can leave
@@ -177,6 +222,11 @@ export class Table extends DurableObject<Env> {
       instance.drop();
       throw e;
     }
+    // The side channel, after the batch (spec §2.4): the output gate holds
+    // every send until the batch is durable (spec §0.4), and `sendFrames`
+    // never throws, so nothing it meets costs the request its reply.
+    this.sendFrames(id, bumps);
+    return incoming.transport === "stream" ? this.admit(incoming.user, reply) : respond(reply.status, reply.body);
   }
 
   /**
@@ -252,21 +302,27 @@ export class Table extends DurableObject<Env> {
 
   /**
    * The request's own call (the plan's Task 9, step 5): P-2's pin, then
-   * `create` or `dispatch`, then the layer's three documents read back out of
-   * the module — all under ONE `Instance.guarded`, so a trap in any of them
-   * drops the module and answers the trap 500 with nothing committed: a move a
-   * trapped call made was never acknowledged. The documents are read before
-   * anything else is computed from the module (the orchestrator's ruling
-   * I-42).
+   * `create`, `dispatch` or — for a transport route — `events`, then the
+   * layer's three documents read back out of the module — all under ONE
+   * `Instance.guarded`, so a trap in any of them drops the module and answers
+   * the trap 500 with nothing committed: a move a trapped call made was never
+   * acknowledged. The documents are read before anything else is computed
+   * from the module (the orchestrator's ruling I-42).
+   *
+   * `…/events` hands `events` its query; `…/stream` reads none (axum's
+   * `stream` handler takes no query), so its admission is always
+   * `events(id, user, "")` (spec §2.4).
    */
   private call(incoming: Incoming, instance: Instance): Called | Response {
-    const { id } = incoming;
-    let stage = incoming.create ? "create" : "dispatch";
+    const { id, transport } = incoming;
+    let stage = incoming.create ? "create" : transport === undefined ? "dispatch" : "events";
     const done = instance.guarded((mod) => {
       const pinned = this.pinned(mod, (m) =>
         incoming.create
           ? m.create(incoming.user, incoming.body, id, incoming.contentType)
-          : m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body),
+          : transport === undefined
+            ? m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body)
+            : m.events(id, incoming.user, transport === "events" ? incoming.query : ""),
       );
       stage = "read";
       return { ...pinned, docs: readLayerDocs(mod, id) };
@@ -277,6 +333,118 @@ export class Table extends DurableObject<Env> {
     }
     return done.ok;
   }
+
+  /**
+   * An upgrade's answer, from its admission — the request's own
+   * `events(id, user, "")`, answered after the request's commit and its
+   * frames (spec §2.4, "Sockets"):
+   *
+   * - **200**: the socket is accepted, hibernatable, with the caller as its
+   *   attachment, and sent that reading at once — M6.3's first frame;
+   * - **403 or 404**: the socket is ACCEPTED, sent an `end` that carries the
+   *   layer's sentence (the orchestrator's ruling, Task 8's review), and
+   *   closed 4403 or 4404 with that sentence as the reason — because a browser
+   *   reports a refused upgrade as an anonymous failure it cannot tell from
+   *   the network;
+   * - **anything else** — the 401, an id the store will not use, a 500 — is
+   *   answered unupgraded, exactly as the layer answered it (a browser cannot
+   *   read a 401; spec §2.7's probe does).
+   *
+   * The socket is accepted after the request's frames were sent, so it is
+   * sent only its first frame, which already reads whatever those frames
+   * announced.
+   */
+  private admit(user: string | undefined, reply: Replied): Response {
+    const { status, body } = reply;
+    if (status !== 200 && status !== 403 && status !== 404) return respond(status, body);
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.ctx.acceptWebSocket(server, [SOCKET_TAG]);
+    if (status === 200) {
+      server.serializeAttachment({ user } satisfies Attachment);
+      server.send(frame("signal", body));
+    } else {
+      const sentence = sentenceOf(body);
+      server.send(frame("end", endAtAdmission(sentence)));
+      server.close(status === 403 ? 4403 : 4404, closeReason(sentence ?? ""));
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * The frames a request owes its sockets (spec §2.4, "The framing"), sent
+   * right after its commit. `bumps` is every bump the request's calls made,
+   * the wake's and the call's, and the whole list is ONE frame per socket,
+   * however many bumps it holds: a finalizing keep carries `bump_table` then
+   * `bump` (the plan's Task 2), and two identical frames would each wake a
+   * screen.
+   *
+   * - An `end` naming this table wins over every other bump: each socket is
+   *   sent `end {"reason":"deleted"}` and closed 4404.
+   * - Else, a `bump` or a `bump_table` naming it: each socket's viewer — its
+   *   attachment's `user` — is read with `events(id, user, "")`, pinned to
+   *   P-2's reading like every call that can reach the layer's clock. A 200 is
+   *   sent as a `signal`; a 403 or a 404 — an admission lost under a live
+   *   socket, such as a stranger's at an open table whose last seat has just
+   *   filled — is the SSE's own `end {"reason":"gone"}` and a 4403 or 4404
+   *   close with the layer's sentence as the reason; any other answer sends
+   *   NOTHING, the SSE's comment arm, and the socket stays open.
+   * - Anything else — no bump, or only the house's chat — sends nothing.
+   *
+   * A socket that is not open (one this object has closed, whose close has not
+   * completed) is passed over.
+   *
+   * **It never throws**: the batch is already durable, so nothing here may
+   * cost the request its reply. A trap is a side channel's (spec §2.4
+   * "Traps"): logged, the module discarded, and no socket framed after it —
+   * `guarded` would answer the next socket from an EMPTY module, whose reading
+   * of this table is a 404 that would end a live socket. Any other throw is
+   * logged `frame-failed` and ends the framing the same way, and the module is
+   * dropped for `answer`'s reason: it may hold what storage does not. Either
+   * way the next request builds a new module and reloads it.
+   */
+  sendFrames(id: string, bumps: Bump[]): void {
+    const ended = bumps.some((b) => "end" in b && b.end === id);
+    const bumped = bumps.some((b) => ("bump" in b && b.bump === id) || ("bump_table" in b && b.bump_table === id));
+    // Bumps come only from a call into this object's module, so the instance
+    // is set whenever there are any; the check narrows the type.
+    const instance = this.instance;
+    if ((!ended && !bumped) || instance === undefined) return;
+    try {
+      for (const ws of this.ctx.getWebSockets()) {
+        if (ws.readyState !== WebSocket.OPEN) continue;
+        if (ended) {
+          ws.send(frame("end", END_DELETED));
+          ws.close(4404, closeReason(DELETED_REASON));
+          continue;
+        }
+        const user = (ws.deserializeAttachment() as Attachment | null)?.user;
+        const done = instance.guarded((mod) => this.pinned(mod, (m) => m.events(id, user, "")));
+        if ("trapped" in done) {
+          log("trap", { id, call: "frame", error: done.trapped });
+          return;
+        }
+        const { status, body } = done.ok.reply;
+        if (status === 200) {
+          ws.send(frame("signal", body));
+        } else if (status === 403 || status === 404) {
+          ws.send(frame("end", END_GONE));
+          ws.close(status === 403 ? 4403 : 4404, closeReason(sentenceOf(body) ?? ""));
+        }
+      }
+    } catch (e) {
+      instance.drop();
+      log("frame-failed", { id, error: String(e) });
+    }
+  }
+
+  /**
+   * A socket carries no move (spec §2.4): whatever a client sends is ignored,
+   * so nothing a socket says reaches `dispatch` — a spectator's least of all.
+   * The keep-alive's `ping` does not arrive here: the auto-response the
+   * constructor sets answers it.
+   */
+  webSocketMessage(): void {}
 
   /**
    * The request's ONE batch (the plan's Task 9, step 6), after EVERY call
@@ -367,6 +535,21 @@ export class Table extends DurableObject<Env> {
 function requestedId(path: string, headers: Headers, create: boolean): string {
   if (create) return decodeURIComponent(headers.get(TABLE_ID_HEADER) ?? "");
   return path.slice("/api/games/".length).split("/")[0] ?? "";
+}
+
+/** The transport route `path` names — `/api/games/{id}/events` or
+ *  `/api/games/{id}/stream`, with `{id}` one non-empty segment — or
+ *  `undefined` for every other path, which the layer's `dispatch` answers. */
+function transportOf(path: string): Transport | undefined {
+  const [root, api, games, id, route, ...rest] = path.split("/");
+  if (root !== "" || api !== "api" || games !== "games" || !id || rest.length > 0) return undefined;
+  return route === "events" || route === "stream" ? route : undefined;
+}
+
+/** Whether a request asks to become a WebSocket: its `Upgrade` token,
+ *  compared case-insensitively, as RFC 6455 §4.2.1 reads it. */
+function isUpgrade(headers: Headers): boolean {
+  return headers.get("Upgrade")?.toLowerCase() === "websocket";
 }
 
 /**
