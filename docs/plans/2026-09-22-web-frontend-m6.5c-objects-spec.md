@@ -409,7 +409,10 @@ be wrong is testable under `cargo test`:
   - **a body the layer would refuse is dispatched UNCHANGED**, so the layer's own 400 answers it
     byte for byte — a duplicate key, an unknown field, a missing field (whose column the first text's
     insertion moved, §0.4), a non-string `id`;
-  - **a body whose `id` is a string** is the name the Worker routed by, and is dispatched unchanged;
+  - **a body whose `id` is a string** is the name the Worker routed by, and is dispatched unchanged —
+    one that is NOT the object's name cannot arrive through the Worker (both parse the same text, and
+    a body the two parsers would read differently fails the layer's parse) and is refused 500 (§4),
+    so a routing defect is loud instead of a 201 for an object that holds nothing;
   - **a body with no `id` key** gets `,"id":"<id>"` inserted TEXTUALLY before its final `}` and is
     dispatched (a body that parses always has a member before it — `seats` is required);
   - **a body with `"id": null`** — which the layer reads as absent, so it would draw an id of its own
@@ -941,7 +944,9 @@ names. For this host:
   directory.
 - **Host-written statuses and sentences — named, never the layer's**: the missing-file 404 (§2.3);
   the 2 MiB body refusal (intended identical to the NAS's, pinned at the first deploy); the stream's
-  426; the create body's `"id": null` 400 (§2.2); the trap 500 and the poison 500 (§2.4); a marker's
+  426; the create body's `"id": null` 400 and its routing-defect 500 `"the create's id does not name
+  the table it was routed to"` (§2.2; unreachable through the Worker, loud if it ever is not); the
+  trap 500 and the poison 500 (§2.4); a marker's
   404 sentences — three heads and three tails — and its 409 (§2.4); the archive misconfiguration 500
   (§2.6); the operator's 403, the force's 503 and the operator payload (§2.9). Everything else a
   client reads is the layer's.
@@ -1086,6 +1091,11 @@ node replay does.
     it, so they lead every page, and no walk row sends a cursor for the replay to rewrite (§0.2).
   - **`created_at` and cursors** normalized as `freeze_clock` normalizes them — the clock cannot be
     frozen live.
+  - **The house chat** is shared by every run and every real user, so its two payloads
+    (`house_chat_post.json`, `house_chat.json`) are compared after taking `seq` and `last` back by the
+    house's `last` read at the run's start, with the page filtered to this run's own messages — a
+    named host-parameterized filter, like the lobby's. A person talking in the lobby DURING a run
+    moves `last` and fails that run; the next run is clean.
   - **`archive-walk.json`'s two FIRST sends** — the finished record (`archive_post.json`, 201,
     `"identical": false`) and the partial one (`archive_post_abandoned.json`, 201, `leaf:
     "abandoned"`) — land only the first time the bucket sees them; on every later run the once-rule
@@ -1358,3 +1368,5 @@ or incomplete, corrected here.
 | The `wait` cap was called the layer's 400: it is axum's `events` HANDLER's (`lib.rs:586-590`, behind `server`), so `parse_query` never refuses `wait=26` | §2.2's `events` restates the cap, its sentence and the handler's order; §2.3; §5.1's cell pins the order by adjacent-pair probes |
 | The live archive rule named `archive_identical.json`, which does not exist (the file is `archive_post_identical.json`), and missed that the walk's SECOND first send — the partial record, `archive_post_abandoned.json` — also turns into the once-rule's 200 on a re-run, with no committed file for that answer | §5.3's rule covers both first sends: the committed 201, or the same body at 200 with `"identical": true`; §9.2 row 1 |
 | §2.4's "one synchronous batch" did not say how an alarm joins SQL writes, and nothing recorded what that rests on | §2.4 names `transactionSync` plus a `setAlarm` in the same turn; §6 records the reliance on write coalescing |
+| The live replay's house-chat payloads cannot repeat: the lobby chat is shared by every run and every real user, so `seq` and `last` climb run over run | §5.3's live bullets normalize them against the house's `last` read at the run's start |
+| `create`'s string-id branch trusted routing silently: a mismatch would answer 201 for an object holding nothing | §2.2's rule refuses it 500, named in §4 (the plan's Ruling P-4) |
