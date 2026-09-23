@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import compiled from "../gen/yokohama_worker_bg.wasm";
 import { createModule, type Reply } from "../gen/factory.js";
 import * as configModule from "../src/config";
-import { frame } from "../src/frames";
+import { closeReason, frame } from "../src/frames";
 import { readReply, type Bump } from "../src/module";
 import { ensureTables, upsertDoc } from "../src/storage";
 import { Table } from "../src/table";
@@ -194,6 +194,20 @@ describe("the table's sockets (spec §2.4)", () => {
     expect(blueFirst).toBe(frame("signal", blueEvents));
   });
 
+  // Spec §2.4: a socket is accepted with the table's id as its tag. Nothing
+  // reads the tag today — `sendFrames` frames every socket the object holds —
+  // so this cell keeps a later `getWebSockets(id)` honest. Mutant: any other
+  // tag.
+  it("every socket is accepted under the table's id as its tag", async () => {
+    const id = "tagged";
+    const stub = await seedPlaying(id);
+    const tabs = [await openTab(stub, RED, id), await openTab(stub, BLUE, id)];
+    await Promise.all(tabs.map((tab) => tab.until(1)));
+    const tags = await runInDurableObject(stub, (_o, state) => state.getWebSockets().map((ws) => state.getTags(ws)));
+    expect(tags).toEqual([[id], [id]]);
+    expect(await runInDurableObject(stub, (_o, state) => state.getWebSockets(id).length)).toBe(2);
+  });
+
   // Each request here carries ONE bump, so this cell is about the viewer; a
   // frame per bump is the finalizing keep's cell. Mutants: every socket sent
   // the first socket's reading, or the request's caller's; the viewer lost
@@ -293,6 +307,36 @@ describe("the table's sockets (spec §2.4)", () => {
     expect(red.ws.readyState, "the seated socket stays open").toBe(WebSocket.OPEN);
   });
 
+  // Spec §5.2's other mid-stream half: a reading lost to a 404 under a live
+  // socket. No known reading turns into a 404 under a live socket — a
+  // delete's `end` comes first — so the live module's `events` answers ONCE
+  // with the layer's own 404 for this id: a fresh module's, which holds no
+  // table. The close carries the
+  // sentence, cut, as its only carrier: this `end` is the SSE's own. Mutants:
+  // every mid-stream refusal closed 4403; a 404 read as a failure (nothing
+  // sent); the close's reason dropped.
+  it("a reading lost mid-stream to a 404 is ended gone and closed 4404 with the layer's sentence", async () => {
+    const id = "lost-404";
+    const stub = await seedPlaying(id);
+    const red = await openTab(stub, RED, id);
+    const [first] = await red.until(1);
+    const missing = readReply(referenceModule().events(id, RED, ""));
+    expect(missing.status, "premise: the layer's 404 for a table it does not hold").toBe(404);
+    const sentence = (JSON.parse(missing.body) as { error: string }).error;
+    await runInDurableObject(stub, (table: Table) => {
+      const { mod } = table["instance"]!.get();
+      const events = mod.events;
+      mod.events = () => {
+        mod.events = events;
+        return { status: missing.status, body: missing.body, bumps: "[]", free() {} } as unknown as Reply;
+      };
+    });
+    const posted = await framed(() => chat(stub, BLUE, id, "anyone?"));
+    expect(posted.bumps, "premise: the post bumped the table").toEqual([[{ bump_table: id }]]);
+    expect(await red.closed()).toEqual({ code: 4404, reason: closeReason(sentence) });
+    expect(red.messages).toEqual([first, END_GONE]);
+  });
+
   // Spec §2.4: a refused upgrade is ACCEPTED, ended and closed, because a
   // browser reports a refused upgrade as an anonymous failure it cannot tell
   // from the network. The admission-time `end` carries the layer's sentence
@@ -344,8 +388,7 @@ describe("the table's sockets (spec §2.4)", () => {
     expect([unusable.status, unusable.webSocket, await unusable.text()]).toEqual([500, null, refusal.body]);
   });
 
-  // Mutants: the `end` never read, so the bump is read as a signal — the
-  // reading after a delete is a 404, and the sockets are sent `gone`; no
+  // Mutants: the `end` never read, so nothing is sent and no close comes; no
   // close, or another code.
   it("a delete ends every socket as deleted, 4404", async () => {
     const id = "deleted";
@@ -512,7 +555,7 @@ describe("the table's sockets (spec §2.4)", () => {
   });
 
   // A throw that is not a trap, while framing, is handled as a trap is: the
-  // batch is durable, so the reply stands, the module is dropped (it may hold
+  // batch is committed, so the reply stands, the module is dropped (it may hold
   // what storage does not) and the failure is logged. Mutants: the throw
   // escaping `sendFrames` (the post's request fails after its batch); the
   // module kept (the GET wakes no new one).
@@ -536,6 +579,29 @@ describe("the table's sockets (spec §2.4)", () => {
     await chat(stub, BLUE, id, "two");
     const chatted = frame("signal", await eventsText(stub, RED, id));
     expect(await red.until(2)).toEqual([first, chatted]);
+  });
+
+  // A framing call only reads, and no known case makes one write. Should one
+  // ever carry bumps or an archive plan, the pass neither frames nor owes
+  // them, and a log line records that it happened. The live module's `events`
+  // answers ONCE with a bump beside its reading. Mutant: the line dropped.
+  it("a framing call that carries bumps is logged", async () => {
+    const id = "carried";
+    const stub = await seedPlaying(id);
+    const red = await openTab(stub, RED, id);
+    const [first] = await red.until(1);
+    const reading = await eventsText(stub, RED, id);
+    await runInDurableObject(stub, (table: Table) => {
+      const { mod } = table["instance"]!.get();
+      const events = mod.events;
+      mod.events = () => {
+        mod.events = events;
+        return { status: 200, body: reading, bumps: JSON.stringify([{ bump: id }]), free() {} } as unknown as Reply;
+      };
+    });
+    const { lines } = await logsDuring(() => chat(stub, BLUE, id, "hm"));
+    expect(lines).toEqual([{ event: "frame-carried-bumps", id, bumps: [{ bump: id }], archive: false }]);
+    expect(await red.until(2)).toEqual([first, frame("signal", reading)]);
   });
 
   // The plan's ruling P-2: `events` can reach the layer's clock (a cold
@@ -597,7 +663,7 @@ describe("the table's sockets (spec §2.4)", () => {
 
   // Spec §2.3's transport parity. Mutants: the 405s answered by the layer's
   // dispatch (its 404 "no such endpoint"); the 426 missing (the layer's 404
-  // again); `wait` passed to the layer unchecked (its reading, 200); the
+  // again); the `…/events` query dropped (its reading, 200); the
   // stream's query handed to its admission (the upgrade would be refused 400,
   // unupgraded); a path BELOW a transport route read as one (its reading,
   // 200). An `Upgrade: WebSocket` is admitted too, as RFC 6455 §4.2.1 reads

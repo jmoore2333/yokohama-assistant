@@ -61,8 +61,10 @@ export const CLOSE_REASON_BYTES = 123;
 
 /**
  * `sentence`, cut at a character boundary to at most 123 UTF-8 bytes. Every
- * close goes through it; the `end` frame before the close carries the whole
- * sentence.
+ * close goes through it. At an admission the `end` frame before the close
+ * carries the whole sentence; mid-stream the `end` is the SSE's own, which
+ * carries none, so there the close's reason, cut, is the layer's sentence's
+ * only carrier. A delete's close carries this host's own short reason.
  *
  * It walks code points, never UTF-16 units, so a surrogate pair is never
  * split. A lone surrogate counts three bytes, which is what `TextEncoder`

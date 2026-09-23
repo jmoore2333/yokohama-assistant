@@ -28,9 +28,6 @@ const NOT_AN_UPGRADE = "this host streams over WebSocket";
  *  the `end` frame before the close carries the meaning. */
 const DELETED_REASON = "this table was deleted";
 
-/** The tag every table socket is accepted under (the plan's Task 10). */
-const SOCKET_TAG = "t";
-
 /** The two transport routes this object answers itself rather than through
  *  `dispatch`, whose route table has no row for either (spec §2.3). */
 type Transport = "events" | "stream";
@@ -226,7 +223,7 @@ export class Table extends DurableObject<Env> {
     // every send until the batch is durable (spec §0.4), and `sendFrames`
     // never throws, so nothing it meets costs the request its reply.
     this.sendFrames(id, bumps);
-    return incoming.transport === "stream" ? this.admit(incoming.user, reply) : respond(reply.status, reply.body);
+    return incoming.transport === "stream" ? this.admit(id, incoming.user, reply) : respond(reply.status, reply.body);
   }
 
   /**
@@ -352,14 +349,16 @@ export class Table extends DurableObject<Env> {
    *
    * The socket is accepted after the request's frames were sent, so it is
    * sent only its first frame, which already reads whatever those frames
-   * announced.
+   * announced. Every socket accepted here is tagged with the table's id (spec
+   * §2.4); nothing in this object reads the tag, since `sendFrames` frames
+   * every socket the object holds.
    */
-  private admit(user: string | undefined, reply: Replied): Response {
+  private admit(id: string, user: string | undefined, reply: Replied): Response {
     const { status, body } = reply;
     if (status !== 200 && status !== 403 && status !== 404) return respond(status, body);
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    this.ctx.acceptWebSocket(server, [SOCKET_TAG]);
+    this.ctx.acceptWebSocket(server, [id]);
     if (status === 200) {
       server.serializeAttachment({ user } satisfies Attachment);
       server.send(frame("signal", body));
@@ -394,14 +393,16 @@ export class Table extends DurableObject<Env> {
    * A socket that is not open (one this object has closed, whose close has not
    * completed) is passed over.
    *
-   * **It never throws**: the batch is already durable, so nothing here may
-   * cost the request its reply. A trap is a side channel's (spec §2.4
+   * **It never throws**: whatever the request wrote is already committed, so
+   * nothing here may cost the request its reply. A trap is a side channel's (spec §2.4
    * "Traps"): logged, the module discarded, and no socket framed after it —
    * `guarded` would answer the next socket from an EMPTY module, whose reading
    * of this table is a 404 that would end a live socket. Any other throw is
    * logged `frame-failed` and ends the framing the same way, and the module is
    * dropped for `answer`'s reason: it may hold what storage does not. Either
-   * way the next request builds a new module and reloads it.
+   * way the next request builds a new module and reloads it. A framing reply
+   * that itself carries bumps or an archive plan is logged
+   * `frame-carried-bumps`.
    */
   sendFrames(id: string, bumps: Bump[]): void {
     const ended = bumps.some((b) => "end" in b && b.end === id);
@@ -424,7 +425,14 @@ export class Table extends DurableObject<Env> {
           log("trap", { id, call: "frame", error: done.trapped });
           return;
         }
-        const { status, body } = done.ok.reply;
+        const { status, body, bumps: carried, archive } = done.ok.reply;
+        // A framing call only reads: the request's own calls have already
+        // built the handle, so no known case pumps here. Should one ever
+        // carry bumps or an archive plan, this pass neither frames nor owes
+        // them, and the line records that it happened.
+        if (carried.length > 0 || archive !== undefined) {
+          log("frame-carried-bumps", { id, bumps: carried, archive: archive !== undefined });
+        }
         if (status === 200) {
           ws.send(frame("signal", body));
         } else if (status === 403 || status === 404) {
