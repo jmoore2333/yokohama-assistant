@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(session.state().current_player, yokohama_core::PlayerId::new(1), "premise: the bot is owed a move");
     }
 
-    /// **A GET can write** (the layer's `lib.rs:520-538`): a cold handle rebuilt with a bot to
+    /// **A GET can write** (the layer's `lib.rs:523-539`): a cold handle rebuilt with a bot to
     /// move pumps that move and persists it — and the bump is in the reply even
     /// though the request it rode in on is then REFUSED, because it happened. The
     /// shell (Task 9) relies on this: it compares documents after EVERY dispatch.
@@ -647,6 +647,14 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["id"].as_str().unwrap().to_string()
     }
 
+    /// Every id the layer's store holds a `doc` under — read through the
+    /// `Games`, so it is the store every create writes. A refused create must
+    /// leave it empty under ANY id: a body that does not name the object would
+    /// have its table stored under an id the layer drew.
+    fn stored(doc: Doc) -> Vec<String> {
+        GAMES.lock().unwrap().as_ref().unwrap().store().list(doc).unwrap()
+    }
+
     /// The Worker names the object BEFORE the layer runs, so a body with no id
     /// gets the object's name inserted, and every 201 names the object that holds
     /// the table (spec §2.2).
@@ -658,6 +666,22 @@ mod tests {
         assert_eq!(r.status, 201, "{}", r.body);
         assert_eq!(created_id(&r), "sim-00000000000000aa");
         assert!(read_inner("table", "sim-00000000000000aa").unwrap().is_some(), "stored under the object's name");
+    }
+
+    /// A string `id` that IS the object's name — the arm every explicit-id
+    /// create takes — goes on UNCHANGED (spec §2.2): a 201 naming the object,
+    /// and exactly that one table stored. Inserting the name again would be the
+    /// layer's duplicate-`id` 400; reading every string id as misrouted would be
+    /// the host's 500.
+    #[test]
+    fn a_string_id_that_is_the_objects_name_goes_on_unchanged() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = CREATE.replacen('{', r#"{"id":"sim-00000000000000ab","#, 1);
+        let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ab", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(created_id(&r), "sim-00000000000000ab");
+        assert_eq!(stored(Doc::Table), ["sim-00000000000000ab"]);
     }
 
     /// **Review Focus 1**: what `curl --data-binary @file` sends of a file an
@@ -672,13 +696,15 @@ mod tests {
             let id = format!("sim-000000000000000{n}");
             let body = format!("{CREATE}{tail}");
             let r = create_inner(Some("red@t.test"), body.as_bytes(), &id, Some("application/json"));
-            assert_eq!((r.status, created_id(&r)), (201, id.clone()), "tail {tail:?}: {}", r.body);
+            assert_eq!(r.status, 201, "tail {tail:?}: {}", r.body);
+            assert_eq!(created_id(&r), id, "tail {tail:?}");
         }
     }
 
     /// `"id": null` is the one body the layer reads as ABSENT after the Worker has
     /// named the object — measured by the re-review to answer 201 for a table no
-    /// object held. Refused, and nothing stored.
+    /// object held. Refused, and nothing stored under ANY id (`stored`): a table
+    /// made from this body would sit under an id the layer drew.
     #[test]
     fn a_null_id_is_refused_and_nothing_is_stored() {
         let _s = serial();
@@ -687,23 +713,41 @@ mod tests {
         let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000bb", Some("application/json"));
         assert_eq!(r.status, 400);
         assert_eq!(r.body, r#"{"error":"a game id, when given, must be a string"}"#);
-        assert!(read_inner("table", "sim-00000000000000bb").unwrap().is_none());
+        assert!(stored(Doc::Table).is_empty() && stored(Doc::Record).is_empty(), "nothing stored");
+        // Anti-vacuity: the same listing names a table the moment one IS stored.
+        let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000bb", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(stored(Doc::Table), ["sim-00000000000000bb"]);
     }
 
     /// A body the layer would refuse reaches it UNCHANGED, so its 400 is the NAS's
     /// byte for byte — including the missing field whose column the first text's
     /// insertion moved from 68 to 96 (spec §0.4).
+    ///
+    /// The last two cases carry TWO defects each — a shape this host refuses
+    /// itself (`"id": null`, a foreign string id) AND a key the layer refuses —
+    /// which pins the layer's parse FIRST (spec §2.2: "only that decides"). A
+    /// host that read the id before the parse would answer them with its own
+    /// 400 and 500.
     #[test]
     fn a_refused_body_is_forwarded_unchanged_and_answered_in_the_layers_words() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        let cases: [(&str, &str); 6] = [
+        let cases: [(&str, &str); 8] = [
             ("a duplicate key", r#"{"players":2,"players":2,"seats":[{"user":"red@t.test"}]}"#),
             ("an unknown field", r#"{"players":2,"seats":[{"user":"red@t.test"}],"bogus":1}"#),
             ("a missing field", r#"{"seats":[{"user":"red@t.test"}],"colors":["Red","Blue"],"start_seat":0,"seed":1}"#),
             ("a non-string id", r#"{"id":5,"players":2,"seats":[{"user":"red@t.test"}]}"#),
             ("a non-object", "[1,2]"),
             ("an unparseable body", "{\"players\":"),
+            (
+                "a null id AND an unknown field",
+                r#"{"id":null,"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"open":true}],"bogus":1}"#,
+            ),
+            (
+                "a foreign id AND an unknown field",
+                r#"{"id":"elsewhere","players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"open":true}],"bogus":1}"#,
+            ),
         ];
         for (what, body) in cases {
             let via_create = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000cc", Some("application/json"));
@@ -719,7 +763,8 @@ mod tests {
         assert_eq!((no_type.status, no_type.body), (direct.status, direct.body), "a missing content type is the layer's own answer");
     }
 
-    /// A `u64` seed survives exactly: nothing is re-serialized (spec §0.4).
+    /// A `u64`-max seed reaches the stored table exactly, through the insertion
+    /// arm.
     #[test]
     fn a_u64_seed_is_stored_exactly() {
         let _s = serial();
@@ -736,9 +781,11 @@ mod tests {
     fn an_array_body_the_layer_would_accept_is_refused() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-171) — adjust the array to
-        // that order until the premise below holds; the review's measured body was
-        // `[2,["Red","Blue"],0,null,[…]]`.
+        // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-171): players,
+        // colors, start_seat, seed, seats, and every later field defaults — the
+        // shape the plan's review measured at 201. The premise below fails if
+        // that order ever changes, so the refusal is never read off a body the
+        // layer would have refused anyway.
         let body = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
         let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
         assert_eq!(direct.status, 201, "premise: the LAYER accepts this array positionally — {}", direct.body);
@@ -746,7 +793,13 @@ mod tests {
         let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ff", Some("application/json"));
         assert_eq!(r.status, 400, "{}", r.body);
         assert_eq!(r.body, r#"{"error":"a game must be created from a JSON object"}"#);
-        assert!(read_inner("table", "sim-00000000000000ff").unwrap().is_none());
+        // Nothing under ANY id: the array names no id, so a table the layer made
+        // from it would sit under one it drew.
+        assert!(stored(Doc::Table).is_empty() && stored(Doc::Record).is_empty(), "nothing stored");
+        // Anti-vacuity: the same listing names a table the moment one IS stored.
+        let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000ff", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(stored(Doc::Table), ["sim-00000000000000ff"]);
     }
 
     /// Unreachable through the Worker, and loud if it ever is not (spec §2.2, §4).
@@ -757,6 +810,7 @@ mod tests {
         let body = CREATE.replacen('{', r#"{"id":"elsewhere","#, 1);
         let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ee", Some("application/json"));
         assert_eq!(r.status, 500);
+        assert_eq!(r.body, r#"{"error":"the create's id does not name the table it was routed to"}"#);
         assert!(read_inner("table", "elsewhere").unwrap().is_none() && read_inner("table", "sim-00000000000000ee").unwrap().is_none());
     }
 
@@ -773,8 +827,6 @@ mod tests {
     fn a_callerless_create_is_the_layers_401_before_any_host_refusal() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        // Read through the `Games`, so this is the store every create writes.
-        let stored = |doc| GAMES.lock().unwrap().as_ref().unwrap().store().list(doc).unwrap();
         let null_id = CREATE.replacen('{', r#"{"id":null,"#, 1);
         let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
         for (what, body) in [("no caller AND a null id", null_id.as_str()), ("no caller AND an array body", array)] {
@@ -847,7 +899,7 @@ mod tests {
 
     /// **`events` drains exactly as `dispatch` does** (plan re-review m-c): it
     /// reaches `Games::handle` too, and a cold handle rebuilt with a bot to move
-    /// pumps that move and persists it (the layer's `lib.rs:520-538`). So the
+    /// pumps that move and persists it (the layer's `lib.rs:523-539`). So the
     /// pump's bump is in THIS reply — the one the shell commits — and none is
     /// left in the buffer for the next call's, which would carry it under a
     /// different request.

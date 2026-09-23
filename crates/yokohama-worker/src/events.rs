@@ -4,10 +4,15 @@
 //! is no row of the layer's route table, and `dispatch` would answer it 404.
 //! This module restates that handler, in its order.
 //!
-//! **`wait` is validated and never held** (spec §2.3). The client does send it
-//! — `useSignal`'s `once()` asks with `wait=25` (`web/src/signal.ts`) — and the
-//! probe that calls `once()` needs an immediate answer; a held request would
-//! keep an object invocation open for nothing.
+//! **`wait` is validated and never held** (spec §2.3) — safe only because this
+//! host reports `signal: "ws"` (`HOST` in `lib.rs`). No client runs the held
+//! arm against it: that arm re-asks a value source at once
+//! (`web/src/signal.ts`), so an immediate answer to it would spin against the
+//! object. What asks with `wait` here is spec §2.7's probe, which Task 8 adds to
+//! the client: after a close the WebSocket arm did not make, it calls the
+//! source's own `once()` one time — `wait=25` for a game — and needs an
+//! immediate answer. A held request would keep an object invocation open for
+//! nothing.
 
 use http::StatusCode;
 use yokohama_web::api::{self, EventsQuery};
