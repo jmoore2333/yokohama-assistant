@@ -802,10 +802,12 @@ export class Table extends DurableObject<Env> {
    *   (`recopy`). A move that leaves the table document alone makes none.
    * - **What it holds**: the compiled module is the isolate's, shared, so
    *   the instance adds its own linear memory, which starts at 18 pages —
-   *   1.125 MiB, 122,381 bytes of them the module's data (the release build,
-   *   read off its memory and data sections) — and the one table document it
-   *   is handed. Building it, `init`, the load and the copy measured about
-   *   0.15 ms a call in the pool.
+   *   1.125 MiB, 121,001 bytes of them the module's data, copied in from its
+   *   168 data segments (the release build, read off its memory and data
+   *   sections; the data SECTION is 122,381 bytes encoded, its segment
+   *   headers included) — and the one table document it is handed. Building
+   *   it, `init`, the load and the copy measured about 0.15 ms a call in the
+   *   pool.
    * - **When it is dropped**: when this returns. Nothing keeps it — `scratch`
    *   is this call's local, and its copy leaves as a string — so the
    *   isolate's garbage collector reclaims it, memory and all, whenever it
