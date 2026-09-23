@@ -2276,10 +2276,13 @@ expires in 2031 (spec §0.5).
   - **`slot-failed`** `{id, generation, revision, attempt, retry_in?, error}`: the push's RPC
     failed. With `retry_in` (milliseconds) the slot still holds it: the failure is counted and the
     alarm re-armed on the backoff — 30 s, 2 min, 10 min, then hourly. Without it, a newer slot has
-    replaced it, with a push and a retry of its own.
+    replaced it, with a push and a retry of its own, or the object has ended (a removal acknowledged
+    meanwhile, then `deleteAll()`).
   - **`slot-ignored`** `{id, generation, revision, current}`, logged by the HOUSE: a push it did not
-    apply — a revision no higher than the current one's, a retired generation, or another generation
-    while one is current — and acknowledged all the same.
+    apply, and acknowledged all the same. The reasons: a revision no higher than the current one's;
+    a retired generation; another generation while one is current; or, with no current row
+    (`current: null`), a generation that does not order after every retired one — how a re-create
+    in the same second reads, until Task 14's marker.
   - **`copy-refused`** `{id, error}`: `house_copy` refused the table's document, and `error` is the
     module's sentence, verbatim. No slot is written, so the house keeps listing the last copy it
     received. Only a corrupted store reaches it; the operator's force (Task 14) is its path.
@@ -2463,7 +2466,8 @@ and claimed `.test` identities, the tail listening, and the header file deleted 
 - **Reading 2 — the lobby, listed from the house's copies:** for the creator (`scope=mine`,
   `my_seats [0]`) and for `second@deploy.test` (`scope=open`, `my_seats []`). In both listings the
   seed's digits appear **0** times, runs of 32 or more hex characters **0** times, and the keys
-  `salt`, `hash` and `seed` **0** times. The scrub holds live.
+  `salt`, `hash` and `seed` **0** times. What the lobby serves carries none of them, live. The
+  scrub itself — the copy the house holds — is read in the pool.
 - **Reading 3 — the lobby socket** as `watcher@deploy.test`, over `curl --http1.1`:
   `HTTP/1.1 101 Switching Protocols`. On `second`'s join (**200**, with the password) it received
   exactly `{"event":"house","data":{"seq":2,"chat":0}}`. `seq` is the house's in-memory count of
@@ -2481,12 +2485,11 @@ and claimed `.test` identities, the tail listening, and the header file deleted 
   join) and 3 (the REMOVAL), then for the re-created generation's 1 and 2 (its removal). No
   `copy-refused`, `trap` or `alarm-failed` line, and no alarm fired.
 - **Against the spike (spec §0.3):**
-  - row 2, startup: the same 2 ms. The upload is larger than the spike's 1,172.84 KiB because the
-    Worker carries the shell;
-  - the shell's own draw inside an object — each generation's 64 random bits, through
-    `crypto.getRandomValues` — worked (reading 4's new `rand`). That is not row 3 itself: row 3 is
-    the module's `getrandom`, and here the Worker drew the `sim-` id and the first create named its
-    seed.
+  - row 2, startup: 2 ms, within the spike's 1–3 ms, and the fourteenth's 2 ms. The upload is
+    larger than the spike's 1,172.84 KiB because the Worker carries the shell;
+  - row 3, `getrandom` in an object: the same. Reading 1's create was LOCKED, so `Lock::new` drew
+    its 16-byte salt through the module's `getrandom` inside the table object, and it worked: the
+    create answered 201 `locked: true`, and `second`'s join with the password answered 200.
 
 #### What this deployment does NOT claim
 
@@ -2503,7 +2506,7 @@ and claimed `.test` identities, the tail listening, and the header file deleted 
 #### Rollback
 
 §6.6. The earlier version is now the fourteenth's, `8b1bdcf8-610d-4b04-9e21-727e216cd61a`, and no
-migration was added, so `npx wrangler rollback` can return to it. Its house holds no copies, so its
-lobby would list nothing, while every table and its game stay as they are: the fourteenth's code
-never reads the `meta` keys this deployment added, and a pending slot's alarm finds nothing to do
-there.
+migration was added, so `npx wrangler rollback` can return to it. Its code reads no copies, so its
+lobby would list nothing; the copies stay in the house's storage. Every table and its game stay as
+they are: the fourteenth's code never reads the `meta` keys this deployment added, and a pending
+slot's alarm finds nothing to do there.
