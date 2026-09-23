@@ -8,7 +8,9 @@ authorized mid-brainstorm that ran on the real account before the design was wri
 Revised the same night — this is the second text — after an Opus adversarial read of the first
 (`f80e2f7`: 0 CRITICAL / 5 HIGH / 16 MEDIUM / 16 MINOR, 47 claims verified true, every finding
 accepted) and after four owner additions made while that read ran (R-6.5c.14–16 and the single-player
-invocation points); §9 traces every change to its reason.** This document is M6.5c's authority under
+invocation points); then touched up after a scoped re-review of that revision (`8dc9096`: of the 37,
+32 addressed and 5 partly; new, 0 CRITICAL / 1 HIGH / 3 MEDIUM / 18 MINOR, every finding accepted).
+§9 traces every change to its reason.** This document is M6.5c's authority under
 the umbrella `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (R-6.5.1–13, as amended by
 R-6.5b.16 and R-6.5b2.2); the plan is written from it; the close is its record. Where it and the
 umbrella disagree, this document is the later ruling and §0.6 says exactly where.
@@ -23,8 +25,8 @@ NAS runs — `api::dispatch` over `Games` — in its own instance of a WebAssemb
 payload is the layer's own and a trap costs one instance, never a table. The signal is a
 hibernatable WebSocket carrying the same frames the SSE stream carries. Finished and abandoned games
 land in an R2 bucket in the file store's own layout — behind a switch that turns the archive off
-cleanly — and a table left without a move for a configured number of days is saved and expired.
-**The code that changes outside the new host is named, and it is small**: three additions to the
+cleanly — and a table left without activity for a configured number of days is saved and expired.
+**The code that changes outside the new host is named, and it is small**: two additions to the
 layer (§1, R-6.5c.4), one transport arm and one outbox branch in the client, and two new request
 scripts written by the corpus emitter; the NAS, the browser module, the CLI and the five fenced
 crates stay as they are. (The runbook, the CI workflow and `CLAUDE.md` move with the cycle, and
@@ -57,7 +59,14 @@ review changed).
 - **The front door**: `api::dispatch(games, host, identity, req) -> ApiResponse`
   (`crates/yokohama-web/src/api.rs:1984`) over `ApiRequest { method, path, query, content_type,
   body }` (`:34`); `Host { identity_name, signal_kind, serves_games, multiplayer_offered }` (`:54`);
-  the route table `api::routes(serves_games)` (`:149`); `api::parse_query` (`:126`).
+  the route table `api::routes(serves_games)` (`:149`); `api::parse_query` (`:126`). The body parser
+  `api::parse_json` (`:97`) is public and is axum's `Json` extractor call for call; the create body
+  `tables::NewGame` (`tables.rs:140`) is public and fenced by `deny_unknown_fields`, and its `id` is
+  `#[serde(default)] Option<String>` (`:162`) — so a body carrying `"id": null` reads as ABSENT and
+  `create` draws its own id (`:715`). The route matcher binds a path segment RAW, with no
+  percent-decoding, because an id is `is_safe_id`'s ASCII (`api.rs:196-210`). `ApiError`'s three
+  fields are public (`lib.rs:117-129`); the body builder `error_response` is `pub(crate)`
+  (`api.rs:80`).
 - **What `dispatch` does NOT serve**, because axum's ROUTER owns it: `GET /api/games/{id}/events`,
   `GET /api/games/{id}/stream`, `GET /api/stream` (`lib.rs:883-885`), `GET|HEAD /api/art` (answered
   by the adapter before `dispatch`, `lib.rs:757-765`) and `GET /enter` (`lib.rs:845`, the route at
@@ -90,9 +99,12 @@ review changed).
   once on a version conflict (`:692-724`); abandon — `Games::delete` (`tables.rs:1655`) checks that
   the caller is SEATED and is the CREATOR (`:1660-1668`), stamps the archived copy from the clock
   (`:1700`), puts BEFORE the tombstone (`:1724`) and the unlink (`:1725`), and REFUSES the delete on
-  any put error — so a deferred put leaves its first run side-effect-free. The browser's save —
-  `api::archive_post` (`api.rs:1915`) — runs `check_pair_with` and puts under
-  `browser/<caller_segment>/`.
+  any put error — so a deferred put leaves its first run side-effect-free. **The creator is always
+  seated**: `config_of` refuses a create whose creator holds no seat (`tables.rs:271-274`) and `join`
+  fills only an `Open` seat, so `delete(id, created_by)` passes both checks for the table's whole
+  life. The browser's save — `api::archive_post` (`api.rs:1915`) — runs `check_pair_with` and puts
+  under `browser/<caller_segment>/`, where `caller_segment` is the encoded address TRUNCATED to 64
+  characters (`archive.rs:139-153`).
 - **The move**: `api::input` is public (`api.rs:1031`) and persists only when the event count or the
   lock changed (`:1157`); a picker click that applies nothing exists ONLY in the resident `Repl`
   (`Input::expect`'s doc, `:989-1011`). A table chat post bumps the table (`chat_append` →
@@ -103,7 +115,11 @@ review changed).
   as `None | Some(1 | 2)`** (`:444-449`, "the dealt cards are numbered 1 and 2") and accepts a
   zeroed 32/64-hex placeholder lock (measured by the review). The lobby is `Games::list(user, scope,
   limit, before)` (`:1556`) over `Doc::Table` alone, SKIPPING any document `check_shape` refuses
-  (`:1593-1596`).
+  (`:1593-1596`), 20 rows to a page by default (`LIST_LIMIT_DEFAULT`, `:680`).
+- **A stored record carries no clock**: its fields are `engine_version`, `rules_hash`, `seed`,
+  `config`, `choices`, `events`, `semantics_rev`, `terminal_digest` and `run` (read off the committed
+  `tests/fixtures/browser-played-2p.json`), so a bot-free game replayed from the same requests writes
+  the same record bytes at any hour.
 - **Identity**: the layer's three modes (`identity.rs`), each reading exactly one header; under
   `worker` the literal `anonymous` is ABSENT (`:162`).
 - **The layer's diagnostics are `eprintln!`, which is a SILENT SINK on `wasm32-unknown-unknown`**
@@ -117,7 +133,13 @@ review changed).
   `/stream`, `/api/stream`, `/api/art`), and the eight `archive_*` fixtures come from a second `Api`
   whose requests are never written out (`:1735-1739`); the M6.5b node replay lists those twelve in its
   `NOT_SERVED` set (`web/src/local/corpus.node.test.ts:141`). The walk script has 2,197 rows, 74
-  named, and **no DELETE rows**.
+  named, and **no DELETE rows**; its creates carry fixed ids (`wire2` at row 0, `wire` at row 1,
+  `wire4` at row 2175), and no row sends a page cursor (the lobby reads are `scope=open`,
+  `scope=mine&limit=1` and `scope=playing`, rows 4, 11 and 26). The second `Api`'s first send ASSUMES
+  AN EMPTY ARCHIVE — it asserts a 201 at `browser/red_at_wire.test/rev7/over/wire.json`
+  (`wire_fixtures.rs:1761-1764`; "each must meet an EMPTY archive or the first send is the once-rule's
+  200", `:1822-1823`); and `art_manifest.json` is CONSTRUCTED from the art directory, never requested
+  (`:2077-2082`).
 
 ### 0.3 What the platform spike MEASURED (2026-09-22, owner-authorized, throwaway, torn down)
 
@@ -161,6 +183,15 @@ browser; a phone; R2; alarms; object-to-object calls; the cost of VERIFYING the 
   duplicate-key 400 into a 201 and moves an unknown-field column (`Cargo.lock:554` has neither
   `preserve_order` nor `arbitrary_precision`); `replay_strict` costs 0.63–0.95× `Session::from_record`
   natively on the 595-event fixture.
+- **The scoped re-review's** (`rereview-spec.md` in the same folder): through `api::dispatch`, the first
+  revision's textual-insertion rule answered `"id": null` with **201 naming an id no object held**
+  (object `sim-00000000000000aa`, reply `sim-f8539ce029926c0a`), and moved a missing field's column from
+  **68 to 96**; §0.4's WebSocket-header reading reproduced under Playwright 1.62.1. Cloudflare's test
+  page says `evictDurableObject` "waits up to 30 seconds for in-flight requests to drain" and
+  `abortAllDurableObjects()` tears instances down "without waiting for in-flight requests to drain";
+  both helpers, `runDurableObjectAlarm` and `runInDurableObject` ship in `@cloudflare/vitest-pool-workers`
+  0.22.0 and in `@cloudflare/vitest-plugin` 1.2.3, the package that page now documents (read off both
+  tarballs, 2026-09-22).
 
 ### 0.5 The account and the door
 
@@ -240,12 +271,14 @@ revisit one; none is re-litigated inside it.
   anywhere in production, so if we find an architectural issue that we should or need to address, we
   can."* A Cloudflare-specific problem gets a solution inside `crates/yokohama-worker` and `worker/`;
   the layer changes only for a named architectural reason; the CLI and the five fenced crates stay
-  untouched. **This cycle's layer changes are THREE, each for a reason no host-side code can
-  supply**: `Games::archive_over_retry(id)` — the game-over stamp must be the layer's own code
-  (R-6.5c.9); `Games::expire(id)` — `delete`'s existing body without its caller checks, because an
-  expiry has no caller and a creator who holds no seat could never pass `delete`'s seat check
-  (R-6.5c.15); and `check_shape` from `pub(crate)` to `pub` — so the house refuses, loudly, a copy
-  its lobby would drop silently on a host where the layer's own diagnostics are mute (R-6.5c.8).
+  untouched. **This cycle's layer changes are TWO, each for a reason no host-side code can supply**:
+  `Games::archive_over_retry(id)` — the game-over stamp must be the layer's own code (R-6.5c.9); and
+  `check_shape` from `pub(crate)` to `pub` — so the house refuses, loudly, a copy its lobby would drop
+  silently on a host where the layer's own diagnostics are mute (R-6.5c.8). Expiry and the operator's
+  expire need NO layer change: they are the layer's own `delete` run as the table's `created_by`,
+  which is always seated (§0.2) — the owner's own words for it, "the layer's own `delete` as
+  `created_by`". (The first two texts added a `Games::expire` on the premise that a creator could hold
+  no seat; the re-review showed the layer forbids that state, §9.2.)
   **The corpus emitter** gains two request scripts (§5.3); **the client** gains one transport arm
   (§2.7) and one outbox branch (R-6.5c.14).
 - **R-6.5c.5 — Workers Free, and an object invocation gets 30 s of CPU.** Owner: *"historically, for
@@ -288,11 +321,12 @@ revisit one; none is re-litigated inside it.
   binding's presence is the switch."** Mechanism §2.6.
 - **R-6.5c.15 — a table expires after a period without activity.** Owner: *"without some garbage
   collection this could get out of hand."* `YOKOHAMA_WEB_TABLE_TTL_DAYS`, absent = never. Expiry is
-  the system's Abandon — saved first when the archive is on — and a returning player is TOLD it
-  expired; the save is not re-imported. Mechanism §2.4.
+  the creator's own Abandon run on their behalf — saved first when the archive is on — and a returning
+  player is TOLD it expired; the save is not re-imported. Mechanism §2.4.
 - **R-6.5c.16 — a minimal operator surface, no UI.** Two routes behind Access plus an address
   allow-list, `YOKOHAMA_WEB_ADMINS`, used from a curl playbook; only a PERSON's assertion is an
-  operator. Mechanism §2.9.
+  operator. The operator's `?force` also clears the fixed ids the live corpus replay uses, which makes
+  that replay repeatable (§5.3). Mechanism §2.9.
 
 ---
 
@@ -360,18 +394,33 @@ be wrong is testable under `cargo test`:
   `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`; `archive` the `ReceiptArchive`'s
   plan when a put was deferred (§2.6); `picker` the lines to persist (§2.4).
 - `events(id, user, query)`: `api::parse_query::<EventsQuery>` then `api::events_at`, serialized —
-  the transport routes' payload, byte-identical to the axum host's `events` route and SSE frame.
-- `create(user, body, id)` (§2.3's create row): when the body parses as a JSON object with no `id`
-  key, the id is inserted TEXTUALLY — `"id":"<id>"` or `,"id":"<id>"` before the object's final `}` —
-  so every earlier byte keeps its column and a duplicate key still reaches the layer as one; any
-  other body is dispatched UNCHANGED, so the layer's own 400 answers it. The parse only decides; it
-  is never re-serialized (§0.4).
+  the transport routes' payload, byte-identical to the axum host's `events` route and SSE frame. A
+  refusal's body is `error_response`'s shape RESTATED here — `{"error": …}`, plus `"status"` when
+  `table_status` is set — because that builder is `pub(crate)` and making it public would be a layer
+  change for convenience (§0.2); a cell pins the restatement equal to `dispatch`'s body for the same
+  refusal.
+- `create(user, body, id)` (§2.3's create row) — the body is first parsed as the layer's own
+  `NewGame` through the layer's own `api::parse_json` (§0.2), and only that decides:
+  - **a body the layer would refuse is dispatched UNCHANGED**, so the layer's own 400 answers it
+    byte for byte — a duplicate key, an unknown field, a missing field (whose column the first text's
+    insertion moved, §0.4), a non-string `id`;
+  - **a body whose `id` is a string** is the name the Worker routed by, and is dispatched unchanged;
+  - **a body with no `id` key** gets `,"id":"<id>"` inserted TEXTUALLY before its final `}` and is
+    dispatched (a body that parses always has a member before it — `seats` is required);
+  - **a body with `"id": null`** — which the layer reads as absent, so it would draw an id of its own
+    after the Worker had already named the object — is refused **400** `"a game id, when given, must
+    be a string"` (host-written, §4).
+
+  Nothing is re-serialized (§0.4); the second look, at whether an `id` key is present, only decides.
+  Every 201 therefore names the object that holds the table (a cell).
 - `house_copy(id) -> json | null`: the table's stored document, scrubbed (§2.5), refused with its
   reason when `check_shape` refuses the copy.
 - `put_copy(id, json)` / `remove_copy(id)` (the house's); `restore_picker(id, lines_json)`;
   `receipt(plan_key, outcome_json)`; `stamp_archive(id)` (calls `Games::archive_over_retry`);
-  `expire(id)` (calls `Games::expire`); `set_clock(seconds?)` returning the PRIOR setting so a caller
-  can restore it; and `debug_trap` under the `debug` feature only (the battery's trap cells).
+  `expire(id)` — host-local: it reads the stored table's `created_by` and dispatches the layer's own
+  `DELETE /api/games/{id}` as that user, so the answer, the archive rule and the leaf are exactly the
+  creator's Abandon; `set_clock(seconds?)` returning the PRIOR setting so a caller can restore it; and
+  `debug_trap` under the `debug` feature only (the battery's trap cells).
 
 **`RecordingSignal`** implements the layer's `Signal` by appending to a per-dispatch buffer that
 `dispatch` drains into the reply. It knows no socket: sending is the shell's, after the write.
@@ -389,10 +438,10 @@ the asset layer hands the Worker only a path it cannot find.
 |---|---|
 | a non-`/api`, non-`/enter` path the asset layer cannot find | **404**, an empty body — never `index.html` (host-written, §4) |
 | `GET /enter` | a 302 to `/#/lobby` (the turnstile; served because multiplayer is on) |
-| `POST /api/games` | `Table` named by the body's `id` when the body is a JSON object whose `id` is a string, else by a drawn `sim-<16 hex>` from `crypto.getRandomValues`; the ORIGINAL bytes are forwarded, the id in `X-Yokohama-Table-Id`, to the module's `create` |
-| `/api/games/{id}` and below — `…/events`, a `…/stream` upgrade | `Table` named `id` |
+| `POST /api/games` | `Table` named by the body's `id` when the body is a JSON object whose `id` is a string, else by a drawn `sim-<16 hex>` from `crypto.getRandomValues`; the ORIGINAL bytes are forwarded to the module's `create`, the id percent-encoded in `X-Yokohama-Table-Id` (a header carries only Latin-1 and a body may name any string; the layer refuses an id outside `is_safe_id`'s set with its own 400) |
+| `/api/games/{id}` and below — `…/events`, a `…/stream` upgrade | `Table` named by the segment exactly as the layer binds it — raw, never percent-decoded (§0.2) |
 | `GET /api/games`, `/api/chat`, `/api/stream`, `/api/health`, `/api/me`, `/api/labels` | `House` |
-| `POST /api/archive` | `Archive` named `"archive:" + address`, the address normalized as `User::parse` normalizes it |
+| `POST /api/archive` | with an identity, `Archive` named `"archive:" + address`, the address normalized as `User::parse` normalizes it; with none, `House`, whose `dispatch` answers the layer's 401 |
 | `GET|HEAD /api/art` | the static manifest's bytes, `env.ASSETS.fetch("/art/manifest.json")` (§4) |
 | `/api/admin/*` | §2.9 |
 | any other `/api/*` | `House`, whose `dispatch` answers the layer's own 404 or 405 |
@@ -404,7 +453,10 @@ the Worker's to it. The Worker reads the body once, so a forwarded body is the b
 
 **The transport routes' parity** (§0.2): `GET …/events` parses its query through the layer's own
 `parse_query`, so an unknown key and a `wait` above 25 are the layer's 400s, and it answers AT ONCE —
-`wait` is validated and not held, because no client of this host sends it (§4). A non-`GET` on
+`wait` is validated and never held. The client DOES send it: the game and deal sources' `once()` is
+`api.events(game, undefined, 25)` (`web/src/signal.ts:476`), and §2.7's probe calls `once()`; an
+immediate answer is what that probe needs, and a held request would keep an object invocation open
+for nothing (§4). A non-`GET` on
 `…/events` or `…/stream` is a **405** with an empty body, axum's router's answer. A `GET …/stream`
 that is not an upgrade is **426** `"this host streams over WebSocket"` (host-written). An upgrade with
 no identity is the layer's 401 (a browser cannot read it; §2.7's probe does).
@@ -447,9 +499,11 @@ assembled tree IS the release the service worker installs, not merely a tree tha
   activity is the newest `written_at` of `record`, `table` and `chat`.
 - `meta(k TEXT PRIMARY KEY, v TEXT NOT NULL)`: `generation` and `revision` (§2.5); `slot` (the
   pending house delivery); `acked` (the `(generation, revision)` and digest last acknowledged);
-  `archive_owed` (a deferred plan with its clock reading); `marker` (§ below); `load_traps`; and
-  `wakes` only when `YOKOHAMA_WEB_COUNT_WAKES=on` (the exit's instrument, off otherwise, because on a
-  turn-based table it costs a row written on almost every move).
+  `archive_owed` (a deferred plan with its clock reading); `marker` (§ below); `held` (an expiry the
+  archive refused as a `Conflict`, § below); `load_traps`; and `wakes` — incremented only when
+  `YOKOHAMA_WEB_COUNT_WAKES=on` AND the object already holds a table, so a probe of an unknown id
+  still writes nothing (the exit's instrument, off otherwise, because on a turn-based table it costs a
+  row written on almost every move).
 
 **Probing creates no garbage** (umbrella §2.2): the constructor writes nothing, an id never created
 answers the layer's 404, and the object ceases to exist when it goes idle. A cell reads
@@ -467,9 +521,19 @@ object "immediately") leaves the alarm to finish the work. The side channels fol
 (the output gate holds them until the batch is durable, §0.4); then the house push and the archive
 upload, which are non-storage I/O and DO let other requests interleave — which is why every piece of
 state they read back is keyed (§2.5, §2.6). **One alarm per object**, set to the earliest of: the
-slot's retry, the owed archive's retry, the expiry deadline, the marker's end; an ordinary move does
-NOT re-arm it (the expiry deadline only moves later: an alarm that fires before `last activity + TTL`
-re-arms itself to it). Backoff for retries: 30 s, 2 min, 10 min, then hourly, reset by a success.
+slot's retry, the owed archive's retry, the expiry deadline (unless `held`), the marker's end. Who
+sets it:
+
+- **a write that makes a delivery due** — a changed house copy (§2.5), an owed archive — sets it to
+  that retry (+30 s) in its own batch; `setAlarm` REPLACES the earlier setting, so a table played
+  every few seconds holds one pending alarm, not one per move;
+- **the success that discharges it** — an acknowledged slot, a landed upload — re-arms it to the next
+  deadline in the success's own batch, so a discharged retry does not wake the object for nothing;
+- **nothing else**: a write that makes nothing due — a move that leaves the copy alone, a chat post —
+  leaves the alarm where it is. The expiry deadline only moves LATER, so an alarm that fires before
+  `last activity + TTL` re-reads the last activity and re-arms itself to it.
+
+Backoff for retries: 30 s, 2 min, 10 min, then hourly, reset by a success.
 
 **Sockets.** A `…/{id}/stream` upgrade is admitted by `events(id, user, "")`:
 
@@ -516,37 +580,53 @@ a marker's end; recovery is the operator's force expire (§2.9). Any successful 
   `Input::expect` turning a stale answer into a 409 rather than a wrong move.
 - **Bounded at 64 lines: the 65th CLEARS the list** (nothing partial is ever re-fed).
 
-**Delete, expiry and the MARKER** (R-6.5c.8, R-6.5c.15). Every way a table ends — the creator's
-Abandon, expiry, the operator's expire — ends the same way:
+**Delete, expiry and the MARKER** (R-6.5c.8, R-6.5c.15). Every way a table ends through the layer —
+the creator's Abandon, expiry, the operator's plain expire — ends the same way:
 
-1. **The layer deletes.** Abandon is `DELETE /api/games/{id}` (the layer's `delete`, caller-checked);
-   expiry and the operator's plain expire are `Games::expire(id)` — `delete`'s existing body without
-   the caller checks (R-6.5c.4) — so the archive rule and leaf are the layer's in all three. Each runs
-   under `blockConcurrencyWhile`, through the receipt loop when a save is owed (§2.6); a put that
-   fails REFUSES the abandon (R-6.5.5) or, for expiry, leaves the table in place to retry on the
-   alarm — **no game with moves is lost while the archive is on**.
+1. **The layer deletes, as the creator.** Abandon is `DELETE /api/games/{id}` from the creator;
+   expiry and the operator's plain expire are the SAME request dispatched as the stored table's
+   `created_by` (the module's host-local `expire`, §2.2) — always seated, so it passes both of
+   `delete`'s checks (§0.2) — and the archive rule and leaf are the layer's in all three. Each runs
+   under `blockConcurrencyWhile`, through the receipt loop when a save is owed (§2.6). A put that
+   fails REFUSES the abandon and the operator's plain expire (R-6.5.5), each answering the layer's
+   sentence; for expiry it leaves the table in place to retry on the alarm — **no game with moves is
+   lost while the archive is on** — except a `Conflict`, which no
+   retry can clear (the record key already holds another game under this id): the object writes
+   `held`, stops arming the expiry deadline, and logs it, and the table waits for the operator's
+   `?force` (§2.9).
 2. **One batch**: the `docs` rows are removed; `marker = {at, reason: "abandoned" | "expired" |
-   "operator", ttl_days?, saved: <leaf> | null}`; the slot takes a REMOVAL; the alarm is set.
+   "operator", ttl_days?, kept: "archive" | "nothing" | "off"}`; the slot takes a REMOVAL; any
+   `archive_owed` is cleared (a delete that saved has superseded it); the alarm is set. `kept` is
+   `archive` when the table was already stamped or this delete's save landed or was `Identical`;
+   `nothing` when there was no game to keep (an open or dealing table, or no move made); `off` when
+   there was a game and the archive is off.
 3. The reply (204 for an abandon); every socket gets `end {"reason":"deleted"}` and a 4404 close.
 4. The alarm delivers the removal to the house (§2.5).
-5. **For 90 days the marker answers every request 404** with a host-written sentence — *"this table
-   was abandoned on 22 Oct — its game is in the archive"*, *"this table expired on 22 Oct after 30
-   days without a move — its game is in the archive"* (or *"— this server keeps no archive, so it was
-   not kept"*), *"this table was removed by an operator on 22 Oct"* — and a `create` at the id is
-   **409** *"this name was used recently — try another"*. A 404 rather than a 410, because the client
-   already ends a source on a 404 and shows the server's sentence; the walk script holds no request
-   to a deleted id (§0.2), so no committed payload meets these sentences.
+5. **For 90 days the marker answers every request 404** with a host-written sentence of a HEAD and
+   a TAIL — the head *"this table was abandoned on 2026-10-22"*, *"this table expired on 2026-10-22
+   after 30 days without activity"* or *"this table was removed by an operator on 2026-10-22"* (UTC
+   dates); the tail by `kept`: *"— its game is in the archive"*, *"— no move had been made, so there
+   was nothing to keep"* or *"— this server keeps no archive, so its game was not kept"*. A 404
+   rather than a 410, because the client already ends a source on a 404 and shows the server's
+   sentence; the walk script holds no request to a deleted id (§0.2), so no committed payload meets
+   these sentences.
 6. At +90 days — and only once the house has acknowledged the removal — `deleteAlarm()` and
    `deleteAll()`: the object ceases to exist. A returning player after that reads the layer's own
    "no game named …".
 
+**A create at an id whose object holds a marker or an unacknowledged removal is 409** *"this name
+was used recently — try another"* — so a new table's first copy can never overwrite a removal the
+house has not yet received. Hosted creates draw random ids, so only a caller that names its own id
+meets it (the tests).
+
 **Expiry** (R-6.5c.15) with `YOKOHAMA_WEB_TABLE_TTL_DAYS` set: when the alarm finds `now ≥ last
-activity + TTL`, the object runs step 1 as `Games::expire`. Finished games expire on the same clock
+activity + TTL`, the object runs step 1 as the creator. Finished games expire on the same clock
 (their last activity is the final move; their record reached the archive at game over, and "Save game
 file" works until expiry); open and dealing tables expire with nothing to save. With the archive OFF
 an expired UNFINISHED game is simply gone — a hosted game has no "Save game file" before game over
-(R-6.5.10) — and the marker says so. A POISONED table does not expire on its own (its load traps);
-the operator's force expire is its path.
+(R-6.5.10) — and the marker says so; a game-over save still OWED from when the archive was on goes
+with it, and the shell logs that (§2.6). A POISONED table does not expire on its own (its load
+traps), nor does a `held` one; the operator's force is their path.
 
 ### 2.5 The house object
 
@@ -575,9 +655,12 @@ drawn once at create and ORDERED by that pair — and a `revision` counter.
   `revision` and writes `slot = {generation, revision, copy | removal, last_active, bytes}` and its
   alarm in the request's batch (§2.4).
 - **After the reply it pushes the slot over RPC.** On an acknowledgement of `(g, r)` it clears the
-  slot **only if the slot still holds `(g, r)`**, and records `acked`; a slot rewritten meanwhile —
-  a newer copy, or a delete's REMOVAL — stays, and its own push or the alarm delivers it. A stale
-  acknowledgement can therefore never erase a newer delivery.
+  slot **only if the slot still holds `(g, r)`**, and records `acked` **only if `(g, r)` is newer
+  than the `acked` it holds** — acknowledgements can arrive out of order, and a regressed `acked`
+  would make a later change back to that copy (an undo) look already delivered. A slot rewritten
+  meanwhile — a newer copy, or a delete's REMOVAL — stays, and its own push or the alarm delivers it.
+  A stale acknowledgement can therefore never erase a newer delivery. The clear, the `acked` and the
+  alarm's re-arm (§2.4) are one batch.
 - **The house keeps, per id, the CURRENT `(generation, revision)` and the set of RETIRED
   generations** (pruned after 90 days). It applies a push when its generation is current and its
   revision higher; or when the id has no current generation and the pushed one is not retired and
@@ -587,7 +670,11 @@ drawn once at create and ORDERED by that pair — and a `revision` counter.
 - The umbrella's three deliveries with no next bump — the create, the final move, a removal — are
   simply the slot's contents when the alarm fires. The copy changes when anything in the scrubbed
   document changes, `archived_at` included, so the game-over stamp is a push with no visible change —
-  one row, and correct.
+  one row, and correct. The copy is the TABLE document, so a move that leaves it alone — most moves;
+  the turn passing, a keep, a join and game over change it — makes no delivery at all.
+- **`last_active` and `bytes` ride in the slot**, so the house knows them as of the last delivery:
+  activity that changes no copy (a chat post, a move within a turn) does not refresh them. The
+  operator's listing says so (§2.9); expiry never reads them — it reads the table's own `written_at`.
 
 **The lobby socket** (`GET /api/stream`) is the house's: accepted with the attachment `{ user }`,
 sent `{"event":"house","data":{"seq","chat"}}` on every change — `seq` the house's own counter,
@@ -614,7 +701,9 @@ their 90-day pruning.
   variable (host-written) — the Worker's form of the NAS refusing to start; static single player is
   unaffected.
 - **Switched off after being on**: an owed game-over save is KEPT and not retried while off (the
-  alarm does not re-arm for it); switching back on resumes it; archived games are untouched.
+  alarm does not re-arm for it); switching back on resumes it at the object's next request or alarm
+  — at the latest its expiry, whose delete saves first; an expiry WHILE OFF takes the owed save with
+  the table, and the shell logs it (§2.4, §6). Archived games are untouched.
 - **The client's dead end, closed** (the one outbox change): a 404 from `POST /api/archive` — the
   layer's "this server keeps no archive" — is read as the archive being OFF: the remembered health
   fact becomes `off` and the outbox forgets the row. At HEAD, `reasonFor` (`web/src/outbox.ts:134`)
@@ -624,9 +713,14 @@ their 90-day pruning.
 `.table.json`; `browser/<caller_segment>/…` for a browser's save — so `rclone sync` of the bucket is a
 directory the CLI loads (R-6.5.4), and ONE layout function serves the directory and the bucket (O-9;
 a cell asserts both write the same relative paths). **A plan whose table's `created_by` (a server
-game) or whose caller segment (a browser save) ends in `.test` — the reserved top-level domain every
-test identity uses — gets `test/` prepended to both keys**, so the live test tiers never write into
-the owner's training data (§5).
+game) or whose CALLER'S ADDRESS (a browser save) ends in `.test` — the reserved top-level domain every
+test identity uses — is written under the root `test/` instead of the bucket's top**, so the live
+test tiers never write into the owner's training data (§5). The rule reads the full normalized
+address — for a browser save the one the Archive object is named by — never the 64-character
+`caller_segment`, which truncation can strip of its `.test` (§0.2). **A reply's path is relative to
+the root**, as a NAS reply's is relative to `YOKOHAMA_WEB_ARCHIVE_DIR`: the committed
+`archive_post.json`'s `browser/red_at_wire.test/rev7/over/wire.json` names the key
+`test/browser/red_at_wire.test/rev7/over/wire.json` on this host (§4).
 
 **The receipt** (R-6.5c.9). `ReceiptArchive` implements the layer's `Archive`. Its `put` looks for a
 receipt matching the EXACT plan — both keys and the SHA-256 of both bodies; with one it returns the
@@ -669,7 +763,9 @@ drives that plan — the re-dispatch and `stamp_archive` alike — and then **re
   reading after an eviction. If the game is no longer over when a retry runs (an undo at a one-person
   table), `archive_if_over` does nothing and `archive_owed` clears; a later completion puts afresh
   and — the record key holding different bytes — is a `Conflict` the shell logs: the archive keeps the
-  first completion, as the directory archive does.
+  first completion, as the directory archive does. **A `Conflict` is final at every site**: game over
+  logs it and clears `archive_owed`; an abandon is refused with it inside the layer's sentence; an
+  expiry is `held` (§2.4).
 - **One archive object per caller** serializes that caller's sends and puts the strict replay of an
   untrusted record (handover §4 item 9) inside an object's 30 s, behind Access and the 2 MiB bound; a
   hostile record can at worst trap ONE instance of ONE caller's archive object, whose storage is never
@@ -683,10 +779,14 @@ from `/api/health`. `usePolled`'s `open()` (`web/src/signal.ts:294`) gains a thi
 - a `WebSocket` on the source's existing `stream` URL (`wss:` for `https:`);
 - each message parsed as `{event, data}` and handed to the SAME handler the stream reader feeds; a
   message that is not that JSON — the auto-response's `pong` — is dropped;
-- a close with **4403/4404** is the arm's refusal, handled exactly as the stream's 403/404 is (it
-  ends the source); a close with 1000 after an `end` frame is the end;
-- **any other close, or an open that fails, is followed by ONE probe: the source's own `once()`**, a
-  plain fetch through `api.ts`'s `call` and `serverHeaders()`. An expired Access session is then
+- **an `end` frame ends the source** exactly as the stream's `end` does, and **the close that follows
+  it is ignored, whatever its code** — this host always sends `end` before its 4403/4404 close (§2.4),
+  so reading the close as a second refusal would end the source twice; the close's reason carries the
+  layer's sentence for a reader of the logs;
+- **a close the arm did not initiate, with no `end` before it, or an open that fails, is followed by
+  ONE probe: the source's own `once()`** — never a close the arm made itself (a hidden tab's, R-P8, or
+  a teardown's), exactly as the stream reader returns silently on its own abort (`signal.ts:378`) —
+  a plain fetch through `api.ts`'s `call` and `serverHeaders()`. An expired Access session is then
   classified exactly as the SSE arm classifies it (`isSessionExpired`, `web/src/api.ts:245-267`) and
   ends the source with the `/enter` remedy (`signal.ts:390-396`); an answer is delivered as a frame (a
   free resync) and the arm climbs the existing ladder (`BACKOFF_MS`, `nextDelay`, `Link`,
@@ -706,19 +806,27 @@ and the browser host `"none"`.
 invoke the Worker **zero** times — every file is a static asset (measured, §0.3 row 7) and a local
 game makes no server call (R-6.5b2.7). The exceptions are all at the END of a game: the health read
 at game over (skipped when the remembered answer is under an hour old, M6.5b2 §2.2) and the outbox's
-upload (R-6.5c.11) — **at most two invocations per finished local game** — plus Abandon's
-always-fresh health read. The first visit's login is Access, not the Worker. A request for a file
+upload (R-6.5c.11) — **two invocations per finished local game when the upload lands**; an upload
+that fails is retried on every `online` event and every launch until it lands or is forgotten
+(`web/src/outbox.ts:417`, `:522`), one invocation each. **"Abandon and save" is two** — the forced
+health read (`Abandon.tsx:163`) and the send (`:110-126`); a plain local Abandon, one. The first
+visit's login is Access, not the Worker. A request for a file
 that does not exist invokes the Worker once (§2.3); for the public door, a scanner's misses are
 Worker invocations, and that is where the path-scoped door's rate question begins (§6).
 
 **Multiplayer, estimated** (MEASURED at the exit): a two-person game of ~400–600 events is ~900
 input POSTs plus ~2 GETs per bump for each other screen — **~2,000–4,000 requests**, each one Worker
 invocation and one object request — **~17–41 games a day** in this week's Worker headroom (67k–83k).
-**Rows written** (Free: 100,000/day, shared): an applied move writes the record, sometimes the table,
-the slot and its alarm (billed as a row), and its acknowledgement's clear, plus the house's copy —
-**~4–6 rows a move**, **~2,000–3,000 a game**, **~35–50 games a day** — the same order as requests, so
-the exit counts both (§5.5). Object requests (100,000) are not close: the account uses 1–2%. R2:
-saves are ~55 KB; 10 GB and 1 M writes a month. R-6.5c.6's push is the lever if a measured count
+**Rows written** (Free: 100,000/day, shared). A move that leaves the house copy alone — most of a
+turn's moves — writes **~1–2 rows**: the record, and an open picker's row cleared. A move that changes
+the table document — the turn passing, a keep, a join, game over — also delivers a copy, and writes
+**~9–12**: the record, the table, `revision`, the slot, its alarm (billed as a row), and on the
+acknowledgement `acked`, the slot's clear and the alarm's re-arm, plus the house's copy and its
+`(generation, revision)`. A picker click that applies nothing writes the `picker` row, and a chat post
+its document. With ~900 input POSTs and ~75–100 turn changes a game, that is **~2,000–3,000 rows a
+game**, **~33–50 games a day** — the same order as requests, so the exit counts both (§5.5) and the
+estimate is only a reason to measure. Object requests (100,000) are not close: the account uses 1–2%.
+R2: saves are ~55 KB; 10 GB and 1 M writes a month. R-6.5c.6's push is the lever if a measured count
 binds.
 
 **Logging.** With observability on, the shell logs to Workers Logs: every receipt outcome, stamp,
@@ -736,11 +844,21 @@ slot push and acknowledgement, trap, poison, expiry, marker end, operator action
 - **`GET /api/admin/tables`** — the house answers from its store: every table it holds a copy of,
   dealing ones included, each with id, name, status, players, `created_at`, `last_active`, `bytes`
   (the table object's SQLite size, carried in the slot), over and winner, `archived_at`. An
-  operator-only payload outside the corpus.
+  operator-only payload outside the corpus. `last_active` and `bytes` are as of the table's last
+  delivery (§2.5), so a table talked in but not moved in reads older than it is; the tables the alarm
+  could not end — poisoned or `held` — are named in the log.
 - **`POST /api/admin/tables/{id}/expire`** — the table object expires NOW by §2.4's path (reason
-  `operator`, the save first when owed). **`?force`** is for a POISONED table: no layer, no save — the
-  lobby removal through the slot, then `deleteAll()` once the house acknowledges, with a log line.
-- **No UI**: RUNBOOK §6 carries the curl playbook (WARP authenticates the owner's shell as the owner).
+  `operator`, the save first when owed, the marker after).
+- **`?force` ends the object without the layer and without a save, whatever it holds** — a poisoned
+  table, a `held` one, any table, or a marker: the lobby removal through the slot (unless the house
+  already acknowledged one), then `deleteAlarm()` and `deleteAll()` once the house acknowledges, with
+  a log line. **It leaves no marker.** It answers **204** once the storage is gone — at once, writing
+  nothing, when the object holds nothing — and **503** `"the lobby has not confirmed the removal — the
+  alarm will finish it"` (host-written) when the push fails; until then a create at the id is the
+  marker's 409 (§2.4). This is also what makes the live corpus replay repeatable: its fixed ids are
+  forced before and after each run (§5.3).
+- **No UI**: RUNBOOK §6 carries the curl playbook (WARP authenticates the owner's shell as the owner —
+  a request that does NOT present the credential, since Service Auth outranks WARP, §0.3 row 1).
 
 ---
 
@@ -778,7 +896,8 @@ Every later task deploys when it changes what the Worker does, and records what 
 `deploy/RUNBOOK.md` gains **§6, the Worker**: the build (`worker/`'s `build:module` and
 `build:assets`), the deploy, the bucket, every variable and what its absence means, the credential's
 playbook (where it lives, how the harness presents it, how to rotate it), the operator's curl
-playbook (§2.9), reading CPU and the logs off the tail, and each deploy's record with the
+playbook (§2.9) including the live replay's force of its three ids (§5.3), reading CPU and the logs off
+the tail, and each deploy's record with the
 container-era numbering continued; plus **"to deploy with no archive"** (R-6.5c.14) and **"to keep
 every table"** (R-6.5c.15, the TTL unset). **§4 is rewritten as the record of why `deploy/worker/` and
 `deploy/modal_app.py` were retired** and both are deleted (R-6.5.13), the strip rule carried out first
@@ -808,24 +927,30 @@ names. For this host:
 - **`?wait` on `…/events`** is validated and answered at once, not held (§2.3).
 - **The socket's framing** `{"event","data"}` carries the SSE frames' data byte-identically; the
   close codes 4403/4404 carry the layer's sentences.
+- **An archive reply's `path` is relative to the archive's root** (§2.6): on this host a `.test`
+  caller's root is `test/`, so `archive_post.json` is byte-identical here and names the key under
+  `test/` — as a NAS reply names a file under `YOKOHAMA_WEB_ARCHIVE_DIR` without spelling the
+  directory.
 - **Host-written statuses and sentences — named, never the layer's**: the missing-file 404 (§2.3);
   the 2 MiB body refusal (intended identical to the NAS's, pinned at the first deploy); the stream's
-  426; the trap 500 and the poison 500 (§2.4); a marker's four 404 sentences and its 409 (§2.4); the
-  archive misconfiguration 500 (§2.6); the operator's 403 and the operator payload (§2.9). Everything
-  else a client reads is the layer's.
+  426; the create body's `"id": null` 400 (§2.2); the trap 500 and the poison 500 (§2.4); a marker's
+  404 sentences — three heads and three tails — and its 409 (§2.4); the archive misconfiguration 500
+  (§2.6); the operator's 403, the force's 503 and the operator payload (§2.9). Everything else a
+  client reads is the layer's.
 
 ---
 
 ## 5. The tests
 
-### 5.1 Rust — `cargo test -p yokohama-worker` (per-edit, native), and the layer's three
+### 5.1 Rust — `cargo test -p yokohama-worker` (per-edit, native), and the layer's two
 
 - **`RecordingSignal`**: every layer bump site's call arrives in the reply, tagged and in order — the
   eight sites (`games.rs:668`; `tables.rs:776, 958, 972, 1262, 1409, 1511, 1742`) — including a cold
   handle's bot pump before a later refusal (`lib.rs:520-538`), which is recorded because it happened.
 - **`ReceiptArchive`**: no receipt → the plan and `Failed("deferred…")`; a receipt for the exact plan
-  → its outcome; a receipt whose digests differ → absent; the `test/` prefix for a `.test` creator and
-  a `.test` caller segment, and none otherwise.
+  → its outcome; a receipt whose digests differ → absent; the `test/` root for a `.test` creator and a
+  `.test` caller — **including a `.test` address longer than the 64-character segment**, whose
+  truncated segment has lost its `.test` — and the bucket's top otherwise.
 - **The picker**: append on an open picker with the record unchanged; clear when the record changes;
   a CHAT POST between two picker clicks leaves the list; the 65th line clears; `restore_picker`
   rebuilding a `PlaceA` picker mid-selection so the next line commits the move the player intended
@@ -834,23 +959,33 @@ names. For this host:
   kind at every status and lock state — **a table with a kept human seat included** — plus the value
   pin (keeps among its needles) and its anti-vacuity partner; `house_copy` refusing a copy
   `check_shape` rejects.
-- **`create`**: an absent id inserted textually; a duplicate key still the layer's 400 with its
-  sentence; an unknown field's column unchanged; a non-object and an unparseable body forwarded
-  unchanged; a `u64` seed exact.
-- **`events`**: an unknown key and a `wait` above 25 are the layer's 400s.
+- **`create`**: an absent id inserted textually and **every 201 naming the object it was sent to**;
+  `"id": null` refused with the host's 400 (it answered 201 for an object that held nothing, §0.4);
+  each refused body forwarded UNCHANGED — its answer the very bytes `dispatch` gives the original body
+  (the layer's 400s are axum's word for word since M6.5a) — for a duplicate key, an unknown field, a
+  missing field (at the original column), a non-string `id`, a non-object and an unparseable body; a
+  `u64` seed exact.
+- **`events`**: an unknown key and a `wait` above 25 are the layer's 400s; a refusal's body equals
+  `dispatch`'s body for the same refusal (the restated `error_response`, §2.2).
 - **The chat variables** (defaults; a bad value refused naming it) and **the crate's platform scan**
   (`yokohama-wasm`'s `this_host_makes_no_platform_call_but_the_clock` shape).
 - **In the layer**: `archive_over_retry` stamps a finished game whose first put failed, does nothing
-  for a stamped or unfinished one, and retries its stamp on a version conflict; `expire` archives and
-  deletes exactly as `delete` would for the creator, and does so for a table whose creator holds NO
-  seat; `check_shape` is reachable as `pub` (a compile-time fact, pinned by the crate's use of it).
+  for a stamped or unfinished one, and retries its stamp on a version conflict; `check_shape` is
+  reachable as `pub` (a compile-time fact, pinned by the crate's use of it).
+- **`expire`** (host-local): for a table at every status, the reply, the archive plan and the leaf are
+  exactly those of the creator's own `DELETE` — the same request, as `created_by`.
 
 ### 5.2 The shell — Cloudflare's vitest pool (per-edit, `worker/`)
 
-`@cloudflare/vitest-pool-workers` (≥ 0.16.20, for `evictDurableObject`), inside workerd with real
-SQLite, alarms (`runDurableObjectAlarm`), WebSockets and a local R2, over the BUILT module. **The
-archive cells run with a clock that TICKS per reading** (the layer's `ticking_clock` shape), so an
-unpinned re-dispatch really does stamp a different `archived_at`. Cells:
+Cloudflare's Workers Vitest integration — `@cloudflare/vitest-pool-workers` (0.22.0 on 2026-09-22;
+≥ 0.16.20 for `evictDurableObject`) or `@cloudflare/vitest-plugin` (1.2.3), the name the test-API page
+now documents; both carry the four helpers these cells use (§0.4), and the plan pins one — inside
+workerd with real SQLite, alarms (`runDurableObjectAlarm`), WebSockets and a local R2, over the BUILT
+module. **The archive cells run with a clock that TICKS per reading** (the layer's `ticking_clock`
+shape), so an unpinned re-dispatch really does stamp a different `archived_at`. **Time-driven cells
+move the STORED times, never the clock** — workerd's `Date.now()` cannot be advanced — by backdating
+`written_at`, the marker's `at` or a retry's due time through `runInDurableObject`, then running
+`runDurableObjectAlarm`. Cells:
 
 - **Routing and the Worker**: every row of §2.3's table — the missing file's empty 404 and never
   `index.html`; `/enter`; the body bound at 2 MiB + 1; the transport routes' 405s and 426.
@@ -866,9 +1001,14 @@ unpinned re-dispatch really does stamp a different `archived_at`. Cells:
   clicks; a trapped dispatch persists nothing; two load traps yield the named poison 500.
 - **The slot**: a lower revision after a higher one leaves the row at the higher; **a stale
   acknowledgement of `r` after the slot was rewritten to `r+1` or a REMOVAL leaves the slot holding
-  it**; a late push of a removed generation is ignored BOTH before and after a re-created table's
-  first push; a failed push is retried by the alarm; the alarm is set in the batch (an
-  `evictDurableObject` between the batch and the push still delivers).
+  it**; an acknowledgement of `r` arriving after `r+1`'s leaves `acked` at `r+1`, and a later change
+  back to `r`'s copy is still delivered; a late push of a removed generation is ignored BOTH before
+  and after a re-created table's first push; a failed push is retried by the alarm; **the alarm is set
+  in the batch**: the house's push handler held pending by a patch on its instance
+  (`runInDurableObject`), then `abortAllDurableObjects()` — which, unlike `evictDurableObject`, does
+  not drain in-flight work, so the push never fails and never succeeds — then `runDurableObjectAlarm`
+  on the table delivers the slot (under the mutant it returns `false` and the lobby never lists the
+  table); a move that changes no copy leaves the alarm where it was.
 - **Sockets**: the first frame on accept; one frame per socket per bump, each for its own viewer; the
   framing; `end {"reason":"gone"}` with 4403/4404 at admission and mid-stream; `end` on delete;
   nothing sent on another failure.
@@ -883,35 +1023,64 @@ unpinned re-dispatch really does stamp a different `archived_at`. Cells:
   recorded reading; the "no longer over" clear.
 - **The switch**: `off` — health off, game over puts nothing and arms nothing, abandon deletes without
   a put, the archive route 404s; `r2` without a binding and a bad value refuse naming the variable; an
-  owed save is not retried while off and resumes when on.
-- **Expiry and the marker**: a write does not expire an active table (the early alarm re-arms to the
-  new deadline); an idle table expires at the TTL, saved first; a failed save at expiry retries and the
-  table stays; archive off expires without a save and says so; each marker sentence; a create under
-  the marker; `deleteAll()` only after the house's acknowledgement and the 90 days; no TTL, no expiry.
+  owed save is not retried while off and resumes when on; an expiry while off takes the owed save and
+  logs it.
+- **Expiry and the marker**: a write does not expire an active table (an alarm that fires early
+  re-reads the last activity and re-arms to the new deadline); an idle table expires at the TTL, saved
+  first, as its creator; a failed save at expiry retries and the table stays; **a `Conflict` at
+  expiry writes `held` and stops arming the expiry deadline**; archive off expires without a save;
+  **the marker's tail by `kept`** — a saved game, a game stamped at game over (whose delete puts
+  nothing), an open table, a dealing one, a playing one with no move, archive off — under each of the
+  three heads; a create under the marker, AND a create while a removal is unacknowledged, 409;
+  `deleteAll()` only after the house's acknowledgement and the 90 days; no TTL, no expiry.
 - **The operator**: a non-operator 403; a credential-claimed operator address refused; the variable
-  absent → 404; the listing includes a dealing table; expire; force on a poisoned table.
+  absent → 404; the listing includes a dealing table; expire; **force** on a poisoned table, a `held`
+  one, a live table and a marker — each leaving NO marker and an empty `sqlite_master`, a create at the
+  id then succeeding — on an object holding nothing (204, nothing written), and with the house's push
+  failing (503, a create meanwhile 409, the alarm finishing it).
+- **The client's two changes** (in `web/`'s own `npm test`, over jsdom, not the pool): the socket arm
+  — an `end` frame ends the source ONCE and its following close is ignored; a close with no `end`
+  before it, or a failed open, sends ONE probe, and an Access 401 on it ends the source with the
+  `/enter` remedy; a close the arm made itself (the tab hidden, the component unmounted) sends none;
+  `pong` dropped; the 30 s `ping` — and the outbox, whose archive-route 404 turns the remembered
+  archive fact `off` and forgets the row.
 
 ### 5.3 The corpus against the objects (per-task in the pool; ONCE live at the exit)
 
 **The corpus emitter** (`crates/yokohama-web/tests/wire_fixtures.rs`, test code) writes two more
 request scripts beside `walk.json`, and changes no committed payload: `walk-host.json` — the
-host-owned requests (`…/events` at the walk positions where it captured `events.json`,
-`events_open.json` and `events_dealing.json`; `/api/art`), each positioned by the walk row it
-follows; and `archive-walk.json` — the second `Api`'s requests that produce the eight `archive_*`
-payloads. The node replay keeps them in `NOT_SERVED`, unchanged; this host's replay serves them, and
-derives its own third column from the file set as the node replay does.
+host-owned requests: `…/events` at the walk positions where it captured `events.json`,
+`events_open.json` and `events_dealing.json`, each positioned by the walk row it follows, and ONE
+`GET /api/art` row the emitter SYNTHESIZES at the walk's start, because `art_manifest.json` is built
+from the art directory and was never requested (§0.2); and `archive-walk.json` — the second `Api`'s
+requests that produce the eight `archive_*` payloads. The node replay keeps them in `NOT_SERVED`,
+unchanged; this host's replay serves them, and derives its own third column from the file set as the
+node replay does.
 
 - **In the pool**, against the objects with `X-Yokohama-User` set as the Worker would set it, and
   the module clock frozen at the corpus's `1_789_000_000` — the node replay's arrangement (M6.5b spec
   §6.3), one host further; statuses asserted, every named row deep-equal to its committed file, §4's
-  second class excepted and each exemption proven to exempt something.
+  second class excepted and each exemption proven to exempt something. Each test file gets an empty
+  bucket, which `archive-walk.json`'s first send assumes (§0.2).
 - **Live, at the exit**, through the Worker with the credential and the dev door, as the walk's own
-  `.test` identities: ids cleared before (waiting out any marker by expiring it through the operator
-  route) and deleted after; the lobby rows compared after filtering to the replay's own ids (a named
-  host-parameterized filter — the owner's own tables are on the same lobby); the clock unfreezable
-  live, so `created_at` and the page cursor are normalized as `freeze_clock` normalizes them; saves
-  landing under `test/`; repeatable, because the walk's record is deterministic (human seats record no
-  agent seed) and the table key is overwritten (§2.6).
+  `.test` identities — **repeatable, and safe to re-run after a run that failed half way**:
+  - **Before the run and after it, the operator's `?force` on `wire`, `wire2` and `wire4`** (§2.9),
+    sent from the owner's shell WITHOUT the credential, so WARP makes it a person's assertion — the
+    credential is never an operator (R-6.5c.16). Force leaves no marker, so nothing a run leaves
+    behind blocks the next one's creates; the harness refuses to start unless all three answer 204,
+    which also catches an unset `YOKOHAMA_WEB_ADMINS` (404) and a shell that is not the owner's (403).
+  - **The lobby payloads**: `games` compared after filtering to the replay's own ids, and `next`
+    compared only where the committed cursor names one of them (`games_next.json`) — the owner's own
+    tables and the e2e's share this lobby, 20 to a page (§0.2). The replay's tables are the newest on
+    it, so they lead every page, and no walk row sends a cursor for the replay to rewrite (§0.2).
+  - **`created_at` and cursors** normalized as `freeze_clock` normalizes them — the clock cannot be
+    frozen live.
+  - **`archive-walk.json`'s first send** answers `archive_post.json` (201) the first time the bucket
+    sees it and `archive_identical.json` (200) on every later run — the same request answered by the
+    once-rule, as its own second send is — and the replay accepts exactly those two committed
+    payloads for that one row; every other row compares as in the pool. The game-over put of `wire`
+    is `Identical` on a re-run, because a record carries no clock and the walk seats no bot (§0.2).
+  - Every save lands under the `test/` root (§2.6).
 
 ### 5.4 Playwright — the multiplayer specs against the LIVE Worker
 
@@ -973,15 +1142,26 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 23. the socket arm laddering without the probe — "reconnecting…" for ever (a client cell: a refused
     upgrade, then an Access 401 on the probe, ends the source with the remedy);
 24. a mid-stream admission loss sending nothing (§5.2);
-25. the alarm armed only after a failure (§5.2's eviction cell);
+25. the alarm armed only after a failure (§5.2's `abortAllDurableObjects` cell — the first text's
+    `evictDurableObject` cell could not see it, because graceful eviction drains the push);
 26. the create body round-tripped through a `Value` (§5.1's duplicate-key cell);
 27. an owed save retried while the archive is off (§5.2);
 28. the outbox filing the archive route's 404 as offline (a client cell);
 29. an expiry that deletes before its save lands (§5.2);
-30. a write that re-arms nothing, so an ACTIVE table expires (§5.2);
+30. an ACTIVE table expires — `written_at` not advanced by a write, or an alarm that expires without
+    re-reading the last activity (§5.2);
 31. the marker dropped — a returning player reads the bare "no game named" (§5.2);
 32. a dev-door identity granted operator rights (§5.2);
-33. `.test` saves written to the owner's paths (§5.1).
+33. `.test` saves written to the owner's paths — the rule read off the truncated segment, so a long
+    `.test` address loses it (§5.1);
+34. `"id": null` forwarded to the layer — a 201 naming an id no object holds (§5.1);
+35. `acked` recorded without the advance check — a late acknowledgement regresses it, and an undo
+    back to that copy is never delivered (§5.2);
+36. a create allowed while a removal is unacknowledged — the new table's first copy overwrites the
+    removal and the house keeps the old generation (§5.2's force-with-a-failing-push cell);
+37. the socket arm probing after a close it made itself — a hidden tab fetches (a client cell);
+38. the close after an `end` frame read as a second refusal — the source ends twice (a client cell);
+39. a `Conflict` at expiry retried for ever — `held` not written (§5.2).
 
 ---
 
@@ -1006,12 +1186,20 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
   1,700 applied moves, an estimate of ~3× until the exit reads it.
 - **The untrusted record on `POST /api/archive`** (handover §4 item 9) is BOUNDED — one instance of
   one caller's archive object, behind Access and the 2 MiB bound — not closed.
-- **A poisoned table is named and forced out by an operator, not repaired.**
+- **A poisoned table is named and forced out by an operator, not repaired**; so is a `held` one —
+  an id whose archive key already holds another game. Hosted creates draw 64-bit random ids, so only a
+  caller that names its own id can reach `held`.
 - **The layer's own diagnostics are mute on this host**: `eprintln!` is a silent sink on
   `wasm32-unknown-unknown`. The shell logs what it can observe (§2.8); a logging seam in the layer is
   a candidate for the cleanup cycle, not this one.
-- **An expired unfinished game is lost when the archive is off.** The marker says so; the operator
-  chose both switches.
+- **An expired unfinished game is lost when the archive is off**, and so is a game-over save still
+  owed from before the switch went off. The marker says the first and the log the second; the
+  operator chose both switches.
+- **The operator listing lags** activity that changes no copy (chat, a move within a turn): its
+  `last_active` and `bytes` are the last delivery's (§2.5). Expiry does not read them.
+- **The live corpus replay needs the owner's WARP shell** for its cleanup: the force is an operator's
+  action, and the credential is never an operator (§5.3). It is repeatable only from a machine where
+  the owner is signed in through WARP.
 - **Push (R-6.5b.11) is not built**; its trigger is the exit's measured counts.
 - **The zone is not changed.** Web Analytics auto-install logs a CORS error on every page load, and
   JS detections and Bot Fight Mode stay on: the owner's zone settings (§7).
@@ -1047,17 +1235,20 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 **Owner items this spec adds**: the zone's Web Analytics auto-install (off for this hostname, or
 accept the console error — a "zero console errors" live review needs a decision), JavaScript
 detections and Bot Fight Mode (they did not challenge the harness); the TTL value
-(`YOKOHAMA_WEB_TABLE_TTL_DAYS`) and the operator list (`YOKOHAMA_WEB_ADMINS`); the bucket's creation
-if the account API is not used.
+(`YOKOHAMA_WEB_TABLE_TTL_DAYS`) and the operator list (`YOKOHAMA_WEB_ADMINS` — it must name the owner
+for the live replay's cleanup, §5.3); the bucket's creation if the account API is not used; and,
+optionally, a lifecycle rule on the bucket's `test/` prefix, where every live tier's saves accumulate
+(the e2e's game-over and abandon saves carry fresh ids on every run).
 
 ---
 
 ## 8. Read order for the session that writes the plan
 
 1. This document, §1, §2, §5.
-2. The review's report (`.superpowers/sdd/2026-09-22-web-frontend-m6.5c-spec/review-spec.md`,
-   gitignored) and `docs/temp/m6.5c-spike-readings-2026-09-22.md` (§0.3's source), and the scratchpad
-   spike source if it survives, as the shape the shell's first cut can start from.
+2. The review's report and the re-review's (`review-spec.md` and `rereview-spec.md` in
+   `.superpowers/sdd/2026-09-22-web-frontend-m6.5c-spec/`, gitignored) and
+   `docs/temp/m6.5c-spike-readings-2026-09-22.md` (§0.3's source), and the scratchpad spike source if
+   it survives, as the shape the shell's first cut can start from.
 3. The umbrella §1 and §4; the M6.5b spec §2.1–§2.2 (the browser host this module is the sibling of)
    and §6.3 (the node corpus replay §5.3 extends); the M6.5b2 spec §2.2 and §2.6 (the health read and
    the outbox R-6.5c.14 touches).
@@ -1065,9 +1256,11 @@ if the account API is not used.
 
 ---
 
-## 9. What the review changed (so a sentence can be traced to its reason)
+## 9. What the reviews changed (so a sentence can be traced to its reason)
 
-The Opus adversarial read of `f80e2f7` (its report is §8's first item; every finding carried evidence
+### 9.1 The first read (`f80e2f7` → `8dc9096`)
+
+The Opus adversarial read of `f80e2f7` (its report is in §8's second item; every finding carried evidence
 it gathered, several measured through the committed module), and the owner's four additions while it
 ran.
 
@@ -1098,5 +1291,38 @@ ran.
 | escalation — deploys terminate sockets and re-run constructors | §5.5's no-deploy window |
 | owner — the archive switch | R-6.5c.14; §2.6; §2.7's outbox branch; battery 27–28 |
 | owner — single player's invocation points | §2.8 |
-| owner — garbage collection | R-6.5c.15 (expiry, the marker); `Games::expire`; battery 29–31 |
+| owner — garbage collection | R-6.5c.15 (expiry, the marker); `Games::expire` (DROPPED at §9.2 #4); battery 29–31 |
 | owner — the operator surface | R-6.5c.16; §2.9; battery 32 |
+
+### 9.2 The scoped re-review (`8dc9096` → this text)
+
+The same reviewer, read-only, on the fix wave: the five HIGH fixed in MECHANISM (each tried, not
+re-read), §0.4's WebSocket reading reproduced; findings 8, 9, 14, 17 and 18 of §9.1 PARTLY addressed,
+the rest addressed; and twenty-two new findings, all accepted. Its report is in §8's second item too.
+
+| finding | what changed here |
+|---|---|
+| 1 HIGH — the live replay could not run twice: the cleanup left 90-day markers on its fixed ids, and `archive-walk.json`'s first send assumes an empty bucket | §2.9's `?force` leaves no marker and clears one; §5.3 forces the three ids before and after each run and accepts `archive_post.json` or `archive_identical.json` for the first send; R-6.5c.16; §6; also the lobby filter's `next` rule, found while fixing it |
+| 2 MEDIUM — `"id": null` answered 201 for a table no object held (measured) | §2.2 `create` parses as the layer's `NewGame` first and refuses `"id": null` 400; §4; battery 34 |
+| 3 MEDIUM — battery 25's cell was vacuous: `evictDurableObject` drains the push | §5.2's `abortAllDurableObjects` cell; battery 25 re-pointed |
+| 4 MEDIUM — `Games::expire`'s reason was false: `config_of` forbids a creator without a seat | R-6.5c.4 now TWO layer changes; expiry is the creator's own `delete` (§2.2's host-local `expire`, §2.4 step 1); the unreachable cell removed |
+| 5 — a missing field's column still moved | §2.2 forwards every refused body unchanged; §5.1 |
+| 6 — `error_response` is `pub(crate)` | §2.2 restates its shape, pinned against `dispatch` |
+| 7 — "no client of this host sends `wait`" was false | §2.3's reason corrected (`signal.ts:476`) |
+| 8 — the probe fired on the arm's own closes | §2.7; battery 37 |
+| 9 — a delete ended the source twice | §2.7 ignores the close after `end`; battery 38 |
+| 10 — `wakes` lost its qualifier | §2.4 restored |
+| 11 — "an ordinary move does NOT re-arm it" contradicted the slot's batch; the rows undercounted a delivering move | §2.4's three alarm rules; §2.5's one-batch acknowledgement; §2.8 re-derived per kind of move (turn counts read off the 595-event fixture: 92 placements) |
+| 12 — `acked` could regress | §2.5 records it only when newer; §5.2; battery 35 |
+| 13 — the marker's sentences missed the saved-nothing and stamped-at-game-over endings | §2.4's `kept` and the head-and-tail sentences; §4; §5.2 |
+| 14 — the `test/` rule read the truncated segment; the reply's path named no key | §2.6 reads the full address and defines the root; §4; battery 33 |
+| 15 — a `Conflict` at expiry retried hourly for ever | §2.4's `held`; §2.6 "final at every site"; §6; battery 39 |
+| 16 — expiry while the archive is off discarded an owed save | §2.4, §2.6 and §6 say so; §5.2 |
+| 17 — `/api/art` had no walk row to follow | §5.3: the emitter synthesizes it |
+| 18 — the listing's `last_active` and `bytes` lag | §2.5, §2.9, §6 say so |
+| 19 — single player's accounting under-listed | §2.8: Abandon and save is two; failed sends retry per `online` and launch |
+| 20 — the expiry cells needed a clock the test controls | §5.2 moves the STORED times through `runInDurableObject` |
+| 21 — battery 30's mutant was the design | battery 30 reworded |
+| 22 — no route for an unidentified `POST /api/archive` | §2.3 routes it to the house (the layer's 401) |
+| found while fixing — a body's id reaches a header, which carries only Latin-1 | §2.3's create row percent-encodes it; the path id is bound raw, as the layer binds it |
+| found while fixing — a create while a removal is unacknowledged would overwrite it | §2.4's 409 rule; battery 36 |
