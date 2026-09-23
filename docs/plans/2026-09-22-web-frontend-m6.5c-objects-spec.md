@@ -215,8 +215,11 @@ browser; a phone; R2; alarms; object-to-object calls; the cost of VERIFYING the 
   **"yokohama ST bypass"**, `non_identity` (Service Auth), precedence 3, including the service
   credential **`yokohama-worker`** (created 2026-09-23T01:01Z, expires 2031), whose client id and
   secret live in the repository root's `.dev.vars`, **gitignored since `952a68c`**.
-- **wrangler 4.135.0**, logged in by OAuth with `workers`, `workers_routes`, `workers_scripts` write
-  and **no R2 scope** — the bucket is created through the account API or by the owner (§3.1).
+- **wrangler 4.135.0** when this was written (**4.136.3** since 2026-09-23), logged in by OAuth with
+  `workers`, `workers_routes`, `workers_scripts` write. Its scope list names no R2 read or write
+  scope, **but the login reaches R2**: `wrangler r2 bucket list` and `wrangler r2 bucket info
+  yokohama-archive` both answered on 2026-09-23 (§9.5). The bucket was created through the account
+  API before that was known (§3.1).
 
 ### 0.6 What this spec supersedes or amends
 
@@ -289,7 +292,10 @@ revisit one; none is re-litigated inside it.
   `created_by`". (The first two texts added a `Games::expire` on the premise that a creator could hold
   no seat; the re-review showed the layer forbids that state, §9.2.)
   **The corpus emitter** gains two request scripts (§5.3); **the client** gains one transport arm
-  (§2.7) and one outbox branch (R-6.5c.14).
+  (§2.7) and one outbox branch (R-6.5c.14). **A third layer change**, if execution finds a reason for
+  one, is the EXECUTING ORCHESTRATOR's ruling, not a return to the owner (the owner, 2026-09-23). It
+  lands with its architectural reason in the ledger, and the close lists it for the whole-branch
+  review.
 - **R-6.5c.5 — Workers Free, and an object invocation gets 30 s of CPU.** Owner: *"historically, for
   DOs on free tier or paid, the start point for CPU time in a DO is 30 seconds. We should build with
   that being the assumption and … we'll find out from the logging if we're wrong."* The documentation
@@ -738,8 +744,8 @@ their 90-day pruning.
   files that 404 as "offline" and retries it on every reconnect until the remembered health expires.
 
 **Keys** are `archive::paths(rev, prefix, why, id)` exactly — `rev7/{over,abandoned}/<id>.json` and
-`.table.json`; `browser/<caller_segment>/…` for a browser's save — so `rclone sync` of the bucket is a
-directory the CLI loads (R-6.5.4), and ONE layout function serves the directory and the bucket (O-9;
+`.table.json`; `browser/<caller_segment>/…` for a browser's save — so a sync of the bucket by any S3
+client (the exit uses `aws s3 sync`, §7) is a directory the CLI loads (R-6.5.4), and ONE layout function serves the directory and the bucket (O-9;
 a cell asserts both write the same relative paths). **A plan whose table's `created_by` (a server
 game) or whose CALLER'S ADDRESS (a browser save) ends in `.test` — the reserved top-level domain every
 test identity uses — is written under the root `test/` instead of the bucket's top**, so the live
@@ -899,8 +905,8 @@ slot push and acknowledgement, trap, poison, expiry, marker end, operator action
   `compatibility_date` (Node compatibility follows the date's default; §0.3 row 3 shows it is no
   obstacle).
 - **Three SQLite-backed classes** in one migration: `Table`, `House`, `Archive`.
-- **The bucket `yokohama-archive`**, CREATED 2026-09-23 through the account API (the wrangler token has
-  no R2 scope, §0.5) — location ENAM, storage class Standard, PRIVATE (its `r2.dev` URL disabled, no
+- **The bucket `yokohama-archive`**, CREATED 2026-09-23 through the account API (before wrangler's
+  login was found to reach R2, §0.5) — location ENAM, storage class Standard, PRIVATE (its `r2.dev` URL disabled, no
   custom domain) — and bound as `ARCHIVE`.
 - **Variables**: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `DEV_DOOR_CLIENT_ID`, `YOKOHAMA_DEV_DOOR`
   (`on` during this cycle), `YOKOHAMA_WEB_ARCHIVE` (`r2`), `YOKOHAMA_WEB_TABLE_TTL_DAYS` (**`90`**, the
@@ -1147,7 +1153,7 @@ socket, which would read as hibernation): two people play a whole game and a thi
 the table object **observed hibernating** between moves — `wakes` rising across pauses with
 `YOKOHAMA_WEB_COUNT_WAKES=on` for the window; the move-to-other-screen wall measured as M6.3 measured
 it, with the cold-path CPU beside it from the tail; a finished game and an abandoned one in the
-bucket, `rclone`-synced and **loaded in the CLI with `why` reconstructing a bot move**; the whole
+bucket, synced by an S3 client (§7) and **loaded in the CLI with `why` reconstructing a bot move**; the whole
 corpus byte-identical live (§5.3); **requests AND rows written per game** counted off the analytics
 (§2.8).
 
@@ -1227,7 +1233,9 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
   never an operator's rights.
 - **The CPU assumption rests on one measurement** (376 ms, `ok`) and the owner's experience; the
   documentation contradicts itself, and `exceededCpu` in the logs reopens it. The Worker's own CPU
-  with JWT verification is unmeasured until the first deploy.
+  with JWT verification is unmeasured until the first deploy. **An anomaly in execution is NOT
+  presumed to be this limit** (the owner, 2026-09-23): a dedicated research subagent diagnoses it,
+  and only a fix that needs a substantial departure from this spec goes back to the owner.
 - **The frame-after-write property rests on the output gate's documented sentence** ("any new
   outgoing network messages … held back until the write has completed"); the rules page's example
   names responses and fetches, not WebSocket sends by name, and no cell can observe it.
@@ -1298,10 +1306,12 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 - **The operator list**: the owner's address, as a Worker secret. It must name the owner for the live
   replay's cleanup, §5.3.
 - **The bucket**: created 2026-09-23 (§3.1).
-- **OPEN — the read-only R2 key for the exit's `rclone`**: the owner creates it in the dashboard
-  (Object Read, `yokohama-archive` only) and stores its two values in the gitignored `.dev.vars` as
-  `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`. It is not minted through the account API, whose
-  reply would put the secret in a session transcript.
+- **The read-only R2 key for the exit's sync**: CREATED by the owner on 2026-09-23 in the dashboard
+  (Object Read, `yokohama-archive` only), its two values in the gitignored `.dev.vars` as
+  `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`. It was verified that day: it lists the bucket, and it
+  is refused a write and any other bucket. It was not minted through the account API, whose reply
+  would put the secret in a session transcript. The exit syncs with the AWS CLI's `aws s3 sync`;
+  `rclone` is not installed on the workstation.
 - **OPEN, optional**: a lifecycle rule on the bucket's `test/` prefix, where every live tier's saves
   accumulate (the e2e's game-over and abandon saves carry fresh ids on every run).
 
@@ -1418,3 +1428,16 @@ and the layer; five of its escalations were this document's sentences.
 | §7 put the zone's Web Analytics decision before the exit, but §5.4's live tier already asserts no console error | §7 needs it before §5.4 |
 | §2.4's close "with the layer's sentence as the reason" throws above 123 UTF-8 bytes at this compatibility date | §2.4 truncates the reason, and answers any other admission status unupgraded |
 | §5.2's "one frame per socket per bump" sends a finalizing keep's two bumps (`bump_table` then `bump`, `tables.rs:1507-1511`) as two identical frames | §5.2 says one frame per socket per REPLY |
+
+### 9.5 The plan's scoped re-review, and the owner's answers (after `ad8caeb`)
+
+The plan's scoped re-review (`.superpowers/sdd/2026-09-23-web-frontend-m6.5c-plan/rereview-plan.md`)
+found one sentence of this document out of date. The owner's answers the same day added four more.
+
+| finding | what changed here |
+|---|---|
+| §0.5 said wrangler's login has no R2 scope. Its scope list names none, but `wrangler r2 bucket list` and `wrangler r2 bucket info yokohama-archive` both answered on 2026-09-23 (the re-review's m-j, then measured) | §0.5 corrected; §3.1's reason for the API-made bucket restated |
+| The exit's sync named `rclone`, which the workstation does not have | §2.6's keys, §5.5 and §7 say any S3 client; the exit uses the AWS CLI |
+| The read-only R2 key was an OPEN owner item | §7: created by the owner and verified |
+| R-6.5c.4 did not say who rules on a third layer change | R-6.5c.4: the executing orchestrator, with its architectural reason recorded and listed at the close |
+| §6 let an `exceededCpu` reopen the CPU assumption without saying who diagnoses it | §6: a dedicated research subagent; only a substantial departure from this spec goes back to the owner |

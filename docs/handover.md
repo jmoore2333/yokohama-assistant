@@ -13,15 +13,22 @@ session close: rewrite the stale lines, do not append history (the decision log 
   - It went through an Opus adversarial read (5 HIGH, all fixed), a scoped re-read (1 HIGH: the live replay could not run twice), your approval, and five more corrections found while planning. §9 traces every change.
 - **The plan** is `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md` at `ec7f268`: sixteen tasks from the layer outward, four live deploys, and a close checklist.
   - One adversarial review MEASURED Tasks 1–3's code and the pinned test pool: 0 CRITICAL / 4 HIGH / 10 MEDIUM / 16 MINOR, all folded in with one fix wave. Chief among them: battery 25's catcher was vacuous a second time, and the plan's "Pool facts" now bind every pool cell.
-- **Your two answers** are in the plan's header: subagent-driven for EVERY task (Opus the floor, Fable the whole-branch review, the orchestrator running every live step), and ONE GREEN COMMIT PER TASK with the red run quoted.
-- **Your open items**, each asked at the task that needs it:
-  - the zone's Web Analytics decision, BEFORE Task 15's live run;
-  - JavaScript detections and Bot Fight Mode, before Task 16;
-  - the TTL, at Task 14;
-  - your operator address as a Worker secret, at Task 14;
-  - the R2 bucket, if the account API refuses, at Task 13;
-  - an R2 read key for `rclone`, at the exit;
-  - the phones.
+  - A scoped re-review RE-RAN that wave: 28 of its 30 findings addressed and 2 partly, plus 3 HIGH / 1 MEDIUM / 13 MINOR new, all folded in with one fix pass. The HIGH were two battery catchers that could not fail and one cell that could not go green.
+- **Your answers** are in the plan's Global Constraints and the execution handover's §2:
+  - subagent-driven for EVERY task (Opus the floor, Fable the whole-branch review, the orchestrator running every live step), with ONE GREEN COMMIT PER TASK and the red run quoted;
+  - Web Analytics and Bot Fight Mode stay ON; the beacon's error is diagnosed, not switched off;
+  - the TTL is 90 days, and your operator address is a Worker secret;
+  - the push and the PR are pre-authorized;
+  - a third layer change is the orchestrator's decision, with its architectural reason recorded;
+  - live runs HOLD above 60,000 requests or rows written in a day;
+  - an anomaly is not presumed to be the CPU limit: a research subagent diagnoses it, and only a substantial spec departure comes back to you.
+- **Done on the account (2026-09-23):**
+  - the bucket `yokohama-archive` (ENAM, Standard, private);
+  - your read-only R2 key, verified (it lists the bucket, and it is refused a write and any other bucket);
+  - wrangler 4.136.3, whose login turned out to reach R2.
+- **Your open items:**
+  - OPTIONAL: a lifecycle rule on the bucket's `test/` prefix, where the live tests' saves accumulate. The executing session asks at Task 13;
+  - the phones, recorded and not gated.
 
 The previous update, 2026-09-22 (tenth session): the PR #37 review's three defects were FIXED, PUSHED and LIVE as `yokohama-web:0.5.0-m6.5b2.1` (RUNBOOK §3.16). The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5, and its open items became the M6.5c handover's §4 items 19–27.
 
