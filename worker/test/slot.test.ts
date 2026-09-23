@@ -244,10 +244,10 @@ describe("the durable slot (spec §2.5)", () => {
   // that is not the layer's own over the original; a generation drawn from a
   // source other than P-2's reading (under the frozen clock every reading is
   // the same, so a LATER P-2 reading is battery 36's to catch, where the
-  // clock ticks); the slot's last activity or size written as constants; a
-  // refused create at a taken name writing a slot. A refused create at an id
-  // that holds nothing is `table.test.ts`'s probe cell ("a probe at %s …",
-  // a create at `bad!name` leaves `sqlite_master` empty).
+  // clock ticks); the slot's last activity written as a constant, or its
+  // size as 0; a refused create at a taken name writing a slot. A refused
+  // create at an id that holds nothing is `table.test.ts`'s probe cell ("a
+  // probe at %s …", a create at `bad!name` leaves `sqlite_master` empty).
   it("a create's copy reaches the house and the lobby lists it", async () => {
     const id = "slot-a";
     const stub = tableStub(id);
@@ -273,7 +273,7 @@ describe("the durable slot (spec §2.5)", () => {
       state.storage.sql.exec<{ last_active: number; bytes: number }>("SELECT last_active, bytes FROM copies WHERE id = ?", id).toArray(),
     );
     expect(stats?.last_active, "the house's last activity is the table's newest written_at").toBe(written?.written_at);
-    expect(stats?.bytes, "the house's size is the table object's SQLite size").toBeGreaterThan(0);
+    expect(stats?.bytes, "the house holds a size, and an SQLite size is never 0").toBeGreaterThan(0);
 
     const again = await create(id);
     expect([again.status, await again.json()], "premise: the layer refuses a taken name").toEqual([

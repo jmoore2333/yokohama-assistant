@@ -2101,6 +2101,9 @@ What answers what:
   - the create's three: **400** `a game must be created from a JSON object`, **400** `a game id,
     when given, must be a string`, **500** `the create's id does not name the table it was routed
     to`;
+  - a create naming a table whose REMOVAL the lobby has not yet acknowledged: **409** `this name
+    was used recently — try another` (spec §2.4; Task 12), so a new table's first copy can never
+    overwrite a removal the house has not received;
   - a trapped engine: **500** `the table's engine stopped — try again`, `the lobby's engine stopped
     — try again` or `the archive's engine stopped — try again`; a table whose stored document traps
     twice: **500** `this table's stored <kind> cannot be loaded`;
@@ -2264,7 +2267,31 @@ expires in 2031 (spec §0.5).
 - **The shell's own log lines** — `trap`, `load-trap`, `poison`, `identity-failed`, `init-refused`,
   `frame-failed` and the rest (spec §2.8) — are the events' `logs`, one JSON object per line, and
   Workers Logs (observability is on) keeps them. The layer's own `eprintln!` lines are mute on this
-  host.
+  host. The house and the slot (spec §2.5; Task 12) add these:
+  - **`slot-pushed`** `{id, generation, revision, removal, attempt}`: a table pushes its slot to the
+    house — its scrubbed copy, or a REMOVAL when `removal` is true — logged before the RPC.
+    `attempt` counts this slot's pushes that failed before it.
+  - **`slot-acked`** `{id, generation, revision}`: the house acknowledged that push, whether it
+    applied it or ignored it. On the happy path every `slot-pushed` has one.
+  - **`slot-failed`** `{id, generation, revision, attempt, retry_in?, error}`: the push's RPC
+    failed. With `retry_in` (milliseconds) the slot still holds it: the failure is counted and the
+    alarm re-armed on the backoff — 30 s, 2 min, 10 min, then hourly. Without it, a newer slot has
+    replaced it, with a push and a retry of its own.
+  - **`slot-ignored`** `{id, generation, revision, current}`, logged by the HOUSE: a push it did not
+    apply — a revision no higher than the current one's, a retired generation, or another generation
+    while one is current — and acknowledged all the same.
+  - **`copy-refused`** `{id, error}`: `house_copy` refused the table's document, and `error` is the
+    module's sentence, verbatim. No slot is written, so the house keeps listing the last copy it
+    received. Only a corrupted store reaches it; the operator's force (Task 14) is its path.
+  - **`trap`** with `call: "house_copy"` `{id, call, error}`: computing the copy trapped, or its
+    module could not be built (`error` keeps the error's class). The request's documents commit and
+    its reply stands. The copy is owed: `meta.copy_owed` counts the traps in a row, the alarm
+    retries on the backoff, and every request computes the copy until it is made.
+  - **`house-chat-dropped`** `{id: "house", traps, error}`: the house chat failed to load twice in
+    a row, so its row was deleted and the lobby serves without it. A first failure logs `load-trap`
+    with `kind: "house"`.
+  - **`alarm-failed`** `{id, error}`: a `setAlarm` or `deleteAlarm` issued beside a batch was
+    rejected.
 - **The Origin check**, over WARP: an upgrade from the site's own origin answers 101, one from
   another answers 403 with the host's sentence (reading 2d).
 
@@ -2417,3 +2444,66 @@ the spike's one unexplained error (reading 6, the beacon) is explained; neither 
 §6.6: there is no earlier version; the NAS, untouched, is the fallback. The migration `v1` is FROZEN
 from this deployment on: a class added later takes a new tag, and no version can be rolled back
 across one.
+
+### 6.9 The house and the slot are live — the fifteenth deployment, 2026-09-24 (a record, not a plan)
+
+From `b24149b5`, Task 12's reviewed head, its fix round included, tree clean. It brings the house
+over scrubbed copies, a durable ordered slot per table, the corpus replayed through the objects in
+the pool, and `/api/art` projected onto the layer's nine maps. **Version
+`e355c676-cfb2-400b-926d-05def2e725fd`.** Every reading holds. The readings ran with the credential
+and claimed `.test` identities, the tail listening, and the header file deleted afterwards.
+
+- **Build:** `worker/`'s `npm run build`. The module is **1,220,664 B**; the assembly **153 entries
+  verified**, 156 files, 9,967,639 B; the release smoke **200**.
+- **The deploy:** the guard PASSED its six checks, the comparison of the two configurations' object
+  blocks among them. Total Upload **1288.14 KiB / gzip 493.52 KiB** (the fourteenth's: 1260.83
+  KiB); **Worker Startup Time 2 ms**; the custom domain `yokohama.moore.nyc`.
+- **Reading 1 — a locked create** as `probe@deploy.test` through the credential, its seed
+  `9007199254740993` (above 2^53): **201** `sim-81e5fae99a122963`, status `open`, `locked: true`.
+- **Reading 2 — the lobby, listed from the house's copies:** for the creator (`scope=mine`,
+  `my_seats [0]`) and for `second@deploy.test` (`scope=open`, `my_seats []`). In both listings the
+  seed's digits appear **0** times, runs of 32 or more hex characters **0** times, and the keys
+  `salt`, `hash` and `seed` **0** times. The scrub holds live.
+- **Reading 3 — the lobby socket** as `watcher@deploy.test`, over `curl --http1.1`:
+  `HTTP/1.1 101 Switching Protocols`. On `second`'s join (**200**, with the password) it received
+  exactly `{"event":"house","data":{"seq":2,"chat":0}}`. `seq` is the house's in-memory count of
+  the copies and removals it applied, so 2 matches the create's copy and then the join's.
+- **Reading 4 — abandon:**
+  - the creator's DELETE: **204**, and the id is gone from `scope=mine` (0 rows);
+  - a re-create naming the SAME id: **201**. Under an unacknowledged removal it would be 409, so the
+    removal was acknowledged and the object ended. The tail shows a NEW generation: `at`
+    1790206923, with a new `rand`;
+  - its DELETE: **204**.
+- **Reading 5 — `/api/art`:** its keys, unsorted, are `orders, techs, sites, achievements, areas,
+  five_power, mercenaries, backs, tokens` — the nine maps in the struct's order, with no
+  `area_duplicates` and no `provenance`.
+- **Reading 6 — the tail:** `slot-pushed`/`slot-acked` pairs for revisions 1 (the create), 2 (the
+  join) and 3 (the REMOVAL), then for the re-created generation's 1 and 2 (its removal). No
+  `copy-refused`, `trap` or `alarm-failed` line, and no alarm fired.
+- **Against the spike (spec §0.3):**
+  - row 2, startup: the same 2 ms. The upload is larger than the spike's 1,172.84 KiB because the
+    Worker carries the shell;
+  - the shell's own draw inside an object — each generation's 64 random bits, through
+    `crypto.getRandomValues` — worked (reading 4's new `rand`). That is not row 3 itself: row 3 is
+    the module's `getrandom`, and here the Worker drew the `sim-` id and the first create named its
+    seed.
+
+#### What this deployment does NOT claim
+
+- **Spike rows 4 and 5 were not re-read here:** no trap was raised live, and no object's CPU was
+  measured.
+- **No alarm fired, by design.** Every push was acknowledged, and the acknowledgement deletes the
+  slot's alarm. So a retry's own delivery, and `ctx.id.name` inside a production `alarm()` (the
+  plan's pool fact 8), were not read live. The pool's cells are their evidence.
+- **The pool-only paths:** an owed copy (`copy_owed`) and its backoff, a refused copy, a failed
+  push and its retry, and the house chat's load traps were not raised live.
+- **The corpus replay ran in the pool only**; the live replay is Task 15's. The slot's `last_active`
+  and `bytes` reached the house, but the operator's listing that shows them is Task 14's.
+
+#### Rollback
+
+§6.6. The earlier version is now the fourteenth's, `8b1bdcf8-610d-4b04-9e21-727e216cd61a`, and no
+migration was added, so `npx wrangler rollback` can return to it. Its house holds no copies, so its
+lobby would list nothing, while every table and its game stay as they are: the fourteenth's code
+never reads the `meta` keys this deployment added, and a pending slot's alarm finds nothing to do
+there.
