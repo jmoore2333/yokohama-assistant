@@ -16,7 +16,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ensureArchiveFact } from "../api";
-import { recallServerFacts, rememberServerFacts, resetFactsForTest } from "./facts";
+import {
+  archiveAnswer,
+  onServerFacts,
+  recallServerFacts,
+  rememberArchiveOff,
+  rememberServerFacts,
+  resetFactsForTest,
+  serverFacts,
+  serverFactsTakenAt,
+} from "./facts";
 import type { Health } from "../types";
 import { wire } from "../wire/contract";
 
@@ -111,5 +120,61 @@ describe("the server's remembered facts", () => {
     vi.spyOn(api, "health").mockResolvedValue(health({ archive: "dir" }));
     expect(recallServerFacts()).toBeNull();
     expect(await ensureArchiveFact()).toBe("dir");
+  });
+
+  // **The Worker's transport survives a reload** (M6.5c, spec §2.7). A stored
+  // `signal` is checked against the union like every other field (review M-8)
+  // and a value outside it falls back to the stream — so without `"ws"` in the
+  // check, every reload would start on the stream: a 426 from the Worker (spec
+  // §2.3) and a trip round the ladder before the health read put it right.
+  it("remembers the socket transport across a reload", () => {
+    rememberServerFacts(health({ signal: "ws" }));
+    resetFactsForTest();
+    expect(recallServerFacts()?.signal).toBe("ws");
+  });
+
+  // **R-6.5c.14's one writer** (spec §2.6). The archive route's 404 is the
+  // deployment saying it keeps no archive — news about ONE field. The record is
+  // rewritten with `archive: "off"` and everything else as it was, the time it
+  // was taken included: the other fields are no fresher than before. Neither
+  // older writer does that — `rememberServerFacts` needs a whole `Health` and
+  // restamps it, and `patchServerFacts` writes nothing down (plan review m2).
+  it("writes the archive OFF into the remembered record, keeping its age and every other field", async () => {
+    const at = Date.now() - 2 * 3600_000;
+    // Every field away from its default, so a rewrite that put one back shows.
+    rememberServerFacts(
+      health({
+        archive: "dir",
+        signal: "ws",
+        lobby_chat: false,
+        chat_text: 280,
+        multiplayer: false,
+        identity: "worker",
+      }),
+      at,
+    );
+    const before = serverFacts();
+    let heard = 0;
+    const stop = onServerFacts(() => {
+      heard += 1;
+    });
+    try {
+      rememberArchiveOff();
+    } finally {
+      stop();
+    }
+    // The screens drawing the fact — the send control, the Abandon label —
+    // redraw from it.
+    expect(heard).toBe(1);
+    expect(serverFacts()).toEqual({ ...before, archive: "off" });
+    expect(serverFactsTakenAt()).toBe(at);
+    expect(archiveAnswer()).toBe("off");
+
+    // And the WRITTEN copy, read the way a fresh page load reads it: a module
+    // evaluated anew over the same storage.
+    vi.resetModules();
+    const reloaded = await import("./facts");
+    expect(reloaded.serverFacts()).toEqual({ ...before, archive: "off" });
+    expect(reloaded.serverFactsTakenAt()).toBe(at);
   });
 });

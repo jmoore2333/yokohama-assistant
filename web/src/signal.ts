@@ -13,12 +13,22 @@
 // waiting on a body, so a visible tab holds ONE open request per resource and
 // arms NOTHING; the server writes a frame when something moves. The timer that
 // is left serves only the two cases where there is no connection to wait on:
-// the ladder after a failure, and the held-request arm's re-ask.
+// the ladder after a failure, and the held-request arm's re-ask. **The socket
+// arm (M6.5c) is one connection per resource too, and holds ONE timer while it
+// is connected — a keep-alive that asks nothing**: a `ping` every 30 s
+// (`ws.ts`), answered without waking the server's object, which keeps the edge
+// from cutting a quiet connection.
 //
-// **The reader is a `fetch`, not an `EventSource`** (spec §0.1) — `sse.ts` says
-// why in one line: `EventSource` cannot carry a header, and the `claimed` door
-// is one. It is also the reason a hidden tab can let go at all, since an
-// `AbortController` comes with the `fetch` and not with the other.
+// **The stream's reader is a `fetch`, not an `EventSource`** (spec §0.1) —
+// `sse.ts` says why in one line: `EventSource` cannot carry a header, and the
+// `claimed` door is one. It is also the reason a hidden tab can let go at all,
+// since an `AbortController` comes with the `fetch` and not with the other.
+//
+// **On the Worker the reader is a `WebSocket`** (M6.5c, R-6.5c.6; spec §2.7):
+// the same frames in a JSON envelope, handed to the same handler, and let go
+// the same way — the abort closes it. A socket carries no header either, and a
+// browser hides why an upgrade was refused, so a close nobody explained is
+// followed by ONE plain fetch that can say (`open` below).
 //
 // **The signal is deliberately separate from the fetch** (ruling R-P9). A
 // `signal` frame is four fields and no frame built, so a client learns "this
@@ -34,7 +44,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, isLocal, isSessionExpired, signalKind } from "./api";
-import { readStream } from "./sse";
+import { readStream, type Frame } from "./sse";
+import { readSocket } from "./ws";
 import type { Events } from "./types";
 
 /** The wait after the 1st, 2nd, … consecutive failure, and then forever.
@@ -97,7 +108,9 @@ export function nextDelay(failures: number): number {
  *
  *  **`stream` is what the SSE arm reads and `once` is what the held arm reads**,
  *  and both are declared because a deployment decides which (see `signalKind`).
- *  A `"wake"` source reads `once` under BOTH arms — see `frames`. */
+ *  The socket arm (M6.5c) opens `stream` as a socket, and asks `once` as its one
+ *  probe after a close nobody explained. A `"wake"` source reads `once` under
+ *  EVERY arm — see `frames`. */
 export interface Source<T> {
   key: string;
   once: () => Promise<T>;
@@ -177,7 +190,8 @@ export interface End {
  * signed-out screen unmounts; a second handler here would be a second thing
  * racing to decide which screen this is. The STREAM's own 401 is not routed
  * there — `readStream` does not go through `call` — and does not need to be:
- * the next ordinary call takes the player to the door.
+ * the next ordinary call takes the player to the door. The socket arm's probe
+ * DOES go through `call`, so a 401 on it reaches the door the ordinary way.
  *
  * **The EDGE's 401 is the exception, and it is not a second door handler**
  * (final review I-2): an expired Access session is not this API saying it does
@@ -300,6 +314,53 @@ export function usePolled<T>(
       const mine = new AbortController();
       controller = mine;
       const frames = src.current.frames ?? "wake";
+      // **One frame, off EITHER transport** (M6.5c): the stream's reader and
+      // the socket's hand this the same `Frame`, so what a frame MEANS is
+      // decided here once.
+      const onFrame = (f: Frame) => {
+        if (stopped) return;
+        if (f.event === "end") {
+          // The server's own reason rides the frame: `deleted` for a table
+          // that was abandoned, `gone` for one that stopped being readable
+          // under a live connection.
+          // **And it is given WORDS here, once, for all four consumers**
+          // (final review I-2). A server-supplied sentence is kept if one
+          // ever arrives; today none does, and defaulting in the consumers
+          // instead would be three copies of the same two strings with one
+          // of them already missing.
+          const { reason, sentence } = JSON.parse(f.data) as {
+            reason: "deleted" | "gone";
+            sentence?: string;
+          };
+          ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
+          return;
+        }
+        if (f.event !== "signal" && f.event !== "house") return;
+        if (frames === "value") latest.current(JSON.parse(f.data) as T);
+        else void reread();
+      };
+      // **The CONNECTION, and it is what both of these hang on.**
+      //
+      // The word first: a `fetch` that has been issued is not a link, and
+      // this hook once said "live" when the request went out. During an
+      // outage that made the word blink off at every rung of the ladder, and
+      // against a server that accepts a connection and then hangs it read
+      // "live" for ever while nothing was connected. Spec §5.1 ties the word
+      // to Connected, and this is that moment.
+      //
+      // The failure count for the same reason, and the house channel is
+      // why it cannot be reset on a frame instead: `/api/stream` writes
+      // NOTHING on connect (R-3.4), so a lobby reconnecting to a quiet
+      // server would climb 2 s, 4 s, 8 s to the ceiling while every one of
+      // those connections was made perfectly well. A 200 with a stream body
+      // IS the connection — and a server that accepts and closes at once is
+      // still bounded, by the first rung. Over the socket the same moment is
+      // its `open` event (`ws.ts`).
+      const onConnected = () => {
+        if (stopped) return;
+        failures.current = 0;
+        setLink("live");
+      };
       try {
         if (signalKind() === "held") {
           // R-plan-5: the same answer, one request at a time. The game's `once`
@@ -323,53 +384,30 @@ export function usePolled<T>(
           schedule(frames === "value" ? 0 : HELD_REASK_MS);
           return;
         }
-        const outcome = await readStream(
-          src.current.stream,
-          mine.signal,
-          (f) => {
+        if (signalKind() === "ws") {
+          // **The socket arm** (M6.5c, spec §2.7): the same frames to the same
+          // handler, and "live" at the same moment — the socket's `open`.
+          const outcome = await readSocket(src.current.stream, mine.signal, onFrame, onConnected);
+          if (stopped || outcome === "ended") return;
+          // A close this arm made ITSELF — a hidden tab (R-P8), a teardown —
+          // asks nothing (Review Focus 2): exactly as the stream reader returns
+          // silently on its own abort.
+          if (mine.signal.aborted) return;
+          // **Nothing is connected now, so the word stops saying "live"**
+          // (spec §5.1) — at the close, not once the probe has answered: a
+          // probe that hangs would otherwise leave "live" on screen over no
+          // connection at all.
+          setLink("reconnecting");
+          // THE PROBE: one plain fetch through `call`, so an expired Access
+          // session is classified exactly as the stream arm classifies it (the
+          // catch below ends the source with the `/enter` remedy); an answer is
+          // a free resync, delivered.
+          const v = await src.current.once();
           if (stopped) return;
-          if (f.event === "end") {
-            // The server's own reason rides the frame: `deleted` for a table
-            // that was abandoned, `gone` for one that stopped being readable
-            // under a live connection.
-            // **And it is given WORDS here, once, for all four consumers**
-            // (final review I-2). A server-supplied sentence is kept if one
-            // ever arrives; today none does, and defaulting in the consumers
-            // instead would be three copies of the same two strings with one
-            // of them already missing.
-            const { reason, sentence } = JSON.parse(f.data) as {
-              reason: "deleted" | "gone";
-              sentence?: string;
-            };
-            ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
-            return;
-          }
-          if (f.event !== "signal" && f.event !== "house") return;
-          if (frames === "value") latest.current(JSON.parse(f.data) as T);
-          else void reread();
-          },
-          // **The CONNECTION, and it is what both of these hang on.**
-          //
-          // The word first: a `fetch` that has been issued is not a link, so
-          // saying "live" above this call said it when the request went out.
-          // During an outage that made the word blink off at every rung of the
-          // ladder, and against a server that accepts a connection and then
-          // hangs it read "live" for ever while nothing was connected. Spec
-          // §5.1 ties the word to Connected, and this is that moment.
-          //
-          // The failure count for the same reason, and the house channel is
-          // why it cannot be reset on a frame instead: `/api/stream` writes
-          // NOTHING on connect (R-3.4), so a lobby reconnecting to a quiet
-          // server would climb 2 s, 4 s, 8 s to the ceiling while every one of
-          // those connections was made perfectly well. A 200 with a stream body
-          // IS the connection — and a server that accepts and closes at once is
-          // still bounded, by the first rung.
-          () => {
-            if (stopped) return;
-            failures.current = 0;
-            setLink("live");
-          },
-        );
+          latest.current(v);
+          throw new Error("the socket closed"); // then the existing ladder
+        }
+        const outcome = await readStream(src.current.stream, mine.signal, onFrame, onConnected);
         if (stopped || outcome === "ended") return;
         // The body ended with nothing said: a dropped connection, and the
         // ladder is what that is for.
@@ -412,7 +450,10 @@ export function usePolled<T>(
         // connection, once per failure. Aborting here is a no-op on the paths
         // that already ended (the stream said `end`, the tab hid, the effect
         // was torn down) and runs after the catch's own `mine.signal.aborted`
-        // test, which is what tells "I was aborted" from "I failed".
+        // test, which is what tells "I was aborted" from "I failed". On the
+        // socket arm it is a no-op on every path: `readSocket` resolves only
+        // once its socket has closed, and hangs the socket up itself when a
+        // handler throws.
         mine.abort();
       }
     };
@@ -455,10 +496,12 @@ export function usePolled<T>(
  * and the open table get them without a second copy.
  *
  * **`frames: "value"`** (R-7.1): a `signal` frame's body IS the `Events` this
- * consumer wants, so the answer arrives whole and `GET …/events` is not called
- * at all. `once` is therefore reached only under the held arm — which is why it
- * asks the server to WAIT, since an immediate read there would be the poll
- * again under another name.
+ * consumer wants, so the answer arrives whole and no frame costs a
+ * `GET …/events`. `once` is therefore reached only under the held arm and by the
+ * socket arm's one probe — and it asks the server to WAIT for the held arm's
+ * sake, since an immediate read there would be the poll again under another
+ * name. The Worker, the one host that serves the socket, answers `wait` at once
+ * (spec §2.3), which is what a probe needs.
  *
  * `onEnd` is how a deleted game stops being watched: the game screen navigates
  * to the lobby with the sentence rather than reading "reconnecting…" forever.

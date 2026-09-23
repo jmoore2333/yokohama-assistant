@@ -794,3 +794,286 @@ describe("the signal, for a game this browser answers", () => {
     expect(stub.matching("GET", "/api/games/local-1/stream")).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M6.5c: the SOCKET arm (spec §2.7; R-6.5c.6).
+//
+// The Worker serves `"ws"`: the stream's own frames over a hibernatable
+// WebSocket, handed to the SAME handler the stream reader feeds — so every rule
+// above about what a frame MEANS is this arm's too, and is not restated here.
+// What is new is what a socket cannot say. A browser reports a refused upgrade
+// as an `error` that says nothing and a close with 1006, so a close nobody
+// explained is followed by ONE plain fetch — the source's own `once()`,
+// through `call` — that CAN say what happened; and a close the arm made itself
+// is followed by nothing at all. These are batteries 23, 37 and 38 of spec
+// §5.7 and the plan's Review Focus 2 and 3.
+
+/**
+ * A `WebSocket` a cell plays from the server's side — a smaller cousin of
+ * `ws.test.ts`'s fake, written again here because a module shared by the two
+ * suites would be a file outside this task's list (plan, Global Constraints).
+ *
+ * It keeps the three rules of a browser's socket the arm leans on: a message is
+ * delivered only while OPEN; `close()` is CLOSING at once and fires `close` a
+ * turn later; and an upgrade that fails fires `error` and then `close` with
+ * 1006, and nothing that says why. What a listener THROWS is the reader's own
+ * business, and `ws.test.ts`'s fake is the one that records it.
+ */
+class FakeSocket extends EventTarget {
+  static made: FakeSocket[] = [];
+  readonly url: string;
+  readyState = 0;
+  readonly sent: string[] = [];
+  /** The code THIS side hung up with — `null` while it has not. */
+  closedWith: number | null = null;
+
+  constructor(url: string | URL) {
+    super();
+    this.url = String(url);
+    FakeSocket.made.push(this);
+  }
+
+  send(data: string): void {
+    if (this.readyState === 0) {
+      throw new DOMException("Still in CONNECTING state.", "InvalidStateError");
+    }
+    this.sent.push(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    if (this.readyState >= 2) return;
+    this.closedWith = code ?? null;
+    this.readyState = 2;
+    queueMicrotask(() => this.closes(code ?? 1005, reason ?? "", true));
+  }
+
+  /** The upgrade succeeds. */
+  accept(): void {
+    this.readyState = 1;
+    this.dispatchEvent(new Event("open"));
+  }
+
+  /** One message in the host's framing (spec §2.4): `{event, data}`. */
+  frame(event: string, data: unknown): void {
+    if (this.readyState === 1) {
+      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ event, data }) }));
+    }
+  }
+
+  /** The server closes, cleanly, with a code of its own. */
+  shut(code: number, reason = ""): void {
+    this.closes(code, reason, true);
+  }
+
+  /** The connection is lost — or, before `accept`, the upgrade is refused. */
+  drop(): void {
+    if (this.readyState === 0) this.dispatchEvent(new Event("error"));
+    this.closes(1006, "", false);
+  }
+
+  private closes(code: number, reason: string, wasClean: boolean): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.dispatchEvent(new CloseEvent("close", { code, reason, wasClean }));
+  }
+}
+
+describe("the signal, over a WebSocket (M6.5c)", () => {
+  beforeEach(() => {
+    // The suite's own `afterEach` puts the transport back to `"sse"`.
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+
+  /** The `n`th socket the hook opened, once it has. */
+  const socket = async (n: number): Promise<FakeSocket> => {
+    await until(() => FakeSocket.made.length >= n, `socket ${n} was opened`);
+    return FakeSocket.made[n - 1]!;
+  };
+
+  // **Battery 23: the arm laddering without the probe.** The expired Access
+  // session is the case the probe exists for: the edge refuses the upgrade,
+  // the page hears 1006 and an `error` that says nothing, and a ladder would
+  // say "reconnecting…" for ever about a door only the player can walk
+  // through — M6.5b2's final-review I-2, back again. The probe is a plain
+  // fetch, so the edge's 401 is READABLE on it, and it ends the source exactly
+  // as the stream arm's cell above ends on it.
+  it("probes ONCE after a socket that closes before it opens, and ends on the edge's expired session (battery 23)", async () => {
+    const ends: End[] = [];
+    const stub = stubApi((call) =>
+      call.path.includes("/events")
+        ? new Response("<html>", {
+            status: 401,
+            headers: { "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/y"' },
+          })
+        : undefined,
+    );
+    renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    const refused = await socket(1);
+    act(() => refused.drop());
+    await until(() => ends.length > 0, "the source ended");
+    expect(ends).toEqual([{ reason: "refused", sentence: ACCESS_CHALLENGE }]);
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+    // Nothing is scheduled after it: passing the turnstile fixes this, and
+    // asking again cannot.
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 3);
+    });
+    expect(FakeSocket.made).toHaveLength(1);
+    expect(stub.calls).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+  });
+
+  // **Battery 37 and Review Focus 2: a close the arm made ITSELF asks
+  // nothing.** Hiding the tab is the arm hanging up (R-P8), and a probe then
+  // would be a request from a hidden tab — the one thing R-P8 forbids — about
+  // a close whose cause is already known. Shown again, the arm opens a new
+  // socket and the server's first frame on accept is the resync (M6.3), with
+  // no probe, no reload and no "reconnecting…".
+  it("asks nothing about a close it made itself: hidden, it lets the socket go; shown, it reopens and resyncs from the first frame (battery 37)", async () => {
+    const seen: Events[] = [];
+    // ANY request fails this cell: no close here earns a probe.
+    const stub = stubApi(() => undefined);
+    const { result } = renderHook(() => useSignal("wire", true, (e) => seen.push(e)));
+    const first = await socket(1);
+    // The source's own stream URL, as a socket.
+    expect(first.url).toBe(`ws://${location.host}/api/games/wire/stream`);
+    act(() => {
+      first.accept();
+      first.frame("signal", at(1));
+    });
+    expect(seen.map((e) => e.events)).toEqual([1]);
+    expect(result.current).toBe("live");
+
+    act(() => visibility("hidden"));
+    expect(first.closedWith).toBe(1000);
+    await settle();
+    expect(stub.calls).toHaveLength(0);
+    // And nothing is opened, asked or handed over while the tab stays hidden.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 2);
+    });
+    expect(FakeSocket.made).toHaveLength(1);
+    expect(stub.calls).toHaveLength(0);
+    expect(seen.map((e) => e.events)).toEqual([1]);
+
+    act(() => visibility("visible"));
+    expect(result.current).toBe("refreshing");
+    const second = await socket(2);
+    // A socket that has been made is not a connection yet.
+    expect(result.current).toBe("refreshing");
+    act(() => {
+      second.accept();
+      second.frame("signal", at(2));
+    });
+    expect(result.current).toBe("live");
+    expect(seen.map((e) => e.events)).toEqual([1, 2]);
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  // **Review Focus 3: a deploy during a game.** Every socket closes 1006 and
+  // says nothing. The arm says so at once, probes once — and the probe's
+  // answer is a free resync, handed over like a frame, so a move made while the
+  // socket was down is not lost — then climbs the SAME ladder the stream does.
+  it("after a close nobody explained, says reconnecting, hands the probe's answer over, and reopens on the ladder's first rung (Review Focus 3)", async () => {
+    const seen: Events[] = [];
+    const probe = gate<Reply>();
+    const stub = stubApi((call) => (call.path.includes("/events") ? probe.promise : undefined));
+    const { result } = renderHook(() => useSignal("wire", true, (e) => seen.push(e)));
+    const first = await socket(1);
+    act(() => {
+      first.accept();
+      first.frame("signal", at(4));
+    });
+    expect(result.current).toBe("live");
+
+    act(() => first.drop());
+    await until(() => stub.matching("GET", "/events").length === 1, "the probe went out");
+    // **Not "live" while the probe is out**: nothing is connected, which is
+    // what the word is tied to (spec §5.1).
+    expect(result.current).toBe("reconnecting");
+    // The probe is `call`'s, so it carries the header that makes Access answer
+    // a readable 401 rather than a redirect (`serverHeaders`).
+    expect(stub.matching("GET", "/events")[0]!.headers["x-requested-with"]).toBe("XMLHttpRequest");
+
+    probe.resolve(at(5));
+    await until(() => seen.length === 2, "the probe's answer was handed over");
+    expect(seen.map((e) => e.events)).toEqual([4, 5]);
+    expect(result.current).toBe("reconnecting");
+
+    // The ladder's first rung, and not before it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! - 100);
+    });
+    expect(FakeSocket.made).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    const second = await socket(2);
+    act(() => {
+      second.accept();
+      second.frame("signal", at(6));
+    });
+    expect(result.current).toBe("live");
+    expect(seen.map((e) => e.events)).toEqual([4, 5, 6]);
+    // ONE probe for one close.
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+  });
+
+  // **A probe that lands after the screen has gone hands nothing over** — the
+  // stream arm's rule ("hands nothing over once it has been torn down"), kept
+  // for the one request this arm makes on its own.
+  it("hands nothing over from a probe that lands after it was torn down", async () => {
+    const seen: Events[] = [];
+    const probe = gate<Reply>();
+    const stub = stubApi((call) => (call.path.includes("/events") ? probe.promise : undefined));
+    const { rerender } = renderHook(
+      ({ active }) => useSignal("wire", active, (e) => seen.push(e)),
+      { initialProps: { active: true } },
+    );
+    const first = await socket(1);
+    act(() => first.accept());
+    act(() => first.drop());
+    await until(() => stub.matching("GET", "/events").length === 1, "the probe went out");
+    rerender({ active: false });
+    probe.resolve(at(5));
+    await settle();
+    expect(seen).toEqual([]);
+    // And nothing is opened in its place.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 2);
+    });
+    expect(FakeSocket.made).toHaveLength(1);
+  });
+
+  // **Battery 38: the close after an `end` read as a second refusal.** The
+  // host sends `end` BEFORE its 4404 close (spec §2.4). Were that close read as
+  // unexplained, the probe would meet the deleted table's 404 and end the source
+  // a SECOND time — which this cell's `/events` answer is arranged to make
+  // visible.
+  it("ends ONCE on an end frame, and the close that follows it asks nothing (battery 38)", async () => {
+    const ends: End[] = [];
+    const stub = stubApi((call) =>
+      call.path.includes("/events")
+        ? { status: 404, body: { error: 'no game named "wire"' } }
+        : undefined,
+    );
+    renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    const s = await socket(1);
+    act(() => {
+      s.accept();
+      s.frame("end", { reason: "deleted" });
+      s.shut(4404, "this table was abandoned");
+    });
+    await settle();
+    expect(ends).toEqual([{ reason: "deleted", sentence: endSentence("deleted") }]);
+    expect(stub.calls).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]! * 3);
+    });
+    expect(FakeSocket.made).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+  });
+});

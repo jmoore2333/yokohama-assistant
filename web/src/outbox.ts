@@ -61,7 +61,12 @@ import {
   type OutboxRow,
   type PendingReason,
 } from "./local/db";
-import { archiveAnswer, onServerFacts, type ArchiveKind } from "./local/facts";
+import {
+  archiveAnswer,
+  onServerFacts,
+  rememberArchiveOff,
+  type ArchiveKind,
+} from "./local/facts";
 
 export type { PendingReason };
 
@@ -304,6 +309,12 @@ export const recordLanded = (id: string, record: string): Promise<void> =>
  *
  * **Safe to retry by construction**: the server answers `identical` for a
  * second send of the same bytes, and this client treats 200 and 201 alike.
+ *
+ * **This module's one call of `api.archive`**, so every send the outbox makes
+ * — the game-over hook, the drain, the sweep and a row's own "Send now" —
+ * meets the 404 branch below through `attempt`. The game screen's "Send to the
+ * archive" and Abandon's save post for themselves, and put the server's
+ * sentence in front of the player who clicked.
  */
 async function offer(
   db: IDBDatabase,
@@ -315,6 +326,17 @@ async function offer(
     await putReceipt(db, id, pair.record);
     announceLanded(id, reply.path);
   } catch (e) {
+    // **A 404 is the deployment's answer, not the moment's** (M6.5c,
+    // R-6.5c.14; spec §2.6): the layer's "this server keeps no archive". Filed
+    // as "offline", the row was posted again on every reconnect until the
+    // remembered health went stale. The archive is OFF: that is written down —
+    // its age untouched — and the row goes, exactly as a known "off" drops
+    // one. By the STATUS, never the sentence, `reasonFor`'s own rule.
+    if (e instanceof ApiError && e.status === 404) {
+      rememberArchiveOff();
+      await forget(db, id);
+      return;
+    }
     const { reason, sentence } = reasonFor(e);
     await putPending(db, id, reason, sentence);
   }

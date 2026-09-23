@@ -451,8 +451,9 @@ export interface Health {
   /** Which identity source this deployment reads, by name. */
   identity: string;
   /** Which change transport `usePolled` reads: the stream, or the held
-   *  request (M6.3). A deployment fact, not a preference. */
-  signal: "sse" | "held";
+   *  request (M6.3), or — the Worker's, M6.5c — the socket. A deployment fact,
+   *  not a preference. */
+  signal: "sse" | "held" | "ws";
   /** Which archive this deployment writes finished and abandoned games to
    *  (M6.5a): none, a directory beside the store, or (M6.5c) a bucket. Read at
    *  the three points spec §2.2 names since M6.5b2 — entering the multiplayer

@@ -302,13 +302,16 @@ export const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
  *  a wrong guess here costs a failed open and one trip round the ladder, not a
  *  screen that never updates.
  *
+ *  **`"ws"` is the Worker's (M6.5c, R-6.5c.6; spec §2.7)**: the stream's own
+ *  frames over a hibernatable WebSocket. The NAS goes on answering `"sse"`.
+ *
  *  **Per SOURCE since M6.5b** (spec §2.3): the value lives in
  *  `local/facts.ts`, keyed by server or local, and this reads the SERVER's.
- *  Its `"sse" | "held"` union is untouched — the transport arm never asks this
- *  about a local game, because it reads `Source.host` instead. */
-export const signalKind = (): "sse" | "held" => serverFacts().signal;
+ *  Its union never holds the local `"none"` — the transport arm never asks
+ *  this about a local game, because it reads `Source.host` instead. */
+export const signalKind = (): "sse" | "held" | "ws" => serverFacts().signal;
 
-export const setSignalKind = (k: "sse" | "held"): void => {
+export const setSignalKind = (k: "sse" | "held" | "ws"): void => {
   patchServerFacts({ signal: k });
 };
 

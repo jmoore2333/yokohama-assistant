@@ -12,7 +12,13 @@
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetFactsForTest } from "./local/facts";
+import {
+  archiveAnswer,
+  recallServerFacts,
+  rememberServerFacts,
+  resetFactsForTest,
+  serverFactsTakenAt,
+} from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { openDb, readOutboxRow } from "./local/db";
 import {
@@ -547,5 +553,90 @@ describe("the database handles", () => {
     // not two zeros.
     expect(opens.mock.calls.length).toBeGreaterThan(1);
     expect(closes.mock.calls.length).toBe(opens.mock.calls.length);
+  });
+});
+
+// ---- a deployment that keeps NO archive answers the route 404 (M6.5c) -----
+//
+// **R-6.5c.14, spec §2.6: "the client's dead end, closed".** A deployment whose
+// archive is off answers `POST /api/archive` with the layer's 404, "this server
+// keeps no archive". Before this branch `reasonFor` filed that 404 as
+// "offline", so a browser that had read `archive: "dir"` less than an hour
+// before the switch was thrown posted the same bytes on every reconnect until
+// its remembered answer went stale. The 404 IS an answer about the deployment:
+// the row goes, and the remembered fact becomes `off`.
+//
+// **The fact's AGE does not move** (plan review m2). The other fields of the
+// remembered health are no fresher than they were, so the record keeps the time
+// it was taken; only `archive` changes, in memory AND in the copy a reload reads.
+describe("a deployment whose archive route answers 404", () => {
+  const KEEPS_NONE = { status: 404, body: { error: "this server keeps no archive" } };
+
+  /** A health answer this browser read a minute ago: fresh, so nothing asks
+   *  again before the send, and old enough that a restamp would show. */
+  const rememberedDir = (): number => {
+    const at = Date.now() - 60_000;
+    rememberServerFacts({ ...wire.health, archive: "dir" }, at);
+    return at;
+  };
+
+  it("forgets the game, and remembers the archive OFF without making the fact younger (battery 28)", async () => {
+    const at = rememberedDir();
+    const off = hosts({ archive: "dir", onArchive: () => KEEPS_NONE });
+    await noteGameOver(GAME);
+    // The premise: the send happened, and the fact it went out on was the
+    // remembered one — no health read moved `takenAt` in between.
+    expect(off.posts).toEqual([RECORD]);
+    expect(off.healths).toEqual([]);
+
+    expect(await pending()).toEqual([]);
+    // Forgotten, and not a receipt either: nothing landed.
+    const db = await openDb();
+    try {
+      expect(await readOutboxRow(db, GAME)).toBeNull();
+    } finally {
+      db.close();
+    }
+    expect(archiveAnswer()).toBe("off");
+    expect(serverFactsTakenAt()).toBe(at);
+    // What the next page load reads: the WRITTEN copy changed, not only this
+    // module's memory of it.
+    resetFactsForTest();
+    expect(recallServerFacts()?.archive).toBe("off");
+  });
+
+  // **By the status, never the words** (`reasonFor`'s own rule): a 404 from
+  // something in front of the server carries no sentence of this API's, and
+  // says the same thing — there is no archive route here to send to.
+  it("reads the 404 by its status, not its sentence", async () => {
+    rememberedDir();
+    hosts({
+      archive: "dir",
+      onArchive: () => new Response("<html>Not Found</html>", { status: 404 }),
+    });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([]);
+    expect(archiveAnswer()).toBe("off");
+  });
+
+  // **Every site that sends** — and the drain is the one that matters most: a
+  // row queued while the archive was on meets the switch thrown to off.
+  it("forgets a waiting row the same way when a drain meets the 404", async () => {
+    const at = rememberedDir();
+    hosts({
+      archive: "dir",
+      onArchive: () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "offline" })]);
+
+    const off = hosts({ archive: "dir", onArchive: () => KEEPS_NONE });
+    await drain();
+    expect(off.posts).toEqual([RECORD]);
+    expect(await pending()).toEqual([]);
+    expect(archiveAnswer()).toBe("off");
+    expect(serverFactsTakenAt()).toBe(at);
   });
 });

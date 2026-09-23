@@ -28,19 +28,20 @@ export type ArchiveKind = "off" | "dir" | "r2";
 
 /** What a screen asks about the source it is talking to. */
 export interface DeploymentFacts {
-  /** How a change ARRIVES: the stream, the held request, or — locally —
-   *  nothing at all, because the bot's trailing run returns inside the reply
-   *  and there is nobody else at the table to wait for. */
-  signal: "sse" | "held" | "none";
+  /** How a change ARRIVES: the stream, the held request, the socket (the
+   *  Worker's, M6.5c), or — locally — nothing at all, because the bot's
+   *  trailing run returns inside the reply and there is nobody else at the
+   *  table to wait for. */
+  signal: "sse" | "held" | "ws" | "none";
   archive: ArchiveKind;
   lobbyChat: boolean;
   chatText: number;
 }
 
 /** The SERVER's record, whose signal is NARROWER: a server always serves one
- *  of the two transports, and `signalKind()`'s union is what `usePolled`'s
- *  held arm branches on. `"none"` is a local fact and is never reachable here
- *  — which is a type and not a comment.
+ *  of its three transports, and `signalKind()`'s union is what `usePolled`'s
+ *  held and socket arms branch on. `"none"` is a local fact and is never
+ *  reachable here — which is a type and not a comment.
  *
  *  **Two fields the local host has no answer to** (M6.5b2): which door this
  *  deployment reads, and whether it serves multiplayer at all. Both are
@@ -48,7 +49,7 @@ export interface DeploymentFacts {
  *  — a local game is played by this browser and has no door and no second
  *  seat. */
 export interface ServerFacts extends DeploymentFacts {
-  signal: "sse" | "held";
+  signal: "sse" | "held" | "ws";
   /** `Health.identity` — the door's name. Empty until a health read has landed,
    *  which is a THIRD state and not a mode: nothing has been asked. */
   identity: string;
@@ -142,7 +143,8 @@ function sane(parsed: Partial<ServerFacts> | undefined): ServerFacts {
   const str = (v: unknown, d: string) => (typeof v === "string" ? v : d);
   const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   return {
-    signal: p.signal === "held" || p.signal === "sse" ? p.signal : DEFAULTS.signal,
+    signal:
+      p.signal === "held" || p.signal === "sse" || p.signal === "ws" ? p.signal : DEFAULTS.signal,
     archive: ARCHIVE_KINDS.includes(p.archive as string)
       ? (p.archive as ServerFacts["archive"])
       : DEFAULTS.archive,
@@ -278,6 +280,38 @@ export const rememberServerFacts = (h: Health, at: number = Date.now()): void =>
 export const patchServerFacts = (p: Partial<ServerFacts>): void => {
   server = { ...server, ...p };
   announce();
+};
+
+/** The deployment keeps NO archive — what the archive route's 404 says
+ *  (M6.5c, R-6.5c.14; spec §2.6), written down.
+ *
+ *  **News about ONE field, so ONE field changes.** The remembered record is
+ *  rewritten with `archive: "off"` and everything else as it was — the time it
+ *  was taken included, because the other fields are no fresher than they were,
+ *  and restamping them would make a stale record read as a new one for another
+ *  hour. Then the same change is made in memory, which is what the screens
+ *  drawing the fact redraw from.
+ *
+ *  **Neither older writer does this** (plan review m2): `rememberServerFacts`
+ *  needs a whole `Health` and restamps the record, and `patchServerFacts` writes
+ *  nothing down — which would leave a reload believing the archive is still on
+ *  until the record went stale. With no record stored — a storage that refuses,
+ *  or one cleared since — there is nothing to rewrite, and memory alone
+ *  changes. */
+export const rememberArchiveOff = (): void => {
+  const stored = recallServerRecord();
+  if (stored) {
+    try {
+      localStorage.setItem(
+        FACTS_KEY,
+        JSON.stringify({ takenAt: stored.takenAt, facts: { ...stored.facts, archive: "off" } }),
+      );
+    } catch {
+      /* storage refused: this page keeps the fact, and the next page learns
+         it again from the route's next 404 */
+    }
+  }
+  patchServerFacts({ archive: "off" });
 };
 
 /** Put this module back where a fresh page load finds it, WITHOUT clearing
