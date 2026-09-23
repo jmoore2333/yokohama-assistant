@@ -22,6 +22,7 @@
 mod config;
 mod create;
 mod events;
+mod house;
 mod picker;
 pub mod signal;
 
@@ -39,6 +40,7 @@ use yokohama_web::ApiError;
 
 pub use crate::create::create_inner;
 pub use crate::events::events_inner;
+pub use crate::house::{house_copy_inner, house_frame_inner, put_copy_inner, remove_copy_inner};
 pub use crate::picker::restore_picker_inner;
 use crate::signal::{Bump, RecordingSignal};
 
@@ -341,6 +343,34 @@ pub fn events(id: &str, user: Option<String>, query: &str) -> Reply {
 #[wasm_bindgen]
 pub fn restore_picker(id: &str, row: &str) -> Reply {
     restore_picker_inner(id, row).into()
+}
+
+/// [`house_copy_inner`] for the shell: the copy, `undefined` when no table is
+/// stored under `id`, and a refusal thrown as its sentence.
+#[wasm_bindgen]
+pub fn house_copy(id: &str) -> Result<Option<String>, JsValue> {
+    house_copy_inner(id).map_err(|e| JsValue::from_str(&e))
+}
+
+/// [`put_copy_inner`] for the shell: a refusal is thrown as its sentence.
+#[wasm_bindgen]
+pub fn put_copy(id: &str, json: &str) -> Result<(), JsValue> {
+    put_copy_inner(id, json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// [`remove_copy_inner`] for the shell: a refusal is thrown as its sentence.
+#[wasm_bindgen]
+pub fn remove_copy(id: &str) -> Result<(), JsValue> {
+    remove_copy_inner(id).map_err(|e| JsValue::from_str(&e))
+}
+
+/// [`house_frame_inner`] for the shell, which passes each counter as a JS
+/// `number`: the parameters are `u32` because `wasm-bindgen` types a `u64`
+/// parameter `bigint` (the orchestrator's ruling I-22), and they widen to the
+/// layer's `u64` without loss.
+#[wasm_bindgen]
+pub fn house_frame(seq: u32, chat: u32) -> String {
+    house_frame_inner(u64::from(seq), u64::from(chat))
 }
 
 /// One call into the layer under the held `GAMES`, answered with what the layer
