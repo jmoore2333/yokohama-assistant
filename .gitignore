@@ -3,6 +3,12 @@ target/
 *.swo
 .DS_Store
 
+# Secrets for local tooling — wrangler's own convention (`.dev.vars` is what
+# `wrangler dev` reads) and the Access service credential the live tests present.
+# Never committed: a credential in history is a credential rotated.
+.dev.vars
+.dev.vars.*
+
 # Phase-2.9 differential-harness divergence artifacts (generated repros;
 # never committed - the seed/players/policy/step in each filename is the
 # provenance, the state snapshot inside is the repro)
