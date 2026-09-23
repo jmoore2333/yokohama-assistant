@@ -270,32 +270,68 @@ fn parse_outcome(json: &str) -> Result<Outcome, String> {
 /// store's bytes, and the two are one finished game only where `persist` wrote
 /// those bytes at game over — the write that deferred the plan.
 ///
-/// **The 200 says whether the stamp LANDED** (ruling I3): `{"stamped": true}`
-/// when the stored table's `archived_at` is set after the retry, else
-/// `{"stamped": false}`. `archive_over_retry` answers `Ok(())` either way,
-/// because inside `archive_if_over` a refused put or a failed stamp is only an
-/// `eprintln!`, and that is mute on this host — so this reads the table the
-/// stamp is written to. `false` is every other case — among them a `failed` or
-/// `conflict` receipt, a put that met none (its plan, deferred again, in this
-/// reply's `archive`), a stamp that did not land, and a game no longer over.
+/// **The 200 is `{"stamped": <bool>, "over": <bool>}`** (ruling I3, and the
+/// orchestrator's ruling on I3's undo case):
+///
+/// - `stamped` says whether the stamp LANDED: whether the stored table's
+///   `archived_at` is set after the retry. `archive_over_retry` answers
+///   `Ok(())` either way, because inside `archive_if_over` a refused put or a
+///   failed stamp is only an `eprintln!`, and that is mute on this host — so
+///   this reads the table the stamp is written to;
+/// - `over` says whether the game is over at retry time: the resident
+///   handle's reading, the one `archive_if_over` takes, and never the table's
+///   `turn` mirror, a cache that can be stale.
+///
+/// The shell (Task 13) derives three arms from the pair, and a `conflict`
+/// receipt clears `archive_owed` whatever they say (final at every site, spec
+/// §2.6):
+///
+/// - `stamped: true` — the save is complete: clear `archive_owed`;
+/// - `stamped: false, over: false` — the game is no longer over (below):
+///   clear it too;
+/// - `stamped: false, over: true` — the stamp did not land: a `failed`
+///   receipt, a put that met none (its plan, deferred again, in this reply's
+///   `archive`), or a stamp write that failed. The alarm retries.
 ///
 /// **No longer over** (ruling E3): after an undo at a one-person table,
-/// `archive_if_over` puts nothing and stamps nothing, and spec §2.6 has the
-/// shell clear `archive_owed` — although `stamped` alone does not tell this
-/// case from a failed upload. A copy that landed under `over/` without its
-/// stamp is then archived again under `abandoned/` at a later abandon — the
-/// directory archive's own behaviour (`Archive`'s doc), kept for parity.
+/// `archive_if_over` puts nothing and stamps nothing. A later completion puts
+/// afresh; where the first completion's copy has landed with different bytes,
+/// that put is a `Conflict` the shell logs — the archive keeps the first
+/// completion, as the directory archive does. A game abandoned
+/// instead, whose copy landed under `over/` without its stamp, is archived
+/// again under `abandoned/` — the directory archive's own behaviour
+/// (`Archive`'s doc), kept for parity.
 ///
 /// An error is the layer's own, in its error shape: an open or dealing table
 /// answers `handle`'s `Err(Open | Dealing)`, and an id with no table its 404.
 pub fn stamp_archive_inner(id: &str) -> ReplyData {
-    from_the_layer(|games| match games.archive_over_retry(id) {
-        Ok(()) => (200, serde_json::json!({ "stamped": stamped(games, id) }).to_string(), None),
-        Err(e) => {
-            let e = ApiError::from(e);
-            (e.status.as_u16(), error_body(&e), None)
+    from_the_layer(|games| {
+        // `over` is read off the handle the retry has just found or built, so
+        // this rebuilds nothing, and nothing between the two moves the game.
+        let over = games.archive_over_retry(id).and_then(|()| {
+            let handle = games.handle(id)?;
+            let over = handle.lock().expect("a game").session.is_over();
+            Ok(over)
+        });
+        match over {
+            Ok(over) => {
+                let reply = Stamp { stamped: stamped(games, id), over };
+                (200, serde_json::to_string(&reply).expect("a stamp serializes"), None)
+            }
+            Err(e) => {
+                let e = ApiError::from(e);
+                (e.status.as_u16(), error_body(&e), None)
+            }
         }
     })
+}
+
+/// [`stamp_archive_inner`]'s 200 body. A struct rather than `json!`, whose
+/// map sorts its keys: the fields serialize in this order, `stamped` first.
+#[derive(Serialize)]
+struct Stamp {
+    stamped: bool,
+    over: bool,
 }
 
 /// Whether `id`'s stored table carries `archived_at`: the document read
@@ -781,7 +817,8 @@ mod tests {
     /// `stamp_archive` at the plan's reading stamps it.
     ///
     /// Its reply says whether the stamp landed (ruling I3): `stamped: false`
-    /// under a `failed` receipt, `true` after a `landed` one.
+    /// under a `failed` receipt, `true` after a `landed` one — each with
+    /// `over: true`, the game being over throughout.
     #[test]
     fn game_over_defers_its_put_and_stamp_archive_completes_it() {
         let _s = serial();
@@ -799,13 +836,13 @@ mod tests {
         // The retry with no receipt yet puts the SAME plan again, at the same
         // reading — in its own reply — and stamps nothing.
         let s = stamp_archive_inner(OWED);
-        assert_eq!((s.status, s.body.as_str()), (200, r#"{"stamped":false}"#));
+        assert_eq!((s.status, s.body.as_str()), (200, r#"{"stamped":false,"over":true}"#));
         assert_eq!(s.archive, r.archive, "the same plan: one reading, one stored pair");
 
         // A FAILED upload's receipt: no stamp, and the reply says so.
         receipt_inner(key(&plan), &outcome("failed", "R2 said no")).unwrap();
         let s = stamp_archive_inner(OWED);
-        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":false}"#, None));
+        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":false,"over":true}"#, None));
         assert_eq!(archived_at(OWED), None);
 
         // A LANDED one, at the reading the plan was made at: stamped at it.
@@ -813,14 +850,14 @@ mod tests {
         let s = stamp_archive_inner(OWED);
         assert_eq!(
             (s.status, s.body.as_str(), tagged(&s).as_str(), s.archive.as_deref()),
-            (200, r#"{"stamped":true}"#, "[]", None)
+            (200, r#"{"stamped":true,"over":true}"#, "[]", None)
         );
         assert_eq!(archived_at(OWED), Some(1_789_000_400));
 
         // A second stamp puts nothing: no receipt is left, so a put would have
         // deferred a plan into this reply.
         let s = stamp_archive_inner(OWED);
-        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":true}"#, None));
+        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":true,"over":true}"#, None));
 
         // No game at all: the layer's own refusal, in its error shape.
         let s = stamp_archive_inner("nobody");
@@ -856,6 +893,71 @@ mod tests {
         assert_eq!(plans[0], plans[1], "one reading, one stored pair: one plan");
     }
 
+    /// **`over` tells the undo case from a failed stamp** (the orchestrator's
+    /// ruling on this task's first concern): `stamped: false` alone cannot,
+    /// and the shell answers the two differently. A game no longer over at
+    /// retry time — an undo at a one-person table after its plan was made —
+    /// answers `{"stamped": false, "over": false}` and puts nothing, so the
+    /// shell clears `archive_owed`. The anti-vacuity partner is the same
+    /// reading and the same receipt over the game still over:
+    /// `{"stamped": true, "over": true}`.
+    ///
+    /// **The undo cannot come through the API at this fixture.** At its end
+    /// the BOT holds the acting seat, and the acting-seat fence refuses the
+    /// one human's `undo` (asserted). So the cell runs what an admitted `undo`
+    /// line runs in `api::input` — `Repl::step("undo")` on the resident
+    /// handle, then `Games::persist` — inside `from_the_layer`, where its bump
+    /// is drained.
+    ///
+    /// `over` is the HANDLE's reading, the one `archive_if_over` takes, and
+    /// never the table's `turn` mirror, a cache that can be stale: under the
+    /// committed table, whose mirror says the game is over, a record cut where
+    /// the human is to move answers `over: false`.
+    #[test]
+    fn stamp_archive_says_whether_the_game_is_over_so_an_undo_is_not_a_failed_stamp() {
+        let _s = serial();
+        let _p = pin(1_789_000_900);
+        for undone in [true, false] {
+            init_inner(&r2(None)).unwrap();
+            let plan = plan_of(&pump_owed_game_over());
+            if undone {
+                let refused = call(LOCAL, "POST", &format!("/api/games/{OWED}/input"), Some(r#"{"line":"undo"}"#));
+                assert_eq!(refused.status, 403, "premise: the fence refuses the API's undo here — {}", refused.body);
+                assert_eq!(stored("record", OWED).as_deref(), plan["record"].as_str(), "premise: and it undid nothing");
+                let undo = crate::from_the_layer(|games| {
+                    let handle = games.handle(OWED).expect("the resident game");
+                    let mut repl = handle.lock().expect("a game");
+                    let _ = repl.step("undo");
+                    assert!(!repl.session.is_over(), "premise: the undo reopened the game");
+                    games.persist(OWED, &repl).expect("the undo is written");
+                    (200, String::new(), None)
+                });
+                assert_eq!(
+                    (tagged(&undo), undo.archive),
+                    (format!(r#"[{{"bump":"{OWED}"}}]"#), None),
+                    "premise: the undo persisted and signalled as the API's does, and deferred nothing",
+                );
+            }
+            receipt_inner(key(&plan), &outcome("landed", plan["record_key"].as_str().unwrap())).unwrap();
+            let s = stamp_archive_inner(OWED);
+            let want = if undone { r#"{"stamped":false,"over":false}"# } else { r#"{"stamped":true,"over":true}"# };
+            assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, want, None), "undone: {undone}");
+            assert_eq!(archived_at(OWED), (!undone).then_some(1_789_000_900), "undone: {undone}");
+        }
+
+        // The handle's reading, never the mirror's: the committed table says
+        // `over: true`, and the record under it is cut at 587, where the human
+        // is to move — so the rebuild pumps nothing and the game is not over.
+        init_inner(&r2(None)).unwrap();
+        let table = read(worker_fixtures().join("owed-game-over.table.json"));
+        let mirror: Value = serde_json::from_str(&table).unwrap();
+        assert_eq!(mirror["turn"]["over"], json!(true), "premise: the table's mirror says the game is over");
+        load_inner("table", OWED, &table).unwrap();
+        load_inner("record", OWED, &partial_of(&read(web_fixtures().join("browser-played-2p.json")), 587)).unwrap();
+        let s = stamp_archive_inner(OWED);
+        assert_eq!((s.status, s.body.as_str(), tagged(&s).as_str()), (200, r#"{"stamped":false,"over":false}"#, "[]"));
+    }
+
     /// The table [`expire_answers_exactly_as_the_creators_delete_at_every_status`]
     /// builds for `status` on the current instance: its id and its creator.
     fn table_at(status: &str) -> (&'static str, &'static str) {
@@ -868,7 +970,7 @@ mod tests {
                 let plan = plan_of(&pump_owed_game_over());
                 if status == "over and stamped" {
                     receipt_inner(key(&plan), &outcome("landed", plan["record_key"].as_str().unwrap())).unwrap();
-                    assert_eq!(stamp_archive_inner(OWED).body, r#"{"stamped":true}"#, "premise: stamped at game over");
+                    assert_eq!(stamp_archive_inner(OWED).body, r#"{"stamped":true,"over":true}"#, "premise: stamped at game over");
                 }
                 return (OWED, LOCAL);
             }
@@ -956,7 +1058,7 @@ mod tests {
         let plan = plan_of(&pump_owed_game_over());
         receipt_inner(key(&plan), &outcome("conflict", "the key holds other bytes")).unwrap();
         let s = stamp_archive_inner(OWED);
-        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":false}"#, None));
+        assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":false,"over":true}"#, None));
         assert_eq!(archived_at(OWED), None, "nothing stamped");
     }
 
