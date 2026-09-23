@@ -20,6 +20,8 @@
 //! reachable under `cargo test`.
 
 mod config;
+mod create;
+mod events;
 pub mod signal;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,7 +33,10 @@ use yokohama_web::archive::NoArchive;
 use yokohama_web::games::Games;
 use yokohama_web::identity::{resolve, IdentityMode, User, WORKER_HEADER};
 use yokohama_web::store::{Doc, MemStore};
+use yokohama_web::ApiError;
 
+pub use crate::create::create_inner;
+pub use crate::events::events_inner;
 use crate::signal::{Bump, RecordingSignal};
 
 /// The one `Games`.
@@ -204,6 +209,30 @@ impl Reply {
     }
 }
 
+/// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
+/// `{"error": …}`, with `"status"` beside it when `table_status` is set.
+///
+/// The layer's own builder is `error_response` in `crates/yokohama-web/src/api.rs`
+/// — the body `IntoResponse for ApiError` writes in `crates/yokohama-web/src/lib.rs`
+/// — and it is `pub(crate)`. Each host is its own host, so this one restates the
+/// shape rather than widen the layer for its convenience, as it restates the
+/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins both arms equal to
+/// `dispatch`'s body for the same refusal, so a drift is a red cell.
+pub(crate) fn error_body(e: &ApiError) -> String {
+    match e.table_status {
+        Some(status) => serde_json::json!({ "error": e.message, "status": status }),
+        None => serde_json::json!({ "error": e.message }),
+    }
+    .to_string()
+}
+
+/// A refusal this host makes ITSELF, before the `Games` is touched: its body is
+/// [`error_body`]'s, and its `bumps` is empty because this call signalled
+/// nothing.
+pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
+    ReplyData { status: e.status.as_u16(), body: error_body(&e), bumps: Vec::new(), archive: None, picker: None }
+}
+
 /// Who the caller is, by the `worker` mode's ONE header (spec §2.3): the value
 /// the shell hands over goes into a header map as `X-Yokohama-User` and is read
 /// by the layer's own `identity::resolve` — so `anonymous`, like an absent or
@@ -251,9 +280,8 @@ pub fn identity(user: Option<String>) -> Reply {
 /// layer's 401 — so `/api/me` answers `user: null` and every route that needs
 /// a caller refuses in the `worker` mode's own words.
 ///
-/// **The signal is drained while the `Games` is still held**, so the list is
-/// this call's alone — including a cold handle's bot pump that persisted before
-/// the request was refused, which is recorded because it happened (spec §5.1).
+/// It answers through [`from_the_layer`], so the signal is drained while the
+/// `Games` is still held.
 pub fn dispatch_inner(
     user: Option<&str>,
     method: &str,
@@ -262,16 +290,16 @@ pub fn dispatch_inner(
     content_type: Option<&str>,
     body: &[u8],
 ) -> ReplyData {
-    let guard = GAMES.lock().expect("the host's games");
-    let games = guard.as_ref().expect("init() before dispatch()");
     let caller = identity_of(user);
     let identity: api::Identity<'_> = match &caller {
         Ok(u) => Ok(u),
         Err(sentence) => Err(sentence.as_str()),
     };
     let req = ApiRequest { method, path, query, content_type, body };
-    let res = api::dispatch(games, &HOST, identity, &req);
-    ReplyData { status: res.status, body: res.body, bumps: drain_bumps(), archive: None, picker: None }
+    from_the_layer(|games| {
+        let res = api::dispatch(games, &HOST, identity, &req);
+        (res.status, res.body)
+    })
 }
 
 #[wasm_bindgen]
@@ -286,9 +314,36 @@ pub fn dispatch(
     dispatch_inner(user.as_deref(), method, path, query, content_type.as_deref(), body).into()
 }
 
+/// [`create_inner`] for the shell.
+#[wasm_bindgen]
+pub fn create(user: Option<String>, body: &[u8], id: &str, content_type: Option<String>) -> Reply {
+    create_inner(user.as_deref(), body, id, content_type.as_deref()).into()
+}
+
+/// [`events_inner`] for the shell.
+#[wasm_bindgen]
+pub fn events(id: &str, user: Option<String>, query: &str) -> Reply {
+    events_inner(id, user.as_deref(), query).into()
+}
+
+/// One call into the layer under the held `GAMES`, answered with what the layer
+/// signalled DURING it.
+///
+/// **The signal is drained while the `Games` is still held**, so the list is
+/// this call's alone — including a cold handle's bot pump that persisted before
+/// the request was refused, which is recorded because it happened (spec §5.1).
+/// [`dispatch_inner`] and [`events_inner`] both answer through here (plan
+/// re-review m-c), so the two cannot drain differently.
+pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String)) -> ReplyData {
+    let guard = GAMES.lock().expect("the host's games");
+    let games = guard.as_ref().expect("init() before any call into the layer");
+    let (status, body) = call(games);
+    ReplyData { status, body, bumps: drain_bumps(), archive: None, picker: None }
+}
+
 /// Everything the layer signalled since the last drain.
 fn drain_bumps() -> Vec<Bump> {
-    SIGNAL.lock().expect("the host's signal").as_ref().expect("init() before dispatch()").drain()
+    SIGNAL.lock().expect("the host's signal").as_ref().expect("init() before any call into the layer").drain()
 }
 
 /// The four document kinds the layer keeps, by the names [`load`] and [`read`]
@@ -584,6 +639,225 @@ mod tests {
         assert_eq!(r.status, 409, "premise: the record route refuses a running game — AFTER the handle is built");
         assert_eq!(tagged(&r), r#"[{"bump":"owed"}]"#, "the owed pump happened, so its bump is recorded");
         assert_ne!(read_inner("record", "owed").unwrap().unwrap(), owed, "and the pump was persisted");
+    }
+
+    const CREATE: &str = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"open":true}]}"#;
+
+    fn created_id(r: &ReplyData) -> String {
+        serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    /// The Worker names the object BEFORE the layer runs, so a body with no id
+    /// gets the object's name inserted, and every 201 names the object that holds
+    /// the table (spec §2.2).
+    #[test]
+    fn an_absent_id_is_inserted_and_every_201_names_the_object() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000aa", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(created_id(&r), "sim-00000000000000aa");
+        assert!(read_inner("table", "sim-00000000000000aa").unwrap().is_some(), "stored under the object's name");
+    }
+
+    /// **Review Focus 1**: what `curl --data-binary @file` sends of a file an
+    /// editor saved with a final newline — the closing brace is NOT the last byte.
+    /// (`curl --data @file` strips carriage returns and newlines but keeps spaces
+    /// and tabs — measured with curl 8.7.1.)
+    #[test]
+    fn trailing_whitespace_after_the_closing_brace_still_inserts_before_it() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        for (n, tail) in ["\n", "  \r\n", "\t \n\n"].iter().enumerate() {
+            let id = format!("sim-000000000000000{n}");
+            let body = format!("{CREATE}{tail}");
+            let r = create_inner(Some("red@t.test"), body.as_bytes(), &id, Some("application/json"));
+            assert_eq!((r.status, created_id(&r)), (201, id.clone()), "tail {tail:?}: {}", r.body);
+        }
+    }
+
+    /// `"id": null` is the one body the layer reads as ABSENT after the Worker has
+    /// named the object — measured by the re-review to answer 201 for a table no
+    /// object held. Refused, and nothing stored.
+    #[test]
+    fn a_null_id_is_refused_and_nothing_is_stored() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = CREATE.replacen('{', r#"{"id":null,"#, 1);
+        let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000bb", Some("application/json"));
+        assert_eq!(r.status, 400);
+        assert_eq!(r.body, r#"{"error":"a game id, when given, must be a string"}"#);
+        assert!(read_inner("table", "sim-00000000000000bb").unwrap().is_none());
+    }
+
+    /// A body the layer would refuse reaches it UNCHANGED, so its 400 is the NAS's
+    /// byte for byte — including the missing field whose column the first text's
+    /// insertion moved from 68 to 96 (spec §0.4).
+    #[test]
+    fn a_refused_body_is_forwarded_unchanged_and_answered_in_the_layers_words() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let cases: [(&str, &str); 6] = [
+            ("a duplicate key", r#"{"players":2,"players":2,"seats":[{"user":"red@t.test"}]}"#),
+            ("an unknown field", r#"{"players":2,"seats":[{"user":"red@t.test"}],"bogus":1}"#),
+            ("a missing field", r#"{"seats":[{"user":"red@t.test"}],"colors":["Red","Blue"],"start_seat":0,"seed":1}"#),
+            ("a non-string id", r#"{"id":5,"players":2,"seats":[{"user":"red@t.test"}]}"#),
+            ("a non-object", "[1,2]"),
+            ("an unparseable body", "{\"players\":"),
+        ];
+        for (what, body) in cases {
+            let via_create = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000cc", Some("application/json"));
+            let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
+            assert_eq!(via_create.status, 400, "{what}: {}", via_create.body);
+            assert_eq!((via_create.status, via_create.body), (direct.status, direct.body), "{what}: forwarded unchanged");
+        }
+        let missing = create_inner(Some("red@t.test"), cases[2].1.as_bytes(), "sim-00000000000000cc", Some("application/json"));
+        let column = cases[2].1.len();
+        assert!(missing.body.contains(&format!("column {column}")), "the ORIGINAL body's column: {}", missing.body);
+        let no_type = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000cc", None);
+        let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", None, CREATE.as_bytes());
+        assert_eq!((no_type.status, no_type.body), (direct.status, direct.body), "a missing content type is the layer's own answer");
+    }
+
+    /// A `u64` seed survives exactly: nothing is re-serialized (spec §0.4).
+    #[test]
+    fn a_u64_seed_is_stored_exactly() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = CREATE.replace("\"seed\":20260831", "\"seed\":\"18446744073709551615\"");
+        let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000dd", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert!(read_inner("table", "sim-00000000000000dd").unwrap().unwrap().contains("18446744073709551615"));
+    }
+
+    /// A positional ARRAY body the layer itself would accept (plan review m3) is
+    /// refused here: this host names its object from an object's `id` only.
+    #[test]
+    fn an_array_body_the_layer_would_accept_is_refused() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-171) — adjust the array to
+        // that order until the premise below holds; the review's measured body was
+        // `[2,["Red","Blue"],0,null,[…]]`.
+        let body = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
+        assert_eq!(direct.status, 201, "premise: the LAYER accepts this array positionally — {}", direct.body);
+        init_inner(&config("off")).unwrap();
+        let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ff", Some("application/json"));
+        assert_eq!(r.status, 400, "{}", r.body);
+        assert_eq!(r.body, r#"{"error":"a game must be created from a JSON object"}"#);
+        assert!(read_inner("table", "sim-00000000000000ff").unwrap().is_none());
+    }
+
+    /// Unreachable through the Worker, and loud if it ever is not (spec §2.2, §4).
+    #[test]
+    fn a_string_id_that_is_not_the_objects_name_is_a_routing_defect() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = CREATE.replacen('{', r#"{"id":"elsewhere","#, 1);
+        let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ee", Some("application/json"));
+        assert_eq!(r.status, 500);
+        assert!(read_inner("table", "elsewhere").unwrap().is_none() && read_inner("table", "sim-00000000000000ee").unwrap().is_none());
+    }
+
+    /// **The caller first** (the orchestrator's ruling at Task 3): the layer's
+    /// `dispatch` reads the caller before the body, so the NAS answers every
+    /// caller-less create 401, and spec §4 makes a host-written sentence a NAMED
+    /// exception, never the default. Two probes, each carrying two defects, each
+    /// answered exactly as `dispatch` answers the same body — the layer's own
+    /// 401, byte for byte — with nothing stored.
+    #[test]
+    fn a_callerless_create_is_the_layers_401_before_any_host_refusal() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let null_id = CREATE.replacen('{', r#"{"id":null,"#, 1);
+        let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        for (what, body) in [("no caller AND a null id", null_id.as_str()), ("no caller AND an array body", array)] {
+            let r = create_inner(None, body.as_bytes(), "sim-0000000000000a11", Some("application/json"));
+            let direct = dispatch_inner(None, "POST", "/api/games", "", Some("application/json"), body.as_bytes());
+            assert_eq!(r.status, 401, "{what}: the caller before the body — {}", r.body);
+            assert_eq!((r.status, r.body), (direct.status, direct.body), "{what}: the layer's own 401");
+            assert!(read_inner("table", "sim-0000000000000a11").unwrap().is_none(), "{what}: nothing stored");
+        }
+    }
+
+    /// The handler's ORDER, pinned by probes that each carry TWO defects — a
+    /// single-defect probe pins nothing about order (the lesson three M6.2 tasks
+    /// relearned).
+    #[test]
+    fn events_refuses_in_axums_handler_order() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        assert_eq!(create_inner(Some("red@t.test"), CREATE.as_bytes(), "t", Some("application/json")).status, 201);
+        let e = events_inner("t", None, "bogus=1");
+        assert_eq!(e.status, 401, "no caller AND an unknown key: the caller first — {}", e.body);
+        let e = events_inner("t", Some("red@t.test"), "bogus=1&wait=26");
+        assert!(e.status == 400 && e.body.contains("bogus"), "an unknown key AND wait=26: the parse first — {}", e.body);
+        let e = events_inner("nope", Some("red@t.test"), "wait=26");
+        assert_eq!(e.status, 400, "wait=26 AND an unknown id: the cap before the read — {}", e.body);
+        assert_eq!(e.body, r#"{"error":"a request can be held for at most 25 seconds, not 26"}"#);
+        let e = events_inner("t", Some("red@t.test"), "wait=25");
+        assert_eq!(e.status, 200, "25 is allowed, and answered at once: {}", e.body);
+        assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0}"#);
+    }
+
+    /// The restated error body is `dispatch`'s own, for the same refusal — both
+    /// arms of it, the `status` arm through a constructed `ApiError` compared with
+    /// the layer's dealing 409.
+    #[test]
+    fn a_refusal_body_is_the_one_dispatch_writes() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let e = events_inner("nope", Some("red@t.test"), "");
+        let d = dispatch_inner(Some("red@t.test"), "GET", "/api/games/nope/table", "", None, b"");
+        assert_eq!((e.status, e.body.as_str()), (d.status, d.body.as_str()), "the unknown id's 404");
+        let body = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}]}"#;
+        assert_eq!(create_inner(Some("red@t.test"), body.as_bytes(), "dealt", Some("application/json")).status, 201);
+        let d = dispatch_inner(Some("red@t.test"), "GET", "/api/games/dealt", "", None, b"");
+        assert_eq!(d.status, 409, "premise: a dealing table's session route is the 409 that carries `status`");
+        let message = serde_json::from_str::<serde_json::Value>(&d.body).unwrap()["error"].as_str().unwrap().to_string();
+        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing") });
+        assert_eq!(restated, d.body);
+    }
+
+    /// `events`' 401 is `dispatch`'s own for the same caller, byte for byte —
+    /// absent, `anonymous`, and a value no header can carry (`User::parse`'s
+    /// sentence) — so the transport route refuses a caller in the words every
+    /// other route uses. The order cell above asserts only the status.
+    #[test]
+    fn an_events_401_is_the_one_dispatch_writes_for_the_same_caller() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        for user in [None, Some("anonymous"), Some("red@wire.test\u{7f}")] {
+            let e = events_inner("t", user, "");
+            let d = dispatch_inner(user, "GET", "/api/games/t/table", "", None, b"");
+            assert_eq!(e.status, 401, "{user:?}: {}", e.body);
+            assert_eq!((e.status, e.body), (d.status, d.body), "{user:?}");
+        }
+    }
+
+    /// **`events` drains exactly as `dispatch` does** (plan re-review m-c): it
+    /// reaches `Games::handle` too, and a cold handle rebuilt with a bot to move
+    /// pumps that move and persists it (the layer's `lib.rs:520-538`). So the
+    /// pump's bump is in THIS reply — the one the shell commits — and none is
+    /// left in the buffer for the next call's, which would carry it under a
+    /// different request.
+    #[test]
+    fn events_drains_a_cold_handles_owed_pump_into_its_own_reply() {
+        let _s = serial();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../worker/test/fixtures");
+        let table = std::fs::read_to_string(dir.join("owed-pump.table.json")).expect("the committed fixture");
+        let owed = std::fs::read_to_string(dir.join("owed-pump.json")).expect("the committed fixture");
+        init_inner(&config("off")).unwrap();
+        load_inner("table", "owed", &table).unwrap();
+        load_inner("record", "owed", &owed).unwrap();
+        let e = events_inner("owed", Some("red@t.test"), "");
+        assert_eq!((e.status, tagged(&e).as_str()), (200, r#"[{"bump":"owed"}]"#), "{}", e.body);
+        assert_ne!(read_inner("record", "owed").unwrap().unwrap(), owed, "the pump was persisted");
+        let reading: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+        assert_eq!((&reading["to_move"], &reading["your_turn"]), (&serde_json::json!(0), &serde_json::json!(true)), "read AFTER the pump: {reading}");
+        let next = call("red@t.test", "GET", "/api/games/owed/table", None);
+        assert_eq!((next.status, tagged(&next).as_str()), (200, "[]"), "nothing left behind for the next call");
     }
 
     /// **The crate's own scan** (spec §5.1), copied from `yokohama-wasm`'s
