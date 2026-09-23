@@ -40,7 +40,9 @@
 //! - **on the COPY, after the scrub**: a defect in the scrub itself. A correct
 //!   scrub turns every document the first check accepts into a copy the second
 //!   accepts, so this check fires only on a scrub defect, and no stored
-//!   document reaches it.
+//!   document reaches it through the real scrub. Its cell reaches it through
+//!   the seam [`house_copy_with`], which takes the scrub as an argument, by
+//!   handing it a defective one.
 //!
 //! The shell calls [`house_copy_inner`] on a TABLE object's instance, over the
 //! table's own stored document, and [`put_copy_inner`], [`remove_copy_inner`]
@@ -56,7 +58,8 @@ use yokohama_web::tables::check_shape;
 use crate::STORE;
 
 /// `id`'s house copy: its stored table document, scrubbed (the module doc) and
-/// serialized — or `None` when no table document is stored under `id`.
+/// serialized — or `None` when no table document is stored under `id`. It is
+/// `house_copy_with` with the real scrub, `scrub`.
 ///
 /// Refused, with a sentence that carries the reason:
 ///
@@ -70,57 +73,57 @@ use crate::STORE;
 ///
 /// Each of the last two carries `check_shape`'s own sentence.
 pub fn house_copy_inner(id: &str) -> Result<Option<String>, String> {
+    house_copy_with(id, scrub)
+}
+
+/// [`house_copy_inner`], with the scrub taken as an argument: the seam that
+/// makes the check on the copy falsifiable (the orchestrator's ruling on the
+/// follow-up's concern). No stored document reaches that check through the
+/// real scrub, so its cell hands this function a defective one. Production
+/// passes [`scrub`] and nothing else.
+pub(crate) fn house_copy_with(id: &str, scrub: impl Fn(&mut TableDoc)) -> Result<Option<String>, String> {
     let Some((stored, _)) = store().read(Doc::Table, id)? else {
         return Ok(None);
     };
-    let original: TableDoc =
+    let mut doc: TableDoc =
         serde_json::from_str(&stored).map_err(|e| format!("{id:?}'s table document does not parse: {e}"))?;
-    check_shape(&original)
+    check_shape(&doc)
         .map_err(|why| format!("{id:?}'s table document is malformed, so the house would not list it: {why}"))?;
-    let copy = scrubbed(original);
-    check_shape(&copy).map_err(|why| format!("{id:?}'s house copy is malformed, so the house would not list it: {why}"))?;
-    Ok(Some(serde_json::to_string(&copy).expect("a table document serializes")))
+    scrub(&mut doc);
+    check_shape(&doc).map_err(|why| format!("{id:?}'s house copy is malformed, so the house would not list it: {why}"))?;
+    Ok(Some(serde_json::to_string(&doc).expect("a table document serializes")))
 }
 
-/// The scrub. Every field is NAMED, with no `..` in the pattern or the
-/// literal, so a field added to `TableDoc` is a compile error here: whoever
-/// adds one decides whether the house may hold it.
-fn scrubbed(doc: TableDoc) -> TableDoc {
+/// The scrub, in place (the module doc). Every field is NAMED, with no `..`:
+/// the three it replaces are bound, and every other is bound to `_` and kept
+/// as stored. So a field added to `TableDoc` is a compile error here, and
+/// whoever adds one decides whether the house may hold it.
+fn scrub(doc: &mut TableDoc) {
     let TableDoc {
-        schema,
-        id,
-        name,
-        created_by,
-        created_at,
-        players,
-        colors,
-        start_seat,
-        seats,
+        schema: _,
+        id: _,
+        name: _,
+        created_by: _,
+        created_at: _,
+        players: _,
+        colors: _,
+        start_seat: _,
+        seats: _,
         keeps,
-        seed: _,
-        status,
-        turn,
+        seed,
+        status: _,
+        turn: _,
         lock,
-        unlocked,
-        archived_at,
+        unlocked: _,
+        archived_at: _,
     } = doc;
-    TableDoc {
-        schema,
-        id,
-        name,
-        created_by,
-        created_at,
-        players,
-        colors,
-        start_seat,
-        seats,
-        keeps: keeps.into_iter().map(|keep| keep.map(|_| 1)).collect(),
-        seed: 0,
-        status,
-        turn,
-        lock: lock.map(|Lock { salt, hash }| Lock { salt: "0".repeat(salt.len()), hash: "0".repeat(hash.len()) }),
-        unlocked,
-        archived_at,
+    *seed = 0;
+    for keep in keeps.iter_mut().flatten() {
+        *keep = 1;
+    }
+    if let Some(Lock { salt, hash }) = lock {
+        *salt = "0".repeat(salt.len());
+        *hash = "0".repeat(hash.len());
     }
 }
 
@@ -179,7 +182,7 @@ mod tests {
     use yokohama_web::table::{Lock, TableDoc};
     use yokohama_web::tables::check_shape;
 
-    use super::{house_copy_inner, house_frame_inner, put_copy_inner, remove_copy_inner};
+    use super::{house_copy_inner, house_copy_with, house_frame_inner, put_copy_inner, remove_copy_inner};
     use crate::tests::{call, config, serial};
     use crate::{create_inner, dispatch_inner, init_inner, load_inner, read_inner};
 
@@ -461,9 +464,10 @@ mod tests {
     /// The document is a table the layer wrote, with `"schema": 99` its ONE
     /// change. The scrub keeps `schema`, so the copy would carry the 99 too,
     /// but the check on the stored original refuses it first, with
-    /// `check_shape`'s own sentence. (The module doc says why the check on the
-    /// copy has no cell that reaches it.) The same document at the schema the
-    /// layer wrote has a copy.
+    /// `check_shape`'s own sentence. (No stored document reaches the check on
+    /// the copy through the real scrub; its cell hands `house_copy_with` a
+    /// defective one.) The same document at the schema the layer wrote has a
+    /// copy.
     #[test]
     fn house_copy_refuses_a_copy_that_check_shape_rejects() {
         let _s = serial();
@@ -528,7 +532,9 @@ mod tests {
             doc.id = id.clone();
             malform(&mut doc);
             let why = check_shape(&doc).expect_err(&format!("premise: `check_shape` rejects {what}"));
-            assert!(check_shape(&super::scrubbed(doc.clone())).is_ok(), "premise: with {what}, the copy alone passes");
+            let mut copy = doc.clone();
+            super::scrub(&mut copy);
+            assert!(check_shape(&copy).is_ok(), "premise: with {what}, the copy alone passes");
             load_inner("table", &id, &serde_json::to_string_pretty(&doc).unwrap()).unwrap();
             let refusal = format!("{id:?}'s table document is malformed, so the house would not list it: {why}");
             assert_eq!(house_copy_inner(&id), Err(refusal), "{what}");
@@ -538,6 +544,44 @@ mod tests {
         for n in 0..4 {
             assert!(row_in(&mine, &format!("kept-{n}")).is_none(), "premise: the listing drops kept-{n}");
         }
+    }
+
+    /// **The check on the copy is falsifiable** (the orchestrator's ruling on
+    /// the follow-up's concern). No stored document reaches it through the real
+    /// scrub, so this cell hands `house_copy_with` a DEFECTIVE one: the real
+    /// scrub, but writing a kept seat's keep as `Some(0)` where it writes
+    /// `Some(1)`. That is the defect the spec's review measured dropping a kept
+    /// table off the lobby (spec §0.4). Over a valid stored document it is
+    /// REFUSED, in the copy's words, carrying `check_shape`'s sentence for the
+    /// copy it made.
+    ///
+    /// The anti-vacuity partner: the same document passes the check on the
+    /// original, and under the real scrub it has a copy — the one
+    /// `house_copy_inner` answers. So the refusal is the copy check's, and the
+    /// defect is its cause.
+    #[test]
+    fn a_defective_scrub_is_refused_by_the_check_on_the_copy() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        create("defect", two_seats(SEED, json!({ "user": BLUE })));
+        post(RED, "defect", "keep", json!({ "seat": 0, "card": 2 }));
+        let stored: TableDoc = serde_json::from_str(&read_inner("table", "defect").unwrap().unwrap()).unwrap();
+        assert!(check_shape(&stored).is_ok() && stored.keeps[0] == Some(2), "premise: a valid document, a keep in");
+        let real = house_copy_with("defect", super::scrub);
+        assert!(matches!(&real, Ok(Some(_))), "premise: the real scrub makes a copy — {real:?}");
+        assert_eq!(house_copy_inner("defect"), real, "premise: `house_copy_inner` is the seam with the real scrub");
+
+        let defective = |doc: &mut TableDoc| {
+            super::scrub(doc);
+            for keep in doc.keeps.iter_mut().flatten() {
+                *keep = 0;
+            }
+        };
+        let mut made = stored.clone();
+        defective(&mut made);
+        let why = check_shape(&made).expect_err("premise: `check_shape` rejects the defective copy");
+        let refusal = format!("\"defect\"'s house copy is malformed, so the house would not list it: {why}");
+        assert_eq!(house_copy_with("defect", defective), Err(refusal));
     }
 
     /// **`house_frame` is the NAS's lobby frame, byte for byte** (spec §2.5): the
