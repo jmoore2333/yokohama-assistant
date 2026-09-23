@@ -1,13 +1,14 @@
+import type { Archive } from "./archive";
+import type { House } from "./house";
 import type { Table } from "./table";
 
 /**
  * The Worker's bindings and variables (spec §3.1, the plan's Global
  * Constraints), written by hand — `wrangler types` is not used, so this is the
- * one statement of what the shell reads from `env`. `ASSETS` and `TABLE` are
- * here because both configurations bind them, and `ARCHIVE` because
- * `shellConfig` asks whether it is bound — no configuration binds it yet, so
- * it is optional. The house's and the archive object's namespaces arrive with
- * their bindings.
+ * one statement of what the shell reads from `env`. `ASSETS` and the three
+ * object namespaces are here because both configurations bind them, and
+ * `ARCHIVE` because `shellConfig` asks whether it is bound — no configuration
+ * binds it yet, so it is optional.
  *
  * **Every variable is optional and every variable is a string.** A variable a
  * configuration does not set is absent, and `shellConfig` gives each absence
@@ -24,6 +25,11 @@ export interface Env {
   ASSETS: Fetcher;
   /** The table objects (spec §2.4), one per table, each named by its id. */
   TABLE: DurableObjectNamespace<Table>;
+  /** The house object (spec §2.5): ONE, named `house`. */
+  HOUSE: DurableObjectNamespace<House>;
+  /** The archive objects (spec §2.6), one per caller, each named
+   *  `archive:<address>`. Not `ARCHIVE`, which is the bucket's name. */
+  ARCHIVER: DurableObjectNamespace<Archive>;
   /** The bucket `yokohama-archive` (spec §3.1). `YOKOHAMA_WEB_ARCHIVE=r2` is
    *  refused without it. */
   ARCHIVE?: R2Bucket;

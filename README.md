@@ -294,8 +294,8 @@ is the record rather than a plan: §1 the static musl cross-compile on the works
 as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
 §3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
 store, no port published to the LAN), §3.5–§3.11 every deployment so far with its numbers, §5
-rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
-edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
+rollback (every earlier image tag is still on the NAS). Hosted multiplayer on Cloudflare Durable
+Objects is `worker/` (RUNBOOK §6, M6.5c); the Modal path and its edge proxy were retired unused (§4).
 
 What the code already does right:
 

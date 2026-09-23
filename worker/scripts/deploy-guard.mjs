@@ -1,5 +1,5 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
-// wrangler deploy`, so nothing ships unless all five hold. Every check that
+// wrangler deploy`, so nothing ships unless all six hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -26,9 +26,14 @@
 //    beyond those and `directory`. Battery rows 13 and 14 (plan review M5): an
 //    asset-layer fallback answers a missing file WITHOUT invoking the Worker,
 //    and the pool reads only `wrangler.test.jsonc`, so no pool cell can see
-//    production's block drift. Checks 3–5 need no build, and
-//    `deploy-guard.test.mjs` runs them over the committed files — the
-//    per-commit catcher; the live reading at each deploy is the second.
+//    production's block drift.
+// 6. The `durable_objects` and `migrations` blocks are present in both files
+//    and EQUAL, read as values (the orchestrator's ruling at Task 9's review):
+//    the pool reads only `wrangler.test.jsonc`, so a class, a binding or a
+//    migration there that production lacks would be tested green and never
+//    shipped. Checks 3–6 need no build, and `deploy-guard.test.mjs` runs them
+//    over the committed files — the per-commit catcher; the live reading at
+//    each deploy is the second.
 //
 // Both files are read with `jsonc-parser`, which knows a string from a
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
@@ -106,7 +111,47 @@ const ABSENT = {
   preview_urls: "wrangler leaves an absent one as the Worker already has it — public, if it was ever on",
 };
 
-/** Checks 3, 4 and 5: the ones that need no build. */
+/** `value` as JSON with every object's keys in order, so two blocks compare
+ *  by value whatever order their keys were written in. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** What check 6 compares, and what each block's absence leaves undeclared. */
+const OBJECT_BLOCKS = {
+  durable_objects: "binds the three object classes",
+  migrations: "migrates the three object classes",
+};
+
+/** Check 6, over the two parsed configurations. */
+function objectBlocks(production, test, failures) {
+  for (const [key, what] of Object.entries(OBJECT_BLOCKS)) {
+    const missing = [];
+    for (const [name, config] of [["wrangler.jsonc", production], ["wrangler.test.jsonc", test]]) {
+      if (config.value[key] === undefined) {
+        failures.push(`${name} has no ${key} block — spec §3.1 ${what}`);
+        missing.push(name);
+      }
+    }
+    if (missing.length > 0) continue;
+    const [p, t] = [canonical(production.value[key]), canonical(test.value[key])];
+    if (p !== t) {
+      failures.push(
+        `wrangler.test.jsonc's ${key} differs from wrangler.jsonc's — the pool would test what production ` +
+          `does not ship: ${t} against ${p}`,
+      );
+    }
+  }
+}
+
+/** Checks 3 to 6: the ones that need no build. */
 export function configFailures(root) {
   const failures = [];
   const production = readConfig(root, "wrangler.jsonc", failures);
@@ -125,10 +170,11 @@ export function configFailures(root) {
   }
   const test = readConfig(root, "wrangler.test.jsonc", failures);
   if (test) assetsBlock("wrangler.test.jsonc", test.value, failures);
+  if (production && test) objectBlocks(production, test, failures);
   return failures;
 }
 
-/** All five checks over the worker package at `root`: `[]` when every one
+/** All six checks over the worker package at `root`: `[]` when every one
  *  holds. */
 export function deployGuard(root) {
   const failures = [];
@@ -184,6 +230,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   console.log(
     "deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; " +
-      "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations",
+      "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; " +
+      "the same object bindings and migrations in both",
   );
 }

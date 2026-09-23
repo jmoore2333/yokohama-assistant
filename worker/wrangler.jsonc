@@ -2,9 +2,10 @@
 // the one `npm run deploy` ships once `scripts/deploy-guard.mjs` passes. The
 // pool reads `wrangler.test.jsonc` instead.
 //
-// It holds the Worker's facts, its static assets and the table object. The
-// house's and the archive object's bindings, the custom domain, the variables
-// and the bucket are added with the code that reads them.
+// It holds the Worker's facts, its custom domain, its static assets, the three
+// object classes and the variables. The bucket's binding is added with the
+// code that reads it (the plan's Task 13). `deploy/RUNBOOK.md` §6 is how it is
+// built, deployed and read.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yokohama-web",
@@ -12,6 +13,10 @@
   // Pinned (spec §3.1); on or after 2026-02-24, so `deleteAll()` deletes an
   // object's alarm too.
   "compatibility_date": "2026-09-15",
+  // The custom domain (spec §3.1): the deploy creates the hostname's DNS
+  // record, and the `yokohama` Access application, which lists this hostname
+  // among its destinations, stands in front of every request to it.
+  "routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }],
   // No `workers.dev` URL and no preview (Version) URLs: the Worker answers
   // only where its own routes put it. Both are set rather than left out,
   // because absent is not off, and the deploy guard refuses either one that is
@@ -36,9 +41,41 @@
     "not_found_handling": "none",
     "run_worker_first": ["/api/*", "/enter"]
   },
-  // The table object (spec §2.4), SQLite-backed, in ONE migration: the house
-  // and the archive object join this same tag, which is edited in place until
-  // the first deploy and frozen after it (the orchestrator's ruling I-30).
-  "durable_objects": { "bindings": [{ "name": "TABLE", "class_name": "Table" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table"] }]
+  // The three object classes (spec §2.4–§2.6), SQLite-backed, in ONE
+  // migration. The tag is FROZEN from the first deploy on: a class added later
+  // needs a tag of its own (the orchestrator's ruling I-30). The deploy guard
+  // holds the pool's two blocks equal to these.
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      // Not `ARCHIVE`: that is the bucket's binding (spec §3.1).
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The variables (spec §3.1), none of them a secret; RUNBOOK §6 says what
+  // each one's absence means. `wrangler deploy` REPLACES the Worker's
+  // variables with these, so this file is the whole list. Three are not here,
+  // and their absence is their meaning: `YOKOHAMA_WEB_TABLE_TTL_DAYS` (no table
+  // expires; the TTL arrives with expiry), `YOKOHAMA_WEB_COUNT_WAKES` (off),
+  // and `YOKOHAMA_WEB_ADMINS`, which is set with `wrangler secret put` (the
+  // plan's ruling P-1) — a deploy leaves a secret alone.
+  "vars": {
+    // The `yokohama` Access application: its team's domain and its audience.
+    "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
+    "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
+    // The `yokohama-worker` Service Auth credential's client id — its public
+    // half. The secret lives only in the repository root's gitignored
+    // `.dev.vars`, and no configuration names it.
+    "DEV_DOOR_CLIENT_ID": "62dc00d9ce1cb5d7c56849003a277bdc.access",
+    // On for this cycle (spec §3.1): the test harness's claimed callers.
+    "YOKOHAMA_DEV_DOOR": "on",
+    // Off until the bucket is bound (the plan's Task 13).
+    "YOKOHAMA_WEB_ARCHIVE": "off",
+    // The NAS's three chat variables, at the NAS's defaults.
+    "YOKOHAMA_WEB_LOBBY_CHAT": "on",
+    "YOKOHAMA_WEB_CHAT_KEEP": "500",
+    "YOKOHAMA_WEB_CHAT_TEXT": "500"
+  }
 }

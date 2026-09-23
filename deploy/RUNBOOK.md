@@ -6,6 +6,9 @@ Synology NAS behind the existing cloudflared tunnel. Where an earlier draft of
 this file guessed wrong, the guess is kept beside the correction — the wrong
 guesses are the useful part.
 
+**Two hosts since M6.5c.** The NAS (§0–§3, §5) serves `yokohama-nas.moore.nyc`; the
+Cloudflare Worker (§6) serves hosted multiplayer at `yokohama.moore.nyc`.
+
 ---
 
 ## 0. What is true before you start
@@ -1971,29 +1974,36 @@ m6.4.1, m6.5a, m6.5b, m6.5b.1, m6.5b2-rc1, m6.5b2, m6.5b2.1.
 
 ---
 
-## 4. Modal — the upgrade path, not yet deployed
+## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 
-`deploy/modal_app.py` runs the same image with a Volume for the store,
-`max_containers=1` (Modal's Volume rules say a file must have a single writer,
-and this store is one JSON file per game), and a commit loop — because on Modal
-a drained request is **not yet a durable one**.
+**This section described an upgrade path. It is now the record of why that path was deleted**, by
+umbrella R-6.5.13 (`docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`), at M6.5c's Task 11
+(2026-09-23).
 
-`deploy/worker/` is the edge proxy for that path, and the reason it exists is
-that a Modal endpoint is world-reachable by default: without
-`requires_proxy_auth=True` plus the Worker holding `Modal-Key`/`Modal-Secret`,
-an Access policy in front would protect nothing, since anyone with the
-`*.modal.run` URL could skip it.
+**What the two files were.** `deploy/modal_app.py` ran the NAS's image on Modal: a Volume for the
+store, `max_containers=1` (a Volume file wants a single writer, and this store is one JSON file per
+game), and a commit loop, because on Modal a drained request is not yet a durable one.
+`deploy/worker/` was the Cloudflare Worker in front of it. Access authenticated at that Worker, which
+forwarded to the `*.modal.run` endpoint holding a Modal proxy token — without the token the endpoint
+was world-reachable and Access would have guarded nothing — and the server ran
+`YOKOHAMA_WEB_IDENTITY=worker`, trusting the `X-Yokohama-User` the Worker set. **Neither was ever
+deployed**, so nothing had to be torn down.
 
-**That path runs `YOKOHAMA_WEB_IDENTITY=worker`, not `claimed`**, because the
-Worker is what authenticates: it reads the Access identity and sets
-`X-Yokohama-User`, stripping any the client sent. `modal_app.py` declares the
-variable on the image it builds; the NAS sets it on the container instead
-(§3), which is the same decision made at the level that owns it in each case.
+**Why they went — two reasons.**
 
-Neither is deployed. The NAS is serving the product today, and §3.3's
-measurement says it should go on doing so.
+- **The path is superseded.** The hosted design is the Durable Objects Worker in `worker/` (§6), and
+  two hosted designs on disk is one too many.
+- **Its strip rule had a defect.** `deploy/worker/src/index.ts:71`'s `CLIENT_MUST_NOT_SET` removed a
+  client's `x-yokohama-user`, and did NOT remove `x-yokohama-claimed-user`. Under the `claimed` door
+  that second header IS the caller, so a forwarded one would have impersonated any seat at any table
+  (umbrella R-6.5.11). The rule carried out of the deleted file is WIDENED: `worker/`'s `handle`
+  removes EVERY client header whose name starts `x-yokohama-` before it forwards anything, and its
+  battery-2 cell (`worker/test/worker.test.ts`) sends all four names the objects trust —
+  `x-yokohama-user`, `x-yokohama-claimed-user`, `x-yokohama-operator`, `x-yokohama-table-id` — beside
+  a real person's assertion, and reads what each object was handed.
 
----
+The files' last versions are in history: `git show 87d30a14:deploy/worker/src/index.ts` and
+`git show 87d30a14:deploy/modal_app.py`. §0–§3 and §5 stay, because the NAS stays (spec §3.4).
 
 ## 5. Rollback
 
@@ -2052,3 +2062,237 @@ measurement says it should go on doing so.
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.
+
+---
+
+## 6. The Worker — hosted multiplayer on Cloudflare (M6.5c)
+
+**`yokohama-web`, a Cloudflare Worker with three kinds of Durable Object, at
+`yokohama.moore.nyc`**, behind the same `yokohama` Access application as the NAS. The authority is
+`docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` (§2 the mechanism, §3 the deployment);
+the code is `worker/` — a TypeScript shell — over `crates/yokohama-worker`, the table layer compiled
+to WebAssembly. The NAS (§0–§3) is unchanged and keeps `yokohama-nas.moore.nyc`.
+
+What answers what:
+
+- **The static release** — `web/dist` and the card art — is served by Cloudflare's asset layer and
+  invokes the Worker ZERO times. The Worker sees only `/api/*`, `/enter`, and a path that has no file,
+  which it answers 404 with an empty body (spec §2.3).
+- **The Worker** is stateless. It verifies the Access assertion, removes every client header named
+  `x-yokohama-…`, and forwards to one of three SQLite-backed classes: `Table`, one per table;
+  `House`, ONE, for the lobby and the house chat; and `Archive`, one per caller, for a browser's saves.
+
+### 6.1 Build
+
+Prerequisites: the pinned toolchain with its `wasm32-unknown-unknown` target, `wasm-bindgen-cli
+0.2.128` and binaryen's `wasm-opt` (the same three as §1's client build), and `npm ci` once in both
+`web/` and `worker/`.
+
+```sh
+cd web && npm run build          # the RELEASE browser module, and web/dist
+cd ../worker && npm run build    # build:module → build:assets → smoke:release
+```
+
+`worker/`'s `npm run build` is three steps, each refusing by name:
+
+1. **`build:module`** — `crates/yokohama-worker` on `--profile release-wasm`, wasm-bindgen, `wasm-opt`,
+   and the factory transform that gives every object its own instance (spec §2.2). A build whose
+   optimizer changed nothing leaves `gen/.unoptimized`, which the deploy guard refuses.
+2. **`build:assets`** — `worker/assets/` from `web/dist` and `crates/yokohama-web/assets/art/`,
+   verified entry by entry against the release's own precache list. A debug browser module is
+   refused.
+3. **`smoke:release`** — the release module instantiated once, in Node: `init` with the archive off,
+   then `GET /api/health` as `smoke@x.test`. It refuses unless the answer is 200, and refuses a debug
+   module. Nothing else runs the release module before a deploy.
+
+**The order matters twice.** `web/`'s `npm run e2e` leaves a DEBUG browser module in `web/dist`, so
+`web/`'s `npm run build` comes first, every time. And `worker/`'s own tests run the DEBUG module:
+after a release build, `npm run build:module:debug` comes before `npm test` in `worker/`.
+
+### 6.2 Deploy
+
+```sh
+cd worker && npx wrangler whoami   # the owner's login, account BDVC
+npm run deploy                     # node scripts/deploy-guard.mjs && wrangler deploy
+```
+
+**The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; an
+assets tree that is not the release its `sw.js` lists, or that holds a debug browser module;
+`workers_dev` or `preview_urls` not `false`; the test clock named anywhere in `wrangler.jsonc`; an
+`assets` block that is not spec §2.3's; and the two configurations' `durable_objects` or
+`migrations` blocks differing. `npx wrangler deploy --dry-run` bundles and validates without
+uploading.
+
+- **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
+  probes once and reconnects, an open picker is re-fed, and no acknowledged move is lost — but it is
+  still a reconnect for everyone at every table, so deploy between games.
+- **The migration `v1` is FROZEN from the first deploy on** (the orchestrator's ruling I-30): a
+  class added later takes a new tag. Cloudflare's own docs now prefer a declarative `exports` field
+  for NEW Workers, and keep the `migrations` array this Worker uses fully supported; the two may not
+  be mixed.
+
+### 6.3 The variables — every one, and what its absence means
+
+`wrangler deploy` REPLACES the Worker's variables with `wrangler.jsonc`'s `vars`, so that file is
+the whole list; it leaves secrets alone.
+
+| Variable | At the fourteenth deployment | Absent means |
+|---|---|---|
+| `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
+| `ACCESS_AUD` | the `yokohama` application's audience | the same |
+| `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
+| `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
+| `YOKOHAMA_WEB_ARCHIVE` | `off` | off (`r2` needs the bucket bound as `ARCHIVE`) |
+| `YOKOHAMA_WEB_TABLE_TTL_DAYS` | unset | no table ever expires |
+| `YOKOHAMA_WEB_ADMINS` | unset; a SECRET when set (`wrangler secret put`, the plan's ruling P-1) | the operator routes are the layer's 404 |
+| `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
+| `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
+| `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
+| `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
+| `YOKOHAMA_WEB_TEST_CLOCK` | **never set in production** — `wrangler.test.jsonc` only, and the deploy guard refuses `wrangler.jsonc` if it names it | the wall clock |
+
+- **A bad value answers 500 naming its variable** on every `/api/*` (spec §2.6), the Worker's form
+  of the NAS refusing to start: a switch other than `on` or `off`, an archive other than `r2` or
+  `off`, `r2` with no bucket bound, a TTL that is not a whole number of days, an operator entry
+  that is not an address, or any value written without quotes. The static release is unaffected.
+- **An address outside visible ASCII is no caller** (Task 2's review, note E1). The layer's own
+  `resolve` reads such a header value as absent — the NAS does the same — so a person whose Access
+  `email` holds any other character meets the layer's 401, and the Worker forwards no identity
+  header for them at all.
+- **To deploy with no archive** (R-6.5c.14): `"YOKOHAMA_WEB_ARCHIVE": "off"`, as the fourteenth
+  deployment does. **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as
+  the fourteenth deployment does.
+
+### 6.4 The credential
+
+**`yokohama-worker`** is an Access Service Auth credential, admitted by the `yokohama` application's
+policy "yokohama ST bypass" (`non_identity`, precedence 3). It was created 2026-09-23T01:01Z and
+expires in 2031 (spec §0.5).
+
+- **Where it lives.** The repository root's `.dev.vars`, gitignored since `952a68c`, holds two
+  lines, `CF-Access-Client-Id=…` and `CF-Access-Client-Secret=…`, named as the headers Access
+  expects. The client id is public, and `wrangler.jsonc` carries it as `DEV_DOOR_CLIENT_ID`. The
+  secret is in no other file, and is never printed, committed or pasted.
+- **What it does.** A request presenting both headers gets an assertion whose `common_name` is the
+  client id and which names no `email`, and Service Auth outranks a WARP identity (spec §0.3 row 1).
+  With `YOKOHAMA_DEV_DOOR` on, such a request names its caller in `X-Yokohama-Claimed-User`; without
+  that header it is no one. Access also sets a `CF_Authorization` cookie, which carries the
+  credential on later requests from the same browser.
+- **The header-file recipe** — the secret never on argv, never on screen. From the repository root:
+
+  ```sh
+  H="$SCRATCH/access.headers"    # SCRATCH: a directory of your own, e.g. the session scratchpad
+  node -e '
+  const fs = require("fs");
+  const v = Object.fromEntries(fs.readFileSync(".dev.vars", "utf8").split(/\r?\n/)
+    .filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1).trim()]));
+  const names = ["CF-Access-Client-Id", "CF-Access-Client-Secret"];
+  if (!names.every((n) => v[n])) { console.error(".dev.vars lacks one of " + names.join(", ")); process.exit(1); }
+  fs.writeFileSync(process.argv[1], names.map((n) => n + ": " + v[n]).join("\n") + "\n", { mode: 0o600 });
+  ' "$H" && chmod 600 "$H"
+  curl -s -H @"$H" https://yokohama.moore.nyc/api/health
+  rm -f "$H"
+  ```
+
+- **In a browser.** `node scripts/read-deploy.mjs install|console <base-url> --headers "$H"` sends
+  the two headers to the Worker's own origin ONLY. Sent to every origin — Playwright's context
+  `extraHTTPHeaders` — they would reach third parties such as the Web Analytics beacon, and would
+  add a CORS preflight that is itself a console error.
+- **To rotate it.** Zero Trust → Access controls → Service credentials → Service Tokens →
+  `yokohama-worker` → **Rotate secret**. The client id stays the same, so `DEV_DOOR_CLIENT_ID` does
+  not change; Access issues a new secret, and keeps the old one valid for the grace period you choose
+  (one hour to 30 days, or revoke at once). Write the new secret into `.dev.vars` before the grace
+  period ends. **Refresh** extends the expiry by a year, and a token can be turned OFF without being
+  deleted. A NEW token has a new client id: update `DEV_DOOR_CLIENT_ID`, deploy, and add the token to
+  "yokohama ST bypass". Secrets issued since 2026-08-26 have the shape `cfast_` and 48 characters,
+  which secret scanners recognize.
+
+### 6.5 Reading it
+
+- **Health**, over WARP as the owner: `curl -s https://yokohama.moore.nyc/api/health`. It reads
+  `identity: "cf-access"`, `signal: "ws"`, and the archive switch.
+- **The tail**: `npx wrangler tail yokohama-web --format json > "$SCRATCH/tail.json"`, left running
+  beside the readings. Every event is one invocation, pretty-printed. The Worker's own invocations
+  have `executionModel: "stateless"`; an object's have `"durableObject"` and its class as
+  `entrypoint`. The request's headers arrive `REDACTED`, the assertion among them. Count and cost
+  them with:
+
+  ```sh
+  jq -c '{model: .executionModel, entry: .entrypoint, url: .event.request.url, cpu: .cpuTime, wall: .wallTime, outcome}' \
+    "$SCRATCH/tail.json" | sort | uniq -c
+  ```
+
+- **The shell's own log lines** — `trap`, `load-trap`, `poison`, `identity-failed`, `init-refused`,
+  `frame-failed` and the rest (spec §2.8) — are the events' `logs`, one JSON object per line, and
+  Workers Logs (observability is on) keeps them. The layer's own `eprintln!` lines are mute on this
+  host.
+- **`node scripts/read-deploy.mjs`** reads a live deployment: `assets` checks every precache entry
+  of the DEPLOYED `/sw.js` (200, the type's essence, the SHA-256), `/index.html` answering 200, and a
+  missing file answering 404 with an empty body; `install` loads the site in headless Chromium and
+  reads the service worker's install; `console` records one fresh load and one controlled load, with
+  every console message and every failed or cross-origin request.
+
+### 6.6 Rollback
+
+- **At the fourteenth deployment there is no earlier version.** The fallback is the NAS, which is
+  untouched. To take the Worker off its hostname, remove the custom domain in the dashboard
+  (Workers & Pages → `yokohama-web` → Domains): the objects and their storage stay. **Never
+  `wrangler delete`**, which deletes the Worker "and all associated Cloudflare developer platform
+  resources" (the command's own reference): the objects ARE the store.
+- **Later**, `npx wrangler rollback <version-id>` (the ids from `npx wrangler deployments list`)
+  goes back to an earlier version, but never across a Durable Object migration: a version from
+  before a class was added cannot be restored (Cloudflare, *Rollbacks — Bindings*).
+
+### 6.7 Still to come in this cycle
+
+Each lands with the task that builds it, and records its own readings here:
+
+- the bucket `yokohama-archive` bound as `ARCHIVE`, the switch at `r2`, and the conditional put read
+  live (Task 13);
+- expiry at `YOKOHAMA_WEB_TABLE_TTL_DAYS` `90`, the marker, the operator surface with its curl
+  playbook, and `YOKOHAMA_WEB_ADMINS` as a secret (Task 14);
+- the live Playwright tier and the live corpus replay, with the replay's ids forced before and after
+  each run (Tasks 14–15).
+
+### 6.8 M6.5c's skeleton is live — the fourteenth deployment, 2026-09-2_ (a record, not a plan)
+
+_Filled in after the deploy with the readings as taken. A reading that differs from the spike's
+(spec §0.3) is a FINDING: stop, and take it to the owner before Task 12._
+
+The first deploy of the Worker (spec §3.2): the Worker, the three classes in migration `v1`, the
+static assets, identity and the body bound — and re-reads of the spike's measurements with the real
+code, before anything else lands on it.
+
+- **Before the deploy — the NAS's body bound, read live (2026-09-23, over WARP):** a
+  2,097,153-byte `POST /api/games` answered **400**
+  `{"error":"the body could not be read: length limit exceeded"}`, and exactly 2,097,152 bytes
+  passed the bound (a 401, from identity). The Worker's `BODY_LIMIT_SENTENCE` is that text.
+- **Build:** _(the commit; `web/`'s `npm run build` — the module's size and the precache
+  generator's lines; `worker/`'s `npm run build` — the module's size, the assembly's entries, and
+  the smoke's line)_
+- **The deploy:** _(`npm run deploy`'s output: the guard's line, Total Upload, **Worker Startup
+  Time**, the bindings, the custom domain, the version id)_
+- **Reading 1 — protection, from an unenrolled vantage** (a throwaway alpine container on the NAS):
+  _(`/`, `/sw.js`, `/api/health`, `/enter`: each 302 to the Access login; an upgrade with no
+  credential: 403; `yokohama-web.bdvc.workers.dev`: 404)_
+- **Reading 2 — identity on an upgrade** (`curl --http1.1 -i` against `/api/stream`): _(as the
+  owner over WARP: 101; with the credential and `X-Yokohama-Claimed-User: probe@deploy.test`: 101;
+  with the credential alone: the layer's 401)_
+- **Reading 3 — the static assets:** _(`read-deploy.mjs assets`: entries byte-exact, `/index.html`
+  200, `/assets/x.js` 404 and empty; the tail's invocations: zero for the real files, one for the
+  missing file; `read-deploy.mjs install`: active, every entry cached, `/index.html` clean, the door
+  ready)_
+- **Reading 4 — cold start and CPU:** _(the Worker Startup Time; the Worker's `cpuTime` with JWT
+  verification, off the tail — R-6.5c.5 left it unmeasured)_
+- **Reading 5 — health:** _(`identity: "cf-access"`, `signal: "ws"`, `archive: "off"`)_
+- **Reading 6 — the Web Analytics beacon's console error, diagnosed:** _(the error's exact text;
+  the failing request's URL, method, type, status, response headers and initiator; whether the
+  service worker handled it; the cause — ours to fix by configuration, or a host fact for Task 15)_
+
+#### What this deployment does NOT claim
+
+_(filled in with the record)_
+
+#### Rollback
+
+§6.6: no earlier version exists; the NAS is the fallback, untouched.

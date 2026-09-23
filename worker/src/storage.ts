@@ -1,13 +1,15 @@
 /**
  * The table object's SQLite (spec §2.4): two tables, and the only SQL the shell
- * runs on them.
+ * runs on them. The house object keeps its chat in the same `docs` table
+ * (spec §2.5's first cut).
  *
  * - `docs(kind, json, written_at)` holds `record`, `table` and `chat` — each the
  *   exact text the module's `read` answered, never parsed, so a seed above 2^53
- *   keeps its digits — and the host's own `picker` row. `written_at` is the
- *   platform's `Date.now()` at the write (the orchestrator's ruling I-43), so a
- *   table's last activity is the newest `written_at` of the layer's three and
- *   costs no row of its own.
+ *   keeps its digits — and the host's own `picker` row. In the house object it
+ *   holds one row, `house`: the house chat, as the module's `read` answered it.
+ *   `written_at` is the platform's `Date.now()` at the write (the
+ *   orchestrator's ruling I-43), so a table's last activity is the newest
+ *   `written_at` of the layer's three and costs no row of its own.
  * - `meta(k, v)` holds the object's own facts, under the keys `MetaKey` names.
  *   It holds no `id`: the object's name is `ctx.id.name`.
  *
@@ -20,7 +22,7 @@
  * a batch's `transactionSync`, after `ensureTables`.
  */
 
-export type DocKind = "record" | "table" | "chat" | "picker";
+export type DocKind = "record" | "table" | "chat" | "picker" | "house";
 
 /** Every key `meta` holds: spec §2.4's, and `poison`, the kind whose load
  *  trapped (the plan's Task 9). */

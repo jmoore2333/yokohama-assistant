@@ -25,11 +25,19 @@
     "not_found_handling": "none",
     "run_worker_first": ["/api/*", "/enter"]
   },
-  // The table object (spec §2.4), bound as `wrangler.jsonc` binds it, in the
-  // same ONE migration: the house and the archive object join this tag, which
-  // is edited in place until the first deploy (the orchestrator's ruling I-30).
-  "durable_objects": { "bindings": [{ "name": "TABLE", "class_name": "Table" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table"] }],
+  // The three object classes, bound and migrated EXACTLY as `wrangler.jsonc`
+  // has them — the deploy guard refuses the two files when either block
+  // differs, so the pool never tests a class, a binding or a migration
+  // production does not ship (the orchestrator's ruling I-30, and its ruling
+  // at Task 9's review).
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
   "vars": {
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud",

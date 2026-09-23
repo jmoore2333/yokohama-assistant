@@ -25,6 +25,16 @@ const ASSETS_BLOCK = (directory) => `"assets": {
     "run_worker_first": ["/api/*", "/enter"]
   }`;
 
+/** The three object classes, bound and migrated as spec §3.1 has them. */
+const OBJECTS = `"durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }]`;
+
 const PRODUCTION = `// production
 {
   "name": "yokohama-web",
@@ -32,12 +42,14 @@ const PRODUCTION = `// production
   "workers_dev": false,
   "preview_urls": false,
   ${ASSETS_BLOCK("./assets")},
+  ${OBJECTS},
 }
 `;
 
 const TEST_CONFIG = `{
   "name": "yokohama-web-test",
   ${ASSETS_BLOCK("./.test-assets")},
+  ${OBJECTS},
   "vars": { "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
 }
 `;
@@ -172,6 +184,37 @@ describe("the deploy guard", () => {
     const extra = PRODUCTION.replace('"binding": "ASSETS",', '"binding": "ASSETS",\n    "experimental_serve_directly": true,');
     expect(deployGuard(worker({ "wrangler.jsonc": extra }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc's assets block has the keys .*experimental_serve_directly/),
+    ]);
+  });
+
+  // Check 6 (the orchestrator's ruling, task 9's review): the pool reads only
+  // wrangler.test.jsonc, so a class or a binding production lacks — or a
+  // migration production does not ship — would be tested green and never
+  // deployed.
+  it("refuses a pool whose object bindings differ from production's", () => {
+    const drift = TEST_CONFIG.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
+    expect(deployGuard(worker({ "wrangler.test.jsonc": drift }))).toEqual([
+      expect.stringMatching(/^wrangler\.test\.jsonc's durable_objects differs from wrangler\.jsonc's/),
+    ]);
+  });
+  it("refuses a migration the pool runs and production does not ship", () => {
+    const drift = PRODUCTION.replace('["Table", "House", "Archive"]', '["Table", "House"]');
+    expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([
+      expect.stringMatching(/^wrangler\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
+    ]);
+  });
+  it("reads the two blocks by value, whatever their keys' order or spacing", () => {
+    const reordered = TEST_CONFIG.replace(
+      '"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }]',
+      '"migrations": [{"new_sqlite_classes": ["Table", "House", "Archive"], "tag": "v1"}]',
+    );
+    expect(deployGuard(worker({ "wrangler.test.jsonc": reordered }))).toEqual([]);
+  });
+  it("refuses a configuration with no object bindings or no migrations", () => {
+    const bare = PRODUCTION.replace(`${OBJECTS},\n`, "");
+    expect(deployGuard(worker({ "wrangler.jsonc": bare }))).toEqual([
+      "wrangler.jsonc has no durable_objects block — spec §3.1 binds the three object classes",
+      "wrangler.jsonc has no migrations block — spec §3.1 migrates the three object classes",
     ]);
   });
 

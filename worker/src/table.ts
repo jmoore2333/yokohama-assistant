@@ -6,6 +6,7 @@ import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
 import { Instance, readReply, type Bump, type Replied } from "./module";
+import { errorBody, log, respond } from "./respond";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
@@ -21,8 +22,9 @@ const TRAP = "the table's engine stopped — try again";
 const CLEARED = "[]";
 
 /** The 426 a `GET …/stream` that is not an upgrade answers (spec §2.3;
- *  host-written, §4). */
-const NOT_AN_UPGRADE = "this host streams over WebSocket";
+ *  host-written, §4) — and the house's `/api/stream`'s too (the
+ *  orchestrator's ruling I-48). */
+export const NOT_AN_UPGRADE = "this host streams over WebSocket";
 
 /** The close reason of a deleted table's sockets: short and fixed, because
  *  the `end` frame before the close carries the meaning. */
@@ -556,7 +558,7 @@ function transportOf(path: string): Transport | undefined {
 
 /** Whether a request asks to become a WebSocket: its `Upgrade` token,
  *  compared case-insensitively, as RFC 6455 §4.2.1 reads it. */
-function isUpgrade(headers: Headers): boolean {
+export function isUpgrade(headers: Headers): boolean {
   return headers.get("Upgrade")?.toLowerCase() === "websocket";
 }
 
@@ -583,22 +585,4 @@ function readLayerDocs(mod: Exports, id: string): Map<LayerDoc, string | undefin
 function clearLoadTraps(sql: SqlStorage): void {
   deleteMeta(sql, "load_traps");
   deleteMeta(sql, "poison");
-}
-
-/** A reply as the plan's Task 9 writes it (step 7): a body is JSON, and an
- *  empty one is no body. */
-function respond(status: number, body: string): Response {
-  return new Response(body || null, { status, headers: body ? { "content-type": "application/json" } : {} });
-}
-
-/** The layer's error shape, for the refusals this object answers itself:
- *  the sentences spec §4 lists as host-written, and a configuration's. */
-function errorBody(sentence: string): string {
-  return JSON.stringify({ error: sentence });
-}
-
-/** One line of the shell's log (spec §2.8): what the layer cannot log on this
- *  host. */
-function log(event: string, fields: Record<string, unknown> = {}): void {
-  console.log(JSON.stringify({ event, ...fields }));
 }
