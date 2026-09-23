@@ -2265,6 +2265,15 @@ expires in 2031 (spec §0.5).
   `frame-failed` and the rest (spec §2.8) — are the events' `logs`, one JSON object per line, and
   Workers Logs (observability is on) keeps them. The layer's own `eprintln!` lines are mute on this
   host.
+- **The Origin check**, over WARP: an upgrade from the site's own origin answers 101, one from
+  another answers 403 with the host's sentence (reading 2d).
+
+  ```sh
+  WS=(-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
+  curl --http1.1 -s -i -N --max-time 5 "${WS[@]}" -H 'Origin: https://yokohama.moore.nyc' https://yokohama.moore.nyc/api/stream | head -1
+  curl --http1.1 -s -i --max-time 5 "${WS[@]}" -H 'Origin: https://evil.example' https://yokohama.moore.nyc/api/stream | sed -n '1p;$p'
+  ```
+
 - **`node scripts/read-deploy.mjs`** reads a live deployment: `assets` checks every precache entry
   of the DEPLOYED `/sw.js` (200, the type's essence, the SHA-256), `/index.html` answering 200, and a
   missing file answering 404 with an empty body; `install` loads the site in headless Chromium and
@@ -2332,13 +2341,21 @@ the spike's one unexplained error (reading 6, the beacon) is explained; neither 
     so the challenge page is the zone's behaviour and not this Worker's. Ruled a difference in
     form, recorded, not a finding that stops the cycle.
 - **Reading 2 — identity on an upgrade** (`curl --http1.1` against `/api/stream`):
-  - the owner over WARP, no credential: **101**. It is the first run of the production key source,
-    `keySource` over workerd's `fetch`, which no cell runs: it verified a real assertion;
-  - the credential with `X-Yokohama-Claimed-User: probe@deploy.test`: **101**;
-  - the credential alone: **401** `{"error":"no identity reached the server: this deployment expects
-    X-Yokohama-User from the edge Worker"}` — the layer's own `worker`-mode sentence.
+  - **2a**, the owner over WARP, no credential: **101**. It is the first run of the production key
+    source, `keySource` over workerd's `fetch`, which no cell runs: it verified a real assertion;
+  - **2b**, the credential with `X-Yokohama-Claimed-User: probe@deploy.test`: **101**;
+  - **2c**, the credential alone: **401** `{"error":"no identity reached the server: this deployment
+    expects X-Yokohama-User from the edge Worker"}` — the layer's own `worker`-mode sentence.
 
   All three as the spike (row 1).
+- **Reading 2d — the Origin check, live**, over WARP, taken after the re-review of `756dc759`
+  suggested it (§6.5 has the two commands):
+  - an upgrade with `Origin: https://yokohama.moore.nyc`: **101** — a production request URL's
+    origin is the site's own, so a page's socket is not refused;
+  - an upgrade with `Origin: https://evil.example`: **403** `{"error":"this socket is for the site's
+    own pages"}`, unupgraded;
+  - a plain `GET /api/health` with that foreign `Origin`: **200** — a request that is not an
+    upgrade is never checked.
 - **Reading 3 — the static assets:**
   - `read-deploy.mjs assets`, over WARP: `/sw.js` 200, `cache-control: no-store`, **153** precache
     entries; **152 byte-exact** and **1 EDGE** — `/index.html`, into which the edge injected its
@@ -2388,10 +2405,6 @@ the spike's one unexplained error (reading 6, the beacon) is explained; neither 
 
 #### What this deployment does NOT claim
 
-- **The Origin check was not read live.** No reading sent `Origin` on an upgrade. Two curl lines over
-  WARP read it: `-H 'Origin: https://yokohama.moore.nyc'` should answer 101 and
-  `-H 'Origin: https://evil.test'` 403. They confirm a production request URL's origin is the
-  site's own; the first browser socket, in Task 15's live tier, is the other proof.
 - **The raw-address rule (§6.3; Task 2's note E1 and Task 11's I1) was not read live**: no Access
   identity with a non-ASCII address exists to try it with. The pool's cells are its evidence.
 - **No game was played and no table was created** live. The lobby lists nothing until Task 12's
