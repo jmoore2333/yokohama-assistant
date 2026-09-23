@@ -16,10 +16,13 @@
 //!
 //! **A plan is its four parts** — both keys and the SHA-256 of both bodies —
 //! and its `key` is a SHA-256 over them, so a receipt answers only the put it
-//! was made for. The layer stamps `archived_at` from its clock inside the table
-//! body it puts, so a put at another reading is another plan: the shell pins
-//! the clock to a plan's reading for every call that drives it (ruling P-2),
-//! and records that reading beside the plan, which has no field for it.
+//! was made for. At the layer's two server sites — game over and the abandon —
+//! it stamps `archived_at` from its clock inside the table body it puts, so a
+//! put there at another reading is another plan: the shell pins the clock to a
+//! plan's reading for every call that drives it (ruling P-2), and records that
+//! reading beside the plan, which has no field for it. A browser's save puts
+//! the table it was sent, which the layer does not stamp, so its plan does not
+//! move with the reading.
 //!
 //! **The `test/` root** (spec §2.6, §5): a plan whose address ends in `.test` —
 //! the reserved domain every test identity uses — is keyed under `test/`
@@ -34,7 +37,6 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use yokohama_web::archive::{paths, Archive, PutError, PutOutcome, Why};
 use yokohama_web::games::Games;
 use yokohama_web::store::Doc;
@@ -42,7 +44,7 @@ use yokohama_web::table::TableDoc;
 use yokohama_web::ApiError;
 
 use crate::config::ARCHIVE_VAR;
-use crate::{dispatch_inner, error_body, from_the_layer, read_inner, ReplyData};
+use crate::{dispatch_inner, error_body, from_the_layer, read_inner, sha256_hex, ReplyData};
 
 /// The root a test identity's plan is keyed under (spec §2.6).
 const TEST_ROOT: &str = "test/";
@@ -137,7 +139,8 @@ impl ReceiptArchive {
     ///
     /// A plan with no address to read is REFUSED rather than keyed at the
     /// bucket's top, where a test identity's save would join the owner's
-    /// training data.
+    /// training data. So is a plan under any other prefix: the layer passes no
+    /// third, and a plan this archive cannot root is keyed nowhere.
     fn root(&self, prefix: &str, table_json: &str) -> Result<&'static str, PutError> {
         let test = match prefix {
             "" => creator_of(table_json)
@@ -202,10 +205,6 @@ impl Archive for ReceiptArchive {
 /// and a caller segment, and a digest is hex — so the four cannot run together.
 fn plan_key(record_key: &str, table_key: &str, record: &str, table: &str) -> String {
     sha256_hex(&format!("{record_key}|{table_key}|{}|{}", sha256_hex(record), sha256_hex(table)))
-}
-
-fn sha256_hex(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 /// A table document's `created_by`, read from its JSON object — `None` for
@@ -359,6 +358,19 @@ fn stamped(games: &Games, id: &str) -> bool {
 /// `Games::handle`'s refusal, which reads the table through the same
 /// `read_table` as `delete` (a 404 for no table, the layer's 500 for a document
 /// that does not read).
+///
+/// **One arm answers otherwise.** Where a game is still RESIDENT under `id`
+/// while its table is gone or names no creator, `handle` answers `Ok`, and
+/// this answers a host-written 500: `"{id:?} has a game in play but no table
+/// document that names its creator"`, not the 404 the layer's `delete` would
+/// give. No public layer call answers the table read's own refusal without a
+/// caller or a rebuild, and restating the layer's sentence here would be a copy
+/// that drifts
+/// (the orchestrator's ruling on the review's I1: the sentence joins spec §4's
+/// host-written list). The shell cannot reach that state: `load` only creates,
+/// so it never replaces a table, and only the house's `put_copy` and
+/// `remove_copy` write `Doc::Table` under a live id — calls the shell makes on
+/// the house's own instance, where no game is played.
 pub fn expire_inner(id: &str) -> ReplyData {
     let creator = read_inner("table", id).ok().flatten().as_deref().and_then(creator_of);
     match creator {
@@ -387,13 +399,15 @@ mod tests {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use yokohama_core::{replay_from, state_at, GameRecord, PlayerId, Rules};
-    use yokohama_web::archive::{caller_segment, strip_for_archive};
+    use yokohama_web::archive::{caller_segment, strip_for_archive, Archive, PutError, Why};
     use yokohama_web::identity::User;
     use yokohama_web::table::TableDoc;
+    use yokohama_web::ApiError;
 
+    use super::ReceiptArchive;
     use crate::tests::{call, config, serial, tagged};
     use crate::{
-        create_inner, events_inner, expire_inner, init_inner, load_inner, read_inner, receipt_inner,
+        create_inner, error_body, events_inner, expire_inner, init_inner, load_inner, read_inner, receipt_inner,
         restore_picker_inner, set_clock, stamp_archive_inner, ReplyData,
     };
 
@@ -862,6 +876,19 @@ mod tests {
         // No game at all: the layer's own refusal, in its error shape.
         let s = stamp_archive_inner("nobody");
         assert_eq!((s.status, s.body.as_str()), (404, r#"{"error":"no game named \"nobody\""}"#));
+
+        // A table with no game yet — open, or dealing — answers `handle`'s
+        // `Err(Open | Dealing)` in the layer's error shape, `status` and all:
+        // the very refusal the layer's own session route answers there.
+        for (id, stage, refusal) in
+            [("opening", Stage::Open, ApiError::open()), ("dealt", Stage::Dealing, ApiError::dealing())]
+        {
+            table(id, RED, BLUE, stage);
+            let layer = call(RED, "GET", &format!("/api/games/{id}"), None);
+            assert_eq!((layer.status, &layer.body), (409, &error_body(&refusal)), "premise: the layer's own refusal");
+            let s = stamp_archive_inner(id);
+            assert_eq!((s.status, s.body, s.archive), (layer.status, layer.body, None), "{id}");
+        }
     }
 
     /// **Every reply carries the plan its OWN call deferred** (plan review M4):
@@ -955,7 +982,32 @@ mod tests {
         load_inner("table", OWED, &table).unwrap();
         load_inner("record", OWED, &partial_of(&read(web_fixtures().join("browser-played-2p.json")), 587)).unwrap();
         let s = stamp_archive_inner(OWED);
-        assert_eq!((s.status, s.body.as_str(), tagged(&s).as_str()), (200, r#"{"stamped":false,"over":false}"#, "[]"));
+        assert_eq!(
+            (s.status, s.body.as_str(), tagged(&s).as_str(), s.archive.as_deref()),
+            (200, r#"{"stamped":false,"over":false}"#, "[]", None),
+        );
+    }
+
+    /// `root`'s two refusals that no request reaches (the review's M2): a
+    /// server game's table that names no creator, and a prefix the layer never
+    /// passes. Each is a `Failed`, and defers NOTHING: no plan is keyed at the
+    /// bucket's top, where a test identity's save would join the owner's
+    /// training data. Driven on `put` directly, because the layer hands `put`
+    /// only a stripped table and one of its two prefixes. The archive HAS a
+    /// test caller, so neither refusal is the absent caller's, and a `root`
+    /// that fell back to it would key the plan under `test/` instead.
+    #[test]
+    fn a_plan_the_archive_cannot_root_is_refused_and_deferred_nowhere() {
+        let archive = ReceiptArchive::new(Some(RED.to_string()));
+        for (prefix, table, sentence) in [
+            ("", "{}", "the table document names no creator"),
+            ("", r#"{"created_by":7}"#, "the table document names no creator"),
+            ("operator/", r#"{"created_by":"red@t.test"}"#, r#"the archive keeps no root for the prefix "operator/""#),
+        ] {
+            let out = archive.put(prefix, Why::Over, "t", "{}", table);
+            assert!(matches!(&out, Err(PutError::Failed(m)) if m == sentence), "{prefix:?} over {table}: {out:?}");
+            assert!(archive.pending.lock().unwrap().is_none(), "{prefix:?} over {table}: nothing deferred");
+        }
     }
 
     /// The table [`expire_answers_exactly_as_the_creators_delete_at_every_status`]

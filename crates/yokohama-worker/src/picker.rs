@@ -43,7 +43,6 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use yokohama_cli::repl::SubPrompt;
 use yokohama_web::api::{self, ApiRequest, ApiResponse};
 use yokohama_web::games::{GameError, Games};
@@ -51,7 +50,7 @@ use yokohama_web::identity::User;
 use yokohama_web::store::Doc;
 use yokohama_web::ApiError;
 
-use crate::{error_body, from_the_layer, ReplyData};
+use crate::{error_body, from_the_layer, sha256_hex, ReplyData};
 
 /// The most lines a list holds: the line after them CLEARS it (spec §2.4).
 const MAX_LINES: usize = 64;
@@ -156,7 +155,7 @@ fn after_input(
             // No entry is a closed picker, so this line opened one, and begins
             // a list.
             (None, Some(line), Some(record)) if !changed => {
-                PickerList { record: digest(record), lines: vec![line] }
+                PickerList { record: sha256_hex(record), lines: vec![line] }
             }
             // Open, but a list could not hold every line it has taken.
             (prior, ..) => return dropped(pickers, id, prior),
@@ -233,7 +232,7 @@ fn restore(games: &Games, id: &str, row: &str) -> Option<String> {
     let record = record_of(games, id);
     let kept = list.filter(|list| {
         (1..=MAX_LINES).contains(&list.lines.len())
-            && record.as_deref().is_some_and(|r| digest(r) == list.record)
+            && record.as_deref().is_some_and(|r| sha256_hex(r) == list.record)
             && list.lines.iter().all(|line| refeed(games, id, line, record.as_deref()))
     });
     match kept {
@@ -312,11 +311,6 @@ fn game_of(path: &str) -> Option<(&str, &str)> {
 /// read — and no list can have been built at either.
 fn record_of(games: &Games, id: &str) -> Option<String> {
     games.read_document(Doc::Record, id).ok().flatten()
-}
-
-/// A [`PickerList::record`]: the SHA-256 of the record's bytes, in lowercase hex.
-fn digest(record: &str) -> String {
-    format!("{:x}", Sha256::digest(record.as_bytes()))
 }
 
 fn with_pickers<T>(f: impl FnOnce(&mut HashMap<String, Picker>) -> T) -> T {

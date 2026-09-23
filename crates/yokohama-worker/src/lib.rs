@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
@@ -252,6 +253,13 @@ pub(crate) fn error_body(e: &ApiError) -> String {
         None => serde_json::json!({ "error": e.message }),
     }
     .to_string()
+}
+
+/// SHA-256 of `text`'s bytes, in lowercase hex: the one digest this host takes
+/// — the picker row's `record` (spec §2.4), and the receipt archive's two body
+/// digests and its plan key (spec §2.6).
+pub(crate) fn sha256_hex(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 /// A refusal this host makes ITSELF, before the `Games` is touched: its body is
