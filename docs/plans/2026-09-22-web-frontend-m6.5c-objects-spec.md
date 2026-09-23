@@ -192,6 +192,15 @@ browser; a phone; R2; alarms; object-to-object calls; the cost of VERIFYING the 
   both helpers, `runDurableObjectAlarm` and `runInDurableObject` ship in `@cloudflare/vitest-pool-workers`
   0.22.0 and in `@cloudflare/vitest-plugin` 1.2.3, the package that page now documents (read off both
   tarballs, 2026-09-22).
+- **The plan's review measured the pool** (`.superpowers/sdd/2026-09-23-web-frontend-m6.5c-plan/review-plan.md`;
+  `@cloudflare/vitest-plugin` 1.2.3, workerd 2026-09-21):
+  - the pool's RPC resolver REFUSES an own property (`test-internal.mjs:510-521`), so a method patched on
+    a live INSTANCE makes every RPC call throw rather than hang; a patch on the PROTOTYPE works, and it
+    survives `abortAllDurableObjects()`;
+  - a stub taken before `abortAllDurableObjects()` is dead after it;
+  - Durable Object storage and R2 are isolated per test FILE, not per test;
+  - a WebSocket close reason longer than 123 UTF-8 bytes throws (`websocket_close_reason_byte_limit`,
+    on at this compatibility date).
 
 ### 0.5 The account and the door
 
@@ -409,9 +418,13 @@ be wrong is testable under `cargo test`:
   - **a body the layer would refuse is dispatched UNCHANGED**, so the layer's own 400 answers it
     byte for byte — a duplicate key, an unknown field, a missing field (whose column the first text's
     insertion moved, §0.4), a non-string `id`;
+  - **a body that PARSES but is not a JSON object** is refused **400** `"a game must be created from a
+    JSON object"` (§4): serde's derived `Deserialize` accepts a struct as a positional ARRAY — the plan's
+    review measured one answering 201 on the layer directly, a pre-existing quirk of the NAS too, left
+    for the cleanup cycle — and the Worker's router reads `id` only from an object;
   - **a body whose `id` is a string** is the name the Worker routed by, and is dispatched unchanged —
-    one that is NOT the object's name cannot arrive through the Worker (both parse the same text, and
-    a body the two parsers would read differently fails the layer's parse) and is refused 500 (§4),
+    once the array arm above holds, an OBJECT body is read the same way by both parsers, so one whose
+    `id` is NOT the object's name cannot arrive through the Worker; it is still refused 500 (§4),
     so a routing defect is loud instead of a 201 for an object that holds nothing;
   - **a body with no `id` key** gets `,"id":"<id>"` inserted TEXTUALLY before its final `}` and is
     dispatched (a body that parses always has a member before it — `seats` is required);
@@ -551,13 +564,15 @@ Backoff for retries: 30 s, 2 min, 10 min, then hourly, reset by a success.
 - on **200** the object `acceptWebSocket`s with the tag `id` and the attachment `{ user }`, and sends
   that frame at once (M6.3's first frame);
 - on **403 or 404** it ACCEPTS, then sends the SSE's own `end` frame `{"reason":"gone"}` and closes
-  with **4403** or **4404** and the layer's sentence as the reason — because a browser reports a
-  refused upgrade as an anonymous failure it cannot tell from the network.
+  with **4403** or **4404** and the layer's sentence as the reason, truncated at a UTF-8 boundary to 123
+  bytes (the platform throws above it, §0.4) — because a browser reports a refused upgrade as an
+  anonymous failure it cannot tell from the network;
+- on any other status it answers that status unupgraded, as the layer answered it.
 
 **The framing.** Every message the object sends is `{"event": <name>, "data": <the SSE frame's data,
 byte-identical>}`, with `<name>` one of the SSE's own event names — `signal`, `house`, `end` — so the
 client's arm unwraps it into the `(event, data)` pair its stream reader already produces (§2.7).
-On each bump naming this table, the object computes `events(id, user, "")` for every socket's
+On each reply whose bumps name this table — ONE frame per socket per reply, however many bumps it carries — the object computes `events(id, user, "")` for every socket's
 attachment: a 200 is sent as `signal`; a **403/404 is `end {"reason":"gone"}` and a 4403/4404 close**
 (a stranger holding an OPEN table's stream when the last seat fills, `lib.rs:635-636`); any other
 failure sends NOTHING (the SSE's comment). A delete sends `end {"reason":"deleted"}` and closes
@@ -656,7 +671,9 @@ copies of tables at every status and lock state, loaded into a `MemStore`, produ
 `Games::list` exactly the rows the originals produce, for every viewer kind — a seat holder, the
 creator, a stranger, a stranger on the `unlocked` roster; and a VALUE pin that no house copy carries
 this run's seed (decimal and hex), password, salt, hash or any keep other than `1`, with the
-anti-vacuity partner that the table's own stored document does carry them.
+anti-vacuity partner that the table's own stored document DOES carry the decimal seed, the salt, the
+hash and a keep of 2 — the password and the hex seed are absence-only needles, since the stored
+document never holds either (the lock is `Lock { salt, hash }`, the seed a decimal number).
 
 **The durable slot** (R-6.5c.8). Each table holds a `generation` — `(created_at, 64 random bits)`,
 drawn once at create and ORDERED by that pair — and a `revision` counter.
@@ -944,7 +961,8 @@ names. For this host:
   directory.
 - **Host-written statuses and sentences — named, never the layer's**: the missing-file 404 (§2.3);
   the 2 MiB body refusal (intended identical to the NAS's, pinned at the first deploy); the stream's
-  426; the create body's `"id": null` 400 and its routing-defect 500 `"the create's id does not name
+  426; the create body's `"id": null` 400, its non-object 400 `"a game must be created from a JSON
+  object"`, and its routing-defect 500 `"the create's id does not name
   the table it was routed to"` (§2.2; unreachable through the Worker, loud if it ever is not); the
   trap 500 and the poison 500 (§2.4); a marker's
   404 sentences — three heads and three tails — and its 409 (§2.4); the archive misconfiguration 500
@@ -1020,12 +1038,15 @@ move the STORED times, never the clock** — workerd's `Date.now()` cannot be ad
   it**; an acknowledgement of `r` arriving after `r+1`'s leaves `acked` at `r+1`, and a later change
   back to `r`'s copy is still delivered; a late push of a removed generation is ignored BOTH before
   and after a re-created table's first push; a failed push is retried by the alarm; **the alarm is set
-  in the batch**: the house's push handler held pending by a patch on its instance
-  (`runInDurableObject`), then `abortAllDurableObjects()` — which, unlike `evictDurableObject`, does
-  not drain in-flight work, so the push never fails and never succeeds — then `runDurableObjectAlarm`
-  on the table delivers the slot (under the mutant it returns `false` and the lobby never lists the
-  table); a move that changes no copy leaves the alarm where it was.
-- **Sockets**: the first frame on accept; one frame per socket per bump, each for its own viewer; the
+  in the batch**: the house's push handler held pending by a gate on `House.prototype.apply` — the
+  PROTOTYPE, since the pool refuses an instance's own property and a patched instance makes the RPC
+  throw, which the mutant survives (§0.4, measured true/true) — then `abortAllDurableObjects()`, which
+  unlike `evictDurableObject` does not drain in-flight work, so the push never fails and never
+  succeeds; the gate restored at once, fresh stubs taken, and `runDurableObjectAlarm` on the table
+  delivers the slot (under the mutant it returns `false` and the lobby never lists the table — measured
+  true/false); a move that changes no copy leaves the alarm where it was.
+- **Sockets**: the first frame on accept; one frame per socket per REPLY — a finalizing keep's two
+  bumps are one frame — each for its own viewer; the
   framing; `end {"reason":"gone"}` with 4403/4404 at admission and mid-stream; `end` on delete;
   nothing sent on another failure.
 - **The archive**: abandon with a failing put leaves the object and its storage in place with the
@@ -1264,7 +1285,8 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 | 27 the edge rewrites `index.html` | EXPLAINED by the spike (§0.3 row 8); the zone settings are OWNER items |
 
 **Owner items this spec adds**: the zone's Web Analytics auto-install (off for this hostname, or
-accept the console error — a "zero console errors" live review needs a decision), JavaScript
+accept the console error — needed BEFORE §5.4's live tier, whose specs assert no console error
+occurred, and so before the exit's live review too), JavaScript
 detections and Bot Fight Mode (they did not challenge the harness); the TTL value
 (`YOKOHAMA_WEB_TABLE_TTL_DAYS`) and the operator list (`YOKOHAMA_WEB_ADMINS` — it must name the owner
 for the live replay's cleanup, §5.3); the bucket's creation if the account API is not used; and,
@@ -1370,3 +1392,17 @@ or incomplete, corrected here.
 | §2.4's "one synchronous batch" did not say how an alarm joins SQL writes, and nothing recorded what that rests on | §2.4 names `transactionSync` plus a `setAlarm` in the same turn; §6 records the reliance on write coalescing |
 | The live replay's house-chat payloads cannot repeat: the lobby chat is shared by every run and every real user, so `seq` and `last` climb run over run | §5.3's live bullets normalize them against the house's `last` read at the run's start |
 | `create`'s string-id branch trusted routing silently: a mismatch would answer 201 for an object holding nothing | §2.2's rule refuses it 500, named in §4 (the plan's Ruling P-4) |
+
+### 9.4 Found by the plan's adversarial review (after `cca0aed`)
+
+The plan's review (`.superpowers/sdd/2026-09-23-web-frontend-m6.5c-plan/review-plan.md`) MEASURED the pool
+and the layer; five of its escalations were this document's sentences.
+
+| finding | what changed here |
+|---|---|
+| §5.2's battery-25 technique was vacuous a second time: a method patched on a live instance makes the pool's RPC THROW (it refuses an own property), so correct code and mutant both answered `true` | §5.2 prescribes a gate on the PROTOTYPE, restored before the alarm, with fresh stubs (measured `true`/`false`); §0.4 records the pool facts |
+| §2.2's "a body the two parsers would read differently fails the layer's parse" was false: the layer accepts a positional ARRAY (measured 201) | §2.2 refuses a non-object body 400, named in §4; the NAS's own quirk is left for the cleanup cycle |
+| §2.5's anti-vacuity partner claimed the stored document carries the password and the hex seed; it holds neither | §2.5 names the real partner — decimal seed, salt, hash, a keep of 2 — and the other two as absence-only needles |
+| §7 put the zone's Web Analytics decision before the exit, but §5.4's live tier already asserts no console error | §7 needs it before §5.4 |
+| §2.4's close "with the layer's sentence as the reason" throws above 123 UTF-8 bytes at this compatibility date | §2.4 truncates the reason, and answers any other admission status unupgraded |
+| §5.2's "one frame per socket per bump" sends a finalizing keep's two bumps (`bump_table` then `bump`, `tables.rs:1507-1511`) as two identical frames | §5.2 says one frame per socket per REPLY |
