@@ -1772,8 +1772,9 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
 ///
 /// The record and the table document are this walk's own — read off the primary
 /// state's store, which is where a finished game's bytes are — so the body is a
-/// real pair and not a construction, and the path in the reply is a function of
-/// the walk's id and the walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
+/// real pair, the table less its lock (see the strip below), and not a
+/// construction. The path in the reply is a function of the walk's id and the
+/// walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
 async fn archive_payloads(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
     use yokohama_web::store::Doc;
     let store = api.state.games.store();
@@ -2989,8 +2990,9 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 
 /// **The two scripts a Worker host replays beside `walk.json`** (M6.5c, spec
 /// §5.3). Each is DERIVED from the walk and named by value, never written
-/// down: a script that stopped naming a payload would move that payload into
-/// the Worker replay's third column with nothing saying so.
+/// down, except the synthesized `GET /api/art` row (see [`corpus`]): a script
+/// that stopped naming a payload would move that payload into the Worker
+/// replay's third column with nothing saying so.
 #[tokio::test]
 async fn the_host_scripts_name_the_payloads_only_a_host_or_an_archive_serves() {
     let Corpus { script, host_script, archive_script, .. } = corpus().await;

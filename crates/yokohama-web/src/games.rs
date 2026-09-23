@@ -677,6 +677,9 @@ impl Games {
     /// which is also what keeps a vs-bot game undone past its end and finished
     /// a second time at its FIRST completion in the archive (spec §10).
     ///
+    /// Since M6.5c a host is a third retrier: [`Games::archive_over_retry`] runs
+    /// this again once the host's deferred put has landed (R-6.5c.9).
+    ///
     /// `record_json` is the text the store write above took, so the archived
     /// bytes ARE the stored bytes — never a re-serialization.
     fn archive_if_over(&self, id: &str, repl: &Repl, record_json: &str) {
@@ -732,7 +735,9 @@ impl Games {
     /// it calls this once the upload has landed. The stamp and its retry on a
     /// version conflict stay [`Games::archive_if_over`]'s own code, never a
     /// host's copy. Idempotent: a stamped, unfinished or archive-off table puts
-    /// nothing.
+    /// nothing. `Ok(())` means the retry RAN, not that a stamp landed: a refused
+    /// put or a failed stamp is the layer's own log line, which a host that
+    /// cannot hear `eprintln!` learns by reading `archived_at` afterwards.
     ///
     /// "Unfinished" means a PLAYING game that is not yet over: `Ok(())`, and no
     /// put. A table that has no game at all answers what [`Games::handle`]
@@ -1769,9 +1774,9 @@ mod tests {
         let games = games.with_archive(archive.clone());
         // `play_to_the_end` drives a SECOND, bot-seated `Repl`: the table's own
         // resident handle is still at the opening, so without this eviction the
-        // retry reads a game that is not over and the cell fails for the right
-        // code (measured by the plan's review). In production the resident handle
-        // IS the game, so the function itself must not evict.
+        // retry reads a game that is not over and the cell fails even though the
+        // code is right (measured by the plan's review). In production the
+        // resident handle IS the game, so the function itself must not evict.
         games.evict_for_test("late");
         games.archive_over_retry("late").expect("the retry");
         let stored = games.store().read(Doc::Record, "late").unwrap().unwrap().0;
@@ -1794,20 +1799,24 @@ mod tests {
         let archive = RecordingArchive::recording();
         let running = games().with_archive(archive.clone());
         one_move_in(&running, "mid");
-        // NO eviction here (re-review N3, measured): `both_seats_as_bots` writes BOT
-        // provenance for BOTH seats, so a rebuild's `bring_alive` would pump this
-        // game to its END and archive it. Evict only a game that is ALREADY over.
+        // NO eviction here (re-review N3): `both_seats_as_bots` writes BOT
+        // provenance for BOTH seats, so a rebuild's `bring_alive` would pump up
+        // to 200 bot moves. Measured at this seed: `one_move_in` stops at the
+        // 200-move cap, the rebuild's one pump plays the remaining 157 to game
+        // over (357 events), and the rebuild's own persist archives the game.
+        // Evict only a game that is ALREADY over.
         running.archive_over_retry("mid").expect("an unfinished game is not an error");
         assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 
-        // NoArchive, at a game that IS over. The eviction is what makes this half
-        // exercise the REAL game-over path. Without it the stale resident handle
-        // reads "not over", the retry stops there, and the assert on
-        // `archived_at` below is trivially true. With it `archive_over_retry`
-        // runs `archive_if_over` against the finished game, and `NoArchive`
-        // stamps nothing. What this half does NOT catch, measured: a mutant that
-        // drops the `is_on` check from `archive_if_over` stays green, because
-        // `NoArchive::put` errs and no stamp lands either way.
+        // NoArchive, at a game that IS over: the eviction makes the retry rebuild
+        // from the finished record. With the archive-off guard in place,
+        // `archive_if_over` returns on that guard before it reads "over" at
+        // all. Without the eviction the not-over reading would stop the retry
+        // even with the archive-off guard gone, so the assert on `archived_at`
+        // would say nothing about the archive. What this half does NOT catch,
+        // measured: a mutant that drops the `is_on` check from
+        // `archive_if_over` stays green, because `NoArchive::put` refuses and no
+        // stamp lands either way.
         let off = games();
         play_to_the_end(&off, "off");
         off.evict_for_test("off");
