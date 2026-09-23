@@ -1,10 +1,13 @@
+import type { Table } from "./table";
+
 /**
  * The Worker's bindings and variables (spec §3.1, the plan's Global
  * Constraints), written by hand — `wrangler types` is not used, so this is the
- * one statement of what the shell reads from `env`. `ASSETS` is here because
- * both configurations bind it, and `ARCHIVE` because `shellConfig` asks
- * whether it is bound — no configuration binds it yet, so it is optional. The
- * Durable Object namespaces arrive with their bindings.
+ * one statement of what the shell reads from `env`. `ASSETS` and `TABLE` are
+ * here because both configurations bind them, and `ARCHIVE` because
+ * `shellConfig` asks whether it is bound — no configuration binds it yet, so
+ * it is optional. The house's and the archive object's namespaces arrive with
+ * their bindings.
  *
  * **Every variable is optional and every variable is a string.** A variable a
  * configuration does not set is absent, and `shellConfig` gives each absence
@@ -19,6 +22,8 @@ export interface Env {
   /** The static assets, bound by both configurations (spec §2.3's
    *  `/api/art` reads the art manifest through it). */
   ASSETS: Fetcher;
+  /** The table objects (spec §2.4), one per table, each named by its id. */
+  TABLE: DurableObjectNamespace<Table>;
   /** The bucket `yokohama-archive` (spec §3.1). `YOKOHAMA_WEB_ARCHIVE=r2` is
    *  refused without it. */
   ARCHIVE?: R2Bucket;

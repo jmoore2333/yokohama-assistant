@@ -2,9 +2,9 @@
 // the one `npm run deploy` ships once `scripts/deploy-guard.mjs` passes. The
 // pool reads `wrangler.test.jsonc` instead.
 //
-// It holds the Worker's facts and its static assets. The Durable Object
-// bindings and their migration, the custom domain, the variables and the
-// bucket are added with the code that reads them.
+// It holds the Worker's facts, its static assets and the table object. The
+// house's and the archive object's bindings, the custom domain, the variables
+// and the bucket are added with the code that reads them.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yokohama-web",
@@ -35,5 +35,10 @@
     "html_handling": "none",
     "not_found_handling": "none",
     "run_worker_first": ["/api/*", "/enter"]
-  }
+  },
+  // The table object (spec §2.4), SQLite-backed, in ONE migration: the house
+  // and the archive object join this same tag, which is edited in place until
+  // the first deploy and frozen after it (the orchestrator's ruling I-30).
+  "durable_objects": { "bindings": [{ "name": "TABLE", "class_name": "Table" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table"] }]
 }
