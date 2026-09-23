@@ -9,13 +9,16 @@ import { Instance, readReply } from "../src/module";
 import { ensureTables, setMeta, upsertDoc } from "../src/storage";
 import type { Table } from "../src/table";
 import { OWED_PUMP_JSON, OWED_PUMP_TABLE_JSON } from "./fixtures.gen";
+import { holdApply } from "./gates";
 import {
   BLUE,
   CREATE_BODY,
   RED,
   call,
   logsDuring,
+  revisionOf,
   seedPlaying,
+  settle,
   sqlOf,
   storedRows,
   tableStub,
@@ -65,22 +68,38 @@ describe("the table object (spec §2.4)", () => {
   // outside the transaction; `written_at` in the module's seconds rather than
   // `Date.now()` (the orchestrator's ruling I-43); the create not pinned to
   // P-2's reading (the pool's is `frozen:1789000000`; unpinned, the module
-  // reads the wall).
+  // reads the wall); the house's slot, its generation or its revision written
+  // in a batch of their own (spec §2.5: "in the request's batch"). The
+  // create's push is HELD, so the acknowledgement's own batch cannot land
+  // inside the watch.
   it("a create persists its table in one batch, and the object knows its own name", async () => {
     const stub = tableStub("fresh");
+    const push = (await revisionOf(stub)) + 1;
     const batches = await watchBatches(stub);
-    const before = Date.now();
-    const res = await call(stub, "red@t.test", "POST", "/api/games", CREATE_BODY, "fresh");
-    const after = Date.now();
-    expect(res.status).toBe(201);
-    // The reply is the table's VIEW, which carries no seed.
-    expect(await res.json<{ id: string; created_at: number }>()).toMatchObject({ id: "fresh", created_at: 1_789_000_000 });
-    expect(await sqlOf(stub, "SELECT kind FROM docs ORDER BY kind")).toEqual([{ kind: "table" }]);
-    expect(batches.statements, "anti-vacuity: the watch saw the object's SQL").toBeGreaterThan(0);
-    expect({ batches: batches.batches, outside: batches.outside }).toEqual({ batches: 1, outside: [] });
-    const [row] = await sqlOf(stub, "SELECT written_at FROM docs WHERE kind = 'table'");
-    expect(row?.written_at).toBeGreaterThanOrEqual(before);
-    expect(row?.written_at).toBeLessThanOrEqual(after);
+    const held = holdApply([["fresh", push]]);
+    try {
+      const before = Date.now();
+      const res = await call(stub, "red@t.test", "POST", "/api/games", CREATE_BODY, "fresh");
+      const after = Date.now();
+      expect(res.status).toBe(201);
+      // The reply is the table's VIEW, which carries no seed.
+      expect(await res.json<{ id: string; created_at: number }>()).toMatchObject({ id: "fresh", created_at: 1_789_000_000 });
+      expect(await sqlOf(stub, "SELECT kind FROM docs ORDER BY kind")).toEqual([{ kind: "table" }]);
+      expect(await sqlOf(stub, "SELECT k FROM meta ORDER BY k"), "the generation, the revision and the slot, in the create's batch").toEqual([
+        { k: "generation" },
+        { k: "revision" },
+        { k: "slot" },
+      ]);
+      expect(batches.statements, "anti-vacuity: the watch saw the object's SQL").toBeGreaterThan(0);
+      expect({ batches: batches.batches, outside: batches.outside }).toEqual({ batches: 1, outside: [] });
+      const [row] = await sqlOf(stub, "SELECT written_at FROM docs WHERE kind = 'table'");
+      expect(row?.written_at).toBeGreaterThanOrEqual(before);
+      expect(row?.written_at).toBeLessThanOrEqual(after);
+      held.release("fresh", push);
+      await settle(stub);
+    } finally {
+      held.restore();
+    }
     // Pool fact 8: `ctx.id.name` inside the object. The alarm's side of it is
     // the three alarm cells below.
     expect(await runInDurableObject(stub, (_o, state) => state.id.name)).toBe("fresh");
@@ -262,10 +281,10 @@ describe("the table object (spec §2.4)", () => {
     expect(still.status).toBe(500);
     const after = await storedRows(stub);
     expect(after.docs).toEqual(before.docs);
-    expect(after.meta).toEqual([
-      { k: "load_traps", v: "2" },
-      { k: "poison", v: "record" },
-    ]);
+    expect(after.meta).toEqual(
+      // SQL's `ORDER BY k` is a byte order, and so is `<` on these keys.
+      [...before.meta, { k: "load_traps", v: "2" }, { k: "poison", v: "record" }].sort((a, b) => (String(a.k) < String(b.k) ? -1 : 1)),
+    );
   });
 
   // "A wake that succeeds resets load_traps" (spec §2.4: two CONSECUTIVE

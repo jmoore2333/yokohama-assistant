@@ -60,12 +60,39 @@ export async function storedRows(
  *  cell may parse it; a record or a table DOCUMENT is never parsed. */
 export type Play = { events: number; prompt: { kind: string; selected?: number[] } };
 
+/** The table's `meta.revision`: 0 before its first slot, and before its first
+ *  batch creates `meta` (the orchestrator's ruling S-12 reads every revision a
+ *  hold is keyed by through this, just before the action). */
+export async function revisionOf(stub: DurableObjectStub<Table>): Promise<number> {
+  const rows = await runInDurableObject(stub, (_o, state) => {
+    const sql = state.storage.sql;
+    const exists = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'meta'").one().n === 1;
+    return exists ? sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'revision'").toArray() : [];
+  });
+  return Number(rows[0]?.v ?? "0");
+}
+
+/**
+ * Every house push `stub`'s table has in flight, run through: each one's
+ * acknowledgement — or its failure — read and its batch written (spec §2.5).
+ * A push leaves after its request's reply, so without this a cell's next
+ * assertion on the table's rows, or on the lines the shell logs, would race a
+ * push an earlier request started. It awaits the table's own record of its
+ * pushes in flight, which `deliverSlot` keeps.
+ */
+export async function settle(stub: DurableObjectStub<Table>): Promise<void> {
+  await runInDurableObject(stub, async (table: Table) => {
+    await Promise.all(table["pushes"].values());
+  });
+}
+
 /**
  * A 2P table at `name`, PLAYING: red creates it with blue's seat open, blue
  * joins, both seats keep (the last keep finalizes), and red's `1` APPLIES the
  * opening move — Task 4's measured sequence at seed 20260831 (the Rust
  * `at_place_a`). Red is still to move, and red's next `1` opens the PlaceA
- * picker with nothing selected.
+ * picker with nothing selected. The house pushes the create, the join and the
+ * two keeps started are run through (`settle`) before it answers.
  */
 export async function seedPlaying(name: string): Promise<DurableObjectStub<Table>> {
   const stub = tableStub(name);
@@ -86,6 +113,7 @@ export async function seedPlaying(name: string): Promise<DurableObjectStub<Table
     1,
     "options",
   ]);
+  await settle(stub);
   return stub;
 }
 

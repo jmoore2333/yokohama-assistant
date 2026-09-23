@@ -86,12 +86,14 @@ web/help-shots/
 # M6.5c: the Worker package's generated trees. `gen/` is the module build's
 # output (`npm run build:module` or `build:module:debug`: the glue, the factory,
 # the module), `assets/` the asset assembly's (`npm run build:assets`), and
-# `.test-assets/` with `test/fixtures.gen.ts` the pool's pre-hook's
-# (`scripts/test-assets.mjs`). Each regenerates from a committed command — the
-# reasoning `web/dist` gives. `package-lock.json` IS committed.
+# `.test-assets/` with `test/fixtures.gen.ts` and `test/corpus.gen.ts` the
+# pool's pre-hook's (`scripts/test-assets.mjs`). Each regenerates from a
+# committed command — the reasoning `web/dist` gives. `package-lock.json` IS
+# committed.
 worker/gen/
 worker/assets/
 worker/.test-assets/
 worker/node_modules/
 worker/.wrangler/
 worker/test/fixtures.gen.ts
+worker/test/corpus.gen.ts

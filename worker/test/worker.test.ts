@@ -11,6 +11,7 @@ import type { JwkSet, KeySource } from "../src/identity";
 import { BODY_LIMIT, handle } from "../src/index";
 import { readReply } from "../src/module";
 import { Table } from "../src/table";
+import { WIRE } from "./corpus.gen";
 import { ART_MANIFEST_JSON } from "./fixtures.gen";
 import { BLUE, CREATE_BODY, RED, logsDuring, seedPlaying, sqlOf, tableStub } from "./helpers";
 import { credentialClaims, personClaims, signer, type Signer } from "./tokens";
@@ -232,12 +233,36 @@ describe("the Worker's own answers (spec §2.3)", () => {
     expect((await worker("/assets/x.js", { env: bad })).status).toBe(404);
   });
 
-  // Mutants: the manifest answered with no JSON type, or not the manifest; a
-  // HEAD answered with the body.
-  it("GET /api/art is the art manifest by value, as JSON; HEAD has no body", async () => {
+  // The NAS's answer is its typed `ArtManifest`: the file's nine maps, in the
+  // struct's declaration order, and NOT the file's two generator keys — the
+  // committed `art_manifest.json` (the orchestrator's ruling on Task 12's
+  // finding). Mutants: the manifest answered with no JSON type, or not the
+  // manifest; the file's bytes streamed whole (the two generator keys); a map
+  // dropped or altered by the projection; the keys in another order; a HEAD
+  // answered with the body.
+  it("GET /api/art is the NAS's art manifest by value, as JSON; HEAD has no body", async () => {
     const res = await worker("/api/art");
     expect([res.status, res.headers.get("content-type")]).toEqual([200, "application/json"]);
-    expect(JSON.parse(res.text)).toEqual(JSON.parse(ART_MANIFEST_JSON));
+    const got = JSON.parse(res.text) as Record<string, unknown>;
+    const committed = JSON.parse(WIRE.art_manifest!) as Record<string, unknown>;
+    const file = JSON.parse(ART_MANIFEST_JSON) as Record<string, unknown>;
+    expect(Object.keys(file), "premise: the file carries the two generator keys the NAS drops").toEqual(
+      expect.arrayContaining(["area_duplicates", "provenance"]),
+    );
+    expect(Object.keys(got).sort(), "exactly the committed payload's keys").toEqual(Object.keys(committed).sort());
+    expect(Object.keys(got), "in the struct's order, as the NAS's route writes them").toEqual([
+      "orders",
+      "techs",
+      "sites",
+      "achievements",
+      "areas",
+      "five_power",
+      "mercenaries",
+      "backs",
+      "tokens",
+    ]);
+    expect(got, "the committed payload, by value").toEqual(committed);
+    for (const [key, map] of Object.entries(got)) expect(map, `${key}: the file's own map`).toEqual(file[key]);
     const head = await worker("/api/art", { method: "HEAD" });
     expect([head.status, head.text]).toEqual([200, ""]);
   });

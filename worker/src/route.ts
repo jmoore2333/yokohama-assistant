@@ -12,7 +12,8 @@ export type Target =
   | { kind: "missing" }
   /** `GET|HEAD /enter`: the turnstile's 302 to `/#/lobby`. */
   | { kind: "enter" }
-  /** `GET|HEAD /api/art`: the static manifest's bytes. */
+  /** `GET|HEAD /api/art`: the static art manifest, projected onto the
+   *  layer's nine maps (`index.ts`, `art`). */
   | { kind: "art" }
   /** Any other method on `/enter` or `/api/art`: 405, as axum's router answers. */
   | { kind: "not-allowed" }

@@ -7,7 +7,8 @@ import type { Env } from "./env";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
 import { Instance, readReply, type Bump, type Replied } from "./module";
 import { errorBody, log, respond } from "./respond";
-import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
+import { advances, cmpGen, copyDigest, HOUSE_NAME, nextRetry, type Ack, type Generation, type Slot } from "./slot";
+import { deleteDoc, deleteMeta, ensureTables, getMeta, hasTables, readDocs, setMeta, upsertDoc } from "./storage";
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
 export const USER_HEADER = "X-Yokohama-User";
@@ -29,6 +30,10 @@ export const NOT_AN_UPGRADE = "this host streams over WebSocket";
 /** The close reason of a deleted table's sockets: short and fixed, because
  *  the `end` frame before the close carries the meaning. */
 const DELETED_REASON = "this table was deleted";
+
+/** A create's 409 at an id whose object still holds an unacknowledged
+ *  REMOVAL (spec §2.4; host-written, §4). */
+const USED_RECENTLY = "this name was used recently — try another";
 
 /** The two transport routes this object answers itself rather than through
  *  `dispatch`, whose route table has no row for either (spec §2.3). */
@@ -106,6 +111,11 @@ export class Table extends DurableObject<Env> {
   private readonly config: ShellConfig | { error: string };
   /** The module (spec §2.2), built at the first request that needs it. */
   private instance: Instance | undefined;
+  /** The house pushes in flight, by `pushKey`: `deliverSlot` hands a second
+   *  caller of the same slot the push already under way, so one slot is
+   *  never pushed twice at once, and a caller that awaits it — the corpus
+   *  replay's flush, a test's `settle` — waits for its acknowledgement. */
+  private readonly pushes = new Map<string, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -150,16 +160,187 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * The alarm's work, for the name the platform handed `alarm()`. An alarm
-   * with no name — `guardAlarmName` says when that happens — is logged and
-   * touches nothing. Nothing in this object arms an alarm yet, so a named one
-   * has nothing to do.
+   * The alarm's work, for the name the platform handed `alarm()` (spec §2.4:
+   * ONE alarm per object, set to the earliest thing due). An alarm with no
+   * name — `guardAlarmName` says when that happens — is logged and touches
+   * nothing. A named one:
+   *
+   * 1. recomputes the house copy from the STORED table document (`recopy`),
+   *    which is how a copy that trapped in its request is delivered (the
+   *    orchestrator's ruling I-42);
+   * 2. delivers the slot (`deliverSlot`) — a retry after a failed push, or a
+   *    push an abort cut off.
+   *
+   * The alarm is re-armed only by the batches those two write — a new
+   * slot's, a failed push's, an acknowledgement's — so a run with nothing due
+   * leaves none.
    */
   async onAlarm(name: string | undefined): Promise<void> {
     if (guardAlarmName(name) === "skip") {
       log("alarm-without-name");
       return;
     }
+    // The guard runs only a named alarm.
+    this.recopy(name as string);
+    await this.deliverSlot();
+  }
+
+  /**
+   * **The slot's ONE delivery routine** (spec §2.5): the request's side
+   * channel after its reply, the alarm, and the corpus replay's flush all
+   * call it. It pushes the slot `meta` holds NOW to the house's `apply` over
+   * RPC — or, when that slot's push is already in flight, answers that push —
+   * and resolves once the acknowledgement's batch, or the failure's, is
+   * written. With no slot, or on an object the platform gives no name, it
+   * does nothing.
+   */
+  async deliverSlot(): Promise<void> {
+    const id = this.ctx.id.name;
+    if (id === undefined) return;
+    const slot = slotState(this.ctx.storage.sql).slot;
+    if (slot === undefined) return;
+    const key = pushKey(slot);
+    const inFlight = this.pushes.get(key);
+    if (inFlight !== undefined) return inFlight;
+    const push = this.push(id, slot).finally(() => this.pushes.delete(key));
+    this.pushes.set(key, push);
+    return push;
+  }
+
+  /**
+   * One push of `slot`, and what its answer owes: logged `slot-pushed` before
+   * the RPC; then either the house's acknowledgement of THIS push — its
+   * `apply` answers the pair it was handed, applied or ignored — logged
+   * `slot-acked` (`acknowledged`), or the RPC's failure (`failed`).
+   */
+  private async push(id: string, slot: Slot): Promise<void> {
+    log("slot-pushed", {
+      id,
+      generation: slot.generation,
+      revision: slot.revision,
+      removal: slot.copy === null,
+      attempt: slot.attempt,
+    });
+    let ack: Ack;
+    try {
+      ack = await this.env.HOUSE.get(this.env.HOUSE.idFromName(HOUSE_NAME)).apply(slot);
+    } catch (e) {
+      this.failed(id, slot, e);
+      return;
+    }
+    log("slot-acked", { id, generation: ack.generation, revision: ack.revision });
+    await this.acknowledged(slot);
+  }
+
+  /**
+   * The acknowledgement of `pushed` (spec §2.5), in ONE batch:
+   *
+   * - the slot is cleared ONLY if it still holds `pushed`'s pair — a newer
+   *   copy, or a delete's REMOVAL, written meanwhile stays for its own push
+   *   or the alarm to deliver;
+   * - `acked` is set ONLY if the pair `advances` the `acked` it holds, with
+   *   the pushed copy's digest — acknowledgements can arrive out of order, and
+   *   a regressed `acked` would make a later change back to an older copy look
+   *   already delivered;
+   * - the alarm is re-armed to the next deadline — the slot still waiting's
+   *   retry — or deleted when nothing is due.
+   *
+   * An acknowledgement that clears nothing and advances nothing writes
+   * nothing. And the batch is written ONLY while the object still holds its
+   * SQL tables (the orchestrator's ruling on Task 12), for two reasons:
+   *
+   * - a straggling acknowledgement that lands after a removal's `deleteAll()`
+   *   must not recreate `meta` in an object that has ceased to exist
+   *   (re-review m-g) — and `deleteAll()` drops the tables;
+   * - the guard is the tables ALONE: one that also asked for a slot or a
+   *   marker would skip the late acknowledgement of `r` that arrives after
+   *   `r + 1` was acknowledged and cleared, so `advances` would never be
+   *   consulted there, and the mutant that records `acked` without it would
+   *   pass batteries 6 and 35 (measured).
+   *
+   * A REMOVAL acknowledged ends the object: `deleteAll()`, which at this
+   * compatibility date deletes its alarm too, and its module is dropped. (The
+   * plan's Task 14 puts the marker's 90 days between the two.)
+   */
+  private async acknowledged(pushed: Slot): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    if (!hasTables(sql)) return;
+    const state = slotState(sql);
+    const holds = state.slot !== undefined && samePush(state.slot, pushed);
+    if (holds && pushed.copy === null) {
+      this.instance?.drop();
+      await this.ctx.storage.deleteAll();
+      return;
+    }
+    const advance = advances(state.acked ?? null, pushed.generation, pushed.revision);
+    if (!holds && !advance) return;
+    const acked: Acked = {
+      generation: pushed.generation,
+      revision: pushed.revision,
+      digest: pushed.copy === null ? null : copyDigest(pushed.copy),
+    };
+    this.batch(
+      (sql) => {
+        if (holds) deleteMeta(sql, "slot");
+        if (advance) setMeta(sql, "acked", JSON.stringify(acked));
+      },
+      holds ? null : retryDue(state.slot),
+    );
+  }
+
+  /**
+   * A push of `pushed` that failed — the RPC threw — logged `slot-failed`. If
+   * the slot still holds it, ONE batch counts the failure in the slot and
+   * re-arms the alarm to its next retry (`nextRetry`: 30 s, 2 min, 10 min,
+   * then hourly). A slot written meanwhile has its own push and its own
+   * retry, and an object that has ceased to exist has none.
+   */
+  private failed(id: string, pushed: Slot, error: unknown): void {
+    // No slot at all once the object has ended: `getMeta` reads none.
+    const slot = slotState(this.ctx.storage.sql).slot;
+    const retrying = slot !== undefined && samePush(slot, pushed);
+    log("slot-failed", {
+      id,
+      generation: pushed.generation,
+      revision: pushed.revision,
+      attempt: pushed.attempt,
+      ...(retrying ? { retry_in: nextRetry(slot.attempt) } : {}),
+      error: String(error),
+    });
+    if (!retrying) return;
+    this.batch((sql) => setMeta(sql, "slot", JSON.stringify({ ...slot, attempt: slot.attempt + 1 })), retryDue(slot));
+  }
+
+  /**
+   * The alarm's half of the orchestrator's ruling I-42: the house copy
+   * recomputed from the STORED table document on a module of its own, and a
+   * slot written — with its alarm, in one batch — when it differs from the one
+   * last put in motion. A copy that trapped in its request is delivered so. A
+   * trap or a refusal here is logged and arms nothing: the next change to the
+   * table recomputes it, and a trap that repeated would otherwise re-arm the
+   * alarm forever. A poisoned table is never re-instantiated (spec §2.4), and
+   * nor is anything built for an object that holds no table document; a
+   * configuration the shell refuses is logged, as every request logs it.
+   */
+  private recopy(id: string): void {
+    const sql = this.ctx.storage.sql;
+    const config = this.config;
+    if ("error" in config) {
+      log("init-refused", { id, error: config.error });
+      return;
+    }
+    if (!hasTables(sql) || Number(getMeta(sql, "load_traps") ?? "0") >= 2) return;
+    const table = readDocs(sql).get("table");
+    if (table === undefined) return;
+    const owed = this.owed(id, table, nextReading(config.clock));
+    const writes = this.owedWrites(id, owed);
+    if (writes.length === 0) return;
+    this.batch(
+      () => {
+        for (const write of writes) write();
+      },
+      owed.slot === undefined ? undefined : Date.now() + nextRetry(0),
+    );
   }
 
   /**
@@ -181,6 +362,10 @@ export class Table extends DurableObject<Env> {
       log("poison", { id, kind, traps });
       return respond(500, errorBody(`this table's stored ${kind} cannot be loaded`));
     }
+    // A create at an id whose slot holds a REMOVAL the house has not yet
+    // acknowledged is refused, writing nothing, so a new table's first copy
+    // can never overwrite a removal the house has not received (spec §2.4).
+    if (incoming.create && slotState(sql).slot?.copy === null) return respond(409, errorBody(USED_RECENTLY));
     // A configuration the shell refuses builds no module. Spec §2.6 has every
     // `/api/*` answer 500 naming the variable, and the plan's Task 11 has the
     // Worker do so (its step 2) before it forwards; the object answers the
@@ -194,6 +379,7 @@ export class Table extends DurableObject<Env> {
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, null)));
     let reply: Replied;
     let bumps: Bump[];
+    let pushing: boolean;
     try {
       const woken = this.wake(id, instance, config, traps);
       if (woken instanceof Response) return woken;
@@ -206,7 +392,7 @@ export class Table extends DurableObject<Env> {
         if (woken.clearTraps) this.batch(clearLoadTraps);
         return called;
       }
-      this.commit(called, woken);
+      pushing = this.commit(id, called, woken);
       reply = called.reply;
       // Every bump the request's calls made: the wake's — `restore_picker`'s,
       // a cold rebuild's owed bot move among them — and the call's own (the
@@ -221,10 +407,13 @@ export class Table extends DurableObject<Env> {
       instance.drop();
       throw e;
     }
-    // The side channel, after the batch (spec §2.4): the output gate holds
+    // The side channels, after the batch (spec §2.4): the output gate holds
     // every send until the batch is durable (spec §0.4), and `sendFrames`
-    // never throws, so nothing it meets costs the request its reply.
+    // never throws, so nothing it meets costs the request its reply. Then the
+    // house push, when the batch wrote a slot: it outlives the reply
+    // (`waitUntil`), and the alarm the batch armed finishes it if it cannot.
     this.sendFrames(id, bumps);
+    if (pushing) this.ctx.waitUntil(this.deliverSlot());
     return incoming.transport === "stream" ? this.admit(id, incoming.user, reply) : respond(reply.status, reply.body);
   }
 
@@ -465,13 +654,22 @@ export class Table extends DurableObject<Env> {
    *   from its row is upserted, with `written_at` = `Date.now()` (the
    *   orchestrator's ruling I-43), and one it no longer holds is deleted;
    * - the `picker` row takes `Reply.picker` verbatim, the request's over the
-   *   wake's, and `"[]"` deletes it (the orchestrator's ruling I-21);
-   * - the wake's `wakes` count, and its clearing of a load trap.
+   *   wake's, and `"[]"` deletes it (the orchestrator's ruling I-21) — which
+   *   is how a delete takes an open picker's row with it: the module answers
+   *   `"[]"` for a table it deletes with a list open (Task 4);
+   * - the wake's `wakes` count, and its clearing of a load trap;
+   * - **what the house is owed** (spec §2.5, `owed`), when the table
+   *   document changed: the table's first generation, and the slot with its
+   *   revision — the new copy, or a REMOVAL when the layer deleted the table
+   *   — with its alarm at +30 s set beside the batch. A copy `house_copy`
+   *   trapped on arms that alarm too, for a fresh module to recompute (the
+   *   orchestrator's ruling I-42).
    *
    * Every write goes in ONE `batch`, and a request with nothing to write runs
-   * none — so a probe creates nothing.
+   * none — so a probe creates nothing. Answers whether the batch wrote a
+   * slot, which the request then pushes.
    */
-  private commit(called: Called, parts: BatchParts): void {
+  private commit(id: string, called: Called, parts: BatchParts): boolean {
     const sql = this.ctx.storage.sql;
     const stored = readDocs(sql);
     const now = Date.now();
@@ -480,6 +678,10 @@ export class Table extends DurableObject<Env> {
       if (text === stored.get(kind)) continue;
       writes.push(text === undefined ? () => deleteDoc(sql, kind) : () => upsertDoc(sql, kind, text, now));
     }
+    // An empty map is an id the store refused (`readLayerDocs`): nothing is
+    // stored under it, so nothing changed.
+    const before = stored.get("table");
+    const after = called.docs.size === 0 ? before : called.docs.get("table");
     const picker = called.reply.picker ?? parts.restored?.reply.picker;
     if (picker === CLEARED) {
       if (stored.has("picker")) writes.push(() => deleteDoc(sql, "picker"));
@@ -490,29 +692,140 @@ export class Table extends DurableObject<Env> {
       writes.push(() => setMeta(sql, "wakes", String(Number(getMeta(sql, "wakes") ?? "0") + 1)));
     }
     if (parts.clearTraps) writes.push(() => clearLoadTraps(sql));
-    if (writes.length === 0) return;
+    // Computed BEFORE the batch, from the documents already read out of the
+    // module (the orchestrator's ruling I-42), and written LAST in it, so the
+    // slot's size and last activity count the documents this batch writes.
+    const owed = after === before ? undefined : this.owed(id, after, called.at);
+    if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
+    if (writes.length === 0) return false;
+    const due = owed !== undefined && (owed.slot !== undefined || owed.trapped) ? now + nextRetry(0) : undefined;
     this.batch(() => {
       for (const write of writes) write();
-    });
+    }, due);
+    return owed?.slot !== undefined;
+  }
+
+  /**
+   * What a change of the table document owes the house (spec §2.5), decided
+   * before any write: `table` is the document the change left — `undefined`
+   * when the layer deleted the table — and `at` the P-2 reading its call was
+   * pinned to.
+   *
+   * - **The generation** is drawn when `meta` holds none, at `at` with 64
+   *   random bits: for every table this shell creates, by the create's own
+   *   batch, whose reading is the table's `created_at`.
+   * - **The copy** is `house_copy` of the document (`copyOf`), or `null`, a
+   *   REMOVAL. One `house_copy` refuses is logged — its sentence VERBATIM —
+   *   and owes nothing: the house keeps listing the last copy it received, a
+   *   state only a corrupted store reaches, whose path is the operator's force
+   *   (Task 5's escalation 1, ruled). One that TRAPS is logged, owes no slot,
+   *   and is `trapped`.
+   * - **The slot** is owed when the copy DIFFERS from the one last put in
+   *   motion (`differs`), at the next revision.
+   */
+  private owed(id: string, table: string | undefined, at: number): Owed {
+    const state = slotState(this.ctx.storage.sql);
+    const draw = state.generation === undefined ? drawGeneration(at) : undefined;
+    const generation = state.generation ?? (draw as Generation);
+    let copy: string | null = null;
+    if (table !== undefined) {
+      const made = this.copyOf(id, table);
+      if ("refused" in made) {
+        log("copy-refused", { id, error: made.refused });
+        return { draw, trapped: false };
+      }
+      if ("trapped" in made) {
+        log("trap", { id, call: "house_copy", error: made.trapped });
+        return { draw, trapped: true };
+      }
+      // `house_copy` answers `undefined` only where no table is stored, and
+      // the module it ran on was handed one.
+      if (made.copy === undefined) return { draw, trapped: false };
+      copy = made.copy;
+    }
+    if (!differs(state, copy)) return { draw, trapped: false };
+    return { draw, slot: { generation, revision: state.revision + 1, copy }, trapped: false };
+  }
+
+  /** The writes `owed` asks of a batch: its generation, then its slot and
+   *  revision — the slot's last activity and size read INSIDE the batch,
+   *  after every document write before it. */
+  private owedWrites(id: string, owed: Owed): Array<() => void> {
+    const sql = this.ctx.storage.sql;
+    const writes: Array<() => void> = [];
+    const { draw, slot: next } = owed;
+    if (draw !== undefined) writes.push(() => setMeta(sql, "generation", JSON.stringify(draw)));
+    if (next !== undefined) {
+      writes.push(() => {
+        const slot: Slot = {
+          id,
+          generation: next.generation,
+          revision: next.revision,
+          copy: next.copy,
+          last_active: lastActive(sql) ?? Date.now(),
+          bytes: sql.databaseSize,
+          attempt: 0,
+        };
+        setMeta(sql, "revision", String(next.revision));
+        setMeta(sql, "slot", JSON.stringify(slot));
+      });
+    }
+    return writes;
+  }
+
+  /**
+   * `house_copy` over `table`, on a module built for this one call and
+   * holding only that document — measured at about 0.15 ms a call in the
+   * pool. A trap there discards THAT module (the orchestrator's ruling
+   * I-42), so this object's own — which the request's frames read next — is
+   * never emptied by it: an emptied module reads this table as a 404, which
+   * would end every live socket (`sendFrames`).
+   *
+   * ONE id through `house_copy`, `put_copy` and `remove_copy` (Task 5's
+   * escalation 3): the copy is made of the document stored under `id` — this
+   * object's name, which the layer wrote into the document as its `id` — and
+   * the house stores it under the slot's `id`, this same name, and removes it
+   * by that key, while its listing reads each row's id from the DOCUMENT.
+   */
+  private copyOf(id: string, table: string): { copy: string | undefined } | { refused: string } | { trapped: string } {
+    const scratch = new Instance(moduleConfig(this.env, null));
+    try {
+      const done = scratch.guarded((mod) => {
+        mod.load("table", id, table);
+        return mod.house_copy(id);
+      });
+      return "trapped" in done ? done : { copy: done.ok };
+    } catch (e) {
+      // `load` or `house_copy` refusing, with its sentence thrown as a string.
+      if (typeof e === "string") return { refused: e };
+      throw e;
+    }
   }
 
   /**
    * A write batch: `writes` inside ONE `transactionSync`, which first creates
-   * the tables. Every write this object makes goes through here.
+   * the tables, and `alarm` beside it in the same synchronous turn, before
+   * any `await` (spec §2.4): a time sets the alarm, `null` deletes it, and
+   * `undefined` leaves it where it is. Every write this object makes goes
+   * through here.
    *
    * An object the platform gives no name writes NOTHING, whatever it is asked
-   * (the orchestrator's ruling, Task 9 fix round 1): no alarm could ever serve
-   * what it stored, because the guard skips a nameless alarm
-   * (`guardAlarmName`). So the rule holds here, by construction, and not
-   * through what the layer happens to refuse.
+   * (the orchestrator's ruling, Task 9 fix round 1), and arms no alarm: no
+   * alarm could ever serve what it stored, because the guard skips a nameless
+   * alarm (`guardAlarmName`). So the rule holds here, by construction, and
+   * not through what the layer happens to refuse.
    */
-  private batch(writes: (sql: SqlStorage) => void): void {
-    if (this.ctx.id.name === undefined) return;
+  private batch(writes: (sql: SqlStorage) => void, alarm?: number | null): void {
+    const id = this.ctx.id.name;
+    if (id === undefined) return;
     const sql = this.ctx.storage.sql;
     this.ctx.storage.transactionSync(() => {
       ensureTables(sql);
       writes(sql);
     });
+    if (alarm === undefined) return;
+    const armed = alarm === null ? this.ctx.storage.deleteAlarm() : this.ctx.storage.setAlarm(alarm);
+    armed.catch((e: unknown) => log("alarm-failed", { id, error: String(e) }));
   }
 
   /** One module call pinned to P-2's reading, answered as plain data with
@@ -585,4 +898,83 @@ function readLayerDocs(mod: Exports, id: string): Map<LayerDoc, string | undefin
 function clearLoadTraps(sql: SqlStorage): void {
   deleteMeta(sql, "load_traps");
   deleteMeta(sql, "poison");
+}
+
+/** What `acked` holds (spec §2.4): the pair last acknowledged, and the
+ *  digest of its copy (`copyDigest`) — `null` for a REMOVAL. */
+type Acked = Ack & { digest: string | null };
+
+/** What a change of the table document owes the house (`Table.owed`). */
+interface Owed {
+  /** The table's first generation, which this batch draws. */
+  draw: Generation | undefined;
+  /** The slot this batch writes: a copy, or `null` — a REMOVAL — at its
+   *  revision. */
+  slot?: { generation: Generation; revision: number; copy: string | null };
+  /** `house_copy` trapped: the copy is still owed. `commit` arms the alarm
+   *  to recompute it; `recopy`, which the alarm runs, arms nothing. */
+  trapped: boolean;
+}
+
+/** The table's slot state, as `meta` holds it (spec §2.4) — each value this
+ *  shell wrote as JSON, none of them a record or a table document: the copy
+ *  inside `slot` comes back as the exact string it went in as. Before the
+ *  first batch there is none, and the revision is 0. */
+interface SlotState {
+  generation?: Generation;
+  revision: number;
+  slot?: Slot;
+  acked?: Acked;
+}
+
+function slotState(sql: SqlStorage): SlotState {
+  const parsed = <T>(k: "generation" | "slot" | "acked"): T | undefined => {
+    const text = getMeta(sql, k);
+    return text === undefined ? undefined : (JSON.parse(text) as T);
+  };
+  return {
+    generation: parsed<Generation>("generation"),
+    revision: Number(getMeta(sql, "revision") ?? "0"),
+    slot: parsed<Slot>("slot"),
+    acked: parsed<Acked>("acked"),
+  };
+}
+
+/** Whether `copy` — `null`: a REMOVAL — differs from the one last put in
+ *  motion (spec §2.5): the slot's while one waits, else the acknowledged
+ *  one's, by its digest. With neither, anything differs. */
+function differs(state: SlotState, copy: string | null): boolean {
+  if (state.slot !== undefined) return copy !== state.slot.copy;
+  if (state.acked === undefined) return true;
+  return (copy === null ? null : copyDigest(copy)) !== state.acked.digest;
+}
+
+/** A new generation at the reading `at`, with 64 random bits. */
+function drawGeneration(at: number): Generation {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  return { at, rand: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("") };
+}
+
+/** The table's last activity (spec §2.4): the newest `written_at` of its
+ *  record, table and chat — `null` when none is stored. */
+function lastActive(sql: SqlStorage): number | null {
+  return sql
+    .exec<{ at: number | null }>("SELECT max(written_at) AS at FROM docs WHERE kind IN ('record', 'table', 'chat')")
+    .one().at;
+}
+
+/** A push's key: its `(generation, revision)`. */
+function pushKey(slot: Slot): string {
+  return `${slot.generation.at}:${slot.generation.rand}:${slot.revision}`;
+}
+
+/** Whether two pushes carry the same `(generation, revision)`. */
+function samePush(a: Ack, b: Ack): boolean {
+  return cmpGen(a.generation, b.generation) === 0 && a.revision === b.revision;
+}
+
+/** When a waiting slot is next retried — `nextRetry` of its failures from
+ *  now — or `null`, nothing due, with no slot. */
+function retryDue(slot: Slot | undefined): number | null {
+  return slot === undefined ? null : Date.now() + nextRetry(slot.attempt);
 }

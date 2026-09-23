@@ -5,6 +5,7 @@ import { House } from "./house";
 import { identityConfig, keySource, resolveIdentity, type Identity, type IdentityConfig, type KeySource } from "./identity";
 import { errorBody, log, respond } from "./respond";
 import { routableName, route, type Target } from "./route";
+import { HOUSE_NAME } from "./slot";
 import { isUpgrade, Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
 
 export { Archive, House, Table };
@@ -47,7 +48,8 @@ const NO_ONE: Identity = { kind: "none" };
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
- * 4. `/api/art`: the static manifest's bytes, as JSON.
+ * 4. `/api/art`: the static art manifest projected onto the nine maps the
+ *    layer's `ArtManifest` declares, as JSON (`art`).
  * 5. The caller: Access's assertion, verified (`resolveIdentity`), whose
  *    address was judged raw and then trimmed and ASCII-lowercased as the
  *    layer reads one. No assertion asks nothing of the key source; a key set
@@ -142,13 +144,37 @@ async function bounded(stream: ReadableStream<Uint8Array> | null): Promise<Uint8
   return bytes;
 }
 
-/** `GET|HEAD /api/art`: the static manifest's bytes as JSON (spec §4 — the
- *  axum route re-serializes the same manifest, so the two agree by value). */
+/**
+ * The nine maps the layer's `ArtManifest` declares, in its declaration order —
+ * all that the NAS's `/api/art` answers. The manifest FILE also carries two
+ * keys of its generator's, `area_duplicates` and `provenance`; the NAS's route
+ * serializes the typed struct, which has no field for either, so serde drops
+ * both, and the corpus's `art_manifest.json` was cut the same way. The Worker
+ * PROJECTS the file onto these nine (the orchestrator's ruling on Task 12's
+ * finding: streaming the file's bytes answered the two generator keys
+ * besides).
+ */
+const ART_MAPS = ["orders", "techs", "sites", "achievements", "areas", "five_power", "mercenaries", "backs", "tokens"] as const;
+
+/**
+ * `GET|HEAD /api/art` (spec §4): the static art manifest projected onto
+ * `ART_MAPS` — a map the file lacks is `{}`, as the struct's
+ * `#[serde(default)]` makes it — serialized compactly, as axum's `Json` writes
+ * it. It is the NAS's answer by VALUE, not byte for byte: within a map,
+ * `JSON.stringify` enumerates integer-like keys (`orders`, `sites`)
+ * numerically, where serde's `BTreeMap` orders them as strings. The manifest
+ * carries no seed, so it may be parsed. Any other answer of the asset layer's
+ * is passed on with its status.
+ */
 async function art(req: Request, url: URL, env: Env): Promise<Response> {
   const asset = await env.ASSETS.fetch(new URL("/art/manifest.json", url));
-  if (req.method === "HEAD") await asset.body?.cancel();
-  const headers: Record<string, string> = asset.status === 200 ? { "content-type": "application/json" } : {};
-  return new Response(req.method === "HEAD" ? null : asset.body, { status: asset.status, headers });
+  if (asset.status !== 200) {
+    if (req.method === "HEAD") await asset.body?.cancel();
+    return new Response(req.method === "HEAD" ? null : asset.body, { status: asset.status });
+  }
+  const manifest = (await asset.json()) as Record<string, unknown>;
+  const body = JSON.stringify(Object.fromEntries(ART_MAPS.map((key) => [key, manifest[key] ?? {}])));
+  return new Response(req.method === "HEAD" ? null : body, { status: 200, headers: { "content-type": "application/json" } });
 }
 
 /** A body's `id` when it is a JSON object whose `id` is a string (spec
@@ -198,7 +224,7 @@ function objectFor(
   body: Uint8Array | null,
   headers: Headers,
 ): { fetch(req: Request): Promise<Response> } {
-  const house = () => env.HOUSE.get(env.HOUSE.idFromName("house"));
+  const house = () => env.HOUSE.get(env.HOUSE.idFromName(HOUSE_NAME));
   switch (target.kind) {
     case "create": {
       // A named id the layer can never use is the house's, whose `create`

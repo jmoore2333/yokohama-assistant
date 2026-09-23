@@ -1,7 +1,8 @@
 /**
  * The table object's SQLite (spec §2.4): two tables, and the only SQL the shell
- * runs on them. The house object keeps its chat in the same `docs` table
- * (spec §2.5's first cut).
+ * runs on them. The house object keeps its chat in the same `docs` table, and
+ * the chat's load-trap count in the same `meta` (spec §2.5); its copies live
+ * in two tables of its own, which `house.ts` writes.
  *
  * - `docs(kind, json, written_at)` holds `record`, `table` and `chat` — each the
  *   exact text the module's `read` answered, never parsed, so a seed above 2^53
