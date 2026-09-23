@@ -2,10 +2,10 @@ import { Archive, ARCHIVE_PREFIX } from "./archive";
 import { shellConfig } from "./config";
 import type { Env } from "./env";
 import { House } from "./house";
-import { forwardable, identityConfig, keySource, resolveIdentity, type Identity, type IdentityConfig, type KeySource } from "./identity";
+import { identityConfig, keySource, resolveIdentity, type Identity, type IdentityConfig, type KeySource } from "./identity";
 import { errorBody, log, respond } from "./respond";
 import { routableName, route, type Target } from "./route";
-import { Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
+import { isUpgrade, Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
 
 export { Archive, House, Table };
 
@@ -22,6 +22,10 @@ export const BODY_LIMIT_SENTENCE = "the body could not be read: length limit exc
  *  trust. */
 const STRIPPED = "x-yokohama-";
 
+/** The 403 an upgrade from another site's page answers (host-written; the
+ *  orchestrator's ruling on Task 11's review, escalation 1). */
+const FOREIGN_SOCKET = "this socket is for the site's own pages";
+
 const NO_ONE: Identity = { kind: "none" };
 
 /**
@@ -31,13 +35,22 @@ const NO_ONE: Identity = { kind: "none" };
  *    EMPTY body — never `index.html`; any method but GET or HEAD on `/enter`
  *    or `/api/art` is 405 with an empty body, as axum's router answers; and
  *    `/enter` is the turnstile's 302 to `/#/lobby`.
+ * 1a. An upgrade whose `Origin` is present and not this site's own is 403
+ *    `this socket is for the site's own pages`, unupgraded (the
+ *    orchestrator's ruling on Task 11's review, escalation 1). A WebSocket is
+ *    outside CORS, so without it a hostile page in a signed-in player's
+ *    browser could open an authenticated socket and read its frames. A
+ *    request with no `Origin` — curl, the deploy readings — is not a page's,
+ *    and passes.
  * 2. `shellConfig`: a configuration it refuses answers every remaining
  *    request — every `/api/*` — 500 naming the variable (spec §2.6).
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
  * 4. `/api/art`: the static manifest's bytes, as JSON.
- * 5. The caller: Access's assertion, verified (`resolveIdentity`). A key set
+ * 5. The caller: Access's assertion, verified (`resolveIdentity`), whose
+ *    address was judged raw and then trimmed and ASCII-lowercased as the
+ *    layer reads one. No assertion asks nothing of the key source; a key set
  *    that cannot be had is no caller, so the request fails CLOSED.
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and `X-Yokohama-User` set when there is a caller.
@@ -56,6 +69,10 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
   if (target.kind === "missing") return new Response(null, { status: 404 });
   if (target.kind === "not-allowed") return new Response(null, { status: 405 });
   if (target.kind === "enter") return new Response(null, { status: 302, headers: { Location: "/#/lobby" } });
+  const origin = req.headers.get("Origin");
+  if (isUpgrade(req.headers) && origin !== null && origin !== url.origin) {
+    return respond(403, errorBody(FOREIGN_SOCKET));
+  }
 
   const config = shellConfig(env);
   if ("error" in config) return respond(500, errorBody(config.error));
@@ -67,8 +84,7 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
 
   if (target.kind === "art") return art(req, url, env);
 
-  let identity = await identify(req.headers, keys, identityConfig(env, config.devDoor, Math.floor(Date.now() / 1000)));
-  if (identity.kind !== "none" && !forwardable(identity.email)) identity = NO_ONE;
+  const identity = await identify(req.headers, keys, identityConfig(env, config.devDoor, Math.floor(Date.now() / 1000)));
 
   const headers = new Headers();
   for (const [name, value] of req.headers) {
@@ -80,15 +96,16 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
 }
 
 /**
- * The caller, or no one. A key set that cannot be had, or an assertion that
- * throws while it is read, is no one, and is logged (`identity-failed`). An
- * assertion naming a `kid` the cached set lacks asks for the keys once more,
- * and is resolved ONCE more — never a loop: the key source decides whether
- * that ask may fetch (once a minute), so a forged `kid` cannot force a fetch
- * per request.
+ * The caller, or no one. A request with no assertion is no one without a word
+ * to the key source (Task 11's review, M1). A key set that cannot be had, or
+ * an assertion that throws while it is read, is no one, and is logged
+ * (`identity-failed`). An assertion naming a `kid` the cached set lacks asks
+ * for the keys once more, and is resolved ONCE more — never a loop: the key
+ * source decides whether that ask may fetch (once a minute), so a forged
+ * `kid` cannot force a fetch per request.
  */
 async function identify(headers: Headers, keys: KeySource, config: IdentityConfig | null): Promise<Identity> {
-  if (config === null) return NO_ONE;
+  if (config === null || !headers.has("cf-access-jwt-assertion")) return NO_ONE;
   try {
     let found = await resolveIdentity(headers, await keys(false), config);
     if (found.kind === "none" && found.unknownKid) found = await resolveIdentity(headers, await keys(true), config);
@@ -198,10 +215,13 @@ function objectFor(
     case "table":
       return env.TABLE.get(env.TABLE.idFromName(target.name));
     case "archive":
-      // With no caller — or an address longer than the layer accepts, which
-      // it refuses — the house's `dispatch` answers the layer's 401. So no
-      // archive object's name passes 262 bytes, far inside the 1,024 past
-      // which the platform would give it none.
+      // Named by the address exactly as `resolveIdentity` answered it —
+      // judged raw, then trimmed and ASCII-lowercased as the layer's
+      // `User::parse` reads a caller — so one caller is one object. With no
+      // caller, or an address longer than the layer accepts (which it
+      // refuses), the house's `dispatch` answers the layer's 401: no archive
+      // object's name passes 262 bytes, far inside the 1,024 past which the
+      // platform would give it none.
       if (identity.kind === "none" || new TextEncoder().encode(identity.email).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + identity.email));
     case "admin":

@@ -2081,6 +2081,29 @@ What answers what:
 - **The Worker** is stateless. It verifies the Access assertion, removes every client header named
   `x-yokohama-…`, and forwards to one of three SQLite-backed classes: `Table`, one per table;
   `House`, ONE, for the lobby and the house chat; and `Archive`, one per caller, for a browser's saves.
+- **A few answers are this host's own words** (spec §4's host-written class, and this cycle's
+  additions). Everything else a client reads is the layer's.
+  - a path with no file: **404** with an empty body — never `index.html`;
+  - any method but GET or HEAD on `/enter` or `/api/art`: **405**, empty; `/enter`: **302** to
+    `/#/lobby`;
+  - a body over 2 MiB: **400** `the body could not be read: length limit exceeded` — the NAS's own
+    sentence, read off it on 2026-09-23;
+  - a bad variable: **500** naming it (§6.3);
+  - **a WebSocket upgrade from another site's page — its `Origin` present and not
+    `https://yokohama.moore.nyc`: 403 `this socket is for the site's own pages`**, unupgraded. A
+    WebSocket is outside CORS, so without it a hostile page in a signed-in player's browser could
+    read a table's turn and timing frames (Task 11's review, escalation 1). A request with no
+    `Origin` — curl, the deploy readings — passes;
+  - a `…/stream` or `/api/stream` GET that is not an upgrade: **426** `this host streams over
+    WebSocket`; any other method on them: **405**, empty;
+  - the create's three: **400** `a game must be created from a JSON object`, **400** `a game id,
+    when given, must be a string`, **500** `the create's id does not name the table it was routed
+    to`;
+  - a trapped engine: **500** `the table's engine stopped — try again`, `the lobby's engine stopped
+    — try again` or `the archive's engine stopped — try again`; a table whose stored document traps
+    twice: **500** `this table's stored <kind> cannot be loaded`;
+  - a deleted table's sockets: `end {"reason":"deleted"}`, then a **4404** close whose reason is
+    `this table was deleted`.
 
 ### 6.1 Build
 
@@ -2151,14 +2174,26 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
 | `YOKOHAMA_WEB_TEST_CLOCK` | **never set in production** — `wrangler.test.jsonc` only, and the deploy guard refuses `wrangler.jsonc` if it names it | the wall clock |
 
-- **A bad value answers 500 naming its variable** on every `/api/*` (spec §2.6), the Worker's form
-  of the NAS refusing to start: a switch other than `on` or `off`, an archive other than `r2` or
-  `off`, `r2` with no bucket bound, a TTL that is not a whole number of days, an operator entry
-  that is not an address, or any value written without quotes. The static release is unaffected.
-- **An address outside visible ASCII is no caller** (Task 2's review, note E1). The layer's own
-  `resolve` reads such a header value as absent — the NAS does the same — so a person whose Access
-  `email` holds any other character meets the layer's 401, and the Worker forwards no identity
-  header for them at all.
+- **A bad value answers 500 naming its variable** (spec §2.6), the Worker's form of the NAS refusing
+  to start: a switch other than `on` or `off`, an archive other than `r2` or `off`, `r2` with no
+  bucket bound, a TTL that is not a whole number of days, an operator entry that is not an address,
+  or any value written without quotes. The static release is unaffected, and so are a few `/api/*`
+  answers, which is where the rule is not "every `/api/*`":
+  - any method but GET or HEAD on `/api/art` is 405 before any configuration is read;
+  - a bad value of any variable but the three chat variables is the Worker's own refusal: 500 on
+    every other `/api/*` request;
+  - a bad chat variable is read only by the objects' module (`init`). So the Worker's own
+    `GET /api/art` still answers 200, and so do the objects' 405 and 426 on the stream routes,
+    which come before a module is built; every other `/api/*` is the object's 500 naming the
+    variable.
+- **An address outside visible ASCII is no caller** (Task 2's review, note E1; Task 11's review,
+  I1). The Worker judges the RAW `email` claim — and the raw claimed header — before it trims or
+  lowercases anything, and then lowercases ASCII only, as the layer's `User::parse` does. So a
+  person whose Access `email` holds any character but a tab, a space or visible ASCII — a no-break
+  space, an ideographic space, or a Kelvin sign (U+212A), which JavaScript's `toLowerCase()` would
+  turn into another user's `k` — meets the layer's 401, and the Worker forwards no identity header
+  for them at all. The layer's own `resolve` reads such a header value as absent, as the NAS
+  does.
 - **To deploy with no archive** (R-6.5c.14): `"YOKOHAMA_WEB_ARCHIVE": "off"`, as the fourteenth
   deployment does. **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as
   the fourteenth deployment does.

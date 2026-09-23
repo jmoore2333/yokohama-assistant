@@ -245,16 +245,19 @@ describe("the Worker's own answers (spec §2.3)", () => {
 
 describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
   // BATTERY 2: the four names the objects trust, forged by a client beside a
-  // real person's assertion. Mutants: the old rule (only `x-yokohama-user`
-  // stripped); nothing stripped; the table's name taken from the client's
-  // header; the identity header set only where the client sent none; a strip
-  // that compares names case-sensitively in capitals.
+  // real person's assertion — and a fifth no object reads yet, which pins the
+  // PREFIX rule (Task 11's review, M2). Mutants: the old rule (only
+  // `x-yokohama-user` stripped); nothing stripped; the four trusted names
+  // stripped by name; the table's name taken from the client's header; the
+  // identity header set only where the client sent none; a strip that compares
+  // names case-sensitively in capitals.
   it("(battery 2) a client's forged x-yokohama-* headers reach no object; the person is the caller", async () => {
     const forged = {
       "x-yokohama-user": "evil@x.test",
       "x-yokohama-claimed-user": "evil@x.test",
       "x-yokohama-operator": "evil@x.test",
       "x-yokohama-table-id": "elsewhere",
+      "x-yokohama-future": "evil@x.test",
     };
     const token = await person(RED);
     const me = await reaching(() => worker("/api/me", { token, headers: forged }));
@@ -334,15 +337,17 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect(res.text).toBe(NO_ONE);
     expect(asked).toEqual([false, true]);
   });
-  // Mutant: a refresh on every request, which would let any token force a
-  // certs fetch (the once-a-minute limit is the key source's, not `handle`'s).
-  it("a known kid, or no assertion at all, asks the cached keys once and refreshes nothing", async () => {
+  // Mutants: a refresh on every request, which would let any token force a
+  // certs fetch (the once-a-minute limit is the key source's, not `handle`'s);
+  // the keys asked for a request that carries no assertion (Task 11's review,
+  // M1), which on a cold isolate is a fetch for nothing.
+  it("a known kid asks the cached keys once and refreshes nothing; no assertion asks nothing", async () => {
     const withToken = keysOf(key.set());
     expect((await worker("/api/me", { token: await person(RED), keys: withToken.keys })).text).toContain(RED);
     expect(withToken.asked).toEqual([false]);
     const without = keysOf(key.set());
     expect((await worker("/api/me", { keys: without.keys })).text).toBe(NO_ONE);
-    expect(without.asked).toEqual([false]);
+    expect(without.asked).toEqual([]);
   });
 
   // A certs fetch that fails is no caller: the request fails CLOSED, and the
@@ -357,17 +362,19 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect(lines).toEqual([{ event: "identity-failed", error: "Error: certs unreachable" }]);
   });
 
-  // The orchestrator's ruling (Task 2's review, E1): an address the layer
-  // cannot read as a header is no caller, and is never forwarded as one.
-  // Mutant: the check dropped — workerd forwards either address as UTF-8
-  // bytes (warning that a browser would throw), the layer reads them as
-  // absent, and `/api/me` still answers no one: only the forwarded headers
-  // show it.
-  it("a person whose address is not visible ASCII is no caller, and no identity header is forwarded", async () => {
-    for (const email of ["rené@x.test", "用户@例子.广告"]) {
+  // The orchestrator's rulings (Task 2's review, E1; Task 11's review, I1):
+  // an address the layer cannot read as a header is no caller, is never
+  // forwarded as one, and is judged RAW. Mutants: the check dropped — workerd
+  // forwards such an address as UTF-8 bytes (warning that a browser would
+  // throw), the layer reads them as absent, and only the forwarded headers
+  // show it; the check after the normalization — the Kelvin sign is then
+  // lowercased to `k` and `\u212Aevin@x.test` IS `kevin@x.test`, another
+  // user.
+  it("a person whose raw address is not visible ASCII is no caller, and no identity header is forwarded", async () => {
+    for (const email of ["rené@x.test", "用户@例子.广告", "\u212Aevin@x.test", "\u00A0red@t.test"]) {
       const res = await reaching(async () => worker("/api/me", { token: await person(email) }));
-      expect([res.result.status, res.result.text]).toEqual([200, NO_ONE]);
-      expect(res.house.map(yokohamaHeaders)).toEqual([{}]);
+      expect([res.result.status, res.result.text], JSON.stringify(email)).toEqual([200, NO_ONE]);
+      expect(res.house.map(yokohamaHeaders), JSON.stringify(email)).toEqual([{}]);
     }
   });
 });
@@ -388,6 +395,37 @@ describe("routing to the objects (spec §2.3)", () => {
       ids.push(id);
     }
     expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  // M4 (Task 11's review): every body that names no string `id` — not JSON,
+  // not an object, an `id` that is null or a number, bytes that open with a
+  // byte-order mark or are not UTF-8 — is created at a DRAWN name, and the
+  // layer answers the body as it answers it anywhere. Mutants: `null` read as
+  // an object (a throw); a non-string `id` taken as the name; a byte-order
+  // mark skipped, or bad UTF-8 decoded leniently — either would name the
+  // object by the body's `id`. (A JSON array or string has no `id` to take, so
+  // those two rows pin the answer rather than a branch.)
+  it.each<[string, Uint8Array]>([
+    ["an array", new TextEncoder().encode("[]")],
+    ["a string", new TextEncoder().encode('"x"')],
+    ["null", new TextEncoder().encode("null")],
+    ["an id that is null", new TextEncoder().encode(CREATE_BODY.replace(/}$/, ',"id":null}'))],
+    ["an id that is a number", new TextEncoder().encode(CREATE_BODY.replace(/}$/, ',"id":5}'))],
+    ["a byte-order mark", new TextEncoder().encode(`\uFEFF${CREATE_BODY.replace(/}$/, ',"id":"named"}')}`)],
+    // The bad byte INSIDE the id's string, where a lenient decoder would read
+    // U+FFFD and name the object by it.
+    [
+      "bytes that are not UTF-8",
+      Uint8Array.from([
+        ...new TextEncoder().encode(CREATE_BODY.replace(/}$/, ',"id":"nam')),
+        0xff,
+        ...new TextEncoder().encode('ed"}'),
+      ]),
+    ],
+  ])("a create whose body is %s lands at a drawn sim- name", async (_what, body) => {
+    const res = await reaching(async () => worker("/api/games", { method: "POST", token: await person(RED), headers: JSON_TYPE, body }));
+    expect(res.table.map((r) => r.headers.get("x-yokohama-table-id"))).toEqual([expect.stringMatching(/^sim-[0-9a-f]{16}$/)]);
+    expect(res.result.status, "the layer refuses every one of these bodies").toBe(400);
   });
 
   // The orchestrator's ruling (Task 9's review): a name the layer can never
@@ -428,6 +466,44 @@ describe("routing to the objects (spec §2.3)", () => {
     const [first] = await tab.until(1);
     expect(first).toMatch(/^\{"event":"signal","data":\{/);
     tab.ws.close(1000, "done");
+  });
+
+  // ESCALATION 1 of Task 11's review, ruled a host-local hardening: an
+  // upgrade from ANOTHER site's page — a hostile page in a signed-in player's
+  // browser, which WebSockets' lack of CORS would otherwise let read turn and
+  // timing frames — is refused 403 unupgraded; the site's own pages, and a
+  // client that sends no `Origin` (curl, the deploy readings), pass. A plain
+  // request is not an upgrade and is never refused for its `Origin`. Mutants:
+  // no check; a prefix compare (`https://yokohama.test.evil.test`); a host
+  // compare (`http://yokohama.test`); an absent `Origin` refused; every request
+  // checked.
+  it("(the Origin check) an upgrade from another site's page is refused 403, unupgraded", async () => {
+    const token = await person(RED);
+    /** The upgrade, with any socket it wrongly opened closed at once — an
+     *  unaccepted socket would hold the house's next eviction open. */
+    const upgradeFrom = async (path: string, origin: string) => {
+      const res = await worker(path, { token, headers: { ...UPGRADE, Origin: origin } });
+      if (res.webSocket) {
+        res.webSocket.accept();
+        res.webSocket.close(1000, "the cell expected no socket");
+      }
+      return [res.status, res.webSocket === null, res.text];
+    };
+    for (const origin of ["https://evil.test", "https://yokohama.test.evil.test", "http://yokohama.test", "null"]) {
+      expect(await upgradeFrom("/api/stream", origin), origin).toEqual([403, true, '{"error":"this socket is for the site\'s own pages"}']);
+    }
+    await seedPlaying("origin-t");
+    const table = await upgradeFrom("/api/games/origin-t/stream", "https://evil.test");
+    expect(table.slice(0, 2), "a table's stream as well as the lobby's").toEqual([403, true]);
+  });
+  it("(the Origin check) the site's own page, or no Origin at all, is upgraded; a plain request is never refused for its Origin", async () => {
+    const token = await person(RED);
+    for (const headers of [{ ...UPGRADE, Origin: ORIGIN }, UPGRADE]) {
+      const tab = await socket(await worker("/api/stream", { token, headers }));
+      tab.ws.close(1000, "done");
+    }
+    const plain = await worker("/api/me", { token, headers: { Origin: "https://evil.test" } });
+    expect(plain.text).toBe(`{"mode":"cf-access","user":"${RED}"}`);
   });
 
   // Task 14 fills the operator surface; until then its paths are the house's,

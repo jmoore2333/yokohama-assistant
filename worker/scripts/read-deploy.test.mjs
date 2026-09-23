@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { checkEntry, credentialFor, edgeInjections, essence, parseHeaderFile, precacheList } from "./read-deploy.mjs";
+import { checkEntry, credentialFor, edgeInjections, essence, get, parseHeaderFile, precacheList, requestLog } from "./read-deploy.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const enc = (text) => new TextEncoder().encode(text);
@@ -131,5 +131,97 @@ describe("credentialFor", () => {
   });
   it("answers nothing without a credential", () => {
     expect(credentialFor("https://yokohama.moore.nyc/", origin, [])).toBeNull();
+  });
+});
+
+// M8 (Task 11's review): every fetch the script makes itself goes through
+// `credentialFor`, so the header file reaches the deployment's origin however
+// a path is written. Mutant: `get` sending the file's headers unconditionally.
+describe("get", () => {
+  const pairs = [["CF-Access-Client-Id", "id.access"], ["CF-Access-Client-Secret", "s3cr3t"]];
+  /** A fetcher that records what it was asked, and answers 200. */
+  function recording() {
+    const asked = [];
+    const fetcher = async (url, init) => {
+      asked.push({ url: String(url), headers: init.headers, redirect: init.redirect });
+      return new Response("ok");
+    };
+    return { asked, fetcher };
+  }
+  it("sends the credential to the base's origin, following no redirect", async () => {
+    const { asked, fetcher } = recording();
+    await get("https://yokohama.moore.nyc", "/sw.js", pairs, fetcher);
+    expect(asked).toEqual([
+      {
+        url: "https://yokohama.moore.nyc/sw.js",
+        headers: { "CF-Access-Client-Id": "id.access", "CF-Access-Client-Secret": "s3cr3t" },
+        redirect: "manual",
+      },
+    ]);
+  });
+  it.each(["//evil.test/x", "https://evil.test/x"])("sends nothing of it where %s resolves to another origin", async (path) => {
+    const { asked, fetcher } = recording();
+    await get("https://yokohama.moore.nyc", path, pairs, fetcher);
+    expect(asked[0].headers).toEqual({});
+  });
+});
+
+// M9 (Task 11's review): CDP reuses a request's id across its redirects, so
+// the log keeps ONE record per HOP — each `redirectResponse` closes the hop
+// before it, with its own status and headers — and the reading can name the
+// request that failed, not only where it was sent. Mutant: records keyed by
+// the id alone, so the 3xx hop's status and headers are lost.
+describe("requestLog", () => {
+  const sent = (requestId, url, redirectResponse) => ({
+    requestId,
+    request: { url, method: "POST" },
+    type: "Fetch",
+    initiator: { type: "script", stack: { callFrames: [{ url: "https://site.test/beacon.js", lineNumber: 7 }] } },
+    ...(redirectResponse ? { redirectResponse } : {}),
+  });
+  it("records each redirect hop with its own status and headers, and never a cookie", () => {
+    const log = requestLog();
+    log.sent(sent("1", "https://cloudflareinsights.com/cdn-cgi/rum"), 2);
+    log.sent(
+      sent("1", "https://bdvc.cloudflareaccess.com/login", {
+        status: 302,
+        headers: { location: "https://bdvc.cloudflareaccess.com/login", "set-cookie": "CF_Authorization=bearer" },
+        fromServiceWorker: false,
+      }),
+      2,
+    );
+    log.failed({ requestId: "1", errorText: "net::ERR_FAILED", corsErrorStatus: { corsError: "MissingAllowOriginHeader" } });
+    expect(log.records).toEqual([
+      {
+        load: 2,
+        url: "https://cloudflareinsights.com/cdn-cgi/rum",
+        method: "POST",
+        type: "Fetch",
+        initiator: { type: "script", url: "https://site.test/beacon.js", line: 7 },
+        status: 302,
+        headers: { location: "https://bdvc.cloudflareaccess.com/login" },
+        fromServiceWorker: false,
+        redirectedTo: "https://bdvc.cloudflareaccess.com/login",
+      },
+      {
+        load: 2,
+        url: "https://bdvc.cloudflareaccess.com/login",
+        method: "POST",
+        type: "Fetch",
+        initiator: { type: "script", url: "https://site.test/beacon.js", line: 7 },
+        redirectedFrom: "https://cloudflareinsights.com/cdn-cgi/rum",
+        failed: "net::ERR_FAILED",
+        blockedReason: undefined,
+        corsError: { corsError: "MissingAllowOriginHeader" },
+      },
+    ]);
+  });
+  it("records a response on its request's current hop, cookies dropped", () => {
+    const log = requestLog();
+    log.sent(sent("7", "https://yokohama.moore.nyc/"), 1);
+    log.received({ requestId: "7", response: { status: 200, headers: { "content-type": "text/html", cookie: "x", "Set-Cookie": "y" }, fromServiceWorker: true } });
+    expect(log.records).toEqual([
+      expect.objectContaining({ url: "https://yokohama.moore.nyc/", status: 200, headers: { "content-type": "text/html" }, fromServiceWorker: true }),
+    ]);
   });
 });

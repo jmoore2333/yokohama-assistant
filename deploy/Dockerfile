@@ -1,15 +1,16 @@
 # The Yokohama browser client and its API, as one image.
 #
-# **One artifact, two targets.** This is what runs under Portainer on the NAS
-# today and what Modal runs later; the deployment decision is where to point a
-# tunnel, not what to build. Nothing in here is host-specific — every path the
-# server needs is an environment variable with a default that resolves inside
-# the image.
+# **One artifact, two places it runs.** This is what runs under Portainer on the
+# NAS, and what anyone self-hosting runs under a local Docker; the deployment
+# decision is where to point a tunnel, not what to build. Nothing in here is
+# host-specific — every path the server needs is an environment variable with a
+# default that resolves inside the image. (Hosted multiplayer on Cloudflare is
+# the Worker in `worker/`, which runs no image — RUNBOOK §6.)
 #
 # Built for `linux/amd64` deliberately. The DS1517+ is an Intel Atom C2538, so
-# amd64 is right for it AND for Modal — but the build happens on a workstation,
-# because compiling this workspace on that Atom is where the plan would fall
-# over rather than where it would be tested.
+# amd64 is right for it — but the build happens on a workstation, because
+# compiling this workspace on that Atom is where the plan would fall over rather
+# than where it would be tested.
 
 # ---------------------------------------------------------------------------
 # 1. The server, AND the browser host's WebAssembly module. `rust-toolchain.toml`

@@ -56,11 +56,13 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
   // The variables (spec §3.1), none of them a secret; RUNBOOK §6 says what
   // each one's absence means. `wrangler deploy` REPLACES the Worker's
-  // variables with these, so this file is the whole list. Three are not here,
-  // and their absence is their meaning: `YOKOHAMA_WEB_TABLE_TTL_DAYS` (no table
-  // expires; the TTL arrives with expiry), `YOKOHAMA_WEB_COUNT_WAKES` (off),
-  // and `YOKOHAMA_WEB_ADMINS`, which is set with `wrangler secret put` (the
-  // plan's ruling P-1) — a deploy leaves a secret alone.
+  // variables with these, so this file is the whole list. Four that `Env`
+  // declares are not here, and their absence is their meaning:
+  // `YOKOHAMA_WEB_TABLE_TTL_DAYS` (no table expires; the TTL arrives with
+  // expiry), `YOKOHAMA_WEB_COUNT_WAKES` (off), `YOKOHAMA_WEB_ADMINS` (set with
+  // `wrangler secret put`, the plan's ruling P-1 — a deploy leaves a secret
+  // alone), and the pool's test clock, which never ships (the deploy guard
+  // refuses this file if it so much as names it).
   "vars": {
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",

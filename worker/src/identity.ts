@@ -25,9 +25,39 @@ const bytes = (b64url: string): Uint8Array => {
 };
 const json = (b64url: string): Record<string, unknown> => JSON.parse(new TextDecoder().decode(bytes(b64url)));
 
+/** ASCII letters lowercased and nothing else — `User::parse`'s
+ *  `to_ascii_lowercase`, never JavaScript's `toLowerCase()`, which maps U+212A
+ *  KELVIN SIGN to ASCII `k`. `address` runs it only on what `forwardable` let
+ *  through, where the two agree; it is ASCII-only anyway, so a check moved
+ *  later can never again turn a Kelvin sign into another user's `k`. */
+export function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (ch) => ch.toLowerCase());
+}
+
+/**
+ * The address a raw value names: `raw` judged by `forwardable` BEFORE
+ * anything else is done to it, then trimmed and ASCII-lowercased as the
+ * layer's `User::parse` reads a caller — or `undefined` for a raw value that
+ * is not forwardable, or blank.
+ */
+function address(raw: string): string | undefined {
+  if (!forwardable(raw)) return undefined;
+  const email = asciiLower(raw.trim());
+  return email === "" ? undefined : email;
+}
+
 /** R-6.5c.3, in order. A missed Access destination, a forged token, another
  *  application's token and an expired one ALL fail closed: `none`, and the
- *  layer's own 401 answers. */
+ *  layer's own 401 answers.
+ *
+ *  The brief's text, with ONE change the orchestrator ruled at Task 11's
+ *  review (I1 — the spec over the brief): the address, the `email` claim or
+ *  the claimed header, is judged RAW by `forwardable` before any trim, and is
+ *  lowercased in ASCII only (`address`). Normalized first, a verified
+ *  `\u212Aevin@x.test` (a Kelvin sign) became `kevin@x.test`, another user,
+ *  and `\u00A0red@t.test` became `red@t.test` — JavaScript's `trim()` strips
+ *  non-ASCII whitespace, and its `toLowerCase()` maps the Kelvin sign to `k`.
+ *  The NAS reads both as no one. */
 export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfig): Promise<Identity> {
   const token = h.get("cf-access-jwt-assertion");
   const parts = token?.split(".");
@@ -51,10 +81,11 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
   if (typeof claims.exp !== "number" || claims.exp <= c.nowSeconds) return { kind: "none" };
   if (typeof claims.nbf === "number" && claims.nbf > c.nowSeconds + 60) return { kind: "none" };
   if (typeof claims.email === "string" && claims.email.trim() !== "") {
-    return { kind: "person", email: claims.email.trim().toLowerCase() };
+    const email = address(claims.email);
+    return email === undefined ? { kind: "none" } : { kind: "person", email };
   }
   if (c.devDoor && claims.common_name === c.devDoorClientId) {
-    const claimed = h.get("x-yokohama-claimed-user")?.trim().toLowerCase();
+    const claimed = address(h.get("x-yokohama-claimed-user") ?? "");
     if (claimed) return { kind: "dev", email: claimed };
   }
   return { kind: "none" };
@@ -81,21 +112,25 @@ export function refreshDue(lastRefreshAt: number | null, now: number): boolean {
  * this closure — ONE per isolate, which is how the Worker's default export
  * holds it (plan review m14; re-review m-d).
  *
- * - `false` answers the cache, and fetches only while there is none.
- * - `true` fetches again only when `refreshDue` says so, and otherwise answers
- *   the cache. So an assertion forging an unknown `kid` costs at most one
- *   fetch a minute, whoever sends it — the limit lives HERE, so `handle` holds
- *   no limiter state.
- * - EVERY fetch records its time, the first included, so a forged `kid` just
- *   after a cold start cannot force a second fetch.
+ * - `false` answers the cache; with none, it joins the fetch in flight, or
+ *   starts one.
+ * - `true` joins the fetch in flight; with none, it fetches again only when
+ *   `refreshDue` says so, and otherwise answers the cache — or, with no cache
+ *   at all, fetches as `false` does. So an assertion forging an unknown `kid`
+ *   costs at most one fetch a minute, whoever sends it — the limit lives
+ *   HERE, so `handle` holds no limiter state.
+ * - EVERY fetch records its time when it STARTS, the first included, and the
+ *   calls that arrive while it is out join it (Task 11's review, M1): a
+ *   forged `kid` just after a cold start cannot force a second fetch, not
+ *   even before the first has landed.
  * - A fetch that fails, answers anything but 200, or answers no key set
- *   REJECTS, and the cache is left as it was.
+ *   REJECTS every call that joined it, and the cache is left as it was.
  */
 export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
   let cached: JwkSet | undefined;
   let lastRefreshAt: number | null = null;
-  const fetchKeys = async (): Promise<JwkSet> => {
-    lastRefreshAt = clock();
+  let inflight: Promise<JwkSet> | undefined;
+  const load = async (): Promise<JwkSet> => {
     const res = await fetcher(`https://${teamDomain}/cdn-cgi/access/certs`);
     if (res.status !== 200) throw new Error(`the Access certs answered ${res.status}`);
     const body: unknown = await res.json();
@@ -104,8 +139,19 @@ export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clo
     cached = { keys: keys as JwkSet["keys"] };
     return cached;
   };
+  const refetch = (): Promise<JwkSet> => {
+    lastRefreshAt = clock();
+    // Cleared when it settles — asynchronously, so always after this
+    // assignment — and only if no later fetch has replaced it.
+    const pending = load().finally(() => {
+      if (inflight === pending) inflight = undefined;
+    });
+    inflight = pending;
+    return pending;
+  };
   return async (refresh) => {
-    if (cached === undefined || (refresh && refreshDue(lastRefreshAt, clock()))) return fetchKeys();
+    if (inflight !== undefined && (cached === undefined || refresh)) return inflight;
+    if (cached === undefined || (refresh && refreshDue(lastRefreshAt, clock()))) return refetch();
     return cached;
   };
 }
@@ -129,14 +175,18 @@ export function identityConfig(env: Env, devDoor: boolean, nowSeconds: number): 
 }
 
 /**
- * Whether an address can travel as the objects' `X-Yokohama-User`: every
- * character a tab, a space or visible ASCII — the bytes the layer's own
- * `resolve` reads a header with (`http`'s `HeaderValue::to_str`), which reads
- * any other value as ABSENT. workerd would send such a value on regardless,
- * as UTF-8 and with a warning that a browser's `Headers` would throw. So an
- * address outside the set is no caller here: no identity header is forwarded
- * at all, and the layer answers as it does for no one (the orchestrator's
- * ruling, Task 2's review).
+ * Whether a RAW address — an assertion's `email` claim, or the claimed
+ * header, before anything is trimmed or lowercased — can travel as the
+ * objects' `X-Yokohama-User`: every character a tab, a space or visible
+ * ASCII, the bytes the layer's own `resolve` reads a header with (`http`'s
+ * `HeaderValue::to_str`), which reads any other value as ABSENT. workerd would
+ * send such a value on regardless, as UTF-8, with a warning that a browser's
+ * `Headers` would throw. So a raw address outside the set is no caller here:
+ * `resolveIdentity` answers `none` for it, no identity header is forwarded,
+ * and the layer answers as it does for no one (the orchestrator's rulings:
+ * Task 2's review, E1; Task 11's review, I1 — judged raw, because JavaScript's
+ * `trim()` and `toLowerCase()` would first turn some such addresses into
+ * visible ASCII, and into another user's).
  */
 export function forwardable(email: string): boolean {
   return /^[\t\x20-\x7e]*$/.test(email);

@@ -26,12 +26,13 @@
 //   the door reading "Ready to play offline."
 // - `console` (Step 7.6): the same browser, two loads of `/` — the first in a
 //   fresh profile, the second once the service worker controls the page —
-//   recording every console message, and every request that failed, answered
-//   400 or more, went to another origin or to the edge's own `/cdn-cgi/`: its
-//   URL, method and type, its status and response headers if any, its
-//   initiator, and whether the service worker answered it. One JSON document
-//   on stdout. `set-cookie` is never printed: Access's session cookie is a
-//   bearer token.
+//   recording every console message, and every request hop that failed,
+//   answered 400 or more, was redirected or came of a redirect, went to
+//   another origin or to the edge's own `/cdn-cgi/`: its URL, method and type,
+//   its status and response headers if any, its initiator, and whether the
+//   service worker answered it — each redirect hop its own record. One JSON
+//   document on stdout. `set-cookie` is never printed: Access's session cookie
+//   is a bearer token.
 //
 // Exit 0 when the reading holds, 1 when it does not; `console` only reports.
 
@@ -144,9 +145,12 @@ function presenting(file, pairs) {
     : `${pairs.map(([name]) => name).join(" and ")} from ${file}, to this origin only`;
 }
 
-/** A GET of `base + path` with the credential, following no redirect. */
-async function get(base, path, pairs) {
-  return fetch(new URL(path, base), { redirect: "manual", headers: Object.fromEntries(pairs) });
+/** A GET of `path` against `base`, following no redirect, with the
+ *  credential only where the URL is `base`'s own origin (`credentialFor` —
+ *  Task 11's review, M8): a path that resolves elsewhere gets none of it. */
+export async function get(base, path, pairs, fetcher = fetch) {
+  const url = new URL(path, base);
+  return fetcher(url, { redirect: "manual", headers: credentialFor(url.href, new URL(base).origin, pairs) ?? {} });
 }
 
 /** The deployed `sw.js`, and its precache list and cache name. */
@@ -301,6 +305,51 @@ function printable(headers) {
   return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !/^(set-)?cookie$/i.test(name)));
 }
 
+/**
+ * CDP's `Network` events folded into ONE record per HOP (Task 11's review,
+ * M9). A redirect reuses its request's id: the next `requestWillBeSent`
+ * carries the 3xx as `redirectResponse`, which closes the hop before it with
+ * its own status and headers, and names where it went. A response or a
+ * failure lands on the request's CURRENT hop. Cookies are never kept.
+ */
+export function requestLog() {
+  const records = [];
+  const current = new Map();
+  return {
+    records,
+    sent(e, load) {
+      const previous = current.get(e.requestId);
+      if (previous && e.redirectResponse) {
+        Object.assign(previous, {
+          status: e.redirectResponse.status,
+          headers: printable(e.redirectResponse.headers),
+          fromServiceWorker: e.redirectResponse.fromServiceWorker,
+          redirectedTo: e.request.url,
+        });
+      }
+      const top = e.initiator?.stack?.callFrames?.[0];
+      const record = {
+        load,
+        url: e.request.url,
+        method: e.request.method,
+        type: e.type,
+        initiator: { type: e.initiator?.type, url: e.initiator?.url ?? top?.url, line: e.initiator?.lineNumber ?? top?.lineNumber },
+        ...(previous && e.redirectResponse ? { redirectedFrom: previous.url } : {}),
+      };
+      records.push(record);
+      current.set(e.requestId, record);
+    },
+    received(e) {
+      const r = current.get(e.requestId);
+      if (r) Object.assign(r, { status: e.response.status, headers: printable(e.response.headers), fromServiceWorker: e.response.fromServiceWorker });
+    },
+    failed(e) {
+      const r = current.get(e.requestId);
+      if (r) Object.assign(r, { failed: e.errorText, blockedReason: e.blockedReason, corsError: e.corsErrorStatus });
+    },
+  };
+}
+
 async function consoleReading(base, file) {
   const pairs = credentialFrom(file);
   // On stderr, so stdout is one JSON document a reader can hand to `jq`.
@@ -312,27 +361,13 @@ async function consoleReading(base, file) {
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     await cdp.send("Network.enable");
-    /** Every request by CDP id: what it was, how it was answered or why it failed. */
-    const requests = new Map();
+    /** Every request, one record per hop: what it was, how it was answered
+     *  or why it failed. */
+    const requests = requestLog();
     let load = 0;
-    cdp.on("Network.requestWillBeSent", (e) => {
-      const top = e.initiator?.stack?.callFrames?.[0];
-      requests.set(e.requestId, {
-        load,
-        url: e.request.url,
-        method: e.request.method,
-        type: e.type,
-        initiator: { type: e.initiator?.type, url: e.initiator?.url ?? top?.url, line: e.initiator?.lineNumber ?? top?.lineNumber },
-      });
-    });
-    cdp.on("Network.responseReceived", (e) => {
-      const r = requests.get(e.requestId);
-      if (r) Object.assign(r, { status: e.response.status, headers: printable(e.response.headers), fromServiceWorker: e.response.fromServiceWorker });
-    });
-    cdp.on("Network.loadingFailed", (e) => {
-      const r = requests.get(e.requestId);
-      if (r) Object.assign(r, { failed: e.errorText, blockedReason: e.blockedReason, corsError: e.corsErrorStatus });
-    });
+    cdp.on("Network.requestWillBeSent", (e) => requests.sent(e, load));
+    cdp.on("Network.responseReceived", (e) => requests.received(e));
+    cdp.on("Network.loadingFailed", (e) => requests.failed(e));
     const consoleLines = [];
     page.on("console", (m) => consoleLines.push({ load, type: m.type(), text: m.text(), location: m.location() }));
     page.on("pageerror", (e) => consoleLines.push({ load, type: "pageerror", text: String(e) }));
@@ -355,11 +390,13 @@ async function consoleReading(base, file) {
     await page.goto("about:blank");
     await page.waitForTimeout(2_000);
 
-    const notable = [...requests.values()].filter((r) => {
+    const notable = requests.records.filter((r) => {
       const url = new URL(r.url);
       return (
         r.failed !== undefined ||
         (r.status !== undefined && r.status >= 400) ||
+        r.redirectedTo !== undefined ||
+        r.redirectedFrom !== undefined ||
         url.origin !== origin ||
         url.pathname.startsWith("/cdn-cgi/")
       );

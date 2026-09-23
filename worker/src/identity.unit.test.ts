@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { credentialClaims, personClaims, signer, type Signer } from "../test/tokens";
 import type { Env } from "./env";
 import {
+  asciiLower,
   forwardable,
   identityConfig,
   keySource,
@@ -124,6 +125,84 @@ describe("resolveIdentity (R-6.5c.3)", () => {
     expect(await resolve(await key.sign({ ...personClaims("red@t.test", at), aud: "the-audience" }))).toEqual(person);
   });
 
+  // I1 (Task 11's review; the orchestrator's ruling, the spec over the
+  // brief's text): the address is checked RAW, before any trim or lowercase.
+  // JavaScript's `toLowerCase()` maps U+212A KELVIN SIGN to ASCII `k`, and its
+  // `trim()` strips non-ASCII whitespace, so an address normalized first
+  // became ANOTHER user's — a verified `\u212Aevin@x.test` (U+212A, the Kelvin
+  // sign) was forwarded as `kevin@x.test`. The NAS reads each of these as no
+  // one.
+  // Mutants: the check after the trim, or after the lowercase.
+  it.each([
+    ["a Kelvin sign", "\u212Aevin@x.test"],
+    ["a leading no-break space", "\u00A0red@t.test"],
+    ["a trailing ideographic space", "red@t.test\u3000"],
+    ["a leading byte-order mark", "\uFEFFred@t.test"],
+  ])("(I1) answers none for a person whose raw email holds %s", async (_what, email) => {
+    expect(await resolve(await key.sign(personClaims(email, at)))).toEqual({ kind: "none" });
+  });
+  // The claimed header's half. Node's `Headers` refuses a character above
+  // U+00FF outright, so the Kelvin sign's claimed case is the next cell's,
+  // over a stand-in; these two a node `Headers` can carry.
+  it.each([
+    ["a leading no-break space", "\u00A0probe@deploy.test"],
+    ["a trailing no-break space", "probe@deploy.test\u00A0"],
+  ])("(I1) answers none for a claimed address holding %s", async (_what, claimed) => {
+    const token = await key.sign(credentialClaims(CLIENT, at));
+    expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed })).toEqual({ kind: "none" });
+  });
+  // The Kelvin sign in the claimed header. A request carries it as UTF-8, but
+  // node's `Headers` refuses to hold a character above U+00FF (and workerd's
+  // warns on it), so the headers here are a stand-in with `get` alone — all
+  // `resolveIdentity` reads — checked against a plain address first, so the
+  // stand-in cannot pass by reading nothing.
+  it("(I1) answers none for a claimed address holding a Kelvin sign", async () => {
+    const token = await key.sign(credentialClaims(CLIENT, at));
+    const headersOf = (claimed: string) => {
+      const values: Record<string, string> = { "cf-access-jwt-assertion": token, "x-yokohama-claimed-user": claimed };
+      return { get: (name: string) => values[name.toLowerCase()] ?? null } as unknown as Headers;
+    };
+    expect(await resolveIdentity(headersOf("probe@deploy.test"), key.set(), CONFIG), "premise").toEqual({
+      kind: "dev",
+      email: "probe@deploy.test",
+    });
+    expect(await resolveIdentity(headersOf("\u212Aevin@x.test"), key.set(), CONFIG)).toEqual({ kind: "none" });
+  });
+  // The ruling's second half: only A–Z are lowercased. `address` checks first,
+  // so no Kelvin sign reaches this, and the rule is pinned here, where a
+  // JavaScript `toLowerCase()` would fail it. Mutant: `toLowerCase()`.
+  it("lowercases A to Z and nothing else: a Kelvin sign stays itself", () => {
+    expect(asciiLower("Red@T.TEST")).toBe("red@t.test");
+    expect(asciiLower("\u212AEVIN")).toBe("\u212Aevin");
+    expect(asciiLower("İ")).toBe("İ");
+  });
+  // Only ASCII is lowercased, as the layer's `User::parse` does
+  // (`to_ascii_lowercase`); ASCII spaces and tabs around a visible-ASCII
+  // address are still trimmed, as the layer trims them.
+  it("trims ASCII space and tab, and lowercases ASCII letters", async () => {
+    expect(await resolve(await key.sign(personClaims("\t Red@T.Test \t", at)))).toEqual({ kind: "person", email: "red@t.test" });
+  });
+
+  // M3 (Task 11's review): an `email` claim that is empty, blank or null names
+  // no person, so a credential carrying one is still the dev door. Mutant:
+  // the blank check dropped — such a credential would become a person with no
+  // address, and the door would shut.
+  it.each<[string, unknown]>([
+    ["an empty", ""],
+    ["a blank", "   "],
+    ["a null", null],
+  ])("a credential whose assertion carries %s email is still the dev door", async (_what, email) => {
+    const token = await key.sign({ ...credentialClaims(CLIENT, at), email });
+    expect(await resolve(token, { "X-Yokohama-Claimed-User": "probe@deploy.test" })).toEqual({
+      kind: "dev",
+      email: "probe@deploy.test",
+    });
+  });
+  // Mutant: the type check dropped — `(5).trim` throws, and `resolve` rejects.
+  it("answers none for an email claim that is not a string", async () => {
+    expect(await resolve(await key.sign({ ...personClaims("red@t.test", at), email: 5 }))).toEqual({ kind: "none" });
+  });
+
   it("answers none with unknownKid for a kid the set lacks, so the caller may refresh once", async () => {
     const token = await key.sign(personClaims("red@t.test", at), { alg: "RS256", kid: "k-rotated", typ: "JWT" });
     expect(await resolve(token)).toEqual({ kind: "none", unknownKid: true });
@@ -182,6 +261,82 @@ describe("keySource (plan review m14; re-review m-d)", () => {
     await expect(keySource(TEAM, status.fetcher, () => 0)(false)).rejects.toThrow(/503/);
     const shape = endpoint(async () => Response.json({ public_cert: {} }));
     await expect(keySource(TEAM, shape.fetcher, () => 0)(false)).rejects.toThrow(/no key set/);
+  });
+
+  /** A second key set: what the certs answer after a rotation. */
+  const ROTATED: JwkSet = { keys: [{ kid: "k2", kty: "RSA", n: "AQAB", e: "AQAB" }] };
+
+  /** A fake certs endpoint whose every answer waits for `release()`: its
+   *  first fetch answers `SET` and every later one `ROTATED`; after
+   *  `failNext()`, the next fetch it receives fails. */
+  function gated() {
+    const urls: string[] = [];
+    const waiting: Array<() => void> = [];
+    let fail = false;
+    const fetcher = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      const answer = urls.length === 1 ? SET : ROTATED;
+      const failing = fail;
+      fail = false;
+      await new Promise<void>((r) => waiting.push(r));
+      if (failing) throw new TypeError("network down");
+      return Response.json(answer);
+    }) as typeof fetch;
+    return {
+      urls,
+      fetcher,
+      failNext: () => {
+        fail = true;
+      },
+      release: () => {
+        for (const r of waiting.splice(0)) r();
+      },
+    };
+  }
+
+  // M1 (Task 11's review): the requests of a cold isolate that arrive while
+  // the first fetch is out JOIN it — a forged kid among them included — so the
+  // once-a-minute limit holds from the first request, not from the first
+  // fetch that lands. Mutant: the cache filled only when a fetch completes,
+  // with nothing held for the fetch in flight.
+  it("shares ONE fetch among the calls that arrive while it is in flight", async () => {
+    const endpoint = gated();
+    const keys = keySource(TEAM, endpoint.fetcher, () => 0);
+    const calls = [keys(false), keys(false), keys(true)];
+    endpoint.release();
+    expect(await Promise.all(calls)).toEqual([SET, SET, SET]);
+    expect(endpoint.urls.length).toBe(1);
+  });
+  // Mutant: a refresh that is not due answering the OLD cache while a refresh
+  // is in flight — the kid the rotation brings would be missed.
+  it("lets a refresh join the refresh already in flight", async () => {
+    let now = 0;
+    const endpoint = gated();
+    const keys = keySource(TEAM, endpoint.fetcher, () => now);
+    const first = keys(false);
+    endpoint.release();
+    expect(await first).toEqual(SET);
+    now = 60_000;
+    const refreshes = [keys(true), keys(true)];
+    // A `false` meanwhile answers the cache at once rather than waiting.
+    expect(await keys(false)).toEqual(SET);
+    endpoint.release();
+    expect(await Promise.all(refreshes), "both refreshes read the rotated set").toEqual([ROTATED, ROTATED]);
+    expect(endpoint.urls.length).toBe(2);
+  });
+  it("fails every call that joined a failed fetch, and fetches again after it", async () => {
+    const endpoint = gated();
+    const keys = keySource(TEAM, endpoint.fetcher, () => 0);
+    endpoint.failNext();
+    const joined = [keys(false), keys(false)];
+    endpoint.release();
+    await expect(joined[0]).rejects.toThrow("network down");
+    await expect(joined[1]).rejects.toThrow("network down");
+    expect(endpoint.urls.length, "the two calls shared the fetch that failed").toBe(1);
+    const next = keys(false);
+    endpoint.release();
+    expect(await next).toEqual(ROTATED);
+    expect(endpoint.urls.length, "nothing cached and nothing in flight: a new fetch").toBe(2);
   });
 
   // After a failure the cache is still empty, so the next call fetches again
