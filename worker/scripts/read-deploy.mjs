@@ -31,8 +31,11 @@
 //   another origin or to the edge's own `/cdn-cgi/`: its URL, method and type,
 //   its status and response headers if any, its initiator, and whether the
 //   service worker answered it — each redirect hop its own record. One JSON
-//   document on stdout. `set-cookie` is never printed: Access's session cookie
-//   is a bearer token.
+//   document on stdout. No bearer token is printed: `set-cookie` and `cookie`
+//   never are, no URL goes past its `?` or `#` — a record's own, or one inside
+//   a console message's text — and a `location` header keeps its origin and
+//   path alone. Access's eager redirects carry its token in a hop's query
+//   (Task 11's re-review, N1).
 //
 // Exit 0 when the reading holds, 1 when it does not; `console` only reports.
 
@@ -188,7 +191,11 @@ async function assets(base, file) {
   const index = await get(base, "/index.html", pairs);
   await index.arrayBuffer();
   const indexOk = index.status === 200;
-  console.log(`/index.html: ${index.status}${index.headers.get("location") ? ` → ${index.headers.get("location")}` : ""} (200 wanted, never a redirect)`);
+  const indexLocation = index.headers.get("location");
+  console.log(
+    `/index.html: ${index.status}${indexLocation ? ` → ${locationOf(indexLocation, new URL("/index.html", base).href)}` : ""} ` +
+      "(200 wanted, never a redirect)",
+  );
   const missing = await get(base, "/assets/x.js", pairs);
   const missingBody = new Uint8Array(await missing.arrayBuffer());
   const missingOk = missing.status === 404 && missingBody.length === 0;
@@ -300,9 +307,39 @@ async function install(base, file) {
   }
 }
 
-/** The response headers worth printing: everything but a cookie. */
-function printable(headers) {
-  return Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !/^(set-)?cookie$/i.test(name)));
+/** `url` cut at its first `?` or `#`: no query and no fragment, so no token
+ *  a URL carries is printed (Task 11's re-review, N1). */
+export function cutAtQuery(url) {
+  if (typeof url !== "string") return url;
+  const at = url.search(/[?#]/);
+  return at === -1 ? url : url.slice(0, at);
+}
+
+/** `text` with every URL in it cut at its query (`cutAtQuery`): a console
+ *  message quotes the URL it is about — a CORS error, a failed fetch. */
+export function cutUrlsIn(text) {
+  return text.replace(/\bhttps?:\/\/[^\s'"<>]+/g, (url) => cutAtQuery(url));
+}
+
+/** A `location` header's origin and path alone, a relative one resolved
+ *  against `base`, the URL of the hop that answered it. */
+export function locationOf(value, base) {
+  try {
+    const url = new URL(value, base);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return cutAtQuery(value);
+  }
+}
+
+/** The response headers worth printing, for a hop at `base`: no cookie, and a
+ *  `location` cut to its origin and path. */
+function printable(headers, base) {
+  return Object.fromEntries(
+    Object.entries(headers ?? {})
+      .filter(([name]) => !/^(set-)?cookie$/i.test(name))
+      .map(([name, value]) => [name, /^location$/i.test(name) ? locationOf(value, base) : value]),
+  );
 }
 
 /**
@@ -310,7 +347,8 @@ function printable(headers) {
  * M9). A redirect reuses its request's id: the next `requestWillBeSent`
  * carries the 3xx as `redirectResponse`, which closes the hop before it with
  * its own status and headers, and names where it went. A response or a
- * failure lands on the request's CURRENT hop. Cookies are never kept.
+ * failure lands on the request's CURRENT hop. Cookies are never kept, and
+ * every URL is cut at its query (`cutAtQuery`, `locationOf`).
  */
 export function requestLog() {
   const records = [];
@@ -318,22 +356,27 @@ export function requestLog() {
   return {
     records,
     sent(e, load) {
+      const url = cutAtQuery(e.request.url);
       const previous = current.get(e.requestId);
       if (previous && e.redirectResponse) {
         Object.assign(previous, {
           status: e.redirectResponse.status,
-          headers: printable(e.redirectResponse.headers),
+          headers: printable(e.redirectResponse.headers, previous.url),
           fromServiceWorker: e.redirectResponse.fromServiceWorker,
-          redirectedTo: e.request.url,
+          redirectedTo: url,
         });
       }
       const top = e.initiator?.stack?.callFrames?.[0];
       const record = {
         load,
-        url: e.request.url,
+        url,
         method: e.request.method,
         type: e.type,
-        initiator: { type: e.initiator?.type, url: e.initiator?.url ?? top?.url, line: e.initiator?.lineNumber ?? top?.lineNumber },
+        initiator: {
+          type: e.initiator?.type,
+          url: cutAtQuery(e.initiator?.url ?? top?.url),
+          line: e.initiator?.lineNumber ?? top?.lineNumber,
+        },
         ...(previous && e.redirectResponse ? { redirectedFrom: previous.url } : {}),
       };
       records.push(record);
@@ -341,7 +384,13 @@ export function requestLog() {
     },
     received(e) {
       const r = current.get(e.requestId);
-      if (r) Object.assign(r, { status: e.response.status, headers: printable(e.response.headers), fromServiceWorker: e.response.fromServiceWorker });
+      if (r) {
+        Object.assign(r, {
+          status: e.response.status,
+          headers: printable(e.response.headers, r.url),
+          fromServiceWorker: e.response.fromServiceWorker,
+        });
+      }
     },
     failed(e) {
       const r = current.get(e.requestId);
@@ -369,11 +418,24 @@ async function consoleReading(base, file) {
     cdp.on("Network.responseReceived", (e) => requests.received(e));
     cdp.on("Network.loadingFailed", (e) => requests.failed(e));
     const consoleLines = [];
-    page.on("console", (m) => consoleLines.push({ load, type: m.type(), text: m.text(), location: m.location() }));
-    page.on("pageerror", (e) => consoleLines.push({ load, type: "pageerror", text: String(e) }));
+    page.on("console", (m) =>
+      consoleLines.push({
+        load,
+        type: m.type(),
+        text: cutUrlsIn(m.text()),
+        location: { ...m.location(), url: cutAtQuery(m.location().url) },
+      }),
+    );
+    page.on("pageerror", (e) => consoleLines.push({ load, type: "pageerror", text: cutUrlsIn(String(e)) }));
     const failed = [];
     page.on("requestfailed", (r) =>
-      failed.push({ load, url: r.url(), method: r.method(), resourceType: r.resourceType(), failure: r.failure()?.errorText ?? null }),
+      failed.push({
+        load,
+        url: cutAtQuery(r.url()),
+        method: r.method(),
+        resourceType: r.resourceType(),
+        failure: r.failure()?.errorText ?? null,
+      }),
     );
 
     // Load 1: a fresh profile, so no service worker controls the page yet.

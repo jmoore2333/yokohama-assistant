@@ -1,6 +1,20 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { checkEntry, credentialFor, edgeInjections, essence, get, parseHeaderFile, precacheList, requestLog } from "./read-deploy.mjs";
+import {
+  checkEntry,
+  credentialFor,
+  cutAtQuery,
+  cutUrlsIn,
+  edgeInjections,
+  essence,
+  get,
+  locationOf,
+  parseHeaderFile,
+  precacheList,
+  requestLog,
+} from "./read-deploy.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const enc = (text) => new TextEncoder().encode(text);
@@ -222,6 +236,91 @@ describe("requestLog", () => {
     log.received({ requestId: "7", response: { status: 200, headers: { "content-type": "text/html", cookie: "x", "Set-Cookie": "y" }, fromServiceWorker: true } });
     expect(log.records).toEqual([
       expect.objectContaining({ url: "https://yokohama.moore.nyc/", status: 200, headers: { "content-type": "text/html" }, fromServiceWorker: true }),
+    ]);
+  });
+});
+
+// N1 (Task 11's re-review; the orchestrator's ruling): Access's eager
+// redirects walk a browser through the application's hostnames with its token
+// in each hop's URL, so no URL the script prints goes past its `?` (or `#`),
+// and a `location` header keeps its origin and path alone. Mutants: a hop's
+// URL, its `redirectedTo`, its initiator's URL or its `location` kept whole —
+// the token lands on stdout.
+describe("what the script prints can carry no token", () => {
+  it("cuts a URL at its query or its fragment", () => {
+    expect(cutAtQuery("https://h.test/cdn-cgi/access/authorized?token=T#f")).toBe("https://h.test/cdn-cgi/access/authorized");
+    expect(cutAtQuery("https://h.test/a#frag")).toBe("https://h.test/a");
+    expect(cutAtQuery("https://h.test/a")).toBe("https://h.test/a");
+  });
+  // A console message quotes the URL it is about. Mutant: the text printed
+  // as it came.
+  it("cuts every URL inside a console message's text", () => {
+    const text =
+      "Access to fetch at 'https://login.test/cdn-cgi/access/authorized?token=TOKEN-3' from origin " +
+      "'https://h.test' has been blocked by CORS policy; see https://h.test/x?y=TOKEN-3#z.";
+    expect(cutUrlsIn(text)).toBe(
+      "Access to fetch at 'https://login.test/cdn-cgi/access/authorized' from origin 'https://h.test' " +
+        "has been blocked by CORS policy; see https://h.test/x",
+    );
+  });
+  it("keeps a location's origin and path alone, resolving a relative one against its hop", () => {
+    expect(locationOf("https://login.test/cdn-cgi/access/login/h?kid=K&meta=M", "https://h.test/x")).toBe(
+      "https://login.test/cdn-cgi/access/login/h",
+    );
+    expect(locationOf("/cdn-cgi/access/authorized?token=T", "https://h.test/x?y=1")).toBe("https://h.test/cdn-cgi/access/authorized");
+  });
+  it("records an eager redirect chain with no token anywhere in it", () => {
+    const log = requestLog();
+    const hop = (url, redirectResponse) => ({
+      requestId: "9",
+      request: { url, method: "GET" },
+      type: "Document",
+      initiator: { type: "script", url: "https://h.test/page.js?session=TOKEN-9" },
+      ...(redirectResponse ? { redirectResponse } : {}),
+    });
+    log.sent(hop("https://h.test/?from=TOKEN-9"), 1);
+    log.sent(
+      hop("https://cli.h.test/cdn-cgi/access/authorized?token=TOKEN-9", {
+        status: 302,
+        headers: { Location: "https://cli.h.test/cdn-cgi/access/authorized?token=TOKEN-9" },
+      }),
+      1,
+    );
+    log.sent(hop("https://h.test/", { status: 302, headers: { location: "/?token=TOKEN-9" } }), 1);
+    log.received({ requestId: "9", response: { status: 200, headers: { location: "/next?token=TOKEN-9" } } });
+    expect(JSON.stringify(log.records)).not.toContain("TOKEN-9");
+    expect(
+      log.records.map((r) => ({ url: r.url, to: r.redirectedTo, from: r.redirectedFrom, location: r.headers?.Location ?? r.headers?.location, initiator: r.initiator.url })),
+    ).toEqual([
+      {
+        url: "https://h.test/",
+        to: "https://cli.h.test/cdn-cgi/access/authorized",
+        from: undefined,
+        location: "https://cli.h.test/cdn-cgi/access/authorized",
+        initiator: "https://h.test/page.js",
+      },
+      {
+        url: "https://cli.h.test/cdn-cgi/access/authorized",
+        to: "https://h.test/",
+        from: "https://h.test/",
+        location: "https://cli.h.test/",
+        initiator: "https://h.test/page.js",
+      },
+      { url: "https://h.test/", to: undefined, from: "https://cli.h.test/cdn-cgi/access/authorized", location: "https://h.test/next", initiator: "https://h.test/page.js" },
+    ]);
+  });
+});
+
+// The script's own usage line: it runs as a command, and an argument it does
+// not know is answered with the usage and exit 2, loading nothing else.
+describe("the command", () => {
+  it("answers --help with its usage and exit 2", () => {
+    const script = fileURLToPath(new URL("./read-deploy.mjs", import.meta.url));
+    const run = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8" });
+    expect([run.status, run.stderr.trim(), run.stdout]).toEqual([
+      2,
+      "usage: node scripts/read-deploy.mjs assets|install|console <base-url> [--headers <file>]",
+      "",
     ]);
   });
 });

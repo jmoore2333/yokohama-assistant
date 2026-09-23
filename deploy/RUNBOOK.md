@@ -7,7 +7,8 @@ this file guessed wrong, the guess is kept beside the correction — the wrong
 guesses are the useful part.
 
 **Two hosts since M6.5c.** The NAS (§0–§3, §5) serves `yokohama-nas.moore.nyc`; the
-Cloudflare Worker (§6) serves hosted multiplayer at `yokohama.moore.nyc`.
+Cloudflare Worker (§6) serves hosted multiplayer at `yokohama.moore.nyc`, since the fourteenth
+deployment on 2026-09-23 (§6.8).
 
 ---
 
@@ -2094,8 +2095,9 @@ What answers what:
     WebSocket is outside CORS, so without it a hostile page in a signed-in player's browser could
     read a table's turn and timing frames (Task 11's review, escalation 1). A request with no
     `Origin` — curl, the deploy readings — passes;
-  - a `…/stream` or `/api/stream` GET that is not an upgrade: **426** `this host streams over
-    WebSocket`; any other method on them: **405**, empty;
+  - any method but GET on `…/events`, `…/stream` or `/api/stream`: **405**, empty; a GET of
+    `…/stream` or `/api/stream` that is not an upgrade: **426** `this host streams over
+    WebSocket`;
   - the create's three: **400** `a game must be created from a JSON object`, **400** `a game id,
     when given, must be a string`, **500** `the create's id does not name the table it was routed
     to`;
@@ -2179,13 +2181,15 @@ the whole list; it leaves secrets alone.
   bucket bound, a TTL that is not a whole number of days, an operator entry that is not an address,
   or any value written without quotes. The static release is unaffected, and so are a few `/api/*`
   answers, which is where the rule is not "every `/api/*`":
-  - any method but GET or HEAD on `/api/art` is 405 before any configuration is read;
+  - two answers come before any configuration is read: 405 for any method but GET or HEAD on
+    `/api/art`, and 403 for an upgrade from another site's page (the list at the top of §6);
   - a bad value of any variable but the three chat variables is the Worker's own refusal: 500 on
     every other `/api/*` request;
   - a bad chat variable is read only by the objects' module (`init`). So the Worker's own
-    `GET /api/art` still answers 200, and so do the objects' 405 and 426 on the stream routes,
-    which come before a module is built; every other `/api/*` is the object's 500 naming the
-    variable.
+    `GET /api/art` still answers 200, and so do the objects' answers that come before a module is
+    built: the 405 for any method but GET on `…/events`, `…/stream` or `/api/stream`, and the 426
+    for a GET of either stream route that is not an upgrade. Every other `/api/*` is the object's
+    500 naming the variable.
 - **An address outside visible ASCII is no caller** (Task 2's review, note E1; Task 11's review,
   I1). The Worker judges the RAW `email` claim — and the raw claimed header — before it trims or
   lowercases anything, and then lowercases ASCII only, as the layer's `User::parse` does. So a
@@ -2289,45 +2293,114 @@ Each lands with the task that builds it, and records its own readings here:
 - the live Playwright tier and the live corpus replay, with the replay's ids forced before and after
   each run (Tasks 14–15).
 
-### 6.8 M6.5c's skeleton is live — the fourteenth deployment, 2026-09-2_ (a record, not a plan)
+### 6.8 M6.5c's skeleton is live — the fourteenth deployment, 2026-09-23 (a record, not a plan)
 
-_Filled in after the deploy with the readings as taken. A reading that differs from the spike's
-(spec §0.3) is a FINDING: stop, and take it to the owner before Task 12._
-
-The first deploy of the Worker (spec §3.2): the Worker, the three classes in migration `v1`, the
-static assets, identity and the body bound — and re-reads of the spike's measurements with the real
-code, before anything else lands on it.
+The first deploy of the Worker (spec §3.2), from `756dc759` — Task 11's reviewed head, tree clean:
+the Worker, the three classes in migration `v1`, the static assets, identity, the body bound and
+the Origin check — and the spike's measurements (spec §0.3) re-read with the real code before
+anything else lands on it. **Version `8b1bdcf8-610d-4b04-9e21-727e216cd61a`.** Every reading
+matched the spike's in substance. One differs in form (reading 1, the zone's challenge page), and
+the spike's one unexplained error (reading 6, the beacon) is explained; neither stops the cycle.
 
 - **Before the deploy — the NAS's body bound, read live (2026-09-23, over WARP):** a
   2,097,153-byte `POST /api/games` answered **400**
   `{"error":"the body could not be read: length limit exceeded"}`, and exactly 2,097,152 bytes
   passed the bound (a 401, from identity). The Worker's `BODY_LIMIT_SENTENCE` is that text.
-- **Build:** _(the commit; `web/`'s `npm run build` — the module's size and the precache
-  generator's lines; `worker/`'s `npm run build` — the module's size, the assembly's entries, and
-  the smoke's line)_
-- **The deploy:** _(`npm run deploy`'s output: the guard's line, Total Upload, **Worker Startup
-  Time**, the bindings, the custom domain, the version id)_
-- **Reading 1 — protection, from an unenrolled vantage** (a throwaway alpine container on the NAS):
-  _(`/`, `/sw.js`, `/api/health`, `/enter`: each 302 to the Access login; an upgrade with no
-  credential: 403; `yokohama-web.bdvc.workers.dev`: 404)_
-- **Reading 2 — identity on an upgrade** (`curl --http1.1 -i` against `/api/stream`): _(as the
-  owner over WARP: 101; with the credential and `X-Yokohama-Claimed-User: probe@deploy.test`: 101;
-  with the credential alone: the layer's 401)_
-- **Reading 3 — the static assets:** _(`read-deploy.mjs assets`: entries byte-exact, `/index.html`
-  200, `/assets/x.js` 404 and empty; the tail's invocations: zero for the real files, one for the
-  missing file; `read-deploy.mjs install`: active, every entry cached, `/index.html` clean, the door
-  ready)_
-- **Reading 4 — cold start and CPU:** _(the Worker Startup Time; the Worker's `cpuTime` with JWT
-  verification, off the tail — R-6.5c.5 left it unmeasured)_
-- **Reading 5 — health:** _(`identity: "cf-access"`, `signal: "ws"`, `archive: "off"`)_
-- **Reading 6 — the Web Analytics beacon's console error, diagnosed:** _(the error's exact text;
-  the failing request's URL, method, type, status, response headers and initiator; whether the
-  service worker handled it; the cause — ours to fix by configuration, or a host fact for Task 15)_
+- **Build:** `web/`'s `npm run build` — wasm-opt 133, the browser module **1,175,106 B**,
+  `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js` **0**; `precache: 153 entries, 9,938,226
+  B`, the cache `yokohama-release-10e4457c62975466`. `worker/`'s `npm run build` — the module
+  **1,854,072 → 1,220,664 B** (wasm-opt 133); the assembly **153 entries verified**, 156 files,
+  9,967,639 B; the release smoke **200**.
+- **The deploy (`npm run deploy`):** the guard PASSED; **154 assets** uploaded in 2.65 s (the 156
+  assembled files less `_headers` and `_redirects`, which configure the asset layer); Total Upload
+  **1260.83 KiB / gzip 484.78 KiB**; **Worker Startup Time 2 ms**; the bindings `TABLE`, `HOUSE` and
+  `ARCHIVER` (Durable Objects), `ASSETS`, and the eight variables of §6.3's table; the custom domain
+  `yokohama.moore.nyc`.
+- **Reading 1 — protection, from an unenrolled vantage** (a throwaway `alpine:3.22` container on the
+  NAS, curl). **Nothing was served.** Two request shapes read differently, and both are recorded:
+  - with curl's default User-Agent: `/` **403**, `/sw.js` **302** to the Access login
+    (`bdvc.cloudflareaccess.com`), `/api/health` **403**, `/enter` **403**, `/index.html` **403**,
+    `/assets/x.js` **302** to the login; a WebSocket upgrade with no credential **403**;
+    `yokohama-web.bdvc.workers.dev` **404**. The 403s carry `cf-mitigated: challenge` and a
+    5,259-byte "Just a moment…" body: the zone's Bot Fight Mode and JavaScript detections —
+    kept ON by the owner's decision, 2026-09-23 — challenging a bot-shaped document request
+    BEFORE Access sees it;
+  - with a browser User-Agent and `Accept: text/html`: `/` and `/api/health` **302** to the Access
+    login, whose `meta` reads `auth_status NONE`, `is_warp false`, `service_token_status false` —
+    exactly the spike's row P;
+  - the NAS host, from the same vantage, reads the same (`/` 403, `/api/health` 403, `/sw.js` 302),
+    so the challenge page is the zone's behaviour and not this Worker's. Ruled a difference in
+    form, recorded, not a finding that stops the cycle.
+- **Reading 2 — identity on an upgrade** (`curl --http1.1` against `/api/stream`):
+  - the owner over WARP, no credential: **101**. It is the first run of the production key source,
+    `keySource` over workerd's `fetch`, which no cell runs: it verified a real assertion;
+  - the credential with `X-Yokohama-Claimed-User: probe@deploy.test`: **101**;
+  - the credential alone: **401** `{"error":"no identity reached the server: this deployment expects
+    X-Yokohama-User from the edge Worker"}` — the layer's own `worker`-mode sentence.
+
+  All three as the spike (row 1).
+- **Reading 3 — the static assets:**
+  - `read-deploy.mjs assets`, over WARP: `/sw.js` 200, `cache-control: no-store`, **153** precache
+    entries; **152 byte-exact** and **1 EDGE** — `/index.html`, into which the edge injected its
+    `challenge-platform` script, and which is the release's bytes once that is cut away; `/index.html`
+    **200**, never a redirect; `/assets/x.js` **404** with an empty body → **HOLDS**;
+  - `read-deploy.mjs install`, the credential sent to the Worker's origin only: the service worker
+    **activated**; its cache holds **154** entries for the 153 listed (the `/__release__` stamp is
+    the 154th); `/index.html` cached at **2,387 B**, the release's bytes; the door reads "Ready to
+    play offline." → **HOLDS**;
+  - the tail (`wrangler tail --format json`, 1,605 lines): the Worker was invoked for `/api/me` ×6,
+    `/api/stream` ×3, `/api/health` ×1 and `/assets/x.js` ×1 — the missing file, exactly ONCE — and
+    ZERO times for any precache path, `/sw.js`, `/index.html`, `/art/*`, `/help/*` or the fonts.
+
+  As the spike (row 7).
+- **Reading 4 — cold start and CPU,** off the tail:
+  - cold start, the deploy's "Worker Startup Time": **2 ms** (the spike: 1–3 ms);
+  - the stateless Worker on `/api/*`, JWT verification included: **cpu 0–2 ms**, 1 ms typical, wall
+    10–19 ms; the first `/api/stream` upgrade 2 ms cpu, 393 ms wall. R-6.5c.5 left this unmeasured:
+    it is about 1 ms, far inside Free's 10 ms;
+  - the objects: the house's first `/api/health` **7 ms** cpu, `/api/me` 0–2 ms, the first
+    `/api/stream` upgrade **9 ms**;
+  - outcomes: 19 `ok`, and 4 `canceled` — the upgrades curl's `--max-time` cut; `identity-failed`
+    lines: **0**.
+- **Reading 5 — health,** over WARP: `identity: "cf-access"`, `signal: "ws"`, `archive: "off"`,
+  `multiplayer: true`, `semantics_rev` 7, `rules_hash` `d85445c479cb1ead`; `/api/me` names the
+  owner's address, through the real assertion; `GET /` answers 200 at **3,325 B** — the edge's
+  JavaScript-detection injection, as spike row 8 (2,387 B built).
+- **Reading 6 — the Web Analytics beacon, diagnosed** (`read-deploy.mjs console`, two loads each):
+  - over WARP, NO custom header anywhere — a real browser's shape: console messages **none**,
+    failed requests **none**; the beacon script **200**; the RUM post to
+    `https://yokohama.moore.nyc/cdn-cgi/rum` **204**;
+  - with the credential sent to the Worker's origin only: the same, and **no error**;
+  - **the diagnosis:** the spike's CORS error was an artifact of the spike's HARNESS, which sent the
+    credential as CONTEXT-WIDE headers. Custom headers on the cross-origin beacon request force a
+    CORS preflight the beacon's host does not answer. A real browser sends no custom header and
+    sees no error, and neither does a harness that scopes the credential to this origin. The zone
+    stays exactly as it is — Web Analytics, Bot Fight Mode and JavaScript detections ON — no
+    allow-list is needed, and the live test tiers scope the credential per origin.
+- **Against the spike (spec §0.3):**
+  - row 1, identity — the same;
+  - row 2, startup and size — the same class: 2 ms, and 1,260.83 KiB against the spike's 1,172.84 KiB,
+    because the Worker now carries the shell;
+  - row 7, the static assets — the same: 152 exact plus `/index.html` edge-rewritten, no invocation
+    for a real file, one for a missing file, the service worker installed whole;
+  - row 8, the edge — the same 3,325 B injection, and the beacon's error explained above;
+  - row P, protection — the same in substance, with the zone's challenge page the one new shape.
 
 #### What this deployment does NOT claim
 
-_(filled in with the record)_
+- **The Origin check was not read live.** No reading sent `Origin` on an upgrade. Two curl lines over
+  WARP read it: `-H 'Origin: https://yokohama.moore.nyc'` should answer 101 and
+  `-H 'Origin: https://evil.test'` 403. They confirm a production request URL's origin is the
+  site's own; the first browser socket, in Task 15's live tier, is the other proof.
+- **The raw-address rule (§6.3; Task 2's note E1 and Task 11's I1) was not read live**: no Access
+  identity with a non-ASCII address exists to try it with. The pool's cells are its evidence.
+- **No game was played and no table was created** live. The lobby lists nothing until Task 12's
+  copies; the archive is off until Task 13 binds the bucket; there is no expiry or operator surface
+  until Task 14.
+- **No phone and no browser off WARP.** Reading 1's unenrolled vantage was curl, not a browser.
 
 #### Rollback
 
-§6.6: no earlier version exists; the NAS is the fallback, untouched.
+§6.6: there is no earlier version; the NAS, untouched, is the fallback. The migration `v1` is FROZEN
+from this deployment on: a class added later takes a new tag, and no version can be rolled back
+across one.
