@@ -899,12 +899,15 @@ slot push and acknowledgement, trap, poison, expiry, marker end, operator action
   `compatibility_date` (Node compatibility follows the date's default; §0.3 row 3 shows it is no
   obstacle).
 - **Three SQLite-backed classes** in one migration: `Table`, `House`, `Archive`.
-- **The bucket `yokohama-archive`**, created through the account API (the wrangler token has no R2
-  scope, §0.5) and bound as `ARCHIVE`.
+- **The bucket `yokohama-archive`**, CREATED 2026-09-23 through the account API (the wrangler token has
+  no R2 scope, §0.5) — location ENAM, storage class Standard, PRIVATE (its `r2.dev` URL disabled, no
+  custom domain) — and bound as `ARCHIVE`.
 - **Variables**: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `DEV_DOOR_CLIENT_ID`, `YOKOHAMA_DEV_DOOR`
-  (`on` during this cycle), `YOKOHAMA_WEB_ARCHIVE` (`r2`), `YOKOHAMA_WEB_TABLE_TTL_DAYS` (the owner's
-  value), `YOKOHAMA_WEB_ADMINS` (the owner's address), `YOKOHAMA_WEB_COUNT_WAKES` (off except in the
-  exit's window), and the three chat variables at the NAS's defaults. No secrets.
+  (`on` during this cycle), `YOKOHAMA_WEB_ARCHIVE` (`r2`), `YOKOHAMA_WEB_TABLE_TTL_DAYS` (**`90`**, the
+  owner's value, 2026-09-23), `YOKOHAMA_WEB_ADMINS` (the owner's address — set as a Worker SECRET so the
+  address stays out of the repository, which the owner approved on 2026-09-23; its value is not a
+  secret and no code differs), `YOKOHAMA_WEB_COUNT_WAKES` (off except in the exit's window), and the
+  three chat variables at the NAS's defaults.
 - **The configuration lives in `worker/wrangler.jsonc`**; the `yokohama` Access application keeps its
   destinations and policies unchanged.
 
@@ -1253,8 +1256,11 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
   action, and the credential is never an operator (§5.3). It is repeatable only from a machine where
   the owner is signed in through WARP.
 - **Push (R-6.5b.11) is not built**; its trigger is the exit's measured counts.
-- **The zone is not changed.** Web Analytics auto-install logs a CORS error on every page load, and
-  JS detections and Bot Fight Mode stay on: the owner's zone settings (§7).
+- **The zone is not changed** (the owner, 2026-09-23): Web Analytics auto-install and Bot Fight Mode —
+  its JavaScript detections with it — stay ON. The beacon's CORS error is DIAGNOSED at the first deploy;
+  it is fixed by configuration if the cause is ours to fix, and otherwise the live tests account for
+  exactly that error. A "zero console errors" reading is not the goal: a known, recorded error is
+  allowed; an unknown one is not.
 - **`wasm-opt` 133 on this workstation against CI's 132.** The deployed module is built at 132.
 - **Inherited and untouched**: the vs-bot gate livelock, the e2e `CAP = 4000`, `walk.json`'s 419 KB
   pretty-printed diff, "who starts" on the local form, nothing in CI building the self-host image,
@@ -1284,14 +1290,20 @@ Each must be CAUGHT by a named cell, or be recorded with its disposition:
 | 26 the TDD commit shape | ASKED at the plan |
 | 27 the edge rewrites `index.html` | EXPLAINED by the spike (§0.3 row 8); the zone settings are OWNER items |
 
-**Owner items this spec adds**: the zone's Web Analytics auto-install (off for this hostname, or
-accept the console error — needed BEFORE §5.4's live tier, whose specs assert no console error
-occurred, and so before the exit's live review too), JavaScript
-detections and Bot Fight Mode (they did not challenge the harness); the TTL value
-(`YOKOHAMA_WEB_TABLE_TTL_DAYS`) and the operator list (`YOKOHAMA_WEB_ADMINS` — it must name the owner
-for the live replay's cleanup, §5.3); the bucket's creation if the account API is not used; and,
-optionally, a lifecycle rule on the bucket's `test/` prefix, where every live tier's saves accumulate
-(the e2e's game-over and abandon saves carry fresh ids on every run).
+**Owner items this spec adds — ANSWERED 2026-09-23 unless marked open:**
+- **The zone**: Web Analytics auto-install and Bot Fight Mode (with its JavaScript detections) stay ON.
+  The beacon's CORS error is diagnosed at the first deploy and fixed by configuration if it can be,
+  else accounted for by the live tests (§6); this is settled before §5.4's live tier.
+- **The TTL**: 90 days.
+- **The operator list**: the owner's address, as a Worker secret. It must name the owner for the live
+  replay's cleanup, §5.3.
+- **The bucket**: created 2026-09-23 (§3.1).
+- **OPEN — the read-only R2 key for the exit's `rclone`**: the owner creates it in the dashboard
+  (Object Read, `yokohama-archive` only) and stores its two values in the gitignored `.dev.vars` as
+  `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`. It is not minted through the account API, whose
+  reply would put the secret in a session transcript.
+- **OPEN, optional**: a lifecycle rule on the bucket's `test/` prefix, where every live tier's saves
+  accumulate (the e2e's game-over and abandon saves carry fresh ids on every run).
 
 ---
 

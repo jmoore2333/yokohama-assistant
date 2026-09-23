@@ -48,7 +48,7 @@ a different orchestrator, in a clean context — that EXECUTES M6.5c.**
 - **The account.** Workers FREE (R-6.5b.16), account BDVC.
   - **The Access application `yokohama`** (`11cbcf68…`, audience `5fa7a989…`) already names `yokohama.moore.nyc` as a destination.
   - **The Service Auth credential `yokohama-worker`** passes Access under the policy "yokohama ST bypass" (`non_identity`, precedence 3). Its client id and secret are in the repository root's **`.dev.vars`**, gitignored since `952a68c`, under the keys **`CF-Access-Client-Id`** and **`CF-Access-Client-Secret`**. **Never print it, never commit it, never paste it into a report** — the plan's Global Constraints give the header-file recipe.
-- **wrangler 4.135** is logged in on this workstation with Workers scopes and **no R2 scope**, so the bucket is created through the account API (the Cloudflare MCP's `execute`) or by the owner (Task 13).
+- **wrangler 4.135** is logged in on this workstation with Workers scopes and **no R2 scope**. The bucket `yokohama-archive` was therefore created through the account API (the Cloudflare MCP's `execute`) on 2026-09-23; it is private and not yet bound.
 
 ---
 
@@ -65,18 +65,17 @@ The sixteen rulings are in spec §1. The ones that most shape execution:
 - **A minimal operator surface**, and `?force` also makes the live replay repeatable.
 - **Execution (2026-09-23):** SUBAGENT-DRIVEN for every task, with Opus as the floor for every implementer and reviewer, Fable for Task 16's whole-branch review, and the ORCHESTRATOR running every live step. The commit shape is **ONE GREEN COMMIT PER TASK**, with the red run quoted in the commit body and the ledger.
 
-**Owner items still open.** Ask each at the task that needs it, and never decide one for the owner:
+**The owner's answers (2026-09-23, after the plan review), and what is still open:**
 
-| item | needed at |
-|---|---|
-| The zone's **Web Analytics** auto-install: off for this hostname, or accept its console error and allow-list it in the live specs | **BEFORE Task 15's live run** — both live specs assert that no console error occurred |
-| JavaScript detections and Bot Fight Mode | before Task 16's headed walk |
-| The **TTL** (`YOKOHAMA_WEB_TABLE_TTL_DAYS`) | Task 14's deploy; absent (never expire) until answered |
-| The **operator list** — the owner's address, set with `wrangler secret put YOKOHAMA_WEB_ADMINS` (P-1) | Task 14 |
-| The **bucket** `yokohama-archive`, if the account API refuses | Task 13 |
-| An optional lifecycle rule on the bucket's `test/` prefix | Task 13 |
-| A read-only **R2 key for `rclone`** | Task 16's exit |
-| **The phones** — recorded, not gated | Task 16 |
+| item | answer / status | where |
+|---|---|---|
+| The zone's **Web Analytics** and **Bot Fight Mode** (with its JavaScript detections) | **Both stay ON.** Zero console errors is not the goal: the beacon's CORS error is DIAGNOSED at the first deploy, FIXED by configuration if it can be (with the owner's approval), else accounted for EXACTLY in the live tests | Task 11 reading 6; Task 15 Step 5 |
+| The **TTL** | **90 days** | Task 14 |
+| The **operator list** as a Worker secret (P-1) | **Approved**; the owner's address | Task 14 |
+| The **bucket** `yokohama-archive` | **CREATED 2026-09-23** by the planning session: ENAM, Standard, private | Task 13 binds it |
+| A read-only **R2 key for `rclone`** | **OPEN — the owner creates it** in the dashboard (Object Read, this bucket only), into `.dev.vars` as `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`. It is not minted through the API, whose reply would land the secret in a transcript | Task 16's exit |
+| A lifecycle rule on the bucket's `test/` prefix | OPEN, optional — ask | Task 13 |
+| **The phones** | recorded, not gated | Task 16 |
 
 ---
 
@@ -129,7 +128,7 @@ Each was found by measurement, is written into the spec or the plan, and must no
     - both archive first sends accept the once-rule's 200;
     - the house chat is offset by its `last`;
     - the lobby is filtered.
-12. **The zone's analytics beacon logs a console error on every page load.** That makes the owner's zone decision a precondition of Task 15.
+12. **The zone's analytics beacon logs a console error on every page load**, and the owner keeps it ON. Task 11 diagnoses it; Task 15 runs clean after a configuration fix, or allow-lists exactly that error.
 
 ---
 

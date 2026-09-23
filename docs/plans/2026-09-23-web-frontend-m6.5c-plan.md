@@ -44,7 +44,7 @@
   - the WebSocket arm (`web/src/ws.ts` is new; `signal.ts`, `api.ts`, `types.ts` and `local/facts.ts` are widened by the `"ws"` value);
   - the outbox's 404 branch (`web/src/outbox.ts`), with its one writer `rememberArchiveOff` in `web/src/local/facts.ts`;
   - the tests of both (Task 8);
-  - the live configuration of two Playwright specs (Task 15).
+  - the live configuration of two Playwright specs, and possibly the LIVE allow-list of one known console error in `web/e2e/harness.ts` (Task 15).
   Nothing else in `web/` moves.
 - **The Worker's facts, verbatim from the spec (§3.1):**
   - the Worker is **`yokohama-web`**, on the custom domain **`yokohama.moore.nyc`**, with `workers_dev: false`, `preview_urls: false` and `observability.enabled: true`;
@@ -54,7 +54,7 @@
   - the three Durable Object namespaces bound as **`TABLE`**, **`HOUSE`** and **`ARCHIVER`** (the last because `ARCHIVE` is the bucket's name).
 - **The Worker's variables (§3.1):**
   - `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `DEV_DOOR_CLIENT_ID`;
-  - `YOKOHAMA_DEV_DOOR` (`on` this cycle), `YOKOHAMA_WEB_ARCHIVE` (`r2` | `off`, absent = off), `YOKOHAMA_WEB_TABLE_TTL_DAYS` (absent = never), `YOKOHAMA_WEB_ADMINS` (absent = the operator routes are the layer's 404), `YOKOHAMA_WEB_COUNT_WAKES` (off except in the exit's window);
+  - `YOKOHAMA_DEV_DOOR` (`on` this cycle), `YOKOHAMA_WEB_ARCHIVE` (`r2` | `off`, absent = off), `YOKOHAMA_WEB_TABLE_TTL_DAYS` (absent = never; **the owner's value is `90`**, set at Task 14), `YOKOHAMA_WEB_ADMINS` (absent = the operator routes are the layer's 404), `YOKOHAMA_WEB_COUNT_WAKES` (off except in the exit's window);
   - the three chat variables at the NAS's names and defaults.
   - **One test-only variable this plan adds: `YOKOHAMA_WEB_TEST_CLOCK`.** It is `frozen:<n>` or `tick:<n>`, and it is set ONLY in `worker/wrangler.test.jsonc`. RUNBOOK §6 names it "never set in production".
 - **Secrets:** `.dev.vars` holds the `yokohama-worker` Service Auth credential (gitignored since `952a68c`).
@@ -88,7 +88,7 @@
 
 ### Rulings this plan takes (each is recorded in the ledger at the task that meets it)
 
-- **P-1 — `YOKOHAMA_WEB_ADMINS` is a `wrangler secret`, not a `vars` entry.** The spec (§3.1) lists it among the variables and says "no secrets". Its VALUE is not secret, but it is the owner's email address, and `worker/wrangler.jsonc` is committed to a repository headed for open source. A secret binding reads as an environment variable exactly as a var does, so no code differs. RUNBOOK §6 says so.
+- **P-1 — `YOKOHAMA_WEB_ADMINS` is a `wrangler secret`, not a `vars` entry** (the owner APPROVED it, 2026-09-23). The spec (§3.1) lists it among the variables and says "no secrets". Its VALUE is not secret, but it is the owner's email address, and `worker/wrangler.jsonc` is committed to a repository headed for open source. A secret binding reads as an environment variable exactly as a var does, so no code differs. RUNBOOK §6 says so.
 - **P-2 — the SHELL pins the module's clock before EVERY module call that can reach the layer's clock** — `create`, `dispatch`, `events`, `restore_picker`, `stamp_archive` and `expire` — and records the reading it pinned. `events` and `restore_picker` belong on that list because a handle rebuild can pump an owed bot move, persist it, and reach the game-over archive site. That is how the shell always knows the reading a plan was made at (spec §2.6: `archive_owed` is "the plan and its clock reading"), game over included, where the move's dispatch is not re-run.
   - The reading is `Math.floor(Date.now() / 1000)` in production.
   - `YOKOHAMA_WEB_TEST_CLOCK=frozen:<n>` gives `n` for every dispatch. That is the corpus replay's arrangement: the node replay's `1_789_000_000`.
@@ -2013,6 +2013,12 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
        - the service worker installs completely in headless Chromium: the credential is the context's headers, the worker is active, the release cache holds every entry, and `/index.html` is cached clean.
     4. **Cold start** (the deploy's "Worker Startup Time"), and **the Worker's CPU with JWT verification** off the tail (R-6.5c.5 left it unmeasured).
     5. `/api/health` over WARP reads `identity: "cf-access"`, `signal: "ws"`, `archive: "off"`.
+    6. **The Web Analytics beacon's console error, DIAGNOSED** (the owner, 2026-09-23: Web Analytics and Bot Fight Mode STAY ON; a known error is acceptable, an unexplained one is not). In headless Chromium with the credential as context headers, record Playwright's `console` and `requestfailed` events for one page load of `/`:
+       - the error's exact text;
+       - the failing request's URL, method and resource type, its status if any, its response headers (`access-control-allow-origin` above all), and its initiator;
+       - whether the page's service worker handled it.
+       - **If the cause is ours to fix by configuration** — a response header, an Access rule for the beacon's endpoint on this hostname, the injected tag's attributes — bring the change and its evidence to the owner. Once approved, apply it, re-read, and record it in RUNBOOK §6.
+       - **Otherwise it is a HOST FACT for Task 15**: the exact error text and URL go in the ledger, and the live tests account for exactly that error.
   - **A reading that differs from the spike's** (§0.3) is a FINDING. Stop, and bring it to the owner before Task 12.
 
 - [ ] **Step 8: Commit** (the RUNBOOK record included).
@@ -2237,7 +2243,7 @@ git commit -m "feat(worker): the house over scrubbed copies, a durable ordered s
 - [ ] **Step 4: Watch them fail. Step 5: implement. Step 6: pass, and run every gate.**
 
 - [ ] **Step 7: The bucket, and DEPLOY — the ORCHESTRATOR.**
-  - **Create `yokohama-archive`** through the account API (the Cloudflare MCP's `execute`, `POST /accounts/{account_id}/r2/buckets` with `{"name":"yokohama-archive"}`). If that API refuses, it is an owner item.
+  - **The bucket `yokohama-archive` ALREADY EXISTS.** The planning session created it on 2026-09-23 through the account API: location ENAM, storage class Standard, private — `r2.dev` disabled, no custom domain. Read it back once with `GET /accounts/{account_id}/r2/buckets/yokohama-archive` through the Cloudflare MCP before binding it.
   - Add the binding and `YOKOHAMA_WEB_ARCHIVE: "r2"` to `wrangler.jsonc`, and deploy.
   - **Ask the owner** whether to add a lifecycle rule on the bucket's `test/` prefix, where every live tier's saves accumulate (spec §7). It is optional, and it is theirs to set.
   - **Readings:**
@@ -2331,8 +2337,8 @@ git commit -m "feat(worker): the R2 archive as a receipt in DirArchive's order, 
 - [ ] **Step 3: Watch them fail. Step 4: implement. Step 5: pass, and run every gate.**
 
 - [ ] **Step 6: DEPLOY and read — the ORCHESTRATOR.**
-  - **Ask the owner for the TTL value first** (an open owner item). Until they answer, deploy with the variable ABSENT: never expire.
-  - Set `YOKOHAMA_WEB_ADMINS` with `npx wrangler secret put YOKOHAMA_WEB_ADMINS` (P-1).
+  - **The TTL is `90`** (the owner, 2026-09-23): `YOKOHAMA_WEB_TABLE_TTL_DAYS: "90"` in `wrangler.jsonc`'s `vars` — a value, not a secret.
+  - Set `YOKOHAMA_WEB_ADMINS` to the owner's address with `npx wrangler secret put YOKOHAMA_WEB_ADMINS` (P-1, approved).
   - **Readings, over WARP as the owner** (no credential):
     - `GET /api/admin/tables` lists a scratch `.test` table;
     - `POST …/expire?force` on it answers 204, and a create at its id then answers 201;
@@ -2353,7 +2359,7 @@ git commit -m "feat(worker): tables expire as their creator's abandon, a 90-day 
 
 **Files:**
 - Create: `web/e2e/live.ts`, `worker/scripts/live-replay.mjs`, `worker/scripts/live-replay.test.mjs`
-- Modify: `web/playwright.config.ts`, `web/e2e/two_browsers.spec.ts`, `web/e2e/joins_by_link.spec.ts`
+- Modify: `web/playwright.config.ts`, `web/e2e/two_browsers.spec.ts`, `web/e2e/joins_by_link.spec.ts`, and — ONLY if Task 11 found no configuration fix for the beacon — `web/e2e/harness.ts` (the LIVE allow-list of that one error) with its test
 
 **Interfaces:**
 - Consumes: the deployed Worker (Tasks 11–14), `.dev.vars` (never printed), and the three request scripts.
@@ -2401,10 +2407,10 @@ cd web && npm run e2e
 ```
 
 - [ ] **Step 5: RUN LIVE — the ORCHESTRATOR.**
-  - **FIRST, the owner's zone decision** (spec §7, moved here by the plan's review, H3). Both live specs assert that no console error occurred (`two_browsers.spec.ts:479-481`, `joins_by_link.spec.ts:463-464`), and the zone's Web Analytics beacon logs a CORS error on every page load (spike row 8). Ask the owner:
-    - to turn Web Analytics' auto-install off for this hostname; or
-    - to accept it, in which case the LIVE branch allow-lists exactly that beacon's CORS error by its URL (`static.cloudflareinsights.com/beacon.min.js`), as a recorded host fact.
-    JavaScript detections and Bot Fight Mode can wait for Task 16: they did not challenge the harness. Record the answer in the ledger BEFORE running a live game.
+  - **FIRST, the beacon — the owner's ruling, 2026-09-23.** Web Analytics STAYS ON, and so does Bot Fight Mode; zero console errors is not the goal, a KNOWN error is acceptable. Both live specs assert that no console error occurred (`two_browsers.spec.ts:479-481`, `joins_by_link.spec.ts:463-464`), and the beacon logs a CORS error on every page load (spike row 8). So one of two holds before a live game runs:
+    - **Task 11's diagnosis found a configuration fix** and the owner approved it: the live specs run unchanged, and must come back clean;
+    - **it did not**: the LIVE branch of `watchForBreakage` (`web/e2e/harness.ts`) allow-lists EXACTLY that error, matched by the text and the URL Task 11 recorded, and flags every other console error as before. A cell in the harness's own tests proves the allow-list matches that error and nothing broader.
+    Record which one held in the ledger BEFORE running a live game.
 
 ```bash
 cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link
@@ -2438,11 +2444,11 @@ This task is the **close checklist**. Every box is a gate, and the close cites e
   - Row 4 is RECORDED as uncatchable by the platform's guarantee.
   - A mutation that stays green is a FINDING that gets a cell, or a disposition the owner rules on.
   - Write the report to the ledger.
-- [ ] **2. The owner's remaining zone decisions**, BEFORE the headed walk (spec §7): JavaScript detections and Bot Fight Mode. Web Analytics was decided before Task 15's live run, and the headed walk inherits that answer.
+- [ ] **2. The zone stays as it is** (the owner, 2026-09-23): Web Analytics, Bot Fight Mode and its JavaScript detections are ON. The headed walk accepts exactly the error Task 11 diagnosed, if it was not fixed, and nothing else.
 - [ ] **3. THE EXIT, in a window with NO deploy** (spec §5.5) — the ORCHESTRATOR. First deploy with `YOKOHAMA_WEB_COUNT_WAKES=on`; that deploy opens the window. Then:
   - **Two people play a whole game and a third watches, HEADED**: three Playwright contexts with `identityHeaders`, or the owner and two contexts. The table object is observed HIBERNATING between moves: `wakes` rises across pauses longer than the object's idle eviction.
   - **The move-to-other-screen wall**, measured as M6.3 measured it, with the cold path's CPU beside it off `wrangler tail`.
-  - **A finished game and an abandoned one are in the bucket.** `rclone`-sync it, using an R2 key the owner creates, read-only — an owner item. Both load in the CLI, and `why` reconstructs a bot move: play one of the two against the bot for that.
+  - **A finished game and an abandoned one are in the bucket.** `rclone`-sync it with the read-only R2 key the owner created. Its two values are in `.dev.vars` as `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, read by path and never printed, and the S3 endpoint is `https://<account id>.r2.cloudflarestorage.com`. Both games load in the CLI, and `why` reconstructs a bot move: play one of the two against the bot for that.
   - **The whole corpus is byte-identical live**: Task 15's replay, run again.
   - **Requests AND rows written per game**, counted off the account's analytics (GraphQL: the Workers and Durable Objects invocation datasets, and SQLite rows written). This is R-6.5c.6's push trigger, read.
   - **The headed walk** owed across two releases (spec §7 item 2): the door and its controls at 390 px, and the five error strips.
@@ -2620,6 +2626,13 @@ half is the spec's §9.4.
 - battery 2's cell forging all four internal headers.
 
 Two simplifications were also taken: `ctx.id.name` replaces a stored `meta.id`, and the generation's time is the create's pinned reading.
+
+**The owner's answers, 2026-09-23, after the review:**
+- **Web Analytics and Bot Fight Mode stay ON.** The beacon's error is diagnosed at Task 11, fixed by configuration if it can be, else accounted for exactly in the live tests (Task 15). Zero console errors is not the goal.
+- **The TTL is 90 days.**
+- **P-1 is approved.**
+- **The bucket was created by the planning session**: ENAM, Standard, private.
+- **The owner creates the read-only R2 key for `rclone` in the dashboard**, into `.dev.vars`. Minting it through the account API would have put the secret in a session transcript.
 
 **What the review verified TRUE, and this wave did not touch:**
 - the whole Rust surface the plan names, compiled for both targets, and every symbol public as cited;
