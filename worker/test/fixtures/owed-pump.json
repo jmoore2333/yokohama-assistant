@@ -1,0 +1,72 @@
+{
+  "engine_version": "0.5.0",
+  "rules_hash": "d85445c479cb1ead",
+  "seed": 20260831,
+  "config": {
+    "player_count": 2,
+    "player_colors": [
+      "Red",
+      "Blue"
+    ],
+    "start_player": 0,
+    "has_port_b": false,
+    "has_lab_b": false,
+    "setup_seed": 0
+  },
+  "choices": [
+    {
+      "Keep": 0
+    },
+    {
+      "Keep": 0
+    }
+  ],
+  "events": [
+    {
+      "Move": "EndAdditionalPhase"
+    },
+    {
+      "Move": {
+        "PlaceThreeAreas": {
+          "placements": []
+        }
+      }
+    },
+    {
+      "Move": {
+        "ReturnPresidentToHand": {
+          "recover": {}
+        }
+      }
+    },
+    {
+      "Move": "EndAdditionalPhase"
+    }
+  ],
+  "semantics_rev": 7,
+  "terminal_digest": "dedf3baa1dcb0c79",
+  "run": {
+    "schema": 1,
+    "seats": [
+      {
+        "controller": "human",
+        "version": 0,
+        "params": {},
+        "observation": "view"
+      },
+      {
+        "controller": "v4-step9-draft1",
+        "version": 2,
+        "params": {
+          "b": 4,
+          "eval_impl": 3,
+          "k": 1,
+          "m": 8,
+          "weights": 6957643967275421640
+        },
+        "agent_seed": 18197950468299833261,
+        "observation": "view"
+      }
+    ]
+  }
+}

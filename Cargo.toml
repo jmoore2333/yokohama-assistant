@@ -9,6 +9,7 @@ members = [
     "crates/yokohama-bridge",
     "crates/yokohama-web",
     "crates/yokohama-wasm",
+    "crates/yokohama-worker",
 ]
 
 [workspace.package]
@@ -17,22 +18,28 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["Jeremy Moore"]
 
-# The browser host's module, and NOTHING else (M6.5b2, R-6.5b2.15).
+# The two hosts' modules, and NOTHING else: the browser's (`yokohama-wasm`,
+# M6.5b2, R-6.5b2.15) and, since M6.5c, the Durable Objects'
+# (`yokohama-worker`, spec §2.2), which the per-edit gate builds under this
+# same profile.
 #
-# A phone compiles this module on every cold start, and the whole release is
-# precached, so bytes here are paid by every visitor on every version.
+# A phone compiles the BROWSER module on every cold start, and the whole
+# release is precached, so bytes there are paid by every visitor on every
+# version.
 #
-# **RE-MEASURED at this cycle's fix-wave head (2026-09-22)**, on this machine,
-# `wasm-bindgen`'s output: 2,843,070 B under plain `release`, 1,783,361 B under
+# **The figures below are the BROWSER module's**, RE-MEASURED at M6.5b2's
+# fix-wave head (2026-09-22), on this machine, `wasm-bindgen`'s output:
+# 2,843,070 B under plain `release`, 1,783,361 B under
 # this profile, and 1,175,223 B / 456,048 B gzipped (`gzip -9`) once
 # `npm run build:wasm` runs `wasm-opt -Oz` over it. The cost is a whole bot turn
 # going 28.6 -> 35.2 ms. **This is the ONE place the figures are measured and
 # every other document cites it** — `web/scripts/wasm-opt.mjs`,
 # `web/src/precache.ts`, `deploy/RUNBOOK.md` §1 and `CLAUDE.md` all carried
-# Task 5's readings after Task 8 grew the module, which is the whole-branch
-# review's false sentence 6. Spec §0.3 carries all nine of Task 5's builds, at
-# a head three tasks older; the differences are that growth plus ordinary build
-# variance, which that document also records.
+# M6.5b2's Task 5 readings after its Task 8 grew the module, which is that
+# cycle's whole-branch review's false sentence 6. The M6.5b2 spec's §0.3
+# carries all nine of Task 5's builds, at a head three tasks older; the
+# differences are that growth plus ordinary build variance, which that
+# document also records.
 #
 # **It is its own profile rather than a `[profile.release]` edit** because
 # nothing selects it without `--profile release-wasm`: the fifteen-gate release
