@@ -111,4 +111,34 @@ describe("the assembly (spec §2.3)", () => {
     const out = join(tree({}), "assets");
     expect(() => assemble({ ...sources(dist), out })).toThrow(/\/index\.html differs/);
   });
+
+  // A refused assembly must leave NOTHING for the deploy guard to pass: a tree
+  // left behind verifies against its own `sw.js`, so `npm run build` failing
+  // here and `npm run deploy` after it would ship what was refused (task 7
+  // review, Important 1). Each cell starts from an earlier assembly's tree, so
+  // "absent" means removed rather than never made.
+  const DEBUG_MODULE = "\0asm...debug_trap...";
+  it.each([
+    ["a dist with no sw.js", () => ({ "index.html": "<!doctype html>" }), /holds no sw\.js/],
+    [
+      "a file two sources both provide",
+      () => ({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), _headers: "# dist's\n" }),
+      /_headers is provided by both/,
+    ],
+    [
+      "a DEBUG browser module",
+      () => ({
+        "index.html": "<!doctype html>",
+        "assets/m.wasm": DEBUG_MODULE,
+        "sw.js": swWith([...ENTRIES, { path: "/assets/m.wasm", digest: sha256(DEBUG_MODULE) }]),
+      }),
+      /DEBUG browser module/,
+    ],
+    ["a worker with no entries", () => ({ "index.html": "<!doctype html>", "sw.js": swWith([]) }), /no precache entries/],
+    ["a file that differs", () => ({ "index.html": "<!doctype HTML>", "sw.js": swWith(ENTRIES) }), /\/index\.html differs/],
+  ])("refuses %s and leaves no tree behind", (_, distFiles, refusal) => {
+    const out = join(tree({ "assets/stale.js": "old", "assets/sw.js": swWith(ENTRIES) }), "assets");
+    expect(() => assemble({ ...sources(tree(distFiles())), out })).toThrow(refusal);
+    expect(existsSync(out)).toBe(false);
+  });
 });

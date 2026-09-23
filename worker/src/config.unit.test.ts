@@ -143,6 +143,22 @@ describe("a variable that is not a string", () => {
   });
 });
 
+// The refusal ORDER, pinned with two defects at once: a single-defect cell pins
+// nothing about which of two refusals is named (the lane's M6.2 lesson; task 7
+// review, Minor 2).
+describe("which of two refusals is named", () => {
+  it("a variable that is not a string, before any value is read", () => {
+    expect(refused(env({ YOKOHAMA_WEB_ARCHIVE: "s3", YOKOHAMA_WEB_TABLE_TTL_DAYS: 90 }))).toBe(
+      "YOKOHAMA_WEB_TABLE_TTL_DAYS must be a string, in quotes — got the number 90",
+    );
+  });
+  it("then the first field in ShellConfig's order: the archive switch before the TTL", () => {
+    expect(refused(env({ YOKOHAMA_WEB_ARCHIVE: "s3", YOKOHAMA_WEB_TABLE_TTL_DAYS: "0" }))).toBe(
+      'YOKOHAMA_WEB_ARCHIVE must be r2 or off — got "s3"',
+    );
+  });
+});
+
 describe("the module's init configuration (the plan's names table)", () => {
   it("carries the archive switch as exactly off or r2, and the rest raw", () => {
     const e = env(

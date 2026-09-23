@@ -2,22 +2,27 @@
 // `worker/assets/` — the directory `wrangler.jsonc`'s `assets` block uploads —
 // and VERIFIES it against the release's own precache list.
 //
-// 1. `worker/assets/` is emptied, so nothing an earlier assembly left survives.
+// 1. `worker/assets/` is removed FIRST, so nothing an earlier assembly left
+//    survives — and removed again when any step below refuses, so a refused
+//    assembly leaves no tree for the deploy guard to pass: a tree left behind
+//    would verify against its own `sw.js` (task 7 review, Important 1).
 // 2. `web/dist/**` is copied in; then `crates/yokohama-web/assets/art/**` under
 //    `art/`, because the art is not in `web/dist` (`web/vite.config.ts` says
 //    why: it is the server's asset, and a copy in the client would drift);
 //    then `worker/static/_headers` and
 //    `_redirects`. A file two sources both provide is refused, naming it,
 //    rather than one silently replacing the other.
-// 3. A browser module built for the DEBUG walk is refused: `npm run e2e` in
-//    `web/` leaves one in `web/dist`, carrying `debug_trap`. The marker is read
-//    off the module's own bytes, as `web/src/precache.ts` reads it.
+// 3. A browser module built for the DEBUG walk is refused (`debugModuleIn`):
+//    `npm run e2e` in `web/` leaves one in `web/dist`, carrying `debug_trap`,
+//    with a precache list that matches it. The marker is read off the module's
+//    own bytes, as `web/src/precache.ts` reads it.
 // 4. The built service worker's precache list is read out of `sw.js`, and every
 //    entry's SHA-256 is checked against the assembled file — so the tree IS the
 //    release the service worker installs, not merely a tree that has a `sw.js`.
 //
-// `precacheEntriesFrom` and `verifyTree` are also the deploy guard's
-// (`scripts/deploy-guard.mjs`), which re-checks the tree before a deploy.
+// `precacheEntriesFrom`, `verifyTree` and `debugModuleIn` are also the deploy
+// guard's (`scripts/deploy-guard.mjs`), which re-checks the tree before a
+// deploy however the tree was made.
 
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -83,16 +88,32 @@ function walk(dir) {
   return out;
 }
 
+/** The first browser module under `root` built for the DEBUG walk — a `.wasm`
+ *  whose bytes contain `debug_trap` — or `undefined`. */
+export function debugModuleIn(root) {
+  return walk(root).find((f) => f.endsWith(".wasm") && readFileSync(join(root, f)).includes("debug_trap"));
+}
+
 /**
  * Builds `out` from the three sources and verifies it (the steps above).
  * Answers what it assembled: the precache entries it verified, every file and
- * its bytes, and the files the precache list does not name.
+ * its bytes, and the files the precache list does not name. Whatever it
+ * refuses, it leaves no `out` behind.
  */
 export function assemble({ dist, art, statics, out }) {
+  rmSync(out, { recursive: true, force: true });
+  try {
+    return assembleInto({ dist, art, statics, out });
+  } catch (e) {
+    rmSync(out, { recursive: true, force: true });
+    throw e;
+  }
+}
+
+function assembleInto({ dist, art, statics, out }) {
   if (!existsSync(join(dist, "sw.js"))) {
     throw new Error(`${dist} holds no sw.js — build the release first: cd web && npm run build`);
   }
-  rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
 
   const from = new Map();
@@ -111,7 +132,7 @@ export function assemble({ dist, art, statics, out }) {
   }
 
   const files = walk(out);
-  const debug = files.find((f) => f.endsWith(".wasm") && readFileSync(join(out, f)).includes("debug_trap"));
+  const debug = debugModuleIn(out);
   if (debug) {
     throw new Error(
       `${debug} is a DEBUG browser module (it exports debug_trap) — npm run e2e leaves one in web/dist; ` +

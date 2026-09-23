@@ -16,23 +16,32 @@ export interface ShellConfig {
   clock: Clock;
 }
 
-/** Every variable the Worker reads, in `Env`'s order. */
-const VARIABLES = [
-  "ACCESS_TEAM_DOMAIN",
-  "ACCESS_AUD",
-  "DEV_DOOR_CLIENT_ID",
-  "YOKOHAMA_DEV_DOOR",
-  "YOKOHAMA_WEB_ARCHIVE",
-  "YOKOHAMA_WEB_TABLE_TTL_DAYS",
-  "YOKOHAMA_WEB_ADMINS",
-  "YOKOHAMA_WEB_COUNT_WAKES",
-  "YOKOHAMA_WEB_LOBBY_CHAT",
-  "YOKOHAMA_WEB_CHAT_KEEP",
-  "YOKOHAMA_WEB_CHAT_TEXT",
-  "YOKOHAMA_WEB_TEST_CLOCK",
-] as const satisfies readonly (keyof Env)[];
+/** Every variable `Env` declares: its string-typed keys, and none of its
+ *  bindings. */
+type Variable = { [K in keyof Env]-?: NonNullable<Env[K]> extends string ? K : never }[keyof Env];
 
-type Variable = (typeof VARIABLES)[number];
+/**
+ * Every variable the Worker reads, in `Env`'s order — written as a record over
+ * `Variable` so the compiler holds the two to ONE list (task 7 review, Minor
+ * 3): a variable `Env` gains without a row here fails to compile, naming it,
+ * and so does a row `Env` does not declare. A variable left out would skip the
+ * string check (`strings`, below) without a word.
+ */
+const ROWS: { readonly [K in Variable]: true } = {
+  ACCESS_TEAM_DOMAIN: true,
+  ACCESS_AUD: true,
+  DEV_DOOR_CLIENT_ID: true,
+  YOKOHAMA_DEV_DOOR: true,
+  YOKOHAMA_WEB_ARCHIVE: true,
+  YOKOHAMA_WEB_TABLE_TTL_DAYS: true,
+  YOKOHAMA_WEB_ADMINS: true,
+  YOKOHAMA_WEB_COUNT_WAKES: true,
+  YOKOHAMA_WEB_LOBBY_CHAT: true,
+  YOKOHAMA_WEB_CHAT_KEEP: true,
+  YOKOHAMA_WEB_CHAT_TEXT: true,
+  YOKOHAMA_WEB_TEST_CLOCK: true,
+};
+const VARIABLES = Object.keys(ROWS) as Variable[];
 
 /** A refusal on its way to `shellConfig`'s `{ error }`. */
 class Refusal {

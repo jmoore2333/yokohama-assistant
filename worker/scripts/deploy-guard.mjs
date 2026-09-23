@@ -6,10 +6,14 @@
 //    module. M6.5b's `grep -c debug_trap` rule, for this module: the release
 //    factory still NAMES `debug_trap` in the object it returns (`typeof
 //    debug_trap === "function" ? …`), and only the debug glue defines and calls
-//    it.
-// 2. The assets directory `wrangler.jsonc` names holds a `sw.js`, and
-//    `verifyTree` passes over it — so the tree wrangler uploads IS the release
-//    the service worker installs.
+//    it. And no `gen/.unoptimized` sits beside it: the build leaves that marker
+//    when its optimizer step changed nothing (`scripts/build-module.mjs`).
+// 2. The assets directory `wrangler.jsonc` names holds a `sw.js`, `verifyTree`
+//    passes over it, and no browser module in it is a DEBUG build
+//    (`debugModuleIn`) — so the tree wrangler uploads IS the release the
+//    service worker installs, however the tree was made. A debug `web/dist`
+//    carries a precache list that matches it, so the digests alone would pass
+//    one (task 7 review, Important 1).
 // 3. `wrangler.jsonc` sets `"workers_dev": false` and `"preview_urls": false`.
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
@@ -34,7 +38,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
-import { precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
+import { debugModuleIn, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
 
 /** Spec §2.3's handling, and the binding `/api/art` reads the manifest
  *  through. */
@@ -135,21 +139,36 @@ export function deployGuard(root) {
   } else if (readFileSync(factory, "utf8").includes("debug_trap(")) {
     failures.push("gen/factory.js is the DEBUG module (it defines debug_trap) — build the release: npm run build");
   }
+  if (existsSync(join(root, "gen", ".unoptimized"))) {
+    failures.push(
+      "gen/.unoptimized marks an UNOPTIMIZED module — the release build's optimizer step changed nothing " +
+        "(web/scripts/wasm-opt.mjs skips when binaryen is absent and YOKOHAMA_WASM_OPT_OPTIONAL=1); " +
+        "install binaryen and build the release: npm run build",
+    );
+  }
 
   // Checks 3–5 report a configuration that does not parse; check 2 only needs
   // to know where the tree is, and says nothing more when it cannot.
   const directory = readConfig(root, "wrangler.jsonc", [])?.value.assets?.directory;
   if (typeof directory === "string" && directory !== "") {
     const shown = posix.normalize(directory);
-    const sw = join(root, directory, "sw.js");
+    const tree = join(root, directory);
+    const sw = join(tree, "sw.js");
     if (!existsSync(sw)) {
       failures.push(`${shown}/sw.js is absent — assemble the assets: npm run build`);
     } else {
       try {
-        verifyTree(join(root, directory), precacheEntriesFrom(readFileSync(sw, "utf8")));
+        verifyTree(tree, precacheEntriesFrom(readFileSync(sw, "utf8")));
       } catch (e) {
         failures.push(`${shown}: ${e instanceof Error ? e.message : String(e)}`);
       }
+    }
+    const debug = existsSync(tree) ? debugModuleIn(tree) : undefined;
+    if (debug) {
+      failures.push(
+        `${shown}/${debug} is a DEBUG browser module (it exports debug_trap) — ` +
+          "build the release (cd web && npm run build), then assemble the assets again: npm run build:assets",
+      );
     }
   }
 
@@ -164,7 +183,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   console.log(
-    "deploy-guard: the release module; the assets tree is the release; no workers.dev or preview URL; " +
-      "no test clock; spec §2.3's assets block in both configurations",
+    "deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; " +
+      "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations",
   );
 }

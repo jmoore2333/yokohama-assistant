@@ -158,8 +158,8 @@ jobs:
       # The pool: the shell's cells inside workerd, over the module built above.
       - run: npm test
         working-directory: worker
-      # The module's own cells, native: every export is a thin wrapper over a
-      # pure-Rust `_inner` function, and the cells call those.
+      # The module's own cells, native: every export's logic is plain Rust,
+      # most of it in an `_inner` function, and the cells call it.
       - run: cargo test -p yokohama-worker
       # The module as it DEPLOYS compiles: the `release-wasm` profile, for the
       # target, without the `debug` feature. The module built above is the

@@ -85,6 +85,15 @@ describe("the deploy guard", () => {
     ]);
   });
 
+  // `YOKOHAMA_WASM_OPT_OPTIONAL=1` lets a release build finish without the
+  // optimizer, exiting 0 with "do not deploy it"; the build leaves this marker
+  // beside the module (task 7 review, Important 2).
+  it("refuses an UNOPTIMIZED module, naming its marker", () => {
+    expect(deployGuard(worker({ "gen/.unoptimized": "the wasm-opt step changed nothing\n" }))).toEqual([
+      expect.stringMatching(/^gen\/\.unoptimized marks an UNOPTIMIZED module/),
+    ]);
+  });
+
   it("refuses when the assets have not been assembled", () => {
     expect(deployGuard(worker({ "assets/sw.js": null }))).toEqual([
       expect.stringMatching(/^assets\/sw\.js is absent/),
@@ -93,6 +102,17 @@ describe("the deploy guard", () => {
   it("refuses a tree that is not the release its sw.js lists", () => {
     expect(deployGuard(worker({ "assets/index.html": "<!doctype HTML>" }))).toEqual([
       expect.stringMatching(/\/index\.html differs/),
+    ]);
+  });
+  // However the tree was made: its own `sw.js` lists the debug module, so the
+  // digests alone pass it (task 7 review, Important 1).
+  it("refuses a DEBUG browser module in the assets tree", () => {
+    const module = "\0asm...debug_trap...";
+    const sw =
+      `var define_PRECACHE_default = [{ path: "/index.html", digest: "${sha256(INDEX)}", type: "text/html" }, ` +
+      `{ path: "/assets/m.wasm", digest: "${sha256(module)}", type: "application/wasm" }];\n`;
+    expect(deployGuard(worker({ "assets/sw.js": sw, "assets/assets/m.wasm": module }))).toEqual([
+      expect.stringMatching(/^assets\/assets\/m\.wasm is a DEBUG browser module/),
     ]);
   });
   // The tree checked is the one wrangler uploads: the directory production's

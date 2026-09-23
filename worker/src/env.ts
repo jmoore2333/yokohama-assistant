@@ -11,7 +11,9 @@
  * its meaning. A wrangler `vars` entry written without quotes would arrive as a
  * number or a boolean, which this type says cannot happen, so `shellConfig`
  * refuses it by name (the orchestrator's ruling E3) and the claim holds
- * wherever a configuration it accepted is in force.
+ * wherever a configuration it accepted is in force. It checks every variable
+ * declared here: `config.ts` lists them in a record the compiler holds to this
+ * interface, so a variable added here without a row there does not compile.
  */
 export interface Env {
   /** The static assets, bound by both configurations (spec §2.3's

@@ -19,7 +19,8 @@
 //
 // `node scripts/factory-glue.mjs` reads `gen/yokohama_worker.js`, writes
 // `gen/factory.js`, and copies `scripts/factory.d.ts.template` beside it as
-// `gen/factory.d.ts`; `scripts/build-module.mjs` runs it after wasm-bindgen.
+// `gen/factory.d.ts`; `scripts/build-module.mjs` runs it LAST — after
+// wasm-bindgen and, in a release build, after the optimizer.
 
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -108,23 +109,23 @@ export function factoryGlue(source) {
   );
 }
 
-/** Writes `factory.js` and `factory.d.ts` beside the glue in `gen`, and says
- *  which module it wrapped. */
+/** Writes `factory.js` and `factory.d.ts` beside the glue in `gen`, and
+ *  answers a line saying which module it wrapped. */
 export function writeFactory(gen) {
   const source = readFileSync(join(gen, "yokohama_worker.js"), "utf8");
   writeFileSync(join(gen, "factory.js"), factoryGlue(source));
   copyFileSync(fileURLToPath(new URL("./factory.d.ts.template", import.meta.url)), join(gen, "factory.d.ts"));
   const debug = /^export function debug_trap\(/m.test(source);
-  console.log(
+  return (
     `factory-glue: gen/factory.js — ${EXPECTED.length} exports` +
-      (debug ? " and debug_trap (a DEBUG module)" : " (a release module: no debug_trap)") +
-      "; gen/factory.d.ts",
+    (debug ? " and debug_trap (a DEBUG module)" : " (a release module: no debug_trap)") +
+    "; gen/factory.d.ts"
   );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    writeFactory(fileURLToPath(new URL("../gen/", import.meta.url)));
+    console.log(writeFactory(fileURLToPath(new URL("../gen/", import.meta.url))));
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);
