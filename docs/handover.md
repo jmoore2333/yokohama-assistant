@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-23, eleventh session: **M6.5c "the objects" is SPECIFIED AND PLANNED, and execution starts from [the M6.5c execution handover](plans/2026-09-23-web-frontend-m6.5c-execution-handover.md)** — for a different orchestrator, in a clean context. Branch `web-room-m6.5c`, documentation only, not pushed.
+**Updated:** 2026-09-23, eleventh session: **M6.5c "the objects" is SPECIFIED AND PLANNED, and execution starts from [the M6.5c execution handover](plans/2026-09-23-web-frontend-m6.5c-execution-handover.md)** — for a different orchestrator, in a clean context. Branch `web-room-m6.5c`, documentation only; first pushed to `origin` with the CLAUDE.md consolidation below, and no PR is open (Task 16 opens it).
 - **The spec** is `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at `50f705f`.
   - It came out of the brainstorm with you and a platform spike you authorized on the real account.
   - It has sixteen rulings, R-6.5c.1–16. They include the TypeScript shell over a per-object wasm module, identity through Access and the `yokohama-worker` credential, EXACTLY TWO layer changes, the archive's off switch, table expiry with a 90-day marker, and the operator surface.
@@ -29,6 +29,10 @@ session close: rewrite the stale lines, do not append history (the decision log 
 - **Your open items:**
   - OPTIONAL: a lifecycle rule on the bucket's `test/` prefix, where the live tests' saves accumulate. The executing session asks at Task 13;
   - the phones, recorded and not gated.
+- **Also 2026-09-23, in a separate docs-only session: `CLAUDE.md` was consolidated a second time.** It went from 174,604 B to 92,365 B and now describes the current state only.
+  - Every changed or removed line is carried word for word in `docs/plans/2026-09-23-claude-md-consolidation.md`.
+  - A new Conventions rule says what a close may add to the file.
+  - `guidingpath.md` and this board were left for the refresh after the cleanup cycle.
 
 The previous update, 2026-09-22 (tenth session): the PR #37 review's three defects were FIXED, PUSHED and LIVE as `yokohama-web:0.5.0-m6.5b2.1` (RUNBOOK §3.16). The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5, and its open items became the M6.5c handover's §4 items 19–27.
 

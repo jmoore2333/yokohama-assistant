@@ -39,8 +39,8 @@ a different orchestrator, in a clean context — that EXECUTES M6.5c.**
 ## 1. Where things stand
 
 - **Branch `web-room-m6.5c`**, stacked on `web-room-m6.5b2`. **The base for every diff is `2621fbe`.**
-  - Its commits: `952a68c` (ignore `.dev.vars`); the spec's `f80e2f7`, `8dc9096`, `cf86c0e`, `1968104`, `cca0aed` and `92592f2`; the plan's `bcc68a2`, `6b26c87` and `ec7f268`; this handover's `6336e7c`; the owner's answers, `ad8caeb`; the scoped re-review's fix pass, `50f705f`, over the spec, the plan, this handover and the board; and the pointer refresh after it.
-  - Nothing is pushed. `git status` is clean.
+  - Its commits: `952a68c` (ignore `.dev.vars`); the spec's `f80e2f7`, `8dc9096`, `cf86c0e`, `1968104`, `cca0aed` and `92592f2`; the plan's `bcc68a2`, `6b26c87` and `ec7f268`; this handover's `6336e7c`; the owner's answers, `ad8caeb`; the scoped re-review's fix pass, `50f705f`, over the spec, the plan, this handover and the board; the pointer refresh after it; and a docs-only commit from a separate session that consolidated `CLAUDE.md` a second time (its record is `docs/plans/2026-09-23-claude-md-consolidation.md`). That commit touches no file this cycle's fences name. Task 16 item 8 edits `CLAUDE.md` as it now stands, under its new Conventions rule for what a close adds.
+  - The branch was first pushed to `origin` with that consolidation commit (2026-09-23), and no PR is open — Task 16 opens it. `git status` is clean.
 - **LIVE on the NAS: `yokohama-web:0.5.0-m6.5b2.1`** at `yokohama-nas.moore.nyc` (RUNBOOK §3.16), on `claimed`. It is untouched by this cycle.
 - **`yokohama.moore.nyc` has NO DNS record.** It is held for the Worker, and Task 11's custom domain creates it. The dead tunnel CNAME that was removed for the spike is recorded in the readings file; do not restore it.
 - **No Worker is deployed.** The spike's throwaway Worker, its namespace and its domain were deleted.
