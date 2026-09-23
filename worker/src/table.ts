@@ -774,12 +774,30 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * `house_copy` over `table`, on a module built for this one call and
-   * holding only that document — measured at about 0.15 ms a call in the
-   * pool. A trap there discards THAT module (the orchestrator's ruling
-   * I-42), so this object's own — which the request's frames read next — is
-   * never emptied by it: an emptied module reads this table as a 404, which
-   * would end every live socket (`sendFrames`).
+   * `house_copy` over `table`, on a SECOND module instance built for this one
+   * call and holding only that document (the orchestrator's ruling I-42, as
+   * adapted in Task 12). A trap there discards THAT instance, so this
+   * object's own — which the request's frames read next — is never emptied
+   * by it: an emptied module reads this table as a 404, which would end every
+   * live socket (`sendFrames`).
+   *
+   * **What the second instance costs**, and when:
+   *
+   * - **When it is made**: only when a copy must be computed — a request
+   *   whose batch changes the table document (such as a create, a join, a
+   *   keep, an unlock, the turn passing or game over; not a delete, whose
+   *   slot is the REMOVAL) and an alarm run that finds a table document
+   *   (`recopy`). A move that leaves the table document alone makes none.
+   * - **What it holds**: the compiled module is the isolate's, shared, so
+   *   the instance adds its own linear memory, which starts at 18 pages —
+   *   1.125 MiB, 122,381 bytes of them the module's data (the release build,
+   *   read off its memory and data sections) — and the one table document it
+   *   is handed. Building it, `init`, the load and the copy measured about
+   *   0.15 ms a call in the pool.
+   * - **When it is dropped**: when this returns. Nothing keeps it — `scratch`
+   *   is this call's local, and its copy leaves as a string — so the
+   *   isolate's garbage collector reclaims it, memory and all, whenever it
+   *   next runs. One is made per call.
    *
    * ONE id through `house_copy`, `put_copy` and `remove_copy` (Task 5's
    * escalation 3): the copy is made of the document stored under `id` — this
