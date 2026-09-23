@@ -15,7 +15,7 @@
 - **Tests:** Cloudflare's Workers Vitest integration (`@cloudflare/vitest-plugin` 1.2.3, or its older name `@cloudflare/vitest-pool-workers` 0.22.0; `vitest` 4.1), running inside workerd.
 - **Web and live:** React, vitest and jsdom in `web/`; Playwright 1.62.1 against the live Worker; Cloudflare Access with a Service Auth credential.
 
-**Spec:** `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at **`92592f2`** (R-6.5c.1–16). §0 is what is TRUE at HEAD with citations, §2 the mechanism, §5 the instruments every task below ends in, §5.7 the battery, §6 what is not claimed, and §9.1–§9.5 what the reviews changed. **The umbrella is `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`**, and the entry artifact is `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`. **The spike readings** are `docs/temp/m6.5c-spike-readings-2026-09-22.md` (gitignored). **The spike's throwaway source**, if the scratchpad still has it, is a shape to start from and never an authority.
+**Spec:** `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at **`50f705f`** (R-6.5c.1–16). §0 is what is TRUE at HEAD with citations, §2 the mechanism, §5 the instruments every task below ends in, §5.7 the battery, §6 what is not claimed, and §9.1–§9.5 what the reviews changed. **The umbrella is `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`**, and the entry artifact is `docs/plans/2026-09-22-web-frontend-m6.5c-handover.md`. **The spike readings** are `docs/temp/m6.5c-spike-readings-2026-09-22.md` (gitignored). **The spike's throwaway source**, if the scratchpad still has it, is a shape to start from and never an authority.
 
 ---
 
@@ -2517,7 +2517,7 @@ This task is the **close checklist**. Every box is a gate, and the close cites e
 - [ ] **0. The whole-branch review.**
   - **Fable reviews the whole branch** against `2621fbe`, with the spec and this plan. Its brief is the lane's method: try the mechanism a sentence promises rather than re-reading the sentence. Ask for "escalations outside the brief".
   - **Then ONE fix wave, then a scoped re-review.** The fix wave's head is the reviewed head for everything below.
-- [ ] **1. The mutation battery** (spec §5.7, **39 rows at `92592f2`** — enumerate from the spec AT EXECUTION, never from this count). Each mutation is applied at the fix-wave head, shown to fail by NAME, reverted, and mapped to its catcher.
+- [ ] **1. The mutation battery** (spec §5.7, **39 rows at `50f705f`** — enumerate from the spec AT EXECUTION, never from this count). Each mutation is applied at the fix-wave head, shown to fail by NAME, reverted, and mapped to its catcher.
   - Row 4 is RECORDED as uncatchable by the platform's guarantee.
   - A mutation that stays green is a FINDING that gets a cell, or a disposition the owner rules on.
   - Write the report to the ledger.

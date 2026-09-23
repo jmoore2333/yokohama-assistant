@@ -7,11 +7,11 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
 **Updated:** 2026-09-23, eleventh session: **M6.5c "the objects" is SPECIFIED AND PLANNED, and execution starts from [the M6.5c execution handover](plans/2026-09-23-web-frontend-m6.5c-execution-handover.md)** — for a different orchestrator, in a clean context. Branch `web-room-m6.5c`, documentation only, not pushed.
-- **The spec** is `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at `92592f2`.
+- **The spec** is `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at `50f705f`.
   - It came out of the brainstorm with you and a platform spike you authorized on the real account.
   - It has sixteen rulings, R-6.5c.1–16. They include the TypeScript shell over a per-object wasm module, identity through Access and the `yokohama-worker` credential, EXACTLY TWO layer changes, the archive's off switch, table expiry with a 90-day marker, and the operator surface.
   - It went through an Opus adversarial read (5 HIGH, all fixed), a scoped re-read (1 HIGH: the live replay could not run twice), your approval, and five more corrections found while planning. §9 traces every change.
-- **The plan** is `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md` at `ec7f268`: sixteen tasks from the layer outward, four live deploys, and a close checklist.
+- **The plan** is `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md` at `50f705f`: sixteen tasks from the layer outward, four live deploys, and a close checklist.
   - One adversarial review MEASURED Tasks 1–3's code and the pinned test pool: 0 CRITICAL / 4 HIGH / 10 MEDIUM / 16 MINOR, all folded in with one fix wave. Chief among them: battery 25's catcher was vacuous a second time, and the plan's "Pool facts" now bind every pool cell.
   - A scoped re-review RE-RAN that wave: 28 of its 30 findings addressed and 2 partly, plus 3 HIGH / 1 MEDIUM / 13 MINOR new, all folded in with one fix pass. The HIGH were two battery catchers that could not fail and one cell that could not go green.
 - **Your answers** are in the plan's Global Constraints and the execution handover's §2:
@@ -216,7 +216,7 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is SPECIFIED AND PLANNED (2026-09-23): spec `…-m6.5c-objects-spec.md` at `92592f2`, plan `…-m6.5c-plan.md` at `ec7f268`, and execution starts from [the M6.5c execution handover](plans/2026-09-23-web-frontend-m6.5c-execution-handover.md)** (what M6.5c inherited: [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md))
+## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is SPECIFIED AND PLANNED (2026-09-23): spec `…-m6.5c-objects-spec.md` at `50f705f`, plan `…-m6.5c-plan.md` at `50f705f`, and execution starts from [the M6.5c execution handover](plans/2026-09-23-web-frontend-m6.5c-execution-handover.md)** (what M6.5c inherited: [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md))
 
 **The PR #37 fix wave is DONE, PUSHED and LIVE as `0.5.0-m6.5b2.1` (2026-09-22, tenth session; RUNBOOK §3.16).** It is eighteen commits over the close, ending `13dc65f`, with no Rust touched. Its authority and its record are both [the fix-wave document](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md). Four sections matter most:
 - §5.7: what the wave does NOT claim. It carries E2's and R-F6's browser readings, the six unpinned `sw.ts` rules, and the storage reads that still trap. These join the M6.5c opening items below.
@@ -554,7 +554,7 @@ from `ifconfig` for the context-tarball fetch, and a Cloudflare "Just a moment�
 
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: **`docs/plans/2026-09-23-web-frontend-m6.5c-execution-handover.md`** (M6.5c's EXECUTION starts here: the spec at `92592f2`, the plan at `ec7f268`), then **`docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`** (the newest close and M6.5c's
+- Web lane: **`docs/plans/2026-09-23-web-frontend-m6.5c-execution-handover.md`** (M6.5c's EXECUTION starts here: the spec and the plan at `50f705f`), then **`docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`** (the newest close and M6.5c's
   entry artifact — §6.3 the owner items, §7 what is not claimed, §8 the eight opening items), then
   `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (M6.5's authority — the umbrella;
   §0 what is true at HEAD, §1 the rulings, §3 the three sub-cycles), then the handover it supersedes

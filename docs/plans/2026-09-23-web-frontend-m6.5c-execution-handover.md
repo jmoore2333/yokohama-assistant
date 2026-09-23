@@ -11,14 +11,14 @@ a different orchestrator, in a clean context — that EXECUTES M6.5c.**
 
 ## 0. Read order (the session's first half hour)
 
-1. **The spec**, `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at `92592f2` — the authority. Read these parts:
+1. **The spec**, `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md` at `50f705f` — the authority. Read these parts:
    - §1, the sixteen rulings R-6.5c.1–16 with the owner's own words;
    - §2, the mechanism;
    - §5, the tests, and §5.7, the 39-row mutation battery;
    - §6, what is not claimed;
    - **§9.1–§9.5**, what each review changed, so every sentence can be traced to its reason.
    §0.3–§0.4 are what was MEASURED; do not re-derive any of it.
-2. **The plan**, `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md` at `ec7f268` — sixteen tasks. Read these sections WHOLE before dispatching anything:
+2. **The plan**, `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md` at `50f705f` — sixteen tasks. Read these sections WHOLE before dispatching anything:
    - Global Constraints;
    - Rulings P-1–P-3;
    - **Pool facts**;
@@ -39,7 +39,7 @@ a different orchestrator, in a clean context — that EXECUTES M6.5c.**
 ## 1. Where things stand
 
 - **Branch `web-room-m6.5c`**, stacked on `web-room-m6.5b2`. **The base for every diff is `2621fbe`.**
-  - Its commits: `952a68c` (ignore `.dev.vars`); the spec's `f80e2f7`, `8dc9096`, `cf86c0e`, `1968104`, `cca0aed` and `92592f2`; the plan's `bcc68a2`, `6b26c87` and `ec7f268`; and this handover's commit.
+  - Its commits: `952a68c` (ignore `.dev.vars`); the spec's `f80e2f7`, `8dc9096`, `cf86c0e`, `1968104`, `cca0aed` and `92592f2`; the plan's `bcc68a2`, `6b26c87` and `ec7f268`; this handover's `6336e7c`; the owner's answers, `ad8caeb`; the scoped re-review's fix pass, `50f705f`, over the spec, the plan, this handover and the board; and the pointer refresh after it.
   - Nothing is pushed. `git status` is clean.
 - **LIVE on the NAS: `yokohama-web:0.5.0-m6.5b2.1`** at `yokohama-nas.moore.nyc` (RUNBOOK §3.16), on `claimed`. It is untouched by this cycle.
 - **`yokohama.moore.nyc` has NO DNS record.** It is held for the Worker, and Task 11's custom domain creates it. The dead tunnel CNAME that was removed for the spike is recorded in the readings file; do not restore it.
