@@ -2206,7 +2206,8 @@ the whole list; it leaves secrets alone.
   two files — and nothing is removed from the bucket. With the switch off:
   - `/api/health` reads `archive: "off"`;
   - game over saves nothing and arms no alarm for a save;
-  - a creator's Abandon deletes without a save, taking with it any save the table still owes;
+  - a creator's Abandon deletes without a save, taking with it any save the table still owes, which
+    it logs as `archive-owed-dropped`;
   - `POST /api/archive` answers the layer's 404 `this server keeps no archive`, which the client
     reads as the archive being off;
   - a game-over save still owed from when the archive was on is KEPT and not retried: no request

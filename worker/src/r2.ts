@@ -22,8 +22,9 @@ export type Plan = { key: string; record_key: string; table_key: string; record:
 
 /** An upload's outcome, as `receipt` takes it (the plan's names table). The
  *  `detail` is MANDATORY — the module refuses a receipt without one (Task 6's
- *  review, escalation c): R2's message for `failed`, the record's key for the
- *  other three. */
+ *  review, escalation c): the record's key for `landed`, `identical` and
+ *  `conflict`; for `failed`, R2's message — or, in the one case
+ *  `executePlan` names, the host's own sentence. */
 export type Outcome = { outcome: "landed" | "identical" | "conflict" | "failed"; detail: string };
 
 /** `meta.archive_owed` (spec §2.4, §2.6): a game-over plan the layer did not
@@ -92,7 +93,9 @@ async function textAt(bucket: Bucket, key: string): Promise<string | null> {
  *    repair, and a re-plan's new `archived_at` lands instead of conflicting;
  * 3. the RECORD key put create-if-absent. When that precondition fails — a
  *    concurrent writer put a record between 1 and 3 — the record is read
- *    again: these very bytes `identical`, other bytes a `conflict`;
+ *    again: these very bytes `identical`, other bytes a `conflict`. A re-read
+ *    that finds NO record is `failed`, carrying the host's own sentence,
+ *    "`<record_key>` refused a create as present, then read as absent";
  * 4. anything else that fails is `failed`, carrying R2's message.
  *
  * The table goes first and the record's key is the once-marker, so an upload

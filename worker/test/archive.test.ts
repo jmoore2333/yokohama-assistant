@@ -20,11 +20,14 @@ import { ARCHIVE_WALK } from "./walk";
 // Storage and the bucket are per FILE (pool fact 5), so every cell uses table
 // ids and callers of its own. The committed owed-game-over pair is written
 // under its own id, `local-242a5429453c593c`, by the first game-over cell
-// (plan review m12); every later cell that needs it writes it under a name of
+// (plan review m12); every other cell that needs it writes it under a name of
 // its own, with the table document's `id` rewritten to that name in its TEXT,
 // so the document's key is still its object's name — m12's reason, which is
 // `write_table` keying by the document's `id`. Every patch is restored in a
-// `finally` (pool fact 2).
+// `finally` (pool fact 2), and every cell that holds a push or an upload then
+// settles its table there too: a cell that fails with one still in flight
+// would otherwise leave it running into the file's teardown, and the run
+// never ends (measured).
 //
 // The clock TICKS where a cell reads the readings (P-2): the exported
 // `nextReading` is replaced at MODULE scope (pool fact 4; the orchestrator's
@@ -388,6 +391,7 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
     } finally {
       puts.open();
       await swapped.restore();
+      await settle(stub);
     }
   });
 
@@ -395,8 +399,10 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
   // supersedes an owed game-over save, and its ONE batch clears it. The game
   // over's own upload failed; the creator's abandon of the finished game
   // saves it under `over/`. The removal's push is held, so the batch is read
-  // before the house's acknowledgement ends the object. Mutant: the delete's
-  // batch leaves `archive_owed` — a save owed by a table that is gone.
+  // before the house's acknowledgement ends the object. With the archive on,
+  // nothing is dropped, so no `archive-owed-dropped` line. Mutants: the
+  // delete's batch leaves `archive_owed` — a save owed by a table that is
+  // gone; the dropped-save line logged with the switch on.
   it("the delete's batch clears an owed save (the orchestrator's ruling I-57)", async () => {
     const id = "go-abandoned";
     const stub = await owedGameOver(id);
@@ -414,15 +420,16 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
       const { result: res, lines } = await logsDuring(() => call(stub, LOCAL, "DELETE", `/api/games/${id}`));
       expect(res.status).toBe(204);
       const recordKey = `rev7/over/${id}.json`;
-      expect(archiveLines(lines), "the finished game saved under over/").toEqual([
+      expect(archiveLines(lines), "the finished game saved under over/, and nothing dropped").toEqual([
         { event: "archive-landed", id, site: "abandon", record_key: recordKey, detail: recordKey },
       ]);
+      expect(lines.filter((l) => (l as { event?: unknown }).event === "archive-owed-dropped"), "the switch on: nothing dropped").toEqual([]);
       expect(await owedOf(stub), "the delete's batch cleared the owed save").toBeUndefined();
       expect(await docOf(stub, "table"), "premise: in the same batch that removed the table").toBeUndefined();
       held.release(id, removal);
-      await settle(stub);
     } finally {
       held.restore();
+      await settle(stub);
     }
   });
 });
@@ -497,8 +504,8 @@ describe("game over (spec §2.6)", () => {
       pushes.restore();
       ticks.restore();
       await swapped.restore();
+      await settle(stub);
     }
-    await settle(stub);
   });
 
   // Step 4. The upload after the reply fails, and then the ALARM's upload
@@ -576,10 +583,10 @@ describe("game over (spec §2.6)", () => {
       await until(async () => (await owedOf(stub))?.attempt === 1, "the upload fails, counted");
       before = Date.now();
       held.release(id, r);
-      await settle(stub);
     } finally {
       held.restore();
       await failing.restore();
+      await settle(stub);
     }
     expect(await sqlOf(stub, "SELECT v FROM meta WHERE k IN ('slot', 'copy_owed')"), "premise: the slot cleared, no copy owed").toEqual([]);
     expect(await alarmOf(stub), "the alarm kept for the save's retry").toBeGreaterThanOrEqual(before + 30_000);
@@ -620,10 +627,10 @@ describe("game over (spec §2.6)", () => {
       // Each swap replaced the `env` it found, so they are undone in reverse.
       await pushes.restore();
       await swapped.restore();
+      await settle(stub);
     }
     expect(archivedAt(await docOf(stub, "table")), "premise: no longer over, nothing stamped").toBeNull();
     expect(await alarmOf(stub), "the alarm kept for the waiting slot's retry").toBeGreaterThanOrEqual(before + 30_000);
-    await settle(stub);
   });
 
   // Step 5. The upload after the reply fails; the object is EVICTED, which
@@ -710,6 +717,7 @@ describe("game over (spec §2.6)", () => {
       } finally {
         puts.open();
         await swapped.restore();
+        await settle(stub);
       }
       expect(await owedOf(stub), "no longer over: nothing is owed").toBeUndefined();
       expect(archivedAt(await docOf(stub, "table")), "and nothing stamped").toBeNull();
@@ -776,11 +784,10 @@ describe("game over (spec §2.6)", () => {
       const chat = await within(call(stub, LOCAL, "POST", `/api/games/${id}/chat`, '{"text":"good game"}'), "the chat post answers while the upload is held");
       expect(chat.status).toBe(201);
       expect(await bucketText(`rev7/over/${id}.json`), "premise: the upload is still held").toBeNull();
-      puts.open();
-      await settle(stub);
     } finally {
       puts.open();
       await swapped.restore();
+      await settle(stub);
     }
     expect(await docOf(stub, "chat")).toContain("good game");
     expect(await owedOf(stub)).toBeUndefined();
@@ -853,9 +860,9 @@ describe("side channels during a slow push or upload (spec §5.2)", () => {
       expect(chat.status).toBe(201);
       expect(held.settled(id, r), "premise: the push is still held").toBe(false);
       held.release(id, r);
-      await settle(stub);
     } finally {
       held.restore();
+      await settle(stub);
     }
     const [acked] = await sqlOf(stub, "SELECT v FROM meta WHERE k = 'acked'");
     expect((JSON.parse(String(acked?.v)) as { revision: number }).revision, "the held push then landed").toBe(r);
@@ -951,5 +958,43 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
     expect(archiveLines(resumed.lines)).toEqual([overLine("landed", id, recordKey, 1), stampLine(id, recordKey, owed!.reading, true, true)]);
     expect(await owedOf(stub)).toBeUndefined();
     expect(archivedAt(await docOf(stub, "table"))).toBe(owed!.reading);
+  });
+
+  // Spec §2.6: with the switch `off`, a delete makes no save of its own, so a
+  // game-over save still owed from when it was `r2` goes with the table — and
+  // the shell logs it, once the delete's batch has committed. The owed save is
+  // arranged as battery 27's is; then the switch reads off, and the creator
+  // abandons. The removal's push is held, so the batch is read before the
+  // house's acknowledgement ends the object. Mutants: the line missing; the
+  // save still owed by a table that is gone.
+  it("an abandon while the switch is off drops an owed save, and logs it", async () => {
+    const id = "off-dropped";
+    const stub = await owedGameOver(id);
+    const recordKey = `rev7/over/${id}.json`;
+    const failing = await swapBucket(stub, failingPuts(1));
+    try {
+      expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
+      await settle(stub);
+    } finally {
+      await failing.restore();
+    }
+    expect((await owedOf(stub))?.attempt, "premise: a save is owed").toBe(1);
+    const off = archiveOff();
+    const removal = (await revisionOf(stub)) + 1;
+    const held = holdApply([[id, removal]]);
+    try {
+      await evictDurableObject(stub);
+      const { result: res, lines } = await logsDuring(() => call(stub, LOCAL, "DELETE", `/api/games/${id}`));
+      expect(res.status, "the delete, in its first dispatch").toBe(204);
+      expect(archiveLines(lines)).toEqual([{ event: "archive-owed-dropped", id, record_key: recordKey, attempt: 1 }]);
+      expect(await owedOf(stub), "no save owed by a table that is gone").toBeUndefined();
+      expect(await docOf(stub, "table"), "premise: in the batch that removed the table").toBeUndefined();
+      held.release(id, removal);
+    } finally {
+      held.restore();
+      off.restore();
+      await settle(stub);
+    }
+    expect(await bucketText(recordKey), "nothing uploaded").toBeNull();
   });
 });

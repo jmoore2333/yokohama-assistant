@@ -433,6 +433,14 @@ export class Table extends DurableObject<Env> {
    *   changed copy owes go in ONE batch (`commit`). A trap is the side
    *   channel's (spec §2.4): logged, the module discarded, and the save
    *   retried.
+   * - **A plan the wake deferred** — a new module's `restore_picker` pumping a
+   *   bot run to game over — is owed rather than a clear, as every reply's
+   *   plan is (the plan's ruling P-2). It is unreachable today: a save is
+   *   owed only for a game already over, so the wake here finds it over, or —
+   *   the undo case — back at a human's decision, and owes no bot run. Were
+   *   a pump to move the record there, the receipt's plan would no longer
+   *   match, the stamp would retry, and the plan it re-made — of that same
+   *   stored record, at the recorded reading — is the one owed.
    *
    * **The undo case, and what it leaves** (the orchestrator's ruling I3;
    * Task 6's escalation e, RECORDED and not fixed this cycle). An undo at a
@@ -498,7 +506,7 @@ export class Table extends DurableObject<Env> {
               },
               due: this.retryAt(current),
             }
-          : "clear",
+          : (owing(woken.restored) ?? "clear"),
       );
       bumps = [...(woken.restored?.reply.bumps ?? []), ...completed.reply.bumps];
     } catch (e) {
@@ -678,6 +686,16 @@ export class Table extends DurableObject<Env> {
    * made, one already stamped, the archive off, a caller the layer refuses —
    * completes in its first dispatch. Only the WAKE's plan can be owed by the
    * batch: the dispatch's was dispatched again.
+   *
+   * **A throw or a timeout RESETS this object** (Cloudflare's State API:
+   * `blockConcurrencyWhile` terminates and resets an object whose callback
+   * throws, or runs past 30 seconds), where `answer`'s throw fails only its
+   * request. So a throw that is not a trap — a batch that does not commit, a
+   * reply `readReply` refuses, a plan `parsePlan` refuses — resets the table
+   * object, and the upload's up to four R2 round trips (a read, two puts, a
+   * re-read) run inside that budget. Nothing is lost: the first dispatch
+   * deletes nothing until its save is made, and a reset object is rebuilt
+   * from what is stored.
    */
   private async abandon(incoming: Incoming): Promise<Response> {
     const ready = this.ready(incoming);
@@ -1021,9 +1039,10 @@ export class Table extends DurableObject<Env> {
    *   deleted when nothing is. A delete the layer made clears it whatever
    *   `archive` says (spec §2.4 step 2; the orchestrator's ruling I-57): with
    *   the archive on, the delete's own save superseded it, and with the
-   *   archive off, the owed save goes with the table. Any other alarm this
-   *   batch sets is brought forward to an owed save's retry when that is
-   *   sooner (`earliest`).
+   *   archive off, the owed save goes with the table, logged
+   *   `archive-owed-dropped` after the batch. Any other alarm this batch sets
+   *   is brought forward to an owed save's retry when that is sooner
+   *   (`earliest`).
    *
    * Every write goes in ONE `batch`, and a request with nothing to write runs
    * none — so a probe creates nothing. Answers whether the batch wrote a
@@ -1061,12 +1080,14 @@ export class Table extends DurableObject<Env> {
     // §2.4: a side channel's trap "retries on the alarm or the next request").
     const owed = after !== before || copyOwedOf(sql) > 0 ? this.owed(id, after, called.at) : undefined;
     if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
-    const holding = archiveOwedOf(sql) !== undefined;
+    // The owed save as it stood before this batch.
+    const holding = archiveOwedOf(sql);
+    const deleted = before !== undefined && after === undefined;
     let alarm: number | null | undefined = owed === undefined ? undefined : owedDue(owed);
-    let owes = holding;
-    if ((before !== undefined && after === undefined) || archive === "clear") {
+    let owes = holding !== undefined;
+    if (deleted || archive === "clear") {
       owes = false;
-      if (holding) {
+      if (holding !== undefined) {
         writes.push(() => deleteMeta(sql, "archive_owed"));
         alarm = earliest(alarm ?? null, dueBesidesArchive(sql) ?? undefined);
       }
@@ -1082,6 +1103,12 @@ export class Table extends DurableObject<Env> {
     this.batch(() => {
       for (const write of writes) write();
     }, alarm);
+    // A delete with the archive off made no save of its own, so the owed save
+    // went with the table: logged once the batch that dropped it has committed
+    // (spec §2.6). With the archive on, the delete's own save superseded it.
+    if (deleted && holding !== undefined && !this.archiveOn()) {
+      log("archive-owed-dropped", { id, record_key: holding.plan.record_key, attempt: holding.attempt });
+    }
     return { pushing: owed?.slot !== undefined, archiving };
   }
 

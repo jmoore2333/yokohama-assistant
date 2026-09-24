@@ -50,7 +50,11 @@ interface Incoming {
  * 3. with none — a save the layer refused before any put, or the archive
  *    off — the first answer is the answer.
  *
- * A browser's save costs its strict replay twice (spec §2.6).
+ * A browser's save costs its strict replay twice (spec §2.6). A throw inside
+ * the loop — a receipt the module refused, thrown on (`dispatch`), or a plan
+ * `parsePlan` refuses — or a loop running past 30 seconds RESETS this object
+ * (Cloudflare's State API, for `blockConcurrencyWhile`). It holds nothing of
+ * its own, so nothing is lost: the save is the caller's to send again.
  */
 export class Archive extends DurableObject<Env> {
   /** The Worker's variables, read once. */
@@ -116,9 +120,14 @@ export class Archive extends DurableObject<Env> {
     receipt?: { plan: Plan; outcome: Outcome },
   ): Replied | Response {
     let done: { ok: Replied } | { trapped: string };
+    // The call a trap is logged under, as the table names its stages.
+    let stage = receipt === undefined ? "dispatch" : "receipt";
     try {
       done = instance.guarded((mod) => {
-        if (receipt !== undefined) mod.receipt(receipt.plan.key, JSON.stringify(receipt.outcome));
+        if (receipt !== undefined) {
+          mod.receipt(receipt.plan.key, JSON.stringify(receipt.outcome));
+          stage = "dispatch";
+        }
         return pinnedTo(mod, at, (m) =>
           m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body),
         );
@@ -129,7 +138,7 @@ export class Archive extends DurableObject<Env> {
       return respond(500, errorBody(e));
     }
     if ("trapped" in done) {
-      log("trap", { id, call: "dispatch", error: done.trapped });
+      log("trap", { id, call: stage, error: done.trapped });
       return respond(500, errorBody(TRAP));
     }
     return done.ok;
