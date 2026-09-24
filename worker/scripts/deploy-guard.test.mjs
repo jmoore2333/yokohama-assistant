@@ -35,6 +35,9 @@ const OBJECTS = `"durable_objects": {
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }]`;
 
+/** The archive's bucket, bound as spec §3.1 has it. */
+const BUCKET = `"r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }]`;
+
 const PRODUCTION = `// production
 {
   "name": "yokohama-web",
@@ -43,6 +46,7 @@ const PRODUCTION = `// production
   "preview_urls": false,
   ${ASSETS_BLOCK("./assets")},
   ${OBJECTS},
+  ${BUCKET},
 }
 `;
 
@@ -50,6 +54,7 @@ const TEST_CONFIG = `{
   "name": "yokohama-web-test",
   ${ASSETS_BLOCK("./.test-assets")},
   ${OBJECTS},
+  ${BUCKET},
   "vars": { "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
 }
 `;
@@ -209,6 +214,22 @@ describe("the deploy guard", () => {
       '"migrations": [{"new_sqlite_classes": ["Table", "House", "Archive"], "tag": "v1"}]',
     );
     expect(deployGuard(worker({ "wrangler.test.jsonc": reordered }))).toEqual([]);
+  });
+  // The same rule for the bucket (Task 13): a pool whose `ARCHIVE` is bound
+  // where production's is not would test an archive production cannot reach
+  // — and production's `YOKOHAMA_WEB_ARCHIVE=r2` with no binding is a 500 on
+  // every `/api/*`.
+  it("refuses a pool whose bucket binding differs from production's", () => {
+    const drift = TEST_CONFIG.replace('"bucket_name": "yokohama-archive"', '"bucket_name": "yokohama-archive-test"');
+    expect(deployGuard(worker({ "wrangler.test.jsonc": drift }))).toEqual([
+      expect.stringMatching(/^wrangler\.test\.jsonc's r2_buckets differs from wrangler\.jsonc's/),
+    ]);
+  });
+  it("refuses a production configuration with no bucket binding", () => {
+    const bare = PRODUCTION.replace(`${BUCKET},\n`, "");
+    expect(deployGuard(worker({ "wrangler.jsonc": bare }))).toEqual([
+      "wrangler.jsonc has no r2_buckets block — spec §3.1 binds the bucket yokohama-archive as ARCHIVE",
+    ]);
   });
   it("refuses a configuration with no object bindings or no migrations", () => {
     const bare = PRODUCTION.replace(`${OBJECTS},\n`, "");

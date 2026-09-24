@@ -1,11 +1,12 @@
 import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { ARCHIVE_PREFIX } from "../src/archive";
 import type { KeySource } from "../src/identity";
 import { handle } from "../src/index";
 import { route } from "../src/route";
 import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
-import { WALK_HOST_JSON, WALK_JSON } from "./corpus.gen";
+import { ARCHIVE_WALK_JSON, WALK_HOST_JSON, WALK_JSON } from "./corpus.gen";
 import { tableStub } from "./helpers";
 
 /**
@@ -16,12 +17,19 @@ import { tableStub } from "./helpers";
  *
  * - **The rows**: `walk.json`'s, and when asked `walk-host.json`'s, each run
  *   after the walk row its `after` names (`-1`: before the first — the art
- *   row), in the file's order.
+ *   row), in the file's order; and when asked `archive-walk.json`'s, after
+ *   all of those, in its order. Those are the emitter's second `Api`'s, whose
+ *   archive starts empty, so its first send lands only where the bucket
+ *   holds nothing under the caller's `browser/` keys — as each test file's
+ *   own bucket starts (pool fact 5), and as the walk leaves it: the walk's
+ *   game over saves under `test/rev7/over/`.
  * - **Where each goes**: to the object `route` names — a table object by its
  *   name, a create's by its body's `id` (with `X-Yokohama-Table-Id` set to
- *   it, percent-encoded), the house by its name — and the art row through
- *   the Worker's own `handle`. `X-Yokohama-User` is the row's `who`, as the
- *   Worker sets it; a row whose `who` is `null` carries none.
+ *   it, percent-encoded), the house by its name, a browser's save by its
+ *   caller's address (`archive:<who>`, as the Worker names it; the house for
+ *   a row with no caller) — and the art row through the Worker's own
+ *   `handle`. `X-Yokohama-User` is the row's `who`, as the Worker sets it; a
+ *   row whose `who` is `null` carries none.
  * - **The body**: `JSON.stringify` of the row's `body`, with a JSON content
  *   type, exactly as the node replay sends it; a `null` body is no body.
  * - **The flush**: before any row the HOUSE answers, `deliverSlot()` runs on
@@ -31,12 +39,13 @@ import { tableStub } from "./helpers";
  *
  * `onRow(index, row, reply)` is AWAITED after each row (the orchestrator's
  * ruling S-12): `index` is the row's place in its own script — `walk.json`'s,
- * or `walk-host.json`'s for a host row, which carries `after` — and `reply` is
- * the answer, read whole. Answering `"stop"` ends the walk after that row.
+ * `walk-host.json`'s for a host row, which carries `after`, or
+ * `archive-walk.json`'s — and `reply` is the answer, read whole. Answering
+ * `"stop"` ends the walk after that row.
  *
- * The walk's own ids are fixed (`wire`, `wire2`, `wire4`), and storage is
- * per test FILE (pool fact 5), so a file that walks creates nothing else
- * under those names.
+ * The walk's own ids are fixed (`wire`, `wire2`, `wire4`, and the archive
+ * object `archive:red@wire.test`), and storage is per test FILE (pool fact 5),
+ * so a file that walks creates nothing else under those names.
  */
 
 /** One row of `walk.json` — `ScriptRow` in `wire_fixtures.rs`. */
@@ -64,6 +73,10 @@ export interface Reply {
 
 export const WALK = JSON.parse(WALK_JSON) as readonly Row[];
 export const WALK_HOST = JSON.parse(WALK_HOST_JSON) as readonly HostRow[];
+/** A browser's saves, `POST /api/archive` with the record and the table as
+ *  two strings in each body — `JSON.parse` reads the SCRIPT, and each string
+ *  inside it comes back as the exact text the emitter sent. */
+export const ARCHIVE_WALK = JSON.parse(ARCHIVE_WALK_JSON) as readonly Row[];
 
 /** `handle`'s key source for the art row, which never reads it: `/api/art`
  *  is answered before the caller is read. */
@@ -72,7 +85,7 @@ const NO_KEYS: KeySource = async () => {
 };
 
 /** The rows in the order they run, each with its index in its own script. */
-function order(host: boolean): Array<{ index: number; row: Row }> {
+function order(host: boolean, archive: boolean): Array<{ index: number; row: Row }> {
   const hosted = host ? WALK_HOST.map((row, index) => ({ index, row })) : [];
   const at = (after: number) => hosted.filter(({ row }) => (row as HostRow).after === after);
   const rows: Array<{ index: number; row: Row }> = [...at(-1)];
@@ -80,6 +93,7 @@ function order(host: boolean): Array<{ index: number; row: Row }> {
   if (host && rows.length !== WALK.length + WALK_HOST.length) {
     throw new Error("a host row names no walk row to follow");
   }
+  if (archive) ARCHIVE_WALK.forEach((row, index) => rows.push({ index, row }));
   return rows;
 }
 
@@ -114,6 +128,12 @@ async function send(row: Row): Promise<{ reply: Reply; table?: string }> {
     case "house":
       res = await env.HOUSE.get(env.HOUSE.idFromName(HOUSE_NAME)).fetch(url, init);
       break;
+    case "archive":
+      res = await (row.who === null
+        ? env.HOUSE.get(env.HOUSE.idFromName(HOUSE_NAME))
+        : env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + row.who))
+      ).fetch(url, init);
+      break;
     default:
       throw new Error(`the walk has no row for a ${target.kind} target: ${row.method} ${row.path}`);
   }
@@ -122,11 +142,11 @@ async function send(row: Row): Promise<{ reply: Reply; table?: string }> {
 
 /** Replays the walk; answers how many rows it sent. */
 export async function walk(
-  options: { host?: boolean; onRow?: (index: number, row: Row, reply: Reply) => unknown } = {},
+  options: { host?: boolean; archive?: boolean; onRow?: (index: number, row: Row, reply: Reply) => unknown } = {},
 ): Promise<number> {
   const touched = new Set<string>();
   let sent = 0;
-  for (const { index, row } of order(options.host ?? false)) {
+  for (const { index, row } of order(options.host ?? false, options.archive ?? false)) {
     if (route(row.method, row.path).kind === "house") {
       for (const name of touched) await runInDurableObject(tableStub(name), (table: Table) => table.deliverSlot());
       touched.clear();

@@ -59,6 +59,24 @@ export class Instance {
   }
 }
 
+/**
+ * One module call pinned to the reading `at` (the plan's ruling P-2), answered
+ * as plain data, with the setting it replaced restored after it: `set_clock`
+ * hands back the prior one, so a test configuration's frozen clock survives
+ * (spec §2.6). It serves the calls that drive a plan after the reading was
+ * taken: an archive object's two dispatches of a browser's save, a table's
+ * second dispatch of an abandon, and an owed save's stamp — each pinned to the
+ * one reading its plan is made at, spec §2.6's one clock reading per plan.
+ */
+export function pinnedTo(mod: Exports, at: number, f: (mod: Exports) => Reply): Replied {
+  const prior = mod.set_clock(at);
+  try {
+    return readReply(f(mod));
+  } finally {
+    mod.set_clock(prior);
+  }
+}
+
 /** Every key a bump carries, and what its value is. */
 const BUMP_VALUES = { bump: "id", bump_table: "id", bump_house_chat: "null", end: "id" } as const;
 

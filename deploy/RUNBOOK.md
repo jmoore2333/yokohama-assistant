@@ -2147,9 +2147,9 @@ npm run deploy                     # node scripts/deploy-guard.mjs && wrangler d
 **The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; an
 assets tree that is not the release its `sw.js` lists, or that holds a debug browser module;
 `workers_dev` or `preview_urls` not `false`; the test clock named anywhere in `wrangler.jsonc`; an
-`assets` block that is not spec §2.3's; and the two configurations' `durable_objects` or
-`migrations` blocks differing. `npx wrangler deploy --dry-run` bundles and validates without
-uploading.
+`assets` block that is not spec §2.3's; and the two configurations' `durable_objects`, `migrations`
+or `r2_buckets` blocks differing, or either file lacking one. `npx wrangler deploy --dry-run`
+bundles and validates without uploading.
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
   probes once and reconnects, an open picker is re-fed, and no acknowledged move is lost — but it is
@@ -2201,9 +2201,19 @@ the whole list; it leaves secrets alone.
   turn into another user's `k` — meets the layer's 401, and the Worker forwards no identity header
   for them at all. The layer's own `resolve` reads such a header value as absent, as the NAS
   does.
-- **To deploy with no archive** (R-6.5c.14): `"YOKOHAMA_WEB_ARCHIVE": "off"`, as the fourteenth
-  deployment does. **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as
-  the fourteenth deployment does.
+- **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
+  and deploy (§6.2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
+  two files — and nothing is removed from the bucket. With the switch off:
+  - `/api/health` reads `archive: "off"`;
+  - game over saves nothing and arms no alarm for a save;
+  - a creator's Abandon deletes without a save, taking with it any save the table still owes;
+  - `POST /api/archive` answers the layer's 404 `this server keeps no archive`, which the client
+    reads as the archive being off;
+  - a game-over save still owed from when the archive was on is KEPT and not retried: no request
+    uploads it, no alarm is re-armed for it, and an alarm that runs for other work logs
+    `archive-owed-kept`. Set back to `r2`, the table's next request or alarm resumes it.
+- **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as the fourteenth
+  deployment does.
 
 ### 6.4 The credential
 

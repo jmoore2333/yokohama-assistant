@@ -73,16 +73,23 @@ export async function revisionOf(stub: DurableObjectStub<Table>): Promise<number
 }
 
 /**
- * Every house push `stub`'s table has in flight, run through: each one's
- * acknowledgement — or its failure — read and its batch written (spec §2.5).
- * A push leaves after its request's reply, so without this a cell's next
- * assertion on the table's rows, or on the lines the shell logs, would race a
- * push an earlier request started. It awaits the table's own record of its
- * pushes in flight, which `deliverSlot` keeps.
+ * Every side channel `stub`'s table has in flight, run through: each house
+ * push's acknowledgement — or its failure — read and its batch written (spec
+ * §2.5), and each archive upload's outcome and what it owes written (spec
+ * §2.6). Both leave after their request's reply, so without this a cell's next
+ * assertion on the table's rows, or on the lines the shell logs, would race
+ * one an earlier request started. It awaits the table's own records of what
+ * is in flight, which `deliverSlot` and `deliverArchive` keep — until neither
+ * holds anything, because an upload that lands can start a push (the stamped
+ * table's changed copy).
  */
 export async function settle(stub: DurableObjectStub<Table>): Promise<void> {
   await runInDurableObject(stub, async (table: Table) => {
-    await Promise.all(table["pushes"].values());
+    for (;;) {
+      const pending = [...table["uploads"].values(), ...table["pushes"].values()];
+      if (pending.length === 0) return;
+      await Promise.all(pending);
+    }
   });
 }
 

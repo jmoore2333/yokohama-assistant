@@ -3,9 +3,8 @@
 // pool reads `wrangler.test.jsonc` instead.
 //
 // It holds the Worker's facts, its custom domain, its static assets, the three
-// object classes and the variables. The bucket's binding is added with the
-// code that reads it (the plan's Task 13). `deploy/RUNBOOK.md` §6 is how it is
-// built, deployed and read.
+// object classes, the archive's bucket and the variables. `deploy/RUNBOOK.md`
+// §6 is how it is built, deployed and read.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yokohama-web",
@@ -54,6 +53,11 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The archive's bucket (spec §3.1, §2.6): `yokohama-archive`, private —
+  // no `r2.dev` URL, no custom domain — made on the owner's account on
+  // 2026-09-23. `YOKOHAMA_WEB_ARCHIVE` below decides whether anything is
+  // saved to it. The deploy guard holds the pool's binding equal to this one.
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
   // The variables (spec §3.1), none of them a secret; RUNBOOK §6 says what
   // each one's absence means. `wrangler deploy` REPLACES the Worker's
   // variables with these, so this file is the whole list. Four that `Env`
@@ -73,8 +77,10 @@
     "DEV_DOOR_CLIENT_ID": "62dc00d9ce1cb5d7c56849003a277bdc.access",
     // On for this cycle (spec §3.1): the test harness's claimed callers.
     "YOKOHAMA_DEV_DOOR": "on",
-    // Off until the bucket is bound (the plan's Task 13).
-    "YOKOHAMA_WEB_ARCHIVE": "off",
+    // The receipt archive over the bucket above (spec §2.6). `off` deploys
+    // with no archive — RUNBOOK §6.3 says what changes — and needs no change
+    // to the binding.
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
     // The NAS's three chat variables, at the NAS's defaults.
     "YOKOHAMA_WEB_LOBBY_CHAT": "on",
     "YOKOHAMA_WEB_CHAT_KEEP": "500",

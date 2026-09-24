@@ -38,12 +38,21 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The bucket, bound EXACTLY as `wrangler.jsonc` binds it — the deploy guard
+  // refuses the two files when their blocks differ. The pool serves it from
+  // its own local R2: nothing here reaches the account, and each test FILE
+  // meets an empty bucket (pool fact 5), which `archive-walk.json`'s first
+  // send assumes (spec §0.2).
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
   "vars": {
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud",
     "DEV_DOOR_CLIENT_ID": "test-client.access",
     "YOKOHAMA_DEV_DOOR": "on",
-    "YOKOHAMA_WEB_ARCHIVE": "off",
+    // On, as production's (spec §2.6): the pool's archive cells and the corpus
+    // replay's archive walk need the receipt archive. The switch's `off` half
+    // is its cells' module-scope patch (`test/archive.test.ts`).
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
     // Production's value (the owner's, spec §3.1), so an expiry cell backdates
     // a table's last activity past it rather than configuring a TTL of its own
     // (the orchestrator's ruling I-34).

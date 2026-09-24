@@ -5,10 +5,11 @@ import type { Table } from "./table";
 /**
  * The Worker's bindings and variables (spec §3.1, the plan's Global
  * Constraints), written by hand — `wrangler types` is not used, so this is the
- * one statement of what the shell reads from `env`. `ASSETS` and the three
- * object namespaces are here because both configurations bind them, and
- * `ARCHIVE` because `shellConfig` asks whether it is bound — no configuration
- * binds it yet, so it is optional.
+ * one statement of what the shell reads from `env`. `ASSETS`, the three
+ * object namespaces and the bucket `ARCHIVE` are here because both
+ * configurations bind them. `ARCHIVE` is optional all the same: a
+ * configuration with the archive `off` needs none, and `shellConfig` refuses
+ * `r2` without it.
  *
  * **Every variable is optional and every variable is a string.** A variable a
  * configuration does not set is absent, and `shellConfig` gives each absence

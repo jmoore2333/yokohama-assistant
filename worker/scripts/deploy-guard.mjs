@@ -27,13 +27,15 @@
 //    asset-layer fallback answers a missing file WITHOUT invoking the Worker,
 //    and the pool reads only `wrangler.test.jsonc`, so no pool cell can see
 //    production's block drift.
-// 6. The `durable_objects` and `migrations` blocks are present in both files
-//    and EQUAL, read as values (the orchestrator's ruling at Task 9's review):
-//    the pool reads only `wrangler.test.jsonc`, so a class, a binding or a
-//    migration there that production lacks would be tested green and never
-//    shipped. Checks 3–6 need no build, and `deploy-guard.test.mjs` runs them
-//    over the committed files — the per-commit catcher; the live reading at
-//    each deploy is the second.
+// 6. The `durable_objects`, `migrations` and `r2_buckets` blocks are present
+//    in both files and EQUAL, read as values (the orchestrator's ruling at
+//    Task 9's review, and Task 13's bucket): the pool reads only
+//    `wrangler.test.jsonc`, so a class, a binding, a migration or a bucket
+//    there that production lacks would be tested green and never shipped —
+//    and production's `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the
+//    500 naming that variable (spec §2.6). Checks 3–6 need no build, and
+//    `deploy-guard.test.mjs` runs them over the committed files — the
+//    per-commit catcher; the live reading at each deploy is the second.
 //
 // Both files are read with `jsonc-parser`, which knows a string from a
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
@@ -128,6 +130,7 @@ function canonical(value) {
 const OBJECT_BLOCKS = {
   durable_objects: "binds the three object classes",
   migrations: "migrates the three object classes",
+  r2_buckets: "binds the bucket yokohama-archive as ARCHIVE",
 };
 
 /** Check 6, over the two parsed configurations. */
@@ -231,6 +234,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     "deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; " +
       "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; " +
-      "the same object bindings and migrations in both",
+      "the same object bindings, migrations and bucket binding in both",
   );
 }

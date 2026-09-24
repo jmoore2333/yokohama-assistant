@@ -1,4 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
+import type { Archive } from "../src/archive";
 import type { Env } from "../src/env";
 import { House } from "../src/house";
 import type { Slot } from "../src/slot";
@@ -10,7 +11,10 @@ import type { Table } from "../src/table";
  * the pool's RPC resolver reads through. An instance's own property makes
  * every RPC to it THROW rather than hang, which is how the SECOND battery-25
  * text was vacuous; the first used `evictDurableObject`, which drains the
- * push. A push FAILED is made on the table's side instead (`failPushes`).
+ * push. A push FAILED is made on the table's side instead (`failPushes`),
+ * and so is an archive upload held or failed: the object's own bucket is
+ * swapped (`swapBucket`), with its puts held (`heldPuts`) or rejected
+ * (`failingPuts`).
  *
  * Every cell restores its patch in a `finally`, and BEFORE any
  * `runDurableObjectAlarm` that follows an abort: a module-level patch survives
@@ -144,5 +148,72 @@ export async function failPushes(stub: DurableObjectStub<Table>, times: number):
       runInDurableObject(stub, (table: Table) => {
         if (own !== undefined) table["env"] = own;
       }),
+  };
+}
+
+/** What a swapped bucket does with a `put` (`swapBucket`): `real` is the
+ *  object's own bucket, whose `put` the answer may call through to. */
+export type PutThrough = (real: R2Bucket, key: string, value: string, options?: R2PutOptions) => Promise<R2Object | null>;
+
+/**
+ * The bucket a LIVE object reaches, replaced — its `env` swapped, inside the
+ * object, for a copy whose `ARCHIVE` reads from the object's own bucket and
+ * hands every `put` to `put` — as `failPushes` swaps `HOUSE`, and for its
+ * reasons: the original is never written to, an eviction discards the copy
+ * (pool fact 4), and `restore()` puts the original back. A table object or an
+ * archive object alike: each reads `this.env.ARCHIVE` when it uploads.
+ */
+export async function swapBucket(
+  stub: DurableObjectStub<Table> | DurableObjectStub<Archive>,
+  put: PutThrough,
+): Promise<{ restore(): Promise<void> }> {
+  const target = stub as unknown as DurableObjectStub;
+  let own: Env | undefined;
+  await runInDurableObject(target, (object: Table | Archive) => {
+    own = object["env"];
+    const real = own.ARCHIVE;
+    if (real === undefined) throw new Error("premise: the pool binds the bucket as ARCHIVE (wrangler.test.jsonc)");
+    const swapped = {
+      get: (...args: Parameters<R2Bucket["get"]>) => real.get(...args),
+      put: (key: string, value: string, options?: R2PutOptions) => put(real, key, value, options),
+    };
+    object["env"] = { ...own, ARCHIVE: swapped as unknown as R2Bucket };
+  });
+  return {
+    restore: () =>
+      runInDurableObject(target, (object: Table | Archive) => {
+        if (own !== undefined) object["env"] = own;
+      }),
+  };
+}
+
+/** The message a `failingPuts` put rejects with — what R2's own failure
+ *  carries into the outcome's `detail`. */
+export const R2_UNREACHABLE = "R2 is unreachable (failingPuts)";
+
+/** The next `times` puts whose key `only` accepts REJECT, as an unreachable
+ *  R2 answers; every other put reaches the real bucket. */
+export function failingPuts(times: number, only: (key: string) => boolean = () => true): PutThrough {
+  let left = times;
+  return (real, key, value, options) =>
+    only(key) && left-- > 0 ? Promise.reject(new Error(R2_UNREACHABLE)) : real.put(key, value, options);
+}
+
+/**
+ * Every put HELD at a gate the cell opens, then passed to the real bucket —
+ * the gate made in the cell's own context, as `holdApply`'s is. `reached()`
+ * says whether a put has arrived at it.
+ */
+export function heldPuts(): { through: PutThrough; reached(): boolean; open(): void } {
+  const door = gate();
+  let reached = false;
+  return {
+    through: async (real, key, value, options) => {
+      reached = true;
+      await door.opened;
+      return real.put(key, value, options);
+    },
+    reached: () => reached,
+    open: () => door.open(),
   };
 }

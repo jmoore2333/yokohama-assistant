@@ -1,6 +1,8 @@
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { WIRE } from "./corpus.gen";
-import { WALK, WALK_HOST, walk } from "./walk";
+import { settle, tableStub } from "./helpers";
+import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
 
 // **The objects serve the corpus** (spec §5.3's pool half, R-6.5c.8; the
 // plan's Task 12 Step 3; battery 7).
@@ -8,7 +10,8 @@ import { WALK, WALK_HOST, walk } from "./walk";
 // `crates/yokohama-web/tests/wire_fixtures.rs` walks the axum router through a
 // deterministic two-player game and freezes every payload the client reads.
 // This replays THE SAME WALK through the objects — the table objects, the
-// house over its scrubbed copies, and the Worker's own `/api/art` — with
+// house over its scrubbed copies, the Worker's own `/api/art`, and a browser's
+// saves through its caller's archive object and this file's bucket — with
 // `X-Yokohama-User` set as the Worker sets it and the module's clock frozen at
 // the corpus's `1_789_000_000` (`wrangler.test.jsonc`, the plan's ruling
 // P-2), and asserts that every named reply is the committed file. It is
@@ -22,14 +25,14 @@ import { WALK, WALK_HOST, walk } from "./walk";
 
 /**
  * The fields a HOST is entitled to differ on (spec §4's second class): which
- * header names the caller (`identity`, and `mode` on `/api/me`) and how a
- * change reaches a browser (`signal`). This host reads `cf-access` and `ws`;
- * the axum host the corpus was cut from, `claimed` and `sse`. `multiplayer` is
- * NOT here — both hosts offer it — nor is `archive`: both read `off` in the
- * pool, so exempting it would hide a host that had acquired one.
+ * header names the caller (`identity`, and `mode` on `/api/me`), how a change
+ * reaches a browser (`signal`), and where its archive is kept (`archive`).
+ * This host reads `cf-access`, `ws` and `r2`; the axum host the corpus was cut
+ * from, `claimed`, `sse` and `off` — its primary `Api` keeps no archive.
+ * `multiplayer` is NOT here: both hosts offer it.
  */
 const HOST_FIELDS: Record<string, string[]> = {
-  health: ["identity", "signal"],
+  health: ["identity", "signal", "archive"],
   me: ["mode"],
   me_signed_out: ["mode"],
 };
@@ -44,23 +47,14 @@ const HOST_FIELDS: Record<string, string[]> = {
  * - `watching`, `locked` and the four `why`/explanation files are built in
  *   process by the emitter's `constructed()`: a deterministic bot-free walk
  *   cannot reach them.
- * - `house_chat_off_404` and the eight `archive_*` files come from the
- *   emitter's second and third `Api`s — a lobby chat switched off, and a real
- *   archive. The eight are replayed from `archive-walk.json` once this host
- *   serves the archive (the plan's Task 13).
+ * - `house_chat_off_404` comes from an `Api` of the emitter's with the lobby
+ *   chat switched off, which no script replays. (The eight `archive_*` files
+ *   are `archive-walk.json`'s, which this host replays.)
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
  */
 const THIRD_COLUMN = [
-  "archive_400_digest",
-  "archive_400_replay",
-  "archive_400_rev",
-  "archive_400_table",
-  "archive_409",
-  "archive_post",
-  "archive_post_abandoned",
-  "archive_post_identical",
   "explanation_terminal",
   "house_chat_off_404",
   "locked",
@@ -76,6 +70,7 @@ describe("the objects serve the corpus (spec §5.3)", () => {
     const named = new Set<string>();
     const sent = await walk({
       host: true,
+      archive: true,
       onRow: (_index, row, reply) => {
         const label = `${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;
         // EVERY row's status, named or not: a row that answered differently
@@ -102,7 +97,7 @@ describe("the objects serve the corpus (spec §5.3)", () => {
         expect(strip(got), `${row.fixture} (${label})`).toEqual(strip(committed));
       },
     });
-    expect(sent, "every row of both scripts was sent").toBe(WALK.length + WALK_HOST.length);
+    expect(sent, "every row of the three scripts was sent").toBe(WALK.length + WALK_HOST.length + ARCHIVE_WALK.length);
 
     // **The three columns, derived**: every committed file is named by a row
     // (and was just compared), or is one this host does not serve.
@@ -115,5 +110,16 @@ describe("the objects serve the corpus (spec §5.3)", () => {
     for (const name of Object.keys(HOST_FIELDS)) {
       expect(named.has(name), `${name} is replayed with its named fields exempted`).toBe(true);
     }
+
+    // **The walk's own game over, archived** (spec §2.6's game-over site):
+    // `wire` finished at the row that names `game_over`, and its record went
+    // to this file's bucket after that reply, under the `test/` root — the
+    // very bytes archive-walk.json's first send carries, which the emitter
+    // read off the same walk's store. No reply above can show it: a save is
+    // read only from the bucket, and no committed payload carries the stamp,
+    // `archived_at`.
+    await settle(tableStub("wire"));
+    const saved = await env.ARCHIVE!.get("test/rev7/over/wire.json");
+    expect(await saved?.text(), "the walk's game over saved its record").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
   });
 });

@@ -1,11 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Exports, Reply } from "../gen/factory.js";
-import { guardAlarmName } from "./alarm";
+import { earliest, guardAlarmName } from "./alarm";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
-import { Instance, readReply, type Bump, type Replied } from "./module";
+import { Instance, pinnedTo, readReply, type Bump, type Replied } from "./module";
+import { executePlan, logOutcome, parsePlan, parseStamp, stampArm, type ArchiveOwed, type Outcome, type Plan } from "./r2";
 import { errorBody, log, respond } from "./respond";
 import { advances, cmpGen, copyDigest, HOUSE_NAME, nextRetry, type Ack, type Generation, type Slot } from "./slot";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, hasTables, readDocs, setMeta, upsertDoc } from "./storage";
@@ -101,9 +102,11 @@ interface Incoming {
 /**
  * **The table object** (spec §2.4): one table's documents in its own SQLite,
  * and the table layer compiled to WebAssembly answering the table's requests —
- * every `/api/games/{id}…`, and the create that names it. Spec §2.3's Worker
- * reaches it by the table's id, so the object's name is the table's id
- * (`ctx.id.name`, the plan's pool fact 8), and `meta` stores none.
+ * every `/api/games/{id}…`, and the create that names it — with the saves its
+ * game owes the archive (spec §2.6): the abandon's (`abandon`), and game
+ * over's (`deliverArchive`). Spec §2.3's Worker reaches it by the table's id,
+ * so the object's name is the table's id (`ctx.id.name`, the plan's pool fact
+ * 8), and `meta` stores none.
  */
 export class Table extends DurableObject<Env> {
   /** The Worker's variables, read once — `shellConfig` reads `env` and
@@ -116,6 +119,11 @@ export class Table extends DurableObject<Env> {
    *  never pushed twice at once, and a caller that awaits it — the corpus
    *  replay's flush, a test's `settle` — waits for its acknowledgement. */
   private readonly pushes = new Map<string, Promise<void>>();
+  /** The owed saves' uploads in flight, by their plan's key:
+   *  `deliverArchive` hands a second caller of the same owed save the upload
+   *  already under way, so one plan is never uploaded twice at once, and a
+   *  caller that awaits it — a test's `settle` — waits for what it settles. */
+  private readonly uploads = new Map<string, Promise<void>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -146,12 +154,18 @@ export class Table extends DurableObject<Env> {
       contentType: req.headers.get("content-type") ?? undefined,
       create,
       transport,
-      // The body, read once: the LAST await before the reply. The wake, the
-      // call and the batch all run after it, in `answer`'s one synchronous
-      // turn, so no other request interleaves between a wake and the dispatch
-      // it serves (spec §2.4; plan review m4).
+      // The body, read once: the LAST await before the reply but for an
+      // abandon's upload, which `blockConcurrencyWhile` shields (`abandon`).
+      // The wake, the call and the batch all run after it, in `answer`'s one
+      // synchronous turn, so no other request interleaves between a wake and
+      // the dispatch it serves (spec §2.4; plan review m4).
       body: new Uint8Array(await req.arrayBuffer()),
     };
+    // An abandon runs WHOLE under `blockConcurrencyWhile` (spec §2.4 step 1,
+    // §2.6): its save is uploaded between its two dispatches, and nothing else
+    // may reach this object in between. A delete that owes no save completes
+    // in its first dispatch, under it all the same.
+    if (incoming.method === "DELETE") return this.ctx.blockConcurrencyWhile(() => this.abandon(incoming));
     return this.answer(incoming);
   }
 
@@ -169,11 +183,13 @@ export class Table extends DurableObject<Env> {
    *    which is how a copy that trapped in its request is delivered (the
    *    orchestrator's ruling I-42);
    * 2. delivers the slot (`deliverSlot`) — a retry after a failed push, or a
-   *    push an abort cut off.
+   *    push an abort cut off — and, beside it, an owed save
+   *    (`deliverArchive`): a game over whose upload failed, or was cut off.
+   *    With the archive `off`, the owed save is kept and logged.
    *
-   * The alarm is re-armed only by the batches those two write — a new
-   * slot's, a failed push's, an acknowledgement's — so a run with nothing due
-   * leaves none.
+   * The alarm is re-armed only by the batches those write — a new slot's, a
+   * failed push's, an acknowledgement's, a failed upload's, a settled save's —
+   * so a run with nothing due leaves none.
    */
   async onAlarm(name: string | undefined): Promise<void> {
     if (guardAlarmName(name) === "skip") {
@@ -182,7 +198,7 @@ export class Table extends DurableObject<Env> {
     }
     // The guard runs only a named alarm.
     this.recopy(name as string);
-    await this.deliverSlot();
+    await Promise.all([this.deliverSlot(), this.deliverArchive()]);
   }
 
   /**
@@ -243,9 +259,11 @@ export class Table extends DurableObject<Env> {
    *   a regressed `acked` would make a later change back to an older copy look
    *   already delivered;
    * - the alarm: when the slot is cleared, re-armed to what is still due — a
-   *   copy still owed (`copy_owed`), at its rung from now — or deleted when
-   *   nothing is; while a newer slot still waits, left where that slot's own
-   *   batch or failure put it (one convention for the rung, `nextRetry`'s).
+   *   copy still owed (`copy_owed`), or a save (`archive_owed`, while the
+   *   archive is on), each at its rung from now, the earlier of the two — or
+   *   deleted when nothing is; while a newer slot still waits, left where that
+   *   slot's own batch or failure put it (one convention for the rung,
+   *   `nextRetry`'s).
    *
    * An acknowledgement that clears nothing and advances nothing writes
    * nothing. And the batch is written ONLY while the object still holds its
@@ -286,7 +304,7 @@ export class Table extends DurableObject<Env> {
         if (holds) deleteMeta(sql, "slot");
         if (advance) setMeta(sql, "acked", JSON.stringify(acked));
       },
-      holds ? copyRetryDue(copyOwedOf(sql)) : undefined,
+      holds ? earliest(copyRetryDue(copyOwedOf(sql)), this.archiveRung(sql)) : undefined,
     );
   }
 
@@ -294,8 +312,9 @@ export class Table extends DurableObject<Env> {
    * A push of `pushed` that failed — the RPC threw — logged `slot-failed`. If
    * the slot still holds it, ONE batch counts the failure in the slot and
    * re-arms the alarm to its next retry (`nextRetry`: 30 s, 2 min, 10 min,
-   * then hourly). A slot written meanwhile has its own push and its own
-   * retry, and an object that has ceased to exist has none.
+   * then hourly) — or to an owed save's, if that comes first (`earliest`). A
+   * slot written meanwhile has its own push and its own retry, and an object
+   * that has ceased to exist has none.
    */
   private failed(id: string, pushed: Slot, error: unknown): void {
     // No slot at all once the object has ended: `getMeta` reads none.
@@ -310,7 +329,10 @@ export class Table extends DurableObject<Env> {
       error: String(error),
     });
     if (!retrying) return;
-    this.batch((sql) => setMeta(sql, "slot", JSON.stringify({ ...slot, attempt: slot.attempt + 1 })), retryDue(slot));
+    this.batch(
+      (sql) => setMeta(sql, "slot", JSON.stringify({ ...slot, attempt: slot.attempt + 1 })),
+      earliest(retryDue(slot), this.archiveRung(this.ctx.storage.sql)),
+    );
   }
 
   /**
@@ -342,16 +364,222 @@ export class Table extends DurableObject<Env> {
     if (writes.length === 0) return;
     this.batch(() => {
       for (const write of writes) write();
-    }, owedDue(owed));
+    }, earliest(owedDue(owed), this.archiveRung(sql)));
   }
 
   /**
-   * The request path (spec §2.4; the plan's Task 9, steps 3 to 7, and Task
-   * 10), in one synchronous turn: the poison check, the wake, the call, the
-   * ONE batch, the frames, and the reply — or, for a `…/stream` upgrade, the
-   * admission (`admit`).
+   * **The owed save's ONE delivery routine** (spec §2.6's game-over site): a
+   * request whose batch leaves a save owed, and the alarm, call it. It uploads
+   * the plan `archive_owed` holds NOW (`executePlan`), logs the outcome, and
+   * settles what the outcome leaves (`settleUpload`) — or, when that plan's
+   * upload is already in flight, answers that upload. It does nothing with no
+   * save owed, on an object the platform gives no name, under a configuration
+   * the shell refuses, or on a poisoned table, which is never re-instantiated
+   * (spec §2.4).
+   *
+   * **While the switch reads `off`** the owed save is KEPT and not uploaded,
+   * and nothing re-arms the alarm for it (spec §2.6): the alarm logs
+   * `archive-owed-kept`, and no request calls this. Switched back on, the next
+   * request or alarm resumes it.
    */
-  private answer(incoming: Incoming): Response {
+  private async deliverArchive(): Promise<void> {
+    const id = this.ctx.id.name;
+    const sql = this.ctx.storage.sql;
+    const owed = archiveOwedOf(sql);
+    if (id === undefined || owed === undefined || "error" in this.config) return;
+    if (Number(getMeta(sql, "load_traps") ?? "0") >= 2) return;
+    if (!this.archiveOn()) {
+      log("archive-owed-kept", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+      return;
+    }
+    const key = owed.plan.key;
+    const inFlight = this.uploads.get(key);
+    if (inFlight !== undefined) return inFlight;
+    const upload = this.upload(id, owed).finally(() => this.uploads.delete(key));
+    this.uploads.set(key, upload);
+    return upload;
+  }
+
+  /** One upload of `owed`'s plan, its outcome logged with the failures before
+   *  it, and what it leaves settled — the slot the settling batch writes
+   *  pushed before this resolves. */
+  private async upload(id: string, owed: ArchiveOwed): Promise<void> {
+    // Only the receipt archive defers, and `shellConfig` refuses `r2` without
+    // the bucket bound, so it is bound here.
+    const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, owed.plan);
+    logOutcome(id, "game-over", owed.plan, outcome, { attempt: owed.attempt });
+    if (this.settleUpload(id, owed, outcome)) await this.deliverSlot();
+  }
+
+  /**
+   * What an owed save's upload leaves (spec §2.6's game-over site), after its
+   * await, in one synchronous turn. Other requests ran during the upload's
+   * I/O — nothing blocks them here — so it acts only while `archive_owed`
+   * still holds the plan it uploaded: a delete that saved has cleared it, and
+   * a later game over has replaced it.
+   *
+   * - **`failed`**: counted in `archive_owed` and retried by the alarm on the
+   *   backoff (`retryArchive`).
+   * - **`conflict`**: final at every site — `archive_owed` cleared, and the
+   *   alarm re-armed to what is still due, or deleted when nothing is.
+   * - **`landed` or `identical`**: the module — woken first when it is new —
+   *   takes the outcome as its receipt and stamps with the layer's own code at
+   *   the RECORDED reading (`stamp`), so its put makes the stored plan and
+   *   meets the receipt. Its answer decides (`stampArm`): `stamped` completes
+   *   the save and clears `archive_owed`; `no-longer-over` clears it too;
+   *   `retry` — the game over, the stamp not landed — keeps it owed, counted,
+   *   its plan the one the stamp re-made at that reading when the module
+   *   deferred one. The stamped table row, `archive_owed` and the slot the
+   *   changed copy owes go in ONE batch (`commit`). A trap is the side
+   *   channel's (spec §2.4): logged, the module discarded, and the save
+   *   retried.
+   *
+   * **The undo case, and what it leaves** (the orchestrator's ruling I3;
+   * Task 6's escalation e, RECORDED and not fixed this cycle). An undo at a
+   * one-person table that lands during the upload's I/O leaves the game not
+   * over at the stamp: nothing is owed, and the first completion's copy stays
+   * in the bucket unstamped. A replay to the SAME end meets it as
+   * `identical`, and stamps. A replay to a DIFFERENT end meets it as a
+   * `conflict` — final, so that game is never stamped: the creator's later
+   * abandon plans the same record key and is refused for good, and an expiry
+   * is `held` until the operator's `?force`. The NAS stamps inside `persist`,
+   * where no undo can land between the put and the stamp; a rule that stamps
+   * on such a conflict is the owner's to make.
+   *
+   * Answers whether its batch wrote a slot.
+   */
+  private settleUpload(id: string, owed: ArchiveOwed, outcome: Outcome): boolean {
+    const sql = this.ctx.storage.sql;
+    const current = archiveOwedOf(sql);
+    if (current?.plan.key !== owed.plan.key) return false;
+    if (outcome.outcome === "failed") {
+      this.retryArchive(current);
+      return false;
+    }
+    if (outcome.outcome === "conflict") {
+      this.batch((sql) => deleteMeta(sql, "archive_owed"), dueBesidesArchive(sql));
+      return false;
+    }
+    const config = this.config;
+    const traps = Number(getMeta(sql, "load_traps") ?? "0");
+    // `deliverArchive` checked both before the upload; a load trap during
+    // its I/O can have poisoned the table since.
+    if ("error" in config || traps >= 2) return false;
+    const instance = (this.instance ??= new Instance(moduleConfig(this.env, null)));
+    let bumps: Bump[];
+    let done: Committed;
+    try {
+      const woken = this.wake(id, instance, config, traps);
+      if (woken instanceof Response) {
+        // The wake logged why the module could not be loaded. The upload
+        // stands; the stamp is retried.
+        this.retryArchive(current);
+        return false;
+      }
+      const completed = this.stamp(id, instance, current, outcome);
+      if (completed === undefined) {
+        this.retryArchive(current, woken.clearTraps);
+        return false;
+      }
+      const { status, body, archive: replanned } = completed.reply;
+      const stamp = status === 200 ? parseStamp(body) : undefined;
+      log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...(stamp ?? { status, body }) });
+      const arm = stamp === undefined ? "retry" : stampArm(stamp);
+      done = this.commit(
+        id,
+        completed,
+        woken,
+        arm === "retry"
+          ? {
+              owe: {
+                plan: replanned === undefined ? current.plan : parsePlan(replanned),
+                reading: current.reading,
+                attempt: current.attempt + 1,
+              },
+              due: this.retryAt(current),
+            }
+          : "clear",
+      );
+      bumps = [...(woken.restored?.reply.bumps ?? []), ...completed.reply.bumps];
+    } catch (e) {
+      // As `answer`'s: the module may hold what storage does not.
+      instance.drop();
+      throw e;
+    }
+    if (bumps.length > 0) this.sendFrames(id, bumps);
+    return done.pushing;
+  }
+
+  /**
+   * An owed save's completion, in the module: the upload's `outcome`
+   * installed as the receipt, `stamp_archive(id)` pinned to the RECORDED
+   * reading (`pinnedTo`, which restores the setting after it), and the layer's
+   * documents read back — under ONE `guarded`. Answers the call, or
+   * `undefined` when it trapped, logged.
+   */
+  private stamp(id: string, instance: Instance, owed: ArchiveOwed, outcome: Outcome): Called | undefined {
+    let stage = "receipt";
+    const done = instance.guarded((mod) => {
+      mod.receipt(owed.plan.key, JSON.stringify(outcome));
+      stage = "stamp_archive";
+      const reply = pinnedTo(mod, owed.reading, (m) => m.stamp_archive(id));
+      stage = "read";
+      return { reply, at: owed.reading, docs: readLayerDocs(mod, id) };
+    });
+    if ("trapped" in done) {
+      log("trap", { id, call: stage, error: done.trapped });
+      return undefined;
+    }
+    return done.ok;
+  }
+
+  /**
+   * `owed` still owed, one more failure counted, in ONE batch — with a load
+   * trap's reset when this turn's wake cleared one — and the alarm re-armed to
+   * its retry (`retryAt`), unless a load trap since has poisoned the table,
+   * which re-arms nothing (spec §2.4).
+   */
+  private retryArchive(owed: ArchiveOwed, clearTraps = false): void {
+    const sql = this.ctx.storage.sql;
+    const poisoned = Number(getMeta(sql, "load_traps") ?? "0") >= 2;
+    this.batch(
+      (sql) => {
+        setMeta(sql, "archive_owed", JSON.stringify({ ...owed, attempt: owed.attempt + 1 }));
+        if (clearTraps) clearLoadTraps(sql);
+      },
+      poisoned ? undefined : this.retryAt(owed),
+    );
+  }
+
+  /** When `owed` is retried after another failure, from now: `owed.attempt`
+   *  counts the failures BEFORE this one, so `nextRetry` of it is the rung
+   *  after this failure — 30 s after the first, as a slot's — or sooner, when
+   *  something else owed is due first. */
+  private retryAt(owed: ArchiveOwed): number {
+    const due = Date.now() + nextRetry(owed.attempt);
+    return Math.min(due, dueBesidesArchive(this.ctx.storage.sql) ?? due);
+  }
+
+  /** Whether saves are uploaded: the switch reads `r2`. */
+  private archiveOn(): boolean {
+    return !("error" in this.config) && this.config.archive === "r2";
+  }
+
+  /** An owed save's retry, from now — at the rung after its failures, or the
+   *  first rung when none has failed — while the switch reads `r2`, and
+   *  `undefined` when none is owed or the switch reads `off`: while off, the
+   *  alarm is not re-armed for it (spec §2.6). */
+  private archiveRung(sql: SqlStorage): number | undefined {
+    const owed = this.archiveOn() ? archiveOwedOf(sql) : undefined;
+    return owed === undefined ? undefined : Date.now() + nextRetry(Math.max(owed.attempt - 1, 0));
+  }
+
+  /**
+   * What a request needs before its wake, or the answer that ends it first:
+   * the poison check, a create's 409 under an unacknowledged removal, and the
+   * configuration — then the module (spec §2.4).
+   */
+  private ready(incoming: Incoming): { config: ShellConfig; instance: Instance; traps: number } | Response {
     const { id } = incoming;
     const sql = this.ctx.storage.sql;
     // Two consecutive load traps poison the table: it is not loaded again, and
@@ -379,9 +607,26 @@ export class Table extends DurableObject<Env> {
       return respond(500, errorBody(config.error));
     }
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, null)));
+    return { config, instance, traps };
+  }
+
+  /**
+   * The request path (spec §2.4; the plan's Task 9, steps 3 to 7, and Task
+   * 10) for every request but a DELETE (`abandon`), in one synchronous turn:
+   * the poison check, the wake, the call, the ONE batch, the frames, and the
+   * reply — or, for a `…/stream` upgrade, the admission (`admit`). A plan the
+   * call deferred is game over's, and so is one the wake's `restore_picker`
+   * deferred: neither call is run again, so the batch OWES it (`owing`; the
+   * plan's ruling P-2), and the save is uploaded after the reply.
+   */
+  private answer(incoming: Incoming): Response {
+    const ready = this.ready(incoming);
+    if (ready instanceof Response) return ready;
+    const { id } = incoming;
+    const { config, instance, traps } = ready;
     let reply: Replied;
     let bumps: Bump[];
-    let pushing: boolean;
+    let done: Committed;
     try {
       const woken = this.wake(id, instance, config, traps);
       if (woken instanceof Response) return woken;
@@ -394,7 +639,7 @@ export class Table extends DurableObject<Env> {
         if (woken.clearTraps) this.batch(clearLoadTraps);
         return called;
       }
-      pushing = this.commit(id, called, woken);
+      done = this.commit(id, called, woken, owing(called) ?? owing(woken.restored));
       reply = called.reply;
       // Every bump the request's calls made: the wake's — `restore_picker`'s,
       // a cold rebuild's owed bot move among them — and the call's own (the
@@ -409,13 +654,116 @@ export class Table extends DurableObject<Env> {
       instance.drop();
       throw e;
     }
-    // The side channels, after the batch (spec §2.4): the output gate holds
-    // every send until the batch is durable (spec §0.4), and `sendFrames`
-    // never throws, so nothing it meets costs the request its reply. Then the
-    // house push, when the batch wrote a slot: it outlives the reply
-    // (`waitUntil`), and the alarm the batch armed finishes it if it cannot.
+    return this.finish(incoming, reply, bumps, done);
+  }
+
+  /**
+   * **The abandon's receipt loop** (spec §2.4 step 1, §2.6) — every DELETE,
+   * run WHOLE under `blockConcurrencyWhile` (`fetch`), which delivers no other
+   * event to this object until it returns, so the module and the rows it
+   * answers from are this request's across the upload's await:
+   *
+   * 1. the wake, and the first dispatch, pinned to P-2's reading, taken ONCE;
+   * 2. when that dispatch deferred a put — the layer refuses the delete,
+   *    deleting nothing, until its save is made — the plan is carried out
+   *    (`executePlan`) and its outcome logged, then installed as the receipt,
+   *    and the SAME request dispatched AGAIN at the SAME reading
+   *    (`redispatch`), so the layer's put makes the very plan the receipt is
+   *    for. Its answer is the answer: a delete that proceeds, or the layer's
+   *    own refusal naming the archive with R2's reason inside it — a
+   *    `conflict` among them, final at every site;
+   * 3. the ONE batch, the frames and the reply, as `answer`'s.
+   *
+   * A delete that owes no save — an open or dealing table, one with no move
+   * made, one already stamped, the archive off, a caller the layer refuses —
+   * completes in its first dispatch. Only the WAKE's plan can be owed by the
+   * batch: the dispatch's was dispatched again.
+   */
+  private async abandon(incoming: Incoming): Promise<Response> {
+    const ready = this.ready(incoming);
+    if (ready instanceof Response) return ready;
+    const { id } = incoming;
+    const { config, instance, traps } = ready;
+    let reply: Replied;
+    let bumps: Bump[];
+    let done: Committed;
+    try {
+      const woken = this.wake(id, instance, config, traps);
+      if (woken instanceof Response) return woken;
+      let called = this.call(incoming, instance);
+      if (called instanceof Response) {
+        if (woken.clearTraps) this.batch(clearLoadTraps);
+        return called;
+      }
+      const deferred = called.reply.archive;
+      if (deferred !== undefined) {
+        const plan = parsePlan(deferred);
+        // Only the receipt archive defers, and `shellConfig` refuses `r2`
+        // without the bucket bound, so it is bound here.
+        const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan);
+        logOutcome(id, "abandon", plan, outcome);
+        const again = this.redispatch(incoming, instance, called, plan, outcome);
+        if (again instanceof Response) {
+          if (woken.clearTraps) this.batch(clearLoadTraps);
+          return again;
+        }
+        called = again;
+      }
+      done = this.commit(id, called, woken, owing(woken.restored));
+      reply = called.reply;
+      bumps = [...(woken.restored?.reply.bumps ?? []), ...reply.bumps];
+    } catch (e) {
+      // As `answer`'s: the module may hold what storage does not.
+      instance.drop();
+      throw e;
+    }
+    return this.finish(incoming, reply, bumps, done);
+  }
+
+  /**
+   * The receipt loop's second dispatch: `outcome` installed as `plan`'s
+   * receipt, then the SAME request dispatched pinned to the FIRST dispatch's
+   * reading (`pinnedTo`, which restores the setting after it) — spec §2.6's
+   * "one clock reading per plan": a reading of its own would stamp another
+   * `archived_at`, and its plan would not be the receipt's — then the layer's
+   * documents read back, all under ONE `guarded`, as `call`'s. The answer
+   * carries both dispatches' bumps (a deferred put signals nothing, but a
+   * call's bumps are never dropped). A trap is the trap 500, persisting
+   * nothing.
+   */
+  private redispatch(incoming: Incoming, instance: Instance, first: Called, plan: Plan, outcome: Outcome): Called | Response {
+    const { id } = incoming;
+    let stage = "receipt";
+    const done = instance.guarded((mod) => {
+      mod.receipt(plan.key, JSON.stringify(outcome));
+      stage = "dispatch";
+      const reply = pinnedTo(mod, first.at, (m) =>
+        m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body),
+      );
+      stage = "read";
+      return { reply, at: first.at, docs: readLayerDocs(mod, id) };
+    });
+    if ("trapped" in done) {
+      log("trap", { id, call: stage, error: done.trapped });
+      return respond(500, errorBody(TRAP));
+    }
+    const again = done.ok;
+    return { ...again, reply: { ...again.reply, bumps: [...first.reply.bumps, ...again.reply.bumps] } };
+  }
+
+  /**
+   * The side channels, after the request's batch (spec §2.4), and the reply:
+   * the output gate holds every send until the batch is durable (spec §0.4),
+   * and `sendFrames` never throws, so nothing it meets costs the request its
+   * reply. Then the house push, when the batch wrote a slot, and the upload of
+   * a save the table owes: each outlives the reply (`waitUntil`), and the alarm
+   * armed beside the batch that made it due finishes it if it cannot.
+   */
+  private finish(incoming: Incoming, reply: Replied, bumps: Bump[], done: Committed): Response {
+    const { id } = incoming;
     this.sendFrames(id, bumps);
-    if (pushing) this.ctx.waitUntil(this.deliverSlot());
+    if (done.pushing) this.ctx.waitUntil(this.deliverSlot());
+    if (done.archiving) this.ctx.waitUntil(this.deliverArchive());
     return incoming.transport === "stream" ? this.admit(id, incoming.user, reply) : respond(reply.status, reply.body);
   }
 
@@ -666,13 +1014,24 @@ export class Table extends DurableObject<Env> {
    *   REMOVAL when the layer deleted the table — with its alarm at +30 s set
    *   beside the batch. A copy `house_copy` traps on is counted in
    *   `copy_owed` and arms the alarm at its rung, for a fresh module to
-   *   recompute (the orchestrator's ruling I-42).
+   *   recompute (the orchestrator's ruling I-42);
+   * - **what the archive is owed** (spec §2.6), `archive`: a plan written to
+   *   `archive_owed` with its retry's alarm, or a save discharged — cleared,
+   *   and the alarm re-armed to what is still due (`dueBesidesArchive`), or
+   *   deleted when nothing is. A delete the layer made clears it whatever
+   *   `archive` says (spec §2.4 step 2; the orchestrator's ruling I-57): with
+   *   the archive on, the delete's own save superseded it, and with the
+   *   archive off, the owed save goes with the table. Any other alarm this
+   *   batch sets is brought forward to an owed save's retry when that is
+   *   sooner (`earliest`).
    *
    * Every write goes in ONE `batch`, and a request with nothing to write runs
    * none — so a probe creates nothing. Answers whether the batch wrote a
-   * slot, which the request then pushes.
+   * slot, which the request then pushes, and whether a save is owed after
+   * it, with the switch on, which the request then uploads — one this batch
+   * wrote, or one owed before it: the next request resumes it (spec §2.6).
    */
-  private commit(id: string, called: Called, parts: BatchParts): boolean {
+  private commit(id: string, called: Called, parts: BatchParts, archive?: ArchiveWrite): Committed {
     const sql = this.ctx.storage.sql;
     const stored = readDocs(sql);
     const now = Date.now();
@@ -702,11 +1061,28 @@ export class Table extends DurableObject<Env> {
     // §2.4: a side channel's trap "retries on the alarm or the next request").
     const owed = after !== before || copyOwedOf(sql) > 0 ? this.owed(id, after, called.at) : undefined;
     if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
-    if (writes.length === 0) return false;
+    const holding = archiveOwedOf(sql) !== undefined;
+    let alarm: number | null | undefined = owed === undefined ? undefined : owedDue(owed);
+    let owes = holding;
+    if ((before !== undefined && after === undefined) || archive === "clear") {
+      owes = false;
+      if (holding) {
+        writes.push(() => deleteMeta(sql, "archive_owed"));
+        alarm = earliest(alarm ?? null, dueBesidesArchive(sql) ?? undefined);
+      }
+    } else if (archive !== undefined) {
+      owes = true;
+      writes.push(() => setMeta(sql, "archive_owed", JSON.stringify(archive.owe)));
+      alarm = earliest(archive.due, alarm ?? undefined);
+    } else {
+      alarm = earliest(alarm, this.archiveRung(sql));
+    }
+    const archiving = owes && this.archiveOn();
+    if (writes.length === 0) return { pushing: false, archiving };
     this.batch(() => {
       for (const write of writes) write();
-    }, owed === undefined ? undefined : owedDue(owed));
-    return owed?.slot !== undefined;
+    }, alarm);
+    return { pushing: owed?.slot !== undefined, archiving };
   }
 
   /**
@@ -1036,4 +1412,47 @@ function copyRetryDue(traps: number): number | null {
 function owedDue(owed: Owed): number | undefined {
   if (owed.slot !== undefined) return Date.now() + nextRetry(0);
   return copyRetryDue(owed.traps) ?? undefined;
+}
+
+/** What a request's batch leaves its side channels (`commit`). */
+interface Committed {
+  /** The batch wrote a slot, which the request pushes. */
+  pushing: boolean;
+  /** A save is owed after the batch, and the switch reads `r2`: the request
+   *  uploads it after its reply. */
+  archiving: boolean;
+}
+
+/** What a batch does to `archive_owed` (spec §2.6): a plan owed, with when
+ *  its alarm must run; or a save discharged — stamped, no longer owed, or a
+ *  `conflict`, final at every site — and cleared. */
+type ArchiveWrite = { owe: ArchiveOwed; due: number } | "clear";
+
+/**
+ * The plan `p`'s call deferred — game over's put, which no call runs again —
+ * owed from the call's batch at the reading pinned for that call (the plan's
+ * ruling P-2), its first retry at the first rung, 30 s; `undefined` when the
+ * call deferred none.
+ */
+function owing(p: Pinned | null): ArchiveWrite | undefined {
+  const deferred = p?.reply.archive;
+  if (p === null || deferred === undefined) return undefined;
+  return { owe: { plan: parsePlan(deferred), reading: p.at, attempt: 0 }, due: Date.now() + nextRetry(0) };
+}
+
+/** `meta.archive_owed` — the shell's own JSON, the plan's record and table
+ *  strings inside it — or `undefined` when no save is owed. */
+function archiveOwedOf(sql: SqlStorage): ArchiveOwed | undefined {
+  const text = getMeta(sql, "archive_owed");
+  return text === undefined ? undefined : (JSON.parse(text) as ArchiveOwed);
+}
+
+/** What is still due once an owed save is discharged — a slot still waiting,
+ *  or a copy still owed, each at its rung from now — as the alarm's next
+ *  deadline, or `null` when nothing is (spec §2.4: "the success that
+ *  discharges it re-arms it to the next deadline"). */
+function dueBesidesArchive(sql: SqlStorage): number | null {
+  const slot = slotState(sql).slot;
+  const waiting = slot === undefined ? null : Date.now() + nextRetry(Math.max(slot.attempt - 1, 0));
+  return earliest(waiting, copyRetryDue(copyOwedOf(sql)) ?? undefined) ?? null;
 }

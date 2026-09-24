@@ -333,14 +333,19 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect([res.house.length, res.archive.length]).toEqual([1, 0]);
   });
 
-  // Spec §2.3: the Archive object named `"archive:" + address`. Mutants: the
+  // Spec §2.3: the Archive object named `"archive:" + address`, answering as
+  // the layer answers. The pool's archive is `r2`, so the layer reads the body
+  // before any put, and refuses a record that does not parse. Mutants: the
   // archive sent to the house; the object named without its prefix, or by an
   // address not trimmed and lowercased as the layer reads one.
-  it("a signed-in POST /api/archive reaches the caller's own Archive object: the layer's 404 with the archive off", async () => {
+  it("a signed-in POST /api/archive reaches the caller's own Archive object, which answers as the layer does", async () => {
+    const body = '{"record":"","table":""}';
     const res = await reaching(async () =>
-      worker("/api/archive", { method: "POST", token: await person(" Red@T.Test "), headers: JSON_TYPE, body: '{"record":"","table":""}' }),
+      worker("/api/archive", { method: "POST", token: await person(" Red@T.Test "), headers: JSON_TYPE, body }),
     );
-    expect([res.result.status, res.result.text]).toEqual([404, '{"error":"this server keeps no archive"}']);
+    const layer = layerAnswer(RED, "POST", "/api/archive", body);
+    expect(layer.status, "premise: the layer refuses the record before any put").toBe(400);
+    expect([res.result.status, res.result.text]).toEqual([layer.status, layer.body]);
     expect(res.archiveNames).toEqual([`archive:${RED}`]);
     expect(res.house).toEqual([]);
   });
@@ -546,7 +551,7 @@ describe("the house, first cut (spec §2.5)", () => {
   it("answers /api/health with this host's facts through the layer's dispatch", async () => {
     const res = await worker("/api/health");
     expect(res.status).toBe(200);
-    for (const fact of ['"identity":"cf-access"', '"signal":"ws"', '"archive":"off"', '"multiplayer":true']) {
+    for (const fact of ['"identity":"cf-access"', '"signal":"ws"', '"archive":"r2"', '"multiplayer":true']) {
       expect(res.text).toContain(fact);
     }
   });
