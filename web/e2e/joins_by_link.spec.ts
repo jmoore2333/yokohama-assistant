@@ -44,7 +44,9 @@ let opened: { page: Page; id: string } | null = null;
 // **Live, the walk abandons the table it opened**, as its creator — in an
 // `afterEach` rather than a `finally`, for the measured reason
 // `two_browsers.spec.ts` gives: a timed-out body's `finally` runs only after
-// its pages are closed. Locally it sends nothing.
+// its pages are closed. Locally it sends nothing: the local server's games are
+// scratch, and its archive directory — which an abandon's save writes into —
+// is read by other specs (`offline.spec.ts`, `plays_locally.spec.ts`).
 test.afterEach(async () => {
   const table = opened;
   opened = null;
@@ -144,10 +146,11 @@ test("a person holding only a link joins a locked open table and plays", async (
       `the address wraps at 390px: ${narrow.who}px against ${wide.who}px at ${desktop.width}`,
     ).toBeLessThanOrEqual(wide.who);
     if (LIVE) {
-      // **The edge's door draws no sign-out** (`App.tsx`: the button exists
-      // under `claimed` ONLY), so live there is none to measure — and its
-      // absence is the reading: a sign-out under Access would look like it
-      // logged you out while Access kept letting you in.
+      // **The edge's door draws no sign-out**: the Worker's door is
+      // `cf-access`, and `App.tsx` draws the button under `claimed` ONLY. So
+      // live there is none to measure — and its absence is the reading: a
+      // sign-out under Access would look like it logged you out while Access
+      // kept letting you in.
       expect(wide.out, "no sign-out under the edge's door").toBeNull();
       expect(narrow.out, "no sign-out under the edge's door").toBeNull();
     } else {

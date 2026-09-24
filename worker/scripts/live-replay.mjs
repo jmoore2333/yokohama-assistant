@@ -78,8 +78,15 @@ const HOUSE_CHAT = new Set(["house_chat_post", "house_chat"]);
 /** `archive-walk.json`'s two FIRST sends, which land only once. */
 const FIRST_SENDS = new Set(["archive_post", "archive_post_abandoned"]);
 
-/** How many times a lobby page is read again while it differs, and how long
- *  apart: the pool's `deliverSlot` flush, which a live run cannot make. */
+/**
+ * How many times a lobby page is read again while it differs, and how long
+ * apart. The mechanism it waits out: a table's slot push to the house rides
+ * `waitUntil` AFTER the table's reply (spec §2.5), so a lobby GET sent right
+ * after a create — or a join, or a keep — can reach the house before the push
+ * does. The pool flushes with `deliverSlot` before every house row; a live run
+ * cannot, so it reads again instead. Every re-read is counted and printed with
+ * this bound, and a page still differing after the last is a MISMATCH.
+ */
 const LOBBY_REREADS = 5;
 const LOBBY_PAUSE_MS = 500;
 
@@ -516,8 +523,9 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       result.named += 1;
       let judged = judge(row.fixture, reply, context);
       for (let again = 0; LOBBY.has(row.fixture) && judged.diffs.length > 0 && again < LOBBY_REREADS; again++) {
-        // The table's push to the house rides `waitUntil` after its reply
-        // (spec §2.5), so a page read right after can predate it.
+        // The table's slot push may not have reached the house yet
+        // (`LOBBY_REREADS` says why); what still differs after the last read
+        // is reported below as a mismatch.
         await pause(LOBBY_PAUSE_MS);
         const reread = await send(row, credential, fetcher);
         result.rereads += 1;
@@ -552,7 +560,10 @@ function finish(result, log) {
   log(`named rows compared: ${result.named}`);
   log(`exemptions spent (${result.spent.length}):`);
   for (const line of result.spent) log(`  ${line}`);
-  log(`lobby re-reads (a copy the house had not yet received): ${result.rereads}`);
+  log(
+    `lobby re-reads: ${result.rereads} spent (the bound: ${LOBBY_REREADS} per lobby row, ${LOBBY_PAUSE_MS} ms apart; ` +
+      "a page still differing after them is a mismatch)",
+  );
   if (result.stopped !== null) log(`stopped: ${result.stopped}`);
   log(`mismatches: ${result.mismatches.length === 0 ? "none" : result.mismatches.length}`);
   log(`live-replay: ${result.holds ? "HOLDS" : "DOES NOT HOLD"}`);

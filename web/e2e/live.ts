@@ -91,7 +91,8 @@ export function identityHeaders(email: string): Record<string, string> {
  * cookie on `url`'s host, or a `Domain` one dotted — and none at all for a
  * `Domain` the host is not within; `Path`, or the request path's directory;
  * `Max-Age` over `Expires`, and a session cookie (`-1`) with neither;
- * `SameSite` as given, else `Lax`.
+ * `SameSite` as given, else `Lax`. It prints nothing: a cookie's value is
+ * the credential's session, and never reaches a log.
  */
 export function cookiesFrom(headers: string[], url: string, now: number = Date.now()): Cookie[] {
   const at = new URL(url);
@@ -158,9 +159,16 @@ let seeded: Promise<StorageState> | undefined;
 /**
  * What a spec hands `newContextWithoutWorker` for `email`'s context.
  *
- * Locally it is NOTHING — exactly today's context: the walk signs in through
- * the form, and the client attaches the claimed header itself. Under `LIVE`
- * it is the seeded cookie and the claimed header.
+ * Locally it is NOTHING — exactly today's context. The local server's door is
+ * `claimed`: the walk types the address into the sign-in form, and the client
+ * keeps it and attaches the claimed header to its own requests.
+ *
+ * Under `LIVE` it is the seeded cookie and, context-wide, the claimed header —
+ * because neither half of the local arrangement holds there. The Worker's
+ * door is `cf-access`, where the client draws no sign-in form (`Door.tsx`
+ * draws one under `claimed` only), so it never holds an address and attaches
+ * no claimed header of its own; and the header must reach the socket the page
+ * opens, whose upgrade only a context header reaches (§0.4; I-75).
  */
 export async function liveContextOptions(email: string): Promise<BrowserContextOptions> {
   if (!LIVE) return {};

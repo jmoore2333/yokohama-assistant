@@ -59,17 +59,21 @@ let opened: { page: Page; id: string } | null = null;
 // only after the test has ENDED — the page closed, and its request refused
 // "Test ended." — while this hook runs first, with the page still open. A live
 // game that times out is exactly the table that must not be left behind.
-// Locally it sends nothing: the local server's directory is scratch.
+// Locally it sends nothing: the local server's games are scratch, and its
+// archive directory — which an abandon's save writes into — is read by other
+// specs (`offline.spec.ts`, `plays_locally.spec.ts`).
 test.afterEach(async () => {
   const table = opened;
   opened = null;
   if (LIVE && table) await abandonAsCreator(table.page, table.id);
 });
 
-/** Whether `ws` is this table's stream: the page's socket under the Worker
- *  (M6.5c). MEASURED: a socket the page opens raises a `websocket` event and
- *  NO `request` event, so a count read off the request log alone would read
- *  ZERO live. Locally no socket opens and this adds nothing. */
+/** Whether `ws` is this table's stream: the Worker's transport is a socket
+ *  (`ws`, M6.5c). MEASURED: a socket the page opens raises a `websocket` event
+ *  and NO `request` event, so a count read off the request log alone would
+ *  read ZERO live. Locally none fires — the transport is the stream's `fetch`
+ *  — and the watcher's checkpoint `toBe(1)` pins that: a socket counted beside
+ *  the stream's request would read 2. */
 const socketTo = (ws: WebSocket, path: string) => path !== "" && new URL(ws.url()).pathname === path;
 
 /** The walk's own cap on MOVES. Idle looks have their own, below: the two
@@ -243,10 +247,11 @@ test("two people at two browsers play to a winner and neither sees the other's h
     if (path.endsWith("/events")) eventsAsked.push(path);
     if (path === streamPath) streams += 1;
   });
-  // The Worker's stream is a socket, counted by the same whole path — and a
-  // socket the page reopens is the Worker's "reconnecting…", read here as the
-  // stream's second open. Its one probe after a close nobody explained is a
-  // `/events` request, which the line above already counts.
+  // The Worker's transport is a socket (`ws`), counted by the same whole path
+  // — and a socket the page reopens is the Worker's "reconnecting…", read here
+  // as the stream's second open. Its one probe after a close nobody explained
+  // is a `/events` request, which the line above already counts. Locally no
+  // socket opens (`socketTo` says what pins that).
   c.on("websocket", (ws) => {
     if (socketTo(ws, streamPath)) streams += 1;
   });

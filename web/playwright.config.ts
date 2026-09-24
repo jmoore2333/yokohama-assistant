@@ -178,9 +178,13 @@ export default defineConfig({
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     ...devices["Desktop Chrome"],
-    // **No trace live.** MEASURED: a trace keeps every request's headers and
-    // cookies, and a live context's cookie IS the Service Auth credential's
-    // session (`e2e/live.ts`) — a failure would have written it to disk.
+    // **No trace live.** MEASURED (Playwright 1.62.1): a retained trace keeps
+    // an `APIRequestContext`'s headers — which is why the credential never
+    // goes through one (`e2e/live.ts`) — and every page request's cookies, and
+    // a live context's `CF_Authorization` cookie IS the Service Auth
+    // credential's session. So a failing live run keeps NO trace; it still
+    // keeps its screenshot (below — pixels, no header), its error, and the
+    // lines the specs print.
     trace: LIVE ? "off" : "retain-on-failure",
     screenshot: "only-on-failure",
   },

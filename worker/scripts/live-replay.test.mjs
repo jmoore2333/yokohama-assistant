@@ -439,7 +439,8 @@ describe("replay", () => {
     const first = await run(once);
     expect(first.result.holds).toBe(true);
     expect(first.result.rereads).toBe(1);
-    expect(first.text).toContain("lobby re-reads (a copy the house had not yet received): 1");
+    // The count spent, and the bound it was spent against.
+    expect(first.text).toContain("lobby re-reads: 1 spent (the bound: 5 per lobby row, 500 ms apart");
 
     const never = fakeHost({
       edit: (plan, rows) => {
@@ -448,9 +449,12 @@ describe("replay", () => {
       },
     });
     const second = await run(never);
+    // A page that never converges within the bound is a MISMATCH.
     expect(second.result.holds).toBe(false);
     expect(second.result.rereads).toBe(5);
     expect(second.result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toContain("games_open games.0.id");
+    expect(second.text).toContain("lobby re-reads: 5 spent (the bound: 5 per lobby row, 500 ms apart");
+    expect(second.text).toContain("live-replay: DOES NOT HOLD");
   });
 
   it("redacts a value that could be a seed or a secret when it reports one", async () => {
