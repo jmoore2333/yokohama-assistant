@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, isBeaconCorsError } from "./harness";
+import { BEACON_PREFIX, isBeaconCorsError, isDealAnswer, isDealAnswerLine } from "./harness";
 import { LIVE_ORIGIN, abandonAsCreator, accessState, baseUrlFor, cookiesFrom, credential, identityHeaders } from "./live";
 
 // ---- the error, as Chromium words it ---------------------------------------
@@ -104,7 +104,8 @@ function fakePage() {
     error: (text: string, url: string) =>
       emit("console", { type: () => "error", text: () => text, location: () => ({ url, lineNumber: 0, columnNumber: 0 }) } as unknown as ConsoleMessage),
     uncaught: (message: string) => emit("pageerror", new Error(message)),
-    response: (status: number, url: string) => emit("response", { status: () => status, url: () => url } as unknown as PwResponse),
+    response: (status: number, url: string, method = "GET") =>
+      emit("response", { status: () => status, url: () => url, request: () => ({ method: () => method }) } as unknown as PwResponse),
   };
 }
 
@@ -414,4 +415,94 @@ describe("baseUrlFor", () => {
     const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");
     expect(config).toContain("export const BASE_URL = baseUrlFor(LIVE);");
   });
+});
+
+// ---- the dealing screen's designed 409 (the live tier's finding 3; I-81) ---
+//
+// `Dealing.tsx`'s own doc: "A 409 here is an ANSWER, not a failure" — the
+// typed refusal of a table that flipped to playing between two of the
+// browser's requests, which the client answers by going to the board. The
+// live run met it on the join spec's page A; locally the race falls the other
+// way. Chromium logs any response of 400 or more as a console error, and the
+// harness records every one under `BASE_URL`, so this one is forgiven — in
+// BOTH modes, since the race is the product's on every host — and nothing
+// broader is.
+
+/** A table's deal route, on `base`. */
+const DEAL = (base: string) => `${base}/api/games/sim-367fcf21183e035d/deal`;
+/** Chromium's line for the 409, as the live run logged it (HTTP/2 sends no
+ *  reason) and as HTTP/1.1 words it. */
+const DEAL_LINE = "Failed to load resource: the server responded with a status of 409 ()";
+const DEAL_LINE_REASON = "Failed to load resource: the server responded with a status of 409 (Conflict)";
+
+describe("isDealAnswer and isDealAnswerLine — the designed 409, exactly", () => {
+  it("forgive the 409 on GET …/api/games/<id>/deal, and the line Chromium logs at it, on either host", () => {
+    for (const base of [baseUrlFor(false), baseUrlFor(true)]) {
+      expect(isDealAnswer(409, "GET", DEAL(base), base), base).toBe(true);
+      expect(isDealAnswerLine(DEAL_LINE, DEAL(base), base), base).toBe(true);
+      expect(isDealAnswerLine(DEAL_LINE_REASON, DEAL(base), base), base).toBe(true);
+    }
+  });
+  it("forgive no 409 on any other path", () => {
+    for (const path of ["/api/games/sim-1", "/api/games/sim-1/keep", "/api/games/sim-1/table", "/api/games/sim-1/join", "/api/stream"]) {
+      expect(isDealAnswer(409, "GET", `${LIVE_ORIGIN}${path}`, LIVE_ORIGIN), path).toBe(false);
+      expect(isDealAnswerLine(DEAL_LINE, `${LIVE_ORIGIN}${path}`, LIVE_ORIGIN), path).toBe(false);
+    }
+  });
+  it("forgive no other status on /deal, and no other method", () => {
+    for (const status of [400, 403, 404, 426, 500]) {
+      expect(isDealAnswer(status, "GET", DEAL(LIVE_ORIGIN), LIVE_ORIGIN), String(status)).toBe(false);
+      expect(isDealAnswerLine(DEAL_LINE.replace("409", String(status)), DEAL(LIVE_ORIGIN), LIVE_ORIGIN), String(status)).toBe(false);
+    }
+    expect(isDealAnswer(409, "POST", DEAL(LIVE_ORIGIN), LIVE_ORIGIN)).toBe(false);
+  });
+  it("forgive no lookalike: /deal2, /deals, a deeper or shallower path, another origin", () => {
+    for (const url of [
+      `${LIVE_ORIGIN}/api/games/sim-1/deal2`,
+      `${LIVE_ORIGIN}/api/games/sim-1/deals`,
+      `${LIVE_ORIGIN}/api/games/sim-1/deal/x`,
+      `${LIVE_ORIGIN}/api/games/sim-1/x/deal`,
+      `${LIVE_ORIGIN}/api/games//deal`,
+      `${LIVE_ORIGIN}/api/deal`,
+      "https://elsewhere.example/api/games/sim-1/deal",
+      "https://yokohama.moore.nyc.evil.example/api/games/sim-1/deal",
+    ]) {
+      expect(isDealAnswer(409, "GET", url, LIVE_ORIGIN), url).toBe(false);
+      expect(isDealAnswerLine(DEAL_LINE, url, LIVE_ORIGIN), url).toBe(false);
+    }
+  });
+  it("forgive no line but Chromium's own: an error that merely quotes it is breakage", () => {
+    expect(isDealAnswerLine(`Uncaught Error: ${DEAL_LINE}`, DEAL(LIVE_ORIGIN), LIVE_ORIGIN)).toBe(false);
+  });
+});
+
+describe("watchForBreakage — the designed 409, in both modes", () => {
+  afterEach(() => {
+    vi.doUnmock("./live");
+    vi.resetModules();
+  });
+
+  for (const live of [false, true]) {
+    it(`forgives both of its arms ${live ? "live" : "locally"}, counted apart from the beacon, and every other 400 or more still fails`, async () => {
+      const { watchForBreakage } = await harnessAt(live);
+      const base = baseUrlFor(live);
+      const fake = fakePage();
+      const watch = watchForBreakage(fake.page);
+      fake.response(409, DEAL(base));
+      fake.error(DEAL_LINE, DEAL(base));
+      expect(watch.failures).toEqual([]);
+      expect(watch.dealAnswers).toBe(2);
+      expect(watch.forgiven, "the beacon's counter is not this one").toBe(0);
+
+      fake.response(409, `${base}/api/games/sim-1/keep`, "POST");
+      fake.response(403, DEAL(base));
+      fake.error(DEAL_LINE, `${base}/api/games/sim-1/keep`);
+      expect(watch.failures).toEqual([
+        `409 ${base}/api/games/sim-1/keep`,
+        `403 ${DEAL(base)}`,
+        `console.error: ${DEAL_LINE}`,
+      ]);
+      expect(watch.dealAnswers).toBe(2);
+    });
+  }
 });

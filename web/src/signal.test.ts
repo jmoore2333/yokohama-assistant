@@ -27,6 +27,7 @@ import {
   type Source,
 } from "./signal";
 import { ACCESS_CHALLENGE, api, setSignalKind } from "./api";
+import { resetFactsForTest } from "./local/facts";
 import { fakeStream, flush, gate, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { Events, TableView } from "./types";
@@ -1075,5 +1076,79 @@ describe("the signal, over a WebSocket (M6.5c)", () => {
     });
     expect(FakeSocket.made).toHaveLength(1);
     expect(ends).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// **No connection opens before the transport is KNOWN** (M6.5c Task 15, the
+// live tier's finding 1; ruling I-81).
+//
+// The live run's lobby asked `GET /api/stream` as a STREAM and the Worker
+// answered 426: `signalKind()` reads the server's facts, whose default is the
+// stream until `GET /api/health` has answered, and the lobby mounts while the
+// health read App makes on entering the multiplayer channel is still out. So
+// the hook waits for that answer when this page has none, and a read that
+// FAILED is the ladder's business — never a guess at the stream.
+
+describe("the transport is known before anything opens (M6.5c live tier)", () => {
+  /** The lobby's house channel: a `"wake"` source on `/api/stream`. */
+  const house: Source<null> = { key: "lobby", once: async () => null, stream: "/api/stream" };
+
+  beforeEach(() => {
+    // Nothing this page has been told: the facts at their defaults, with no
+    // answer taken.
+    resetFactsForTest();
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+  });
+  afterEach(() => {
+    resetFactsForTest();
+  });
+
+  it("waits for the health read in flight, and opens the socket it names — never the stream first", async () => {
+    const health = gate<Reply>();
+    const stub = stubApi((call) => (call.path.endsWith("/api/health") ? health.promise : undefined));
+    // App's own read on entering the multiplayer channel, still out as the
+    // lobby mounts.
+    const asked = api.health();
+    renderHook(() => usePolled(house, true, () => {}));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(stub.matching("GET", "/api/stream"), "no stream on the default guess").toEqual([]);
+    expect(FakeSocket.made, "and no socket either").toEqual([]);
+
+    health.resolve({ ...wire.health, signal: "ws" });
+    await asked;
+    await until(() => FakeSocket.made.length === 1, "the socket the health read named");
+    expect(new URL(FakeSocket.made[0]!.url).pathname).toBe("/api/stream");
+    expect(stub.matching("GET", "/api/stream"), "never a stream at all").toEqual([]);
+  });
+
+  it("after a failed health read, climbs the ladder and asks again rather than guess", async () => {
+    let healths = 0;
+    const stub = stubApi((call) => {
+      if (!call.path.endsWith("/api/health")) return undefined;
+      healths += 1;
+      return healths === 1 ? { status: 500, body: wire.error } : { ...wire.health, signal: "ws" };
+    });
+    // App's read, which FAILED before the lobby mounted.
+    await api.health().catch(() => {});
+    const { result } = renderHook(() => usePolled(house, true, () => {}));
+    await settle();
+    expect(result.current, "the word says so").toBe("reconnecting");
+    // The first attempt asks nothing of its own: the entry read is App's.
+    expect(healths).toBe(1);
+    expect(stub.matching("GET", "/api/stream")).toEqual([]);
+    expect(FakeSocket.made).toEqual([]);
+
+    // The ladder's first rung asks the health read itself.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+    });
+    await until(() => FakeSocket.made.length === 1, "the socket, once health answered");
+    expect(healths).toBe(2);
+    expect(stub.matching("GET", "/api/stream"), "never guessed").toEqual([]);
   });
 });

@@ -315,6 +315,71 @@ export const setSignalKind = (k: "sse" | "held" | "ws"): void => {
   patchServerFacts({ signal: k });
 };
 
+/** The SERVER's health read in flight, and whether the last one to settle
+ *  failed — what [`transportWait`] reads (M6.5c's live tier, finding 1). */
+let healthRead: Promise<Health> | null = null;
+let healthReadFailed = false;
+
+/** `GET /api/health`, with the server's read in flight kept where
+ *  [`transportWait`] can find it. A local read is the module's, and says
+ *  nothing about the server's transport. */
+function readHealth(host?: Host): Promise<Health> {
+  const read = call<Health>("GET", "/api/health", undefined, host);
+  if (host === "local") return read;
+  healthRead = read;
+  read
+    .then(
+      () => {
+        healthReadFailed = false;
+      },
+      () => {
+        healthReadFailed = true;
+      },
+    )
+    .finally(() => {
+      if (healthRead === read) healthRead = null;
+    });
+  return read;
+}
+
+/**
+ * What a change signal waits for before it picks its transport (M6.5c Task 15,
+ * the live tier's finding 1; ruling I-81): `null` — pick now — or the health
+ * answer, remembered when it lands.
+ *
+ * The live run's lobby asked `/api/stream` as a STREAM and the Worker answered
+ * 426: the facts' default is the stream until `GET /api/health` has answered,
+ * and the lobby mounts while the read App makes on entering the multiplayer
+ * channel is still out. So:
+ *
+ * - **Known** — a health answer landed, on this page or a visit before it —
+ *   is `null`: the transport is read at once, exactly as it always was.
+ * - **Being asked** is that read, awaited.
+ * - **Asked and FAILED** is the ladder's business, never a guess: a caller's
+ *   first attempt fails without a request of its own — the entry read is
+ *   App's, and one that just failed is not asked again at once — and a
+ *   `retrying` caller asks again itself.
+ * - **Never asked** is `null` too. App asks on entering the multiplayer
+ *   channel — before any of its screens can mount, and a hook's first open
+ *   waits a timer's turn besides — so a page never opens a server stream
+ *   unasked; what reaches here is a caller that set the transport itself (the
+ *   cells), and it reads what was set.
+ */
+export function transportWait(retrying: boolean): Promise<void> | null {
+  if (serverFactsTakenAt() !== null) return null;
+  const read =
+    healthRead ??
+    (healthReadFailed
+      ? retrying
+        ? api.health()
+        : Promise.reject(new Error("the transport is not known: the health read failed"))
+      : null);
+  if (read === null) return null;
+  return read.then((h) => {
+    rememberServerFacts(h);
+  });
+}
+
 /** Whether this DEPLOYMENT answers the house chat (M6.4, R-6.4.6), read once
  *  from the same `GET /api/health` the transport above comes from.
  *
@@ -678,8 +743,10 @@ export const api = {
    *  `user: null` is the answer, not an error. */
   me: (host?: Host) => call<Me>("GET", "/api/me", undefined, host),
   /** The engine's compatibility keys, the identity mode, and — since M6.3 —
-   *  which change transport to read. Fetched once at boot. */
-  health: (host?: Host) => call<Health>("GET", "/api/health", undefined, host),
+   *  which change transport to read. Asked on entering the multiplayer channel
+   *  (`App`) and wherever `ensureArchiveFact` must; the server's read in flight
+   *  is kept for [`transportWait`]. */
+  health: (host?: Host) => readHealth(host),
   /** The words on the cards.
    *
    *  **`host` is what makes them survive an unreachable API** (spec §2.3): the

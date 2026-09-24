@@ -30,6 +30,10 @@ import type { Frame } from "./sse";
  *  cut. It asks the server nothing, which is why it is not a poll. */
 export const PING_MS = 30_000;
 
+/** `WebSocket.OPEN`, as the number the standard fixes it at — so a socket
+ *  double need not carry the class's statics. */
+const OPEN = 1;
+
 /** One message off the socket as the stream's `Frame` — or `null` for anything
  *  that is not a text message holding an `{event: string, data}` object. The
  *  auto-response's `pong` is the one such message this host sends. `data` is
@@ -64,7 +68,11 @@ function unwrap(message: unknown): Frame | null {
  *
  * `onOpen` fires once, when the socket opens: the moment the caller's "live"
  * hangs on, as it hangs on `readStream`'s 200. `ping` starts then too, and
- * stops at the close.
+ * stops at the hang-up or at the close, whichever comes first — and a tick
+ * sends only on an OPEN socket (M6.5c's live tier, finding 2): between a
+ * close BEGUN, by this side or the server's, and the `close` event the socket
+ * is CLOSING, and a send there is Chromium's console error "WebSocket is
+ * already in CLOSING or CLOSED state."
  *
  * **The abort hangs up with 1000**, and the read resolves once the socket has
  * closed. A signal that has already aborted opens nothing.
@@ -90,7 +98,14 @@ export function readSocket(
     const ws = new WebSocket(url.href);
     let ended = false;
     let ping: ReturnType<typeof setInterval> | undefined;
-    const hangUp = () => ws.close(1000);
+    const stopPing = () => {
+      clearInterval(ping);
+      ping = undefined;
+    };
+    const hangUp = () => {
+      stopPing();
+      ws.close(1000);
+    };
     signal.addEventListener("abort", hangUp, { once: true });
     const guarded = (handler: () => void) => {
       try {
@@ -101,7 +116,9 @@ export function readSocket(
       }
     };
     ws.addEventListener("open", () => {
-      ping = setInterval(() => ws.send("ping"), PING_MS);
+      ping = setInterval(() => {
+        if (ws.readyState === OPEN) ws.send("ping");
+      }, PING_MS);
       guarded(() => onOpen?.());
     });
     ws.addEventListener("message", (e: MessageEvent) => {
@@ -112,7 +129,7 @@ export function readSocket(
       guarded(() => onFrame(f));
     });
     ws.addEventListener("close", () => {
-      clearInterval(ping);
+      stopPing();
       signal.removeEventListener("abort", hangUp);
       resolve(ended ? "ended" : "closed");
     });

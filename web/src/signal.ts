@@ -43,7 +43,7 @@
 // "live" would be a claim it cannot make yet.
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, isLocal, isSessionExpired, signalKind } from "./api";
+import { api, ApiError, isLocal, isSessionExpired, signalKind, transportWait } from "./api";
 import { readStream, type Frame } from "./sse";
 import { readSocket } from "./ws";
 import type { Events } from "./types";
@@ -362,6 +362,18 @@ export function usePolled<T>(
         setLink("live");
       };
       try {
+        // **Nothing opens before the transport is KNOWN** (M6.5c Task 15, the
+        // live tier's finding 1; ruling I-81): the facts' default is the
+        // stream, and the Worker answers a stream's GET with 426.
+        // `transportWait` says when this waits — only while this page has no
+        // health answer — and a read that FAILED rejects here, into the
+        // ladder below, rather than letting the default be guessed. A caller
+        // that has already failed once asks the read again itself.
+        const pending = transportWait(failures.current > 0);
+        if (pending !== null) {
+          await pending;
+          if (stopped || mine.signal.aborted) return;
+        }
         if (signalKind() === "held") {
           // R-plan-5: the same answer, one request at a time. The game's `once`
           // holds on the server for up to 25 s; the others answer at once and

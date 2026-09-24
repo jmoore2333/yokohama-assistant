@@ -57,13 +57,18 @@ export function rng(seed: number): () => number {
  * Analytics beacon's CORS block ([`isBeaconCorsError`]) — and COUNTED in
  * `forgiven`, so a live run says how often the allow-list was spent. Locally
  * the switch is off and the line below it never runs.
+ *
+ * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
+ * M6.5c's live tier, finding 3): both of its lines — the response and
+ * Chromium's console line — counted apart, in `dealAnswers`, so a run says
+ * which forgiveness it spent.
  */
 export function watchForBreakage(
   page: Page,
   expected: { status: number; urlIncludes: string }[] = [],
-): { failures: string[]; forgiven: number } {
+): { failures: string[]; forgiven: number; dealAnswers: number } {
   const failures: string[] = [];
-  const watch = { failures, forgiven: 0 };
+  const watch = { failures, forgiven: 0, dealAnswers: 0 };
   const allowed = (status: number, url: string) =>
     expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
@@ -80,15 +85,63 @@ export function watchForBreakage(
       watch.forgiven += 1;
       return;
     }
+    if (isDealAnswerLine(text, m.location().url, BASE_URL)) {
+      watch.dealAnswers += 1;
+      return;
+    }
     failures.push(`console.error: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
     if (r.status() >= 400 && r.url().startsWith(BASE_URL) && !allowed(r.status(), r.url())) {
+      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL)) {
+        watch.dealAnswers += 1;
+        return;
+      }
       failures.push(`${r.status()} ${r.url()}`);
     }
   });
   return watch;
+}
+
+/** A table's deal route on `base`'s origin: `/api/games/<id>/deal` and
+ *  nothing after it. */
+function isDealRoute(url: string, base: string): boolean {
+  let at: URL;
+  try {
+    at = new URL(url);
+  } catch {
+    return false;
+  }
+  return at.origin === new URL(base).origin && /^\/api\/games\/[^/]+\/deal$/.test(at.pathname);
+}
+
+/**
+ * **The dealing screen's designed 409** (M6.5c Task 15, the live tier's finding
+ * 3; ruling I-81): a `GET …/api/games/<id>/deal` answered 409 on `base`.
+ *
+ * `Dealing.tsx`'s own doc: "A 409 here is an ANSWER, not a failure" — the
+ * typed refusal of a table that flipped to playing between two of the
+ * browser's requests, which the client answers by going to the board. The live
+ * run met it on the join spec's first page; locally the race falls the other
+ * way. So it is forgiven in BOTH modes — the race is the product's on every
+ * host — and nothing broader is: no other status, no other method, no other
+ * path (`/deal2`, `/deals`, `/deal/x`), no other origin. Pure, so its cells are
+ * node cells (`harness.node.test.ts`).
+ */
+export function isDealAnswer(status: number, method: string, url: string, base: string): boolean {
+  return status === 409 && method === "GET" && isDealRoute(url, base);
+}
+
+/** Chromium's console line for that response — "Failed to load resource: the
+ *  server responded with a status of 409 (<reason>)", the reason empty over
+ *  HTTP/2 — matched only where Chromium LOCATES it at a deal route. */
+const DEAL_409_LINE = /^Failed to load resource: the server responded with a status of 409 \([^)]*\)$/;
+
+/** The console half of [`isDealAnswer`]: its line, at a deal route on
+ *  `base`. */
+export function isDealAnswerLine(text: string, url: string, base: string): boolean {
+  return DEAL_409_LINE.test(text) && isDealRoute(url, base);
 }
 
 /**

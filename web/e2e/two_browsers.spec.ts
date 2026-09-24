@@ -518,6 +518,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
       `the players opened this table's stream a ${streamOpens.a}, b ` +
       `${streamOpens.b} times (a ${streamsAtStart.a}, b ${streamsAtStart.b} ` +
       `before the first move)` +
+      // The dealing screen's designed 409, forgiven in both modes (`harness.ts`,
+      // `isDealAnswer`): two lines per 409, the response and Chromium's own.
+      `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers}, ` +
+      `c ${watchC.dealAnswers} times` +
       // Live, how often the one allowed console error was spent.
       (LIVE
         ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, ` +

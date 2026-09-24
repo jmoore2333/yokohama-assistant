@@ -491,6 +491,9 @@ test("a person holding only a link joins a locked open table and plays", async (
   console.log(
     `join-by-link table ${id}: ${moves} moves across two browsers in ` +
       `${Math.round((Date.now() - started) / 1000)}s` +
+      // The dealing screen's designed 409, forgiven in both modes (`harness.ts`,
+      // `isDealAnswer`): two lines per 409, the response and Chromium's own.
+      `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers} times` +
       // Live, how often the one allowed console error was spent.
       (LIVE ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, b ${watchB.forgiven} times` : ""),
   );

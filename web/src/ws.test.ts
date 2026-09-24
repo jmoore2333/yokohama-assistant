@@ -104,6 +104,12 @@ class FakeSocket {
     this.closes(code, reason, true);
   }
 
+  /** The server has BEGUN its closing handshake: CLOSING, and no `close` event
+   *  yet — the window a keep-alive's tick can fall into. */
+  closing(): void {
+    if (this.readyState === 1) this.readyState = 2;
+  }
+
   /** The connection is lost — or, before `accept`, the upgrade is refused. */
   drop(): void {
     if (this.readyState === 0) this.emit(new Event("error"));
@@ -214,6 +220,37 @@ describe("the socket reader", () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(PING_MS * 3);
     expect(s.sent).toEqual(["ping", "ping"]);
+  });
+
+  // **The live tier's finding 2** (M6.5c Task 15; ruling I-81). Chromium logs
+  // "WebSocket is already in CLOSING or CLOSED state." for a `send` on a socket
+  // that is closing — the server's close at game over, or this side's own
+  // hang-up — and the keep-alive's tick can land in that window: the live run
+  // logged it twice on one page. This fake records every `send` whatever the
+  // state, so a ping into the window is seen.
+  it("sends no ping to a socket that is CLOSING, whoever began the close", async () => {
+    const r = read();
+    const s = r.socket();
+    s.accept();
+    s.closing();
+    await vi.advanceTimersByTimeAsync(PING_MS);
+    expect(s.sent).toEqual([]);
+    s.shut(1000);
+    await r.done;
+  });
+
+  it("stops the keep-alive the moment it hangs up, before the close arrives", async () => {
+    const abort = new AbortController();
+    const r = read("/api/games/wire/stream", abort.signal);
+    const s = r.socket();
+    s.accept();
+    expect(vi.getTimerCount(), "the premise: the keep-alive is armed").toBe(1);
+    abort.abort();
+    // CLOSING now, and the close event a turn away: nothing may tick between.
+    expect(s.readyState).toBe(2);
+    expect(vi.getTimerCount(), "hanging up stopped it at once").toBe(0);
+    await r.done;
+    expect(s.sent).toEqual([]);
   });
 
   // **Battery 38.** This host always sends `end` BEFORE its 4403/4404 close
