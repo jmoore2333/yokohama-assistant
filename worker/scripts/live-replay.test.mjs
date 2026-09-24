@@ -129,6 +129,14 @@ describe("normalizeHouseChat", () => {
     // talking in the lobby during a run moves it, and that fails the run.
     expect(normalized.last).toBe(2);
   });
+  // On a SECOND run the base IS the first run's own post, by one of the
+  // replay's own identities — so only `seq > base` drops it.
+  it("drops the replay's own message AT the base: the previous run's post", () => {
+    const page = committed("house_chat");
+    const ours = page.messages[0];
+    const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE }, { ...ours, seq: BASE + 1 }] };
+    expect(normalizeHouseChat("house_chat", got, BASE, identities)).toEqual(page);
+  });
   it("refuses a name that is not the house chat, and a seq or last that is not a number", () => {
     expect(() => normalizeHouseChat("chat", committed("chat"), BASE, identities)).toThrow("chat is not a house chat payload");
     expect(() => normalizeHouseChat("house_chat_post", committed("error"), BASE, identities)).toThrow(
@@ -160,6 +168,9 @@ describe("firstSendAccepts", () => {
     expect(firstSendAccepts(post, 201, committed("archive_post_identical")), "a 201 saying identical").toBeNull();
     expect(firstSendAccepts(post, 200, committed("archive_post_abandoned")), "another leaf").toBeNull();
     expect(firstSendAccepts(post, 201, { ...post, path: "browser/other/rev7/over/wire.json" })).toBeNull();
+    // The once-rule's 200 is the SAME body but `identical`: a save filed at
+    // another path is no repeat of this one.
+    expect(firstSendAccepts(post, 200, { ...committed("archive_post_identical"), path: "browser/other/rev7/over/wire.json" })).toBeNull();
   });
 });
 
@@ -469,5 +480,51 @@ describe("replay", () => {
     expect(result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toEqual(["table seed"]);
     expect(text).toContain("table seed: committed (absent) · got <redacted>");
     expect(text).not.toContain("13377331133773311337");
+  });
+
+  it("prints its verdict AFTER the second force when the base cannot be read", async () => {
+    const host = fakeHost({ edit: (plan) => void (plan[0] = () => json(403, committed("not_seated_403"))) });
+    const { result, text } = await run(host);
+    expect(result.holds).toBe(false);
+    expect(result.run, "no row is sent without a base").toBe(0);
+    expect(text).toContain("the house chat's base could not be read: 403 — it said: you are not seated at this table");
+    const lines = text.split("\n");
+    const forcedAfter = lines.findIndex((l) => l.startsWith("force after:"));
+    expect(forcedAfter, "the ids are forced again").toBeGreaterThan(-1);
+    expect(lines.findIndex((l) => l === "live-replay: DOES NOT HOLD"), "the verdict is the report's last word").toBeGreaterThan(forcedAfter);
+  });
+
+  it("refuses a row that would leave the Worker's origin before sending anything, the forces included", async () => {
+    const host = fakeHost();
+    const walk = [...SCRIPTS.walk, { ...SCRIPTS.walk[2], path: "//elsewhere.example/api/games/wire/table" }];
+    await expect(
+      replay({
+        ...SCRIPTS,
+        walk,
+        corpus: CORPUS,
+        credential: { id: "dummy-id.access", secret: "dummy-secret-value" },
+        fetcher: host.fetcher,
+        log: () => {},
+        pause: async () => {},
+      }),
+    ).rejects.toThrow(`leaves ${ORIGIN}`);
+    expect(host.requests).toEqual([]);
+  });
+
+  // An exemption is spent only on a value that DIFFERS: a host field the
+  // Worker did not send is no exemption, and must not read as one.
+  it("refuses a host field the Worker did not send, as a mismatch and not an exemption spent", async () => {
+    const host = fakeHost({
+      edit: (plan, rows) => {
+        const { archive: _dropped, ...health } = liveBody("health");
+        plan[planIndex(rows, "walk.json", 28)] = () => json(200, health);
+      },
+    });
+    const { result } = await run(host);
+    expect(result.holds).toBe(false);
+    expect(result.mismatches.map((m) => `${m.fixture} ${m.path} ${m.reason}`)).toEqual([
+      "health archive exempted, but this host sent no string for it",
+    ]);
+    expect(result.spent.filter((s) => s.startsWith("HOST_FIELDS health.archive"))).toEqual([]);
   });
 });

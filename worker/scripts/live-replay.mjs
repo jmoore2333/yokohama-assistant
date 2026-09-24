@@ -403,7 +403,11 @@ function judge(fixture, reply, context) {
     got = freezeClock(got);
     for (const field of HOST_FIELDS[fixture] ?? []) {
       if (!isObject(got)) break;
-      if (isDeepStrictEqual(got[field], committed[field])) {
+      // An exemption is spent only on a value this host SENT and that
+      // differs: a field it dropped is a mismatch, never `"off" → (absent)`.
+      if (typeof got[field] !== "string") {
+        diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
+      } else if (isDeepStrictEqual(got[field], committed[field])) {
         diffs.push({ path: field, reason: "exempted, but both hosts agree on it", committed: committed[field], got: got[field] });
       } else {
         spent.push(`HOST_FIELDS ${fixture}.${field}: ${fmt(committed[field])} → ${fmt(got[field])}`);
@@ -453,6 +457,9 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
   const identities = [...new Set(rows.map(({ row }) => row.who).filter((who) => who !== null))];
   const reader = rows.find(({ row }) => row.fixture === "house_chat")?.row;
   if (reader === undefined) throw new Error("no row of the scripts reads the house chat, so there is no base to read");
+  // Every row's address, checked BEFORE anything is sent — the forces
+  // included: a row that would leave the Worker's origin refuses the run.
+  for (const { row } of rows) urlOf(row);
   const result = { holds: false, run: 0, total: rows.length, named: 0, spent: [], rereads: 0, mismatches: [], forcedBefore: [], forcedAfter: [], base: null, stopped: null };
   /** A mismatch, kept and printed as it is found. */
   const differs = (label, fixture, diff) => {
@@ -473,15 +480,17 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
   try {
     const baseReply = await send(reader, credential, fetcher);
     const last = baseReply.status === 200 ? parsed(baseReply)?.last : undefined;
-    if (typeof last !== "number") {
+    if (typeof last === "number") {
+      result.base = last;
+      log(`the house chat's base: last ${last}, read as ${reader.who}`);
+    } else {
+      // No base, no rows: the `finally` forces the ids again, and the report
+      // follows it, as on every other road out.
       result.stopped = `the house chat's base could not be read: ${baseReply.status}${said(baseReply)}`;
-      return finish(result, log);
     }
-    result.base = last;
-    log(`the house chat's base: last ${last}, read as ${reader.who}`);
     const context = { corpus, ids, identities, base: last };
 
-    for (const { script, index, row } of rows) {
+    for (const { script, index, row } of result.stopped === null ? rows : []) {
       const label = `${script} row ${index}: ${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;
       let reply;
       try {

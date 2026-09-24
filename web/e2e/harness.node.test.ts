@@ -11,18 +11,20 @@
 // when no Chromium is installed and EMPTIES the walk's scratch directories —
 // both wrong for a command that CI's `web-server` job runs with no browser,
 // and that may run beside a walk. The stand-in holds the one name the harness
-// reads, with the value the local config gives it.
+// reads, computed by the config's own formula, `baseUrlFor` — whose use by the
+// config a cell below reads off the config's source.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../playwright.config", () => ({ BASE_URL: "http://127.0.0.1:8479" }));
+vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
 import { BEACON_PREFIX, isBeaconCorsError } from "./harness";
-import { LIVE_ORIGIN, abandonAsCreator, accessState, cookiesFrom, credential, identityHeaders } from "./live";
+import { LIVE_ORIGIN, abandonAsCreator, accessState, baseUrlFor, cookiesFrom, credential, identityHeaders } from "./live";
 
 // ---- the error, as Chromium words it ---------------------------------------
 //
@@ -62,6 +64,12 @@ describe("isBeaconCorsError — the one console error the live tier forgives", (
     expect(isBeaconCorsError(blocked("https://static.cloudflareinsights.com/beacon.min.jsx"), PAGE)).toBe(false);
     // The BLOCKED address decides, not any address the sentence carries.
     expect(isBeaconCorsError(blocked(`https://elsewhere.example/x?from=${BEACON}`), PAGE)).toBe(false);
+  });
+  // The sentence must BE Chromium's, from its first word: an error that
+  // merely quotes it — an app's own message about the beacon — is breakage.
+  it("matches no error that merely quotes the beacon's CORS sentence", () => {
+    expect(isBeaconCorsError(`Uncaught Error: the analytics failed: ${CORS_HEADER}`, PAGE)).toBe(false);
+    expect(isBeaconCorsError(` ${CORS_HEADER}`, PAGE)).toBe(false);
   });
   it("matches no other error on the beacon's host", () => {
     expect(isBeaconCorsError("Failed to load resource: the server responded with a status of 404 ()", BEACON)).toBe(false);
@@ -104,7 +112,9 @@ function fakePage() {
  *  run would read. */
 async function harnessAt(live: boolean) {
   vi.resetModules();
-  vi.doMock("../playwright.config", () => ({ BASE_URL: live ? LIVE_ORIGIN : "http://127.0.0.1:8479" }));
+  vi.doMock("../playwright.config", async () => ({
+    BASE_URL: (await vi.importActual<typeof import("./live")>("./live")).baseUrlFor(live),
+  }));
   vi.doMock("./live", async (original) => ({ ...(await original<typeof import("./live")>()), LIVE: live }));
   return import("./harness");
 }
@@ -199,6 +209,9 @@ describe("identityHeaders and liveContextOptions", () => {
   // and the client attaches the header itself.
   it("adds nothing to a context unless the run is live", async () => {
     vi.stubEnv("YOKOHAMA_WEB_E2E_TARGET", "");
+    // A fresh module, whatever an earlier cell or the shell loaded: `LIVE` is
+    // read once, when the module is.
+    vi.resetModules();
     const live = await import("./live");
     expect(live.LIVE).toBe(false);
     expect(await live.liveContextOptions("a@e2e.test")).toEqual({});
@@ -266,6 +279,20 @@ describe("accessState — the credential becomes a cookie before any browser see
     const said = await accessState(dummy, async () => answer(403, [])).catch((e: unknown) => String(e));
     expect(said).not.toContain("dummy-secret-value");
   });
+  // A non-200 names no cause, because several read the same: the zone's Bot
+  // Fight Mode answers a bot-shaped request 403 BEFORE Access, and a Worker
+  // 5xx would read like Access's refusal. It says what came back instead —
+  // the body's type and size, never the body, and never a redirect's address.
+  it("says what came back — the body's type and size, or a redirect — and asserts no cause", async () => {
+    const challenge = "<html><title>Just a moment...</title></html>";
+    const page = new Response(challenge, { status: 403, headers: { "content-type": "text/html; charset=UTF-8" } });
+    const said = await accessState(dummy, async () => page).catch((e: unknown) => String(e));
+    expect(said).toContain(`GET ${LIVE_ORIGIN}/api/health answered 403 and not 200 — a text/html; charset=UTF-8 body of ${challenge.length} B`);
+    expect(said).not.toContain("Just a moment");
+    expect(said).not.toContain("Access did not admit it");
+    const moved = await accessState(dummy, async () => answer(302, [])).catch((e: unknown) => String(e));
+    expect(moved).toContain("answered 302 and not 200 — a redirect (its location is not printed");
+  });
 });
 
 describe("abandonAsCreator", () => {
@@ -285,8 +312,106 @@ describe("abandonAsCreator", () => {
     expect(calls).toEqual([[`${LIVE_ORIGIN}/api/games/sim-00ab`, { maxRedirects: 0 }]]);
   });
   it("refuses an answer that did not abandon it, naming the table and the operator's force", async () => {
+    // The force goes WITHOUT the credential, over WARP (R-6.5c.16): the
+    // credential is never an operator, and would earn the gate's 403.
     await expect(abandonAsCreator(pageAnswering(403, []), "sim-00ab")).rejects.toThrow(
-      `the live table sim-00ab was not abandoned: DELETE answered 403 — force it as the operator: POST ${LIVE_ORIGIN}/api/admin/tables/sim-00ab/expire?force`,
+      `the live table sim-00ab was not abandoned: DELETE answered 403 — force it as the operator, over WARP, with no credential: ` +
+        `POST ${LIVE_ORIGIN}/api/admin/tables/sim-00ab/expire?force`,
     );
+  });
+});
+
+// ---- a thrown API call, live (the review's H-1; ruling I-79) ---------------
+//
+// MEASURED (Playwright 1.62.1): a THROWN API request's message carries a
+// "Call log" listing every header it sent — the context's cookie among them,
+// `CF_Authorization=<session>` live — and Playwright writes a failing test's
+// error to the reporter AND to `test-results/<test>/error-context.md`,
+// whatever `trace` reads. So every live `request.*` call goes through
+// `liveRequest`, and these cells pin what it lets out.
+
+/** A thrown API call's message, as Playwright words one: its first line, then
+ *  the call log — with a DUMMY cookie where a live one would be. */
+const THROWN = [
+  "apiRequestContext.delete: connect ECONNREFUSED 127.0.0.1:9",
+  "Call log:",
+  `  - → DELETE ${LIVE_ORIGIN}/api/games/sim-00ab`,
+  "    - user-agent: Mozilla/5.0",
+  "    - cookie: CF_Authorization=DUMMY-SESSION-5678",
+  "    - x-yokohama-claimed-user: a@e2e.test",
+].join("\n");
+
+/** `live.ts` loaded as a run whose target is `target`: `LIVE` is read once,
+ *  when the module is. */
+async function liveAt(target: string) {
+  vi.resetModules();
+  vi.stubEnv("YOKOHAMA_WEB_E2E_TARGET", target);
+  return import("./live");
+}
+
+describe("liveRequest — a live call's log never leaves the run", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("live, rethrows the call's first line alone, and says why the rest is withheld", async () => {
+    const live = await liveAt("live");
+    const error = await live
+      .liveRequest(async () => {
+        throw new Error(THROWN);
+      })
+      .catch((e: unknown) => e as Error);
+    expect(error.message).toBe(
+      "apiRequestContext.delete: connect ECONNREFUSED 127.0.0.1:9 (the call log is withheld: it lists the live context's cookie)",
+    );
+    expect(error.message).not.toContain("DUMMY-SESSION-5678");
+    // And no `cause`: MEASURED, the reporter prints a cause's message as
+    // "[cause]: …" and writes it into `error-context.md` as well.
+    expect(error.cause).toBeUndefined();
+  });
+  it("locally, lets the call's own error through untouched: there is no cookie to withhold", async () => {
+    const live = await liveAt("");
+    const error = new Error(THROWN);
+    await expect(
+      live.liveRequest(async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+  });
+  it("hands back what the call answers", async () => {
+    const live = await liveAt("live");
+    expect(await live.liveRequest(async () => 7)).toBe(7);
+  });
+  it("carries the abandon's DELETE: live, its failure holds no cookie", async () => {
+    const live = await liveAt("live");
+    const page = {
+      request: {
+        delete: async () => {
+          throw new Error(THROWN);
+        },
+      },
+    } as unknown as Page;
+    const said = await live.abandonAsCreator(page, "sim-00ab").catch((e: unknown) => (e as Error).message);
+    expect(said).toContain("apiRequestContext.delete: connect ECONNREFUSED 127.0.0.1:9");
+    expect(said).not.toContain("DUMMY-SESSION-5678");
+  });
+});
+
+// ---- where a walk plays (plan review M9; the review's L-8) -----------------
+
+describe("baseUrlFor", () => {
+  it("is the Worker's origin live, and the local binary's own port otherwise", () => {
+    expect(baseUrlFor(true)).toBe(LIVE_ORIGIN);
+    expect(baseUrlFor(false)).toBe("http://127.0.0.1:8479");
+  });
+  // The EXPORTED constant is what `watchForBreakage` and `two_browsers` read,
+  // so a config that went back to a constant local origin would watch nothing
+  // live. Read from its SOURCE, since loading it empties the walk's scratch
+  // directories.
+  it("is what playwright.config.ts exports as BASE_URL", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");
+    expect(config).toContain("export const BASE_URL = baseUrlFor(LIVE);");
   });
 });

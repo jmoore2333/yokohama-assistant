@@ -27,12 +27,23 @@
 //     not). It is not a secret, and it is also why the beacon's CORS error
 //     recurs live — `harness.ts`'s `isBeaconCorsError` is that one error.
 //
-// **The credential never reaches Playwright.** It is presented ONCE per run,
-// by Node's own `fetch`, and only the cookie Access answers with goes on.
-// MEASURED (Playwright 1.62.1, a local server): a trace records an
+// **The credential never reaches Playwright.** It is presented once per
+// worker process, which is once per green run — Playwright restarts the
+// worker after a failing test, and `seeded` goes with it — by Node's own
+// `fetch`, and only the cookie Access answers with goes on. MEASURED
+// (Playwright 1.62.1, a local server): a trace records an
 // `APIRequestContext`'s `extraHTTPHeaders` and a page's cookies alike, so a
 // credential handed to Playwright would be written into any trace a failure
 // kept — and the config turns tracing off under `LIVE` for the cookie's sake.
+//
+// **And the COOKIE stays out of every error** (the review's H-1). MEASURED
+// (Playwright 1.62.1): a THROWN API request's message carries a "Call log"
+// listing every header it sent, the context's cookie among them, and
+// Playwright writes a failing test's error to the reporter and to
+// `test-results/<test>/error-context.md` whatever `trace` reads. So every live
+// `request.*` call goes through [`liveRequest`]. And never
+// `expect(res).toBeOK()` on a live context's response: its failure message
+// prints the call log too — `expect(res.ok())` is the form to use.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -41,8 +52,22 @@ import type { BrowserContextOptions, Page } from "@playwright/test";
 /** The deployed Worker's origin: `BASE_URL` under `LIVE`. */
 export const LIVE_ORIGIN = "https://yokohama.moore.nyc";
 
+/** The local binary's port — `playwright.config.ts` says why it is its own. */
+export const LOCAL_PORT = 8479;
+
 /** Whether this run targets the Worker. */
 export const LIVE = process.env.YOKOHAMA_WEB_E2E_TARGET === "live";
+
+/**
+ * The origin a walk plays at: the Worker's live, the local binary's
+ * otherwise. `playwright.config.ts` exports it AS `BASE_URL` — the constant
+ * `watchForBreakage` and `two_browsers.spec.ts` read — and a cell reads the
+ * config's source for that, so a constant local origin cannot come back
+ * unnoticed (plan review M9).
+ */
+export function baseUrlFor(live: boolean): string {
+  return live ? LIVE_ORIGIN : `http://127.0.0.1:${LOCAL_PORT}`;
+}
 
 /** The repository root's `.dev.vars`, which holds the credential (the plan's
  *  Global Constraints: two `KEY=VALUE` lines, named as the headers). */
@@ -91,8 +116,9 @@ export function identityHeaders(email: string): Record<string, string> {
  * cookie on `url`'s host, or a `Domain` one dotted — and none at all for a
  * `Domain` the host is not within; `Path`, or the request path's directory;
  * `Max-Age` over `Expires`, and a session cookie (`-1`) with neither;
- * `SameSite` as given, else `Lax`. It prints nothing: a cookie's value is
- * the credential's session, and never reaches a log.
+ * `SameSite` as given, else `Lax`. It prints nothing itself; the value is the
+ * credential's session, and what would otherwise print it is a thrown API
+ * call's call log — which [`liveRequest`] withholds.
  */
 export function cookiesFrom(headers: string[], url: string, now: number = Date.now()): Cookie[] {
   const at = new URL(url);
@@ -137,13 +163,23 @@ export function cookiesFrom(headers: string[], url: string, now: number = Date.n
  * following no redirect — and the storage Access's answer seeds: every cookie
  * it set, `CF_Authorization` among them. Refuses an answer that is not 200 and
  * one that set no `CF_Authorization`; neither sentence carries a value.
+ *
+ * A refusal says WHAT came back and asserts no cause, because several read
+ * alike: the zone's Bot Fight Mode answers a bot-shaped request 403 before
+ * Access does, and a Worker 5xx is no refusal of the credential. It prints the
+ * body's type and size — never the body — and a redirect without its address,
+ * which Access's carries a token in.
  */
 export async function accessState(cred: { id: string; secret: string }, fetcher: typeof fetch = fetch): Promise<StorageState> {
   const url = `${LIVE_ORIGIN}/api/health`;
   const res = await fetcher(url, { headers: { [KEYS[0]]: cred.id, [KEYS[1]]: cred.secret }, redirect: "manual" });
-  await res.arrayBuffer();
+  const bytes = (await res.arrayBuffer()).byteLength;
   if (res.status !== 200) {
-    throw new Error(`the credential's one request, GET ${url} answered ${res.status} and not 200 — Access did not admit it`);
+    const what =
+      res.status >= 300 && res.status < 400
+        ? "a redirect (its location is not printed: Access's carries a token)"
+        : `a ${res.headers.get("content-type") ?? "typeless"} body of ${bytes} B`;
+    throw new Error(`the credential's one request, GET ${url} answered ${res.status} and not 200 — ${what}`);
   }
   const cookies = cookiesFrom(res.headers.getSetCookie(), url);
   if (!cookies.some((c) => c.name === "CF_Authorization")) {
@@ -152,8 +188,9 @@ export async function accessState(cred: { id: string; secret: string }, fetcher:
   return { cookies, origins: [] };
 }
 
-/** The seeded storage: one presentation of the credential per worker, which
- *  is one per run at the config's `workers: 1`. */
+/** The seeded storage: one presentation of the credential per worker
+ *  process, which is once per green run — Playwright restarts the worker
+ *  after a failing test, and this goes with it. */
 let seeded: Promise<StorageState> | undefined;
 
 /**
@@ -184,11 +221,34 @@ export async function liveContextOptions(email: string): Promise<BrowserContextO
  * ends it whatever it holds.
  */
 export async function abandonAsCreator(page: Page, id: string): Promise<void> {
-  const res = await page.request.delete(`${LIVE_ORIGIN}/api/games/${encodeURIComponent(id)}`, { maxRedirects: 0 });
+  const res = await liveRequest(() => page.request.delete(`${LIVE_ORIGIN}/api/games/${encodeURIComponent(id)}`, { maxRedirects: 0 }));
   if (!res.ok()) {
+    // The force goes WITHOUT the credential, over WARP (R-6.5c.16): the
+    // credential is never an operator, and would earn the gate's 403.
     throw new Error(
-      `the live table ${id} was not abandoned: DELETE answered ${res.status()} — force it as the operator: ` +
-        `POST ${LIVE_ORIGIN}/api/admin/tables/${id}/expire?force`,
+      `the live table ${id} was not abandoned: DELETE answered ${res.status()} — force it as the operator, over WARP, ` +
+        `with no credential: POST ${LIVE_ORIGIN}/api/admin/tables/${id}/expire?force`,
     );
+  }
+}
+
+/**
+ * **Every live `request.*` call, made through this** (the review's H-1;
+ * ruling I-79): `call`'s answer, or — when it THROWS under `LIVE` — a fresh
+ * `Error` whose message is the thrown message's FIRST line alone, the one
+ * before its "Call log", which lists every header the request sent, the
+ * context's `CF_Authorization` cookie among them. No `cause` is attached, since
+ * a reporter prints a cause's message too.
+ *
+ * Locally the call's own error goes through untouched: a local context holds
+ * no such cookie, and nothing about a local run changes.
+ */
+export async function liveRequest<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    if (!LIVE) throw e;
+    const first = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0];
+    throw new Error(`${first} (the call log is withheld: it lists the live context's cookie)`);
   }
 }

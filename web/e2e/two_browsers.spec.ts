@@ -41,7 +41,7 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
-import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
+import { LIVE, abandonAsCreator, liveContextOptions, liveRequest } from "./live";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -335,11 +335,17 @@ test("two people at two browsers play to a winner and neither sees the other's h
    *  Deliberately not read off a screen: the expected row index has to come
    *  from something other than the account being checked, or the check is the
    *  account agreeing with itself. Issued from A's context — never from C's —
-   *  so the watcher's own request log stays a reading about the watcher. */
+   *  so the watcher's own request log stays a reading about the watcher.
+   *
+   *  **Through `liveRequest`**, which live withholds a thrown call's log: it
+   *  lists the context's Access cookie (`live.ts`). Locally it changes
+   *  nothing. */
   const appliedEvents = async (): Promise<number> => {
-    const res = await a.request.get(`${BASE_URL}/api/games/${id}/events`, {
-      headers: { "x-yokohama-claimed-user": "a@e2e.test" },
-    });
+    const res = await liveRequest(() =>
+      a.request.get(`${BASE_URL}/api/games/${id}/events`, {
+        headers: { "x-yokohama-claimed-user": "a@e2e.test" },
+      }),
+    );
     expect(res.ok(), `the event count is readable (${res.status()})`).toBeTruthy();
     return ((await res.json()) as { events: number }).events;
   };

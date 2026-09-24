@@ -15,7 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIVE, LIVE_ORIGIN } from "./e2e/live";
+import { LIVE, LOCAL_PORT, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -28,17 +28,21 @@ import { LIVE, LIVE_ORIGIN } from "./e2e/live";
  * directory it does not own. So: an unusual port, and reuse is OFF, so a
  * collision is a loud bind failure rather than a silent conversation with a
  * stranger.
+ *
+ * The number itself is `e2e/live.ts`'s `LOCAL_PORT`, beside `baseUrlFor`, so
+ * the origin a walk reads has one definition.
  */
-const PORT = 8479;
+const PORT = LOCAL_PORT;
 /**
  * The origin every walk is played at — and under `LIVE` the deployed Worker's
  * (M6.5c, spec §5.4; `e2e/live.ts`). It is THIS constant that changes and not
  * only `use.baseURL` below: `watchForBreakage` flags failed responses whose
  * address starts with it, and `two_browsers.spec.ts` asks it for the event
  * count, so a live run with a local `BASE_URL` would watch nothing and ask a
- * port nobody is listening on (plan review M9).
+ * port nobody is listening on (plan review M9). A node cell reads this line
+ * (`e2e/harness.node.test.ts`).
  */
-export const BASE_URL = LIVE ? LIVE_ORIGIN : `http://127.0.0.1:${PORT}`;
+export const BASE_URL = baseUrlFor(LIVE);
 
 /**
  * A browser has to be INSTALLED, and absence is loud by default.
@@ -162,7 +166,8 @@ export default defineConfig({
   ...(LIVE ? { testMatch: ["**/two_browsers.spec.ts", "**/joins_by_link.spec.ts"] } : {}),
   fullyParallel: false,
   // One at a time, live as locally — which also makes the live run present
-  // the credential ONCE: `e2e/live.ts` seeds its cookie once per worker.
+  // the credential once per worker process: once per green run, since
+  // Playwright restarts the worker after a failing test (`e2e/live.ts`).
   workers: 1,
   // A whole game is hundreds of clicks against a real server. The default 30s
   // is a per-test timeout, not a per-action one.
@@ -182,9 +187,11 @@ export default defineConfig({
     // an `APIRequestContext`'s headers — which is why the credential never
     // goes through one (`e2e/live.ts`) — and every page request's cookies, and
     // a live context's `CF_Authorization` cookie IS the Service Auth
-    // credential's session. So a failing live run keeps NO trace; it still
-    // keeps its screenshot (below — pixels, no header), its error, and the
-    // lines the specs print.
+    // credential's session. So a failing live run keeps NO trace. It still
+    // keeps its screenshot (below — pixels, no header), the lines the specs
+    // print, and its error — of which a thrown API call's would list the
+    // cookie in its call log, so every live `request.*` call goes through
+    // `liveRequest`, which withholds that log (`e2e/live.ts`).
     trace: LIVE ? "off" : "retain-on-failure",
     screenshot: "only-on-failure",
   },
