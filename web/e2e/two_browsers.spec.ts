@@ -32,7 +32,7 @@
 //     than one the browser had let go of (spec §9.5, mutations 11 and 12). That
 //     count is what found the reopen ruling R-9.1 fixed.
 
-import { type Page } from "@playwright/test";
+import { type Page, type WebSocket } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
@@ -41,9 +41,36 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
+import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
+
+/** The table this walk opened, and the page of the person who opened it. */
+let opened: { page: Page; id: string } | null = null;
+
+// **Live, the walk abandons the table it opened** (spec §5.4): the Worker's
+// lobby is shared with real people and every other run, so what a walk leaves
+// behind stays there. As its CREATOR, through A's own page; the game's save is
+// the Worker's, under the bucket's `test/` root.
+//
+// **An `afterEach` and not a `finally`, and that was MEASURED** (Playwright
+// 1.62.1): when a test runs out of its budget, a `finally` in its body runs
+// only after the test has ENDED — the page closed, and its request refused
+// "Test ended." — while this hook runs first, with the page still open. A live
+// game that times out is exactly the table that must not be left behind.
+// Locally it sends nothing: the local server's directory is scratch.
+test.afterEach(async () => {
+  const table = opened;
+  opened = null;
+  if (LIVE && table) await abandonAsCreator(table.page, table.id);
+});
+
+/** Whether `ws` is this table's stream: the page's socket under the Worker
+ *  (M6.5c). MEASURED: a socket the page opens raises a `websocket` event and
+ *  NO `request` event, so a count read off the request log alone would read
+ *  ZERO live. Locally no socket opens and this adds nothing. */
+const socketTo = (ws: WebSocket, path: string) => path !== "" && new URL(ws.url()).pathname === path;
 
 /** The walk's own cap on MOVES. Idle looks have their own, below: the two
  *  failures are different — a game that will not end, and a table where nobody
@@ -99,7 +126,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // browser to notice, and the watching browser plays the turn back before it
   // is answerable. The run prints its own move, wait and elapsed figures below,
   // which is the number to read rather than this one.
-  test.setTimeout(20 * 60 * 1000);
+  //
+  // **And twice that again live** (plan review m15): every request crosses the
+  // edge, and the local run alone has taken 457 s.
+  test.setTimeout((LIVE ? 40 : 20) * 60 * 1000);
   const started = Date.now();
   // **This table's stream path — empty until the SERVER has named the table.**
   // The players' listeners below are installed with their pages, long before
@@ -107,8 +137,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // the whole path is also what keeps the lobby's own house channel
   // (`/api/stream`) out of these counts, as it does for the watcher's.
   let streamPath = "";
-  const a = await (await newContextWithoutWorker(browser)).newPage();
-  const b = await (await newContextWithoutWorker(browser)).newPage();
+  // Two people, and live each context is its person (`live.ts`); locally a
+  // context is the plain one it always was, and the sign-in form names them.
+  const a = await (await newContextWithoutWorker(browser, await liveContextOptions("a@e2e.test"))).newPage();
+  const b = await (await newContextWithoutWorker(browser, await liveContextOptions("b@e2e.test"))).newPage();
   /** How many times each PLAYER opened this table's stream (R-6.4.4, R-plan-7).
    *  The teardown that closed it at every turn boundary is gone, so this is a
    *  count that stops growing once each screen is up — and a reopen mid-game
@@ -120,6 +152,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
   for (const [k, p] of [["a", a], ["b", b]] as const) {
     p.on("request", (r) => {
       if (new URL(r.url()).pathname === streamPath) streamOpens[k] += 1;
+    });
+    p.on("websocket", (ws) => {
+      if (socketTo(ws, streamPath)) streamOpens[k] += 1;
     });
   }
   const watchA = watchForBreakage(a);
@@ -149,6 +184,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await a.getByRole("button", { name: "Deal" }).click();
   const id = String(((await (await created).json()) as { id: string }).id);
   expect(id, "the server named the table").toBeTruthy();
+  opened = { page: a, id };
   streamPath = `/api/games/${id}/stream`;
 
   // A chooses, and is then waiting: the table does not start until B has
@@ -178,7 +214,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // It arrives at the table's own address and nothing else: C holds no seat, so
   // the lobby's Your games does not list this table for it, and the only way in
   // is the link somebody would have sent.
-  const c = await (await newContextWithoutWorker(browser)).newPage();
+  const c = await (await newContextWithoutWorker(browser, await liveContextOptions(WATCHER))).newPage();
   const watchC = watchForBreakage(c);
   await signIn(c, WATCHER);
   await c.goto(`/#/t/${id}`);
@@ -206,6 +242,13 @@ test("two people at two browsers play to a winner and neither sees the other's h
     const path = new URL(r.url()).pathname;
     if (path.endsWith("/events")) eventsAsked.push(path);
     if (path === streamPath) streams += 1;
+  });
+  // The Worker's stream is a socket, counted by the same whole path — and a
+  // socket the page reopens is the Worker's "reconnecting…", read here as the
+  // stream's second open. Its one probe after a close nobody explained is a
+  // `/events` request, which the line above already counts.
+  c.on("websocket", (ws) => {
+    if (socketTo(ws, streamPath)) streams += 1;
   });
 
   await c.getByLabel("Password").fill(WATCH_PASSWORD);
@@ -463,7 +506,12 @@ test("two people at two browsers play to a winner and neither sees the other's h
       `(${streamReads.join(",") || "no checkpoint"} at the checkpoints); ` +
       `the players opened this table's stream a ${streamOpens.a}, b ` +
       `${streamOpens.b} times (a ${streamsAtStart.a}, b ${streamsAtStart.b} ` +
-      `before the first move)`,
+      `before the first move)` +
+      // Live, how often the one allowed console error was spent.
+      (LIVE
+        ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, ` +
+          `b ${watchB.forgiven}, c ${watchC.forgiven} times`
+        : ""),
   );
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);
   // The disjointness check above is vacuous against two empty hands, and a hand

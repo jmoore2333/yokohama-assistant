@@ -15,6 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LIVE, LIVE_ORIGIN } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -29,7 +30,15 @@ import { join } from "node:path";
  * stranger.
  */
 const PORT = 8479;
-export const BASE_URL = `http://127.0.0.1:${PORT}`;
+/**
+ * The origin every walk is played at — and under `LIVE` the deployed Worker's
+ * (M6.5c, spec §5.4; `e2e/live.ts`). It is THIS constant that changes and not
+ * only `use.baseURL` below: `watchForBreakage` flags failed responses whose
+ * address starts with it, and `two_browsers.spec.ts` asks it for the event
+ * count, so a live run with a local `BASE_URL` would watch nothing and ask a
+ * port nobody is listening on (plan review M9).
+ */
+export const BASE_URL = LIVE ? LIVE_ORIGIN : `http://127.0.0.1:${PORT}`;
 
 /**
  * A browser has to be INSTALLED, and absence is loud by default.
@@ -137,11 +146,23 @@ export default defineConfig({
   // has to satisfy. Ignored from the RUN, still checked as a file.
   //
   //     cd web && npm run build && YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts
+  //
+  // **The node cells beside the specs are vitest's, never Playwright's**
+  // (M6.5c): `e2e/*.node.test.ts` runs under `npm run test:wasm`, and its name
+  // matches Playwright's default `*.test.ts` glob — loaded here it calls
+  // `vi.mock` with no vitest around it, and the whole run collects nothing.
   testIgnore: [
+    "**/*.node.test.ts",
     ...(process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"]),
     ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
   ],
+  // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks.
+  // Every other spec stays on the local binary, and these two keep their local
+  // run as well.
+  ...(LIVE ? { testMatch: ["**/two_browsers.spec.ts", "**/joins_by_link.spec.ts"] } : {}),
   fullyParallel: false,
+  // One at a time, live as locally — which also makes the live run present
+  // the credential ONCE: `e2e/live.ts` seeds its cookie once per worker.
   workers: 1,
   // A whole game is hundreds of clicks against a real server. The default 30s
   // is a per-test timeout, not a per-action one.
@@ -157,10 +178,15 @@ export default defineConfig({
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     ...devices["Desktop Chrome"],
-    trace: "retain-on-failure",
+    // **No trace live.** MEASURED: a trace keeps every request's headers and
+    // cookies, and a live context's cookie IS the Service Auth credential's
+    // session (`e2e/live.ts`) — a failure would have written it to disk.
+    trace: LIVE ? "off" : "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  ...(haveBrowser
+  // **No server live**: the Worker is the server, and nothing local is
+  // started, built or emptied.
+  ...(haveBrowser && !LIVE
     ? {
         webServer: {
           // Run from the REPO ROOT, where the server's own defaults resolve:

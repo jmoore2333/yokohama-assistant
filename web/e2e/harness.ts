@@ -2,6 +2,7 @@
 
 import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
+import { LIVE } from "./live";
 
 /** A deterministic PRNG, so a failing walk reproduces from its seed alone.
  *  SplitMix64's shape, in the 32 bits JS can multiply exactly. */
@@ -51,12 +52,18 @@ export function rng(seed: number): () => number {
  * Deliberately a per-call opt-in and not a global allowlist: a 409 from
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
+ *
+ * **Under `LIVE`, and only there, ONE more error is forgiven** — the Web
+ * Analytics beacon's CORS block ([`isBeaconCorsError`]) — and COUNTED in
+ * `forgiven`, so a live run says how often the allow-list was spent. Locally
+ * the switch is off and the line below it never runs.
  */
 export function watchForBreakage(
   page: Page,
   expected: { status: number; urlIncludes: string }[] = [],
-): { failures: string[] } {
+): { failures: string[]; forgiven: number } {
   const failures: string[] = [];
+  const watch = { failures, forgiven: 0 };
   const allowed = (status: number, url: string) =>
     expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
@@ -66,6 +73,13 @@ export function watchForBreakage(
     if (m.type() !== "error") return;
     const text = m.text();
     if (expected.some((e) => text.includes(String(e.status)))) return;
+    // The CONSOLE arm is the only one the beacon reaches: its load fails
+    // cross-origin, so nothing under `BASE_URL` answers it and the response
+    // arm below never sees it.
+    if (LIVE && isBeaconCorsError(text, m.location().url)) {
+      watch.forgiven += 1;
+      return;
+    }
     failures.push(`console.error: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
@@ -74,7 +88,59 @@ export function watchForBreakage(
       failures.push(`${r.status()} ${r.url()}`);
     }
   });
-  return { failures };
+  return watch;
+}
+
+/**
+ * The Web Analytics beacon's STABLE address: every release is served below
+ * it, at a versioned path (`…/beacon.min.js/v<hash>`) the next release will
+ * change.
+ */
+export const BEACON_PREFIX = "https://static.cloudflareinsights.com/beacon.min.js";
+
+/** Chromium's CORS sentence — "Access to <kind> at '<address>' from origin
+ *  '<origin>' has been blocked by CORS policy: <reason>" — and the address it
+ *  names as BLOCKED. */
+const CORS_BLOCKED = /^Access to .+? at '([^']+)' from origin '[^']*' has been blocked by CORS policy\b/;
+
+/** What Chromium logs for the same load a line later. */
+const LOAD_FAILED = "Failed to load resource: net::ERR_FAILED";
+
+/**
+ * **Whether a console error is the live tier's one known error** (the
+ * orchestrator's ruling I-75): the Web Analytics beacon, which the zone's edge
+ * injects into every page, refused by CORS.
+ *
+ * Why it happens, and only live: the live contexts carry the claimed header
+ * as `extraHTTPHeaders` (`live.ts` says why), which Chromium adds to the
+ * beacon's cross-origin script load as well; a custom header makes that load
+ * ask a CORS preflight, and the beacon's host does not grant it (Task 11's
+ * diagnosis). A real player sends no such header and sees no error. The zone
+ * stays as it is, by the owner's ruling.
+ *
+ * MEASURED (pinned Chromium, a local page and a local "beacon"): ONE blocked
+ * load logs TWO errors, so both are this error —
+ *
+ *   1. the CORS sentence, located at the PAGE, naming the blocked address:
+ *      matched by the CLASS (any resource kind, any reason after its colon),
+ *      and the address it names as BLOCKED must be the beacon's;
+ *   2. `Failed to load resource: net::ERR_FAILED`, whose text names neither
+ *      the beacon nor CORS: matched only where Chromium LOCATES it at the
+ *      beacon's address.
+ *
+ * "The beacon's address" is the stable prefix itself or anything below it
+ * (`/`) or on it (`?`): never another host, a lookalike host, another path, or
+ * a longer name. A pure function, so its cells are node cells
+ * (`harness.node.test.ts`).
+ */
+export function isBeaconCorsError(text: string, url: string): boolean {
+  const blocked = CORS_BLOCKED.exec(text)?.[1];
+  if (blocked !== undefined) return fromTheBeacon(blocked);
+  return text === LOAD_FAILED && fromTheBeacon(url);
+}
+
+function fromTheBeacon(url: string): boolean {
+  return url === BEACON_PREFIX || url.startsWith(`${BEACON_PREFIX}/`) || url.startsWith(`${BEACON_PREFIX}?`);
 }
 
 /**
