@@ -1,3 +1,4 @@
+import { adminRoute, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
 import { shellConfig } from "./config";
 import type { Env } from "./env";
@@ -56,6 +57,14 @@ const NO_ONE: Identity = { kind: "none" };
  *    that cannot be had is no caller, so the request fails CLOSED.
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and `X-Yokohama-User` set when there is a caller.
+ * 6a. `/api/admin` and below — the operator surface (spec §2.9) — pass the
+ *    gate (`operatorGate`): with `YOKOHAMA_WEB_ADMINS` absent they are
+ *    unrouted `/api/*`, the house's; a caller who is not a PERSON on the list
+ *    is 403 `this address is not an operator here`, a dev-door identity
+ *    among them whatever address it claims; a listed person passes with
+ *    `X-Yokohama-Operator` set to their address, and the route names the
+ *    object (`adminRoute`): the listing is the house's, an expire the table's,
+ *    and any other path the house's — the layer's own 404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
  *    object's 101 is returned as it came.
@@ -94,8 +103,26 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
   }
   if (identity.kind !== "none") headers.set(USER_HEADER, identity.email);
 
-  return objectFor(target, env, identity, body, headers).fetch(new Request(req.url, { method: req.method, headers, body }));
+  let forwarded: Forwarded;
+  if (target.kind === "admin") {
+    const gate = operatorGate(config.admins, identity);
+    if (gate.kind === "refused") return respond(403, errorBody(NOT_AN_OPERATOR));
+    forwarded = { kind: "house" };
+    if (gate.kind === "operator") {
+      headers.set(OPERATOR_HEADER, gate.email);
+      const admin = adminRoute(req.method, url.pathname, url.search.slice(1));
+      if (admin.kind === "expire") forwarded = { kind: "table", name: admin.name };
+    }
+  } else {
+    forwarded = target;
+  }
+
+  return objectFor(forwarded, env, identity, body, headers).fetch(new Request(req.url, { method: req.method, headers, body }));
 }
+
+/** A target `handle` forwards to an object: every route but the Worker's own
+ *  answers, with an operator's route resolved to the house or a table. */
+type Forwarded = Exclude<Target, { kind: "missing" | "not-allowed" | "enter" | "art" | "admin" }>;
 
 /**
  * The caller, or no one. A request with no assertion is no one without a word
@@ -218,7 +245,7 @@ const ADDRESS_MAX_BYTES = 254;
  * `fetch`.
  */
 function objectFor(
-  target: Exclude<Target, { kind: "missing" | "not-allowed" | "enter" | "art" }>,
+  target: Forwarded,
   env: Env,
   identity: Identity,
   body: Uint8Array | null,
@@ -250,11 +277,6 @@ function objectFor(
       // platform would give it none.
       if (identity.kind === "none" || new TextEncoder().encode(identity.email).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + identity.email));
-    case "admin":
-      // The operator surface is Task 14's (spec §2.9). Until it lands every
-      // `/api/admin` path is the house's `dispatch`, which answers the layer's
-      // own 404 — spec §2.9's answer with `YOKOHAMA_WEB_ADMINS` absent.
-      return house();
     case "house":
       return house();
   }

@@ -1,7 +1,13 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { expect, vi } from "vitest";
+import * as configModule from "../src/config";
+import * as markerModule from "../src/marker";
+import type { Env } from "../src/env";
+import type { House } from "../src/house";
+import { ensureTables, upsertDoc } from "../src/storage";
 import type { Table } from "../src/table";
+import { OWED_GAME_OVER_JSON, OWED_GAME_OVER_TABLE_JSON } from "./fixtures.gen";
 
 export const RED = "red@t.test";
 export const BLUE = "blue@t.test";
@@ -176,4 +182,186 @@ export async function logsDuring<T>(f: () => Promise<T>): Promise<{ result: T; l
   } finally {
     spy.mockRestore();
   }
+}
+
+/** The committed owed-game-over pair's creator, and its one human seat. */
+export const LOCAL = "local@browser";
+/** The committed owed-game-over pair's own id. */
+export const OWED = "local-242a5429453c593c";
+
+/** A record no game here makes: what another game's copy, archived under
+ *  this id, holds. */
+export const ANOTHER_RECORD = '{"engine_version":"another","events":[]}';
+
+/** `text` with `from` replaced by `to`, where `from` occurs exactly once — an
+ *  edit of a document's TEXT, never a parse, so a seed above 2^53 keeps its
+ *  digits. */
+export function replaceOnce(text: string, from: string, to: string): string {
+  const at = text.indexOf(from);
+  if (at < 0 || text.includes(from, at + 1)) throw new Error(`premise: ${JSON.stringify(from)} occurs exactly once`);
+  return text.slice(0, at) + to + text.slice(at + from.length);
+}
+
+/** A table document's `archived_at`, read off its text: `null` while it is
+ *  unstamped. */
+export function archivedAt(table: string | null | undefined): number | null {
+  const m = /"archived_at": (null|\d+)/.exec(table ?? "");
+  if (m === null) throw new Error(`premise: a table document naming archived_at — got ${table?.slice(0, 80)}`);
+  return m[1] === "null" ? null : Number(m[1]);
+}
+
+/** A table object named `name` holding `docs` as their exact text, written in
+ *  one batch before its first request — whose WAKE loads them. */
+export async function holding(name: string, docs: { table: string; record: string }): Promise<DurableObjectStub<Table>> {
+  const stub = tableStub(name);
+  await runInDurableObject(stub, (_t, state) => {
+    state.storage.transactionSync(() => {
+      ensureTables(state.storage.sql);
+      upsertDoc(state.storage.sql, "table", docs.table, Date.now());
+      upsertDoc(state.storage.sql, "record", docs.record, Date.now());
+    });
+  });
+  return stub;
+}
+
+/**
+ * The committed owed-game-over pair (`crates/yokohama-worker`'s fixture): the
+ * finished browser-played game cut back to the start of the bot's trailing
+ * run, so the first request's WAKE pumps the bot to the end and reaches the
+ * game-over site (plan review M4). Its creator is `local@browser`, not a
+ * `.test` address, so its save is keyed at the bucket's top — the test
+ * file's local bucket.
+ */
+export function owedGameOver(name: string = OWED): Promise<DurableObjectStub<Table>> {
+  const table = name === OWED ? OWED_GAME_OVER_TABLE_JSON : replaceOnce(OWED_GAME_OVER_TABLE_JSON, `"id": "${OWED}"`, `"id": "${name}"`);
+  return holding(name, { table, record: OWED_GAME_OVER_JSON });
+}
+
+/** A `docs` row's exact text — `undefined` when none is stored. */
+export async function docOf(stub: DurableObjectStub<Table>, kind: "table" | "record" | "chat"): Promise<string | undefined> {
+  const rows = await runInDurableObject(stub, (_t, state) => {
+    const sql = state.storage.sql;
+    const exists = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'docs'").one().n === 1;
+    return exists ? sql.exec<{ json: string }>("SELECT json FROM docs WHERE kind = ?", kind).toArray() : [];
+  });
+  return rows[0]?.json;
+}
+
+/** The object at `key` in the test file's bucket, as its text: `null` when
+ *  absent. */
+export async function bucketText(key: string): Promise<string | null> {
+  const object = await env.ARCHIVE!.get(key);
+  return object === null ? null : object.text();
+}
+
+/** The pending alarm, or `null`. */
+export function alarmOf(stub: DurableObjectStub<Table>): Promise<number | null> {
+  return runInDurableObject(stub, (_t, state) => state.storage.getAlarm());
+}
+
+/**
+ * The switch set to `off` at MODULE scope (pool fact 4), in both of the
+ * shell's readers — `shellConfig`, and the module's `init` configuration,
+ * which reads its own copy — as if `YOKOHAMA_WEB_ARCHIVE` read `off`. An object
+ * reads its configuration when it is built, so a cell rebuilds the objects it
+ * asks (`rebuilt`).
+ */
+export function archiveOff(): { restore(): void } {
+  const { shellConfig, moduleConfig } = configModule;
+  const off = (e: Env): Env => ({ ...e, YOKOHAMA_WEB_ARCHIVE: "off" });
+  const shell = vi.spyOn(configModule, "shellConfig").mockImplementation((e) => shellConfig(off(e)));
+  const init = vi.spyOn(configModule, "moduleConfig").mockImplementation((e, caller) => moduleConfig(off(e), caller));
+  return {
+    restore() {
+      shell.mockRestore();
+      init.mockRestore();
+    },
+  };
+}
+
+/** `stub`'s object built afresh at its next event, so it reads the
+ *  configuration in force: running, then evicted. */
+export async function rebuilt(stub: DurableObjectStub<Table> | DurableObjectStub<House>): Promise<void> {
+  await runInDurableObject(stub as unknown as DurableObjectStub, () => {});
+  await evictDurableObject(stub);
+}
+
+/**
+ * An operator's `POST /api/admin/tables/{id}/expire` — `?force` when `force`
+ * — at `id`'s table object, as the Worker forwards one past its gate (spec
+ * §2.9; the plan's internal headers): `X-Yokohama-Operator` names the
+ * operator, and `X-Yokohama-User` the same address, as the Worker sets it for
+ * any caller. Answered whole, as `call` answers.
+ */
+export async function operate(stub: DurableObjectStub<Table>, id: string, operator: string, force = false): Promise<Response> {
+  const headers = new Headers({ "X-Yokohama-Operator": operator, "X-Yokohama-User": operator });
+  const res = await stub.fetch(`https://yokohama.test/api/admin/tables/${id}/expire${force ? "?force" : ""}`, { method: "POST", headers });
+  const text = await res.text();
+  return new Response(text === "" ? null : text, { status: res.status, headers: res.headers });
+}
+
+/** Every `docs` row's `written_at` set to `at` — how a cell moves a table's
+ *  last activity back in time, since workerd's clock cannot be moved (spec
+ *  §5.2). */
+export async function backdate(stub: DurableObjectStub<Table>, at: number): Promise<void> {
+  await runInDurableObject(stub, (_t, state) => {
+    state.storage.transactionSync(() => state.storage.sql.exec("UPDATE docs SET written_at = ?", at));
+  });
+}
+
+/** `meta.marker` — the shell's own JSON — or `undefined` when none stands. */
+export async function markerOf(stub: DurableObjectStub<Table>): Promise<Record<string, unknown> | undefined> {
+  const rows = await runInDurableObject(stub, (_t, state) => {
+    const sql = state.storage.sql;
+    const exists = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'meta'").one().n === 1;
+    return exists ? sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'marker'").toArray() : [];
+  });
+  return rows[0] === undefined ? undefined : (JSON.parse(rows[0].v) as Record<string, unknown>);
+}
+
+/** The number of tables `sqlite_master` lists: 0 once an object has ended,
+ *  and for one that never wrote. */
+export async function tablesIn(stub: DurableObjectStub<Table>): Promise<number> {
+  const [row] = await sqlOf(stub, "SELECT count(*) AS n FROM sqlite_master");
+  return Number(row?.n);
+}
+
+/** A day, written here rather than taken from the shell, so a wrong day in
+ *  the shell fails the cells that read it. */
+export const DAY_MS = 86_400_000;
+
+/** Where a table's alarm stands when nothing but its expiry is due (spec
+ *  §2.4): its last activity — the newest `written_at` of its record, table
+ *  and chat — plus `wrangler.test.jsonc`'s TTL, 90 days. */
+export async function expiryOf(stub: DurableObjectStub<Table>): Promise<number> {
+  const [row] = await sqlOf(stub, "SELECT max(written_at) AS at FROM docs WHERE kind IN ('record', 'table', 'chat')");
+  return Number(row?.at) + 90 * DAY_MS;
+}
+
+/** The standing marker moved back past its 90 days, and the alarm run: with
+ *  its removal acknowledged, the object ends (spec §2.4 step 6). */
+export async function endMarker(stub: DurableObjectStub<Table>): Promise<void> {
+  const marker = await markerOf(stub);
+  if (marker === undefined) throw new Error("premise: a marker stands");
+  await runInDurableObject(stub, (_t, state) => {
+    const moved = JSON.stringify({ ...marker, at: (marker.at as number) - 91 * DAY_MS });
+    state.storage.transactionSync(() => state.storage.sql.exec("UPDATE meta SET v = ? WHERE k = 'marker'", moved));
+  });
+  await logsDuring(() => runDurableObjectAlarm(stub));
+  expect(await tablesIn(stub), "the marker's 90 days over and its removal acknowledged: the object has ended").toBe(0);
+}
+
+/**
+ * No TTL, as a deployment that keeps every table runs (R-6.5c.15): the ONE
+ * TTL reader replaced at MODULE scope (the orchestrator's ruling I-34; pool
+ * fact 4), so it survives an eviction. `wrangler.test.jsonc` sets production's
+ * 90 days, under which an acknowledgement leaves the table's expiry deadline
+ * armed and every alarm run ends by re-arming to everything still due (spec
+ * §2.4) — which stands in for a retry's own re-arm. A cell about that re-arm
+ * runs without a TTL, where nothing else arms the alarm. Restore it in a
+ * `finally`.
+ */
+export function noTtl(): { restore(): void } {
+  const spy = vi.spyOn(markerModule, "ttlDaysOf").mockReturnValue(null);
+  return { restore: () => spy.mockRestore() };
 }

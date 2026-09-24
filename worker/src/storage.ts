@@ -19,15 +19,18 @@
  * writes nothing — so probing an id leaves `sqlite_master` empty. A read before
  * that asks `sqlite_master` (`hasTables`) and reads absence as empty.
  *
- * The writers — `upsertDoc`, `deleteDoc`, `setMeta`, `deleteMeta` — run inside
- * a batch's `transactionSync`, after `ensureTables`.
+ * The writers — `upsertDoc`, `deleteDoc`, `clearDocs`, `setMeta`, `deleteMeta`,
+ * `clearMetaBut` — run inside a batch's `transactionSync`, after
+ * `ensureTables`.
  */
 
 export type DocKind = "record" | "table" | "chat" | "picker" | "house";
 
 /** Every key `meta` holds: spec §2.4's; `poison`, the kind whose load
- *  trapped (the plan's Task 9); and `copy_owed`, the `house_copy` traps in a
- *  row while a copy is owed (the orchestrator's ruling on Task 12's review). */
+ *  trapped (the plan's Task 9); `copy_owed`, the `house_copy` traps in a row
+ *  while a copy is owed (the orchestrator's ruling on Task 12's review); and
+ *  `expiry_failed`, an idle table's expiries in a row that did not end it,
+ *  which set its retry (Task 14). */
 export type MetaKey =
   | "generation"
   | "revision"
@@ -37,6 +40,7 @@ export type MetaKey =
   | "archive_owed"
   | "marker"
   | "held"
+  | "expiry_failed"
   | "load_traps"
   | "poison"
   | "wakes";
@@ -78,6 +82,11 @@ export function deleteDoc(sql: SqlStorage, kind: DocKind): void {
   sql.exec("DELETE FROM docs WHERE kind = ?", kind);
 }
 
+/** Every `docs` row deleted. */
+export function clearDocs(sql: SqlStorage): void {
+  sql.exec("DELETE FROM docs");
+}
+
 /** `k`'s value — `undefined` when it is not set, or before the first write
  *  batch. */
 export function getMeta(sql: SqlStorage, k: MetaKey): string | undefined {
@@ -91,4 +100,9 @@ export function setMeta(sql: SqlStorage, k: MetaKey, v: string): void {
 
 export function deleteMeta(sql: SqlStorage, k: MetaKey): void {
   sql.exec("DELETE FROM meta WHERE k = ?", k);
+}
+
+/** Every `meta` row deleted but those under `keep`. */
+export function clearMetaBut(sql: SqlStorage, keep: MetaKey[]): void {
+  sql.exec(`DELETE FROM meta WHERE k NOT IN (${keep.map(() => "?").join(", ")})`, ...keep);
 }

@@ -3,16 +3,39 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { describe, expect, it, vi } from "vitest";
 import type { Archive } from "../src/archive";
 import * as clockModule from "../src/clock";
-import * as configModule from "../src/config";
-import type { Env } from "../src/env";
 import type { House } from "../src/house";
 import type { ArchiveOwed } from "../src/r2";
 import { HOUSE_NAME } from "../src/slot";
-import { ensureTables, upsertDoc } from "../src/storage";
 import type { Table } from "../src/table";
-import { OWED_GAME_OVER_JSON, OWED_GAME_OVER_TABLE_JSON } from "./fixtures.gen";
+import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
 import { failingPuts, failPushes, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
-import { BLUE, RED, call, logsDuring, revisionOf, seedPlaying, settle, sqlOf, storedRows, tableStub, watchBatches, type Play } from "./helpers";
+import {
+  ANOTHER_RECORD,
+  BLUE,
+  LOCAL,
+  OWED,
+  RED,
+  alarmOf,
+  archiveOff,
+  archivedAt,
+  bucketText,
+  call,
+  docOf,
+  expiryOf,
+  holding,
+  logsDuring,
+  noTtl,
+  owedGameOver,
+  rebuilt,
+  replaceOnce,
+  revisionOf,
+  seedPlaying,
+  settle,
+  sqlOf,
+  storedRows,
+  watchBatches,
+  type Play,
+} from "./helpers";
 import { ARCHIVE_WALK } from "./walk";
 
 // **The archive on R2** (spec §2.6, R-6.5c.9, R-6.5c.14; the plan's Task 13).
@@ -34,60 +57,8 @@ import { ARCHIVE_WALK } from "./walk";
 // rulings I-43/I-44), so a re-dispatch or a stamp that took a reading of its
 // own would stamp a different `archived_at` than the one its receipt is for.
 
-/** The committed pair's creator, and its one human seat. */
-const LOCAL = "local@browser";
-/** The committed pair's own id. */
-const OWED = "local-242a5429453c593c";
 /** The walk's first seat — at the one-person table, both seats. */
 const WIRE_RED = "red@wire.test";
-
-/** A record no game here makes: what another game's copy, archived under
- *  this id, holds. */
-const ANOTHER_RECORD = '{"engine_version":"another","events":[]}';
-
-/** `text` with `from` replaced by `to`, where `from` occurs exactly once — an
- *  edit of a document's TEXT, never a parse, so a seed above 2^53 keeps its
- *  digits. */
-function replaceOnce(text: string, from: string, to: string): string {
-  const at = text.indexOf(from);
-  if (at < 0 || text.includes(from, at + 1)) throw new Error(`premise: ${JSON.stringify(from)} occurs exactly once`);
-  return text.slice(0, at) + to + text.slice(at + from.length);
-}
-
-/** A table document's `archived_at`, read off its text: `null` while it is
- *  unstamped. */
-function archivedAt(table: string | null | undefined): number | null {
-  const m = /"archived_at": (null|\d+)/.exec(table ?? "");
-  if (m === null) throw new Error(`premise: a table document naming archived_at — got ${table?.slice(0, 80)}`);
-  return m[1] === "null" ? null : Number(m[1]);
-}
-
-/** A table object named `name` holding `docs` as their exact text, written in
- *  one batch before its first request — whose WAKE loads them. */
-async function holding(name: string, docs: { table: string; record: string }): Promise<DurableObjectStub<Table>> {
-  const stub = tableStub(name);
-  await runInDurableObject(stub, (_t, state) => {
-    state.storage.transactionSync(() => {
-      ensureTables(state.storage.sql);
-      upsertDoc(state.storage.sql, "table", docs.table, Date.now());
-      upsertDoc(state.storage.sql, "record", docs.record, Date.now());
-    });
-  });
-  return stub;
-}
-
-/**
- * The committed owed-game-over pair (`crates/yokohama-worker`'s fixture): the
- * finished browser-played game cut back to the start of the bot's trailing
- * run, so the first request's WAKE pumps the bot to the end and reaches the
- * game-over site (plan review M4). Its creator is `local@browser`, not a
- * `.test` address, so its save is keyed at the bucket's top — this file's
- * local bucket.
- */
-function owedGameOver(name: string = OWED): Promise<DurableObjectStub<Table>> {
-  const table = name === OWED ? OWED_GAME_OVER_TABLE_JSON : replaceOnce(OWED_GAME_OVER_TABLE_JSON, `"id": "${OWED}"`, `"id": "${name}"`);
-  return holding(name, { table, record: OWED_GAME_OVER_JSON });
-}
 
 /**
  * The walk's own finished game at a ONE-PERSON table (the orchestrator's
@@ -112,27 +83,6 @@ async function owedOf(stub: DurableObjectStub<Table>): Promise<ArchiveOwed | und
     return exists ? sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'archive_owed'").toArray() : [];
   });
   return rows[0] === undefined ? undefined : (JSON.parse(rows[0].v) as ArchiveOwed);
-}
-
-/** A `docs` row's exact text — `undefined` when none is stored. */
-async function docOf(stub: DurableObjectStub<Table>, kind: "table" | "record" | "chat"): Promise<string | undefined> {
-  const rows = await runInDurableObject(stub, (_t, state) => {
-    const sql = state.storage.sql;
-    const exists = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'docs'").one().n === 1;
-    return exists ? sql.exec<{ json: string }>("SELECT json FROM docs WHERE kind = ?", kind).toArray() : [];
-  });
-  return rows[0]?.json;
-}
-
-/** The object at `key` in this file's bucket, as its text: `null` when absent. */
-async function bucketText(key: string): Promise<string | null> {
-  const object = await env.ARCHIVE!.get(key);
-  return object === null ? null : object.text();
-}
-
-/** The pending alarm, or `null`. */
-function alarmOf(stub: DurableObjectStub<Table>): Promise<number | null> {
-  return runInDurableObject(stub, (_t, state) => state.storage.getAlarm());
 }
 
 /** Every reading P-2 hands out, ticking one second each from `from`. */
@@ -209,33 +159,6 @@ async function save(caller: string, body: unknown): Promise<{ status: number; te
     body: JSON.stringify(body),
   });
   return { status: res.status, text: await res.text() };
-}
-
-/**
- * The switch set to `off` at MODULE scope (pool fact 4), in both of the
- * shell's readers — `shellConfig`, and the module's `init` configuration,
- * which reads its own copy — as if `YOKOHAMA_WEB_ARCHIVE` read `off`. An object
- * reads its configuration when it is built, so a cell rebuilds the objects it
- * asks (`rebuilt`).
- */
-function archiveOff(): { restore(): void } {
-  const { shellConfig, moduleConfig } = configModule;
-  const off = (e: Env): Env => ({ ...e, YOKOHAMA_WEB_ARCHIVE: "off" });
-  const shell = vi.spyOn(configModule, "shellConfig").mockImplementation((e) => shellConfig(off(e)));
-  const init = vi.spyOn(configModule, "moduleConfig").mockImplementation((e, caller) => moduleConfig(off(e), caller));
-  return {
-    restore() {
-      shell.mockRestore();
-      init.mockRestore();
-    },
-  };
-}
-
-/** `stub`'s object built afresh at its next event, so it reads the
- *  configuration in force: running, then evicted. */
-async function rebuilt(stub: DurableObjectStub<Table> | DurableObjectStub<House>): Promise<void> {
-  await runInDurableObject(stub as unknown as DurableObjectStub, () => {});
-  await evictDurableObject(stub);
 }
 
 describe("the abandon's receipt loop (spec §2.6)", () => {
@@ -399,7 +322,7 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
   // supersedes an owed game-over save, and its ONE batch clears it. The game
   // over's own upload failed; the creator's abandon of the finished game
   // saves it under `over/`. The removal's push is held, so the batch is read
-  // before the house's acknowledgement ends the object. With the archive on,
+  // before the house's acknowledgement clears the slot. With the archive on,
   // nothing is dropped, so no `archive-owed-dropped` line. Mutants: the
   // delete's batch leaves `archive_owed` — a save owed by a table that is
   // gone; the dropped-save line logged with the switch on.
@@ -515,46 +438,53 @@ describe("game over (spec §2.6)", () => {
   // the game ends: the owed-game-over pair's never reached the house through
   // this shell, so the first alarm's recopy would push it, and that push's
   // acknowledgement re-arms the alarm for the owed save too — hiding a failure
-  // that re-arms nothing (measured). Mutants: a failure that re-arms nothing,
-  // or counts nothing (the retry at 30 s again); an alarm that does not
-  // deliver the owed save.
+  // that re-arms nothing (measured). It runs with no TTL (`noTtl`): under one,
+  // every alarm run ends by re-arming to everything still due, this retry
+  // among them, which would hide the same failure. Mutants: a failure that
+  // re-arms nothing, or counts nothing (the retry at 30 s again); an alarm
+  // that does not deliver the owed save.
   it("a failing put is retried by the alarm, on the backoff, and lands", async () => {
-    const id = "retry-seat";
-    const stub = await oneSeatGame(id);
-    const recordKey = `test/rev7/over/${id}.json`;
-    const input = (line: string) => call(stub, WIRE_RED, "POST", `/api/games/${id}/input`, JSON.stringify({ line }));
-    expect((await input("undo")).status, "premise: the one person's undo").toBe(200);
-    await settle(stub);
-    const failing = await swapBucket(stub, failingPuts(2));
+    const ttl = noTtl();
     try {
-      const first = await logsDuring(async () => {
-        expect((await input("1")).status, "premise: the last move ends the game again").toBe(200);
-        await settle(stub);
-      });
-      expect(archiveLines(first.lines), "premise: the upload after the reply failed").toEqual([
-        overLine("failed", id, recordKey, 0, R2_UNREACHABLE),
-      ]);
-      expect((await owedOf(stub))?.attempt, "the failure is counted").toBe(1);
-      expect(await alarmOf(stub), "and its retry armed").not.toBeNull();
-      const before = Date.now();
-      const second = await logsDuring(async () => {
+      const id = "retry-seat";
+      const stub = await oneSeatGame(id);
+      const recordKey = `test/rev7/over/${id}.json`;
+      const input = (line: string) => call(stub, WIRE_RED, "POST", `/api/games/${id}/input`, JSON.stringify({ line }));
+      expect((await input("undo")).status, "premise: the one person's undo").toBe(200);
+      await settle(stub);
+      const failing = await swapBucket(stub, failingPuts(2));
+      try {
+        const first = await logsDuring(async () => {
+          expect((await input("1")).status, "premise: the last move ends the game again").toBe(200);
+          await settle(stub);
+        });
+        expect(archiveLines(first.lines), "premise: the upload after the reply failed").toEqual([
+          overLine("failed", id, recordKey, 0, R2_UNREACHABLE),
+        ]);
+        expect((await owedOf(stub))?.attempt, "the failure is counted").toBe(1);
+        expect(await alarmOf(stub), "and its retry armed").not.toBeNull();
+        const before = Date.now();
+        const second = await logsDuring(async () => {
+          expect(await runDurableObjectAlarm(stub)).toBe(true);
+          await settle(stub);
+        });
+        expect(archiveLines(second.lines), "the alarm retried it").toEqual([overLine("failed", id, recordKey, 1, R2_UNREACHABLE)]);
+        expect(await alarmOf(stub), "the second failure re-armed at the second rung").toBeGreaterThanOrEqual(before + 120_000);
+      } finally {
+        await failing.restore();
+      }
+      const owed = await owedOf(stub);
+      const third = await logsDuring(async () => {
         expect(await runDurableObjectAlarm(stub)).toBe(true);
         await settle(stub);
       });
-      expect(archiveLines(second.lines), "the alarm retried it").toEqual([overLine("failed", id, recordKey, 1, R2_UNREACHABLE)]);
-      expect(await alarmOf(stub), "the second failure re-armed at the second rung").toBeGreaterThanOrEqual(before + 120_000);
+      expect(archiveLines(third.lines)).toEqual([overLine("landed", id, recordKey, 2), stampLine(id, recordKey, owed!.reading, true, true)]);
+      expect(await owedOf(stub)).toBeUndefined();
+      expect(archivedAt(await docOf(stub, "table"))).toBe(owed!.reading);
+      expect(await bucketText(recordKey)).toBe(await docOf(stub, "record"));
     } finally {
-      await failing.restore();
+      ttl.restore();
     }
-    const owed = await owedOf(stub);
-    const third = await logsDuring(async () => {
-      expect(await runDurableObjectAlarm(stub)).toBe(true);
-      await settle(stub);
-    });
-    expect(archiveLines(third.lines)).toEqual([overLine("landed", id, recordKey, 2), stampLine(id, recordKey, owed!.reading, true, true)]);
-    expect(await owedOf(stub)).toBeUndefined();
-    expect(archivedAt(await docOf(stub, "table"))).toBe(owed!.reading);
-    expect(await bucketText(recordKey)).toBe(await docOf(stub, "record"));
   });
 
   // Spec §2.4's one alarm, "the earliest of" what is due. At the one-person
@@ -588,8 +518,13 @@ describe("game over (spec §2.6)", () => {
       await failing.restore();
       await settle(stub);
     }
+    const after = Date.now();
     expect(await sqlOf(stub, "SELECT v FROM meta WHERE k IN ('slot', 'copy_owed')"), "premise: the slot cleared, no copy owed").toEqual([]);
-    expect(await alarmOf(stub), "the alarm kept for the save's retry").toBeGreaterThanOrEqual(before + 30_000);
+    // A window, not a floor: the table's expiry, 90 days out, satisfies any
+    // floor, and it is where the alarm would stand had the save been forgotten.
+    const alarm = await alarmOf(stub);
+    expect(alarm, "the alarm kept for the save's retry").toBeGreaterThanOrEqual(before + 30_000);
+    expect(alarm).toBeLessThanOrEqual(after + 30_000);
   });
 
   // The other side of the same rule: a save DISCHARGED while a slot still
@@ -629,8 +564,12 @@ describe("game over (spec §2.6)", () => {
       await swapped.restore();
       await settle(stub);
     }
+    const after = Date.now();
     expect(archivedAt(await docOf(stub, "table")), "premise: no longer over, nothing stamped").toBeNull();
-    expect(await alarmOf(stub), "the alarm kept for the waiting slot's retry").toBeGreaterThanOrEqual(before + 30_000);
+    // A window, not a floor, for the reason the cell above gives.
+    const alarm = await alarmOf(stub);
+    expect(alarm, "the alarm kept for the waiting slot's retry").toBeGreaterThanOrEqual(before + 30_000);
+    expect(alarm).toBeLessThanOrEqual(after + 30_000);
   });
 
   // Step 5. The upload after the reply fails; the object is EVICTED, which
@@ -748,8 +687,9 @@ describe("game over (spec §2.6)", () => {
   // "A Conflict is final at every site" (spec §2.6): another game's record
   // already holds this id's key. Game over logs it and clears `archive_owed`,
   // writes nothing to the bucket, stamps nothing — and, the save discharged,
-  // leaves no alarm for it. Mutants: a conflict retried (still owed, with an
-  // alarm); a conflict stamped.
+  // re-arms the alarm to what is still due: with nothing else, the table's
+  // expiry (spec §2.4). Mutants: a conflict retried (still owed, with an alarm
+  // at a rung); a conflict stamped.
   it("a conflict at game over is final: logged, nothing owed, nothing stamped", async () => {
     const id = "go-conflict";
     const stub = await owedGameOver(id);
@@ -764,7 +704,7 @@ describe("game over (spec §2.6)", () => {
     expect(archivedAt(await docOf(stub, "table")), "nothing stamped").toBeNull();
     expect(await bucketText(recordKey), "the archive keeps the record it held").toBe(ANOTHER_RECORD);
     expect(await bucketText(`rev7/over/${id}.table.json`), "a conflict writes nothing").toBeNull();
-    expect(await alarmOf(stub), "no alarm for a save discharged").toBeNull();
+    expect(await alarmOf(stub), "no retry for a save discharged: the alarm is the table's expiry").toBe(await expiryOf(stub));
   });
 
   // Spec §5.2: "a chat post arriving during a slow … R2 put lands". It must be
@@ -911,9 +851,11 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
 
   // Battery 27, and its resumption. A save owed while the switch was `r2`
   // is KEPT while it reads `off`: the alarm logs it and neither uploads nor
-  // re-arms for it, and a request retries nothing. Switched back on, the next
-  // request resumes it. Mutants: the owed save retried while off; the alarm
-  // re-armed for it while off; a request that never resumes it.
+  // re-arms for it — it re-arms to the table's expiry, the one deadline still
+  // kept while off (spec §2.6: "at the latest its expiry") — and a request
+  // retries nothing. Switched back on, the next request resumes it. Mutants:
+  // the owed save retried while off; the alarm re-armed for it while off; a
+  // request that never resumes it.
   it("an owed save is kept, not retried, while off (battery 27), and resumes at the next request once on", async () => {
     const id = "off-owed";
     const stub = await owedGameOver(id);
@@ -939,7 +881,7 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
       expect(archiveLines(ran.lines)).toEqual([{ event: "archive-owed-kept", id, record_key: recordKey, attempt: 1 }]);
       expect(await bucketText(recordKey), "not uploaded while off").toBeNull();
       expect(await owedOf(stub), "kept as it was").toEqual(owed);
-      expect(await alarmOf(stub), "and no alarm re-armed for it").toBeNull();
+      expect(await alarmOf(stub), "no retry re-armed for it: the alarm is the table's expiry").toBe(await expiryOf(stub));
       const read = await logsDuring(async () => {
         expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
         await settle(stub);
@@ -965,7 +907,7 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
   // the shell logs it, once the delete's batch has committed. The owed save is
   // arranged as battery 27's is; then the switch reads off, and the creator
   // abandons. The removal's push is held, so the batch is read before the
-  // house's acknowledgement ends the object. Mutants: the line missing; the
+  // house's acknowledgement clears the slot. Mutants: the line missing; the
   // save still owed by a table that is gone.
   it("an abandon while the switch is off drops an owed save, and logs it", async () => {
     const id = "off-dropped";

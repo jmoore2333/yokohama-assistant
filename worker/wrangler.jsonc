@@ -60,10 +60,9 @@
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
   // The variables (spec §3.1), none of them a secret; RUNBOOK §6 says what
   // each one's absence means. `wrangler deploy` REPLACES the Worker's
-  // variables with these, so this file is the whole list. Four that `Env`
+  // variables with these, so this file is the whole list. Three that `Env`
   // declares are not here, and their absence is their meaning:
-  // `YOKOHAMA_WEB_TABLE_TTL_DAYS` (no table expires; the TTL arrives with
-  // expiry), `YOKOHAMA_WEB_COUNT_WAKES` (off), `YOKOHAMA_WEB_ADMINS` (set with
+  // `YOKOHAMA_WEB_COUNT_WAKES` (off), `YOKOHAMA_WEB_ADMINS` (set with
   // `wrangler secret put`, the plan's ruling P-1 — a deploy leaves a secret
   // alone), and the pool's test clock, which never ships (the deploy guard
   // refuses this file if it so much as names it).
@@ -81,6 +80,10 @@
     // with no archive — RUNBOOK §6.3 says what changes — and needs no change
     // to the binding.
     "YOKOHAMA_WEB_ARCHIVE": "r2",
+    // A table expires after 90 days without activity (R-6.5c.15; the owner's
+    // value, 2026-09-23), as its creator's own Abandon, saved first while the
+    // archive is on. Removing the line keeps every table (RUNBOOK §6.3).
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
     // The NAS's three chat variables, at the NAS's defaults.
     "YOKOHAMA_WEB_LOBBY_CHAT": "on",
     "YOKOHAMA_WEB_CHAT_KEEP": "500",

@@ -1,15 +1,38 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Exports, Reply } from "../gen/factory.js";
+import { adminRoute, OPERATOR_HEADER, UNCONFIRMED } from "./admin";
 import { earliest, guardAlarmName } from "./alarm";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
+import { expiryDeadline, gameOf, keptOf, markerEnd, markerSentence, ttlDaysOf, type Ending, type Marker, type Reason } from "./marker";
 import { Instance, pinnedTo, readReply, type Bump, type Replied } from "./module";
-import { executePlan, logOutcome, parsePlan, parseStamp, stampArm, type ArchiveOwed, type Outcome, type Plan } from "./r2";
+import {
+  executePlan,
+  logOutcome,
+  parsePlan,
+  parseStamp,
+  stampArm,
+  type ArchiveOwed,
+  type Outcome,
+  type Plan,
+  type Site,
+} from "./r2";
 import { errorBody, log, respond } from "./respond";
 import { advances, cmpGen, copyDigest, HOUSE_NAME, nextRetry, type Ack, type Generation, type Slot } from "./slot";
-import { deleteDoc, deleteMeta, ensureTables, getMeta, hasTables, readDocs, setMeta, upsertDoc } from "./storage";
+import {
+  clearDocs,
+  clearMetaBut,
+  deleteDoc,
+  deleteMeta,
+  ensureTables,
+  getMeta,
+  hasTables,
+  readDocs,
+  setMeta,
+  upsertDoc,
+} from "./storage";
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
 export const USER_HEADER = "X-Yokohama-User";
@@ -32,8 +55,8 @@ export const NOT_AN_UPGRADE = "this host streams over WebSocket";
  *  the `end` frame before the close carries the meaning. */
 const DELETED_REASON = "this table was deleted";
 
-/** A create's 409 at an id whose object still holds an unacknowledged
- *  REMOVAL (spec §2.4; host-written, §4). */
+/** A create's 409 at an id whose object holds a MARKER, or a REMOVAL the
+ *  house has not acknowledged (spec §2.4; host-written, §4). */
 const USED_RECENTLY = "this name was used recently — try another";
 
 /** The two transport routes this object answers itself rather than through
@@ -104,9 +127,12 @@ interface Incoming {
  * and the table layer compiled to WebAssembly answering the table's requests —
  * every `/api/games/{id}…`, and the create that names it — with the saves its
  * game owes the archive (spec §2.6): the abandon's (`abandon`), and game
- * over's (`deliverArchive`). Spec §2.3's Worker reaches it by the table's id,
- * so the object's name is the table's id (`ctx.id.name`, the plan's pool fact
- * 8), and `meta` stores none.
+ * over's (`deliverArchive`). An idle table expires on its alarm (`expiry`);
+ * a table the layer deleted keeps a MARKER for 90 days, which answers every
+ * request (`ended`); and an operator's expire reaches it past the Worker's
+ * gate (`operate`, spec §2.9). Spec §2.3's Worker reaches it by the table's
+ * id, so the object's name is the table's id (`ctx.id.name`, the plan's pool
+ * fact 8), and `meta` stores none.
  */
 export class Table extends DurableObject<Env> {
   /** The Worker's variables, read once — `shellConfig` reads `env` and
@@ -136,7 +162,15 @@ export class Table extends DurableObject<Env> {
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    // An operator's expire (spec §2.9), past the Worker's gate: the header is
+    // the gate's word, since the Worker removes a client's. It is answered
+    // before the marker's 404, because a force ends a marker too.
+    const operator = req.headers.get(OPERATOR_HEADER);
+    const admin = operator === null ? undefined : adminRoute(req.method, url.pathname, url.search.slice(1));
+    if (operator !== null && admin?.kind === "expire") return this.operate(this.ctx.id.name ?? admin.name, operator, admin.force);
     const create = req.method === "POST" && url.pathname === "/api/games";
+    const ended = this.ended(create);
+    if (ended !== undefined) return ended;
     const transport = transportOf(url.pathname);
     // The transport routes' own refusals (spec §2.3), answered before the
     // table is read, as a router answers them. A non-`GET` is 405 with an
@@ -177,7 +211,8 @@ export class Table extends DurableObject<Env> {
    * The alarm's work, for the name the platform handed `alarm()` (spec §2.4:
    * ONE alarm per object, set to the earliest thing due). An alarm with no
    * name — `guardAlarmName` says when that happens — is logged and touches
-   * nothing. A named one:
+   * nothing. A named one, while a MARKER stands, is the marker's
+   * (`markerAlarm`). Otherwise it:
    *
    * 1. recomputes the house copy from the STORED table document (`recopy`),
    *    which is how a copy that trapped in its request is delivered (the
@@ -185,11 +220,15 @@ export class Table extends DurableObject<Env> {
    * 2. delivers the slot (`deliverSlot`) — a retry after a failed push, or a
    *    push an abort cut off — and, beside it, an owed save
    *    (`deliverArchive`): a game over whose upload failed, or was cut off.
-   *    With the archive `off`, the owed save is kept and logged.
+   *    With the archive `off`, the owed save is kept and logged;
+   * 3. expires the table once its last activity is a TTL old, or re-reads
+   *    that activity and re-arms to the table's next deadline (`expiry`).
    *
-   * The alarm is re-armed only by the batches those write — a new slot's, a
-   * failed push's, an acknowledgement's, a failed upload's, a settled save's —
-   * so a run with nothing due leaves none.
+   * The batches the first two write re-arm the alarm — a new slot's, a failed
+   * push's, an acknowledgement's, a failed upload's, a settled save's — to the
+   * earliest thing due. The third re-arms it to the table's next deadline, or
+   * arms nothing for the expiry of a table that may not expire (`held`,
+   * poisoned). With no TTL, a run with nothing due leaves none.
    */
   async onAlarm(name: string | undefined): Promise<void> {
     if (guardAlarmName(name) === "skip") {
@@ -197,8 +236,44 @@ export class Table extends DurableObject<Env> {
       return;
     }
     // The guard runs only a named alarm.
-    this.recopy(name as string);
+    const id = name as string;
+    const marker = markerOf(this.ctx.storage.sql);
+    if (marker !== undefined) return this.markerAlarm(marker);
+    this.recopy(id);
     await Promise.all([this.deliverSlot(), this.deliverArchive()]);
+    await this.expiry(id);
+  }
+
+  /**
+   * The alarm while a MARKER stands (spec §2.4 steps 4 and 6): a REMOVAL that
+   * still waits is pushed, and its acknowledgement either ends the object —
+   * the marker's 90 days are over — or re-arms the alarm to their end
+   * (`acknowledged`); a failed push re-arms to its retry (`failed`). With the
+   * removal acknowledged, the object ends at the marker's end, and an alarm
+   * that runs before it re-arms to it.
+   */
+  private async markerAlarm(marker: Marker): Promise<void> {
+    if (slotState(this.ctx.storage.sql).slot !== undefined) return this.deliverSlot();
+    if (Date.now() < markerEnd(marker)) {
+      this.arm(markerEnd(marker));
+      return;
+    }
+    await this.end(marker);
+  }
+
+  /**
+   * The object ends (spec §2.4 step 6; spec §2.9's force): its module dropped,
+   * and `deleteAll()`, which at this compatibility date deletes its alarm too.
+   * Logged `marker-ended` when it ends a marker, and `forced` when there is
+   * none — which only a force leaves, since every delete through the layer
+   * writes its marker in the batch that writes its REMOVAL.
+   */
+  private async end(marker: Marker | undefined): Promise<void> {
+    const id = this.ctx.id.name;
+    this.instance?.drop();
+    await this.ctx.storage.deleteAll();
+    if (marker === undefined) log("forced", { id });
+    else log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
   }
 
   /**
@@ -260,10 +335,10 @@ export class Table extends DurableObject<Env> {
    *   already delivered;
    * - the alarm: when the slot is cleared, re-armed to what is still due — a
    *   copy still owed (`copy_owed`), or a save (`archive_owed`, while the
-   *   archive is on), each at its rung from now, the earlier of the two — or
-   *   deleted when nothing is; while a newer slot still waits, left where that
-   *   slot's own batch or failure put it (one convention for the rung,
-   *   `nextRetry`'s).
+   *   archive is on), each at its rung from now; the table's expiry, or a
+   *   marker's end (`deadlines`) — the earliest of them, or deleted when
+   *   nothing is; while a newer slot still waits, left where that slot's own
+   *   batch or failure put it (one convention for the rung, `nextRetry`'s).
    *
    * An acknowledgement that clears nothing and advances nothing writes
    * nothing. And the batch is written ONLY while the object still holds its
@@ -278,9 +353,10 @@ export class Table extends DurableObject<Env> {
    *   consulted there, and the mutant that records `acked` without it would
    *   pass batteries 6 and 35 (measured).
    *
-   * A REMOVAL acknowledged ends the object: `deleteAll()`, which at this
-   * compatibility date deletes its alarm too, and its module is dropped. (The
-   * plan's Task 14 puts the marker's 90 days between the two.)
+   * A REMOVAL acknowledged ends the object (`end`) once the delete's MARKER
+   * has stood its 90 days, or at once when no marker stands — a force's
+   * removal (spec §2.4 step 6, §2.9). While the marker stands, the batch below
+   * clears the slot and re-arms the alarm to the marker's end.
    */
   private async acknowledged(pushed: Slot): Promise<void> {
     const sql = this.ctx.storage.sql;
@@ -288,9 +364,8 @@ export class Table extends DurableObject<Env> {
     const state = slotState(sql);
     const holds = state.slot !== undefined && samePush(state.slot, pushed);
     if (holds && pushed.copy === null) {
-      this.instance?.drop();
-      await this.ctx.storage.deleteAll();
-      return;
+      const marker = markerOf(sql);
+      if (marker === undefined || Date.now() >= markerEnd(marker)) return this.end(marker);
     }
     const advance = advances(state.acked ?? null, pushed.generation, pushed.revision);
     if (!holds && !advance) return;
@@ -304,7 +379,7 @@ export class Table extends DurableObject<Env> {
         if (holds) deleteMeta(sql, "slot");
         if (advance) setMeta(sql, "acked", JSON.stringify(acked));
       },
-      holds ? earliest(copyRetryDue(copyOwedOf(sql)), this.archiveRung(sql)) : undefined,
+      holds ? earliest(earliest(copyRetryDue(copyOwedOf(sql)), this.archiveRung(sql)), this.deadlines(sql)) : undefined,
     );
   }
 
@@ -465,7 +540,7 @@ export class Table extends DurableObject<Env> {
       return false;
     }
     if (outcome.outcome === "conflict") {
-      this.batch((sql) => deleteMeta(sql, "archive_owed"), dueBesidesArchive(sql));
+      this.batch((sql) => deleteMeta(sql, "archive_owed"), this.dueBesidesArchive(sql));
       return false;
     }
     const config = this.config;
@@ -565,7 +640,7 @@ export class Table extends DurableObject<Env> {
    *  something else owed is due first. */
   private retryAt(owed: ArchiveOwed): number {
     const due = Date.now() + nextRetry(owed.attempt);
-    return Math.min(due, dueBesidesArchive(this.ctx.storage.sql) ?? due);
+    return Math.min(due, this.dueBesidesArchive(this.ctx.storage.sql) ?? due);
   }
 
   /** Whether saves are uploaded: the switch reads `r2`. */
@@ -583,12 +658,27 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * What a request needs before its wake, or the answer that ends it first:
-   * the poison check, a create's 409 under an unacknowledged removal, and the
-   * configuration — then the module (spec §2.4).
+   * The answer an ENDED table gives before anything is read, writing nothing
+   * (spec §2.4): while a MARKER stands, every request is 404 with the
+   * marker's sentence — an upgrade too, answered unupgraded, so the client's
+   * probe reads it (spec §2.7) — and a create at the id is 409; with no
+   * marker, a create at an id whose REMOVAL the house has not acknowledged —
+   * a force's — is 409 too, so a new table's first copy can never overwrite a
+   * removal the house has not received. `undefined` for every other request.
    */
-  private ready(incoming: Incoming): { config: ShellConfig; instance: Instance; traps: number } | Response {
-    const { id } = incoming;
+  private ended(create: boolean): Response | undefined {
+    const sql = this.ctx.storage.sql;
+    const marker = markerOf(sql);
+    if (marker !== undefined) return create ? respond(409, errorBody(USED_RECENTLY)) : respond(404, errorBody(markerSentence(marker)));
+    if (create && slotState(sql).slot?.copy === null) return respond(409, errorBody(USED_RECENTLY));
+    return undefined;
+  }
+
+  /**
+   * What a request needs before its wake, or the answer that ends it first:
+   * the poison check and the configuration — then the module (spec §2.4).
+   */
+  private ready(id: string): { config: ShellConfig; instance: Instance; traps: number } | Response {
     const sql = this.ctx.storage.sql;
     // Two consecutive load traps poison the table: it is not loaded again, and
     // every request is the poison 500 naming the kind (spec §2.4 "Traps").
@@ -600,10 +690,6 @@ export class Table extends DurableObject<Env> {
       log("poison", { id, kind, traps });
       return respond(500, errorBody(`this table's stored ${kind} cannot be loaded`));
     }
-    // A create at an id whose slot holds a REMOVAL the house has not yet
-    // acknowledged is refused, writing nothing, so a new table's first copy
-    // can never overwrite a removal the house has not received (spec §2.4).
-    if (incoming.create && slotState(sql).slot?.copy === null) return respond(409, errorBody(USED_RECENTLY));
     // A configuration the shell refuses builds no module. Spec §2.6 has every
     // `/api/*` answer 500 naming the variable, and the plan's Task 11 has the
     // Worker do so (its step 2) before it forwards; the object answers the
@@ -628,7 +714,7 @@ export class Table extends DurableObject<Env> {
    * plan's ruling P-2), and the save is uploaded after the reply.
    */
   private answer(incoming: Incoming): Response {
-    const ready = this.ready(incoming);
+    const ready = this.ready(incoming.id);
     if (ready instanceof Response) return ready;
     const { id } = incoming;
     const { config, instance, traps } = ready;
@@ -666,26 +752,15 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * **The abandon's receipt loop** (spec §2.4 step 1, §2.6) — every DELETE,
-   * run WHOLE under `blockConcurrencyWhile` (`fetch`), which delivers no other
-   * event to this object until it returns, so the module and the rows it
-   * answers from are this request's across the upload's await:
-   *
-   * 1. the wake, and the first dispatch, pinned to P-2's reading, taken ONCE;
-   * 2. when that dispatch deferred a put — the layer refuses the delete,
-   *    deleting nothing, until its save is made — the plan is carried out
-   *    (`executePlan`) and its outcome logged, then installed as the receipt,
-   *    and the SAME request dispatched AGAIN at the SAME reading
-   *    (`redispatch`), so the layer's put makes the very plan the receipt is
-   *    for. Its answer is the answer: a delete that proceeds, or the layer's
-   *    own refusal naming the archive with R2's reason inside it — a
-   *    `conflict` among them, final at every site;
-   * 3. the ONE batch, the frames and the reply, as `answer`'s.
-   *
-   * A delete that owes no save — an open or dealing table, one with no move
-   * made, one already stamped, the archive off, a caller the layer refuses —
-   * completes in its first dispatch. Only the WAKE's plan can be owed by the
-   * batch: the dispatch's was dispatched again.
+   * **The abandon** — every DELETE (spec §2.4 step 1, §2.6) — run WHOLE under
+   * `blockConcurrencyWhile` (`fetch`), which delivers no other event to this
+   * object until it returns, so the module and the rows it answers from are
+   * this request's across the upload's await: the wake; the receipt loop of
+   * every delete through the layer (`deleting`), over the caller's own
+   * DELETE; then the ONE batch — the marker in it when the layer deleted the
+   * table — the frames and the reply, as `answer`'s. Only the WAKE's plan, or
+   * the reading's, can be owed by the batch: the dispatch's was dispatched
+   * again.
    *
    * **A throw or a timeout RESETS this object** (Cloudflare's State API:
    * `blockConcurrencyWhile` terminates and resets an object whose callback
@@ -695,10 +770,11 @@ export class Table extends DurableObject<Env> {
    * object, and the upload's up to four R2 round trips (a read, two puts, a
    * re-read) run inside that budget. Nothing is lost: the first dispatch
    * deletes nothing until its save is made, and a reset object is rebuilt
-   * from what is stored.
+   * from what is stored. An expiry runs under the same block, with the same
+   * budget (`expiry`, `operate`).
    */
   private async abandon(incoming: Incoming): Promise<Response> {
-    const ready = this.ready(incoming);
+    const ready = this.ready(incoming.id);
     if (ready instanceof Response) return ready;
     const { id } = incoming;
     const { config, instance, traps } = ready;
@@ -708,28 +784,21 @@ export class Table extends DurableObject<Env> {
     try {
       const woken = this.wake(id, instance, config, traps);
       if (woken instanceof Response) return woken;
-      let called = this.call(incoming, instance);
-      if (called instanceof Response) {
+      const deleted = await this.deleting(id, instance, config, {
+        site: "abandon",
+        reason: { reason: "abandoned" },
+        viewer: () => incoming.user,
+        call: "dispatch",
+        f: (m) => m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body),
+      });
+      if (deleted instanceof Response) {
         if (woken.clearTraps) this.batch(clearLoadTraps);
-        return called;
+        return deleted;
       }
-      const deferred = called.reply.archive;
-      if (deferred !== undefined) {
-        const plan = parsePlan(deferred);
-        // Only the receipt archive defers, and `shellConfig` refuses `r2`
-        // without the bucket bound, so it is bound here.
-        const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan);
-        logOutcome(id, "abandon", plan, outcome);
-        const again = this.redispatch(incoming, instance, called, plan, outcome);
-        if (again instanceof Response) {
-          if (woken.clearTraps) this.batch(clearLoadTraps);
-          return again;
-        }
-        called = again;
-      }
-      done = this.commit(id, called, woken, owing(woken.restored));
+      const { called, reading, ending } = deleted;
+      done = this.commit(id, called, woken, owing(woken.restored) ?? owing(reading), ending);
       reply = called.reply;
-      bumps = [...(woken.restored?.reply.bumps ?? []), ...reply.bumps];
+      bumps = [...(woken.restored?.reply.bumps ?? []), ...(reading?.reply.bumps ?? []), ...reply.bumps];
     } catch (e) {
       // As `answer`'s: the module may hold what storage does not.
       instance.drop();
@@ -739,25 +808,116 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * The receipt loop's second dispatch: `outcome` installed as `plan`'s
-   * receipt, then the SAME request dispatched pinned to the FIRST dispatch's
-   * reading (`pinnedTo`, which restores the setting after it) — spec §2.6's
-   * "one clock reading per plan": a reading of its own would stamp another
-   * `archived_at`, and its plan would not be the receipt's — then the layer's
-   * documents read back, all under ONE `guarded`, as `call`'s. The answer
-   * carries both dispatches' bumps (a deferred put signals nothing, but a
-   * call's bumps are never dropped). A trap is the trap 500, persisting
+   * **The receipt loop of every delete through the layer** (spec §2.4 step 1,
+   * §2.6) — a creator's abandon, and an expiry, the alarm's or an operator's
+   * — after the wake, under its caller's `blockConcurrencyWhile`:
+   *
+   * 1. P-2's reading, taken ONCE, and under ONE `guarded`: the viewer, read
+   *    first (an expiry's, off the table's house copy); then, pinned to that
+   *    reading, the call that decides what the marker says was kept (the
+   *    orchestrator's ruling I-64) — `events(id, viewer, "")` as the table's
+   *    creator, before anything is deleted — and the delete's own first
+   *    dispatch; then the layer's documents read back. The `events` call
+   *    shares the dispatch's P-2 reading, so a delete still takes one;
+   * 2. when that dispatch deferred a put — the layer refuses the delete,
+   *    deleting nothing, until its save is made — the plan is carried out
+   *    (`executePlan`) and its outcome logged, then installed as the receipt,
+   *    and the SAME call dispatched AGAIN at the SAME reading (`redispatch`),
+   *    so the layer's put makes the very plan the receipt is for. Its answer
+   *    is the answer: a delete that proceeds, or the layer's own refusal
+   *    naming the archive with R2's reason inside it — a `conflict` among
+   *    them, final at every site;
+   * 3. the ENDING the delete's batch writes as its marker, should the layer
+   *    have deleted the table: `kept` from the reading, the archive's switch
+   *    and the save's outcome (`gameOf`, `keptOf`) — never from the table
+   *    document, which is never parsed.
+   *
+   * A delete that owes no save — an open or dealing table, one with no move
+   * made, one already stamped, the archive off, a caller the layer refuses —
+   * completes in its first dispatch. A trap is the trap 500, persisting
    * nothing.
+   *
+   * The viewer is the table's creator whenever the layer deletes: the
+   * abandon's caller, whom the layer's `delete` refuses unless they created
+   * the table, and for an expiry the creator its house copy names
+   * (`creatorIn`) — so the `events` call that decides a marker answers 200.
+   * The stored record, `gameOf`'s fallback, would decide only where `creatorIn`
+   * finds no creator and the layer deletes all the same, and no stored table
+   * reaches that: `house_copy` refuses a stored document the layer's own
+   * delete also refuses to read (both run `check_shape` over the same stored
+   * text), or a copy its scrub broke, which the module's own cells show no
+   * stored document reaches.
    */
-  private redispatch(incoming: Incoming, instance: Instance, first: Called, plan: Plan, outcome: Outcome): Called | Response {
-    const { id } = incoming;
+  private async deleting(id: string, instance: Instance, config: ShellConfig, how: Deleting): Promise<Deleted | Response> {
+    const stored = readDocs(this.ctx.storage.sql);
+    // An expiry's viewer reads the house copy; an abandon's calls nothing.
+    let stage = "house_copy";
+    const done = instance.guarded((mod) => {
+      const at = this.reading();
+      const viewer = how.viewer(mod);
+      // The pin is the reading's, as `pinned` counts a pin with its call.
+      stage = "events";
+      mod.set_clock(at);
+      const reading = viewer === undefined ? undefined : readReply(mod.events(id, viewer, ""));
+      stage = how.call;
+      const reply = readReply(how.f(mod));
+      stage = "read";
+      return { reading, first: { reply, at, docs: readLayerDocs(mod, id) } };
+    });
+    if ("trapped" in done) {
+      log("trap", { id, call: stage, error: done.trapped });
+      return respond(500, errorBody(TRAP));
+    }
+    const { reading, first } = done.ok;
+    let called: Called = first;
+    let outcome: Outcome | undefined;
+    let plan: Plan | undefined;
+    const deferred = first.reply.archive;
+    if (deferred !== undefined) {
+      plan = parsePlan(deferred);
+      // Only the receipt archive defers, and `shellConfig` refuses `r2`
+      // without the bucket bound, so it is bound here.
+      outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan);
+      logOutcome(id, how.site, plan, outcome, how.attempt === undefined ? {} : { attempt: how.attempt });
+      const again = this.redispatch(id, instance, first, plan, outcome, how.f, how.call);
+      if (again instanceof Response) return again;
+      called = again;
+    }
+    const saved = outcome?.outcome === "landed" || outcome?.outcome === "identical";
+    return {
+      called,
+      reading: reading === undefined ? null : { reply: reading, at: first.at },
+      outcome,
+      plan,
+      ending: { ...how.reason, kept: keptOf(gameOf(reading, stored.has("record")), config.archive, saved) },
+    };
+  }
+
+  /**
+   * The receipt loop's second dispatch: `outcome` installed as `plan`'s
+   * receipt, then the SAME call `f` dispatched pinned to the FIRST
+   * dispatch's reading (`pinnedTo`, which restores the setting after it) —
+   * spec §2.6's "one clock reading per plan": a reading of its own would stamp
+   * another `archived_at`, and its plan would not be the receipt's — then the
+   * layer's documents read back, all under ONE `guarded`, as `call`'s. The
+   * answer carries both dispatches' bumps (a deferred put signals nothing,
+   * but a call's bumps are never dropped). A trap is the trap 500, persisting
+   * nothing, logged with `call` naming the dispatch.
+   */
+  private redispatch(
+    id: string,
+    instance: Instance,
+    first: Called,
+    plan: Plan,
+    outcome: Outcome,
+    f: (mod: Exports) => Reply,
+    call: string,
+  ): Called | Response {
     let stage = "receipt";
     const done = instance.guarded((mod) => {
       mod.receipt(plan.key, JSON.stringify(outcome));
-      stage = "dispatch";
-      const reply = pinnedTo(mod, first.at, (m) =>
-        m.dispatch(incoming.user, incoming.method, incoming.path, incoming.query, incoming.contentType, incoming.body),
-      );
+      stage = call;
+      const reply = pinnedTo(mod, first.at, f);
       stage = "read";
       return { reply, at: first.at, docs: readLayerDocs(mod, id) };
     });
@@ -767,6 +927,217 @@ export class Table extends DurableObject<Env> {
     }
     const again = done.ok;
     return { ...again, reply: { ...again.reply, bumps: [...first.reply.bumps, ...again.reply.bumps] } };
+  }
+
+  /**
+   * **An expiry** (spec §2.4 step 1; R-6.5c.15) — the alarm's, once the TTL
+   * has run out (`expiry`), and an operator's plain expire (`operate`) — as
+   * the table's creator's own abandon: the receipt loop (`deleting`) over the
+   * module's host-local `expire(id)`, which dispatches the layer's
+   * `DELETE /api/games/{id}` as the stored table's `created_by`, so the
+   * answer, the archive rule and the leaf are the layer's. It runs under its
+   * caller's `blockConcurrencyWhile`, as an abandon does; then the ONE batch
+   * — the marker in it when the layer deleted the table, logged `expired` —
+   * and the frames. The pushes and the upload the batch owes are the
+   * caller's. Answers the layer's answer, or the shell's before it (a poison,
+   * a trap), with the batch and the save's outcome when the delete was
+   * dispatched.
+   */
+  private async expire(id: string, reason: Reason): Promise<Expired> {
+    const answered = async (res: Response): Promise<Expired> => ({ status: res.status, body: await res.text() });
+    const ready = this.ready(id);
+    if (ready instanceof Response) return answered(ready);
+    const { config, instance, traps } = ready;
+    let expired: Expired;
+    let bumps: Bump[];
+    try {
+      const woken = this.wake(id, instance, config, traps);
+      if (woken instanceof Response) return answered(woken);
+      const deleted = await this.deleting(id, instance, config, {
+        site: reason.reason === "expired" ? "expiry" : "operator",
+        reason,
+        viewer: (mod) => creatorIn(mod, id),
+        call: "expire",
+        f: (m) => m.expire(id),
+        ...(reason.reason === "expired" ? { attempt: expiryFailedOf(this.ctx.storage.sql) } : {}),
+      });
+      if (deleted instanceof Response) {
+        if (woken.clearTraps) this.batch(clearLoadTraps);
+        return answered(deleted);
+      }
+      const { called, reading, ending, outcome, plan } = deleted;
+      const done = this.commit(id, called, woken, owing(woken.restored) ?? owing(reading), ending);
+      expired = { status: called.reply.status, body: called.reply.body, done, outcome, plan };
+      bumps = [...(woken.restored?.reply.bumps ?? []), ...(reading?.reply.bumps ?? []), ...called.reply.bumps];
+    } catch (e) {
+      // As `answer`'s: the module may hold what storage does not.
+      instance.drop();
+      throw e;
+    }
+    this.sendFrames(id, bumps);
+    const marker = expired.done?.marker;
+    if (marker !== undefined) log("expired", { id, reason: marker.reason, kept: marker.kept });
+    return expired;
+  }
+
+  /**
+   * The alarm's expiry (spec §2.4 "Expiry"; R-6.5c.15), after its
+   * deliveries. With a TTL (`ttlDaysOf`) and a document stored, from the
+   * table's last activity — the newest `written_at` of its record, table and
+   * chat, RE-READ at every run, because the expiry deadline only moves later
+   * and nothing re-arms the alarm for a write that makes nothing due:
+   *
+   * - a table `held` or poisoned never expires on its own (spec §2.4; the
+   *   operator's force is its path): past its TTL it is named in the log,
+   *   `expiry-blocked`, and no expiry deadline is armed for it;
+   * - before `last activity + TTL` — an alarm armed for other work, or at a
+   *   deadline a later activity has since moved — the alarm is re-armed to
+   *   the table's next deadline (`nextDue`), and a count of failed expiries
+   *   that later activity has made stale is dropped;
+   * - otherwise the table expires (`expire`) under `blockConcurrencyWhile`,
+   *   and an expiry that did not end it is settled (`unexpired`) before the
+   *   block ends. The delete's side channels — its removal's push, an owed
+   *   save's upload — follow the block as a request's follow its reply
+   *   (`waitUntil`, `finish`), and the alarm armed in the delete's batch
+   *   finishes them if they cannot.
+   */
+  private async expiry(id: string): Promise<void> {
+    const sql = this.ctx.storage.sql;
+    const config = this.config;
+    if ("error" in config || !hasTables(sql)) return;
+    const ttl = ttlDaysOf(config);
+    const activity = lastActive(sql);
+    if (ttl === null || activity === null) return;
+    const deadline = expiryDeadline(activity, ttl);
+    const blocked = getMeta(sql, "held") !== undefined ? "held" : poisoned(sql) ? "poisoned" : undefined;
+    if (blocked !== undefined) {
+      if (Date.now() >= deadline) log("expiry-blocked", { id, why: blocked });
+      return;
+    }
+    if (Date.now() < deadline) {
+      if (expiryFailedOf(sql) > 0) this.batch((sql) => deleteMeta(sql, "expiry_failed"));
+      this.arm(this.nextDue(sql));
+      return;
+    }
+    const done = await this.ctx.blockConcurrencyWhile(async () => {
+      const expired = await this.expire(id, { reason: "expired", ttl_days: ttl });
+      if (expired.done?.marker === undefined) this.unexpired(id, expired);
+      return expired.done;
+    });
+    if (done?.pushing) this.ctx.waitUntil(this.deliverSlot());
+    if (done?.archiving) this.ctx.waitUntil(this.deliverArchive());
+  }
+
+  /**
+   * An expiry the layer did not end (spec §2.4 step 1): the table stays, and
+   * one batch says what follows, the alarm re-armed beside it to the next
+   * deadline (`nextDue`):
+   *
+   * - a `conflict` — the record key already holds another game, which no
+   *   retry can clear — writes `held`, logged: the expiry deadline is armed no
+   *   more, and the table waits for the operator's force;
+   * - anything else — a save that failed, a trap, a wake that could not load
+   *   the table — is counted in `expiry_failed` and retried on the backoff,
+   *   30 s, 2 min, 10 min, then hourly (`expiryDue`), logged `expiry-failed`
+   *   with the answer it met.
+   */
+  private unexpired(id: string, expired: Expired): void {
+    const sql = this.ctx.storage.sql;
+    if (expired.outcome?.outcome === "conflict" && expired.plan !== undefined) {
+      const recordKey = expired.plan.record_key;
+      this.batch((sql) => {
+        setMeta(sql, "held", JSON.stringify({ at: Date.now(), record_key: recordKey }));
+        deleteMeta(sql, "expiry_failed");
+      });
+      this.arm(this.nextDue(sql));
+      log("held", { id, record_key: recordKey });
+      return;
+    }
+    const attempt = expiryFailedOf(sql);
+    this.batch((sql) => setMeta(sql, "expiry_failed", String(attempt + 1)));
+    this.arm(this.nextDue(sql));
+    log("expiry-failed", { id, status: expired.status, body: expired.body, attempt, retry_in: nextRetry(attempt) });
+  }
+
+  /**
+   * **An operator's expire** (spec §2.9), reached only with
+   * `X-Yokohama-Operator`, which the Worker sets past its gate; logged
+   * `operator` with the action and the operator's address.
+   *
+   * - `?force`: `force`.
+   * - A plain expire: while a marker stands, the marker's 404, as every
+   *   request meets it. Otherwise the table expires NOW by spec §2.4's path
+   *   (`expire`), as its creator's own abandon with reason `operator` — the
+   *   save first when one is owed, the marker after — under
+   *   `blockConcurrencyWhile`, and the answer is the layer's: its 204, or its
+   *   refusal when the save fails, which writes nothing of the alarm's
+   *   (`held`, a retry's count).
+   */
+  private async operate(id: string, address: string, force: boolean): Promise<Response> {
+    log("operator", { id, action: force ? "force" : "expire", address });
+    if (force) return this.force(id);
+    const marker = markerOf(this.ctx.storage.sql);
+    if (marker !== undefined) return respond(404, errorBody(markerSentence(marker)));
+    const expired = await this.ctx.blockConcurrencyWhile(() => this.expire(id, { reason: "operator" }));
+    if (expired.done?.pushing) this.ctx.waitUntil(this.deliverSlot());
+    if (expired.done?.archiving) this.ctx.waitUntil(this.deliverArchive());
+    return respond(expired.status, expired.body);
+  }
+
+  /**
+   * **The operator's `?force`** (spec §2.9): the object ends WHATEVER it holds
+   * — a table, a poisoned one, a `held` one, a marker — with no layer and no
+   * save, and it leaves NO marker.
+   *
+   * - With nothing stored: 204 at once, writing nothing.
+   * - Where the house holds nothing of the table — it was never sent a copy,
+   *   or it has acknowledged the table's removal — the object ends at once
+   *   (`end`), and 204.
+   * - Otherwise ONE batch deletes every document, and every `meta` key but
+   *   the slot's own four — the marker, an owed save and `held` among them —
+   *   and writes the REMOVAL, unless one already waits, with its retry's
+   *   alarm. The module is dropped and every socket ended as a delete ends
+   *   them, and the removal is pushed IN the request (`deliverSlot`): its
+   *   acknowledgement, with no marker standing, ends the object
+   *   (`acknowledged`). The answer is 204 once the storage is gone, or 503
+   *   `the lobby has not confirmed the removal — the alarm will finish it`
+   *   when the push failed — and the alarm, re-armed by that failure, does.
+   *   Until then a create at the id is the 409 of a removal the house has not
+   *   acknowledged (`ended`).
+   *
+   * An owed save it drops is logged `archive-owed-dropped`, as a delete's is.
+   * It holds no `blockConcurrencyWhile`: a request that lands while the push
+   * is out finds no document to answer from, and every push and
+   * acknowledgement is keyed by its pair (spec §2.5).
+   */
+  private async force(id: string): Promise<Response> {
+    const sql = this.ctx.storage.sql;
+    if (!hasTables(sql)) return respond(204, "");
+    const state = slotState(sql);
+    const owed = archiveOwedOf(sql);
+    const drop = () => {
+      if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+    };
+    if (state.generation === undefined || (state.slot === undefined && !differs(state, null))) {
+      this.endSockets(id);
+      await this.end(undefined);
+      drop();
+      return respond(204, "");
+    }
+    const removal = state.slot?.copy === null ? undefined : { generation: state.generation, revision: state.revision + 1, copy: null };
+    this.batch(
+      (sql) => {
+        clearDocs(sql);
+        clearMetaBut(sql, ["generation", "revision", "slot", "acked"]);
+        for (const write of this.owedWrites(id, { draw: undefined, slot: removal, traps: 0 })) write();
+      },
+      removal === undefined ? undefined : Date.now() + nextRetry(0),
+    );
+    this.instance?.drop();
+    this.endSockets(id);
+    drop();
+    await this.deliverSlot();
+    return hasTables(sql) ? respond(503, errorBody(UNCONFIRMED)) : respond(204, "");
   }
 
   /**
@@ -971,13 +1342,12 @@ export class Table extends DurableObject<Env> {
     const instance = this.instance;
     if ((!ended && !bumped) || instance === undefined) return;
     try {
+      if (ended) {
+        this.closeDeleted();
+        return;
+      }
       for (const ws of this.ctx.getWebSockets()) {
         if (ws.readyState !== WebSocket.OPEN) continue;
-        if (ended) {
-          ws.send(frame("end", END_DELETED));
-          ws.close(4404, closeReason(DELETED_REASON));
-          continue;
-        }
         const user = (ws.deserializeAttachment() as Attachment | null)?.user;
         const done = instance.guarded((mod) => this.pinned(mod, (m) => m.events(id, user, "")));
         if ("trapped" in done) {
@@ -1001,6 +1371,27 @@ export class Table extends DurableObject<Env> {
       }
     } catch (e) {
       instance.drop();
+      log("frame-failed", { id, error: String(e) });
+    }
+  }
+
+  /** Every open socket ended as a deleted table's: `end {"reason":"deleted"}`,
+   *  then a 4404 close with this host's short reason. */
+  private closeDeleted(): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      ws.send(frame("end", END_DELETED));
+      ws.close(4404, closeReason(DELETED_REASON));
+    }
+  }
+
+  /** A force's end of every socket (`closeDeleted`), which never throws: the
+   *  storage is already gone, or going, so nothing here may cost the force its
+   *  answer. A throw is logged `frame-failed`. */
+  private endSockets(id: string): void {
+    try {
+      this.closeDeleted();
+    } catch (e) {
       log("frame-failed", { id, error: String(e) });
     }
   }
@@ -1042,15 +1433,23 @@ export class Table extends DurableObject<Env> {
    *   archive off, the owed save goes with the table, logged
    *   `archive-owed-dropped` after the batch. Any other alarm this batch sets
    *   is brought forward to an owed save's retry when that is sooner
-   *   (`earliest`).
+   *   (`earliest`);
+   * - **the MARKER** (spec §2.4 step 2), when the layer deleted the table:
+   *   `ending` at `Date.now()` (the orchestrator's rulings I-43/I-44), with
+   *   `held` and `expiry_failed` gone with the table — beside the REMOVAL and
+   *   its alarm, and the cleared `archive_owed`, so the whole ending is this
+   *   ONE batch. Every delete comes through a DELETE — the creator's, or an
+   *   expiry's as the creator — whose caller passes its `ending`; the layer
+   *   deletes a table on no other route.
    *
    * Every write goes in ONE `batch`, and a request with nothing to write runs
    * none — so a probe creates nothing. Answers whether the batch wrote a
-   * slot, which the request then pushes, and whether a save is owed after
-   * it, with the switch on, which the request then uploads — one this batch
-   * wrote, or one owed before it: the next request resumes it (spec §2.6).
+   * slot, which the request then pushes; whether a save is owed after it,
+   * with the switch on, which the request then uploads — one this batch
+   * wrote, or one owed before it: the next request resumes it (spec §2.6);
+   * and the marker it wrote.
    */
-  private commit(id: string, called: Called, parts: BatchParts, archive?: ArchiveWrite): Committed {
+  private commit(id: string, called: Called, parts: BatchParts, archive?: ArchiveWrite, ending?: Ending): Committed {
     const sql = this.ctx.storage.sql;
     const stored = readDocs(sql);
     const now = Date.now();
@@ -1063,6 +1462,7 @@ export class Table extends DurableObject<Env> {
     // stored under it, so nothing changed.
     const before = stored.get("table");
     const after = called.docs.size === 0 ? before : called.docs.get("table");
+    const deleted = before !== undefined && after === undefined;
     const picker = called.reply.picker ?? parts.restored?.reply.picker;
     if (picker === CLEARED) {
       if (stored.has("picker")) writes.push(() => deleteDoc(sql, "picker"));
@@ -1082,14 +1482,19 @@ export class Table extends DurableObject<Env> {
     if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
     // The owed save as it stood before this batch.
     const holding = archiveOwedOf(sql);
-    const deleted = before !== undefined && after === undefined;
+    const marker: Marker | undefined = deleted && ending !== undefined ? { at: now, ...ending } : undefined;
+    if (marker !== undefined) {
+      writes.push(() => setMeta(sql, "marker", JSON.stringify(marker)));
+      if (getMeta(sql, "held") !== undefined) writes.push(() => deleteMeta(sql, "held"));
+      if (expiryFailedOf(sql) > 0) writes.push(() => deleteMeta(sql, "expiry_failed"));
+    }
     let alarm: number | null | undefined = owed === undefined ? undefined : owedDue(owed);
     let owes = holding !== undefined;
     if (deleted || archive === "clear") {
       owes = false;
       if (holding !== undefined) {
         writes.push(() => deleteMeta(sql, "archive_owed"));
-        alarm = earliest(alarm ?? null, dueBesidesArchive(sql) ?? undefined);
+        alarm = earliest(alarm ?? null, this.dueBesidesArchive(sql) ?? undefined);
       }
     } else if (archive !== undefined) {
       owes = true;
@@ -1099,7 +1504,7 @@ export class Table extends DurableObject<Env> {
       alarm = earliest(alarm, this.archiveRung(sql));
     }
     const archiving = owes && this.archiveOn();
-    if (writes.length === 0) return { pushing: false, archiving };
+    if (writes.length === 0) return { pushing: false, archiving, marker };
     this.batch(() => {
       for (const write of writes) write();
     }, alarm);
@@ -1109,7 +1514,7 @@ export class Table extends DurableObject<Env> {
     if (deleted && holding !== undefined && !this.archiveOn()) {
       log("archive-owed-dropped", { id, record_key: holding.plan.record_key, attempt: holding.attempt });
     }
-    return { pushing: owed?.slot !== undefined, archiving };
+    return { pushing: owed?.slot !== undefined, archiving, marker };
   }
 
   /**
@@ -1263,9 +1668,63 @@ export class Table extends DurableObject<Env> {
       ensureTables(sql);
       writes(sql);
     });
-    if (alarm === undefined) return;
+    this.arm(alarm);
+  }
+
+  /** The alarm, as `batch` sets it beside its writes: a time sets it, `null`
+   *  deletes it, `undefined` leaves it where it is; a rejection is logged
+   *  `alarm-failed`. An object the platform gives no name arms nothing, as it
+   *  writes nothing (`batch`). */
+  private arm(alarm: number | null | undefined): void {
+    const id = this.ctx.id.name;
+    if (id === undefined || alarm === undefined) return;
     const armed = alarm === null ? this.ctx.storage.deleteAlarm() : this.ctx.storage.setAlarm(alarm);
     armed.catch((e: unknown) => log("alarm-failed", { id, error: String(e) }));
+  }
+
+  /**
+   * What spec §2.4's one alarm waits for besides a delivery's retry: a
+   * standing marker's end (`markerEnd`), or else the table's expiry
+   * (`expiryDue`) — `undefined` when neither is due.
+   */
+  private deadlines(sql: SqlStorage): number | undefined {
+    const marker = markerOf(sql);
+    return marker === undefined ? this.expiryDue(sql) : markerEnd(marker);
+  }
+
+  /**
+   * When the table expires (spec §2.4 "Expiry"): its last activity plus the
+   * TTL — or, while its expiries keep failing, the retry after them on the
+   * backoff (`nextRetry`), if that is later. `undefined` when no expiry is
+   * due: no TTL; nothing stored, or a marker standing; or a table `held` or
+   * poisoned, which never expires on its own (spec §2.4).
+   */
+  private expiryDue(sql: SqlStorage): number | undefined {
+    if (!hasTables(sql) || "error" in this.config) return undefined;
+    const ttl = ttlDaysOf(this.config);
+    if (ttl === null || getMeta(sql, "marker") !== undefined || getMeta(sql, "held") !== undefined || poisoned(sql)) return undefined;
+    const activity = lastActive(sql);
+    if (activity === null) return undefined;
+    const deadline = expiryDeadline(activity, ttl);
+    const failed = expiryFailedOf(sql);
+    return failed > 0 ? Math.max(deadline, Date.now() + nextRetry(failed - 1)) : deadline;
+  }
+
+  /** What is still due once an owed save is discharged — a slot still
+   *  waiting, or a copy still owed, each at its rung from now; the table's
+   *  expiry, or a marker's end (`deadlines`) — as the alarm's next deadline,
+   *  or `null` when nothing is (spec §2.4: "the success that discharges it
+   *  re-arms it to the next deadline"). */
+  private dueBesidesArchive(sql: SqlStorage): number | null {
+    const slot = slotState(sql).slot;
+    const waiting = slot === undefined ? null : Date.now() + nextRetry(Math.max(slot.attempt - 1, 0));
+    return earliest(earliest(waiting, copyRetryDue(copyOwedOf(sql)) ?? undefined), this.deadlines(sql)) ?? null;
+  }
+
+  /** Everything that is due, an owed save's retry among them: the alarm's
+   *  next deadline, or `null` when nothing is. */
+  private nextDue(sql: SqlStorage): number | null {
+    return earliest(this.dueBesidesArchive(sql), this.archiveRung(sql)) ?? null;
   }
 
   /** One module call pinned to P-2's reading, answered as plain data with
@@ -1448,6 +1907,51 @@ interface Committed {
   /** A save is owed after the batch, and the switch reads `r2`: the request
    *  uploads it after its reply. */
   archiving: boolean;
+  /** The marker the batch wrote, the layer having deleted the table. */
+  marker: Marker | undefined;
+}
+
+/** How a delete through the layer is made (`Table.deleting`). */
+interface Deleting {
+  /** Where its save's plan is made, as the outcome's line names it. */
+  site: Site;
+  /** How the table ends, should the layer delete it. */
+  reason: Reason;
+  /** Whom the reading that decides `kept` is taken as: the table's creator. */
+  viewer: (mod: Exports) => string | undefined;
+  /** The delete's own call — the caller's DELETE, or `expire(id)` — made
+   *  twice when it defers a put. */
+  f: (mod: Exports) => Reply;
+  /** That call's name, in a trap's line. */
+  call: string;
+  /** An expiry's failures before this one, on the outcome's line. */
+  attempt?: number;
+}
+
+/** What a delete through the layer did (`Table.deleting`). */
+interface Deleted {
+  /** The last dispatch: the first, or the second when a put was deferred. */
+  called: Called;
+  /** The `events` call `kept` was decided by, pinned to the delete's one P-2
+   *  reading — a plan it deferred is owed as the wake's would be — or `null`
+   *  when there was no viewer to make it as. */
+  reading: Pinned | null;
+  /** A deferred put's outcome, and its plan. */
+  outcome: Outcome | undefined;
+  plan: Plan | undefined;
+  /** What the marker records, should the layer have deleted the table. */
+  ending: Ending;
+}
+
+/** What an expiry answered (`Table.expire`): the layer's answer, or the
+ *  shell's before it — and, when the delete was dispatched, its batch and its
+ *  save's outcome. */
+interface Expired {
+  status: number;
+  body: string;
+  done?: Committed;
+  outcome?: Outcome;
+  plan?: Plan;
 }
 
 /** What a batch does to `archive_owed` (spec §2.6): a plan owed, with when
@@ -1474,12 +1978,41 @@ function archiveOwedOf(sql: SqlStorage): ArchiveOwed | undefined {
   return text === undefined ? undefined : (JSON.parse(text) as ArchiveOwed);
 }
 
-/** What is still due once an owed save is discharged — a slot still waiting,
- *  or a copy still owed, each at its rung from now — as the alarm's next
- *  deadline, or `null` when nothing is (spec §2.4: "the success that
- *  discharges it re-arms it to the next deadline"). */
-function dueBesidesArchive(sql: SqlStorage): number | null {
-  const slot = slotState(sql).slot;
-  const waiting = slot === undefined ? null : Date.now() + nextRetry(Math.max(slot.attempt - 1, 0));
-  return earliest(waiting, copyRetryDue(copyOwedOf(sql)) ?? undefined) ?? null;
+/** `meta.marker` — the shell's own JSON — or `undefined` when none stands. */
+function markerOf(sql: SqlStorage): Marker | undefined {
+  const text = getMeta(sql, "marker");
+  return text === undefined ? undefined : (JSON.parse(text) as Marker);
+}
+
+/** `meta.expiry_failed`: the table's expiries in a row that did not end it —
+ *  0 when none has failed. */
+function expiryFailedOf(sql: SqlStorage): number {
+  return Number(getMeta(sql, "expiry_failed") ?? "0");
+}
+
+/** Whether two load traps in a row have poisoned the table (spec §2.4). */
+function poisoned(sql: SqlStorage): boolean {
+  return Number(getMeta(sql, "load_traps") ?? "0") >= 2;
+}
+
+/**
+ * The creator of the table `mod` holds under `id` — whom an expiry reads the
+ * table as (`deleting`) — off its HOUSE COPY: the table document with its seed
+ * zeroed (spec §2.5's scrub), so it may be parsed, where the table document
+ * itself never is (the plan's strings rule; the orchestrator's ruling I-64).
+ * `undefined` when no table is stored, or the module refuses the copy, as it
+ * refuses a stored document that does not parse or that `check_shape`
+ * rejects. A trap is the caller's: it runs under their `guarded`.
+ */
+function creatorIn(mod: Exports, id: string): string | undefined {
+  let copy: string | undefined;
+  try {
+    copy = mod.house_copy(id);
+  } catch (e) {
+    if (typeof e === "string") return undefined;
+    throw e;
+  }
+  if (copy === undefined) return undefined;
+  const createdBy = (JSON.parse(copy) as { created_by?: unknown }).created_by;
+  return typeof createdBy === "string" ? createdBy : undefined;
 }

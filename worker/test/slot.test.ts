@@ -11,7 +11,24 @@ import { cmpGen, HOUSE_NAME, type Generation, type Slot } from "../src/slot";
 import { Table as TableClass } from "../src/table";
 import type { Table } from "../src/table";
 import { failPushes, holdApply, type Hold } from "./gates";
-import { BLUE, CREATE_BODY, RED, call, logsDuring, seedPlaying, settle, sqlOf, tableStub, watchBatches } from "./helpers";
+import {
+  BLUE,
+  CREATE_BODY,
+  DAY_MS,
+  RED,
+  call,
+  endMarker,
+  expiryOf,
+  logsDuring,
+  markerOf,
+  noTtl,
+  operate,
+  seedPlaying,
+  settle,
+  sqlOf,
+  tableStub,
+  watchBatches,
+} from "./helpers";
 import { walk } from "./walk";
 
 // **The durable slot and the house over scrubbed copies** (spec §2.5,
@@ -339,7 +356,8 @@ describe("the durable slot (spec §2.5)", () => {
   // while the removal still waits. THE DISCRIMINATING ASSERTION is the slot
   // in between: the mutant — the slot cleared on ANY ack — empties it there.
   // The end state is the same either way, because the held removal completes
-  // on release.
+  // on release: the removal acknowledged, and the delete's marker standing
+  // (spec §2.4 step 6; the object ends only after the marker's 90 days).
   it("a stale ack of r+2 leaves a REMOVAL waiting in the slot (battery 22)", async () => {
     const id = "slot-c2";
     const stub = tableStub(id);
@@ -370,15 +388,20 @@ describe("the durable slot (spec §2.5)", () => {
     }
     expect(await copyRow(id), "the house dropped the row").toBeUndefined();
     expect((await retiredOf(id)).length, "and retired the generation").toBe(1);
-    expect(await sqlOf(stub, "SELECT count(*) AS n FROM sqlite_master"), "the object ended after the ack").toEqual([{ n: 0 }]);
+    expect(await sqlOf(stub, "SELECT k FROM meta WHERE k IN ('marker', 'slot') ORDER BY k"), "the removal acknowledged; the marker stands").toEqual([
+      { k: "marker" },
+    ]);
   });
 
   // The orchestrator's ruling on Task 12's question (re-review m-g): a late
   // acknowledgement's batch is written only while the object holds its SQL
   // tables. A straggler — the create's push, held — is let through after the
-  // removal's acknowledgement ended the object: the house ignores it (its
-  // generation is retired) and acknowledges it, and the table must recreate
-  // nothing. `sqlite_master` is empty before the straggler and after it.
+  // object has ended: an operator's force, which answers only once the house
+  // has acknowledged its removal and `deleteAll()` has run (spec §2.9; a
+  // creator's delete would leave its marker for 90 days). The house ignores
+  // the straggler (its generation is retired) and acknowledges it, and the
+  // table must recreate nothing. `sqlite_master` is empty before the
+  // straggler and after it.
   // Mutant: the guard dropped — the straggler's `acked` recreates `meta`.
   // Battery 22's cell is the other half: there the tables are present, and a
   // stale acknowledgement leaves the REMOVAL in place.
@@ -391,8 +414,8 @@ describe("the durable slot (spec §2.5)", () => {
     try {
       expect((await create(id)).status).toBe(201);
       await until(async () => held.reached(id, r), "the create's push reaches its gate");
-      expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status).toBe(204);
-      await until(async () => (await tables()) === 0, "the removal, not held, ends the object");
+      expect((await operate(stub, id, "boss@t.test", true)).status, "the force, its removal not held, ends the object").toBe(204);
+      expect(await tables(), "premise: the object has ended").toBe(0);
       held.release(id, r);
       await settle(stub);
       expect(held.settled(id, r), "premise: the straggler ran through the house").toBe(true);
@@ -480,13 +503,16 @@ describe("the durable slot (spec §2.5)", () => {
   // The request's push fails, and then the ALARM's push fails too: the alarm
   // that ran is spent, so only the failure's own re-arm — at the backoff's
   // second rung, 2 min — leaves one to run. The pushes fail on the table's
-  // side (`failPushes`), so the run prints nothing. Mutants: a failure that
-  // re-arms nothing (no alarm is left after the alarm's failed push); a
-  // failure not counted in the slot, or a ladder off by a rung (the retry at
-  // 30 s); an alarm that does not deliver.
+  // side (`failPushes`), so the run prints nothing. It runs with no TTL
+  // (`noTtl`): under one, every alarm run ends by re-arming to everything
+  // still due, this retry among them, which would stand in for the failure's
+  // own re-arm. Mutants: a failure that re-arms nothing (no alarm is left
+  // after the alarm's failed push); a failure not counted in the slot, or a
+  // ladder off by a rung (the retry at 30 s); an alarm that does not deliver.
   it("a failed push is retried by the alarm, on the backoff", async () => {
     const id = "slot-e";
     const stub = tableStub(id);
+    const ttl = noTtl();
     const failure = (attempt: number, retry: number) => ({
       event: "slot-failed",
       id,
@@ -497,26 +523,30 @@ describe("the durable slot (spec §2.5)", () => {
       error: "Error: the house is unreachable (failPushes)",
     });
     const pushed = (attempt: number) => ({ event: "slot-pushed", id, generation: expect.any(Object), revision: 1, removal: false, attempt });
-    const failing = await failPushes(stub, 2);
     try {
-      const { lines } = await logsDuring(async () => {
-        expect((await create(id)).status).toBe(201);
-        await settle(stub);
-      });
-      expect(lines, "premise: the request's push failed").toEqual([pushed(0), failure(0, 30_000)]);
-      expect(await copyRow(id), "premise: the house holds no copy").toBeUndefined();
-      expect((await metaOf(stub)).slot?.attempt, "the failure is counted").toBe(1);
-      const before = Date.now();
-      const { result, lines: again } = await logsDuring(() => runDurableObjectAlarm(stub));
-      expect([result, again], "premise: the alarm's push failed too").toEqual([true, [pushed(1), failure(1, 120_000)]]);
-      expect(await alarmOf(stub), "the failure re-armed the alarm at the second rung").toBeGreaterThanOrEqual(before + 120_000);
+      const failing = await failPushes(stub, 2);
+      try {
+        const { lines } = await logsDuring(async () => {
+          expect((await create(id)).status).toBe(201);
+          await settle(stub);
+        });
+        expect(lines, "premise: the request's push failed").toEqual([pushed(0), failure(0, 30_000)]);
+        expect(await copyRow(id), "premise: the house holds no copy").toBeUndefined();
+        expect((await metaOf(stub)).slot?.attempt, "the failure is counted").toBe(1);
+        const before = Date.now();
+        const { result, lines: again } = await logsDuring(() => runDurableObjectAlarm(stub));
+        expect([result, again], "premise: the alarm's push failed too").toEqual([true, [pushed(1), failure(1, 120_000)]]);
+        expect(await alarmOf(stub), "the failure re-armed the alarm at the second rung").toBeGreaterThanOrEqual(before + 120_000);
+      } finally {
+        await failing.restore();
+      }
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      expect((await listed(STRANGER, "scope=open", [id])).map((r) => r.id)).toEqual([id]);
+      expect((await metaOf(stub)).slot).toBeUndefined();
+      expect(await alarmOf(stub), "with no TTL, the acknowledgement deleted the alarm").toBeNull();
     } finally {
-      await failing.restore();
+      ttl.restore();
     }
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect((await listed(STRANGER, "scope=open", [id])).map((r) => r.id)).toEqual([id]);
-    expect((await metaOf(stub)).slot).toBeUndefined();
-    expect(await alarmOf(stub), "the acknowledgement deleted the alarm").toBeNull();
   });
 
   // `deliverSlot` pushes one slot once at a time: a second call while that
@@ -553,14 +583,19 @@ describe("the durable slot (spec §2.5)", () => {
   // (vacuous); the SECOND patched the instance, which makes the RPC THROW
   // rather than hang (vacuous again — measured true/true by the plan's
   // review). Here the push hangs on a PROTOTYPE gate, neither failing nor
-  // succeeding, and `abortAllDurableObjects()` does not drain it. Mutant: the
-  // alarm armed only after a failure — no alarm exists, and the run is FALSE.
+  // succeeding, and `abortAllDurableObjects()` does not drain it. The alarm
+  // the earlier acknowledgements left — the table's expiry, 90 days out, which
+  // the pool would run on demand all the same — is cleared first, so the only
+  // alarm left is one the finalizing keep's batch set. Mutant: the alarm armed
+  // only after a failure — no alarm exists, and the run is FALSE.
   it("the alarm is set IN the batch: an abort mid-push is finished by the alarm", async () => {
     const id = "slot-f";
     const before = tableStub(id);
     expect((await create(id, TWO_HUMANS)).status).toBe(201);
     expect((await call(before, RED, "POST", `/api/games/${id}/keep`, '{"seat":0,"card":1}')).status).toBe(200);
     await settle(before);
+    await runInDurableObject(before, (_t, state) => state.storage.deleteAlarm());
+    expect(await alarmOf(before), "premise: no alarm but the keep's batch can arm one").toBeNull();
     const n = (await metaOf(before)).revision;
     const held = holdApply();
     try {
@@ -580,10 +615,11 @@ describe("the durable slot (spec §2.5)", () => {
   });
 
   // Spec §2.4: "a write that makes nothing due … leaves the alarm where it
-  // is". After the first delivery the acknowledgement deleted the alarm, so
-  // one is set BY HAND to give it a value to keep — a null could not tell
-  // "left alone" from "deleted". Mutants: a slot written on every request; the
-  // alarm set, or deleted, by every write.
+  // is". The alarm is set BY HAND to a value of the cell's own — not the
+  // expiry deadline the last acknowledgement armed, which a write that
+  // re-armed to the new last activity would move only by milliseconds — so a
+  // write that touched it is seen. Mutants: a slot written on every request;
+  // the alarm set, or deleted, by every write.
   it("a move that leaves the copy alone writes no slot and leaves the alarm where it was", async () => {
     const id = "slot-g";
     const stub = tableStub(id);
@@ -608,12 +644,14 @@ describe("the durable slot (spec §2.5)", () => {
   });
 
   // Battery 36 (spec §2.4): a new table's first copy can never overwrite a
-  // removal the house has not received. The clock TICKS for this cell, so the
-  // re-created generation orders after the retired one (plan review m7).
-  // Mutants: no 409 (the create lands and its copy would race the removal);
-  // the object never ended after the ack (the re-create meets the layer's
-  // "already exists", or finds the old slot).
-  it("a create while a removal is unacknowledged is 409; after the ack the object is gone and the id is free", async () => {
+  // removal the house has not received. After the house's acknowledgement the
+  // delete's marker still stands, and a create is still 409; once its 90 days
+  // are over the object ends, and the id is free. The clock TICKS for this
+  // cell, so the re-created generation orders after the retired one (plan
+  // review m7). Mutants: no 409 (the create lands and its copy would race the
+  // removal); the object never ended after the marker (the re-create meets
+  // the layer's "already exists", or finds the old slot).
+  it("a create while a removal is unacknowledged is 409; once the marker has ended the object is gone and the id is free", async () => {
     const id = "slot-h";
     const stub = tableStub(id);
     const tick = tickFrom(1_790_000_000);
@@ -634,7 +672,10 @@ describe("the durable slot (spec §2.5)", () => {
       } finally {
         held.restore();
       }
-      expect(await sqlOf(stub, "SELECT count(*) AS n FROM sqlite_master"), "the object is gone").toEqual([{ n: 0 }]);
+      expect((await metaOf(stub)).slot, "premise: the house acknowledged the removal").toBeUndefined();
+      const marked = await create(id);
+      expect([marked.status, await marked.json()], "after the ack the marker stands, and a create is still 409").toEqual([409, USED_RECENTLY]);
+      await endMarker(stub);
       const recreated = await create(id);
       expect(recreated.status).toBe(201);
       const createdAt = (await recreated.json<{ created_at: number }>()).created_at;
@@ -674,6 +715,7 @@ describe("the durable slot (spec §2.5)", () => {
       expect(await copyRow(id)).toBeUndefined();
       expect(await listed(RED, "scope=mine", [id])).toEqual([]);
 
+      await endMarker(stub);
       expect((await create(id)).status).toBe(201);
       await settle(stub);
       const current = await copyRow(id);
@@ -693,12 +735,15 @@ describe("the durable slot (spec §2.5)", () => {
     }
   });
 
-  // Spec §2.4: a delete's 204 writes ONE batch — the docs rows and the picker
-  // row removed, the slot a REMOVAL at `revision + 1`, with its alarm. The
-  // removal's push is held so no acknowledgement's batch runs inside the
-  // watch. Mutants: the removal in a batch of its own; the picker row left;
-  // no alarm for the removal; an alarm left behind the ended object.
-  it("a delete removes every docs row, the picker's too, and writes its REMOVAL in the same one batch", async () => {
+  // Spec §2.4 step 2: a delete's 204 writes ONE batch — the docs rows and the
+  // picker row removed, the marker written, the slot a REMOVAL at
+  // `revision + 1`, with its alarm. The removal's push is held so no
+  // acknowledgement's batch runs inside the watch. Its acknowledgement then
+  // re-arms the alarm to the marker's end (step 6). Mutants: the removal, or
+  // the marker, in a batch of its own; the picker row left; no alarm for the
+  // removal; the acknowledgement's alarm deleted, or left at the removal's
+  // retry.
+  it("a delete removes every docs row, the picker's too, and writes its marker and its REMOVAL in the same one batch", async () => {
     const id = "slot-n";
     const stub = await seedPlaying(id);
     expect((await call(stub, RED, "POST", `/api/games/${id}/input`, '{"line":"1"}')).status).toBe(200);
@@ -715,16 +760,16 @@ describe("the durable slot (spec §2.5)", () => {
       expect(await kinds()).toEqual([]);
       const slot = (await metaOf(stub)).slot;
       expect([slot?.revision, slot?.copy, slot?.attempt]).toEqual([n + 1, null, 0]);
+      expect(await markerOf(stub), "the marker, in that batch").toMatchObject({ reason: "abandoned", kept: "archive" });
       expect(await alarmOf(stub)).toBeGreaterThanOrEqual(deletedAt + 30_000);
       held.release(id, n + 1);
       await settle(stub);
     } finally {
       held.restore();
     }
-    expect(await sqlOf(stub, "SELECT count(*) AS n FROM sqlite_master")).toEqual([{ n: 0 }]);
-    // `deleteAll()` deletes the alarm too at this compatibility date
-    // (2026-09-15; the flag's date is 2026-02-24): the removal's alarm is gone.
-    expect(await alarmOf(stub), "no alarm outlives the object").toBeNull();
+    const marker = (await markerOf(stub))!;
+    expect((await metaOf(stub)).slot, "premise: the removal acknowledged").toBeUndefined();
+    expect(await alarmOf(stub), "the acknowledgement re-armed the alarm to the marker's end").toBe((marker.at as number) + 90 * DAY_MS);
   });
 
   // Task 5's escalation 1, RULED: a copy `house_copy` refuses is logged —
@@ -741,6 +786,8 @@ describe("the durable slot (spec §2.5)", () => {
     expect((await create(id)).status).toBe(201);
     await settle(stub);
     const before = await metaOf(stub);
+    const armed = await alarmOf(stub);
+    expect(armed, "premise: the create's acknowledgement armed the table's expiry").toBe(await expiryOf(stub));
     const sentence = `"${id}"'s table document is malformed, so the house would not list it: a keep of 3`;
     const original = Instance.prototype.get;
     Instance.prototype.get = function (this: Instance) {
@@ -761,7 +808,7 @@ describe("the durable slot (spec §2.5)", () => {
     }
     const after = await metaOf(stub);
     expect([after.slot, after.revision], "no slot").toEqual([undefined, before.revision]);
-    expect(await alarmOf(stub), "and no alarm: a refusal would repeat").toBeNull();
+    expect(await alarmOf(stub), "and no retry armed — a refusal would repeat: the alarm is where it was").toBe(armed);
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "the last copy the house received").toEqual(["open"]);
     expect((await call(stub, RED, "POST", `/api/games/${id}/keep`, '{"seat":0,"card":1}')).status).toBe(200);
     await settle(stub);
@@ -806,8 +853,10 @@ describe("the durable slot (spec §2.5)", () => {
       return got;
     };
     const joinedAt = Date.now();
+    let joinedBy = joinedAt;
     try {
       const { result, lines } = await logsDuring(() => call(stub, BLUE, "POST", `/api/games/${id}/join`, '{"seat":1}'));
+      joinedBy = Date.now();
       expect(result.status, "the reply stands").toBe(200);
       expect(lines).toEqual([{ event: "trap", id, call: "house_copy", error: "RuntimeError: unreachable" }]);
     } finally {
@@ -816,7 +865,11 @@ describe("the durable slot (spec §2.5)", () => {
     expect(await tableText(stub), "the documents committed").toMatch(/"status":\s*"dealing"/);
     const after = await metaOf(stub);
     expect([after.slot, after.revision], "the slot is left as it was").toEqual([undefined, before.revision]);
-    expect(await alarmOf(stub), "the alarm waits to recompute it").toBeGreaterThanOrEqual(joinedAt + 30_000);
+    // A window, not a floor: the table's expiry, 90 days out, satisfies any
+    // floor, and it is where the alarm would stand had the trap armed nothing.
+    const recompute = await alarmOf(stub);
+    expect(recompute, "the alarm waits to recompute it").toBeGreaterThanOrEqual(joinedAt + 30_000);
+    expect(recompute, "at the first rung").toBeLessThanOrEqual(joinedBy + 30_000);
     await until(async () => messages.length >= 2, "the join's frame");
     expect(JSON.parse(messages[1]!).event, "the socket heard the join, and is not ended").toBe("signal");
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "premise: the house still lists the old copy").toEqual(["open"]);
@@ -825,7 +878,7 @@ describe("the durable slot (spec §2.5)", () => {
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status)).toEqual(["dealing"]);
     const delivered = await metaOf(stub);
     expect([delivered.slot, delivered.acked?.revision]).toEqual([undefined, before.revision + 1]);
-    expect(await alarmOf(stub)).toBeNull();
+    expect(await alarmOf(stub), "the acknowledgement re-armed the alarm to the table's expiry").toBe(await expiryOf(stub));
     ws.close(1000, "done");
   });
 
@@ -836,45 +889,54 @@ describe("the durable slot (spec §2.5)", () => {
   // has — and every request computes the copy while it is owed, whether or
   // not it changes the table document. Three traps in a row — the join's,
   // then two alarms' — climb the ladder, and a plain GET, which changes
-  // nothing, delivers the copy. Mutants: a trap in the alarm's retry that
-  // arms nothing; the ladder not climbed; a request that computes the copy
-  // only when the document changes (the table stays listed as open for good).
+  // nothing, delivers the copy. It runs with no TTL (`noTtl`): under one, an
+  // acknowledgement leaves the table's expiry armed, which a floor on the
+  // alarm cannot tell from a rung, and every alarm run ends by re-arming to
+  // everything still due, the copy's rung among them. Mutants: a trap in the
+  // alarm's retry that arms nothing; the ladder not climbed; a request that
+  // computes the copy only when the document changes (the table stays listed
+  // as open for good).
   it("a copy that keeps trapping is retried on the backoff, and the next request delivers it", async () => {
     const id = "slot-r";
     const stub = tableStub(id);
-    expect((await create(id)).status).toBe(201);
-    await settle(stub);
-    const trapLine = { event: "trap", id, call: "house_copy", error: "RuntimeError: unreachable" };
-    const traps = trapCopies(3);
+    const ttl = noTtl();
     try {
-      const t0 = Date.now();
-      const joined = await logsDuring(() => call(stub, BLUE, "POST", `/api/games/${id}/join`, '{"seat":1}'));
-      expect([joined.result.status, joined.lines]).toEqual([200, [trapLine]]);
-      expect(await copyOwed(stub)).toEqual(["1"]);
-      expect(await alarmOf(stub), "the first rung, 30 s").toBeGreaterThanOrEqual(t0 + 30_000);
-      for (const [owed, rung] of [
-        ["2", 120_000],
-        ["3", 600_000],
-      ] as const) {
-        const t = Date.now();
-        const ran = await logsDuring(() => runDurableObjectAlarm(stub));
-        expect([ran.result, ran.lines], `the alarm's retry traps again (${owed})`).toEqual([true, [trapLine]]);
-        expect(await copyOwed(stub)).toEqual([owed]);
-        expect(await alarmOf(stub), `the rung after ${owed} traps`).toBeGreaterThanOrEqual(t + rung);
+      expect((await create(id)).status).toBe(201);
+      await settle(stub);
+      const trapLine = { event: "trap", id, call: "house_copy", error: "RuntimeError: unreachable" };
+      const traps = trapCopies(3);
+      try {
+        const t0 = Date.now();
+        const joined = await logsDuring(() => call(stub, BLUE, "POST", `/api/games/${id}/join`, '{"seat":1}'));
+        expect([joined.result.status, joined.lines]).toEqual([200, [trapLine]]);
+        expect(await copyOwed(stub)).toEqual(["1"]);
+        expect(await alarmOf(stub), "the first rung, 30 s").toBeGreaterThanOrEqual(t0 + 30_000);
+        for (const [owed, rung] of [
+          ["2", 120_000],
+          ["3", 600_000],
+        ] as const) {
+          const t = Date.now();
+          const ran = await logsDuring(() => runDurableObjectAlarm(stub));
+          expect([ran.result, ran.lines], `the alarm's retry traps again (${owed})`).toEqual([true, [trapLine]]);
+          expect(await copyOwed(stub)).toEqual([owed]);
+          expect(await alarmOf(stub), `the rung after ${owed} traps`).toBeGreaterThanOrEqual(t + rung);
+        }
+      } finally {
+        traps.restore();
       }
+      expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "premise: the house still lists the create's copy").toEqual([
+        "open",
+      ]);
+      const table = await tableText(stub);
+      expect((await call(stub, RED, "GET", `/api/games/${id}/table`)).status).toBe(200);
+      await settle(stub);
+      expect(await tableText(stub), "premise: the GET changed no document").toBe(table);
+      expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "the GET delivered the owed copy").toEqual(["dealing"]);
+      expect(await copyOwed(stub), "and nothing is owed").toEqual([]);
+      expect(await alarmOf(stub), "with no TTL, the acknowledgement deleted the alarm").toBeNull();
     } finally {
-      traps.restore();
+      ttl.restore();
     }
-    expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "premise: the house still lists the create's copy").toEqual([
-      "open",
-    ]);
-    const table = await tableText(stub);
-    expect((await call(stub, RED, "GET", `/api/games/${id}/table`)).status).toBe(200);
-    await settle(stub);
-    expect(await tableText(stub), "premise: the GET changed no document").toBe(table);
-    expect((await listed(RED, "scope=mine", [id])).map((r) => r.status), "the GET delivered the owed copy").toEqual(["dealing"]);
-    expect(await copyOwed(stub), "and nothing is owed").toEqual([]);
-    expect(await alarmOf(stub), "the acknowledgement deleted the alarm").toBeNull();
   });
 
   // A throw that is not a trap while the copy's own module is built — a
@@ -924,6 +986,8 @@ describe("the durable slot (spec §2.5)", () => {
     const r = (await metaOf(stub)).revision + 1;
     const held = holdApply([[id, r]]);
     let traps: { restore(): void } | undefined;
+    let released = 0;
+    let settled = 0;
     try {
       expect((await create(id)).status).toBe(201);
       await until(async () => held.reached(id, r), "the create's push reaches its gate");
@@ -931,8 +995,10 @@ describe("the durable slot (spec §2.5)", () => {
       const { result, lines } = await logsDuring(() => call(stub, BLUE, "POST", `/api/games/${id}/join`, '{"seat":1}'));
       expect([result.status, lines.map((l) => (l as { event: string }).event)], "premise: the join's copy trapped").toEqual([200, ["trap"]]);
       expect((await metaOf(stub)).slot?.revision, "premise: the slot still holds the create's copy").toBe(r);
+      released = Date.now();
       held.release(id, r);
       await settle(stub);
+      settled = Date.now();
       const m = await metaOf(stub);
       expect([m.slot, m.acked?.revision], "premise: the create's acknowledgement cleared the slot").toEqual([undefined, r]);
     } finally {
@@ -940,7 +1006,11 @@ describe("the durable slot (spec §2.5)", () => {
       held.restore();
     }
     expect(await copyOwed(stub), "premise: the copy is owed").toEqual(["1"]);
-    expect(await alarmOf(stub), "the owed copy keeps its alarm").not.toBeNull();
+    // A window, not "not null": with a TTL the acknowledgement would re-arm
+    // to the table's expiry had it forgotten the copy.
+    const alarm = await alarmOf(stub);
+    expect(alarm, "the owed copy keeps its alarm, at its first rung").toBeGreaterThanOrEqual(released + 30_000);
+    expect(alarm).toBeLessThanOrEqual(settled + 30_000);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status)).toEqual(["dealing"]);
   });

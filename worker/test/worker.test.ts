@@ -536,8 +536,9 @@ describe("routing to the objects (spec §2.3)", () => {
     expect(plain.text).toBe(`{"mode":"cf-access","user":"${RED}"}`);
   });
 
-  // Task 14 fills the operator surface; until then its paths are the house's,
-  // which answers the layer's 404 — spec §2.9's answer with no operator set.
+  // Spec §2.9's off-path: the pool sets no `YOKOHAMA_WEB_ADMINS`, so the
+  // operator's paths are unrouted `/api/*` — the house's, which answers the
+  // layer's 404. `test/operator.test.ts` is the surface with operators set.
   it("/api/admin paths are the house's: the layer's 404", async () => {
     const res = await reaching(async () => worker("/api/admin/tables", { token: await person(RED) }));
     expect([res.result.status, res.result.text]).toEqual([404, '{"error":"no such endpoint: /api/admin/tables"}']);

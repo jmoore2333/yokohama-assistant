@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Exports, Reply } from "../gen/factory.js";
+import { adminRoute, OPERATOR_HEADER, type OperatorRow } from "./admin";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
@@ -72,6 +73,11 @@ interface Incoming {
  *   `bump_house_chat`, sends every lobby socket ONE frame,
  *   `frame("house", house_frame(seq, chat))` — `chat` being the house chat's
  *   `last` — after its batch.
+ * - **The operator's listing** (spec §2.9), `GET /api/admin/tables` with
+ *   `X-Yokohama-Operator` — which only the Worker's gate sets — is answered
+ *   from the `copies` table alone (`listing`), before any module is built,
+ *   and logged with the operator's address. The listing is not the layer's:
+ *   it is an operator-only payload, outside the corpus.
  */
 export class House extends DurableObject<Env> {
   /** The Worker's variables, read once. */
@@ -94,6 +100,11 @@ export class House extends DurableObject<Env> {
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    const operator = req.headers.get(OPERATOR_HEADER);
+    if (operator !== null && adminRoute(req.method, url.pathname, url.search.slice(1)).kind === "listing") {
+      log("operator", { action: "list", address: operator });
+      return respond(200, JSON.stringify({ tables: this.listing() }));
+    }
     const stream = url.pathname === "/api/stream";
     if (stream && req.method !== "GET") return respond(405, "");
     if (stream && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
@@ -165,6 +176,47 @@ export class House extends DurableObject<Env> {
     this.seq += 1;
     this.mirror(slot);
     return ack;
+  }
+
+  /**
+   * **The operator's listing** (spec §2.9): every table the house holds a
+   * copy of — whatever its status, dealing included — by id, each with its
+   * name, status, players, `created_at`, `over`, `winner` and `archived_at`
+   * read off its copy, and its `last_active` and `bytes` as that table's slot
+   * carried them. So those two are as of the table's last DELIVERY (spec
+   * §2.5): activity that changes no copy — a chat post, a move within a turn —
+   * does not refresh them, and a table whose last copy the table object
+   * refused (`copy-refused`) is listed as that last copy reads. A copy
+   * carries no seed — the scrub zeroes it — so it may be parsed.
+   */
+  listing(): OperatorRow[] {
+    const sql = this.ctx.storage.sql;
+    if (!hasCopies(sql)) return [];
+    return sql
+      .exec<{ id: string; json: string; last_active: number; bytes: number }>("SELECT id, json, last_active, bytes FROM copies ORDER BY id")
+      .toArray()
+      .map(({ id, json, last_active, bytes }) => {
+        const copy = JSON.parse(json) as {
+          name?: string | null;
+          status: string;
+          players: number;
+          created_at: number;
+          turn?: { over?: boolean; winner?: number | null } | null;
+          archived_at?: number | null;
+        };
+        return {
+          id,
+          name: copy.name ?? null,
+          status: copy.status,
+          players: copy.players,
+          created_at: copy.created_at,
+          last_active,
+          bytes,
+          over: copy.turn?.over ?? false,
+          winner: copy.turn?.winner ?? null,
+          archived_at: copy.archived_at ?? null,
+        };
+      });
   }
 
   /** The request path: the wake, the call, the batch, the frames, the reply. */

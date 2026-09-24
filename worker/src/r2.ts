@@ -39,9 +39,11 @@ export type Stamp = { stamped: boolean; over: boolean };
 /** The two calls `executePlan` makes of R2's bucket binding. */
 export type Bucket = Pick<R2Bucket, "get" | "put">;
 
-/** Where a plan was made: the game-over site's owed save, the abandon's
- *  receipt loop, or a browser's save through its caller's archive object. */
-export type Site = "game-over" | "abandon" | "browser";
+/** Where a plan was made: the game-over site's owed save; the receipt loop
+ *  of a delete through the layer — a creator's abandon, an idle table's
+ *  expiry, an operator's expire; or a browser's save through its caller's
+ *  archive object. */
+export type Site = "game-over" | "abandon" | "expiry" | "operator" | "browser";
 
 /**
  * The shell's line for an upload's outcome (spec §2.8; the layer's own lines
