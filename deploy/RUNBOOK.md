@@ -2451,11 +2451,14 @@ expires in 2031 (spec §0.5).
     the object was evicted — hibernation, a deploy, a restart — and woke. With the switch off, no
     line.
   - **`picker-dropped`** `{id, stored, running}`: a new module found the table's `picker` row built
-    under code other than its own — `stored` is the row's code, `null` for a row an earlier build
-    wrote, and `running` this build's, a digest of the CLI's and the layer's sources — and cleared
-    it without re-feeding a line (the orchestrator's ruling I-85): under other code a line may mean
-    something else. A picker open across a deploy that changed that code starts over, and the
-    player's next click is a 409.
+    under code other than its own — `stored` is the row's code, `null` for a row written before
+    rows carried one (every row the fourteenth to the eighteenth deployments wrote), and `running`
+    this build's, a digest of the CLI's and the layer's sources — and cleared it without re-feeding
+    a line (the orchestrator's rulings I-85 and I-89): under other code a line may mean something
+    else, and no code vouches for an unstamped row. A picker open across a deploy that changed that
+    code starts over, and the player's next click is a 409. So after the first deployment past the
+    eighteenth, every picker open at it is dropped at its table's next request, logged with
+    `stored: null`.
   - **`restore-refused`** `{id, status, body}`: the wake's `restore_picker` met the layer's own
     refusal — a stored record that does not parse, or does not replay — and the request went on to
     its own dispatch, whose answer stands. The picker row is kept.
@@ -2555,6 +2558,23 @@ expires in 2031 (spec §0.5).
   before a class was added cannot be restored (Cloudflare, *Rollbacks — Bindings*). Nor can a
   version bound to an R2 bucket that no longer exists (the same section), and every version from
   the sixteenth deployment on binds `yokohama-archive`.
+- **A rollback to the eighteenth deployment or earlier is a GENERATION-ORDER rollback** (the
+  orchestrator's ruling I-89), the shape of §5's schema-rollback bullets. From the deployment after
+  the eighteenth on, a table draws its generation's time from the shell's clock in MILLISECONDS
+  (the orchestrator's F-2), where the eighteenth and earlier draw the module's reading in SECONDS.
+  A seconds generation orders BEFORE every milliseconds one, and the house applies a table's first
+  copy only when its generation orders after every generation it has retired for that id. So a
+  table forced under the newer code — or deleted, its marker's 90 days over — and created again
+  under the rolled-back code has its every copy ignored (`slot-ignored`, `current: null`): the
+  lobby does not list it until the retired generation is pruned — which the house does only inside
+  a copy it APPLIES, for any table, once that generation is 90 days retired — and the table itself
+  plays by its link. Ids never used, and tables the house still lists, are unaffected: a table
+  keeps the generation it first drew. Rolling forward again needs nothing, since every
+  milliseconds generation orders after every seconds one.
+- **The same rollback drops every open picker the newer code stored.** Its rows carry a `code`
+  key, which the older module's strict read of the row does not know, so it reads the row as no
+  list and clears it, re-feeding nothing: the player's next click is a 409. Nothing is applied
+  and nothing else is lost.
 
 ### 6.7 The live tiers and the quota guard
 

@@ -650,35 +650,46 @@ describe("the table object (spec §2.4)", () => {
     expect(await wakes(), "the switch off: a wake is not counted").toEqual(["2"]);
   });
 
-  // The orchestrator's ruling I-85, the shell's half: a picker row the module
-  // clears for its CODE — built under code other than this build's, as at a
-  // deploy that changes the CLI or the layer — is logged `picker-dropped
-  // {id, stored, running}` at the wake and deleted in the request's batch, and
-  // the player's next click is `Input::expect`'s 409 with nothing applied. The
-  // running code is the one the module stamps on every row it writes.
-  // Mutants: no line; the row kept; the line's two codes swapped.
-  it("a picker row built under other code is dropped at the wake: logged, deleted, and nothing re-fed", async () => {
-    const stub = await seedPlaying("picker-code");
+  // The orchestrator's rulings I-85 and I-89, the shell's half: a picker row
+  // the module clears for its CODE — built under code other than this
+  // build's, as at a deploy that changes the CLI or the layer; or UNSTAMPED,
+  // as every row the fourteenth to the eighteenth deployments wrote, for
+  // which no code vouches — is logged `picker-dropped {id, stored, running}`
+  // at the wake (`stored: null` for the unstamped row) and deleted in the
+  // request's batch, and the player's next click is `Input::expect`'s 409 with
+  // nothing applied. The running code is the one the module stamps on every
+  // row it writes. Mutants: no line; the row kept; the line's two codes
+  // swapped; an unstamped row re-fed as if its code were this build's.
+  it.each([
+    ["another code", "0".repeat(64)],
+    ["no code, as deployments 14 to 18 wrote it", null],
+  ] as const)("a picker row with %s is dropped at the wake: logged, deleted, and nothing re-fed", async (what, stored) => {
+    const id = stored === null ? "picker-unstamped" : "picker-code";
+    const stub = await seedPlaying(id);
     const input = (line: string, expect?: string) =>
-      call(stub, RED, "POST", "/api/games/picker-code/input", JSON.stringify(expect === undefined ? { line } : { line, expect }));
+      call(stub, RED, "POST", `/api/games/${id}/input`, JSON.stringify(expect === undefined ? { line } : { line, expect }));
     const opened = await input("1");
     expect([opened.status, (await opened.json<Play>()).prompt.kind], "premise: `1` opens PlaceA").toEqual([200, "place_a"]);
     const [row] = await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'");
-    const running = (JSON.parse(String(row?.json)) as { code: string }).code;
+    const written = JSON.parse(String(row?.json)) as { code?: string; record: string; lines: unknown[] };
+    const running = written.code;
     expect(running, "premise: the module stamps its code on the row").toMatch(/^[0-9a-f]{64}$/);
-    const other = "0".repeat(64);
+    // The row as another build would have left it: its code replaced, or no
+    // `code` key at all.
+    const { code: _stamped, ...unstamped } = written;
+    const planted = JSON.stringify(stored === null ? unstamped : { ...written, code: stored });
     await runInDurableObject(stub, (_o, state) => {
-      state.storage.transactionSync(() => upsertDoc(state.storage.sql, "picker", String(row?.json).replace(running, other), Date.now()));
+      state.storage.transactionSync(() => upsertDoc(state.storage.sql, "picker", planted, Date.now()));
     });
     await evictDurableObject(stub);
     const before = await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'");
     const { result, lines } = await logsDuring(() => input("A09", "place_a"));
-    expect(result.status, "the picker starts closed: the click is `Input::expect`'s 409").toBe(409);
-    expect(lines.filter((l) => (l as { event: string }).event === "picker-dropped")).toEqual([
-      { event: "picker-dropped", id: "picker-code", stored: other, running },
+    expect(result.status, `${what}: the picker starts closed, so the click is \`Input::expect\`'s 409`).toBe(409);
+    expect(lines.filter((l) => (l as { event: string }).event === "picker-dropped"), what).toEqual([
+      { event: "picker-dropped", id, stored, running },
     ]);
-    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'"), "the row is deleted").toEqual([]);
-    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'"), "nothing applied").toEqual(before);
+    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'"), `${what}: the row is deleted`).toEqual([]);
+    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'"), `${what}: nothing applied`).toEqual(before);
   });
 
   // The orchestrator's ruling (Task 4's wake contract): a restore the layer

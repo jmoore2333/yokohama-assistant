@@ -95,7 +95,9 @@ pub(crate) enum Picker {
 #[serde(deny_unknown_fields)]
 pub struct PickerList {
     /// The [`CODE`] the list was built under. Absent from a row an earlier
-    /// build wrote, before a row carried one.
+    /// build wrote, before a row carried one — every row the fourteenth to the
+    /// eighteenth deployments wrote — which a restore clears: no code vouches
+    /// for its meaning (the orchestrator's rulings I-85 and I-89).
     #[serde(default)]
     pub code: Option<String>,
     /// The SHA-256 of the bytes of the record the list was built at, in
@@ -717,9 +719,11 @@ mod tests {
     /// P1's: at the record the finalizing keep left — no event yet — its one
     /// line is `1`, which here APPLIES the opening move, standing in for a line
     /// recorded under code where `1` opened a picker. Stamped with another
-    /// code, or with none (a row an earlier build wrote), it is cleared: `"[]"`
-    /// for the shell to delete, nothing applied, nothing bumped, and `dropped`
-    /// naming both codes for the shell's `picker-dropped` line.
+    /// code, or with none (a row an earlier build wrote, as every row the
+    /// fourteenth to the eighteenth deployments did: the orchestrator's ruling
+    /// I-89), it is cleared: `"[]"` for the shell to delete, nothing applied,
+    /// nothing bumped, and `dropped` naming both codes — `stored: null` for
+    /// the unstamped row — for the shell's `picker-dropped` line.
     ///
     /// The anti-vacuity half stamps the same row with THIS code: it is
     /// re-fed, and its line, which changes the record, has made the move — the
