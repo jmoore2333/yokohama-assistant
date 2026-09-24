@@ -32,7 +32,7 @@
 //     than one the browser had let go of (spec §9.5, mutations 11 and 12). That
 //     count is what found the reopen ruling R-9.1 fixed.
 
-import { type Page, type WebSocket } from "@playwright/test";
+import { type Page } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
@@ -41,7 +41,11 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
-import { LIVE, abandonAsCreator, liveContextOptions, liveRequest } from "./live";
+import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
+// The readings every walk that SHARES a table makes — whose hand, whose move,
+// the table's chat, its stream, and the server's event count — live in
+// `shared_table.ts` since the exit's game needed them too (ruling I-88).
+import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo } from "./shared_table";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -68,14 +72,6 @@ test.afterEach(async () => {
   if (LIVE && table) await abandonAsCreator(table.page, table.id);
 });
 
-/** Whether `ws` is this table's stream: the Worker's transport is a socket
- *  (`ws`, M6.5c). MEASURED: a socket the page opens raises a `websocket` event
- *  and NO `request` event, so a count read off the request log alone would
- *  read ZERO live. Locally none fires — the transport is the stream's `fetch`
- *  — and the watcher's checkpoint `toBe(1)` pins that: a socket counted beside
- *  the stream's request would read 2. */
-const socketTo = (ws: WebSocket, path: string) => path !== "" && new URL(ws.url()).pathname === path;
-
 /** The walk's own cap on MOVES. Idle looks have their own, below: the two
  *  failures are different — a game that will not end, and a table where nobody
  *  is moving — and a single counter would report the second as the first. */
@@ -86,40 +82,6 @@ const WATCH_PASSWORD = "sesame";
 
 /** Who watches. Named at no seat, invited by nobody. */
 const WATCHER = "c@e2e.test";
-
-/**
- * The card ids in a page's OWN hand panel — the one place another seat's cards
- * could leak onto this screen.
- *
- * `aside.side` is the game screen's side column and `App` renders `Dashboard`
- * there with `only={["Players", "Hand"]}`, so the single `.card-strip` of order
- * cards under it is the viewer's hand. `data-card` is `OrderCardView`'s own
- * identifier attribute: the id is otherwise only prose in a caption and pixels
- * in a picture, neither of which compares across two browsers.
- */
-async function ownHand(page: Page): Promise<string[]> {
-  return page
-    .locator("aside.side .card-strip .card-face.order")
-    .evaluateAll((els) => els.map((e) => e.getAttribute("data-card") ?? ""));
-}
-
-/**
- * Whether this screen has a move on it — which is NOT the same as "not inert",
- * and the difference is a measured race.
- *
- * A screen that is playing back the other seat's turn is neither watching nor
- * locked, so `inert` is `null` there; it also has nothing to click, because the
- * walk has replaced the deck with its own strip. `readScreen` presses that
- * strip's skip control once before it reads, but the poll can START a walk in
- * the window between the two pages' reads — measured: the walk picked the page
- * that had begun walking, `act` found no affordance and reported a dead end on
- * a game that was fine. So the turn is chosen by what can actually be pressed.
- */
-function hasMove(s: Screen): boolean {
-  return (
-    s.inert === null && (s.options > 0 || s.tiles > 0 || s.counts > 0 || s.confirm || s.only)
-  );
-}
 
 test("two people at two browsers play to a winner and neither sees the other's hand", async ({
   browser,
@@ -273,25 +235,6 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // post bumps the table, the frame carries the new count, and the panel asks
   // for the delta. Nothing below reloads a page, which is what makes "arrives"
   // a claim about the transport rather than about a refresh.
-  const chatOf = (p: Page) => p.locator("aside.side section.chat");
-  const unfold = async (p: Page) => {
-    const fold = chatOf(p).getByRole("button", { name: "show" });
-    if (await fold.count()) await fold.click();
-    await expect(chatOf(p).getByRole("button", { name: "hide" })).toBeVisible();
-  };
-  const say = async (p: Page, text: string) => {
-    await unfold(p);
-    await chatOf(p).getByRole("textbox", { name: "Say something" }).fill(text);
-    await chatOf(p).getByRole("textbox", { name: "Say something" }).press("Enter");
-    await expect(chatOf(p).getByRole("listitem").filter({ hasText: text })).toBeVisible();
-  };
-  const reads = async (p: Page, text: string) => {
-    await unfold(p);
-    await expect(
-      chatOf(p).getByRole("listitem").filter({ hasText: text }),
-      `${text} arrives without a reload`,
-    ).toBeVisible({ timeout: 15_000 });
-  };
   await say(a, "hello from a");
   await reads(b, "hello from a");
   await say(b, "and b");
@@ -330,26 +273,6 @@ test("two people at two browsers play to a winner and neither sees the other's h
    *  own output line rather than only in an assertion message. */
   const streamReads: number[] = [];
 
-  /** How many events this table has applied, asked of the SERVER.
-   *
-   *  Deliberately not read off a screen: the expected row index has to come
-   *  from something other than the account being checked, or the check is the
-   *  account agreeing with itself. Issued from A's context — never from C's —
-   *  so the watcher's own request log stays a reading about the watcher.
-   *
-   *  **Through `liveRequest`**, which live withholds a thrown call's log: it
-   *  lists the context's Access cookie (`live.ts`). Locally it changes
-   *  nothing. */
-  const appliedEvents = async (): Promise<number> => {
-    const res = await liveRequest(() =>
-      a.request.get(`${BASE_URL}/api/games/${id}/events`, {
-        headers: { "x-yokohama-claimed-user": "a@e2e.test" },
-      }),
-    );
-    expect(res.ok(), `the event count is readable (${res.status()})`).toBeTruthy();
-    return ((await res.json()) as { events: number }).events;
-  };
-
   /**
    * What the watching browser must show once a move has landed.
    *
@@ -371,7 +294,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
     await acting.waitForFunction(() => !document.querySelector("[data-busy]"), null, {
       timeout: 15_000,
     });
-    const applied = await appliedEvents();
+    // Asked of the SERVER from A's context — never from C's (`shared_table.ts`).
+    const applied = await appliedEvents(a, id, "a@e2e.test");
     if (applied === lastApplied) return;
     lastApplied = applied;
     await expect(

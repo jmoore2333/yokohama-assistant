@@ -1,5 +1,6 @@
 // **The live tier: two specs against the deployed Worker** (M6.5c, spec §5.4;
-// R-6.5c.12; the orchestrator's ruling I-75).
+// R-6.5c.12; the orchestrator's ruling I-75) — and a third, the exit's headed
+// game, run only when asked for by name (ruling I-88; [`EXIT_SPEC`]).
 //
 //   cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link
 //
@@ -57,6 +58,21 @@ export const LOCAL_PORT = 8479;
 
 /** Whether this run targets the Worker. */
 export const LIVE = process.env.YOKOHAMA_WEB_E2E_TARGET === "live";
+
+/** The specs a live run plays (spec §5.4): the two multiplayer walks. ONE
+ *  list, read by `playwright.config.ts` for what a live run matches and by
+ *  `live.node.test.ts` for which specs the request rule below reaches — so a
+ *  spec added here is a spec that rule checks. */
+export const LIVE_SPECS = ["two_browsers.spec.ts", "joins_by_link.spec.ts"] as const;
+
+/** The exit's headed game (M6.5c Task 16; ruling I-88): a live spec as well,
+ *  but one that runs only when asked for by name — [`EXIT`] beside the live
+ *  target — and is kept out of every other run, `npm run e2e` and a plain live
+ *  run among them (`playwright.config.ts`). */
+export const EXIT_SPEC = "exit_game.spec.ts";
+
+/** Whether the exit's game was asked for: `YOKOHAMA_WEB_EXIT=1`. */
+export const EXIT = process.env.YOKOHAMA_WEB_EXIT === "1";
 
 /**
  * The origin a walk plays at: the Worker's live, the local binary's

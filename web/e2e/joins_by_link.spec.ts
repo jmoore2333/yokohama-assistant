@@ -32,8 +32,12 @@ import type { Page } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
-import type { Screen } from "./harness";
 import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
+// Whether a screen has a move on it — read from what can actually be pressed,
+// so a walk in flight reads as "not yet" rather than as a dead end. One
+// predicate for every walk that shares a table; its doc carries the
+// measurement (`shared_table.ts`).
+import { hasMove } from "./shared_table";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -63,19 +67,6 @@ const MOVES = 6;
  *  polled yet, or is playing the turn back — and a run of them is nobody
  *  moving. */
 const IDLE_LIMIT = 60;
-
-/**
- * Whether this screen has a move on it, which is NOT the same as "not inert".
- *
- * `two_browsers.spec.ts` carries the same predicate and its doc carries the
- * measurement: a screen playing back the other seat's turn is neither watching
- * nor locked, so `inert` is `null` there while there is nothing to click. Read
- * from what can actually be pressed, so a walk in flight reads as "not yet"
- * rather than as a dead end.
- */
-function hasMove(s: Screen): boolean {
-  return s.inert === null && (s.options > 0 || s.tiles > 0 || s.counts > 0 || s.confirm || s.only);
-}
 
 test("a person holding only a link joins a locked open table and plays", async ({ browser }) => {
   test.setTimeout(5 * 60 * 1000);

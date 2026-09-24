@@ -3018,6 +3018,14 @@ describe("a local game", () => {
 
   beforeEach(() => {
     resetLocalHostForTests();
+    // **And on the way IN, not only on the way out** (the whole-branch
+    // review's L-13): the `afterEach` below cleans up after THIS describe's
+    // cells, but a cell from another describe that rendered `App` has already
+    // left a fresh record behind — the corpus's health, `archive: "off"` — and
+    // under a shuffled order (seeds 22 and 44) the first cell here then read
+    // that answer from memory, never asked, and never drew "Send to the
+    // archive".
+    resetFactsForTest();
   });
   afterEach(() => {
     resetLocalHostForTests();

@@ -17,8 +17,9 @@
 //
 // **`browser.newContext()` does not get the fixture**, because the override
 // below replaces the `context` FIXTURE and a context a spec makes for itself is
-// not that one. TWO specs make their own — `joins_by_link` and `two_browsers`,
-// five sites between them — and [`newContextWithoutWorker`] is what they use.
+// not that one. Every spec that makes its own — the two multiplayer walks,
+// the exit's game and `plays_locally`'s fresh browser — uses
+// [`newContextWithoutWorker`].
 // `every_spec_declares_its_worker.spec.ts` checks that too: it names any spec
 // whose source contains `browser.newContext(`.
 

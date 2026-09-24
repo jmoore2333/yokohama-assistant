@@ -25,10 +25,10 @@
 // wrong: a context a spec builds with `browser.newContext()` never passes
 // through the fixture, since the fixture overrides `context` and that is a
 // different object. `e2e/sw.ts` exports `newContextWithoutWorker` for those,
-// and the two specs that make their own contexts — `joins_by_link` and
-// `two_browsers`, five sites between them — use it. An earlier draft of this
-// file said that fact was "held by reading"; it is held by the second
-// expectation below.
+// and every spec that makes its own contexts — the two multiplayer walks, the
+// exit's game and `plays_locally`'s fresh browser — uses it. An earlier draft
+// of this file said that fact was "held by reading"; it is held by the second
+// expectation below, which is why this sentence names no count.
 
 import { expect, test } from "@playwright/test";
 import { readFileSync, readdirSync } from "node:fs";

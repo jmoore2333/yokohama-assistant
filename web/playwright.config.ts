@@ -15,7 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIVE, LOCAL_PORT, baseUrlFor } from "./e2e/live";
+import { EXIT, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -155,15 +155,22 @@ export default defineConfig({
   // (M6.5c): `e2e/*.node.test.ts` runs under `npm run test:wasm`, and its name
   // matches Playwright's default `*.test.ts` glob — loaded here it calls
   // `vi.mock` with no vitest around it, and the whole run collects nothing.
+  //
+  // **The exit's headed game is opt-in the same way** (ruling I-88): ignored
+  // from every run unless `YOKOHAMA_WEB_EXIT=1`, and still checked as a file by
+  // the two structural specs. With the switch and no live target it is listed
+  // and skips itself, saying why.
   testIgnore: [
     "**/*.node.test.ts",
     ...(process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"]),
     ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
+    ...(EXIT ? [] : [`**/${EXIT_SPEC}`]),
   ],
-  // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks.
-  // Every other spec stays on the local binary, and these two keep their local
-  // run as well.
-  ...(LIVE ? { testMatch: ["**/two_browsers.spec.ts", "**/joins_by_link.spec.ts"] } : {}),
+  // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks —
+  // `LIVE_SPECS`, the one list — and the exit's game beside them when it is
+  // asked for. Every other spec stays on the local binary, and these keep
+  // their local run as well.
+  ...(LIVE ? { testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : [])].map((f) => `**/${f}`) } : {}),
   fullyParallel: false,
   // One at a time, live as locally — which also makes the live run present
   // the credential once per worker process: once per green run, since

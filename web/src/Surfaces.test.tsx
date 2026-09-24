@@ -5,7 +5,7 @@
 // retired as drawers in M5 W5a — they are boards, and they are drawn on the
 // table now. What those four cells asserted lives in `Strips.test.tsx`.
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Surface, SURFACES } from "./Surfaces";
@@ -347,22 +347,31 @@ describe("the replay track", () => {
     expect(onScrub).toHaveBeenLastCalledWith(other.index);
   });
 
-  it("offers a way back to the present only while you are away from it", async () => {
+  // **"Back to live" is offered only while you are away from the present — in
+  // three cells, one per case.** They were one cell that rendered the log three
+  // times, and a render of the log is the heavy part of every cell here: that
+  // one took over a second unloaded, and under three concurrent full suites it
+  // ran out of vitest's 5 s budget in all three (measured: 5,325–5,490 ms,
+  // "Test timed out in 5000ms" — the whole-branch review's L-11). Each case
+  // now pays for one render.
+  it("offers a way back to the present while you are away from it", async () => {
     stubApi(() => wire.log);
     const { user, onScrub } = showLog(2);
     await user.click(await screen.findByRole("button", { name: "Back to live" }));
     expect(onScrub).toHaveBeenCalledWith(null);
+  });
 
-    cleanup();
+  it("offers no way back while you are at the present", async () => {
     stubApi(() => wire.log);
     showLog(null);
     await screen.findByLabelText("Replay position");
     expect(screen.queryByRole("button", { name: "Back to live" })).not.toBeInTheDocument();
+  });
 
-    // …and not at the last stop either, which this component labels "now".
-    // Offering "Back to live" there asks the reader to return to where they
-    // already are.
-    cleanup();
+  // …and not at the last stop either, which this component labels "now".
+  // Offering "Back to live" there asks the reader to return to where they
+  // already are.
+  it("offers no way back at the last stop, which it labels now", async () => {
     stubApi(() => wire.log);
     showLog(wire.log.total);
     await screen.findByText("now");

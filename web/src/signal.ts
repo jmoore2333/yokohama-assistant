@@ -11,13 +11,14 @@
 //
 // **There is no interval any more** (R-3.2). A connected reader is a promise
 // waiting on a body, so a visible tab holds ONE open request per resource and
-// arms NOTHING; the server writes a frame when something moves. The timer that
-// is left serves only the two cases where there is no connection to wait on:
-// the ladder after a failure, and the held-request arm's re-ask. **The socket
-// arm (M6.5c) is one connection per resource too, and holds ONE timer while it
-// is connected — a keep-alive that asks nothing**: a `ping` every 30 s
-// (`ws.ts`), answered without waking the server's object, which keeps the edge
-// from cutting a quiet connection.
+// arms NOTHING; the server writes a frame when something moves. The timers
+// that are left serve only the cases where there is no connection to wait on:
+// the ladder after a failure, the held-request arm's re-ask, and — before this
+// page knows its transport — the bound on the health read an open waits for
+// (`transportWait`, ruling I-86). **The socket arm (M6.5c) is one connection
+// per resource too, and holds ONE timer while it is connected — a keep-alive
+// that asks nothing**: a `ping` every 30 s (`ws.ts`), answered without waking
+// the server's object, which keeps the edge from cutting a quiet connection.
 //
 // **The stream's reader is a `fetch`, not an `EventSource`** (spec §0.1) —
 // `sse.ts` says why in one line: `EventSource` cannot carry a header, and the
@@ -163,7 +164,15 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
  *  The server said this stream is over (`deleted`), the resource is gone (404)
  *  or it is not ours to read (403). None of the three changes by being asked
  *  again, while the screen goes on saying "reconnecting…" about something that
- *  is not coming back. */
+ *  is not coming back.
+ *
+ *  **The socket arm reads a refusal at ADMISSION as `gone` whatever its
+ *  status** (the whole-branch review's L-1): the Worker answers an upgrade it
+ *  refuses 403 or 404 with an `end` frame whose reason is always `gone`,
+ *  carrying the layer's own sentence (`worker/src/frames.ts`,
+ *  `endAtAdmission`) — so `refused` is the stream arm's and the probe's
+ *  reading of a 403, and a locked table reads `gone` over the socket. No
+ *  consumer branches on `reason` today; each draws `sentence`. */
 export interface End {
   reason: "deleted" | "gone" | "refused";
   sentence?: string;
@@ -366,11 +375,21 @@ export function usePolled<T>(
         // live tier's finding 1; ruling I-81): the facts' default is the
         // stream, and the Worker answers a stream's GET with 426.
         // `transportWait` says when this waits — only while this page has no
-        // health answer — and a read that FAILED rejects here, into the
-        // ladder below, rather than letting the default be guessed. A caller
-        // that has already failed once asks the read again itself.
+        // health answer, and never past the health read's bound (ruling
+        // I-86), after which the transport this page has is opened — and a
+        // read that FAILED rejects here, into the ladder below, rather than
+        // letting the default be guessed. A caller that has already failed
+        // once asks the read again itself.
         const pending = transportWait(failures.current > 0);
         if (pending !== null) {
+          // **Nothing is connected while the transport is being asked, so the
+          // word stops saying "live"** (spec §5.1; ruling I-86) — the resting
+          // word the effect set on mount, which a wait on a health read that
+          // never settles left on screen over no connection at all. A tab
+          // come back keeps "refreshing", the truer word about a board as old
+          // as the tab was hidden; either gives way to "live" at the
+          // connection, as every other word here does.
+          setLink((word) => (word === "live" ? "reconnecting" : word));
           await pending;
           if (stopped || mine.signal.aborted) return;
         }
