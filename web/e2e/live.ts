@@ -76,13 +76,16 @@ export const EXIT = process.env.YOKOHAMA_WEB_EXIT === "1";
 
 /**
  * The two Chromium switches the exit's run launches with (R3's R-N6; ruling
- * I-91), so that its headed windows, stacked over one another, stay VISIBLE:
- * a covered window that Chromium backgrounded would read `hidden` and let its
+ * I-91), meant to keep its headed windows VISIBLE when one covers another: a
+ * covered window that Chromium backgrounded would read `hidden` and let its
  * socket go (R-P8). Playwright 1.62.1 already passes both to every Chromium it
  * launches (its `chromiumSwitches`); `playwright.config.ts` names them for the
  * exit's run all the same, so its precondition does not rest on a default an
- * upgrade could drop. The spec checks the precondition itself
- * ([`mustBeVisible`]).
+ * upgrade could drop. **On macOS they are not enough**: on the exit's first
+ * headed run (deployment 19) the three windows stacked and the covered one
+ * read hidden at move 5 — which is why the spec also lays its windows out side
+ * by side ([`exitLayout`], [`placeWindow`]). The spec checks the precondition
+ * itself ([`mustBeVisible`]).
  */
 export const EXIT_LAUNCH_ARGS = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] as const;
 
@@ -357,5 +360,94 @@ export async function mustBeVisible(
           "product. Keep all three windows visible, none minimized and none on another Space, and run it again.",
       );
     }
+  }
+}
+
+// ---- the exit's windows, side by side (exit game run 1, deployment 19) ----
+//
+// MEASURED on the exit's first headed run: the three windows opened STACKED
+// over one another, and macOS's occlusion marked the covered ones hidden
+// whatever the two launch switches read — x's before the pause after move 5,
+// which the precondition above reported as it should. So the spec puts each
+// window in a column of its own, none covering another.
+
+/** A window's place on the screen, in the screen's logical pixels. */
+export interface WindowBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Where the exit's three windows go, and the viewport each context emulates
+ *  inside its window. */
+export interface ExitLayout {
+  screen: { width: number; height: number };
+  columns: [WindowBounds, WindowBounds, WindowBounds];
+  viewport: { width: number; height: number };
+}
+
+/** The screen the exit lays its windows out on when `EXIT_SCREEN` says
+ *  nothing: the orchestrator's Mac, "2560 x 1664 Retina", in logical pixels. */
+export const DEFAULT_EXIT_SCREEN = "1280x832";
+
+/** The smallest viewport a column may leave, either way: 320 is the narrowest
+ *  width the client is laid out for (its width gate reads 320 to 2560). */
+const MIN_VIEWPORT = 320;
+
+/**
+ * The exit's three windows on the screen `screen` names (`EXIT_SCREEN`,
+ * `<width>x<height>` in logical pixels; unset or empty is the default): three
+ * columns a third of the screen's width apart, each 6 px narrower than that
+ * and 12 px shorter than the screen, at its top. Each context's viewport is
+ * its column less 16 px across and 90 px down — room for the window's own
+ * frame and toolbar — because Playwright emulates a viewport whatever the
+ * window's size, so the two must agree or the page is clipped. At the default a column is
+ * 420 px wide, which is the client's narrow layout (`joins_by_link` reads it
+ * live at 390).
+ *
+ * A value that is not `<width>x<height>` is refused by NAME, as is a screen
+ * whose columns would leave a viewport under 320 by 320.
+ */
+export function exitLayout(screen: string | undefined): ExitLayout {
+  const raw = screen === undefined || screen === "" ? DEFAULT_EXIT_SCREEN : screen;
+  const read = /^([1-9][0-9]*)x([1-9][0-9]*)$/.exec(raw);
+  if (read === null) {
+    throw new Error(
+      `EXIT_SCREEN must be the screen's logical size as <width>x<height>, e.g. ${DEFAULT_EXIT_SCREEN} — got ${JSON.stringify(raw)}`,
+    );
+  }
+  const width = Number(read[1]);
+  const height = Number(read[2]);
+  const pitch = Math.floor(width / 3);
+  const column = { width: pitch - 6, height: height - 12 };
+  const viewport = { width: column.width - 16, height: column.height - 90 };
+  if (viewport.width < MIN_VIEWPORT || viewport.height < MIN_VIEWPORT) {
+    throw new Error(
+      `EXIT_SCREEN ${raw} leaves each window a ${viewport.width} by ${viewport.height} viewport, and the columns need ` +
+        `at least ${MIN_VIEWPORT} by ${MIN_VIEWPORT} — give the screen's logical size (the default is ${DEFAULT_EXIT_SCREEN})`,
+    );
+  }
+  const at = (i: number): WindowBounds => ({ left: i * pitch, top: 0, ...column });
+  return { screen: { width, height }, columns: [at(0), at(1), at(2)], viewport };
+}
+
+/**
+ * Put `page`'s window at `bounds`, in the normal state, through the browser
+ * protocol, and read back where the window manager left it. That may differ
+ * from what was asked — a window manager may keep a window clear of a menu
+ * bar or a screen's edge — which is why the spec prints what it READ. Chromium
+ * only (`newCDPSession` is Chromium's), and it sends nothing to any server.
+ * The session is detached whatever happens.
+ */
+export async function placeWindow(page: Page, bounds: WindowBounds): Promise<Partial<WindowBounds>> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { windowId } = await cdp.send("Browser.getWindowForTarget");
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { ...bounds, windowState: "normal" } });
+    const { bounds: got } = await cdp.send("Browser.getWindowBounds", { windowId });
+    return { left: got.left, top: got.top, width: got.width, height: got.height };
+  } finally {
+    await cdp.detach();
   }
 }

@@ -33,7 +33,9 @@ import {
   cookiesFrom,
   credential,
   identityHeaders,
+  exitLayout,
   mustBeVisible,
+  placeWindow,
   reportVisibility,
   watchVisibility,
 } from "./live";
@@ -538,13 +540,115 @@ describe("watchVisibility and mustBeVisible — the exit's own precondition", ()
   });
 
   // The config's side, read from its SOURCE as `BASE_URL` is above: the
-  // exit's run launches Chromium with the two switches that keep a covered
-  // window visible.
-  it("is launched, in the exit's run, with the switches that keep a covered window visible", () => {
+  // exit's run launches Chromium with the two switches meant to keep a covered
+  // window visible — not enough on macOS, which is why the spec also lays its
+  // windows out side by side (below).
+  it("is launched, in the exit's run, with the switches meant to keep a covered window visible", () => {
     expect(EXIT_LAUNCH_ARGS).toEqual(["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]);
     const here = dirname(fileURLToPath(import.meta.url));
     const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");
     expect(config).toContain("...(EXIT ? { launchOptions: { args: [...EXIT_LAUNCH_ARGS] } } : {}),");
+  });
+});
+
+// ---- the exit's windows, side by side (exit game run 1, deployment 19) ----
+//
+// MEASURED on the exit's first headed run: its three windows STACKED, and
+// macOS's occlusion marked the covered ones hidden whatever the two launch
+// switches read — so the spec's own precondition failed at move 5. The spec
+// now puts its three windows in three NON-overlapping columns of the screen
+// `EXIT_SCREEN` names, through the browser protocol, and gives each context
+// the viewport of its column: Playwright emulates a viewport whatever the
+// window's size, so the two must agree or the page is clipped.
+
+describe("exitLayout — three windows side by side, none covering another", () => {
+  it("is three columns of the default screen, this Mac's logical 1280x832", () => {
+    expect(exitLayout(undefined)).toEqual({
+      screen: { width: 1280, height: 832 },
+      columns: [
+        { left: 0, top: 0, width: 420, height: 820 },
+        { left: 426, top: 0, width: 420, height: 820 },
+        { left: 852, top: 0, width: 420, height: 820 },
+      ],
+      viewport: { width: 404, height: 730 },
+    });
+    expect(exitLayout(""), "an empty variable is the default").toEqual(exitLayout(undefined));
+  });
+
+  it("sizes the columns from the screen it is given: none reaches the next, the screen's edge, or past its own viewport", () => {
+    for (const screen of ["1280x832", "1100x700", "1512x982", "1920x1080", "2560x1440"]) {
+      const { screen: s, columns, viewport } = exitLayout(screen);
+      expect(`${s.width}x${s.height}`).toBe(screen);
+      columns.forEach((c, i) => {
+        const next = i < columns.length - 1 ? columns[i + 1]!.left : s.width;
+        expect(c.left + c.width, `${screen}: column ${i} reaches ${next}`).toBeLessThan(next);
+        expect(c.top + c.height, `${screen}: column ${i} is taller than the screen`).toBeLessThan(s.height);
+        expect(viewport.width, `${screen}: the viewport is wider than its window`).toBeLessThan(c.width);
+        expect(viewport.height, `${screen}: the viewport is taller than its window`).toBeLessThan(c.height);
+      });
+    }
+  });
+
+  it("refuses a screen it cannot read, and one whose columns are too small to play in, naming EXIT_SCREEN", () => {
+    for (const bad of ["1280", "1280x", "x832", "1280\u00d7832", "1280x832x2", "-1280x832", "1280.5x832", "wide"]) {
+      expect(() => exitLayout(bad), bad).toThrow(/^EXIT_SCREEN must be the screen's logical size/);
+    }
+    expect(() => exitLayout("900x600")).toThrow(
+      "EXIT_SCREEN 900x600 leaves each window a 278 by 498 viewport, and the columns need at least 320 by 320",
+    );
+    expect(() => exitLayout("1280x400")).toThrow(
+      "EXIT_SCREEN 1280x400 leaves each window a 404 by 298 viewport, and the columns need at least 320 by 320",
+    );
+  });
+});
+
+describe("placeWindow — a window put in its column through the browser protocol", () => {
+  /** A page whose context hands out ONE fake session, for THIS page only. */
+  function protocolPage(answer: (method: string, params: unknown) => unknown) {
+    const sent: Array<[string, unknown]> = [];
+    const fake = { sent, detached: 0, page: undefined as unknown as Page };
+    const session = {
+      send: async (method: string, params?: unknown) => {
+        sent.push([method, params]);
+        return answer(method, params);
+      },
+      detach: async () => {
+        fake.detached += 1;
+      },
+    };
+    fake.page = {
+      context: () => ({ newCDPSession: async (p: unknown) => (p === fake.page ? session : undefined) }),
+    } as unknown as Page;
+    return fake;
+  }
+
+  it("asks for the page's own window, sets its bounds in the normal state, reads back where it went, and detaches", async () => {
+    const fake = protocolPage((method) =>
+      method === "Browser.getWindowForTarget"
+        ? { windowId: 7, bounds: {} }
+        : method === "Browser.getWindowBounds"
+          ? { bounds: { left: 426, top: 37, width: 420, height: 795, windowState: "normal" } }
+          : {},
+    );
+    const got = await placeWindow(fake.page, { left: 426, top: 0, width: 420, height: 820 });
+    expect(fake.sent).toEqual([
+      ["Browser.getWindowForTarget", undefined],
+      ["Browser.setWindowBounds", { windowId: 7, bounds: { left: 426, top: 0, width: 420, height: 820, windowState: "normal" } }],
+      ["Browser.getWindowBounds", { windowId: 7 }],
+    ]);
+    // What the window manager reported back — in this fake, a window moved
+    // below a menu bar and shortened — which is what the spec prints.
+    expect(got).toEqual({ left: 426, top: 37, width: 420, height: 795 });
+    expect(fake.detached).toBe(1);
+  });
+
+  it("detaches when the protocol refuses as well, and lets the refusal through", async () => {
+    const fake = protocolPage((method) => {
+      if (method === "Browser.setWindowBounds") throw new Error("Browser window not found");
+      return { windowId: 7, bounds: {} };
+    });
+    await expect(placeWindow(fake.page, { left: 0, top: 0, width: 420, height: 820 })).rejects.toThrow("Browser window not found");
+    expect(fake.detached).toBe(1);
   });
 });
 

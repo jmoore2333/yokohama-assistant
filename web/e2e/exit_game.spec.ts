@@ -8,6 +8,11 @@
 //
 // `WAKE_PAUSE_MS=<ms>` sets the four long pauses: 45 000 by default, past the
 // ~35 s of idleness after which the spike measured an object evicted.
+// `EXIT_SCREEN=<width>x<height>` is the screen the three windows are laid out
+// on, side by side, in its logical pixels: 1280x832 by default. No other
+// window may cover a column entirely while it runs — the terminal with the
+// tail included — or that window reads hidden and the run fails its own
+// precondition.
 //
 // **Opt-in twice over.** It plays on the owner's account and spends real
 // minutes, so no run that did not ask for it by name plays it:
@@ -51,7 +56,11 @@
 // three pages must read `visible` and have reported nothing else since; a
 // run that breaks that fails saying it is not a finding about the product
 // (`live.ts`'s `mustBeVisible`). The exit's run launches Chromium with the
-// two switches that keep a covered window visible (`playwright.config.ts`).
+// two switches meant to keep a covered window visible (`playwright.config.ts`),
+// and on macOS they do not: on the first headed run (deployment 19) the three
+// windows stacked and x's read hidden at move 5. So the spec also puts its
+// three windows side by side, none covering another, in the columns of the
+// screen `EXIT_SCREEN` names (`1280x832` unless set).
 //
 // **What it leaves on the account**: what any live spec's abandon leaves —
 // the game's save under the bucket's `test/` root (all three people are
@@ -63,7 +72,18 @@ import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
-import { EXIT, LIVE, abandonAsCreator, liveContextOptions, liveRequest, mustBeVisible, watchVisibility } from "./live";
+import {
+  EXIT,
+  LIVE,
+  abandonAsCreator,
+  exitLayout,
+  liveContextOptions,
+  liveRequest,
+  mustBeVisible,
+  placeWindow,
+  watchVisibility,
+  type WindowBounds,
+} from "./live";
 import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo, unfold } from "./shared_table";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
@@ -231,9 +251,28 @@ test("two people and a watcher play a paced game across four hibernations, and i
   const PASSWORD = `exit-${stamp}`;
   const pick = rng(0x4558_4954); // "EXIT"
 
-  const x = await (await newContextWithoutWorker(browser, await liveContextOptions(X))).newPage();
-  const y = await (await newContextWithoutWorker(browser, await liveContextOptions(Y))).newPage();
-  const w = await (await newContextWithoutWorker(browser, await liveContextOptions(W))).newPage();
+  // **Three windows side by side, none covering another** (exit game run 1,
+  // deployment 19): the windows stacked, and macOS marked the covered ones
+  // hidden whatever the launch switches read. Each page's window is put in a
+  // column of its own the moment the page exists — before it navigates — and
+  // each context emulates its column's viewport (`live.ts`, `exitLayout`).
+  // `EXIT_SCREEN` is the screen's logical size; a value that cannot be read
+  // is refused here, before a table is opened.
+  const layout = exitLayout(process.env.EXIT_SCREEN);
+  const open = async (email: string, column: WindowBounds) => {
+    const context = await newContextWithoutWorker(browser, {
+      ...(await liveContextOptions(email)),
+      viewport: layout.viewport,
+    });
+    const page = await context.newPage();
+    return { page, placed: await placeWindow(page, column) };
+  };
+  const { page: x, placed: placedX } = await open(X, layout.columns[0]);
+  const { page: y, placed: placedY } = await open(Y, layout.columns[1]);
+  const { page: w, placed: placedW } = await open(W, layout.columns[2]);
+  /** A window's bounds as the window manager reported them. */
+  const bounds = (b: Partial<WindowBounds>) =>
+    `${b.width ?? "?"}x${b.height ?? "?"} at ${b.left ?? "?"},${b.top ?? "?"}`;
   // The precondition's record starts here, before any page navigates.
   const windows = [
     ["x", x, await watchVisibility(x)],
@@ -354,7 +393,10 @@ test("two people and a watcher play a paced game across four hibernations, and i
   console.log(
     `exit phase 1, seating: table ${id} ("${NAME}") opened locked by ${X}; ${Y} read x's lobby line, ` +
       `said its own, and joined through the lobby's Open tables link with the password; both kept; ` +
-      `${W} unlocked it and is watching with no hand; ${seated}s`,
+      `${W} unlocked it and is watching with no hand; windows x ${bounds(placedX)}, y ${bounds(placedY)}, ` +
+      `w ${bounds(placedW)} (EXIT_SCREEN ${layout.screen.width}x${layout.screen.height}: columns ` +
+      `${bounds(layout.columns[0])}, ${bounds(layout.columns[1])}, ${bounds(layout.columns[2])} asked; ` +
+      `viewport ${layout.viewport.width}x${layout.viewport.height}); ${seated}s`,
   );
 
   // ---- phase 2: the paced game -------------------------------------------
