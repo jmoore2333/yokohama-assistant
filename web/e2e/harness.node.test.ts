@@ -24,7 +24,19 @@ vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
 import { BEACON_PREFIX, isBeaconCorsError, isDealAnswer, isDealAnswerLine } from "./harness";
-import { LIVE_ORIGIN, abandonAsCreator, accessState, baseUrlFor, cookiesFrom, credential, identityHeaders } from "./live";
+import {
+  EXIT_LAUNCH_ARGS,
+  LIVE_ORIGIN,
+  abandonAsCreator,
+  accessState,
+  baseUrlFor,
+  cookiesFrom,
+  credential,
+  identityHeaders,
+  mustBeVisible,
+  reportVisibility,
+  watchVisibility,
+} from "./live";
 
 // ---- the error, as Chromium words it ---------------------------------------
 //
@@ -414,6 +426,125 @@ describe("baseUrlFor", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");
     expect(config).toContain("export const BASE_URL = baseUrlFor(LIVE);");
+  });
+});
+
+// ---- the exit's precondition: its windows stay visible (R3's R-N6; I-91) --
+//
+// A hidden page lets its table's socket go by design (R-P8), so a window of
+// the exit's headed run that was minimized, or left on another Space, fails
+// the one-socket claims for a reason that is not the product's. The spec
+// watches every page's visibility from before its first navigation and
+// checks it at every checkpoint; these cells hold the two halves through
+// fakes — the page's own script included, over a stand-in document.
+
+/** A page as `watchVisibility` and `mustBeVisible` use one: the binding it
+ *  was handed, the init script it was handed, and the state `evaluate`
+ *  answers — `state`, which a cell sets. */
+function visibilityPage() {
+  let binding: ((state: string) => unknown) | undefined;
+  let script: { fn: unknown; arg: unknown } | undefined;
+  const fake = {
+    state: "visible",
+    page: {
+      exposeFunction: async (_name: string, fn: (state: string) => unknown) => {
+        binding = fn;
+      },
+      addInitScript: async (fn: unknown, arg: unknown) => {
+        script = { fn, arg };
+      },
+      evaluate: async () => fake.state,
+    } as unknown as Page,
+    /** The page reporting `state` through its binding, as its document would. */
+    report: (state: string) => binding!(state),
+    script: () => script!,
+  };
+  return fake;
+}
+
+describe("watchVisibility and mustBeVisible — the exit's own precondition", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const at = (s: number) => () => new Date(Date.UTC(2026, 8, 24, 6, 30, s));
+
+  it("records every report of a state other than visible, with its time, and counts every report", async () => {
+    const fake = visibilityPage();
+    let s = 5;
+    const watch = await watchVisibility(fake.page, () => at(s)());
+    fake.report("visible");
+    s = 6;
+    fake.report("hidden");
+    fake.report("visible");
+    expect(watch).toEqual({ reports: 3, hidden: ["hidden at 06:30:06Z"] });
+  });
+
+  it("installs the page's half, which reports the document's state as it starts and at every change", async () => {
+    const fake = visibilityPage();
+    await watchVisibility(fake.page);
+    const { fn, arg } = fake.script();
+    expect(fn, "the script every document runs first").toBe(reportVisibility);
+    const reports: string[] = [];
+    const changed: Array<() => void> = [];
+    const doc = {
+      visibilityState: "visible",
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === "visibilitychange") changed.push(listener);
+      },
+    };
+    vi.stubGlobal("document", doc);
+    vi.stubGlobal("window", { [String(arg)]: (state: string) => reports.push(state) });
+    reportVisibility(String(arg));
+    doc.visibilityState = "hidden";
+    for (const listener of changed) listener();
+    doc.visibilityState = "visible";
+    for (const listener of changed) listener();
+    expect(reports).toEqual(["visible", "hidden", "visible"]);
+  });
+
+  it("passes when every page reads visible now and has reported nothing else", async () => {
+    const [x, y] = [visibilityPage(), visibilityPage()];
+    const [wx, wy] = [await watchVisibility(x.page), await watchVisibility(y.page)];
+    x.report("visible");
+    y.report("visible");
+    await expect(mustBeVisible([["x", x.page, wx], ["y", y.page, wy]], "before the pause after move 5")).resolves.toBeUndefined();
+  });
+
+  it("fails as the spec's own precondition, naming the page: hidden now, or hidden since it was watched", async () => {
+    const x = visibilityPage();
+    const wx = await watchVisibility(x.page, at(0));
+    x.report("visible");
+    x.state = "hidden";
+    await expect(mustBeVisible([["x", x.page, wx]], "after the pause at move 15")).rejects.toThrow(
+      /^the exit's own precondition failed after the pause at move 15: x's window was not visible \(hidden now\)\. .*it is not a finding about the product/s,
+    );
+    // Hidden between two reads and visible again at the second: what a
+    // checkpoint's read of the state alone would miss.
+    const y = visibilityPage();
+    const wy = await watchVisibility(y.page, at(0));
+    y.report("hidden");
+    y.report("visible");
+    await expect(mustBeVisible([["y", y.page, wy]], "at the end of play")).rejects.toThrow(
+      "the exit's own precondition failed at the end of play: y's window was not visible (hidden at 06:30:00Z)",
+    );
+  });
+
+  it("fails when a page has reported nothing at all: the watch itself is not running", async () => {
+    const x = visibilityPage();
+    const wx = await watchVisibility(x.page);
+    await expect(mustBeVisible([["x", x.page, wx]], "before the pause after move 5")).rejects.toThrow(
+      "the exit's own precondition cannot be read before the pause after move 5: x's page has reported no visibility at all",
+    );
+  });
+
+  // The config's side, read from its SOURCE as `BASE_URL` is above: the
+  // exit's run launches Chromium with the two switches that keep a covered
+  // window visible.
+  it("is launched, in the exit's run, with the switches that keep a covered window visible", () => {
+    expect(EXIT_LAUNCH_ARGS).toEqual(["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]);
+    const here = dirname(fileURLToPath(import.meta.url));
+    const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");
+    expect(config).toContain("...(EXIT ? { launchOptions: { args: [...EXIT_LAUNCH_ARGS] } } : {}),");
   });
 });
 

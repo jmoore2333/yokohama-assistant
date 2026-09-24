@@ -43,9 +43,9 @@ http = "1"
 sha2 = "0.10"
 
 [build-dependencies]
-# `build.rs` digests the CLI's and the layer's sources into the picker row's
-# code identity (the orchestrator's ruling I-85) — the same SHA-256 crate the
-# module itself uses, compiled for the build host.
+# `build.rs` digests the engine's, the CLI's and the layer's sources into the
+# picker row's code identity (the orchestrator's ruling I-85) — the same
+# SHA-256 crate the module itself uses, compiled for the build host.
 sha2 = "0.10"
 
 [features]

@@ -15,7 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EXIT, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, baseUrlFor } from "./e2e/live";
+import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -201,6 +201,12 @@ export default defineConfig({
     // `liveRequest`, which withholds that log (`e2e/live.ts`).
     trace: LIVE ? "off" : "retain-on-failure",
     screenshot: "only-on-failure",
+    // **The exit's stacked headed windows stay VISIBLE** (R3's R-N6; ruling
+    // I-91): the two switches `EXIT_LAUNCH_ARGS` names (`e2e/live.ts`), which
+    // Playwright 1.62.1 already passes to every Chromium — named here so the
+    // exit's precondition does not rest on a default. Every spec of an exit
+    // run is launched with them; no other run changes.
+    ...(EXIT ? { launchOptions: { args: [...EXIT_LAUNCH_ARGS] } } : {}),
   },
   // **No server live**: the Worker is the server, and nothing local is
   // started, built or emptied.

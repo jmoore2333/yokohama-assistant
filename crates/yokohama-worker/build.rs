@@ -1,19 +1,26 @@
 //! **The picker's code identity** (the orchestrator's ruling I-85; spec §2.4):
 //! a digest of the sources that give a re-fed picker line its meaning — the
-//! CLI's `crates/yokohama-cli/src` (the prompt numbering, the grammars,
-//! `Repl::step`) and the layer's `crates/yokohama-web/src` (`api::input` and
-//! its gameplay fence) — handed to the crate as the compile-time variable
-//! `YOKOHAMA_WORKER_PICKER_CODE`, which `picker.rs` reads as `CODE`. A stored
-//! picker row carries the code it was built under, and `restore_picker` clears
-//! a row whose code is not this build's rather than re-feed a line whose
-//! meaning may have changed. The engine is not among the roots: a change to
-//! what a move means there bumps `SEMANTICS_REV`, and a record of another
-//! revision does not load at all.
+//! engine's `crates/yokohama-core/src` (the legal list, whose ORDER numbers the
+//! main prompt, and the card data), the CLI's `crates/yokohama-cli/src` (the
+//! prompt numbering, the grammars, `Repl::step`) and the layer's
+//! `crates/yokohama-web/src` (`api::input` and its gameplay fence) — handed to
+//! the crate as the compile-time variable `YOKOHAMA_WORKER_PICKER_CODE`, which
+//! `picker.rs` reads as `CODE`. A stored picker row carries the code it was
+//! built under, and `restore_picker` clears a row whose code is not this
+//! build's rather than re-feed a line whose meaning may have changed.
 //!
-//! **The digest, in full**: every file under the two roots whose name does not
-//! begin with a dot (a `.DS_Store`, an editor's swap file), in the byte order
-//! of its path from the repository root with `/` between the parts; for each,
-//! the path, a NUL, its length in bytes as decimal, a NUL, and its bytes;
+//! **The engine is a root because its own guards do not cover a line's
+//! NUMBER** (R1's R-1). `Repl::group_options` numbers the legal list in the
+//! engine's order, and a pure reorder cannot change the state a record replays
+//! to, so `SEMANTICS_REV`'s own rule forbids bumping it for one; and a data
+//! edit that makes a move legal or illegal moves `rules_hash` instead, across
+//! which a record still loads, with a warning. Either would leave a row's
+//! record and its line as they were, and `1` would mean another move.
+//!
+//! **The digest, in full**: every file under the three roots whose name does
+//! not begin with a dot (a `.DS_Store`, an editor's swap file), in the byte
+//! order of its path from the repository root with `/` between the parts; for
+//! each, the path, a NUL, its length in bytes as decimal, a NUL, and its bytes;
 //! SHA-256 of all of it, in lowercase hex.
 //!
 //! `cargo:rerun-if-changed` names every directory and every file under the
@@ -26,8 +33,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// The two roots, from the repository root.
-const ROOTS: [&str; 2] = ["crates/yokohama-cli/src", "crates/yokohama-web/src"];
+/// The three roots, from the repository root.
+const ROOTS: [&str; 3] = ["crates/yokohama-core/src", "crates/yokohama-cli/src", "crates/yokohama-web/src"];
 
 fn main() {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));

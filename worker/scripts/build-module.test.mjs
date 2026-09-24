@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildModule, SOURCES, sourceDigest } from "./build-module.mjs";
@@ -220,6 +221,45 @@ describe("the source digest", () => {
     expect(SOURCES).toEqual(expect.arrayContaining(["crates/yokohama-worker", "crates/yokohama-web/src", "crates/yokohama-cli/src"]));
     expect(sourceDigest(here)).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  // R3's R-N1: the stamp reads every crate the module is compiled from, as
+  // CARGO names the module's graph — every path dependency of
+  // `yokohama-worker`, followed through each crate it reaches, dev
+  // dependencies aside (none is compiled into the module). A path dependency
+  // added anywhere in that graph is then a red cell here, and not a crate whose
+  // edits pass the guard's freshness check unseen, as the bridge's did: the
+  // CLI's path dependency, missing from the first list. Each crate is read
+  // whole, or as its manifest and `src/`, with its `build.rs` when it has one.
+  it("covers every path crate in the module's graph, as cargo metadata names it", () => {
+    const repo = fileURLToPath(new URL("../../", import.meta.url));
+    const run = spawnSync("cargo", ["metadata", "--no-deps", "--format-version", "1", "--offline"], {
+      cwd: repo,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    expect(run.error, "cargo runs: this cell reads the module's graph from cargo metadata").toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    const byName = new Map(JSON.parse(run.stdout).packages.map((p) => [p.name, p]));
+    const graph = new Set();
+    const visit = (name) => {
+      if (graph.has(name)) return;
+      graph.add(name);
+      for (const dep of byName.get(name).dependencies) if (dep.path !== undefined && dep.kind !== "dev") visit(dep.name);
+    };
+    visit("yokohama-worker");
+    const crates = [...graph].map((name) => relative(repo, dirname(byName.get(name).manifest_path)).split(sep).join("/")).sort();
+    expect(crates, "premise: the graph holds the module's own crate, the layer, the CLI and the engine").toEqual(
+      expect.arrayContaining(["crates/yokohama-worker", "crates/yokohama-web", "crates/yokohama-cli", "crates/yokohama-core"]),
+    );
+    const unread = crates.flatMap((dir) =>
+      SOURCES.includes(dir)
+        ? []
+        : [`${dir}/Cargo.toml`, `${dir}/src`, ...(existsSync(join(repo, dir, "build.rs")) ? [`${dir}/build.rs`] : [])].filter(
+            (source) => !SOURCES.includes(source),
+          ),
+    );
+    expect(unread, "sources of the module's graph that the stamp does not read").toEqual([]);
+  }, 60_000);
 });
 
 describe("the source stamp", () => {

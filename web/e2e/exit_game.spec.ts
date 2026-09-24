@@ -38,8 +38,20 @@
 // beside the median of the other moves'; and what the three pages asked the
 // table DURING each pause (nothing, if the pause meant anything). NOT seen here at all: the eviction and the wake
 // themselves. The orchestrator reads those off `wrangler tail` — the
-// `wake {id, wakes}` line under `YOKOHAMA_WEB_COUNT_WAKES=on` (ruling I-84) —
-// with each request's CPU beside it.
+// `wake {id, wakes}` line under `YOKOHAMA_WEB_COUNT_WAKES=on` (ruling I-84),
+// the window RUNBOOK §6.7 opens and closes — with each request's CPU beside
+// it.
+//
+// **Its own precondition: every window VISIBLE** (R3's R-N6; ruling I-91). A
+// hidden page lets its table's socket go by design (R-P8), so a window
+// minimized, or left on another Space, would fail the one-socket claims for a
+// reason that is not the product's. Each page's visibility is watched from
+// before its first navigation, and at every checkpoint — before each long
+// pause, once the move after it has landed, and at the end of play — all
+// three pages must read `visible` and have reported nothing else since; a
+// run that breaks that fails saying it is not a finding about the product
+// (`live.ts`'s `mustBeVisible`). The exit's run launches Chromium with the
+// two switches that keep a covered window visible (`playwright.config.ts`).
 //
 // **What it leaves on the account**: what any live spec's abandon leaves —
 // the game's save under the bucket's `test/` root (all three people are
@@ -51,7 +63,7 @@ import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
-import { EXIT, LIVE, abandonAsCreator, liveContextOptions, liveRequest } from "./live";
+import { EXIT, LIVE, abandonAsCreator, liveContextOptions, liveRequest, mustBeVisible, watchVisibility } from "./live";
 import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo, unfold } from "./shared_table";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
@@ -222,6 +234,18 @@ test("two people and a watcher play a paced game across four hibernations, and i
   const x = await (await newContextWithoutWorker(browser, await liveContextOptions(X))).newPage();
   const y = await (await newContextWithoutWorker(browser, await liveContextOptions(Y))).newPage();
   const w = await (await newContextWithoutWorker(browser, await liveContextOptions(W))).newPage();
+  // The precondition's record starts here, before any page navigates.
+  const windows = [
+    ["x", x, await watchVisibility(x)],
+    ["y", y, await watchVisibility(y)],
+    ["w", w, await watchVisibility(w)],
+  ] as const;
+  /** How many checkpoints read all three windows visible. */
+  let visibleReads = 0;
+  const visible = async (where: string) => {
+    await mustBeVisible(windows, where);
+    visibleReads += 1;
+  };
   const watchX = watchForBreakage(x);
   const watchY = watchForBreakage(y);
   const watchW = watchForBreakage(w);
@@ -382,6 +406,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
       for (const p of [x, y, w]) {
         await p.waitForFunction(() => !document.querySelector("[data-busy]"), null, { timeout: 60_000 });
       }
+      await visible(`before the pause after move ${played}`);
       meanwhile = tap([x, y, w], id);
     }
     const pause = wake ? WAKE_PAUSE : HUMAN_PAUSE_MS[0] + Math.floor(pick() * (HUMAN_PAUSE_MS[1] - HUMAN_PAUSE_MS[0] + 1));
@@ -434,6 +459,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
     const trip = firstOfMove === null ? null : await roundTrip(firstOfMove);
     const applied = await watchMove(mover);
     if (wake) {
+      await visible(`once the move after the pause at ${played - 1} had landed`);
       checkpoints.push({
         after: played - 1,
         pausedMs: pause,
@@ -454,6 +480,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
     if (played % 4 === 2) await chat(x, "x", `x: after move ${n}`);
     else if (played % 4 === 0) await chat(y, "y", `y: after move ${n}`);
   }
+  await visible("at the end of play");
   /** The stream counts at the END of play, which is what the claim is about:
    *  the abandon below ends every screen's stream, and nothing after it is
    *  play. */
@@ -476,7 +503,8 @@ test("two people and a watcher play a paced game across four hibernations, and i
       `the long pauses — ${checkpoints.map(describeCheckpoint).join("; ")}; ` +
       `the other moves' POST round trip, median ${median ?? "n/a"} ms over ${awake.length}; ` +
       `table chat x ${said.x}, y ${said.y}, and the watcher's panel holds ${watcherLines} lines; ` +
-      `the watcher was held to ${heldTo} applied moves with no hand; this table's stream opened ` +
+      `the watcher was held to ${heldTo} applied moves with no hand; all three windows read visible at ` +
+      `${visibleReads} checkpoints; this table's stream opened ` +
       `w ${opensAtEnd.w}, x ${opensAtStart.x}→${opensAtEnd.x}, y ${opensAtStart.y}→${opensAtEnd.y} times`,
   );
 

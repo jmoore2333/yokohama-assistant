@@ -75,6 +75,18 @@ export const EXIT_SPEC = "exit_game.spec.ts";
 export const EXIT = process.env.YOKOHAMA_WEB_EXIT === "1";
 
 /**
+ * The two Chromium switches the exit's run launches with (R3's R-N6; ruling
+ * I-91), so that its headed windows, stacked over one another, stay VISIBLE:
+ * a covered window that Chromium backgrounded would read `hidden` and let its
+ * socket go (R-P8). Playwright 1.62.1 already passes both to every Chromium it
+ * launches (its `chromiumSwitches`); `playwright.config.ts` names them for the
+ * exit's run all the same, so its precondition does not rest on a default an
+ * upgrade could drop. The spec checks the precondition itself
+ * ([`mustBeVisible`]).
+ */
+export const EXIT_LAUNCH_ARGS = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] as const;
+
+/**
  * The origin a walk plays at: the Worker's live, the local binary's
  * otherwise. `playwright.config.ts` exports it AS `BASE_URL` — the constant
  * `watchForBreakage` and `two_browsers.spec.ts` read — and a cell reads the
@@ -266,5 +278,84 @@ export async function liveRequest<T>(call: () => Promise<T>): Promise<T> {
     if (!LIVE) throw e;
     const first = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0];
     throw new Error(`${first} (the call log is withheld: it lists the live context's cookie)`);
+  }
+}
+
+// ---- the exit's precondition: its windows stay visible (R3's R-N6) --------
+
+/** The binding a watched page reports its visibility through. */
+const VISIBILITY_BINDING = "__yokohamaExitVisibility";
+
+/** What a page has reported of its own visibility since [`watchVisibility`]
+ *  was called on it: how many reports, and each report of a state other than
+ *  `visible`, as `<state> at <UTC time>`. */
+export interface VisibilityWatch {
+  reports: number;
+  hidden: string[];
+}
+
+/**
+ * Starts recording `page`'s visibility — across its navigations, and from
+ * before its first — through a binding the page calls and a script every
+ * document it loads runs before its own ([`reportVisibility`]).
+ */
+export async function watchVisibility(page: Page, now: () => Date = () => new Date()): Promise<VisibilityWatch> {
+  const watch: VisibilityWatch = { reports: 0, hidden: [] };
+  await page.exposeFunction(VISIBILITY_BINDING, (state: string) => {
+    watch.reports += 1;
+    if (state !== "visible") watch.hidden.push(`${state} at ${now().toISOString().slice(11, 19)}Z`);
+  });
+  await page.addInitScript(reportVisibility, VISIBILITY_BINDING);
+  return watch;
+}
+
+/**
+ * The page's half of [`watchVisibility`]: the document's `visibilityState`,
+ * reported through the binding named `binding` as the document starts and
+ * again at every change. It runs IN the page — Playwright sends its source —
+ * so it closes over nothing but its argument.
+ */
+export function reportVisibility(binding: string): void {
+  const report = () => {
+    const send = (window as unknown as Record<string, unknown>)[binding];
+    if (typeof send === "function") send(document.visibilityState);
+  };
+  report();
+  document.addEventListener("visibilitychange", report);
+}
+
+/**
+ * **The exit's own precondition**, read at a checkpoint (R3's R-N6; ruling
+ * I-91): every page's `document.visibilityState` reads `visible` now, and the
+ * page has reported no other state since it was watched — which a read of the
+ * state alone would miss: a window hidden and shown again between two
+ * checkpoints. A hidden page lets its table's socket go by design (R-P8) and
+ * opens another once it is visible again, so a window minimized, or left on
+ * another Space, fails the exit's one-socket claims for a reason that is not
+ * the product's. This throws at the first page that breaks the precondition,
+ * saying so — or that has reported nothing at all, since then the watch is
+ * not running and the precondition cannot be read.
+ */
+export async function mustBeVisible(
+  pages: ReadonlyArray<readonly [who: string, page: Page, watch: VisibilityWatch]>,
+  where: string,
+): Promise<void> {
+  for (const [who, page, watch] of pages) {
+    if (watch.reports === 0) {
+      throw new Error(
+        `the exit's own precondition cannot be read ${where}: ${who}'s page has reported no visibility at all, ` +
+          "so this run cannot tell whether its window was hidden",
+      );
+    }
+    const now = await page.evaluate(() => document.visibilityState);
+    const seen = [...(now === "visible" ? [] : [`${now} now`]), ...watch.hidden];
+    if (seen.length > 0) {
+      throw new Error(
+        `the exit's own precondition failed ${where}: ${who}'s window was not visible (${seen.join(", ")}). ` +
+          "A hidden page lets its table's socket go, by design (R-P8), and opens another once it is visible again, " +
+          "so this run can say nothing about the sockets surviving a hibernation — it is not a finding about the " +
+          "product. Keep all three windows visible, none minimized and none on another Space, and run it again.",
+      );
+    }
   }
 }

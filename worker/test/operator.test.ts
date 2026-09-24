@@ -585,6 +585,11 @@ describe("the operator's force (spec §2.9)", () => {
       await forcing;
     } finally {
       held.restore();
+      // On a red premise above the object was never aborted, and its push
+      // resumes here: run through before the next cell. After the abort a
+      // fresh stub reaches a new instance, and the push the aborted one held
+      // is not its to settle — battery 25's arrangement (`slot.test.ts`).
+      await settle(tableStub(id));
     }
     const fresh = tableStub(id);
     expect(await logsDuring(() => runDurableObjectAlarm(fresh)).then((r) => r.result)).toBe(true);

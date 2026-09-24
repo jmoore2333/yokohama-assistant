@@ -1196,9 +1196,11 @@ export class Table extends DurableObject<Env> {
    *   it, and the request goes on to its own dispatch, whose answer stands —
    *   the same error, on a route that needs the replay. A row it cleared for
    *   its CODE — built under code other than this build's (the orchestrator's
-   *   ruling I-85) — is logged `picker-dropped {id, stored, running}`, the
-   *   row's code (`null` for a row that names none) and this build's; the
-   *   request's batch deletes it.
+   *   ruling I-85) — is deleted by the request's batch, which logs
+   *   `picker-dropped {id, stored, running}` once it has committed (`commit`):
+   *   the row's code (`null` for a row that names none) and this build's. A
+   *   request whose call then traps commits no such batch, so it logs no
+   *   drop, the row stays, and the next wake drops it and logs it (R1's N-2).
    * - A trap in a load or in the restore is a LOAD trap: the module is
    *   dropped, `load_traps` counts it and `poison` names the kind, in a batch
    *   of their own, and the answer is the trap 500.
@@ -1248,11 +1250,6 @@ export class Table extends DurableObject<Env> {
     }
     if (restored !== null && restored.reply.status !== 200) {
       log("restore-refused", { id, status: restored.reply.status, body: restored.reply.body });
-    }
-    if (restored?.reply.dropped !== undefined) {
-      // The module's own JSON, `{"stored", "running"}`: two codes, and no
-      // record or table document.
-      log("picker-dropped", { id, ...(JSON.parse(restored.reply.dropped) as { stored: string | null; running: string }) });
     }
     return { restored, countWake: config.countWakes && stored.has("table"), clearTraps: traps > 0 };
   }
@@ -1447,7 +1444,10 @@ export class Table extends DurableObject<Env> {
    * - the `picker` row takes `Reply.picker` verbatim, the request's over the
    *   wake's, and `"[]"` deletes it (the orchestrator's ruling I-21) — which
    *   is how a delete takes an open picker's row with it: the module answers
-   *   `"[]"` for a table it deletes with a list open (Task 4);
+   *   `"[]"` for a table it deletes with a list open (Task 4). A row the
+   *   wake's restore dropped for its code (`Reply.dropped`) is logged
+   *   `picker-dropped {id, stored, running}` once the batch has committed, as
+   *   the `wake` line is (R1's N-2);
    * - the wake's `wakes` count — logged `wake {id, wakes}`, the new count,
    *   once the batch has committed (the orchestrator's ruling I-84: the one
    *   place the count can be read off a live Worker) — and its clearing of a
@@ -1543,6 +1543,13 @@ export class Table extends DurableObject<Env> {
       for (const write of writes) write();
     }, alarm);
     if (wakes !== undefined) log("wake", { id, wakes });
+    // The module's own JSON, `{"stored", "running"}`: two codes, and no record
+    // or table document. A drop always has a write — the row it cleared, or
+    // the request's own row over it — so it never meets the early return.
+    const dropped = parts.restored?.reply.dropped;
+    if (dropped !== undefined) {
+      log("picker-dropped", { id, ...(JSON.parse(dropped) as { stored: string | null; running: string }) });
+    }
     // A delete with the archive off made no save of its own, so the owed save
     // went with the table: logged once the batch that dropped it has committed
     // (spec §2.6). With the archive on, the delete's own save superseded it.

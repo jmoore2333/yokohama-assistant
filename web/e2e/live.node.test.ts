@@ -16,7 +16,18 @@
 // Rust crate's `platform_calls_stay_behind_the_server_feature` already use —
 // and it parses them with the TypeScript compiler rather than matching text,
 // so a call split over lines, or a comment that merely NAMES one, is read for
-// what it is. What it reads:
+// what it is.
+//
+// **The one form it accepts** is a call on an API context, written where the
+// context is read: `<x>.request.<verb>(…)`, or the fixture's
+// `request.<verb>(…)`, directly in the function handed to `liveRequest`. Every
+// OTHER read of a context is refused wherever it is — an alias
+// (`const api = x.request`), an argument, a destructure under another name,
+// a bracketed key — because the calls later made on it carry no name the scan
+// knows (R3's R-N2, ruling I-91). Inside liveRequest's function as well: an
+// alias made there can be called from a callback nested in it, the escape the
+// nested-call rule closes for a direct call. `r.request()` — a browser
+// request's own method — reads no context. What it reads:
 //
 //   - every helper module in this directory — every `.ts` that is not a spec
 //     or a test, since a live spec may import any of them;
@@ -41,16 +52,60 @@ import { EXIT_SPEC, LIVE_SPECS } from "./live";
  *  live file that needs one has to say why in this list. */
 const SENDS = new Set(["get", "post", "put", "patch", "delete", "head", "fetch", "newContext"]);
 
-/** `request.<verb>(…)` on the fixture, or `<anything>.request.<verb>(…)` —
- *  `page.request`, `context.request`, `playwright.request`. */
-function isRequestCall(call: ts.CallExpression): boolean {
-  const callee = call.expression;
-  if (!ts.isPropertyAccessExpression(callee) || !SENDS.has(callee.name.text)) return false;
-  const on = callee.expression;
-  return (
-    (ts.isIdentifier(on) && on.text === "request") ||
-    (ts.isPropertyAccessExpression(on) && on.name.text === "request")
+/** Whether `key` names `request`: as a name, a string, or a bracketed
+ *  string. */
+function isRequestKey(key: ts.Node): boolean {
+  if (ts.isComputedPropertyName(key)) return isRequestKey(key.expression);
+  return (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && key.text === "request";
+}
+
+/** Whether `n` is the callee of a call: `r.request()`. */
+function isCallee(n: ts.Node): boolean {
+  return ts.isCallExpression(n.parent) && n.parent.expression === n;
+}
+
+/** Whether an identifier `request` is READ where it stands — rather than
+ *  declared, a property's key, an import or export, a type, or the name half
+ *  of `x.request` (which its property access reads). A destructure's default
+ *  value is a read. */
+function isRead(id: ts.Identifier): boolean {
+  const p = id.parent;
+  if (ts.isPropertyAccessExpression(p)) return p.expression === id;
+  if (ts.isShorthandPropertyAssignment(p)) return true;
+  if (ts.isBindingElement(p)) return p.initializer === id;
+  if ((p as { name?: ts.Node }).name === id) return false;
+  return !(
+    ts.isImportSpecifier(p) ||
+    ts.isImportClause(p) ||
+    ts.isNamespaceImport(p) ||
+    ts.isExportSpecifier(p) ||
+    ts.isTypeReferenceNode(p) ||
+    ts.isQualifiedName(p) ||
+    ts.isTypeQueryNode(p)
   );
+}
+
+/**
+ * Whether `n` reads an API context: `<x>.request` or `<x>["request"]` that is
+ * not itself called, the fixture's `request` where it is read, a destructure
+ * or an import that takes `request` under another name.
+ */
+function readsContext(n: ts.Node): boolean {
+  if (ts.isPropertyAccessExpression(n)) return n.name.text === "request" && !isCallee(n);
+  if (ts.isElementAccessExpression(n)) return isRequestKey(n.argumentExpression) && !isCallee(n);
+  if (ts.isIdentifier(n)) return n.text === "request" && isRead(n);
+  if (ts.isBindingElement(n) || ts.isImportSpecifier(n)) {
+    return n.propertyName !== undefined && isRequestKey(n.propertyName) && !(ts.isIdentifier(n.name) && n.name.text === "request");
+  }
+  return false;
+}
+
+/** The call a context read is SENT by — `<read>.<verb>(…)` with a verb in
+ *  `SENDS` — or `undefined` when the read goes anywhere else. */
+function sentBy(read: ts.Node): ts.CallExpression | undefined {
+  const verb = read.parent;
+  if (!ts.isPropertyAccessExpression(verb) || verb.expression !== read || !SENDS.has(verb.name.text)) return undefined;
+  return isCallee(verb) ? (verb.parent as ts.CallExpression) : undefined;
 }
 
 /** Whether `node`'s NEAREST enclosing function is the function handed to
@@ -74,8 +129,9 @@ function insideLiveRequest(node: ts.Node): boolean {
 }
 
 /** What one file does with live requests: every API call that is not made
- *  inside `liveRequest`, and every `toBeOK(`, each as `file:line: the call`;
- *  and how many calls ARE wrapped — so a scan that found nothing can say so. */
+ *  inside `liveRequest`, every other read of an API context, and every
+ *  `toBeOK(`, each as `file:line: the code`; and how many calls ARE wrapped —
+ *  so a scan that found nothing can say so. */
 function scan(file: string, source: string): { refused: string[]; wrapped: number } {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
   const refused: string[] = [];
@@ -83,11 +139,20 @@ function scan(file: string, source: string): { refused: string[]; wrapped: numbe
   const where = (n: ts.Node) =>
     `${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}: ${n.getText(sf).split("\n")[0]}`;
   const visit = (n: ts.Node): void => {
-    if (ts.isCallExpression(n)) {
-      if (isRequestCall(n)) {
-        if (insideLiveRequest(n)) wrapped += 1;
-        else refused.push(`${where(n)} — a live API call outside liveRequest(…), whose failure would print the context's cookie`);
+    if (readsContext(n)) {
+      const call = sentBy(n);
+      if (call === undefined) {
+        refused.push(
+          `${where(n)} — an API context taken where this scan cannot follow it (an alias, an argument, a destructure): ` +
+            "call it as <x>.request.<verb>(…) directly inside liveRequest(…)",
+        );
+      } else if (insideLiveRequest(call)) {
+        wrapped += 1;
+      } else {
+        refused.push(`${where(call)} — a live API call outside liveRequest(…), whose failure would print the context's cookie`);
       }
+    }
+    if (ts.isCallExpression(n)) {
       const callee = n.expression;
       if (ts.isPropertyAccessExpression(callee) && callee.name.text === "toBeOK") {
         refused.push(`${where(n)} — toBeOK() prints the call log on failure; assert res.ok() instead`);
@@ -159,7 +224,53 @@ describe("scan — the rule, on sources written for it", () => {
     ]);
   });
 
-  it("reads what is CODE: a comment naming a call, a response's request(), and a browser's context are not calls", () => {
+  // R3's R-N2 (ruling I-91): an API context taken anywhere the scan cannot
+  // follow — an alias, an argument, a destructure under another name, a
+  // bracketed key — is refused where it is taken, since the calls made on it
+  // later carry no name the scan knows. Inside liveRequest's function too: an
+  // alias made there can be called from a callback nested in it, which is the
+  // escape the nested-call cell above closes for a direct call. Before this
+  // rule the scan refused none of them.
+  it("refuses the API context taken where the scan cannot follow it — an alias, an argument, a destructure — inside liveRequest or out", () => {
+    const { refused, wrapped } = scan(
+      "alias.ts",
+      wrap(
+        [
+          "const api = x.request;",
+          "await api.get(`${BASE_URL}/api/health`);",
+          "await send(page.request, url);",
+          "const { request: renamed } = page;",
+          "const fixture = request;",
+          'const viaKey = page["request"];',
+          "await liveRequest(async () => { const inner = page.request; return inner.get(url); });",
+          "const { fallback = request } = options;",
+        ].join("\n"),
+      ),
+    );
+    expect(refused.map((r) => r.split(" — ")[0])).toEqual([
+      "alias.ts:2: x.request",
+      "alias.ts:4: page.request",
+      "alias.ts:5: request: renamed",
+      "alias.ts:6: request",
+      'alias.ts:7: page["request"]',
+      "alias.ts:8: page.request",
+      "alias.ts:9: request",
+    ]);
+    expect(wrapped, "none of them is a call the scan can see").toBe(0);
+  });
+
+  // The companion: a destructure that KEEPS the name declares `request`, which
+  // is not a read, and every call made on it is then held by that name.
+  it("holds a destructure that keeps the name by that name: a call on it outside is refused, inside is wrapped", () => {
+    const { refused, wrapped } = scan(
+      "shorthand.ts",
+      wrap(["const { request } = page;", "await request.get(url);", "await liveRequest(() => request.get(url));"].join("\n")),
+    );
+    expect(refused.map((r) => r.split(" — ")[0])).toEqual(["shorthand.ts:3: request.get(url)"]);
+    expect(wrapped).toBe(1);
+  });
+
+  it("reads what is CODE: a comment naming a call, a response's request(), a browser's context, and a key or a declaration named request are not reads", () => {
     const { refused, wrapped } = scan(
       "prose.ts",
       wrap(
@@ -167,6 +278,9 @@ describe("scan — the rule, on sources written for it", () => {
           "// never `await page.request.get(url)` here, and never `expect(res).toBeOK()`",
           "const method = r.request().method();",
           "const ctx = await browser.newContext();",
+          'const options = { request: "GET" };',
+          "type Shape = { request: number };",
+          "function named(request: number) { return 1; }",
         ].join("\n"),
       ),
     );

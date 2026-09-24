@@ -1,11 +1,12 @@
 //! **`init`'s configuration** (spec §2.2, §3.1): the JSON the shell builds from
 //! the Worker's variables, parsed and refused HERE — so a bad VALUE is refused
 //! at `init` naming its variable, the Worker's form of the NAS refusing to
-//! start. A configuration of the wrong SHAPE — not the object of its five
-//! keys, a key it does not have, or a value of the wrong JSON type, such as
-//! `{"chat_keep": 500}` for the string `"500"` — is refused in serde's words,
-//! which name no variable. The shell always builds the object, with every
-//! value a string or `null` (`worker/src/config.ts`'s `moduleConfig`, whose
+//! start. A configuration of the wrong SHAPE names no variable: JSON that is
+//! not an OBJECT is refused in this crate's own sentence, which names the five
+//! keys ([`parse`]); text that is not JSON, and an object with a key it does not
+//! have or a value of the wrong JSON type, such as `{"chat_keep": 500}` for the
+//! string `"500"`, in serde's words. The shell always builds the object, with
+//! every value a string or `null` (`worker/src/config.ts`'s `moduleConfig`, whose
 //! `shellConfig` refuses a variable that is not a string first: the
 //! orchestrator's ruling E3), so no deployment reaches those.
 

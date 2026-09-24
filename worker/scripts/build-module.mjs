@@ -61,10 +61,12 @@ const digest = (file) => createHash("sha256").update(readFileSync(file)).digest(
 
 /**
  * What the module is compiled FROM, in this repository, from its root: the
- * workspace's manifest and lock and the pinned toolchain; the four crates in
- * the module's graph — `yokohama-core`, `yokohama-cli`, `yokohama-web`, each
- * as its manifest and `src/`, and `yokohama-worker` whole, its `build.rs`
- * among it. A superset of the picker's code identity, `build.rs`'s digest of
+ * workspace's manifest and lock and the pinned toolchain; the five crates in
+ * the module's graph — `yokohama-core`, `yokohama-cli`, `yokohama-bridge` (a
+ * path dependency of the CLI's), `yokohama-web`, each as its manifest and
+ * `src/`, and `yokohama-worker` whole, its `build.rs` among it. A cell derives
+ * the graph from `cargo metadata` and holds this list to it (R3's R-N1). A
+ * superset of the picker's code identity, `build.rs`'s digest of the engine's,
  * the CLI's and the layer's `src/` alone: that one says which code gives a
  * re-fed line its meaning, and this one whether `gen/` is the tree's build.
  */
@@ -76,6 +78,8 @@ export const SOURCES = [
   "crates/yokohama-core/src",
   "crates/yokohama-cli/Cargo.toml",
   "crates/yokohama-cli/src",
+  "crates/yokohama-bridge/Cargo.toml",
+  "crates/yokohama-bridge/src",
   "crates/yokohama-web/Cargo.toml",
   "crates/yokohama-web/src",
   "crates/yokohama-worker",

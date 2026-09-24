@@ -2153,8 +2153,10 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
    and the factory transform that gives every object its own instance (spec §2.2). A build whose
    optimizer changed nothing leaves `gen/.unoptimized`, which the deploy guard refuses. Every build
    stamps `gen/source.json` with a digest of the sources the module is compiled from — the
-   workspace's manifest, lock and toolchain, and the four crates in its graph — taken before cargo
-   runs; the deploy guard takes the digest again and compares (R3's M-3).
+   workspace's manifest, lock and toolchain, and the five crates in its graph, the bridge (a path
+   dependency of the CLI's) among them — taken before cargo runs; the deploy guard takes the
+   digest again and compares (R3's M-3). A cell holds that list to the graph `cargo metadata`
+   names (R3's R-N1).
 2. **`build:assets`** — `worker/assets/` from `web/dist`, `crates/yokohama-web/assets/art/` and
    `worker/static`, verified entry by entry against the release's own precache list. A debug browser
    module is refused. The `sw.js` it copies names the release it came from, and is what the deploy
@@ -2190,8 +2192,9 @@ or `r2_buckets` blocks differing, or either file lacking one; and `YOKOHAMA_WEB_
 uploading.
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
-  probes once and reconnects, an open picker is re-fed, and no acknowledged move is lost — but it is
-  still a reconnect for everyone at every table, so deploy between games.
+  probes once and reconnects, an open picker is re-fed — or dropped, when the deploy changed the
+  engine's, the CLI's or the layer's sources (`picker-dropped`, §6.5) — and no acknowledged move is
+  lost; but it is still a reconnect for everyone at every table, so deploy between games.
 - **The migration `v1` is FROZEN from the first deploy on** (the orchestrator's ruling I-30): a
   class added later takes a new tag. Cloudflare's own docs now prefer a declarative `exports` field
   for NEW Workers, and keep the `migrations` array this Worker uses fully supported; the two may not
@@ -2211,7 +2214,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
 | `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown — a refusal names an entry by its position, never its value; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
-| `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
+| `YOKOHAMA_WEB_COUNT_WAKES` | unset — the exit's window sets it for one deploy, and the next deploy unsets it (§6.7) | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
 | `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
@@ -2453,12 +2456,14 @@ expires in 2031 (spec §0.5).
   - **`picker-dropped`** `{id, stored, running}`: a new module found the table's `picker` row built
     under code other than its own — `stored` is the row's code, `null` for a row written before
     rows carried one (every row the fourteenth to the eighteenth deployments wrote), and `running`
-    this build's, a digest of the CLI's and the layer's sources — and cleared it without re-feeding
-    a line (the orchestrator's rulings I-85 and I-89): under other code a line may mean something
-    else, and no code vouches for an unstamped row. A picker open across a deploy that changed that
-    code starts over, and the player's next click is a 409. So after the first deployment past the
-    eighteenth, every picker open at it is dropped at its table's next request, logged with
-    `stored: null`.
+    this build's, a digest of the engine's, the CLI's and the layer's sources — and cleared it
+    without re-feeding a line (the orchestrator's rulings I-85 and I-89): under other code a line
+    may mean something else, and no code vouches for an unstamped row. It is logged once the
+    request's batch that deletes the row has committed, as `wake` is: a request whose own call
+    traps commits nothing, so the row stays, and the next request's wake drops it and logs it
+    (R1's N-2). A picker open across a deploy that changed that code starts over, and the player's
+    next click is a 409. So after the first deployment past the eighteenth, every picker open at it
+    is dropped at its table's next request, logged with `stored: null`.
   - **`restore-refused`** `{id, status, body}`: the wake's `restore_picker` met the layer's own
     refusal — a stored record that does not parse, or does not replay — and the request went on to
     its own dispatch, whose answer stands. The picker row is kept.
@@ -2632,6 +2637,28 @@ credential in the repository root's `.dev.vars` (§6.4), whose values neither pr
   that is not the API's JSON error by its type and size, never its text, so a 403 that reads as a
   `text/html` body of about 5,259 B is the zone's, and the cure is to run over WARP.
 
+#### The exit's window: counting wakes
+
+The exit's headed game (`web/e2e/exit_game.spec.ts`, run as its header says) reads each wake off
+`wrangler tail` as the `wake {id, wakes}` line (§6.5), which the objects log only while
+`YOKOHAMA_WEB_COUNT_WAKES` reads `on` (the orchestrator's ruling I-84). `wrangler.jsonc` leaves it
+unset (§6.3), so the window is two deploys, run in `worker/`, with no file edited:
+
+```sh
+node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on   # opens it
+npm run deploy                                                                        # closes it
+```
+
+- **Opening it is a deploy**, guarded like any other: the guard runs first, as `npm run deploy`
+  runs it, and `--var` deploys one more plain-text variable beside `wrangler.jsonc`'s `vars`,
+  replacing none of them (read in wrangler 4.136.3's source). Like every deploy, it restarts every
+  object and closes every socket (§6.2): open the window between games, before the exit's run.
+- **Closing it is the exit's last step.** The plain deploy replaces the Worker's variables with
+  the file's again, which name no `YOKOHAMA_WEB_COUNT_WAKES`, so the switch reads off. While the
+  window is open, every table's wake writes `meta.wakes` in its request's batch and logs its line.
+- A SECRET would switch it on as well, but a secret survives every later deploy until it is
+  deleted; the `--var` deploy is the form the ordinary deploy closes.
+
 #### The quota guard
 
 Workers Free counts requests per UTC day, and Durable Object rows read and written besides. The
@@ -2639,12 +2666,13 @@ owner's line for this cycle is **80,000 Worker requests per UTC day, account-wid
 orchestrator's ruling I-82): read the day's figures before a live run and again after it, and HOLD a
 run that could cross the line until the next UTC day. The GraphQL Analytics API gives them — `POST
 https://api.cloudflare.com/client/v4/graphql` with a token that can read the account's analytics,
-or the Cloudflare MCP's `execute` — ONE dataset per query, since one error fails the whole query:
+or the Cloudflare MCP's `execute` — ONE dataset per call, since one error fails the whole call (the
+MCP's `execute` throws at the first):
 
 ```graphql
-query ($account: string!, $start: Time!, $end: Time!) {
+query ($account: string!, $date: Date!) {
   viewer { accounts(filter: { accountTag: $account }) {
-    workersInvocationsAdaptive(limit: 1000, filter: { datetime_geq: $start, datetime_leq: $end }) {
+    workersInvocationsAdaptive(limit: 1000, filter: { date: $date }) {
       sum { requests } dimensions { scriptName }
     }
   } }
@@ -2659,8 +2687,9 @@ query ($account: string!, $date: Date!) {
 }
 ```
 
-`$start` is the UTC day's midnight and `$end` now; the requests are summed over every script, since
-the line is the account's; the figures lag by some minutes. **What a run costs**, read this way on
+`$date` is the UTC day, `YYYY-MM-DD` — the `filter: { date: "YYYY-MM-DD" }` form this cycle's
+readings used, one dataset per call; the requests are summed over every script, since the line is
+the account's; the figures lag by some minutes. **What a run costs**, read this way on
 2026-09-24 (the ledger's quota readings):
 
 - one `two_browsers` game — 2,862 moves, with `joins_by_link` and the cleanups — cost about

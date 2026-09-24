@@ -26,14 +26,14 @@
 //!
 //! **A list is only ever re-fed at the exact record it was built at, under the
 //! code it was built under.** The row carries that record's SHA-256 and the
-//! [`CODE`] it was built under — `build.rs`'s digest of the CLI's and the
-//! layer's sources, the code that gives a line its meaning (the orchestrator's
-//! ruling I-85) — and a restore at any other record, or under any other code,
-//! clears the list without re-feeding a line. At that record and under that
-//! code, every line does again what it did when it was recorded — it left the
-//! picker open and applied nothing — so no re-fed line can apply a move. A
-//! re-fed line that fails or closes the picker clears the list, and so does one
-//! that changes the record, whose move stays made
+//! [`CODE`] it was built under — `build.rs`'s digest of the engine's, the
+//! CLI's and the layer's sources, the code that gives a line its meaning (the
+//! orchestrator's ruling I-85) — and a restore at any other record, or under
+//! any other code, clears the list without re-feeding a line. At that record
+//! and under that code, every line does again what it did when it was recorded
+//! — it left the picker open and applied nothing — so no re-fed line can apply
+//! a move. A re-fed line that fails or closes the picker clears the list, and
+//! so does one that changes the record, whose move stays made
 //! ([`restore_picker_inner`]).
 //!
 //! `Reply.picker` is the list's JSON when it grew, and `"[]"` when a list
@@ -63,11 +63,13 @@ const MAX_LINES: usize = 64;
 /// the table's `picker` row.
 const CLEARED: &str = "[]";
 
-/// This build's CODE: `build.rs`'s digest of the CLI's and the layer's
-/// sources, the code that gives a re-fed line its meaning (the orchestrator's
-/// ruling I-85). Every list this module writes carries it. The engine's own
-/// changes are `SEMANTICS_REV`'s to guard: a record of another revision does
-/// not load.
+/// This build's CODE: `build.rs`'s digest of the engine's, the CLI's and the
+/// layer's sources, the code that gives a re-fed line its meaning (the
+/// orchestrator's ruling I-85). Every list this module writes carries it. The
+/// engine is among them because a line's NUMBER is the engine's order (R1's
+/// R-1): a pure reorder of the legal list moves no `SEMANTICS_REV` — its own
+/// rule forbids the bump, since no record replays differently — and a data
+/// edit moves only `rules_hash`, across which a record still loads.
 pub(crate) const CODE: &str = env!("YOKOHAMA_WORKER_PICKER_CODE");
 
 /// Every table's picker, as this instance knows it. `None` until
@@ -667,13 +669,14 @@ mod tests {
 
     /// **`CODE` is the digest `build.rs` states**, recomputed HERE from the
     /// rule in this cell's own words, so the constant is never checked against
-    /// the script that made it: every file under `crates/yokohama-cli/src` and
-    /// `crates/yokohama-web/src` whose name does not begin with a dot, in the
-    /// byte order of its path from the repository root, each as its path, a
-    /// NUL, its length in decimal, a NUL and its bytes; SHA-256 in lowercase
-    /// hex. It fails on a constant digested from other roots or by another
-    /// rule, and on a stale one — a build script that did not run again after
-    /// a source changed.
+    /// the script that made it: every file under `crates/yokohama-core/src`,
+    /// `crates/yokohama-cli/src` and `crates/yokohama-web/src` whose name does
+    /// not begin with a dot, in the byte order of its path from the repository
+    /// root, each as its path, a NUL, its length in decimal, a NUL and its
+    /// bytes; SHA-256 in lowercase hex. It fails on a constant digested from
+    /// other roots — the engine's left out, as it was before R1's R-1 — or by
+    /// another rule, and on a stale one: a build script that did not run again
+    /// after a source changed.
     #[test]
     fn the_code_is_the_digest_of_the_sources_that_give_a_line_its_meaning() {
         fn walk(repo: &std::path::Path, rel: &str, files: &mut Vec<String>) {
@@ -693,15 +696,15 @@ mod tests {
         }
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut files = Vec::new();
-        for root in ["crates/yokohama-cli/src", "crates/yokohama-web/src"] {
+        for root in ["crates/yokohama-core/src", "crates/yokohama-cli/src", "crates/yokohama-web/src"] {
             walk(&repo, root, &mut files);
         }
         files.sort();
-        assert!(
-            files.iter().any(|f| f == "crates/yokohama-cli/src/repl.rs") && files.iter().any(|f| f == "crates/yokohama-web/src/api.rs"),
-            "premise: both roots were read — {} files",
-            files.len()
-        );
+        for premise in
+            ["crates/yokohama-core/src/game/legal_moves.rs", "crates/yokohama-cli/src/repl.rs", "crates/yokohama-web/src/api.rs"]
+        {
+            assert!(files.iter().any(|f| f == premise), "premise: {premise} was read — {} files", files.len());
+        }
         let mut hasher = Sha256::new();
         for path in &files {
             let bytes = std::fs::read(repo.join(path)).unwrap();

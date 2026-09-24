@@ -24,8 +24,8 @@
 //! which is its own body (`--features debug` only).
 //!
 //! `build.rs` runs on the build host, never in the module: it digests the
-//! CLI's and the layer's sources into the picker row's code identity
-//! (`picker.rs`), and the scan above reads `src/` alone.
+//! engine's, the CLI's and the layer's sources into the picker row's code
+//! identity (`picker.rs`), and the scan above reads `src/` alone.
 
 mod config;
 mod create;
@@ -145,10 +145,11 @@ const HOST: Host =
 /// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
 /// with no receipt and no pending plan, under `off` none. A refused
 /// configuration changes nothing. A bad VALUE's refusal names its variable
-/// (spec §2.2); a configuration of the wrong shape — not the object of its five
-/// keys, an unknown key, a value of the wrong JSON type — is refused in serde's
-/// words, which name none (`config.rs`), and the shell never builds one. The
-/// clock is not reset: [`set_clock`] is its only writer.
+/// (spec §2.2); a configuration of the wrong shape names none — JSON that is
+/// not an object is refused in this crate's own sentence, which names the five
+/// keys, and an unknown key or a value of the wrong JSON type in serde's words
+/// (`config.rs`) — and the shell never builds one. The clock is not reset:
+/// [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
     let config::Config { chat, archive } = config::parse(config)?;
     let store = Arc::new(MemStore::default());

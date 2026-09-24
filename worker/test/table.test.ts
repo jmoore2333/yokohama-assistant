@@ -96,9 +96,11 @@ describe("the table object (spec §2.4)", () => {
       expect(row?.written_at).toBeGreaterThanOrEqual(before);
       expect(row?.written_at).toBeLessThanOrEqual(after);
       held.release("fresh", push);
-      await settle(stub);
     } finally {
+      // Released or restored, the push runs through before the next cell —
+      // on a red assertion above as on the green path.
       held.restore();
+      await settle(stub);
     }
     // Pool fact 8: `ctx.id.name` inside the object. The alarm's side of it is
     // the three alarm cells below.
@@ -652,18 +654,22 @@ describe("the table object (spec §2.4)", () => {
 
   // The orchestrator's rulings I-85 and I-89, the shell's half: a picker row
   // the module clears for its CODE — built under code other than this
-  // build's, as at a deploy that changes the CLI or the layer; or UNSTAMPED,
-  // as every row the fourteenth to the eighteenth deployments wrote, for
-  // which no code vouches — is logged `picker-dropped {id, stored, running}`
-  // at the wake (`stored: null` for the unstamped row) and deleted in the
-  // request's batch, and the player's next click is `Input::expect`'s 409 with
-  // nothing applied. The running code is the one the module stamps on every
-  // row it writes. Mutants: no line; the row kept; the line's two codes
+  // build's, as at a deploy that changes the engine, the CLI or the layer; or
+  // UNSTAMPED, as every row the fourteenth to the eighteenth deployments
+  // wrote, for which no code vouches — is deleted in the request's batch and
+  // logged `picker-dropped {id, stored, running}` once that batch has
+  // committed (`stored: null` for the unstamped row), and the player's next
+  // click is `Input::expect`'s 409 with nothing applied. A request whose own
+  // call TRAPS after the wake commits nothing: it logs no drop, the row waits,
+  // and the next wake drops it and logs it — once (R1's N-2). The running code
+  // is the one the module stamps on every row it writes. Mutants: no line; the
+  // line logged at the wake, before the batch (the trapped request logs it,
+  // and the drop is logged twice); the row kept; the line's two codes
   // swapped; an unstamped row re-fed as if its code were this build's.
   it.each([
     ["another code", "0".repeat(64)],
     ["no code, as deployments 14 to 18 wrote it", null],
-  ] as const)("a picker row with %s is dropped at the wake: logged, deleted, and nothing re-fed", async (what, stored) => {
+  ] as const)("a picker row with %s is dropped at the wake: logged once its batch commits, deleted, and nothing re-fed", async (what, stored) => {
     const id = stored === null ? "picker-unstamped" : "picker-code";
     const stub = await seedPlaying(id);
     const input = (line: string, expect?: string) =>
@@ -683,9 +689,36 @@ describe("the table object (spec §2.4)", () => {
     });
     await evictDurableObject(stub);
     const before = await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'");
+    const drops = (lines: unknown[]) => lines.filter((l) => (l as { event: string }).event === "picker-dropped");
+    // The first request after the eviction wakes the module, whose restore
+    // drops the row — and then its own call traps (`get` patched for the wake
+    // alone, handing back a module whose `dispatch` traps), so its batch never
+    // runs: the trap's line, and no other.
+    const original = Instance.prototype.get;
+    Instance.prototype.get = function (this: Instance) {
+      Instance.prototype.get = original;
+      const got = original.call(this);
+      got.mod.dispatch = () => got.mod.debug_trap!();
+      return got;
+    };
+    let trapped: { result: Response; lines: unknown[] };
+    try {
+      trapped = await logsDuring(() => input("A09", "place_a"));
+    } finally {
+      Instance.prototype.get = original;
+    }
+    expect(trapped.result.status, "premise: the call trapped").toBe(500);
+    expect(trapped.lines, `${what}: a request that committed no batch logs no drop`).toEqual([
+      { event: "trap", id, call: "dispatch", error: "RuntimeError: unreachable" },
+    ]);
+    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'"), `${what}: the row waits for a batch`).toEqual([
+      { json: planted },
+    ]);
+    // The trap dropped the module, so the next request wakes another: its
+    // restore drops the row again, and its batch deletes it.
     const { result, lines } = await logsDuring(() => input("A09", "place_a"));
     expect(result.status, `${what}: the picker starts closed, so the click is \`Input::expect\`'s 409`).toBe(409);
-    expect(lines.filter((l) => (l as { event: string }).event === "picker-dropped"), what).toEqual([
+    expect(drops(lines), `${what}: logged once, by the request whose batch deleted it`).toEqual([
       { event: "picker-dropped", id, stored, running },
     ]);
     expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'"), `${what}: the row is deleted`).toEqual([]);
