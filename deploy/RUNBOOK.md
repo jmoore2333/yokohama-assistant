@@ -2183,15 +2183,15 @@ uploading.
 `wrangler deploy` REPLACES the Worker's variables with `wrangler.jsonc`'s `vars`, so that file is
 the whole list; it leaves secrets alone.
 
-| Variable | At the sixteenth deployment | Absent means |
+| Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
-| `YOKOHAMA_WEB_TABLE_TTL_DAYS` | unset | no table ever expires |
-| `YOKOHAMA_WEB_ADMINS` | unset; a SECRET when set (`wrangler secret put`, the plan's ruling P-1), and the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
+| `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
+| `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
@@ -2237,23 +2237,23 @@ the whole list; it leaves secrets alone.
     or one for other work — logs `archive-owed-kept`. Set back to `r2`, the table's next request or
     alarm resumes it.
 - **The TTL** (R-6.5c.15): `wrangler.jsonc` sets `YOKOHAMA_WEB_TABLE_TTL_DAYS` to `90`, the owner's
-  value, from Task 14's commit on. A table's last activity is the newest write of its record, its
-  table document or its chat; a table untouched for the TTL expires on its alarm as its creator's
-  own Abandon — saved first while the archive is on, then deleted, leaving its marker (the list at
-  the top of §6). A save that fails leaves the table in place and is retried on the backoff (30 s,
-  2 min, 10 min, then hourly). A table whose record key already holds another game's record is
-  `held`: no retry can clear that, so it is never expired again, and waits for an operator's force.
-  A poisoned table never expires on its own either. With the archive off, an expired game is
-  deleted with no save of its own — one stamped while the archive was on is still in the bucket, and
-  its marker says so — and a save still owed from when it was on goes with it, logged
-  `archive-owed-dropped`.
-  **A table created before the TTL was set carries no expiry deadline** until its next delivery to
-  the lobby — a change of its copy, which re-arms its alarm — or until an alarm runs for other work;
-  the operator's listing names it, and an operator's expire or force ends it. **Nor does a LOWERED
-  TTL move a deadline already armed**: after a change such as 90 → 30, an idle table's alarm stays
-  at its old deadline, and the table expires then, or sooner if an alarm runs for other work, since
-  every run re-reads the TTL. A RAISED TTL needs nothing: the alarm at the old deadline re-reads it,
-  finds nothing due, and re-arms.
+  value, from Task 14's commit on; it is live from the seventeenth deployment (§6.11). A table's
+  last activity is the newest write of its record, its table document or its chat; a table untouched
+  for the TTL expires on its alarm as its creator's own Abandon — saved first while the archive is
+  on, then deleted, leaving its marker (the list at the top of §6). A save that fails leaves the
+  table in place and is retried on the backoff (30 s, 2 min, 10 min, then hourly). A table whose
+  record key already holds another game's record is `held`: no retry can clear that, so it is never
+  expired again, and waits for an operator's force. A poisoned table never expires on its own
+  either. With the archive off, an expired game is deleted with no save of its own — one stamped
+  while the archive was on is still in the bucket, and its marker says so — and a save still owed
+  from when it was on goes with it, logged `archive-owed-dropped`. **A table created before the TTL
+  was set carries no expiry deadline** until its next delivery to the lobby — a change of its copy,
+  which re-arms its alarm — or until an alarm runs for other work; the operator's listing names it,
+  and an operator's expire or force ends it. **Nor does a LOWERED TTL move a deadline already
+  armed**: after a change such as 90 → 30, an idle table's alarm stays at its old deadline, and the
+  table expires then, or sooner if an alarm runs for other work, since every run re-reads the TTL. A
+  RAISED TTL needs nothing: the alarm at the old deadline re-reads it, finds nothing due, and
+  re-arms.
 - **To keep every table** (R-6.5c.15): remove `YOKOHAMA_WEB_TABLE_TTL_DAYS` from `wrangler.jsonc`'s
   `vars` and deploy (§6.2). With it absent no table expires and no expiry deadline is armed; the
   markers and the operator surface work as before.
@@ -2360,10 +2360,11 @@ expires in 2031 (spec §0.5).
 - **Health**, over WARP as the owner: `curl -s https://yokohama.moore.nyc/api/health`. It reads
   `identity: "cf-access"`, `signal: "ws"`, and the archive switch.
 - **The tail**: `npx wrangler tail yokohama-web --format json > "$SCRATCH/tail.json"`, left running
-  beside the readings. Every event is one invocation, pretty-printed. The Worker's own invocations
-  have `executionModel: "stateless"`; an object's have `"durableObject"` and its class as
-  `entrypoint`. The request's headers arrive `REDACTED`, the assertion among them. Count and cost
-  them with:
+  beside the readings. Every event is one invocation, PRETTY-PRINTED across many lines: parse the
+  file by whole JSON objects — `jq` reads them as a stream — never line by line (§6.11). The
+  Worker's own invocations have `executionModel: "stateless"`; an object's have `"durableObject"`
+  and its class as `entrypoint`. The request's headers arrive `REDACTED`, the assertion among them.
+  Count and cost them with:
 
   ```sh
   jq -c '{model: .executionModel, entry: .entrypoint, url: .event.request.url, cpu: .cpuTime, wall: .wallTime, outcome}' \
@@ -2447,9 +2448,13 @@ expires in 2031 (spec §0.5).
     it — its save failed, the engine trapped, or its wake could not load the table — and `body` is
     the answer it met. The table stays, and the alarm retries it `retry_in` milliseconds later, on
     the backoff. `attempt` counts the expiries before this one that did not end it. **A line that
-    repeats every hour with the same `body`** names a table no retry will end — a stored document
-    the layer's delete refuses to read (`does not parse`, `malformed`) among them — which only an
-    operator's force ends.
+    repeats every hour with the same `body` is read by that `body`.** One naming a stored
+    DOCUMENT — `… table document does not parse`, `… table document is malformed`, `… record does
+    not parse` — names a table no retry will end, and only an operator's force ends it. The
+    archive's own refusal, `the archive could not be written (…) — the table was not deleted`,
+    with R2's reason inside the parentheses, repeats for as long as R2 fails, a long outage
+    included: **wait for the archive**. Once R2 answers, the next retry saves the game and the
+    table expires. A force there DROPS the game the expiry was saving.
   - **`held`** `{id, record_key}`: an expiry's save met another game's record already at its key —
     a `conflict`, which no retry can clear. The table stays, and is never expired again; an
     operator's force is its path.
@@ -2498,10 +2503,8 @@ expires in 2031 (spec §0.5).
 
 Each lands with the task that builds it, and records its own readings here:
 
-- expiry at `YOKOHAMA_WEB_TABLE_TTL_DAYS` `90`, the marker, the operator surface with its curl
-  playbook, and `YOKOHAMA_WEB_ADMINS` as a secret (Task 14);
 - the live Playwright tier and the live corpus replay, with the replay's ids forced before and after
-  each run (Tasks 14–15).
+  each run (Task 15).
 
 ### 6.8 M6.5c's skeleton is live — the fourteenth deployment, 2026-09-23 (a record, not a plan)
 
@@ -2770,3 +2773,139 @@ without a save. Its code never reads `archive_owed`, so a save owed at the rollb
 — unless an Abandon deletes that table meanwhile, which takes the save with it, and no line names
 it. "Resources connected to your Worker will not be changed during a rollback" (Cloudflare,
 *Rollbacks*), so every save already in the bucket stays.
+
+### 6.11 Expiry, the marker and the operator are live — the seventeenth deployment, 2026-09-24 (a record, not a plan)
+
+From `c2e8d084`, Task 14's reviewed head, its fix round included. It brings expiry, the marker and
+the operator surface. A table idle for `YOKOHAMA_WEB_TABLE_TTL_DAYS` days (`90`) ends as its
+creator's own Abandon, saved first while the archive is on. A table the layer deleted answers every
+request with its MARKER for 90 days. And the operator surface is gated on the secret
+`YOKOHAMA_WEB_ADMINS`. **Two versions:** the code deploy made
+`eb764c8b-69c6-475c-a30e-8815ff0e690f`, and the secret put made
+**`0b7575a8-7b56-4c53-8619-a82b52b3a63b`**, which is the one live: all 43 of the tail's events
+carry it. Every reading holds. The readings ran over WARP as the operator, with no credential, and
+through the credential as claimed identities — `.test` addresses, and in reading (f) the
+operator's own — the tail listening, and the header file deleted afterwards. The operator's address
+is written nowhere here (the plan's ruling P-1).
+
+- **Build:** `web/`'s `npm run build` — `precache: 153 entries, 9,938,226 B`, the cache
+  `yokohama-release-10e4457c62975466`, the fourteenth's. `worker/`'s `npm run build` — the module
+  **1,220,664 B**, 16 exports and no `debug_trap`, the sixteenth's size, and nothing under
+  `crates/` or `web/` changed between the two; the assembly **153 entries verified**, 156 files,
+  9,967,639 B; the release smoke **200**.
+- **The deploy (`npm run deploy`):** the guard PASSED all seven checks, its line naming the new one
+  last:
+
+  ```text
+  deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; the same object bindings, migrations and bucket binding in both; no operator list in its vars
+  ```
+
+  Wrangler read 172 asset files and re-uploaded none. **Worker Startup Time 1 ms.** The bindings
+  list names `env.YOKOHAMA_WEB_TABLE_TTL_DAYS ("90")` beside the three Durable Object classes, the
+  bucket and the other variables.
+- **The secret** (the plan's ruling P-1), after the deploy: `printf '%s' '<operator>' | npx
+  wrangler secret put YOKOHAMA_WEB_ADMINS`, the value piped on stdin. Wrangler reported it
+  uploaded, and `npx wrangler secret list` names exactly `YOKOHAMA_WEB_ADMINS`. A secret put
+  deploys a new version at once, and that version, `0b7575a8-…`, is the one the readings ran
+  against. `/api/health` then answered **200** with `archive: "r2"`, so the list parsed: a
+  malformed one would have answered it with the 500 naming the variable (§6.3).
+- **The premises**, over WARP as the operator: `GET /api/me` answered **200**
+  `{"mode":"cf-access","user":"<the operator's address>"}`, and `/api/health` **200** with
+  `identity: "cf-access"`, `signal: "ws"`, `archive: "r2"` and `semantics_rev` 7.
+- **(a) and (b) — the listing.** Through the credential, `red@deploy.test` created
+  `t14-force-1790224338` (**201**). `GET /api/admin/tables` as the operator answered **200** with
+  its row, all ten fields:
+
+  ```json
+  {"id":"t14-force-1790224338","name":null,"status":"open","players":2,"created_at":1790224338,"last_active":1790224338723,"bytes":24576,"over":false,"winner":null,"archived_at":null}
+  ```
+
+  `created_at` is the layer's unix SECONDS and `last_active` the shell's MILLISECONDS: the same
+  second. **The listing held ONLY that row.** The lobby holds no copy of a table from an earlier
+  deployment, so no stale table existed to force.
+- **(c) and (d) — a force frees the id at once.**
+  `POST /api/admin/tables/t14-force-1790224338/expire?force` as the operator answered **204** with
+  an empty body. A create at the same id then answered **201**: the tail shows a NEW generation,
+  `at` 1790224339 with a new `rand`, and no `slot-ignored` line. Forced again: **204**.
+- **(e) — the marker, live.** `t14-marker-1790224338`, created through the credential as
+  `red@deploy.test` (**201**), was deleted by its creator with no move made (**204**). Then:
+  - `GET …/table`, over WARP as the operator, answered **404** with the marker sentence:
+
+    ```json
+    {"error":"this table was abandoned on 2026-09-24 — no move had been made, so there was nothing to keep"}
+    ```
+
+  - a create at the id, through the credential: **409** `{"error":"this name was used recently —
+    try another"}`;
+  - forced: **204**. Its removal was already acknowledged, so the force pushed nothing and ended
+    the object at once.
+- **(f) and (g) — the gate refuses the dev door, live** (battery 32). The credential claiming the
+  operator's address: `GET /api/me` **200** `{"mode":"cf-access","user":"<the operator's
+  address>"}`, then `GET /api/admin/tables` **403** `{"error":"this address is not an operator
+  here"}`. The credential claiming `red@deploy.test`, an address not on the list: **403**, the same
+  body.
+- **(h) — nothing left behind:** the listing then held **0** rows whose id starts `t14-`.
+- **Three more readings** — the fix round's rulings I-72 and I-74, and spec §2.9's force on an
+  object that holds nothing:
+  - `POST /api/admin/tables/t14-nothing/expire?force=false`: **400** `{"error":"?force takes no
+    value — send ?force alone, or no query for an expire that saves first"}`. The tail has ONE
+    event for it, the stateless Worker's: no object was reached;
+  - `GET /api/admin/tables?x=1`: **404** `{"error":"no such endpoint: /api/admin/tables"}`, the
+    layer's own, answered by the house;
+  - `POST /api/admin/tables/t14-nothing/expire?force`: **204**, with an `operator` line and no
+    `forced` line: the object held nothing, so nothing was written.
+- **The tail** (`wrangler tail --format json`): 43 events from 04:32:12 to 04:32:45 UTC, all
+  `outcome: "ok"`, 0 exceptions. **It is PRETTY-PRINTED: parse it by whole JSON objects, never
+  line by line** — a parse by lines tripped these readings once.
+  - `operator` ×6, each with the operator's address: `list` ×2 and `force` ×4;
+  - `forced` ×3: the two forces of `t14-force-1790224338` and the marker's. The force of
+    `t14-nothing` logged none;
+  - `slot-pushed` and `slot-acked` ×6, in pairs: three creates' copies (`removal: false`) and three
+    REMOVALS (`removal: true`), for the two forces of a live table and the abandon. The marker's
+    force pushed nothing;
+  - `expired`, `archive-owed-dropped`, `trap` and `slot-ignored`: **0**. **No alarm fired**: every
+    event is a request or one of the six `apply` calls a table made to the house;
+  - of the 20 requests, the 17 that reached an object appear twice, the stateless Worker's event
+    and the object's. The two 403s and the 400 appear once, answered by the Worker before any
+    object.
+- **A transitional `forced` line** (the review's L-4). From this deployment on, a `forced` line
+  with no `operator` line before it would be the acknowledgement of a REMOVAL that a delete by the
+  earlier code left unacknowledged. That code wrote no marker, so the acknowledgement ends the
+  object as a force's does. **None was seen.**
+- **Against the spike (spec §0.3):** row 2, startup: **1 ms**, within the spike's 1–3 ms; the
+  fourteenth to the sixteenth deployments read 2 ms.
+
+#### What this deployment does NOT claim
+
+- **No table expired live.** None had been idle for 90 days, and no alarm fired. The expiry — its
+  save, `expired`, `expiry-failed`, `held` and `expiry-blocked` — and the head `this table expired
+  on …` were read in the pool only.
+- **An operator's plain expire** (no `?force`) was not called, so the head `this table was removed
+  by an operator on …` was not read live. Nor were the tails `— its game is in the archive` and
+  `— this server keeps no archive, so its game was not kept`: the one live marker was an abandon
+  with no move made. It was forced before its 90 days, so `marker-ended` was not read either.
+- **A force's 503** was not read: every push was acknowledged at once. No force met a poisoned or
+  `held` table, or a save still owed.
+- **The gate's refusal of an unlisted PERSON** was not read live. Reading (g) went through the
+  credential, which the gate refuses whatever address it claims, and no Access login but the
+  operator's was used. The node and pool cells are its evidence.
+- **The listing's `name`, `over`, `winner` and `archived_at`** were read live only at their empty
+  values. The pool's listing cell pins them at others (the review's M-2).
+
+#### Rollback
+
+§6.6. The earlier version is now the sixteenth's, `a8e887b5-6212-47ce-a493-abbd40b53cd6`, and no
+migration was added, so `npx wrangler rollback` can return to it. Its code has no expiry and no
+operator surface: no table expires, and every `/api/admin` path is the layer's 404. An alarm this
+deployment armed, for an expiry or a marker's end, runs the older alarm work there and ends
+nothing. That code never reads a marker either:
+
+- a table whose marker stands answers the layer's own `no game named …` in place of the marker
+  sentence, and its object keeps its `meta` rows, since only this deployment's code ends a marker;
+- a create at such an id is no longer refused once the lobby has acknowledged the removal. It
+  reuses the generation the object still holds, which the lobby retired at the removal, so for 90
+  days from the removal the lobby ignores the new table's copies (`slot-ignored`) and does not list
+  it; the table itself plays by its link. A create whose body names no id is given a random `sim-`
+  name, so only a create that names its id can meet one.
+
+What a rollback does with the secret was not read.
