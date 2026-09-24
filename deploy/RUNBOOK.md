@@ -2164,13 +2164,13 @@ bundles and validates without uploading.
 `wrangler deploy` REPLACES the Worker's variables with `wrangler.jsonc`'s `vars`, so that file is
 the whole list; it leaves secrets alone.
 
-| Variable | At the fourteenth deployment | Absent means |
+| Variable | At the sixteenth deployment | Absent means |
 |---|---|---|
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
-| `YOKOHAMA_WEB_ARCHIVE` | `off` | off (`r2` needs the bucket bound as `ARCHIVE`) |
+| `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | unset | no table ever expires |
 | `YOKOHAMA_WEB_ADMINS` | unset; a SECRET when set (`wrangler secret put`, the plan's ruling P-1) | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
@@ -2211,9 +2211,10 @@ the whole list; it leaves secrets alone.
   - `POST /api/archive` answers the layer's 404 `this server keeps no archive`, which the client
     reads as the archive being off;
   - a game-over save still owed from when the archive was on is KEPT and not retried: no request
-    uploads it, no alarm is re-armed for it, and an alarm that runs for other work logs
-    `archive-owed-kept`. Set back to `r2`, the table's next request or alarm resumes it.
-- **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as the fourteenth
+    uploads it, no alarm is re-armed for it, and any alarm that runs — one armed before the switch,
+    or one for other work — logs `archive-owed-kept`. Set back to `r2`, the table's next request or
+    alarm resumes it.
+- **To keep every table** (R-6.5c.15): leave `YOKOHAMA_WEB_TABLE_TTL_DAYS` unset, as the sixteenth
   deployment does.
 
 ### 6.4 The credential
@@ -2306,6 +2307,37 @@ expires in 2031 (spec §0.5).
     with `kind: "house"`.
   - **`alarm-failed`** `{id, error}`: a `setAlarm` or `deleteAlarm` issued beside a batch was
     rejected.
+
+  The archive on R2 (spec §2.6; Task 13) adds these:
+  - **`archive-landed`**, **`archive-identical`**, **`archive-conflict`**, **`archive-failed`**
+    `{id, site, record_key, detail, attempt?}`: one upload's outcome. `site` is `abandon` (a
+    creator's DELETE), `game-over` (a save a game over owes, uploaded after the move's reply) or
+    `browser` (`POST /api/archive`, where `id` is the archive object's name, `archive:<address>`).
+    `detail` is the record's key, or for `failed` R2's message — or the host's own sentence
+    `<record_key> refused a create as present, then read as absent`, when the record's
+    create-if-absent put was refused and the record then read as absent. `attempt`, at the
+    game-over site only, counts this save's earlier tries that did not complete it. A failed
+    game-over save is retried on the backoff — 30 s, 2 min, 10 min, then hourly — by the alarm, and
+    by the table's next request.
+  - **`archive-stamped`** `{id, record_key, reading, stamped, over}`: a game-over save that landed
+    (or was already there), stamped by the layer's own `stamp_archive` at the plan's recorded
+    `reading`. `stamped: true` completes the save; `stamped: false, over: false` — an undo at a
+    one-person table while the upload ran — means nothing is owed any more; `stamped: false,
+    over: true` is retried. When the stamp answers other than 200 the line carries
+    `{status, body}` in place of the two booleans, and the save is retried.
+  - **`archive-owed-kept`** `{id, record_key, attempt}`: the alarm ran while the switch reads
+    `off` and found a save still owed. The save is kept, and nothing re-arms the alarm for it; once
+    the switch reads `r2` again, the table's next request or alarm resumes it.
+  - **`archive-owed-dropped`** `{id, record_key, attempt}`: a delete made while the switch reads
+    `off` took with it a save the table still owed — logged after the delete's batch committed.
+  - **`trap`** with `call` naming the stage that trapped: in an abandon's second dispatch,
+    `receipt`, `dispatch` or `read`; in a game-over save's stamp, `receipt`, `stamp_archive` or
+    `read`; in an archive object, `receipt` or `dispatch`.
+- **The bucket**, through wrangler's own login: `npx wrangler r2 object get
+  "yokohama-archive/<key>" --remote --file <path>`. A pair is `rev7/{over,abandoned}/<id>.json` and
+  `.table.json`, and a browser's save sits under `browser/<caller_segment>/`. A game whose table's
+  creator, or a browser save whose sender, has an address ending `.test` is keyed under the root
+  `test/` instead, apart from the owner's paths (spec §2.6).
 - **The Origin check**, over WARP: an upgrade from the site's own origin answers 101, one from
   another answers 403 with the host's sentence (reading 2d).
 
@@ -2330,14 +2362,14 @@ expires in 2031 (spec §0.5).
   resources" (the command's own reference): the objects ARE the store.
 - **Later**, `npx wrangler rollback <version-id>` (the ids from `npx wrangler deployments list`)
   goes back to an earlier version, but never across a Durable Object migration: a version from
-  before a class was added cannot be restored (Cloudflare, *Rollbacks — Bindings*).
+  before a class was added cannot be restored (Cloudflare, *Rollbacks — Bindings*). Nor can a
+  version bound to an R2 bucket that no longer exists (the same section), and every version from
+  the sixteenth deployment on binds `yokohama-archive`.
 
 ### 6.7 Still to come in this cycle
 
 Each lands with the task that builds it, and records its own readings here:
 
-- the bucket `yokohama-archive` bound as `ARCHIVE`, the switch at `r2`, and the conditional put read
-  live (Task 13);
 - expiry at `YOKOHAMA_WEB_TABLE_TTL_DAYS` `90`, the marker, the operator surface with its curl
   playbook, and `YOKOHAMA_WEB_ADMINS` as a secret (Task 14);
 - the live Playwright tier and the live corpus replay, with the replay's ids forced before and after
@@ -2521,3 +2553,92 @@ migration was added, so `npx wrangler rollback` can return to it. Its code reads
 lobby would list nothing; the copies stay in the house's storage. Every table and its game stay as
 they are: the fourteenth's code never reads the `meta` keys this deployment added, and a pending
 slot's alarm finds nothing to do there.
+
+### 6.10 The archive is live — the sixteenth deployment, 2026-09-24 (a record, not a plan)
+
+From `4d984f52`, Task 13's reviewed head, its fix round included, tree clean. It brings the archive
+on R2: the bucket `yokohama-archive` bound as `ARCHIVE` and the switch at `r2`. An abandon's save
+and a browser's are uploaded between two dispatches of the layer, the receipt loop (spec §2.6). A
+game over's save is uploaded after the move's reply, and then stamped by the layer's own
+`stamp_archive`. **Version `a8e887b5-6212-47ce-a493-abbd40b53cd6`.** Every reading holds. The
+readings ran with the credential and claimed `.test` identities, the tail listening, and the header
+file deleted afterwards.
+
+- **The bucket, read back through the account API before it was bound** (2026-09-23): created
+  2026-09-23T05:26:17Z, location ENAM, storage class Standard, the default jurisdiction, 0 objects.
+  It is private: its managed `r2.dev` domain is disabled, and the planning session gave it no custom
+  domain. Its one lifecycle rule is the default that aborts an unfinished multipart upload after 7
+  days.
+- **Build:** `worker/`'s `npm run build`. The module is **1,220,664 B**, the fifteenth's size, and
+  nothing under `crates/` or `web/` changed between the two; the assembly **153 entries verified**,
+  156 files, 9,967,639 B; the release smoke **200**, under its own configuration with the archive
+  `off`.
+- **The deploy:** the guard PASSED, naming "the same object bindings, migrations and bucket binding
+  in both". Total Upload **1311.47 KiB / gzip 499.90 KiB** (the fifteenth's: 1288.14 KiB / 493.52
+  KiB); **Worker Startup Time 2 ms**. The bindings now include `env.ARCHIVE (yokohama-archive)`, an
+  R2 bucket, and `env.YOKOHAMA_WEB_ARCHIVE ("r2")`. Wrangler's OAuth login accepted the R2 binding,
+  so the plan's fallback — a fresh `wrangler login` — was not needed.
+- **Reading 1 — health**, over WARP as the owner: `identity: cf-access`, `signal: ws`,
+  **`archive: r2`**.
+- **Reading 2 — an abandoned game lands.** Through the credential, `red@deploy.test` created a
+  LOCKED table, `t13-abandon-1790214892` (seed 20260831), and `blue@deploy.test` joined with the
+  password (**200**); both keeps answered **200**. Red's lines `1, 2, A09, confirm, 1, 1, 1, 1, 1`
+  took the record to 1, 1, 1, 2, 3, 4, 5, 6 and 7 events, the last reading `watching` with
+  `to_move 1`, and Blue's `1` took it to 8. The creator's DELETE answered **204**, saved first and
+  then deleted, and the id is gone from `scope=mine`.
+- **Reading 3 — the pair, read back** with `npx wrangler r2 object get … --remote` through
+  wrangler's own login. The pair sits under the `test/` root, never the owner's paths:
+  - `test/rev7/abandoned/t13-abandon-1790214892.json` holds **8 events** in 1,301 B;
+  - its `.table.json` reads `lock: null` and `unlocked: []` (`strip_for_archive`),
+    `archived_at: 1790214893` and status `playing`;
+  - the record LOADS in the CLI (`cargo run -p yokohama-cli -- <file>`), and `log` lists the eight
+    moves. Red ends the additional-action phase, places 2 assistants in Customs (A09), places the
+    President from hand in Customs, takes the area action declining every optional part, skips the
+    5-Power token, skips the building and ends the additional-action phase; then Blue ends the
+    additional-action phase.
+- **Reading 4 — the conditional put's form, live** (spec §2.6, §3.2). The tail shows this line, and
+  no `archive-failed` line:
+
+  ```json
+  {"event":"archive-landed","id":"t13-abandon-1790214892","site":"abandon","record_key":"test/rev7/abandoned/t13-abandon-1790214892.json","detail":"test/rev7/abandoned/t13-abandon-1790214892.json"}
+  ```
+
+  `TypeError` appears **0** times in the tail, and all **40** invocations read `outcome: "ok"`.
+  **The form that shipped is `onlyIf: new Headers({"If-None-Match": "*"})`, and production R2
+  ACCEPTED it**: the record's create-if-absent put landed. The plan's fallback, the object form
+  `onlyIf: {etagDoesNotMatch: "*"}`, was not needed. Cloudflare's type for `onlyIf` admits both
+  (`R2Conditional | Headers`).
+- **Against the spike (spec §0.3):** row 2, startup: 2 ms, within the spike's 1–3 ms, as at the
+  fourteenth and fifteenth deployments.
+- **The owner's optional lifecycle rule on `test/` was asked and is OPEN.** Every live tier's saves
+  accumulate under that prefix (spec §7); the rule is the owner's to set, and none is set.
+
+#### What this deployment does NOT claim
+
+- **A finished game's save was not read live.** Only an abandon's save landed. The game-over site
+  is read at the exit (Task 16), where a whole game is played: the save owed in the move's batch,
+  the upload after the reply, `stamp_archive` at the recorded reading, and the `archive-stamped`
+  line. The pool's cells are its evidence until then.
+- **The refusal itself was read in the pool only.** Live, the conditional form was read only as
+  ACCEPTED. A create-if-absent put meeting a present record, refused by the bucket and then re-read
+  as `identical` or `conflict`, is proven against miniflare's R2 by the two race cells in
+  `worker/test/archive.test.ts`. Production R2's answer to that precondition was not read.
+- **No alarm fired**, so no retry of a failed upload, and no save owed across an eviction, was read
+  live.
+- **The CLI read was of a two-human record**: eight moves of an abandoned game, with no bot seat and
+  no final scoring. A finished game's record is read at the exit.
+- **A browser's save (`POST /api/archive`) and the switch's `off` paths were not read at this
+  version**, `archive-owed-kept` and `archive-owed-dropped` among them. The corpus replay's
+  `archive-walk.json` ran in the pool only; the live replay is Task 15's.
+
+#### Rollback
+
+§6.6. The earlier version is now the fifteenth's, `e355c676-cfb2-400b-926d-05def2e725fd`. No
+migration was added and that version binds no bucket, so `npx wrangler rollback` can return to it.
+A version captures "its bundled code, static assets, bindings, and compatibility settings"
+(Cloudflare, *Versions & deployments*), and its variables are bindings, so the fifteenth would run
+with no bucket bound and the archive `off`: a game over saves nothing, and an Abandon deletes
+without a save. Its code never reads `archive_owed`, so a save owed at the rollback waits in `meta`
+— unless an Abandon deletes that table meanwhile, which takes the save with it, and no line names
+it. "Resources connected to your Worker will not be changed during a rollback" (Cloudflare,
+*Rollbacks*), so every save already in the bucket stays.
