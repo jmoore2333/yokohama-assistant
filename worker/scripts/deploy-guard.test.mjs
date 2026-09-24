@@ -163,6 +163,30 @@ describe("the deploy guard", () => {
     ]);
   });
 
+  // Check 7 (the plan's ruling P-1, made mechanical): the operator list is a
+  // SECRET, set with `wrangler secret put`. In `vars` it would be committed —
+  // an address in a repository headed for open source. It is read as a KEY,
+  // not as text, so the configuration's own comments may name it. Mutants:
+  // the check missing; top level only (an environment's vars pass); the
+  // file's text searched (the committed configuration, whose comment names
+  // it, is refused).
+  it("refuses an operator list among production's vars", () => {
+    const listed = PRODUCTION.replace('"main"', '"vars": { "YOKOHAMA_WEB_ADMINS": "someone@example.com" },\n  "main"');
+    expect(deployGuard(worker({ "wrangler.jsonc": listed }))).toEqual([
+      "wrangler.jsonc's vars name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value",
+    ]);
+  });
+  it("refuses one in an environment's vars", () => {
+    const listed = PRODUCTION.replace('"main"', '"env": { "staging": { "vars": { "YOKOHAMA_WEB_ADMINS": "x@y.z" } } },\n  "main"');
+    expect(deployGuard(worker({ "wrangler.jsonc": listed }))).toEqual([
+      "wrangler.jsonc's env.staging.vars name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value",
+    ]);
+  });
+  it("reads the name in a comment as prose", () => {
+    const commented = PRODUCTION.replace("// production", "// production — YOKOHAMA_WEB_ADMINS is set with wrangler secret put");
+    expect(deployGuard(worker({ "wrangler.jsonc": commented }))).toEqual([]);
+  });
+
   // Battery rows 13 and 14 (plan review M5): the pool reads only
   // wrangler.test.jsonc, and an asset-layer fallback answers without invoking
   // the Worker, so no pool cell can see production's block change; this can.

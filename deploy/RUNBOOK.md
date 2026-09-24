@@ -2110,11 +2110,17 @@ What answers what:
     the client's probe reads it. The heads: `this table was abandoned on 2026-10-22`, `this table
     expired on 2026-10-22 after 90 days without activity` (one day of TTL reads `1 day`), `this
     table was removed by an operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
-    game is in the archive`, `— no move had been made, so there was nothing to keep`, `— this server
-    keeps no archive, so its game was not kept`. After the 90 days, once the lobby has acknowledged
-    the removal, the object ends and the id reads the layer's own `no game named …`;
-  - the operator surface (spec §2.9; §6.3 below): **403** `this address is not an operator here`,
-    and a force's **503** `the lobby has not confirmed the removal — the alarm will finish it`;
+    game is in the archive` where its game was saved — stamped at game over, or saved by the delete
+    itself, which with the switch at `r2` saves every game before it deletes it — whatever the
+    switch reads now (the orchestrator's ruling I-71); `— no move had been made, so there was
+    nothing to keep` where there was no game; and `— this server keeps no archive, so its game was
+    not kept` for a game never saved, deleted while the switch reads `off`. After the 90 days, once
+    the lobby has acknowledged the removal, the object ends and the id reads the layer's own `no
+    game named …`;
+  - the operator surface (spec §2.9; §6.3 below): **403** `this address is not an operator here`;
+    **400** `?force takes no value — send ?force alone, or no query for an expire that saves first`
+    for a force given any value, `?force=false` among them (the orchestrator's ruling I-72); and a
+    force's **503** `the lobby has not confirmed the removal — the alarm will finish it`;
   - a trapped engine: **500** `the table's engine stopped — try again`, `the lobby's engine stopped
     — try again` or `the archive's engine stopped — try again`; a table whose stored document traps
     twice: **500** `this table's stored <kind> cannot be loaded`;
@@ -2158,9 +2164,11 @@ npm run deploy                     # node scripts/deploy-guard.mjs && wrangler d
 **The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; an
 assets tree that is not the release its `sw.js` lists, or that holds a debug browser module;
 `workers_dev` or `preview_urls` not `false`; the test clock named anywhere in `wrangler.jsonc`; an
-`assets` block that is not spec §2.3's; and the two configurations' `durable_objects`, `migrations`
-or `r2_buckets` blocks differing, or either file lacking one. `npx wrangler deploy --dry-run`
-bundles and validates without uploading.
+`assets` block that is not spec §2.3's; the two configurations' `durable_objects`, `migrations`
+or `r2_buckets` blocks differing, or either file lacking one; and `YOKOHAMA_WEB_ADMINS` among
+`wrangler.jsonc`'s `vars`, the top level's or any environment's — the operator list is a secret
+(§6.3), never a committed value. `npx wrangler deploy --dry-run` bundles and validates without
+uploading.
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
   probes once and reconnects, an open picker is re-fed, and no acknowledged move is lost — but it is
@@ -2183,7 +2191,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | unset | no table ever expires |
-| `YOKOHAMA_WEB_ADMINS` | unset; a SECRET when set (`wrangler secret put`, the plan's ruling P-1) | the operator routes are the layer's 404 |
+| `YOKOHAMA_WEB_ADMINS` | unset; a SECRET when set (`wrangler secret put`, the plan's ruling P-1), and the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
@@ -2219,6 +2227,9 @@ the whole list; it leaves secrets alone.
   - game over saves nothing and arms no alarm for a save;
   - a creator's Abandon deletes without a save, taking with it any save the table still owes, which
     it logs as `archive-owed-dropped`;
+  - a game saved while the switch read `r2` — stamped at game over — is still in the bucket, and
+    its marker says so when it is abandoned or expires: `its game is in the archive` (the
+    orchestrator's ruling I-71). Only a game never saved reads `its game was not kept`;
   - `POST /api/archive` answers the layer's 404 `this server keeps no archive`, which the client
     reads as the archive being off;
   - a game-over save still owed from when the archive was on is KEPT and not retried: no request
@@ -2232,11 +2243,17 @@ the whole list; it leaves secrets alone.
   the top of §6). A save that fails leaves the table in place and is retried on the backoff (30 s,
   2 min, 10 min, then hourly). A table whose record key already holds another game's record is
   `held`: no retry can clear that, so it is never expired again, and waits for an operator's force.
-  A poisoned table never expires on its own either. With the archive off, an expired game is simply
-  gone, and a save still owed from when it was on goes with it, logged `archive-owed-dropped`.
+  A poisoned table never expires on its own either. With the archive off, an expired game is
+  deleted with no save of its own — one stamped while the archive was on is still in the bucket, and
+  its marker says so — and a save still owed from when it was on goes with it, logged
+  `archive-owed-dropped`.
   **A table created before the TTL was set carries no expiry deadline** until its next delivery to
   the lobby — a change of its copy, which re-arms its alarm — or until an alarm runs for other work;
-  the operator's listing names it, and an operator's expire or force ends it.
+  the operator's listing names it, and an operator's expire or force ends it. **Nor does a LOWERED
+  TTL move a deadline already armed**: after a change such as 90 → 30, an idle table's alarm stays
+  at its old deadline, and the table expires then, or sooner if an alarm runs for other work, since
+  every run re-reads the TTL. A RAISED TTL needs nothing: the alarm at the old deadline re-reads it,
+  finds nothing due, and re-arms.
 - **To keep every table** (R-6.5c.15): remove `YOKOHAMA_WEB_TABLE_TTL_DAYS` from `wrangler.jsonc`'s
   `vars` and deploy (§6.2). With it absent no table expires and no expiry deadline is armed; the
   markers and the operator surface work as before.
@@ -2275,8 +2292,9 @@ curl -s -w '\n%{http_code}\n' -X POST "$B/api/admin/tables/<id>/expire?force"   
 
 - **The listing** is every table the lobby holds a copy of, whatever its status — dealing ones
   included, which the lobby's own pages never show a stranger — each with `id`, `name`, `status`,
-  `players`, `created_at`, `last_active` (milliseconds), `bytes` (the table object's SQLite size),
-  `over`, `winner` and `archived_at`. `last_active` and `bytes` are as of the table's last delivery
+  `players`, `created_at` (unix SECONDS, the layer's), `last_active` (unix MILLISECONDS, the
+  shell's), `bytes` (the table object's SQLite size), `over`, `winner` and `archived_at` (unix
+  seconds). `last_active` and `bytes` are as of the table's last delivery
   to the lobby: a chat post or a move within a turn does not refresh them. The listing does not
   say that a table is `held` or poisoned; the log does (`held`, `expiry-blocked`, `poison`).
 - **Expire** ends a table NOW, exactly as its expiry would — its creator's own Abandon, the save
@@ -2289,7 +2307,9 @@ curl -s -w '\n%{http_code}\n' -X POST "$B/api/admin/tables/<id>/expire?force"   
   503, a create at the id is 409 meanwhile, and the table's alarm finishes the force. On an id that
   holds nothing, 204, writing nothing. It is how a poisoned or `held` table leaves, how a table whose
   copy the lobby refused (`copy-refused`) leaves, and how the live corpus replay frees its fixed
-  ids.
+  ids. **`?force` takes no value** (the orchestrator's ruling I-72): with one — `?force=false`,
+  `?force=1` — the answer is the 400 naming the switch, which neither forces nor expires; `?force=`
+  forces. Keys compare exactly, so `?Force`, or a second key beside `force`, is the layer's 404.
 
 ### 6.4 The credential
 
@@ -2369,8 +2389,10 @@ expires in 2031 (spec §0.5).
     a retired generation; another generation while one is current; or, with no current row
     (`current: null`), a generation that does not order after every retired one — how a table
     re-created in the same second as the table it replaces would read. A delete's marker refuses
-    any create at its id for 90 days (409), so only a force followed within the same second by a
-    create at the id can still meet it.
+    any create at its id for 90 days (409), so only a force leaves the way open. The retired
+    generation's time is the forced table's CREATE, not the force, so the case is a table created,
+    forced and re-created within one second — or any re-create under a frozen test clock, which the
+    pool's `recreate` helper steps around.
   - **`copy-refused`** `{id, error}`: `house_copy` refused the table's document, and `error` is the
     module's sentence, verbatim. No slot is written, so the house keeps listing the last copy it
     received. Only a corrupted store reaches it; the operator's force (Task 14) is its path.
@@ -2409,9 +2431,10 @@ expires in 2031 (spec §0.5).
   - **`archive-owed-dropped`** `{id, record_key, attempt}`: a delete made while the switch reads
     `off` — an abandon, or an expiry — took with it a save the table still owed, logged after the
     delete's batch committed; and an operator's force, which saves nothing whatever the switch
-    reads, logs every owed save it drops.
+    reads, logs every owed save it drops, once it is gone and before its `forced`.
   - **`trap`** with `call` naming the stage that trapped: in a delete's first dispatch — an
-    abandon's, an expiry's — `house_copy` (an expiry reading its creator off the table's copy),
+    abandon's, an expiry's — `house_copy` (the delete reading the table's copy: its stamp, and at
+    an expiry its creator),
     `events` (the reading that decides the marker's tail), `dispatch` or `expire`, or `read`; in its
     second dispatch, `receipt`, `dispatch` or `expire`, or `read`; in a game-over save's stamp,
     `receipt`, `stamp_archive` or `read`; in an archive object, `receipt` or `dispatch`.
@@ -2423,7 +2446,10 @@ expires in 2031 (spec §0.5).
   - **`expiry-failed`** `{id, status, body, attempt, retry_in}`: an idle table's expiry did not end
     it — its save failed, the engine trapped, or its wake could not load the table — and `body` is
     the answer it met. The table stays, and the alarm retries it `retry_in` milliseconds later, on
-    the backoff. `attempt` counts the expiries before this one that did not end it.
+    the backoff. `attempt` counts the expiries before this one that did not end it. **A line that
+    repeats every hour with the same `body`** names a table no retry will end — a stored document
+    the layer's delete refuses to read (`does not parse`, `malformed`) among them — which only an
+    operator's force ends.
   - **`held`** `{id, record_key}`: an expiry's save met another game's record already at its key —
     a `conflict`, which no retry can clear. The table stays, and is never expired again; an
     operator's force is its path.

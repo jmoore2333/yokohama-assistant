@@ -64,7 +64,9 @@ const NO_ONE: Identity = { kind: "none" };
  *    among them whatever address it claims; a listed person passes with
  *    `X-Yokohama-Operator` set to their address, and the route names the
  *    object (`adminRoute`): the listing is the house's, an expire the table's,
- *    and any other path the house's — the layer's own 404.
+ *    `?force` given a value the 400 `adminRoute` names (the orchestrator's
+ *    ruling I-72), and any other path or query the house's — the layer's own
+ *    404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
  *    object's 101 is returned as it came.
@@ -111,6 +113,7 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
     if (gate.kind === "operator") {
       headers.set(OPERATOR_HEADER, gate.email);
       const admin = adminRoute(req.method, url.pathname, url.search.slice(1));
+      if (admin.kind === "refused") return respond(400, errorBody(admin.sentence));
       if (admin.kind === "expire") forwarded = { kind: "table", name: admin.name };
     }
   } else {

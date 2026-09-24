@@ -14,18 +14,24 @@ import { readReply } from "../src/module";
 import { HOUSE_NAME } from "../src/slot";
 import { Table } from "../src/table";
 import { failingPuts, failPushes, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
+import { OWED_GAME_OVER_JSON, OWED_GAME_OVER_TABLE_JSON } from "./fixtures.gen";
 import {
   ANOTHER_RECORD,
   CREATE_BODY,
   DAY_MS,
   RED,
   LOCAL,
+  OWED,
   alarmOf,
+  archivedAt,
   backdate,
   call,
+  docOf,
+  holding,
   logsDuring,
   markerOf,
   owedGameOver,
+  replaceOnce,
   revisionOf,
   seedPlaying,
   settle,
@@ -52,8 +58,10 @@ const ORIGIN = "https://yokohama.test";
 const BOSS = "boss@t.test";
 const OPS: Env = { ...env, YOKOHAMA_WEB_ADMINS: "chief@t.test, Boss@T.test" };
 
-/** Spec §2.9's two host-written refusals, and §2.4's 409, as LITERALS. */
+/** Spec §2.9's two host-written refusals, ruling I-72's, and §2.4's 409, as
+ *  LITERALS. */
 const NOT_AN_OPERATOR = '{"error":"this address is not an operator here"}';
+const FORCE_VALUE = "?force takes no value — send ?force alone, or no query for an expire that saves first";
 const UNCONFIRMED = { error: "the lobby has not confirmed the removal — the alarm will finish it" };
 const USED_RECENTLY = { error: "this name was used recently — try another" };
 
@@ -107,10 +115,10 @@ async function reaching<T>(f: () => Promise<T>) {
 /** The layer's own answer to `method path`, from a fresh module in this
  *  configuration: what the house's `dispatch` answers for a path it has no
  *  route for. */
-function layerAnswer(method: string, path: string): { status: number; text: string } {
+function layerAnswer(method: string, path: string, query = ""): { status: number; text: string } {
   const mod = createModule(compiled);
   mod.init(configModule.moduleConfig(env, null));
-  const r = readReply(mod.dispatch(BOSS, method, path, "", undefined, new Uint8Array()));
+  const r = readReply(mod.dispatch(BOSS, method, path, query, undefined, new Uint8Array()));
   return { status: r.status, text: r.body };
 }
 
@@ -210,18 +218,23 @@ describe("the gate (spec §2.9)", () => {
   });
 
   // An operator's path the surface does not name is unrouted: the layer's own
-  // 404, as for anyone. Mutants: a loose route (a GET of an expire, a POST of
-  // the listing, `/api/admin` itself answered as the listing).
+  // 404, as for anyone — and so is a query a route does not take, its keys
+  // compared exactly (the orchestrator's ruling I-72). Mutants: a loose route
+  // (a GET of an expire, a POST of the listing, `/api/admin` itself answered
+  // as the listing); the listing taking any query; a key beside `force`
+  // ignored.
   it("an operator's path the surface does not name is the layer's 404", async () => {
     const token = await person(BOSS);
-    for (const [method, path] of [
-      ["GET", "/api/admin"],
-      ["GET", "/api/admin/tables/op-none/expire"],
-      ["POST", "/api/admin/tables"],
-      ["POST", "/api/admin/tables/op-none/expire/now"],
+    for (const [method, path, query] of [
+      ["GET", "/api/admin", ""],
+      ["GET", "/api/admin/tables/op-none/expire", ""],
+      ["POST", "/api/admin/tables", ""],
+      ["POST", "/api/admin/tables/op-none/expire/now", ""],
+      ["GET", "/api/admin/tables", "scope=all"],
+      ["POST", "/api/admin/tables/op-none/expire", "force&dry=1"],
     ] as const) {
-      const res = await worker(path, { token, method, env: OPS });
-      expect(res, `${method} ${path}`).toEqual(layerAnswer(method, path));
+      const res = await worker(query === "" ? path : `${path}?${query}`, { token, method, env: OPS });
+      expect(res, `${method} ${path}?${query}`).toEqual(layerAnswer(method, path, query));
       expect(res.status).toBe(404);
     }
     expect(await tablesIn(tableStub("op-none")), "no table object was made").toBe(0);
@@ -232,23 +245,38 @@ describe("the listing (spec §2.9)", () => {
   // Every table the house holds a copy of, a DEALING one among them — which
   // the lobby's own pages never show a stranger — with the ten fields, its
   // size and its last activity as the house last received them. Logged with
-  // the operator's address. Mutants: a status filtered out; a field missing or
-  // renamed; the size or last activity from anywhere but the slot; no line.
+  // the operator's address. Two tables carry a name — the open one through
+  // its create, and a FINISHED game through its document — and the finished
+  // one is stamped at game over (the committed owed-game-over pair, named in
+  // its text: winner seat 1, created 1_789_956_559, stamped at the pool's
+  // frozen reading), so every field is read at a value other than its
+  // default. Mutants: a status filtered out; a field missing or renamed; the
+  // name, `over`, the winner or the stamp read as its default whatever the
+  // copy says (the review's M-2); the size or last activity from anywhere but
+  // the slot; no line.
   it("lists every table the house holds, a dealing one among them, with its size and last activity", async () => {
-    const [open, dealing, playing] = ["op-list-open", "op-list-deal", "op-list-play"];
-    expect((await call(tableStub(open), RED, "POST", "/api/games", CREATE_BODY, open)).status).toBe(201);
+    const [open, dealing, playing, won] = ["op-list-open", "op-list-deal", "op-list-play", "op-list-won"];
+    const named = CREATE_BODY.replace(/}$/, ',"name":"Café ☕ 東京"}');
+    expect((await call(tableStub(open), RED, "POST", "/api/games", named, open)).status).toBe(201);
     expect((await call(tableStub(dealing), RED, "POST", "/api/games", CREATE_BODY, dealing)).status).toBe(201);
     expect((await call(tableStub(dealing), "blue@t.test", "POST", `/api/games/${dealing}/join`, '{"seat":1}')).status).toBe(200);
     await seedPlaying(playing);
-    for (const id of [open, dealing]) await settle(tableStub(id));
+    const finished = replaceOnce(OWED_GAME_OVER_TABLE_JSON, `"id": "${OWED}",\n  "name": null`, `"id": "${won}",\n  "name": "Finished ☕"`);
+    const wonStub = await holding(won, { table: finished, record: OWED_GAME_OVER_JSON });
+    // Its save's lines are the archive cells' to read; here they are quiet.
+    await logsDuring(async () => {
+      expect((await call(wonStub, LOCAL, "GET", `/api/games/${won}/table`)).status, "premise: the wake plays the game to its end").toBe(200);
+      for (const id of [open, dealing, won]) await settle(tableStub(id));
+    });
+    expect(archivedAt(await docOf(wonStub, "table")), "premise: stamped at game over, at the frozen reading").toBe(1_789_000_000);
     const token = await person(BOSS);
     const { result, lines } = await logsDuring(() => worker("/api/admin/tables", { token, env: OPS }));
     expect(result.status).toBe(200);
     expect(lines).toEqual([{ event: "operator", action: "list", address: BOSS }]);
     const rows = (JSON.parse(result.text) as { tables: Array<Record<string, unknown>> }).tables.filter((r) =>
-      [open, dealing, playing].includes(String(r.id)),
+      [open, dealing, playing, won].includes(String(r.id)),
     );
-    const want = async (id: string, status: string) => {
+    const want = async (id: string, status: string, read: Record<string, unknown> = {}) => {
       const stored = await copyOf(id);
       expect(stored?.bytes, `premise: the house holds ${id}'s size`).toBeGreaterThan(0);
       return {
@@ -262,9 +290,15 @@ describe("the listing (spec §2.9)", () => {
         over: false,
         winner: null,
         archived_at: null,
+        ...read,
       };
     };
-    expect(rows).toEqual([await want(dealing, "dealing"), await want(open, "open"), await want(playing, "playing")]);
+    expect(rows).toEqual([
+      await want(dealing, "dealing"),
+      await want(open, "open", { name: "Café ☕ 東京" }),
+      await want(playing, "playing"),
+      await want(won, "playing", { name: "Finished ☕", created_at: 1_789_956_559, over: true, winner: 1, archived_at: 1_789_000_000 }),
+    ]);
   });
 });
 
@@ -423,6 +457,39 @@ describe("the operator's force (spec §2.9)", () => {
     expect((await copyOf(id))?.gen_at, "the house lists the NEW table").toBe(again.created_at);
   });
 
+  // The orchestrator's ruling I-72: `?force` is the BARE key. With any value
+  // it is a 400 naming the switch — answered by the Worker, reaching no
+  // object, the table untouched — never a force and never a plain expire,
+  // because `?force=false` forcing would drop a save the operator meant to
+  // keep. A key in another case is unrouted: the layer's own 404, as for an
+  // unknown path. `?force=` is the bare key written with its `=`, and forces.
+  // Mutants: a force read from any value; a value's refusal answered as a
+  // plain expire (the table then ends, saved, with a marker); `?Force` taken
+  // as the key.
+  it("takes ?force bare: a value is a 400 naming the switch, another key is unrouted (ruling I-72)", async () => {
+    const id = "op-force-value";
+    const stub = await seedPlaying(id);
+    const token = await person(BOSS);
+    const path = `/api/admin/tables/${id}/expire`;
+    for (const value of ["false", "0", "1", "true"]) {
+      const res = await reaching(() => worker(`${path}?force=${value}`, { method: "POST", token, env: OPS }));
+      expect([res.result.status, JSON.parse(res.result.text)], value).toEqual([400, { error: FORCE_VALUE }]);
+      expect(res.reached, `${value}: no object reached`).toBe(0);
+    }
+    const unrouted = await worker(`${path}?Force`, { method: "POST", token, env: OPS });
+    expect(unrouted).toEqual(layerAnswer("POST", path, "Force"));
+    expect(unrouted.status, "premise: the layer's 404").toBe(404);
+    expect(await markerOf(stub), "the table untouched: no marker").toBeUndefined();
+    expect((await call(stub, RED, "GET", `/api/games/${id}`)).status, "and it still answers").toBe(200);
+    const forced = await logsDuring(async () => {
+      const res = await worker(`${path}?force=`, { method: "POST", token, env: OPS });
+      await settle(stub);
+      return res;
+    });
+    expect(forced.result).toEqual({ status: 204, text: "" });
+    expect(await tablesIn(stub), "`?force=` forced").toBe(0);
+  });
+
   // Spec §2.9: "at once, writing nothing, when the object holds nothing".
   // Mutants: a removal written for a table that never existed; a batch that
   // creates the tables.
@@ -437,27 +504,37 @@ describe("the operator's force (spec §2.9)", () => {
 
   // A force ends a table with no save, so a game-over save the table still
   // owes goes with it — logged, as a delete's while the archive is off (spec
-  // §2.6). The owed save is arranged as battery 27's is, and the alarm's
-  // retry (its put failing again) first delivers the table's copy, so the
-  // force has a REMOVAL to send. Mutant: the dropped save not logged.
-  it("drops a save the table still owes, and logs it", async () => {
-    const id = "op-force-owed";
+  // §2.6; the orchestrator's ruling I-70) — and logged in ONE order on both of
+  // the force's paths: the dropped save, then `forced` (the review's L-9). The
+  // owed save is arranged as battery 27's is. "At once": the table was never
+  // sent a copy, so it has no generation and ends at once. "After its push":
+  // the alarm's retry (its put failing again) first delivers the table's copy,
+  // so the force has a REMOVAL to send, and ends at its acknowledgement.
+  // Mutants: the dropped save not logged; `forced` logged before it on the
+  // path that ends at once.
+  it.each([
+    ["at once", 1, false],
+    ["after its push", 2, true],
+  ] as const)("drops a save the table still owes, and logs it before it ends: %s", async (how, attempt, delivered) => {
+    const id = `op-force-owed-${delivered ? "pushed" : "at-once"}`;
     const stub = await owedGameOver(id);
     const recordKey = `rev7/over/${id}.json`;
-    const failing = await swapBucket(stub, failingPuts(2));
+    const failing = await swapBucket(stub, failingPuts(attempt));
     try {
       await logsDuring(async () => {
         expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
         await settle(stub);
-        expect(await runDurableObjectAlarm(stub)).toBe(true);
-        await settle(stub);
+        if (delivered) {
+          expect(await runDurableObjectAlarm(stub)).toBe(true);
+          await settle(stub);
+        }
       });
     } finally {
       await failing.restore();
     }
     const owed = (await sqlOf(stub, "SELECT v FROM meta WHERE k = 'archive_owed'")).map((r) => (JSON.parse(String(r.v)) as { attempt: number }).attempt);
-    expect(owed, "premise: a save is owed, twice failed").toEqual([2]);
-    expect(await revisionOf(stub), "premise: the house was sent the table's copy").toBeGreaterThan(0);
+    expect(owed, `premise: a save is owed, failed ${attempt} time(s)`).toEqual([attempt]);
+    expect((await revisionOf(stub)) > 0, `premise (${how}): the house ${delivered ? "was" : "was never"} sent the table's copy`).toBe(delivered);
     const { result, lines } = await logsDuring(async () => {
       const res = await expire(id, true);
       await settle(stub);
@@ -466,7 +543,7 @@ describe("the operator's force (spec §2.9)", () => {
     expect(result).toEqual({ status: 204, text: "" });
     expect(ends(lines)).toEqual([
       { event: "operator", id, action: "force", address: BOSS },
-      { event: "archive-owed-dropped", id, record_key: recordKey, attempt: 2 },
+      { event: "archive-owed-dropped", id, record_key: recordKey, attempt },
       { event: "forced", id },
     ]);
     expect(await tablesIn(stub)).toBe(0);

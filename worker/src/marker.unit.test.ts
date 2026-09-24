@@ -125,25 +125,43 @@ describe("whether there was a game to keep (the orchestrator's ruling I-64)", ()
   });
 });
 
-// Spec §2.4 step 2, in the orchestrator's ruling I-64's terms. Mutants: a
-// save that landed read as anything but `archive`; a stamped game (no plan, a
-// game, the archive on) read as `nothing`; the archive's switch ignored.
-describe("what the marker says was kept (spec §2.4 step 2; ruling I-64)", () => {
+// Spec §2.4 step 2, as the orchestrator's rulings I-64 and I-71 read it: a
+// table whose copy carries `archived_at` — the layer's own stamp, which is a
+// fact of the bucket whatever the switch reads now — kept its game in the
+// archive, and that is asked BEFORE the switch. Mutants: the stamp consulted
+// after the switch (a game stamped at game over, then deleted with the archive
+// off, reads `off`); a save that landed read as anything but `archive`; a game
+// deleted with no save while the archive is on read as `nothing`; the switch
+// ignored.
+describe("what the marker says was kept (spec §2.4 step 2; rulings I-64, I-71)", () => {
+  const facts = (f: Partial<{ stamped: boolean; saved: boolean; game: boolean; archive: "r2" | "off" }>) => ({
+    stamped: false,
+    saved: false,
+    game: true,
+    archive: "r2" as const,
+    ...f,
+  });
+
+  it("is the archive for a table already stamped, whatever the switch reads now", () => {
+    expect(keptOf(facts({ stamped: true, archive: "off" }))).toBe("archive");
+    expect(keptOf(facts({ stamped: true, archive: "r2" }))).toBe("archive");
+  });
+
   it("is the archive when the delete's save landed, or was already there", () => {
-    expect(keptOf(true, "r2", true)).toBe("archive");
-    expect(keptOf(false, "r2", true), "a landed save wins whatever the reading").toBe("archive");
+    expect(keptOf(facts({ saved: true }))).toBe("archive");
+    expect(keptOf(facts({ saved: true, game: false })), "a landed save wins whatever the reading").toBe("archive");
   });
 
   it("is the archive for a game deleted with no save while the archive is on: it was stamped", () => {
-    expect(keptOf(true, "r2", false)).toBe("archive");
+    expect(keptOf(facts({}))).toBe("archive");
   });
 
-  it("is off for a game deleted while the archive is off", () => {
-    expect(keptOf(true, "off", false)).toBe("off");
+  it("is off for a game never stamped, deleted while the archive is off", () => {
+    expect(keptOf(facts({ archive: "off" }))).toBe("off");
   });
 
   it("is nothing when there was no game, whatever the switch", () => {
-    expect(keptOf(false, "r2", false)).toBe("nothing");
-    expect(keptOf(false, "off", false)).toBe("nothing");
+    expect(keptOf(facts({ game: false }))).toBe("nothing");
+    expect(keptOf(facts({ game: false, archive: "off" }))).toBe("nothing");
   });
 });

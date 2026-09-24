@@ -546,21 +546,24 @@ describe("the marker (spec §2.4 steps 5–6)", () => {
 
 describe("the marker's tail, by what was kept, under each head (spec §2.4 step 2; §5.2)", () => {
   type Head = "abandoned" | "expired" | "operator";
-  type Arranged = "saved" | "stamped" | "open" | "dealing" | "no-move" | "off";
-  /** Spec §2.4 step 2 as the orchestrator's ruling I-64 reads it. */
+  type Arranged = "saved" | "stamped" | "stamped-off" | "open" | "dealing" | "no-move" | "off";
+  /** Spec §2.4 step 2 as the orchestrator's rulings I-64 and I-71 read it. */
   const KEPT: Record<Arranged, "archive" | "nothing" | "off"> = {
     saved: "archive",
     stamped: "archive",
+    "stamped-off": "archive",
     open: "nothing",
     dealing: "nothing",
     "no-move": "nothing",
     off: "off",
   };
+  /** The arrangements whose ending runs with the archive switched off. */
+  const SWITCHED_OFF: readonly Arranged[] = ["off", "stamped-off"];
 
   /** A table at `id` as `arranged` names it, and its creator. */
   async function arrange(arranged: Arranged, id: string): Promise<{ stub: DurableObjectStub<Table>; creator: string }> {
     if (arranged === "saved" || arranged === "off") return { stub: await seedPlaying(id), creator: RED };
-    if (arranged === "stamped") {
+    if (arranged === "stamped" || arranged === "stamped-off") {
       const stub = await owedGameOver(id);
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
       await settle(stub);
@@ -592,19 +595,24 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
     await settle(stub);
   }
 
-  // Mutants: a stamped game — deleted with no save while the archive is on —
-  // read as `nothing` (the ruling's `status: playing` taken literally: a
-  // finished game's reading says `over`); a table with no move read as a
-  // game; the switch ignored; a head under the wrong reason; `ttl_days`
-  // missing from an expired marker.
+  // `stamped-off` is the review's probe (the orchestrator's ruling I-71): a
+  // game stamped at game over while the archive was on, ended after the switch
+  // reads off. Its game is in the bucket, so its tail is the archive's, and
+  // the bucket still holds it. Mutants: a stamped game — deleted with no save
+  // while the archive is on — read as `nothing` (the ruling's `status:
+  // playing` taken literally: a finished game's reading says `over`); a
+  // stamped game read as `off` once the switch is off (the stamp consulted
+  // after the switch); a table with no move read as a game; the switch
+  // ignored; a head under the wrong reason; `ttl_days` missing from an
+  // expired marker.
   it.each(
     (["abandoned", "expired", "operator"] as const).flatMap((head) =>
-      (["saved", "stamped", "open", "dealing", "no-move", "off"] as const).map((arranged) => [head, arranged] as const),
+      (["saved", "stamped", "stamped-off", "open", "dealing", "no-move", "off"] as const).map((arranged) => [head, arranged] as const),
     ),
   )("%s: %s", async (head, arranged) => {
     const id = `tail-${arranged}-${head}`;
     const { stub, creator } = await arrange(arranged, id);
-    const off = arranged === "off" ? archiveOff() : undefined;
+    const off = SWITCHED_OFF.includes(arranged) ? archiveOff() : undefined;
     try {
       if (off !== undefined) await rebuilt(stub);
       await logsDuring(() => end(head, stub, id, creator));
@@ -616,5 +624,8 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
     expect(await sentenceAt(stub, id, creator)).toBe(HEAD[head](utcDate(marker!.at as number)) + TAIL[KEPT[arranged]]);
     const abandonedKey = `${creator === LOCAL ? "" : "test/"}rev7/abandoned/${id}.json`;
     expect((await bucketText(abandonedKey)) !== null, "this ending made a save exactly when it had a game to save").toBe(arranged === "saved");
+    if (arranged === "stamped" || arranged === "stamped-off") {
+      expect(await bucketText(`rev7/over/${id}.json`), "the game over's save is still in the bucket").not.toBeNull();
+    }
   });
 });

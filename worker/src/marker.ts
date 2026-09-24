@@ -98,16 +98,32 @@ export function gameOf(reading: { status: number; body: string } | undefined, re
   return (status === "playing" || status === "over") && typeof events === "number" && events > 0;
 }
 
+/** What a delete through the layer knew when it ended a table: whether the
+ *  table's copy carried the layer's stamp (`archived_at`), whether this
+ *  delete's own save landed or was already there, whether there was a game to
+ *  keep (`gameOf`), and what the archive's switch reads. */
+export interface Keeping {
+  stamped: boolean;
+  saved: boolean;
+  game: boolean;
+  archive: "r2" | "off";
+}
+
 /**
  * What the marker says was kept (spec §2.4 step 2, as the orchestrator's
- * ruling I-64 reads it): `archive` when the delete's own save landed or was
- * already there, or when a game was deleted with no save while the archive is
- * on — the layer saves every unstamped game it deletes, so that game was
- * stamped; `nothing` when there was no game; `off` for a game deleted while
- * the archive is off.
+ * rulings I-64 and I-71 read it):
+ *
+ * - `archive` when the table was already stamped — the layer's own stamp,
+ *   which says the bucket holds the game whatever the switch reads now, so it
+ *   is asked BEFORE the switch (I-71) — or when the delete's own save landed
+ *   or was already there;
+ * - otherwise `nothing` when there was no game;
+ * - otherwise, for a game, `archive` while the archive is on — the layer saves
+ *   every unstamped game it deletes, so one deleted with no save was stamped,
+ *   the answer where no copy could be read — and `off` while it is off.
  */
-export function keptOf(game: boolean, archive: "r2" | "off", saved: boolean): Kept {
-  if (saved) return "archive";
+export function keptOf({ stamped, saved, game, archive }: Keeping): Kept {
+  if (stamped || saved) return "archive";
   if (!game) return "nothing";
   return archive === "r2" ? "archive" : "off";
 }

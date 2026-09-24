@@ -198,7 +198,7 @@ export class House extends DurableObject<Env> {
       .map(({ id, json, last_active, bytes }) => {
         const copy = JSON.parse(json) as {
           name?: string | null;
-          status: string;
+          status: OperatorRow["status"];
           players: number;
           created_at: number;
           turn?: { over?: boolean; winner?: number | null } | null;

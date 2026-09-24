@@ -23,6 +23,10 @@ export const NOT_AN_OPERATOR = "this address is not an operator here";
  *  §2.9; host-written, §4). */
 export const UNCONFIRMED = "the lobby has not confirmed the removal — the alarm will finish it";
 
+/** The 400 for `?force` given a value (the orchestrator's ruling I-72;
+ *  host-written). */
+export const FORCE_TAKES_NO_VALUE = "?force takes no value — send ?force alone, or no query for an expire that saves first";
+
 /**
  * The gate's verdict on a request to `/api/admin` or below (spec §2.9):
  *
@@ -45,34 +49,53 @@ export function operatorGate(admins: string[] | null, identity: Identity): Gate 
 }
 
 /**
- * Which route a request under `/api/admin` names (spec §2.9): `GET
- * /api/admin/tables`, the listing; `POST /api/admin/tables/{id}/expire`, an
- * expire — a force when the query names `force` — of the table `id`, where
- * `id` is a name a table object can have (`routableName`, the path's segment
- * as the layer binds it: raw); anything else is unrouted.
+ * Which route a request under `/api/admin` names (spec §2.9), by method, path
+ * and query — keys compared exactly:
+ *
+ * - `GET /api/admin/tables` with no query: the listing;
+ * - `POST /api/admin/tables/{id}/expire`, where `id` is a name a table object
+ *   can have (`routableName`, the path's segment as the layer binds it: raw):
+ *   with no query, a plain expire; with the BARE key `force` — `?force`, or
+ *   `?force=` — a force; with `force` given a value, `refused` with its 400
+ *   (the orchestrator's ruling I-72: `?force=false` forcing would drop a save
+ *   the operator meant to keep, so a value is neither a force nor a plain
+ *   expire);
+ * - anything else — another method or path, or a query holding any other
+ *   key, `?Force` among them — unrouted, the layer's own 404.
  */
-export type AdminRoute = { kind: "listing" } | { kind: "expire"; name: string; force: boolean } | { kind: "unrouted" };
+export type AdminRoute =
+  | { kind: "listing" }
+  | { kind: "expire"; name: string; force: boolean }
+  | { kind: "refused"; sentence: string }
+  | { kind: "unrouted" };
 
 const EXPIRE = /^\/api\/admin\/tables\/([^/]+)\/expire$/;
 
 export function adminRoute(method: string, pathname: string, query: string): AdminRoute {
-  if (pathname === "/api/admin/tables") return method === "GET" ? { kind: "listing" } : { kind: "unrouted" };
+  const keys = [...new URLSearchParams(query)];
+  if (pathname === "/api/admin/tables") return method === "GET" && keys.length === 0 ? { kind: "listing" } : { kind: "unrouted" };
   const name = EXPIRE.exec(pathname)?.[1];
   if (name === undefined || method !== "POST" || !routableName(name)) return { kind: "unrouted" };
-  return { kind: "expire", name, force: new URLSearchParams(query).has("force") };
+  const [first, ...more] = keys;
+  if (first === undefined) return { kind: "expire", name, force: false };
+  const [key, value] = first;
+  if (key !== "force" || more.length > 0) return { kind: "unrouted" };
+  return value === "" ? { kind: "expire", name, force: true } : { kind: "refused", sentence: FORCE_TAKES_NO_VALUE };
 }
 
 /**
  * One row of the operator's listing (spec §2.9) — an operator-only payload,
- * outside the corpus: the table's id, name, status, players, `created_at`,
- * `over`, `winner` and `archived_at`, read off the house's scrubbed copy, and
- * its `last_active` and `bytes` (the table object's SQLite size) as of the
- * table's last delivery (spec §2.5).
+ * outside the corpus: the table's id, name, status, players, `created_at` and
+ * `archived_at` (the layer's unix SECONDS), `over` and `winner`, read off the
+ * house's scrubbed copy, and its `last_active` (the shell's MILLISECONDS) and
+ * `bytes` (the table object's SQLite size) as of the table's last delivery
+ * (spec §2.5).
  */
 export interface OperatorRow {
   id: string;
   name: string | null;
-  status: string;
+  /** The layer's `TableStatus`: "over" is not a status (`over` says it). */
+  status: "open" | "dealing" | "playing";
   players: number;
   created_at: number;
   last_active: number;

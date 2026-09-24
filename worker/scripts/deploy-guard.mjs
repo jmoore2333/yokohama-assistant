@@ -1,5 +1,5 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
-// wrangler deploy`, so nothing ships unless all six hold. Every check that
+// wrangler deploy`, so nothing ships unless all seven hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -33,9 +33,16 @@
 //    `wrangler.test.jsonc`, so a class, a binding, a migration or a bucket
 //    there that production lacks would be tested green and never shipped —
 //    and production's `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the
-//    500 naming that variable (spec §2.6). Checks 3–6 need no build, and
-//    `deploy-guard.test.mjs` runs them over the committed files — the
-//    per-commit catcher; the live reading at each deploy is the second.
+//    500 naming that variable (spec §2.6).
+// 7. No `vars` block in `wrangler.jsonc` — the top level's, or any
+//    environment's — names `YOKOHAMA_WEB_ADMINS` (the plan's ruling P-1, as
+//    the orchestrator ruled at Task 14's review): the operator list is a
+//    SECRET, set with `wrangler secret put`, and a value there is an address
+//    committed to the repository. Read as a KEY, so a comment may name it.
+//
+// Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
+// committed files — the per-commit catcher; the live reading at each deploy
+// is the second.
 //
 // Both files are read with `jsonc-parser`, which knows a string from a
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
@@ -154,7 +161,25 @@ function objectBlocks(production, test, failures) {
   }
 }
 
-/** Checks 3 to 6: the ones that need no build. */
+/** Check 7, over `wrangler.jsonc`: every `vars` block, the top level's and
+ *  each environment's, read for the operator list's KEY. */
+function operatorList(value, failures) {
+  const blocks = [["vars", value.vars]];
+  if (value.env !== null && typeof value.env === "object" && !Array.isArray(value.env)) {
+    for (const [name, env] of Object.entries(value.env)) {
+      if (env !== null && typeof env === "object") blocks.push([`env.${name}.vars`, env.vars]);
+    }
+  }
+  for (const [where, vars] of blocks) {
+    if (vars !== null && typeof vars === "object" && Object.hasOwn(vars, "YOKOHAMA_WEB_ADMINS")) {
+      failures.push(
+        `wrangler.jsonc's ${where} name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value`,
+      );
+    }
+  }
+}
+
+/** Checks 3 to 7: the ones that need no build. */
 export function configFailures(root) {
   const failures = [];
   const production = readConfig(root, "wrangler.jsonc", failures);
@@ -170,6 +195,7 @@ export function configFailures(root) {
       failures.push("wrangler.jsonc names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in wrangler.test.jsonc and nowhere else");
     }
     assetsBlock("wrangler.jsonc", production.value, failures);
+    operatorList(production.value, failures);
   }
   const test = readConfig(root, "wrangler.test.jsonc", failures);
   if (test) assetsBlock("wrangler.test.jsonc", test.value, failures);
@@ -177,7 +203,7 @@ export function configFailures(root) {
   return failures;
 }
 
-/** All six checks over the worker package at `root`: `[]` when every one
+/** All seven checks over the worker package at `root`: `[]` when every one
  *  holds. */
 export function deployGuard(root) {
   const failures = [];
@@ -234,6 +260,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     "deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; " +
       "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; " +
-      "the same object bindings, migrations and bucket binding in both",
+      "the same object bindings, migrations and bucket binding in both; no operator list in its vars",
   );
 }

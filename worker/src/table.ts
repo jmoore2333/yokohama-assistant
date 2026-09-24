@@ -266,12 +266,18 @@ export class Table extends DurableObject<Env> {
    * and `deleteAll()`, which at this compatibility date deletes its alarm too.
    * Logged `marker-ended` when it ends a marker, and `forced` when there is
    * none — which only a force leaves, since every delete through the layer
-   * writes its marker in the batch that writes its REMOVAL.
+   * writes its marker in the batch that writes its REMOVAL. An owed save it
+   * drops is logged `archive-owed-dropped` first, once `deleteAll()` has
+   * dropped it — only a force's immediate path meets one here, since a
+   * delete's batch and a force's clear it — so a force logs the two in ONE
+   * order on both its paths.
    */
   private async end(marker: Marker | undefined): Promise<void> {
     const id = this.ctx.id.name;
+    const owed = archiveOwedOf(this.ctx.storage.sql);
     this.instance?.drop();
     await this.ctx.storage.deleteAll();
+    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
     if (marker === undefined) log("forced", { id });
     else log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
   }
@@ -812,13 +818,14 @@ export class Table extends DurableObject<Env> {
    * §2.6) — a creator's abandon, and an expiry, the alarm's or an operator's
    * — after the wake, under its caller's `blockConcurrencyWhile`:
    *
-   * 1. P-2's reading, taken ONCE, and under ONE `guarded`: the viewer, read
-   *    first (an expiry's, off the table's house copy); then, pinned to that
-   *    reading, the call that decides what the marker says was kept (the
-   *    orchestrator's ruling I-64) — `events(id, viewer, "")` as the table's
-   *    creator, before anything is deleted — and the delete's own first
-   *    dispatch; then the layer's documents read back. The `events` call
-   *    shares the dispatch's P-2 reading, so a delete still takes one;
+   * 1. P-2's reading, taken ONCE, and under ONE `guarded`: the table's house
+   *    copy, read first at both sites (`copyFacts`) — its stamp, and an
+   *    expiry's viewer, the creator it names; then, pinned to that reading,
+   *    the call that decides whether there was a game (the orchestrator's
+   *    ruling I-64) — `events(id, viewer, "")` as the table's creator, before
+   *    anything is deleted — and the delete's own first dispatch; then the
+   *    layer's documents read back. The `events` call shares the dispatch's
+   *    P-2 reading, so a delete still takes one;
    * 2. when that dispatch deferred a put — the layer refuses the delete,
    *    deleting nothing, until its save is made — the plan is carried out
    *    (`executePlan`) and its outcome logged, then installed as the receipt,
@@ -828,8 +835,10 @@ export class Table extends DurableObject<Env> {
    *    naming the archive with R2's reason inside it — a `conflict` among
    *    them, final at every site;
    * 3. the ENDING the delete's batch writes as its marker, should the layer
-   *    have deleted the table: `kept` from the reading, the archive's switch
-   *    and the save's outcome (`gameOf`, `keptOf`) — never from the table
+   *    have deleted the table: `kept` from the copy's stamp, the save's
+   *    outcome, the reading and the archive's switch (`gameOf`, `keptOf`) — a
+   *    table stamped, or saved by this delete, kept `archive` whatever the
+   *    switch reads (the orchestrator's ruling I-71) — never from the table
    *    document, which is never parsed.
    *
    * A delete that owes no save — an open or dealing table, one with no move
@@ -839,22 +848,29 @@ export class Table extends DurableObject<Env> {
    *
    * The viewer is the table's creator whenever the layer deletes: the
    * abandon's caller, whom the layer's `delete` refuses unless they created
-   * the table, and for an expiry the creator its house copy names
-   * (`creatorIn`) — so the `events` call that decides a marker answers 200.
-   * The stored record, `gameOf`'s fallback, would decide only where `creatorIn`
-   * finds no creator and the layer deletes all the same, and no stored table
-   * reaches that: `house_copy` refuses a stored document the layer's own
-   * delete also refuses to read (both run `check_shape` over the same stored
-   * text), or a copy its scrub broke, which the module's own cells show no
-   * stored document reaches.
+   * the table, and for an expiry the creator its house copy names. Its
+   * `events` call answers 200 but for a stored record that parses and will
+   * not replay — written at another `SEMANTICS_REV`, or corrupted — which
+   * `events` must rebuild at a playing table where the layer's delete reads
+   * no further than its JSON. That reading is the layer's error and the
+   * delete proceeds, so `gameOf` falls back to the stored record, which
+   * reads as a game, even with no event in it: `kept` is then `archive`
+   * where the table was stamped, the save landed or the switch reads `r2`,
+   * and `off` otherwise. A copy the module refuses names no creator and no
+   * stamp, and no stored table reaches that where the layer deletes:
+   * `house_copy` refuses a stored document the layer's own delete also
+   * refuses to read (both run `check_shape` over the same stored text), or a
+   * copy its scrub broke, which the module's own cells show no stored
+   * document reaches.
    */
   private async deleting(id: string, instance: Instance, config: ShellConfig, how: Deleting): Promise<Deleted | Response> {
     const stored = readDocs(this.ctx.storage.sql);
-    // An expiry's viewer reads the house copy; an abandon's calls nothing.
+    // Both sites read the house copy: its stamp, and an expiry's viewer.
     let stage = "house_copy";
     const done = instance.guarded((mod) => {
       const at = this.reading();
-      const viewer = how.viewer(mod);
+      const copy = copyFacts(mod, id);
+      const viewer = how.viewer(copy);
       // The pin is the reading's, as `pinned` counts a pin with its call.
       stage = "events";
       mod.set_clock(at);
@@ -862,13 +878,13 @@ export class Table extends DurableObject<Env> {
       stage = how.call;
       const reply = readReply(how.f(mod));
       stage = "read";
-      return { reading, first: { reply, at, docs: readLayerDocs(mod, id) } };
+      return { copy, reading, first: { reply, at, docs: readLayerDocs(mod, id) } };
     });
     if ("trapped" in done) {
       log("trap", { id, call: stage, error: done.trapped });
       return respond(500, errorBody(TRAP));
     }
-    const { reading, first } = done.ok;
+    const { copy, reading, first } = done.ok;
     let called: Called = first;
     let outcome: Outcome | undefined;
     let plan: Plan | undefined;
@@ -883,13 +899,18 @@ export class Table extends DurableObject<Env> {
       if (again instanceof Response) return again;
       called = again;
     }
-    const saved = outcome?.outcome === "landed" || outcome?.outcome === "identical";
+    const kept = keptOf({
+      stamped: copy?.stamped ?? false,
+      saved: outcome?.outcome === "landed" || outcome?.outcome === "identical",
+      game: gameOf(reading, stored.has("record")),
+      archive: config.archive,
+    });
     return {
       called,
       reading: reading === undefined ? null : { reply: reading, at: first.at },
       outcome,
       plan,
-      ending: { ...how.reason, kept: keptOf(gameOf(reading, stored.has("record")), config.archive, saved) },
+      ending: { ...how.reason, kept },
     };
   }
 
@@ -956,7 +977,7 @@ export class Table extends DurableObject<Env> {
       const deleted = await this.deleting(id, instance, config, {
         site: reason.reason === "expired" ? "expiry" : "operator",
         reason,
-        viewer: (mod) => creatorIn(mod, id),
+        viewer: (copy) => copy?.createdBy,
         call: "expire",
         f: (m) => m.expire(id),
         ...(reason.reason === "expired" ? { attempt: expiryFailedOf(this.ctx.storage.sql) } : {}),
@@ -1090,9 +1111,11 @@ export class Table extends DurableObject<Env> {
    * save, and it leaves NO marker.
    *
    * - With nothing stored: 204 at once, writing nothing.
-   * - Where the house holds nothing of the table — it was never sent a copy,
-   *   or it has acknowledged the table's removal — the object ends at once
-   *   (`end`), and 204.
+   * - Where the object holds no generation — no copy of the table was ever
+   *   drawn — or the house has acknowledged the table's removal, the object
+   *   ends at once (`end`), and 204. A table whose first copy trapped holds a
+   *   generation all the same and takes the push below, which the house
+   *   acknowledges although it never held the row.
    * - Otherwise ONE batch deletes every document, and every `meta` key but
    *   the slot's own four — the marker, an owed save and `held` among them —
    *   and writes the REMOVAL, unless one already waits, with its retry's
@@ -1105,7 +1128,9 @@ export class Table extends DurableObject<Env> {
    *   Until then a create at the id is the 409 of a removal the house has not
    *   acknowledged (`ended`).
    *
-   * An owed save it drops is logged `archive-owed-dropped`, as a delete's is.
+   * An owed save it drops is logged `archive-owed-dropped`, as a delete's is,
+   * once it is gone and before `forced` on both paths: after the batch that
+   * drops it, or by `end`.
    * It holds no `blockConcurrencyWhile`: a request that lands while the push
    * is out finds no document to answer from, and every push and
    * acknowledgement is keyed by its pair (spec §2.5).
@@ -1114,16 +1139,12 @@ export class Table extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     if (!hasTables(sql)) return respond(204, "");
     const state = slotState(sql);
-    const owed = archiveOwedOf(sql);
-    const drop = () => {
-      if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
-    };
     if (state.generation === undefined || (state.slot === undefined && !differs(state, null))) {
       this.endSockets(id);
       await this.end(undefined);
-      drop();
       return respond(204, "");
     }
+    const owed = archiveOwedOf(sql);
     const removal = state.slot?.copy === null ? undefined : { generation: state.generation, revision: state.revision + 1, copy: null };
     this.batch(
       (sql) => {
@@ -1135,7 +1156,7 @@ export class Table extends DurableObject<Env> {
     );
     this.instance?.drop();
     this.endSockets(id);
-    drop();
+    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
     await this.deliverSlot();
     return hasTables(sql) ? respond(503, errorBody(UNCONFIRMED)) : respond(204, "");
   }
@@ -1917,8 +1938,9 @@ interface Deleting {
   site: Site;
   /** How the table ends, should the layer delete it. */
   reason: Reason;
-  /** Whom the reading that decides `kept` is taken as: the table's creator. */
-  viewer: (mod: Exports) => string | undefined;
+  /** Whom the reading that decides `kept` is taken as — the table's creator —
+   *  given what its house copy says (`copyFacts`). */
+  viewer: (copy: CopyFacts | undefined) => string | undefined;
   /** The delete's own call — the caller's DELETE, or `expire(id)` — made
    *  twice when it defers a put. */
   f: (mod: Exports) => Reply;
@@ -1995,16 +2017,27 @@ function poisoned(sql: SqlStorage): boolean {
   return Number(getMeta(sql, "load_traps") ?? "0") >= 2;
 }
 
+/** What a table's HOUSE COPY says that a delete through the layer reads
+ *  (`copyFacts`). */
+interface CopyFacts {
+  /** The table's creator — `created_by` — whom an expiry reads it as. */
+  createdBy: string | undefined;
+  /** The table's save was made: `archived_at` is set (the orchestrator's
+   *  ruling I-71). */
+  stamped: boolean;
+}
+
 /**
- * The creator of the table `mod` holds under `id` — whom an expiry reads the
- * table as (`deleting`) — off its HOUSE COPY: the table document with its seed
- * zeroed (spec §2.5's scrub), so it may be parsed, where the table document
- * itself never is (the plan's strings rule; the orchestrator's ruling I-64).
- * `undefined` when no table is stored, or the module refuses the copy, as it
- * refuses a stored document that does not parse or that `check_shape`
- * rejects. A trap is the caller's: it runs under their `guarded`.
+ * What the table `mod` holds under `id` says of itself on its HOUSE COPY — the
+ * table document with its seed zeroed (spec §2.5's scrub), so it may be
+ * parsed, where the table document itself never is (the plan's strings rule;
+ * the orchestrator's rulings I-64 and I-71): its creator, whom an expiry reads
+ * the table as, and whether its save was made. `undefined` when no table is
+ * stored, or the module refuses the copy, as it refuses a stored document that
+ * does not parse or that `check_shape` rejects. A trap is the caller's: it runs
+ * under their `guarded`.
  */
-function creatorIn(mod: Exports, id: string): string | undefined {
+function copyFacts(mod: Exports, id: string): CopyFacts | undefined {
   let copy: string | undefined;
   try {
     copy = mod.house_copy(id);
@@ -2013,6 +2046,9 @@ function creatorIn(mod: Exports, id: string): string | undefined {
     throw e;
   }
   if (copy === undefined) return undefined;
-  const createdBy = (JSON.parse(copy) as { created_by?: unknown }).created_by;
-  return typeof createdBy === "string" ? createdBy : undefined;
+  const parsed = JSON.parse(copy) as { created_by?: unknown; archived_at?: unknown };
+  return {
+    createdBy: typeof parsed.created_by === "string" ? parsed.created_by : undefined,
+    stamped: typeof parsed.archived_at === "number",
+  };
 }
