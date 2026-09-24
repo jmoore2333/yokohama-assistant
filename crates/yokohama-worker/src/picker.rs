@@ -24,12 +24,16 @@
 //! - **The 65th line clears the list**, and nothing more is recorded until
 //!   that picker closes, so nothing partial is ever re-fed.
 //!
-//! **A list is only ever re-fed at the exact record it was built at.** The row
-//! carries that record's SHA-256, and a restore at any other record clears the
-//! list without re-feeding a line. At that record, under the same code, every
-//! line does again what it did when it was recorded — it left the picker open
-//! and applied nothing — so no re-fed line can apply a move. A re-fed
-//! line that fails, changes the record or closes the picker clears the list
+//! **A list is only ever re-fed at the exact record it was built at, under the
+//! code it was built under.** The row carries that record's SHA-256 and the
+//! [`CODE`] it was built under — `build.rs`'s digest of the CLI's and the
+//! layer's sources, the code that gives a line its meaning (the orchestrator's
+//! ruling I-85) — and a restore at any other record, or under any other code,
+//! clears the list without re-feeding a line. At that record and under that
+//! code, every line does again what it did when it was recorded — it left the
+//! picker open and applied nothing — so no re-fed line can apply a move. A
+//! re-fed line that fails or closes the picker clears the list, and so does one
+//! that changes the record, whose move stays made
 //! ([`restore_picker_inner`]).
 //!
 //! `Reply.picker` is the list's JSON when it grew, and `"[]"` when a list
@@ -59,6 +63,13 @@ const MAX_LINES: usize = 64;
 /// the table's `picker` row.
 const CLEARED: &str = "[]";
 
+/// This build's CODE: `build.rs`'s digest of the CLI's and the layer's
+/// sources, the code that gives a re-fed line its meaning (the orchestrator's
+/// ruling I-85). Every list this module writes carries it. The engine's own
+/// changes are `SEMANTICS_REV`'s to guard: a record of another revision does
+/// not load.
+pub(crate) const CODE: &str = env!("YOKOHAMA_WORKER_PICKER_CODE");
+
 /// Every table's picker, as this instance knows it. `None` until
 /// [`crate::init_inner`], which replaces it with an empty map each time it
 /// rebuilds the `Games` — a new instance knows no picker until one is restored
@@ -78,11 +89,15 @@ pub(crate) enum Picker {
     Dropped,
 }
 
-/// The stored `picker` row (spec §2.4): the lines to re-feed, and the record
-/// they were built at.
+/// The stored `picker` row (spec §2.4): the lines to re-feed, the record they
+/// were built at, and the code they were built under.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PickerList {
+    /// The [`CODE`] the list was built under. Absent from a row an earlier
+    /// build wrote, before a row carried one.
+    #[serde(default)]
+    pub code: Option<String>,
     /// The SHA-256 of the bytes of the record the list was built at, in
     /// lowercase hex.
     pub record: String,
@@ -155,7 +170,7 @@ fn after_input(
             // No entry is a closed picker, so this line opened one, and begins
             // a list.
             (None, Some(line), Some(record)) if !changed => {
-                PickerList { record: sha256_hex(record), lines: vec![line] }
+                PickerList { code: Some(CODE.to_string()), record: sha256_hex(record), lines: vec![line] }
             }
             // Open, but a list could not hold every line it has taken.
             (prior, ..) => return dropped(pickers, id, prior),
@@ -201,34 +216,69 @@ fn cleared(prior: Picker) -> Option<String> {
 ///   `picker` is `"[]"`, so the shell deletes it. A malformed row is never a
 ///   panic: a lost picker costs a stale click a 409, and must never poison the
 ///   table (the orchestrator's ruling I-21);
+/// - **a list built under other code** — its `code` not this build's
+///   `CODE`, or absent from a row an earlier build wrote — is cleared before
+///   a line is read, and `Reply.dropped` names the two codes for the shell's
+///   `picker-dropped` line: under other code a line may mean something else,
+///   and re-fed it could make a move nobody chose (the orchestrator's ruling
+///   I-85). A picker open across a deploy that changes that code starts over,
+///   and the player's next click is `Input::expect`'s 409;
 /// - **a list built at another record** is cleared without re-feeding a line;
 /// - **otherwise each line is re-fed** through `api::input` as its user, the
-///   replies discarded. A line that fails, changes the record, or leaves the
-///   picker closed clears the list, and the picker is closed, as a restart
-///   leaves it. A list re-fed whole is kept: `picker` is `None`, and the row
-///   stays as it is.
+///   replies discarded. A line that fails, or leaves the picker closed,
+///   clears the list and closes the picker, as a restart leaves it: nothing
+///   was applied. A line that CHANGES the record has made a move — the layer
+///   persisted it, and its bumps are drained into this reply, which the shell
+///   commits like any other — and it clears the list and closes the picker
+///   too. At the record and under the code the row names no line does that:
+///   none changed the record when it was recorded. A list re-fed whole is
+///   kept: `picker` is `None`, and the row stays as it is.
 ///
 /// At a table with no game yet, where `handle()` answers `Err(Open | Dealing)`,
 /// it answers 200 with nothing to report (plan review m13). Any other refusal
 /// is the layer's own, in the API's error shape, and leaves the row alone.
 pub fn restore_picker_inner(id: &str, row: &str) -> ReplyData {
-    from_the_layer(|games| match games.handle(id) {
-        Ok(_) => (200, String::new(), restore(games, id, row)),
+    let mut dropped = None;
+    let mut reply = from_the_layer(|games| match games.handle(id) {
+        Ok(_) => {
+            let (picker, gone) = restore(games, id, row);
+            dropped = gone;
+            (200, String::new(), picker)
+        }
         Err(GameError::Open | GameError::Dealing) => (200, String::new(), None),
         Err(e) => {
             let e = ApiError::from(e);
             (e.status.as_u16(), error_body(&e), None)
         }
-    })
+    });
+    reply.dropped = dropped;
+    reply
 }
 
-/// The row's verdict, once `id`'s handle is built: `Reply.picker`.
-fn restore(games: &Games, id: &str, row: &str) -> Option<String> {
+/// `Reply.dropped`: the code a cleared row was built under — `None` for a row
+/// that names none — and this build's.
+#[derive(Serialize)]
+struct Dropped<'a> {
+    stored: Option<&'a str>,
+    running: &'a str,
+}
+
+/// The row's verdict, once `id`'s handle is built: `Reply.picker`, and
+/// `Reply.dropped` when the row was built under other code.
+fn restore(games: &Games, id: &str, row: &str) -> (Option<String>, Option<String>) {
     let list = match serde_json::from_str::<Value>(row) {
-        Ok(Value::Null) => return None,
+        Ok(Value::Null) => return (None, None),
         Ok(value) => as_list(value),
         Err(_) => None,
     };
+    // Under other code a line may mean something else: the list is cleared
+    // before one is read.
+    if let Some(stored) = list.as_ref().map(|list| list.code.as_deref()).filter(|&code| code != Some(CODE)) {
+        let dropped = serde_json::to_string(&Dropped { stored, running: CODE }).expect("a dropped row's codes serialize");
+        close(games, id);
+        with_pickers(|pickers| pickers.remove(id));
+        return (Some(CLEARED.to_string()), Some(dropped));
+    }
     let record = record_of(games, id);
     let kept = list.filter(|list| {
         (1..=MAX_LINES).contains(&list.lines.len())
@@ -238,12 +288,12 @@ fn restore(games: &Games, id: &str, row: &str) -> Option<String> {
     match kept {
         Some(list) => {
             with_pickers(|pickers| pickers.insert(id.to_string(), Picker::Lines(list)));
-            None
+            (None, None)
         }
         None => {
             close(games, id);
             with_pickers(|pickers| pickers.remove(id));
-            Some(CLEARED.to_string())
+            (Some(CLEARED.to_string()), None)
         }
     }
 }
@@ -324,6 +374,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use yokohama_web::games::GameError;
 
+    use super::CODE;
     use crate::tests::{call, config, serial, tagged, CREATE};
     use crate::{create_inner, init_inner, load_inner, read_inner, restore_picker_inner, ReplyData, GAMES};
 
@@ -430,7 +481,9 @@ mod tests {
         init_inner(&config("off")).unwrap();
         let r = at_place_a("grow");
         let built_at = digest_of(&record("grow"));
-        let want = format!(r#"{{"record":"{built_at}","lines":[{{"user":"red@t.test","line":"1","expect":null}}]}}"#);
+        let want = format!(
+            r#"{{"code":"{CODE}","record":"{built_at}","lines":[{{"user":"red@t.test","line":"1","expect":null}}]}}"#
+        );
         assert_eq!(r.picker.as_deref(), Some(want.as_str()), "the line that OPENED the picker begins the list");
         let r = input(RED, "grow", "A09", Some("place_a"));
         assert_eq!((r.status, &body(&r)["prompt"]["selected"]), (200, &json!([9])), "premise: Customs is selected");
@@ -610,6 +663,117 @@ mod tests {
         assert_ne!(record("stale"), moved);
     }
 
+    /// **`CODE` is the digest `build.rs` states**, recomputed HERE from the
+    /// rule in this cell's own words, so the constant is never checked against
+    /// the script that made it: every file under `crates/yokohama-cli/src` and
+    /// `crates/yokohama-web/src` whose name does not begin with a dot, in the
+    /// byte order of its path from the repository root, each as its path, a
+    /// NUL, its length in decimal, a NUL and its bytes; SHA-256 in lowercase
+    /// hex. It fails on a constant digested from other roots or by another
+    /// rule, and on a stale one — a build script that did not run again after
+    /// a source changed.
+    #[test]
+    fn the_code_is_the_digest_of_the_sources_that_give_a_line_its_meaning() {
+        fn walk(repo: &std::path::Path, rel: &str, files: &mut Vec<String>) {
+            for entry in std::fs::read_dir(repo.join(rel)).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                let child = format!("{rel}/{name}");
+                if name.starts_with('.') {
+                    continue;
+                }
+                if entry.file_type().unwrap().is_dir() {
+                    walk(repo, &child, files);
+                } else {
+                    files.push(child);
+                }
+            }
+        }
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for root in ["crates/yokohama-cli/src", "crates/yokohama-web/src"] {
+            walk(&repo, root, &mut files);
+        }
+        files.sort();
+        assert!(
+            files.iter().any(|f| f == "crates/yokohama-cli/src/repl.rs") && files.iter().any(|f| f == "crates/yokohama-web/src/api.rs"),
+            "premise: both roots were read — {} files",
+            files.len()
+        );
+        let mut hasher = Sha256::new();
+        for path in &files {
+            let bytes = std::fs::read(repo.join(path)).unwrap();
+            hasher.update(path.as_bytes());
+            hasher.update([0]);
+            hasher.update(bytes.len().to_string().as_bytes());
+            hasher.update([0]);
+            hasher.update(&bytes);
+        }
+        assert_eq!(CODE, format!("{:x}", hasher.finalize()));
+    }
+
+    /// **A row built under other code is cleared, and not one line of it is
+    /// re-fed** (the orchestrator's ruling I-85; R1's probe P1). The row is
+    /// P1's: at the record the finalizing keep left — no event yet — its one
+    /// line is `1`, which here APPLIES the opening move, standing in for a line
+    /// recorded under code where `1` opened a picker. Stamped with another
+    /// code, or with none (a row an earlier build wrote), it is cleared: `"[]"`
+    /// for the shell to delete, nothing applied, nothing bumped, and `dropped`
+    /// naming both codes for the shell's `picker-dropped` line.
+    ///
+    /// The anti-vacuity half stamps the same row with THIS code: it is
+    /// re-fed, and its line, which changes the record, has made the move — the
+    /// layer persisted it and its bump is in this reply, for the shell to
+    /// commit — and the list is cleared. That is what a restore did before the
+    /// row carried a code, whatever code had recorded the line.
+    #[test]
+    fn a_row_built_under_other_code_is_cleared_and_not_a_line_of_it_is_refed() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let r = create_inner(Some(RED), CREATE.as_bytes(), "code", Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        assert_eq!(call(BLUE, "POST", "/api/games/code/join", Some(r#"{"seat":1}"#)).status, 200);
+        assert_eq!(call(RED, "POST", "/api/games/code/keep", Some(r#"{"seat":0,"card":1}"#)).status, 200);
+        assert_eq!(call(BLUE, "POST", "/api/games/code/keep", Some(r#"{"seat":1,"card":1}"#)).status, 200);
+        let (stored_table, stored) = (table("code"), record("code"));
+        let at = digest_of(&stored);
+        let row = |code: Option<&str>| {
+            let mut row = json!({ "record": at, "lines": [{ "user": RED, "line": "1", "expect": null }] });
+            if let Some(code) = code {
+                row["code"] = json!(code);
+            }
+            row.to_string()
+        };
+        let other = "0".repeat(64);
+        assert_ne!(other, CODE, "premise: another code");
+        for (what, stamped, stored_code) in [("another code", Some(other.as_str()), json!(other)), ("no code", None, Value::Null)] {
+            fresh("code", &stored_table, &stored);
+            let r = restore_picker_inner("code", &row(stamped));
+            assert_eq!(
+                (r.status, r.picker.as_deref(), tagged(&r).as_str()),
+                (200, Some("[]"), "[]"),
+                "{what}: cleared, and nothing bumped"
+            );
+            let dropped: Value = serde_json::from_str(r.dropped.as_deref().expect("the reply names the dropped row")).unwrap();
+            assert_eq!(dropped, json!({ "stored": stored_code, "running": CODE }), "{what}");
+            assert_eq!(record("code"), stored, "{what}: nothing applied");
+            let s = body(&call(RED, "GET", "/api/games/code", None));
+            assert_eq!((&s["events"], &s["prompt"]["kind"]), (&json!(0), &json!("options")), "{what}: nothing re-fed");
+        }
+
+        // Anti-vacuity: stamped with THIS code, the same line is re-fed, and it
+        // moves the game.
+        fresh("code", &stored_table, &stored);
+        let r = restore_picker_inner("code", &row(Some(CODE)));
+        assert_eq!(
+            (r.status, r.picker.as_deref(), tagged(&r).as_str(), r.dropped.as_deref()),
+            (200, Some("[]"), r#"[{"bump":"code"}]"#, None),
+            "re-fed: the line made its move, persisted and bumped, and the list is cleared",
+        );
+        assert_ne!(record("code"), stored, "the move stays applied");
+        assert_eq!(body(&call(RED, "GET", "/api/games/code", None))["events"], json!(1));
+    }
+
     /// At a table with no game yet — `handle()` answers `Err(Open)` or
     /// `Err(Dealing)` — `restore_picker` answers 200 and does nothing: no
     /// picker, no bumps, no archive, and no document written (plan review m13).
@@ -650,13 +814,15 @@ mod tests {
     /// losing a picker costs a 409 on a stale click and must never poison a
     /// table. Nothing is re-fed or bumped, and the record is untouched.
     ///
-    /// The last five rows are at THIS record, each with one thing wrong: no
-    /// lines at all; a key the list does not have; 65 lines, more than a list
-    /// ever holds; and the list, or its line, in serde's POSITIONAL array form,
-    /// which a derived `Deserialize` reads and `Reply.picker` never writes. The
-    /// final checks are their anti-vacuity partners: the same line, in a row
-    /// with nothing wrong, IS re-fed and kept, and so is the longest list
-    /// `after_input` writes, 64 lines.
+    /// The last five rows are at THIS record and under THIS code, each with
+    /// one thing wrong: no lines at all; a key the list does not have; 65
+    /// lines, more than a list ever holds; and the list, or its line, in
+    /// serde's POSITIONAL array form, which a derived `Deserialize` reads and
+    /// `Reply.picker` never writes. None of them is a row built under other
+    /// code, so none is reported as `dropped`. The final checks are their
+    /// anti-vacuity partners: the same line, in a row with nothing wrong, IS
+    /// re-fed and kept, and so is the longest list `after_input` writes, 64
+    /// lines.
     #[test]
     fn a_row_that_is_not_a_list_is_cleared_and_nothing_is_refed() {
         let _s = serial();
@@ -671,30 +837,31 @@ mod tests {
             "42".to_string(),
             json!({ "record": at }).to_string(),
             json!({ "lines": [one] }).to_string(),
-            json!({ "record": at, "lines": [] }).to_string(),
-            json!({ "record": at, "lines": [one], "extra": 1 }).to_string(),
-            json!({ "record": at, "lines": vec![one.clone(); 65] }).to_string(),
-            json!([at, [[RED, "1", null]]]).to_string(),
-            json!({ "record": at, "lines": [[RED, "1", null]] }).to_string(),
+            json!({ "code": CODE, "record": at, "lines": [] }).to_string(),
+            json!({ "code": CODE, "record": at, "lines": [one], "extra": 1 }).to_string(),
+            json!({ "code": CODE, "record": at, "lines": vec![one.clone(); 65] }).to_string(),
+            json!([CODE, at, [[RED, "1", null]]]).to_string(),
+            json!({ "code": CODE, "record": at, "lines": [[RED, "1", null]] }).to_string(),
         ];
         for row in &rows {
             fresh("junk", &stored_table, &stored);
             let r = restore_picker_inner("junk", row);
             assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, Some("[]"), "[]"), "{row}");
+            assert_eq!(r.dropped, None, "{row}: no list, so no code to drop it for");
             assert_eq!(record("junk"), stored, "{row}: the record untouched");
             let kind = body(&call(RED, "GET", "/api/games/junk", None))["prompt"]["kind"].clone();
             assert_eq!(kind, json!("options"), "{row}: nothing re-fed");
         }
         // Anti-vacuity: the same line, in a well-formed row at this record, IS re-fed and kept.
         fresh("junk", &stored_table, &stored);
-        let r = restore_picker_inner("junk", &json!({ "record": at, "lines": [one] }).to_string());
+        let r = restore_picker_inner("junk", &json!({ "code": CODE, "record": at, "lines": [one] }).to_string());
         assert_eq!((r.status, r.picker.as_deref()), (200, None));
         assert_eq!(body(&call(RED, "GET", "/api/games/junk", None))["prompt"]["kind"], json!("place_a"));
         // And the longest list `after_input` writes — `1`, then `A09` 63 times — is a list.
         let mut longest = vec![one.clone()];
         longest.extend(vec![json!({ "user": RED, "line": "A09", "expect": null }); 63]);
         fresh("junk", &stored_table, &stored);
-        let r = restore_picker_inner("junk", &json!({ "record": at, "lines": longest }).to_string());
+        let r = restore_picker_inner("junk", &json!({ "code": CODE, "record": at, "lines": longest }).to_string());
         assert_eq!((r.status, r.picker.as_deref()), (200, None), "64 lines are kept");
         let prompt = body(&call(RED, "GET", "/api/games/junk", None))["prompt"].clone();
         assert_eq!((&prompt["kind"], &prompt["selected"]), (&json!("place_a"), &json!([9])), "all 64 re-fed");

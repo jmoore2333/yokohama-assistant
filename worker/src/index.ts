@@ -28,6 +28,10 @@ const STRIPPED = "x-yokohama-";
  *  orchestrator's ruling on Task 11's review, escalation 1). */
 const FOREIGN_SOCKET = "this socket is for the site's own pages";
 
+/** The 500 of an object whose `fetch` rejected — ONE host-written sentence for
+ *  the table, the house and the archive alike (the orchestrator's F-1). */
+export const OBJECT_FAILED = "the server could not answer — try again";
+
 const NO_ONE: Identity = { kind: "none" };
 
 /**
@@ -69,7 +73,14 @@ const NO_ONE: Identity = { kind: "none" };
  *    404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
- *    object's 101 is returned as it came.
+ *    object's 101 is returned as it came. An object whose `fetch` REJECTS —
+ *    a throw that is not a trap: a reply the shell cannot read, a batch that
+ *    did not commit, a reset under `blockConcurrencyWhile` — answers 500
+ *    `the server could not answer — try again` in the API's error shape,
+ *    logged `object-failed {target, path, error}`, where the platform's own
+ *    plain 500 answered before, which a client cannot read as `{"error": …}`
+ *    (the orchestrator's F-1). A trap is not such a throw: each object
+ *    answers its own trap 500.
  *
  * `keys` is the team's key set (`keySource`): the default export's ONE per
  * isolate, or a test's. `_ctx` is the runtime's execution context: nothing
@@ -120,7 +131,13 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
     forwarded = target;
   }
 
-  return objectFor(forwarded, env, identity, body, headers).fetch(new Request(req.url, { method: req.method, headers, body }));
+  const object = objectFor(forwarded, env, identity, body, headers);
+  try {
+    return await object.fetch(new Request(req.url, { method: req.method, headers, body }));
+  } catch (e) {
+    log("object-failed", { target: forwarded.kind, path: url.pathname, error: String(e) });
+    return respond(500, errorBody(OBJECT_FAILED));
+  }
 }
 
 /** A target `handle` forwards to an object: every route but the Worker's own

@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildModule } from "./build-module.mjs";
+import { buildModule, SOURCES, sourceDigest } from "./build-module.mjs";
 import { EXPECTED } from "./factory-glue.mjs";
 
 // wasm-bindgen's glue in miniature, as `factory-glue.test.mjs` builds it.
@@ -150,5 +151,99 @@ describe("the unoptimized marker", () => {
     expect(existsSync(join(root, "gen", "factory.js"))).toBe(true);
     expect(existsSync(join(root, "gen", ".unoptimized"))).toBe(false);
     expect(built.optimized).toBeNull();
+  });
+});
+
+// **The source stamp** (R3's M-3): what the module was built FROM, digested
+// before cargo runs and written as `gen/source.json`, which the deploy guard
+// recomputes — so a deploy after a crate change with no rebuild is refused by
+// name. The digest is ONE function, `sourceDigest`, which both call.
+describe("the source digest", () => {
+  /** A scratch repository holding `files` (path from its root → text). */
+  function repo(files) {
+    const root = mkdtempSync(join(tmpdir(), "source-digest-"));
+    dirs.push(root);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
+    return root;
+  }
+  const BASE = {
+    "Cargo.lock": "# the lock\n",
+    "crates/yokohama-worker/build.rs": "fn main() {}\n",
+    "crates/yokohama-worker/src/lib.rs": "// the module\n",
+    "crates/yokohama-cli/src/repl.rs": "// the prompt\n",
+  };
+
+  // Mutants: a file's bytes, a file added, one removed, or one renamed read
+  // as no change; a hidden file read as a source; the lock left out.
+  it("moves with every source's bytes, name and presence, and with nothing else", () => {
+    const root = repo(BASE);
+    const before = sourceDigest(root);
+    expect(before).toMatch(/^[0-9a-f]{64}$/);
+    expect(sourceDigest(root), "the same tree, the same digest").toBe(before);
+    const changed = (f) => {
+      const r = repo(BASE);
+      f(r);
+      return sourceDigest(r);
+    };
+    expect(changed((r) => writeFileSync(join(r, "crates/yokohama-worker/src/lib.rs"), "// the module, changed\n"))).not.toBe(before);
+    expect(
+      changed((r) => {
+        mkdirSync(join(r, "crates/yokohama-web/src"), { recursive: true });
+        writeFileSync(join(r, "crates/yokohama-web/src/api.rs"), "// added\n");
+      }),
+    ).not.toBe(before);
+    expect(changed((r) => rmSync(join(r, "crates/yokohama-cli/src/repl.rs")))).not.toBe(before);
+    expect(
+      changed((r) => renameSync(join(r, "crates/yokohama-cli/src/repl.rs"), join(r, "crates/yokohama-cli/src/repl2.rs"))),
+    ).not.toBe(before);
+    expect(changed((r) => writeFileSync(join(r, "Cargo.lock"), "# another lock\n"))).not.toBe(before);
+    expect(changed((r) => writeFileSync(join(r, "crates/yokohama-worker/src/.DS_Store"), "Finder"))).toBe(before);
+    expect(
+      changed((r) => {
+        mkdirSync(join(r, "web/src"), { recursive: true });
+        writeFileSync(join(r, "web/src/App.tsx"), "// not a source of the module\n");
+      }),
+    ).toBe(before);
+  });
+
+  // Every root the stamp names exists in THIS repository: a crate renamed or
+  // moved would otherwise drop out of the digest as absent, and a change to it
+  // would never refuse a deploy.
+  it("names only roots this repository holds", () => {
+    const here = fileURLToPath(new URL("../../", import.meta.url));
+    for (const source of SOURCES) {
+      expect(statSync(join(here, source), { throwIfNoEntry: false }), `${source} exists`).toBeDefined();
+    }
+    expect(SOURCES).toEqual(expect.arrayContaining(["crates/yokohama-worker", "crates/yokohama-web/src", "crates/yokohama-cli/src"]));
+    expect(sourceDigest(here)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("the source stamp", () => {
+  // The digest is taken BEFORE cargo runs: a source edited while the build
+  // runs leaves a stamp of the tree the build started from, which the guard
+  // then refuses. Mutants: no stamp; the stamp taken after the build.
+  it("stamps gen/ with the digest of the sources the build started from", () => {
+    const root = worker({ "../crates/yokohama-worker/src/lib.rs": "// the module\n" });
+    const repoRoot = dirname(root);
+    const started = sourceDigest(repoRoot);
+    const release = tools();
+    const step = (cmd, args, cwd) => {
+      if (cmd === "cargo") writeFileSync(join(repoRoot, "crates/yokohama-worker/src/lib.rs"), "// edited during the build\n");
+      release.step(cmd, args, cwd);
+    };
+    buildModule({ debug: false, worker: root, step });
+    expect(JSON.parse(readFileSync(join(root, "gen", "source.json"), "utf8"))).toEqual({ digest: started });
+    expect(sourceDigest(repoRoot), "premise: the tree moved during the build").not.toBe(started);
+  });
+  it("is written by the debug build too, and goes with gen/ when a build fails", () => {
+    const root = worker();
+    buildModule({ debug: true, worker: root, step: tools().step });
+    expect(existsSync(join(root, "gen", "source.json"))).toBe(true);
+    expect(() => buildModule({ debug: false, worker: root, step: tools({ fail: "wasm-bindgen" }).step })).toThrow();
+    expect(existsSync(join(root, "gen"))).toBe(false);
   });
 });

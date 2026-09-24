@@ -9,6 +9,7 @@ import type { Env } from "../src/env";
 import { House } from "../src/house";
 import type { JwkSet, KeySource } from "../src/identity";
 import { BODY_LIMIT, handle } from "../src/index";
+import * as moduleModule from "../src/module";
 import { readReply } from "../src/module";
 import { Table } from "../src/table";
 import { WIRE } from "./corpus.gen";
@@ -333,6 +334,24 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect([res.house.length, res.archive.length]).toEqual([1, 0]);
   });
 
+  // R1's L-2, end to end: the dev door's claimed value must be an ADDRESS by
+  // the layer's `User::parse` rule, or it is no one. Before, `not-an-email`
+  // was the dev identity, named an Archive object whose `init` refused it
+  // under `r2`, and answered that object's 500 — a sentence no spec lists.
+  // Now it is the house's 401, as it is with no caller at all. Mutant: the
+  // rule dropped at the dev door.
+  it("(L-2) a claimed value that is no address is no one: POST /api/archive is the house's 401", async () => {
+    const token = await credential();
+    const claimed = { "X-Yokohama-Claimed-User": "not-an-email" };
+    expect((await worker("/api/me", { token, headers: claimed })).text).toBe(NO_ONE);
+    const res = await reaching(() =>
+      worker("/api/archive", { method: "POST", token, headers: { ...JSON_TYPE, ...claimed }, body: '{"record":"","table":""}' }),
+    );
+    expect(res.result.status).toBe(401);
+    expect((JSON.parse(res.result.text) as { error: string }).error).toContain("X-Yokohama-User from the edge Worker");
+    expect([res.house.length, res.archive.length]).toEqual([1, 0]);
+  });
+
   // Spec §2.3: the Archive object named `"archive:" + address`, answering as
   // the layer answers. The pool's archive is `r2`, so the layer reads the body
   // before any put, and refuses a record that does not parse. Mutants: the
@@ -534,6 +553,38 @@ describe("routing to the objects (spec §2.3)", () => {
     }
     const plain = await worker("/api/me", { token, headers: { Origin: "https://evil.test" } });
     expect(plain.text).toBe(`{"mode":"cf-access","user":"${RED}"}`);
+  });
+
+  // F-1 (the orchestrator's reading of the shell): an object whose `fetch`
+  // REJECTS — a throw that is not a trap, such as a reply the shell cannot
+  // read, or a batch that did not commit — answers the API's 500 in ONE
+  // host-written sentence whichever object threw, logged `object-failed`.
+  // Before, it was the platform's own plain 500, which the client cannot read
+  // as `{"error": …}`, and no line said so. `readReply` refuses at MODULE
+  // scope (pool fact 4), in the table and the house alike. Mutants: no catch;
+  // another shape or sentence; no line.
+  it("(F-1) an object that throws answers the API's 500, logged, for the table and the house alike", async () => {
+    const refusing = vi.spyOn(moduleModule, "readReply").mockImplementation(() => {
+      throw new Error("a reply the shell cannot read");
+    });
+    try {
+      for (const [target, path] of [
+        ["table", "/api/games/f1-throws/table"],
+        ["house", "/api/games"],
+      ] as const) {
+        const token = await person(RED);
+        const { result, lines } = await logsDuring(() => worker(path, { token }));
+        expect([result.status, result.headers.get("content-type"), JSON.parse(result.text)], target).toEqual([
+          500,
+          "application/json",
+          { error: "the server could not answer — try again" },
+        ]);
+        const failed = lines.filter((l) => (l as { event: string }).event === "object-failed");
+        expect(failed, target).toEqual([{ event: "object-failed", target, path, error: expect.stringContaining("a reply the shell cannot read") }]);
+      }
+    } finally {
+      refusing.mockRestore();
+    }
   });
 
   // Spec §2.9's off-path: the pool sets no `YOKOHAMA_WEB_ADMINS`, so the

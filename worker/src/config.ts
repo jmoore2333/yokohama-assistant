@@ -1,4 +1,5 @@
 import type { Env } from "./env";
+import { isAddress } from "./identity";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
  *  frozen reading, or a reading that ticks one second per use. */
@@ -107,23 +108,28 @@ function ttlDays(raw: string | null): number | null {
  * The operators (spec §2.9): comma-separated addresses, each trimmed and
  * lowercased as the layer's `User::parse` reads a caller, so an entry compares
  * with a caller's address as that caller would be read. An empty entry is
- * refused, and so is an entry that breaks `User::parse`'s rule of one `@` with
- * something on both sides and no whitespace or control character: `User::parse`
- * never answers with such an address, so the entry could match no one, and the
- * operator would meet a 403 that names nothing wrong.
+ * refused, and so is an entry that breaks `User::parse`'s rule (`isAddress`):
+ * `User::parse` never answers with such an address, so the entry could match
+ * no one, and the operator would meet a 403 that names nothing wrong. The
+ * first empty entry is named before the first that is no address.
+ *
+ * **A refusal names the entry by its POSITION and never echoes a value** (R3's
+ * M-6): the list is the operator's address, which the plan's ruling P-1 keeps
+ * out of the repository, and a refusal is the 500 body of every `/api/*`
+ * request and the `init-refused` line.
  */
 function admins(raw: string | null): string[] | null {
   if (raw === null) return null;
   const entries = raw.split(",").map(folded);
-  if (entries.includes("")) refuse(`YOKOHAMA_WEB_ADMINS has an empty entry — got ${JSON.stringify(raw)}`);
-  for (const entry of entries) {
-    const parts = entry.split("@");
-    if (parts.length !== 2 || parts[0] === "" || parts[1] === "" || /[\s\p{Cc}]/u.test(entry)) {
-      refuse(
-        `YOKOHAMA_WEB_ADMINS entry ${JSON.stringify(entry)} is not an address — ` +
-          "one @ with something on both sides, and no spaces or control characters",
-      );
-    }
+  const position = (i: number) => `entry ${i + 1} of ${entries.length}`;
+  const empty = entries.indexOf("");
+  if (empty !== -1) refuse(`YOKOHAMA_WEB_ADMINS ${position(empty)} is empty`);
+  const bad = entries.findIndex((entry) => !isAddress(entry));
+  if (bad !== -1) {
+    refuse(
+      `YOKOHAMA_WEB_ADMINS ${position(bad)} is not an address — ` +
+        "one @ with something on both sides, no spaces or control characters, and at most 254 bytes",
+    );
   }
   return entries;
 }

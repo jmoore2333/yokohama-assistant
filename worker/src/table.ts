@@ -440,7 +440,7 @@ export class Table extends DurableObject<Env> {
     if (!hasTables(sql) || Number(getMeta(sql, "load_traps") ?? "0") >= 2) return;
     const table = readDocs(sql).get("table");
     if (table === undefined) return;
-    const owed = this.owed(id, table, nextReading(config.clock));
+    const owed = this.owed(id, table);
     const writes = this.owedWrites(id, owed);
     if (writes.length === 0) return;
     this.batch(() => {
@@ -1194,7 +1194,11 @@ export class Table extends DurableObject<Env> {
    *   traps traps here. Its 200 has an empty body. A refusal that is not a
    *   trap is the layer's own error: logged, the row left as the module left
    *   it, and the request goes on to its own dispatch, whose answer stands —
-   *   the same error, on a route that needs the replay.
+   *   the same error, on a route that needs the replay. A row it cleared for
+   *   its CODE — built under code other than this build's (the orchestrator's
+   *   ruling I-85) — is logged `picker-dropped {id, stored, running}`, the
+   *   row's code (`null` for a row that names none) and this build's; the
+   *   request's batch deletes it.
    * - A trap in a load or in the restore is a LOAD trap: the module is
    *   dropped, `load_traps` counts it and `poison` names the kind, in a batch
    *   of their own, and the answer is the trap 500.
@@ -1244,6 +1248,11 @@ export class Table extends DurableObject<Env> {
     }
     if (restored !== null && restored.reply.status !== 200) {
       log("restore-refused", { id, status: restored.reply.status, body: restored.reply.body });
+    }
+    if (restored?.reply.dropped !== undefined) {
+      // The module's own JSON, `{"stored", "running"}`: two codes, and no
+      // record or table document.
+      log("picker-dropped", { id, ...(JSON.parse(restored.reply.dropped) as { stored: string | null; running: string }) });
     }
     return { restored, countWake: config.countWakes && stored.has("table"), clearTraps: traps > 0 };
   }
@@ -1376,10 +1385,12 @@ export class Table extends DurableObject<Env> {
           return;
         }
         const { status, body, bumps: carried, archive } = done.ok.reply;
-        // A framing call only reads: the request's own calls have already
-        // built the handle, so no known case pumps here. Should one ever
-        // carry bumps or an archive plan, this pass neither frames nor owes
-        // them, and the line records that it happened.
+        // A framing call only reads, and no known case pumps here: the wake
+        // that loaded this module built the handle — `restore_picker` builds
+        // it first wherever there is a game — and a finalizing keep leaves it
+        // resident; at an open or dealing table there is no game to pump.
+        // Should one ever carry bumps or an archive plan, this pass neither
+        // frames nor owes them, and the line records that it happened.
         if (carried.length > 0 || archive !== undefined) {
           log("frame-carried-bumps", { id, bumps: carried, archive: archive !== undefined });
         }
@@ -1437,7 +1448,10 @@ export class Table extends DurableObject<Env> {
    *   wake's, and `"[]"` deletes it (the orchestrator's ruling I-21) — which
    *   is how a delete takes an open picker's row with it: the module answers
    *   `"[]"` for a table it deletes with a list open (Task 4);
-   * - the wake's `wakes` count, and its clearing of a load trap;
+   * - the wake's `wakes` count — logged `wake {id, wakes}`, the new count,
+   *   once the batch has committed (the orchestrator's ruling I-84: the one
+   *   place the count can be read off a live Worker) — and its clearing of a
+   *   load trap;
    * - **what the house is owed** (spec §2.5, `owed`), when the table
    *   document changed or a copy is still owed (`copy_owed`): the table's
    *   first generation, and the slot with its revision — the new copy, or a
@@ -1490,16 +1504,15 @@ export class Table extends DurableObject<Env> {
     } else if (picker !== undefined) {
       writes.push(() => upsertDoc(sql, "picker", picker, now));
     }
-    if (parts.countWake) {
-      writes.push(() => setMeta(sql, "wakes", String(Number(getMeta(sql, "wakes") ?? "0") + 1)));
-    }
+    const wakes = parts.countWake ? Number(getMeta(sql, "wakes") ?? "0") + 1 : undefined;
+    if (wakes !== undefined) writes.push(() => setMeta(sql, "wakes", String(wakes)));
     if (parts.clearTraps) writes.push(() => clearLoadTraps(sql));
     // Computed BEFORE the batch, from the documents already read out of the
     // module (the orchestrator's ruling I-42), and written LAST in it, so the
     // slot's size and last activity count the documents this batch writes.
     // A copy still owed is computed by every request until it is made (spec
     // §2.4: a side channel's trap "retries on the alarm or the next request").
-    const owed = after !== before || copyOwedOf(sql) > 0 ? this.owed(id, after, called.at) : undefined;
+    const owed = after !== before || copyOwedOf(sql) > 0 ? this.owed(id, after) : undefined;
     if (owed !== undefined) writes.push(...this.owedWrites(id, owed));
     // The owed save as it stood before this batch.
     const holding = archiveOwedOf(sql);
@@ -1529,6 +1542,7 @@ export class Table extends DurableObject<Env> {
     this.batch(() => {
       for (const write of writes) write();
     }, alarm);
+    if (wakes !== undefined) log("wake", { id, wakes });
     // A delete with the archive off made no save of its own, so the owed save
     // went with the table: logged once the batch that dropped it has committed
     // (spec §2.6). With the archive on, the delete's own save superseded it.
@@ -1541,12 +1555,18 @@ export class Table extends DurableObject<Env> {
   /**
    * What a change of the table document owes the house (spec §2.5), decided
    * before any write: `table` is the document the change left — `undefined`
-   * when the layer deleted the table — and `at` the P-2 reading its call was
-   * pinned to.
+   * when the layer deleted the table.
    *
-   * - **The generation** is drawn when `meta` holds none, at `at` with 64
-   *   random bits: for every table this shell creates, by the create's own
-   *   batch, whose reading is the table's `created_at`.
+   * - **The generation** is drawn when `meta` holds none (`drawGeneration`):
+   *   `Date.now()` in MILLISECONDS — the shell's own time base (the
+   *   orchestrator's rulings I-43/I-44), never P-2's reading in seconds — and
+   *   64 random bits, for every table this shell creates by the create's own
+   *   batch. The house lists a re-created table only when its generation
+   *   orders after the one it retired, so a table forced and created again
+   *   within one SECOND is listed every time, where the second's reading tied
+   *   the two and the random half decided (the orchestrator's F-2); only a
+   *   re-create in the same millisecond as the original's create still
+   *   ties.
    * - **The copy** is `house_copy` of the document (`copyOf`), or `null`, a
    *   REMOVAL. One `house_copy` refuses is logged — its sentence VERBATIM —
    *   and owes nothing: the house keeps listing the last copy it received, a
@@ -1558,10 +1578,10 @@ export class Table extends DurableObject<Env> {
    * - **The slot** is owed when the copy DIFFERS from the one last put in
    *   motion (`differs`), at the next revision.
    */
-  private owed(id: string, table: string | undefined, at: number): Owed {
+  private owed(id: string, table: string | undefined): Owed {
     const sql = this.ctx.storage.sql;
     const state = slotState(sql);
-    const draw = state.generation === undefined ? drawGeneration(at) : undefined;
+    const draw = state.generation === undefined ? drawGeneration(Date.now()) : undefined;
     const generation = state.generation ?? (draw as Generation);
     let copy: string | null = null;
     if (table !== undefined) {
@@ -1870,7 +1890,8 @@ function differs(state: SlotState, copy: string | null): boolean {
   return (copy === null ? null : copyDigest(copy)) !== state.acked.digest;
 }
 
-/** A new generation at the reading `at`, with 64 random bits. */
+/** A new generation at `at` — the shell's `Date.now()`, in milliseconds
+ *  (`Table.owed`) — with 64 random bits. */
 function drawGeneration(at: number): Generation {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return { at, rand: [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("") };

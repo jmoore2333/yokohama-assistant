@@ -9,7 +9,9 @@
 // `web/src/wire/`; the pool replays the same walk through the objects
 // (`test/corpus.test.ts`). This sends it to the deployed Worker, through the
 // edge and Access, as the walk's own `.test` identities — and it is
-// REPEATABLE, and safe to re-run after a run that failed half way:
+// REPEATABLE, and safe to re-run after a run that failed half way, for as long
+// as the walk's `wire` records are the bytes its two first sends saved (see
+// "The reset" below):
 //
 // 1. **The operator's force** on each table the walk creates (`wire`, `wire2`,
 //    `wire4`), `POST /api/admin/tables/<id>/expire?force` — the BARE key, since
@@ -32,6 +34,15 @@
 // 5. **The force again** once the replay has begun, however it ended; then the
 //    report: rows run, named rows compared, the exemptions spent, and every
 //    mismatch. Exit 1 on a mismatch, a refused force, or a run that stopped.
+//
+// **The reset** (R3's M-1). The two first sends' saves stay in the bucket for
+// good, by the owner's direction, so every later run's first sends meet them:
+// the once-rule's 200 `identical`. A `wire` record whose bytes have changed —
+// a version bump, a walk that applies other moves, a record format change —
+// meets them as a 409 instead. The run stops there, since every row after it
+// reads a save it did not make, names the cause, and prints the four keys and
+// a `npx wrangler r2 object delete` for each (`resetRecipe`), run in `worker/`
+// with wrangler's own login: the owner's R2 key is read-only (spec §7).
 //
 // **The secret.** `.dev.vars` is read by path and its values are never
 // printed, and the credential goes to the Worker's own origin alone — a row
@@ -188,6 +199,22 @@ export function normalizeHouseChat(name, got, base, identities) {
     .filter((m) => typeof m?.seq === "number" && m.seq > base && ours.has(m?.author?.user))
     .map((m) => ({ ...m, seq: m.seq - base }));
   return { ...got, last: got.last - base, messages };
+}
+
+/**
+ * What to delete when a first send meets an earlier run's save of a `wire`
+ * record that has since changed (R3's M-1): each first send's record key, as
+ * its committed reply names the path, and its `.table.json` twin — under the
+ * root spec §2.6 gives the sender `who`, `test/` for an address ending
+ * `.test` — and a `wrangler r2 object delete` for each.
+ */
+export function resetRecipe(corpus, who) {
+  const root = who.endsWith(".test") ? "test/" : "";
+  const keys = [...FIRST_SENDS].flatMap((fixture) => {
+    const { path } = JSON.parse(corpus[fixture]);
+    return [`${root}${path}`, `${root}${path.replace(/\.json$/, ".table.json")}`];
+  });
+  return { keys, commands: keys.map((key) => `npx wrangler r2 object delete "yokohama-archive/${key}" --remote`) };
 }
 
 /**
@@ -460,7 +487,20 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
   // Every row's address, checked BEFORE anything is sent — the forces
   // included: a row that would leave the Worker's origin refuses the run.
   for (const { row } of rows) urlOf(row);
-  const result = { holds: false, run: 0, total: rows.length, named: 0, spent: [], rereads: 0, mismatches: [], forcedBefore: [], forcedAfter: [], base: null, stopped: null };
+  const result = {
+    holds: false,
+    run: 0,
+    total: rows.length,
+    named: 0,
+    spent: [],
+    rereads: 0,
+    mismatches: [],
+    forcedBefore: [],
+    forcedAfter: [],
+    base: null,
+    stopped: null,
+    reset: null,
+  };
   /** A mismatch, kept and printed as it is found. */
   const differs = (label, fixture, diff) => {
     result.mismatches.push({ label, fixture, ...diff });
@@ -506,6 +546,17 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       if (row.fixture !== null && corpus[row.fixture] === undefined) throw new Error(`${row.fixture} is named by a script and not committed`);
       if (row.fixture !== null && FIRST_SENDS.has(row.fixture)) {
         result.named += 1;
+        if (reply.status === 409) {
+          // An earlier run's save of a `wire` record that has since changed:
+          // every row after this one would read a save this run did not make.
+          result.stopped =
+            `${row.fixture} answered 409${said(reply)}. The bucket holds an earlier run's save of a wire record that has ` +
+            "since changed (a version bump, a walk that applies other moves, a record format change): delete the " +
+            "replay's four saves, then run it again";
+          result.reset = resetRecipe(corpus, row.who);
+          differs(label, row.fixture, { path: "(first send)", reason: `committed 201, or the once-rule's 200 · got 409${said(reply)}` });
+          break;
+        }
         const committed = JSON.parse(corpus[row.fixture]);
         // Not JSON reads as `null`: refused below, and reported by its shape.
         const got = parsed(reply);
@@ -574,6 +625,10 @@ function finish(result, log) {
       "a page still differing after them is a mismatch)",
   );
   if (result.stopped !== null) log(`stopped: ${result.stopped}`);
+  if (result.reset !== null) {
+    log("the reset — in worker/, with wrangler's own login; then run the replay again:");
+    for (const command of result.reset.commands) log(`  ${command}`);
+  }
   log(`mismatches: ${result.mismatches.length === 0 ? "none" : result.mismatches.length}`);
   log(`live-replay: ${result.holds ? "HOLDS" : "DOES NOT HOLD"}`);
   return result;

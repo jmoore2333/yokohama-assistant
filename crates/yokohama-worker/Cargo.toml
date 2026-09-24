@@ -42,6 +42,12 @@ http = "1"
 # archive's plan key (spec §2.6: a SHA-256 over the plan's four parts).
 sha2 = "0.10"
 
+[build-dependencies]
+# `build.rs` digests the CLI's and the layer's sources into the picker row's
+# code identity (the orchestrator's ruling I-85) — the same SHA-256 crate the
+# module itself uses, compiled for the build host.
+sha2 = "0.10"
+
 [features]
 # The battery's trap hook (spec §2.2): `debug_trap`, a panic inside a held
 # lock. Only a build that passes `--features debug` has it; the per-edit gate's

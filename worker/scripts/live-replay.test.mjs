@@ -14,6 +14,7 @@ import {
   order,
   readCredential,
   replay,
+  resetRecipe,
   urlOf,
 } from "./live-replay.mjs";
 
@@ -171,6 +172,29 @@ describe("firstSendAccepts", () => {
     // The once-rule's 200 is the SAME body but `identical`: a save filed at
     // another path is no repeat of this one.
     expect(firstSendAccepts(post, 200, { ...committed("archive_post_identical"), path: "browser/other/rev7/over/wire.json" })).toBeNull();
+  });
+});
+
+// R3's M-1: the replay's two first sends leave their saves in the bucket for
+// good (the owner's direction), so a `wire` record whose bytes change — a
+// version bump, a walk that applies other moves — meets the earlier save as a
+// 409 on every later run. The recipe names the four keys to delete.
+describe("resetRecipe", () => {
+  it("names the four keys the two first sends leave, under test/, and a delete for each", () => {
+    const recipe = resetRecipe(CORPUS, "red@wire.test");
+    expect(recipe.keys).toEqual([
+      "test/browser/red_at_wire.test/rev7/over/wire.json",
+      "test/browser/red_at_wire.test/rev7/over/wire.table.json",
+      "test/browser/red_at_wire.test/rev7/abandoned/wire.json",
+      "test/browser/red_at_wire.test/rev7/abandoned/wire.table.json",
+    ]);
+    expect(recipe.commands).toEqual(recipe.keys.map((key) => `npx wrangler r2 object delete "yokohama-archive/${key}" --remote`));
+  });
+  // The root is spec §2.6's: `test/` for a sender whose address ends `.test`
+  // with its dot, and the bucket's top otherwise. Mutant: the root read off
+  // anything but the sender's full address.
+  it("keys a sender outside .test at the bucket's top", () => {
+    expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
   });
 });
 
@@ -421,6 +445,37 @@ describe("replay", () => {
     expect(text).toContain("walk.json row 9: POST /api/games/wire/join as blue@wire.test — status: committed 200 · got 403");
     expect(text).toContain("you are not seated at this table");
     expect(text).not.toContain("sesame");
+  });
+
+  // R3's M-1: a first send's 409 is the bucket holding an EARLIER run's save
+  // of a `wire` record that has since changed. The run stops there — every
+  // row after it reads the save it did not make — names the cause, prints the
+  // reset recipe after the forces, and exits non-zero. Mutants: the run going
+  // on; no recipe; the recipe's keys at the bucket's top.
+  it("stops at a first send's 409, names the cause, and prints the reset recipe", async () => {
+    const host = fakeHost({
+      edit: (plan, rows) => {
+        const i = planIndex(rows, "archive-walk.json", 0);
+        expect(rows[i - 1].row.fixture, "the premise").toBe("archive_post");
+        plan[i] = () => json(409, committed("archive_409"));
+      },
+    });
+    const { result, text } = await run(host);
+    expect(result.holds).toBe(false);
+    expect(result.run, "no row after it").toBe(planIndex(host.rows, "archive-walk.json", 0));
+    expect(result.stopped).toBe(
+      "archive_post answered 409 — it said: a different record is archived under this id. The bucket holds an earlier " +
+        "run's save of a wire record that has since changed (a version bump, a walk that applies other moves, a record " +
+        "format change): delete the replay's four saves, then run it again",
+    );
+    expect(result.forcedAfter.map((f) => f.status)).toEqual([204, 204, 204]);
+    const lines = text.split("\n");
+    const verdict = lines.indexOf("live-replay: DOES NOT HOLD");
+    for (const command of resetRecipe(CORPUS, "red@wire.test").commands) {
+      const at = lines.indexOf(`  ${command}`);
+      expect(at, command).toBeGreaterThan(lines.findIndex((l) => l.startsWith("force after:")));
+      expect(at, "before the verdict").toBeLessThan(verdict);
+    }
   });
 
   it("refuses an exemption the Worker did not need: a host field reading as the axum host's", async () => {

@@ -1,5 +1,5 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
-// wrangler deploy`, so nothing ships unless all seven hold. Every check that
+// wrangler deploy`, so nothing ships unless all nine hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -39,6 +39,21 @@
 //    the orchestrator ruled at Task 14's review): the operator list is a
 //    SECRET, set with `wrangler secret put`, and a value there is an address
 //    committed to the repository. Read as a KEY, so a comment may name it.
+// 8. `gen/` is the build of the tree as it is now (R3's M-3): `gen/source.json`
+//    — the stamp `npm run build` writes, the digest of what the module is
+//    compiled from, taken before cargo ran (`build-module.mjs`'s
+//    `sourceDigest`, ONE function for the two) — equals that digest taken
+//    now. `wrangler deploy` bundles `src/` fresh and ships `gen/` as it sits,
+//    so a crate changed and deployed without a rebuild would ship the old
+//    module, whose exports the new shell may call and not find.
+// 9. The assets tree is the assembly of the CURRENT `web/dist` and
+//    `worker/static` (R3's M-3): its `sw.js` — the copy the assembly made,
+//    which names the release it came from — is byte for byte
+//    `web/dist/sw.js`, and each file of `worker/static` is its copy in the
+//    tree. Check 2 verifies the tree against ITS OWN `sw.js`, which a tree
+//    assembled from an earlier `web/dist` passes; the bytes are compared, not
+//    the release names alone, because the name digests the precache list and
+//    a change to `web/src/sw.ts` alone keeps it.
 //
 // Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
@@ -48,11 +63,12 @@
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
 // holds one (every URL), and would choke on a trailing comma.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 import { debugModuleIn, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
+import { sourceDigest } from "./build-module.mjs";
 
 /** Spec §2.3's handling, and the binding `/api/art` reads the manifest
  *  through. */
@@ -179,6 +195,60 @@ function operatorList(value, failures) {
   }
 }
 
+/** Check 8: `gen/source.json` against the digest of the sources now. Asked
+ *  only of a module that is there — check 1 names a missing one. */
+function staleModule(root, repo, failures) {
+  const stamp = join(root, "gen", "source.json");
+  if (!existsSync(stamp)) {
+    failures.push("gen/source.json is absent — this module was not built by npm run build: build the release: npm run build");
+    return;
+  }
+  let built;
+  try {
+    built = JSON.parse(readFileSync(stamp, "utf8"))?.digest;
+  } catch {
+    built = undefined;
+  }
+  if (typeof built !== "string") {
+    failures.push("gen/source.json is not the build's stamp — build the release again: npm run build");
+  } else if (built !== sourceDigest(repo)) {
+    failures.push("gen/ was built from sources that have since changed — build the release again: npm run build");
+  }
+}
+
+/** The release a built service worker names, off the banner
+ *  `web/scripts/precache.mjs` writes — or a stand-in when it names none,
+ *  since the bytes, not the name, decide check 9. */
+function releaseOf(sw) {
+  return /the release is (yokohama-release-[0-9a-f]+)\./.exec(sw)?.[1] ?? "no release name";
+}
+
+/** Check 9: the tree `shown` at `tree` against the current `web/dist/sw.js`
+ *  and `worker/static`. Asked only of a tree that holds a `sw.js` — check 2
+ *  names a missing one. */
+function staleAssets(root, repo, tree, shown, failures) {
+  const dist = join(repo, "web", "dist", "sw.js");
+  const rebuild = "run npm run build in web/, then in worker/";
+  if (!existsSync(dist)) {
+    failures.push(`web/dist/sw.js is absent, so nothing says whether worker/${shown} is the current release — ${rebuild}`);
+  } else {
+    const [assembled, current] = [readFileSync(join(tree, "sw.js"), "utf8"), readFileSync(dist, "utf8")];
+    if (assembled !== current) {
+      const [was, now] = [releaseOf(assembled), releaseOf(current)];
+      const names =
+        was === now ? `both name ${was}, so its service worker's own code moved` : `it holds ${was}, and web/dist ${now}`;
+      failures.push(`worker/${shown} was assembled from a web/dist that has since changed — ${names}: ${rebuild}`);
+    }
+  }
+  const statics = join(root, "static");
+  for (const file of existsSync(statics) ? readdirSync(statics).sort() : []) {
+    const copy = join(tree, file);
+    if (!existsSync(copy) || !readFileSync(copy).equals(readFileSync(join(statics, file)))) {
+      failures.push(`worker/${shown}/${file} is not worker/static/${file} — assemble the assets again: npm run build`);
+    }
+  }
+}
+
 /** Checks 3 to 7: the ones that need no build. */
 export function configFailures(root) {
   const failures = [];
@@ -203,16 +273,19 @@ export function configFailures(root) {
   return failures;
 }
 
-/** All seven checks over the worker package at `root`: `[]` when every one
- *  holds. */
-export function deployGuard(root) {
+/** All nine checks over the worker package at `root`, inside the repository
+ *  at `repo`: `[]` when every one holds. */
+export function deployGuard(root, repo = join(root, "..")) {
   const failures = [];
 
   const factory = join(root, "gen", "factory.js");
   if (!existsSync(factory)) {
     failures.push("gen/factory.js is absent — build the release module: npm run build");
-  } else if (readFileSync(factory, "utf8").includes("debug_trap(")) {
-    failures.push("gen/factory.js is the DEBUG module (it defines debug_trap) — build the release: npm run build");
+  } else {
+    if (readFileSync(factory, "utf8").includes("debug_trap(")) {
+      failures.push("gen/factory.js is the DEBUG module (it defines debug_trap) — build the release: npm run build");
+    }
+    staleModule(root, repo, failures);
   }
   if (existsSync(join(root, "gen", ".unoptimized"))) {
     failures.push(
@@ -237,6 +310,7 @@ export function deployGuard(root) {
       } catch (e) {
         failures.push(`${shown}: ${e instanceof Error ? e.message : String(e)}`);
       }
+      staleAssets(root, repo, tree, shown, failures);
     }
     const debug = existsSync(tree) ? debugModuleIn(tree) : undefined;
     if (debug) {
@@ -258,7 +332,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
   console.log(
-    "deploy-guard: the optimized release module; the assets tree is the release, with no debug browser module; " +
+    "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
+      "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; " +
       "the same object bindings, migrations and bucket binding in both; no operator list in its vars",
   );

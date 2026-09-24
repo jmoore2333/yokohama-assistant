@@ -3,7 +3,6 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import compiled from "../gen/yokohama_worker_bg.wasm";
 import { createModule } from "../gen/factory.js";
-import * as clockModule from "../src/clock";
 import * as configModule from "../src/config";
 import type { House } from "../src/house";
 import { Instance, readReply } from "../src/module";
@@ -193,15 +192,6 @@ function applyInHouse(slot: Slot) {
   return runInDurableObject(houseStub(), (house: House) => house.apply(slot));
 }
 
-/** The module's reading ticks one second per call from `from`: the exported
- *  `nextReading` replaced at MODULE scope (pool fact 4; the orchestrator's
- *  rulings I-43/I-44), so a re-created table's generation orders after the
- *  one it replaces. Restore it in a `finally`. */
-function tickFrom(from: number) {
-  let next = from;
-  return vi.spyOn(clockModule, "nextReading").mockImplementation(() => next++);
-}
-
 /** `house_copy` TRAPS in the next `times` NEW modules built — the module a
  *  copy is computed on is always a new one — at MODULE scope (pool fact 4).
  *  The table's live module and the house's are warm in the cells that use
@@ -258,17 +248,19 @@ async function lobbySocket(user: string) {
 describe("the durable slot (spec §2.5)", () => {
   // Mutants: no slot written at the create; the slot never pushed; the house
   // not listing its copies (its module never handed them), or listing a row
-  // that is not the layer's own over the original; a generation drawn from a
-  // source other than P-2's reading (under the frozen clock every reading is
-  // the same, so a LATER P-2 reading is battery 36's to catch, where the
-  // clock ticks); the slot's last activity written as a constant, or its
-  // size as 0; a refused create at a taken name writing a slot. A refused
+  // that is not the layer's own over the original; a generation whose time is
+  // not the shell's `Date.now()` in MILLISECONDS (the orchestrator's F-2; the
+  // P-2 reading in seconds is the mutant); the slot's last activity written
+  // as a constant, or its size as 0; a refused create at a taken name
+  // writing a slot. A refused
   // create at an id that holds nothing is `table.test.ts`'s probe cell ("a
   // probe at %s …", a create at `bad!name` leaves `sqlite_master` empty).
   it("a create's copy reaches the house and the lobby lists it", async () => {
     const id = "slot-a";
     const stub = tableStub(id);
+    const before = Date.now();
     expect((await create(id)).status).toBe(201);
+    const after = Date.now();
     await runInDurableObject(stub, (table: Table) => table.deliverSlot());
     const rows = await listed(STRANGER, "scope=open", [id]);
     // The NAS's answer: the layer's own listing over the ORIGINAL document.
@@ -279,7 +271,8 @@ describe("the durable slot (spec §2.5)", () => {
     expect(want.length, "premise: the layer lists it for a stranger").toBe(1);
     expect(rows, "the house's row is the layer's row over the original").toEqual(want);
     const meta = await metaOf(stub);
-    expect(meta.generation?.at, "the generation's time is the create's reading").toBe(1_789_000_000);
+    expect(meta.generation?.at, "the generation's time is the create's Date.now(), in milliseconds").toBeGreaterThanOrEqual(before);
+    expect(meta.generation?.at).toBeLessThanOrEqual(after);
     expect(meta.generation?.rand).toMatch(/^[0-9a-f]{16}$/);
     expect([meta.revision, meta.slot, meta.acked?.revision]).toEqual([1, undefined, 1]);
     // The slot's last activity and size, as the house stored them: the table
@@ -318,11 +311,13 @@ describe("the durable slot (spec §2.5)", () => {
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status)).toEqual(["dealing"]);
   });
 
-  // Battery 6, and battery 35's SECOND catcher. The mutant is `acked`
-  // recorded without `advances`: r's late ack would regress it to r. This arm
-  // CANNOT see battery 22 — by the time r's ack lands the slot is already
-  // empty, so a mutant that "clears a newer slot" clears nothing (re-review
-  // N2, measured).
+  // Battery 6: the slot is cleared only by the acknowledgement. Its mutant —
+  // a push that deletes the slot before the house's RPC answers — fails the
+  // premise that the create's slot still holds r while r's push is held. And
+  // battery 35's SECOND catcher: its mutant is `acked` recorded without
+  // `advances`, and r's late ack would regress it to r. This arm CANNOT see
+  // battery 22 — by the time r's ack lands the slot is already empty, so a
+  // mutant that "clears a newer slot" clears nothing (re-review N2, measured).
   it("a late ack of r leaves acked at r+1 (battery 35's SECOND catcher, battery 6)", async () => {
     const id = "slot-c";
     const stub = tableStub(id);
@@ -344,6 +339,7 @@ describe("the durable slot (spec §2.5)", () => {
       expect(held.settled(id, r), "premise: r's push ran through the house").toBe(true);
     } finally {
       held.restore();
+      await settle(stub);
     }
     const after = await metaOf(stub);
     expect(after.slot, "the slot stays EMPTY").toBeUndefined();
@@ -385,6 +381,7 @@ describe("the durable slot (spec §2.5)", () => {
       await settle(stub);
     } finally {
       held.restore();
+      await settle(stub);
     }
     expect(await copyRow(id), "the house dropped the row").toBeUndefined();
     expect((await retiredOf(id)).length, "and retired the generation").toBe(1);
@@ -421,6 +418,7 @@ describe("the durable slot (spec §2.5)", () => {
       expect(held.settled(id, r), "premise: the straggler ran through the house").toBe(true);
     } finally {
       held.restore();
+      await settle(stub);
     }
     expect(await tables(), "the straggler's acknowledgement recreated nothing").toBe(0);
     expect(await copyRow(id), "and the house lists nothing for it").toBeUndefined();
@@ -494,6 +492,7 @@ describe("the durable slot (spec §2.5)", () => {
       });
     } finally {
       hold?.restore();
+      await settle(stub);
     }
     expect(back, "premise: the walk reached the change back to X, byte for byte").toBe(true);
     await runInDurableObject(stub, (table: Table) => table.deliverSlot());
@@ -575,6 +574,7 @@ describe("the durable slot (spec §2.5)", () => {
     } finally {
       calls.mockRestore();
       held.restore();
+      await settle(stub);
     }
     expect((await metaOf(stub)).acked?.revision).toBe(r);
   });
@@ -607,6 +607,9 @@ describe("the durable slot (spec §2.5)", () => {
       await abortAllDurableObjects();
     } finally {
       held.restore();
+      // The abort left the object to a new instance, which this stub
+      // reaches: the push the aborted one held is not its to settle.
+      await settle(tableStub(id));
     }
     const fresh = tableStub(id);
     expect(await runDurableObjectAlarm(fresh)).toBe(true);
@@ -646,47 +649,51 @@ describe("the durable slot (spec §2.5)", () => {
   // Battery 36 (spec §2.4): a new table's first copy can never overwrite a
   // removal the house has not received. After the house's acknowledgement the
   // delete's marker still stands, and a create is still 409; once its 90 days
-  // are over the object ends, and the id is free. The clock TICKS for this
-  // cell, so the re-created generation orders after the retired one (plan
-  // review m7). Mutants: no 409 (the create lands and its copy would race the
+  // are over the object ends, and the id is free. The re-create runs under
+  // the FROZEN clock, the same second as the table it replaced, and its
+  // generation still orders after the retired one by its time — the shell's
+  // milliseconds — never by the coin toss of its random half (the
+  // orchestrator's F-2; plan review m7 stepped around it with a ticking
+  // clock). Mutants: no 409 (the create lands and its copy would race the
   // removal); the object never ended after the marker (the re-create meets
-  // the layer's "already exists", or finds the old slot).
+  // the layer's "already exists", or finds the old slot); the generation's
+  // time the P-2 reading in seconds (the two times tie).
   it("a create while a removal is unacknowledged is 409; once the marker has ended the object is gone and the id is free", async () => {
     const id = "slot-h";
     const stub = tableStub(id);
-    const tick = tickFrom(1_790_000_000);
+    const created = await create(id);
+    expect(created.status).toBe(201);
+    const firstCreatedAt = (await created.json<{ created_at: number }>()).created_at;
+    await settle(stub);
+    const first = (await metaOf(stub)).generation!;
+    const held = holdApply();
     try {
-      expect((await create(id)).status).toBe(201);
-      await settle(stub);
-      const first = (await metaOf(stub)).generation!;
-      const held = holdApply();
-      try {
-        expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status).toBe(204);
-        const pending = await metaOf(stub);
-        expect(pending.slot?.copy, "premise: a REMOVAL waits").toBeNull();
-        const again = await create(id);
-        expect([again.status, await again.json()]).toEqual([409, USED_RECENTLY]);
-        expect(await metaOf(stub), "the 409 wrote nothing").toEqual(pending);
-        held.release();
-        await runInDurableObject(stub, (table: Table) => table.deliverSlot());
-      } finally {
-        held.restore();
-      }
-      expect((await metaOf(stub)).slot, "premise: the house acknowledged the removal").toBeUndefined();
-      const marked = await create(id);
-      expect([marked.status, await marked.json()], "after the ack the marker stands, and a create is still 409").toEqual([409, USED_RECENTLY]);
-      await endMarker(stub);
-      const recreated = await create(id);
-      expect(recreated.status).toBe(201);
-      const createdAt = (await recreated.json<{ created_at: number }>()).created_at;
-      await settle(stub);
-      const second = (await metaOf(stub)).generation!;
-      expect(cmpGen(second, first), "premise: the new generation orders after the retired one").toBeGreaterThan(0);
-      expect(second.at, "the generation's time is the re-create's created_at").toBe(createdAt);
-      expect((await listed(RED, "scope=mine", [id])).map((r) => r.created_at), "the house lists the NEW table").toEqual([createdAt]);
+      expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status).toBe(204);
+      const pending = await metaOf(stub);
+      expect(pending.slot?.copy, "premise: a REMOVAL waits").toBeNull();
+      const again = await create(id);
+      expect([again.status, await again.json()]).toEqual([409, USED_RECENTLY]);
+      expect(await metaOf(stub), "the 409 wrote nothing").toEqual(pending);
+      held.release();
+      await runInDurableObject(stub, (table: Table) => table.deliverSlot());
     } finally {
-      tick.mockRestore();
+      held.restore();
+      await settle(stub);
     }
+    expect((await metaOf(stub)).slot, "premise: the house acknowledged the removal").toBeUndefined();
+    const marked = await create(id);
+    expect([marked.status, await marked.json()], "after the ack the marker stands, and a create is still 409").toEqual([409, USED_RECENTLY]);
+    await endMarker(stub);
+    const recreated = await create(id);
+    expect(recreated.status).toBe(201);
+    const createdAt = (await recreated.json<{ created_at: number }>()).created_at;
+    expect(createdAt, "premise: the re-create is in the same second as the table it replaced").toBe(firstCreatedAt);
+    await settle(stub);
+    const second = (await metaOf(stub)).generation!;
+    expect(second.at, "the new generation's time is later, in milliseconds").toBeGreaterThan(first.at);
+    expect(cmpGen(second, first), "so it orders after the retired one").toBeGreaterThan(0);
+    expect((await copyRow(id))?.generation, "the house applied the NEW table's copy").toEqual(second);
+    expect((await listed(RED, "scope=mine", [id])).map((r) => r.created_at), "and the lobby lists it").toEqual([createdAt]);
   });
 
   // Battery 18 through the objects (the orchestrator's ruling S-12): a removed
@@ -699,40 +706,35 @@ describe("the durable slot (spec §2.5)", () => {
   it("a removed generation's late push is ignored before and after the re-created table's first push (battery 18)", async () => {
     const id = "slot-k";
     const stub = tableStub(id);
-    const tick = tickFrom(1_791_000_000);
-    try {
-      expect((await create(id)).status).toBe(201);
-      await settle(stub);
-      const old = (await metaOf(stub)).generation!;
-      const lastCopy = (await copyRow(id))!.json;
-      expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status).toBe(204);
-      await settle(stub);
-      expect(await copyRow(id), "premise: the removal was applied").toBeUndefined();
-      expect(await retiredOf(id), "premise: its generation is retired").toEqual([old]);
+    expect((await create(id)).status).toBe(201);
+    await settle(stub);
+    const old = (await metaOf(stub)).generation!;
+    const lastCopy = (await copyRow(id))!.json;
+    expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status).toBe(204);
+    await settle(stub);
+    expect(await copyRow(id), "premise: the removal was applied").toBeUndefined();
+    expect(await retiredOf(id), "premise: its generation is retired").toEqual([old]);
 
-      const early = await logsDuring(() => applyInHouse(pushOf(id, old, 50, lastCopy)));
-      expect(early.lines.map((l) => (l as { event: string }).event), "before the re-create").toEqual(["slot-ignored"]);
-      expect(await copyRow(id)).toBeUndefined();
-      expect(await listed(RED, "scope=mine", [id])).toEqual([]);
+    const early = await logsDuring(() => applyInHouse(pushOf(id, old, 50, lastCopy)));
+    expect(early.lines.map((l) => (l as { event: string }).event), "before the re-create").toEqual(["slot-ignored"]);
+    expect(await copyRow(id)).toBeUndefined();
+    expect(await listed(RED, "scope=mine", [id])).toEqual([]);
 
-      await endMarker(stub);
-      expect((await create(id)).status).toBe(201);
-      await settle(stub);
-      const current = await copyRow(id);
-      expect(cmpGen(current!.generation, old), "premise: the re-created table's copy is current").toBeGreaterThan(0);
-      const late = await logsDuring(() => applyInHouse(pushOf(id, old, 51, lastCopy)));
-      expect(late.lines.map((l) => (l as { event: string }).event), "after the re-create").toEqual(["slot-ignored"]);
-      expect(await copyRow(id), "the row is still the re-created table's").toEqual(current);
-      // A current row is replaced only through its own generation, even by one
-      // that is newer and was never retired: it waits for the current one's
-      // removal (spec §2.5).
-      const newer: Generation = { at: current!.generation.at + 1, rand: "0000000000000000" };
-      const other = await logsDuring(() => applyInHouse(pushOf(id, newer, 99, lastCopy)));
-      expect(other.lines.map((l) => (l as { event: string }).event), "another generation while one is current").toEqual(["slot-ignored"]);
-      expect(await copyRow(id)).toEqual(current);
-    } finally {
-      tick.mockRestore();
-    }
+    await endMarker(stub);
+    expect((await create(id)).status).toBe(201);
+    await settle(stub);
+    const current = await copyRow(id);
+    expect(cmpGen(current!.generation, old), "premise: the re-created table's copy is current").toBeGreaterThan(0);
+    const late = await logsDuring(() => applyInHouse(pushOf(id, old, 51, lastCopy)));
+    expect(late.lines.map((l) => (l as { event: string }).event), "after the re-create").toEqual(["slot-ignored"]);
+    expect(await copyRow(id), "the row is still the re-created table's").toEqual(current);
+    // A current row is replaced only through its own generation, even by one
+    // that is newer and was never retired: it waits for the current one's
+    // removal (spec §2.5).
+    const newer: Generation = { at: current!.generation.at + 1, rand: "0000000000000000" };
+    const other = await logsDuring(() => applyInHouse(pushOf(id, newer, 99, lastCopy)));
+    expect(other.lines.map((l) => (l as { event: string }).event), "another generation while one is current").toEqual(["slot-ignored"]);
+    expect(await copyRow(id)).toEqual(current);
   });
 
   // Spec §2.4 step 2: a delete's 204 writes ONE batch — the docs rows and the
@@ -766,6 +768,7 @@ describe("the durable slot (spec §2.5)", () => {
       await settle(stub);
     } finally {
       held.restore();
+      await settle(stub);
     }
     const marker = (await markerOf(stub))!;
     expect((await metaOf(stub)).slot, "premise: the removal acknowledged").toBeUndefined();
@@ -1004,6 +1007,7 @@ describe("the durable slot (spec §2.5)", () => {
     } finally {
       traps?.restore();
       held.restore();
+      await settle(stub);
     }
     expect(await copyOwed(stub), "premise: the copy is owed").toEqual(["1"]);
     // A window, not "not null": with a TTL the acknowledgement would re-arm
@@ -1043,6 +1047,7 @@ describe("the durable slot (spec §2.5)", () => {
     } finally {
       await failing?.restore();
       held.restore();
+      await settle(stub);
     }
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect((await listed(RED, "scope=mine", [id])).map((r) => r.status)).toEqual(["dealing"]);

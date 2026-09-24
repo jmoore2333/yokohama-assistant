@@ -5,9 +5,11 @@ import { createModule, type Exports, type Reply } from "../gen/factory.js";
  *  plan's names table; `crates/yokohama-worker/src/signal.rs`). */
 export type Bump = { bump: string } | { bump_table: string } | { bump_house_chat: null } | { end: string };
 
-/** A reply as plain data. `archive` (the deferred archive plan) and `picker`
- *  (the picker row) are present only when the module set them. */
-export type Replied = { status: number; body: string; bumps: Bump[]; archive?: string; picker?: string };
+/** A reply as plain data. `archive` (the deferred archive plan), `picker`
+ *  (the picker row) and `dropped` (the codes of a picker row `restore_picker`
+ *  cleared for its code, `{"stored", "running"}`) are present only when the
+ *  module set them. */
+export type Replied = { status: number; body: string; bumps: Bump[]; archive?: string; picker?: string; dropped?: string };
 
 /**
  * One object's module (spec §2.2, §2.4): the factory's instance, built on first
@@ -95,6 +97,7 @@ export function readReply(r: Reply): Replied {
   const bumps = r.bumps;
   const archive = r.archive;
   const picker = r.picker;
+  const dropped = r.dropped;
   r.free();
   return {
     status,
@@ -102,6 +105,7 @@ export function readReply(r: Reply): Replied {
     bumps: parseBumps(bumps),
     ...(archive === undefined ? {} : { archive }),
     ...(picker === undefined ? {} : { picker }),
+    ...(dropped === undefined ? {} : { dropped }),
   };
 }
 

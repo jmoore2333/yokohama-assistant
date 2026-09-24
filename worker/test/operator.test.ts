@@ -4,7 +4,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import compiled from "../gen/yokohama_worker_bg.wasm";
 import { createModule } from "../gen/factory.js";
 import { Archive } from "../src/archive";
-import * as clockModule from "../src/clock";
 import * as configModule from "../src/config";
 import type { Env } from "../src/env";
 import { House } from "../src/house";
@@ -141,28 +140,36 @@ async function copyOf(id: string): Promise<{ gen_at: number; last_active: number
 }
 
 /** The shell's lines among `lines`, less the slot's push and acknowledgement,
- *  which `test/slot.test.ts` pins. */
+ *  which `test/slot.test.ts` pins, and a counted wake's `wake` line, which
+ *  `test/table.test.ts` pins (the orchestrator's ruling I-84; the pool counts
+ *  wakes). */
 function ends(lines: unknown[]): unknown[] {
-  return lines.filter((l) => !["slot-pushed", "slot-acked"].includes(String((l as { event?: unknown }).event)));
+  return lines.filter((l) => !["slot-pushed", "slot-acked", "wake"].includes(String((l as { event?: unknown }).event)));
 }
 
-/** A create at `id`, as red, with the module's reading ticking from `from`
- *  (the exported `nextReading` replaced at MODULE scope; the orchestrator's
- *  rulings I-43/I-44): the new table's generation orders after one the house
- *  retired at the pool's frozen reading, which it would otherwise tie (plan
- *  review m7). Its copy is delivered before this answers. */
-async function recreate(id: string, from: number): Promise<{ status: number; created_at: number }> {
-  let next = from;
-  const tick = vi.spyOn(clockModule, "nextReading").mockImplementation(() => next++);
-  try {
-    const stub = tableStub(id);
-    const res = await call(stub, RED, "POST", "/api/games", CREATE_BODY, id);
-    const body = (await res.json()) as { created_at: number };
-    await settle(stub);
-    return { status: res.status, created_at: body.created_at };
-  } finally {
-    tick.mockRestore();
-  }
+/** The house's retired generations' times for `id`. */
+async function retiredAt(id: string): Promise<number[]> {
+  return runInDurableObject(houseStub(), (_h, state) => {
+    const sql = state.storage.sql;
+    const exists = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'retired'").one().n === 1;
+    return exists ? sql.exec<{ gen_at: number }>("SELECT gen_at FROM retired WHERE id = ?", id).toArray().map((r) => r.gen_at) : [];
+  });
+}
+
+/**
+ * A create at `id`, as red, under the pool's FROZEN clock — the same second
+ * as the table it replaces — its copy delivered before this answers, with the
+ * generation it drew. A generation's time is the shell's `Date.now()` in
+ * milliseconds (the orchestrator's F-2), so the new one orders after the one
+ * the house retired by its time, and the house lists it, every time; the
+ * P-2 reading in seconds tied the two, and the random half decided.
+ */
+async function recreate(id: string): Promise<{ status: number; generation: { at: number; rand: string } }> {
+  const stub = tableStub(id);
+  const res = await call(stub, RED, "POST", "/api/games", CREATE_BODY, id);
+  await settle(stub);
+  const [row] = await sqlOf(stub, "SELECT v FROM meta WHERE k = 'generation'");
+  return { status: res.status, generation: JSON.parse(String(row?.v)) as { at: number; rand: string } };
 }
 
 describe("the gate (spec §2.9)", () => {
@@ -452,9 +459,12 @@ describe("the operator's force (spec §2.9)", () => {
       expect(await socket.closed).toEqual({ code: 4404, reason: "this table was deleted" });
       expect(socket.messages.at(-1)).toBe('{"event":"end","data":{"reason":"deleted"}}');
     }
-    const again = await recreate(id, 1_794_000_000);
+    const retired = await retiredAt(id);
+    expect(retired.length, "premise: the house retired the forced table's generation").toBeGreaterThan(0);
+    const again = await recreate(id);
     expect(again.status, "a create at the id").toBe(201);
-    expect((await copyOf(id))?.gen_at, "the house lists the NEW table").toBe(again.created_at);
+    expect(again.generation.at, "the new generation orders after every retired one, by its time").toBeGreaterThan(Math.max(...retired));
+    expect((await copyOf(id))?.gen_at, "the house lists the NEW table").toBe(again.generation.at);
   });
 
   // The orchestrator's ruling I-72: `?force` is the BARE key. With any value
@@ -611,6 +621,6 @@ describe("the operator's force (spec §2.9)", () => {
     });
     expect(ends(lines)).toEqual([{ event: "forced", id }]);
     expect(await tablesIn(stub)).toBe(0);
-    expect((await recreate(id, 1_795_000_000)).status).toBe(201);
+    expect((await recreate(id)).status).toBe(201);
   });
 });

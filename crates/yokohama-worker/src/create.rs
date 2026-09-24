@@ -49,7 +49,7 @@ const MISROUTED: &str = "the create's id does not name the table it was routed t
 ///   had already named the object: the re-review measured a 201 naming a table
 ///   no object held (spec §0.4).
 /// - **No `id` key**: the object's name is inserted as the body's last member
-///   ([`with_id`]), and the body goes on.
+///   (`with_id`), and the body goes on.
 pub fn create_inner(user: Option<&str>, body: &[u8], id: &str, content_type: Option<&str>) -> ReplyData {
     let forward = |body: &[u8]| dispatch_inner(user, "POST", "/api/games", "", content_type, body);
     // Caller first: a create with no caller gets the layer's 401, never a host sentence (spec §4).

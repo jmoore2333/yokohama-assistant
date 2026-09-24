@@ -1,7 +1,13 @@
 //! **`init`'s configuration** (spec §2.2, §3.1): the JSON the shell builds from
-//! the Worker's variables, parsed and refused HERE — so a bad value is refused
+//! the Worker's variables, parsed and refused HERE — so a bad VALUE is refused
 //! at `init` naming its variable, the Worker's form of the NAS refusing to
-//! start.
+//! start. A configuration of the wrong SHAPE — not the object of its five
+//! keys, a key it does not have, or a value of the wrong JSON type, such as
+//! `{"chat_keep": 500}` for the string `"500"` — is refused in serde's words,
+//! which name no variable. The shell always builds the object, with every
+//! value a string or `null` (`worker/src/config.ts`'s `moduleConfig`, whose
+//! `shellConfig` refuses a variable that is not a string first: the
+//! orchestrator's ruling E3), so no deployment reaches those.
 
 use serde::Deserialize;
 use yokohama_web::chat::ChatConfig;
@@ -11,7 +17,8 @@ use yokohama_web::identity::User;
 pub(crate) const ARCHIVE_VAR: &str = "YOKOHAMA_WEB_ARCHIVE";
 
 /// The five keys the shell sends, and no others: an unknown key is a
-/// misspelling in the shell, refused rather than ignored.
+/// misspelling in the shell, refused rather than ignored. Read ONLY from the
+/// object form ([`parse`]).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InitConfig {
@@ -53,8 +60,22 @@ pub(crate) enum Switch {
 /// The receipt archive reads it whole for spec §2.6's `test/` root, which must
 /// read `Red@T.TEST` as the `red@t.test` a sender of that name normalizes to.
 /// Under `off` nothing reads it, and it is not checked.
+///
+/// **The object form only** (R1's L-3): serde's derived `Deserialize` also
+/// reads a struct from a positional ARRAY, a form `deny_unknown_fields` does
+/// not govern, so anything but an object is refused before serde reads it —
+/// the rule this crate keeps for a create body, the picker row and a
+/// receipt's outcome. The refusal echoes nothing, since the configuration
+/// carries the Archive object's address.
 pub(crate) fn parse(config: &str) -> Result<Config, String> {
-    let c: InitConfig = serde_json::from_str(config)
+    let value: serde_json::Value = serde_json::from_str(config)
+        .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
+    if !value.is_object() {
+        return Err("the module's init configuration is the object of its five keys — \
+                    archive, caller, lobby_chat, chat_keep and chat_text"
+            .to_string());
+    }
+    let c: InitConfig = serde_json::from_value(value)
         .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
     let archive = match c.archive.as_str() {
         "off" => Switch::Off,

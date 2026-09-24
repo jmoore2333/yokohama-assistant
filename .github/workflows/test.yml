@@ -74,13 +74,16 @@ jobs:
       # emits 1.78 MB and the pass takes it to 1.17 MB, which is the figure the
       # release budget and every §0.3 measurement are stated at.
       #
-      # **Pinned to the upstream release binary rather than apt's package.** The
-      # workstation runs binaryen 132 (`wasm-opt version 132`) and
-      # `ubuntu-latest`'s `binaryen` is several versions behind it, so
-      # `apt-get install binaryen` would optimize with a different compiler than
-      # every recorded byte count was taken on — a size regression CI could not
-      # see and a difference nobody could reproduce locally. The tarball is one
-      # static binary; the cache key carries the version, so a bump here
+      # **Pinned to the upstream release binary rather than apt's package.**
+      # `ubuntu-latest`'s `binaryen` is several versions behind 132, the version
+      # `deploy/RUNBOOK.md`'s byte figures of §1 to §3 were taken on, so
+      # `apt-get install binaryen` would optimize with a compiler no recorded
+      # figure was taken on — a size regression CI could not see. The
+      # workstation has read binaryen 133 since (`wasm-opt version 133`), and
+      # every Worker deployment of M6.5c built its modules with 133 (RUNBOOK §1;
+      # the orchestrator's ruling I-87). This job builds modules and deploys
+      # none, and nothing here says 132 and 133 emit the same bytes. The tarball
+      # is one static binary; the cache key carries the version, so a bump here
       # invalidates the cache rather than restoring the old one.
       #
       # **The download is CHECKSUMMED before anything is unpacked.** The URL

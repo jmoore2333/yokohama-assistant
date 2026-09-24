@@ -90,11 +90,15 @@ brew install binaryen                                       # M6.5b2: wasm-opt, 
 that it produced an UNOPTIMIZED module — **do not cut a deploy from one**: it is
 1.78 MB instead of 1.17 MB.
 
-**Which version, and where it matters.** The workstation reading is `wasm-opt
-version 132`, and every byte figure in this document was taken with it; CI and
-`deploy/Dockerfile` install that exact binary from the upstream release tarball,
-pinned by SHA-256. `apt-get install binaryen` on Debian or Ubuntu gives **120**,
-which emits a different module (1,174,709 B against 132's 1,173,055 B on the
+**Which version, and where it matters.** The byte figures in §1 to §3 were
+taken with `wasm-opt version 132`, the workstation's reading when they were
+recorded. The workstation has read **`wasm-opt version 133`** since, and every
+Worker deployment of M6.5c, the fourteenth to the eighteenth (§6), built both
+modules with 133 (the orchestrator's ruling I-87). CI and `deploy/Dockerfile`
+install **132** from the upstream release tarball, pinned by SHA-256, and CI
+builds modules and never deploys one. Nothing here says that 132 and 133 emit
+the same bytes; aligning the two pins is the cleanup cycle's. `apt-get install
+binaryen` on Debian or Ubuntu gives **120**, which emits a different module (1,174,709 B against 132's 1,173,055 B on the
 same input). That is fine for developing on a Linux box and it is NOT the build
 to read a recorded figure or a release budget off. The script prints the version
 it used on every run.
@@ -2124,6 +2128,11 @@ What answers what:
   - a trapped engine: **500** `the table's engine stopped — try again`, `the lobby's engine stopped
     — try again` or `the archive's engine stopped — try again`; a table whose stored document traps
     twice: **500** `this table's stored <kind> cannot be loaded`;
+  - **an object whose request failed on an error that is not a trap** — a reply the shell cannot
+    read, a batch that did not commit, an object reset under `blockConcurrencyWhile`: **500** `the
+    server could not answer — try again`, one sentence for the table, the house and the archive
+    alike, logged `object-failed` (the orchestrator's F-1). Before it, the platform's own plain 500
+    answered, which the client cannot read as `{"error": …}`;
   - a deleted table's sockets: `end {"reason":"deleted"}`, then a **4404** close whose reason is
     `this table was deleted`.
 
@@ -2142,10 +2151,14 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
 
 1. **`build:module`** — `crates/yokohama-worker` on `--profile release-wasm`, wasm-bindgen, `wasm-opt`,
    and the factory transform that gives every object its own instance (spec §2.2). A build whose
-   optimizer changed nothing leaves `gen/.unoptimized`, which the deploy guard refuses.
-2. **`build:assets`** — `worker/assets/` from `web/dist` and `crates/yokohama-web/assets/art/`,
-   verified entry by entry against the release's own precache list. A debug browser module is
-   refused.
+   optimizer changed nothing leaves `gen/.unoptimized`, which the deploy guard refuses. Every build
+   stamps `gen/source.json` with a digest of the sources the module is compiled from — the
+   workspace's manifest, lock and toolchain, and the four crates in its graph — taken before cargo
+   runs; the deploy guard takes the digest again and compares (R3's M-3).
+2. **`build:assets`** — `worker/assets/` from `web/dist`, `crates/yokohama-web/assets/art/` and
+   `worker/static`, verified entry by entry against the release's own precache list. A debug browser
+   module is refused. The `sw.js` it copies names the release it came from, and is what the deploy
+   guard compares with the current `web/dist/sw.js`.
 3. **`smoke:release`** — the release module instantiated once, in Node: `init` with the archive off,
    then `GET /api/health` as `smoke@x.test`. It refuses unless the answer is 200, and refuses a debug
    module. Nothing else runs the release module before a deploy.
@@ -2161,8 +2174,14 @@ cd worker && npx wrangler whoami   # the owner's login, account BDVC
 npm run deploy                     # node scripts/deploy-guard.mjs && wrangler deploy
 ```
 
-**The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; an
-assets tree that is not the release its `sw.js` lists, or that holds a debug browser module;
+**The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; a
+module whose sources have changed since it was built (`gen/ was built from sources that have since
+changed`), or that carries no stamp; an assets tree that is not the release its `sw.js` lists, or
+that holds a debug browser module; an assets tree assembled from a `web/dist` that has changed since
+— its `sw.js` against `web/dist/sw.js`, byte for byte, and the refusal names both releases — or
+whose copy of a `worker/static` file is not that file (R3's M-3: `wrangler deploy` bundles `src/`
+fresh but ships `gen/` and the assets tree as they sit, so a skipped rebuild would ship the old
+module, or the old client);
 `workers_dev` or `preview_urls` not `false`; the test clock named anywhere in `wrangler.jsonc`; an
 `assets` block that is not spec §2.3's; the two configurations' `durable_objects`, `migrations`
 or `r2_buckets` blocks differing, or either file lacking one; and `YOKOHAMA_WEB_ADMINS` among
@@ -2191,7 +2210,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
-| `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
+| `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown — a refusal names an entry by its position, never its value; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
@@ -2219,7 +2238,10 @@ the whole list; it leaves secrets alone.
   space, an ideographic space, or a Kelvin sign (U+212A), which JavaScript's `toLowerCase()` would
   turn into another user's `k` — meets the layer's 401, and the Worker forwards no identity header
   for them at all. The layer's own `resolve` reads such a header value as absent, as the NAS
-  does.
+  does. **And a dev-door claimed value must be an ADDRESS** by `User::parse`'s rule — one `@` with
+  something on both sides, no spaces or control characters, at most 254 bytes — or it is no one,
+  and the layer's 401 answers (R1's L-2). A claimed `not-an-email` once named an Archive object
+  whose `init` refused it, a 500 no spec lists.
 - **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
   and deploy (§6.2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
   two files — and nothing is removed from the bucket. With the switch off:
@@ -2279,7 +2301,10 @@ npx wrangler secret delete YOKOHAMA_WEB_ADMINS                                  
 
 **A malformed entry takes every `/api/*` down** with a 500 naming the variable, as every bad
 variable does (§6.3's first bullet): an entry must be one address — one `@` with something on both
-sides, and no spaces — and the list must hold no empty entry. Put the list again, corrected.
+sides, no spaces, at most 254 bytes — and the list must hold no empty entry. The 500 names the entry
+by its POSITION and never its value, which is an address (R3's M-6): `YOKOHAMA_WEB_ADMINS entry 2 of
+3 is not an address — …`, or `… entry 3 of 3 is empty` for a trailing comma. Put the list again,
+corrected.
 
 **The three calls**, over WARP as the operator:
 
@@ -2343,9 +2368,14 @@ expires in 2031 (spec §0.5).
   ```
 
 - **In a browser.** `node scripts/read-deploy.mjs install|console <base-url> --headers "$H"` sends
-  the two headers to the Worker's own origin ONLY. Sent to every origin — Playwright's context
-  `extraHTTPHeaders` — they would reach third parties such as the Web Analytics beacon, and would
-  add a CORS preflight that is itself a console error.
+  the two headers to the Worker's own origin ONLY: sent to every origin, as a browser context's
+  `extraHTTPHeaders` would send them, they would reach third parties such as the Web Analytics
+  beacon. The live Playwright tier never hands the credential to Playwright at all (§6.7; the
+  orchestrator's ruling I-75): Node's own `fetch` presents it once, and each context carries the
+  `CF_Authorization` cookie Access answers with, which the browser keeps to this origin. What that
+  tier DOES send context-wide is the claimed address, `X-Yokohama-Claimed-User`, which is no secret
+  — and which, as a custom header on the cross-origin beacon request, forces the CORS preflight whose
+  two console lines the live walk forgives exactly.
 - **To rotate it.** Zero Trust → Access controls → Service credentials → Service Tokens →
   `yokohama-worker` → **Rotate secret**. The client id stays the same, so `DEV_DOOR_CLIENT_ID` does
   not change; Access issues a new secret, and keeps the old one valid for the grace period you choose
@@ -2388,12 +2418,13 @@ expires in 2031 (spec §0.5).
   - **`slot-ignored`** `{id, generation, revision, current}`, logged by the HOUSE: a push it did not
     apply, and acknowledged all the same. The reasons: a revision no higher than the current one's;
     a retired generation; another generation while one is current; or, with no current row
-    (`current: null`), a generation that does not order after every retired one — how a table
-    re-created in the same second as the table it replaces would read. A delete's marker refuses
-    any create at its id for 90 days (409), so only a force leaves the way open. The retired
-    generation's time is the forced table's CREATE, not the force, so the case is a table created,
-    forced and re-created within one second — or any re-create under a frozen test clock, which the
-    pool's `recreate` helper steps around.
+    (`current: null`), a generation that does not order after every retired one. A generation's
+    time is the shell's clock in MILLISECONDS when the table's first batch drew it (the
+    orchestrator's F-2), so that last case is a table created, forced and re-created within the
+    same MILLISECOND as the original's create — the pool reads 5 to 12 ms between the two. A
+    delete's marker refuses any create at its id for 90 days (409), so only a force leaves the way
+    open. A table created by an earlier deployment keeps the generation it drew then, whose time is
+    a reading in SECONDS, and every generation drawn since orders after it.
   - **`copy-refused`** `{id, error}`: `house_copy` refused the table's document, and `error` is the
     module's sentence, verbatim. No slot is written, so the house keeps listing the last copy it
     received. Only a corrupted store reaches it; the operator's force (Task 14) is its path.
@@ -2406,6 +2437,32 @@ expires in 2031 (spec §0.5).
     with `kind: "house"`.
   - **`alarm-failed`** `{id, error}`: a `setAlarm` or `deleteAlarm` issued beside a batch was
     rejected.
+
+  The request path and the wake (the whole-branch review's fix wave) add these:
+  - **`object-failed`** `{target, path, error}`, logged by the WORKER: an object's `fetch` rejected
+    — a throw that is not a trap, such as a reply the shell cannot read, a batch that did not
+    commit, or an object reset under `blockConcurrencyWhile` — and the request answered 500 `the
+    server could not answer — try again`. `target` is the route's kind — `table`, `create`, `house`
+    or `archive` — and `path` the request's. A trap never logs it: each object logs its own `trap`
+    and answers its own 500.
+  - **`wake`** `{id, wakes}`: with `YOKOHAMA_WEB_COUNT_WAKES` on, a NEW module was loaded at a table
+    that holds a table document, and its request's batch committed the count; `wakes` is the count
+    after it. This is how `meta.wakes` is read off a live Worker (the orchestrator's ruling I-84):
+    the object was evicted — hibernation, a deploy, a restart — and woke. With the switch off, no
+    line.
+  - **`picker-dropped`** `{id, stored, running}`: a new module found the table's `picker` row built
+    under code other than its own — `stored` is the row's code, `null` for a row an earlier build
+    wrote, and `running` this build's, a digest of the CLI's and the layer's sources — and cleared
+    it without re-feeding a line (the orchestrator's ruling I-85): under other code a line may mean
+    something else. A picker open across a deploy that changed that code starts over, and the
+    player's next click is a 409.
+  - **`restore-refused`** `{id, status, body}`: the wake's `restore_picker` met the layer's own
+    refusal — a stored record that does not parse, or does not replay — and the request went on to
+    its own dispatch, whose answer stands. The picker row is kept.
+  - **`frame-carried-bumps`** `{id, bumps, archive}`: a framing read, which only reads, carried
+    bumps or an archive plan; this pass neither frames nor owes them. No known case makes one.
+  - **`alarm-without-name`**: the platform delivered an alarm with no name, and it touched nothing.
+    Only an object reached by no name gets one, and such an object writes nothing and arms nothing.
 
   The archive on R2 (spec §2.6; Task 13) adds these:
   - **`archive-landed`**, **`archive-identical`**, **`archive-conflict`**, **`archive-failed`**
@@ -2499,12 +2556,137 @@ expires in 2031 (spec §0.5).
   version bound to an R2 bucket that no longer exists (the same section), and every version from
   the sixteenth deployment on binds `yokohama-archive`.
 
-### 6.7 Still to come in this cycle
+### 6.7 The live tiers and the quota guard
 
-Each lands with the task that builds it, and records its own readings here:
+Two tiers read the DEPLOYED Worker, and neither is a gate: CI runs neither, and each plays on the
+owner's account, spends its quota, and leaves rows and saves behind. They are the operator's to run —
+the orchestrator's this cycle (Task 15) — from the owner's workstation, over WARP, with the
+credential in the repository root's `.dev.vars` (§6.4), whose values neither prints.
 
-- the live Playwright tier and the live corpus replay, with the replay's ids forced before and after
-  each run (Task 15).
+- **The live Playwright tier** — two specs, `two_browsers` and `joins_by_link`, played at
+  `https://yokohama.moore.nyc` (`web/e2e/live.ts` holds its rules):
+
+  ```sh
+  cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link
+  ```
+
+  One Playwright run at a time. **How a live context is somebody** (the orchestrator's rulings I-75
+  and I-76): Node's own `fetch` presents the credential ONCE, to `/api/health`, and Access answers
+  with a `CF_Authorization` cookie, which seeds each context's storage — the browser keeps it to
+  this origin, and the credential itself never reaches Playwright or another host. The claimed
+  address goes context-wide as `X-Yokohama-Claimed-User`, because Playwright's request routing does
+  not reach a page's own WebSocket upgrade and the socket must carry an identity; that header is no
+  secret. **Tracing is OFF** under the live target, since a trace keeps a page's cookies: a failing
+  live run keeps its screenshots and no trace. **Every live `request.*` call goes through
+  `liveRequest`**, which rethrows an error's first line alone, because Playwright's "Call log"
+  lists the context's cookie; and a live response never gets `expect(res).toBeOK()`, whose failure
+  prints the same log — `expect(res.ok())` is the form. A failure whose message still holds
+  `Call log:` is an exposed session: paste it nowhere, and delete `web/test-results/` after a
+  failed live run.
+- **What the live walk forgives, and nothing else** (`web/e2e/harness.ts`'s `watchForBreakage`):
+  - live only, the Web Analytics beacon's CORS error: the claimed header is a custom header on the
+    cross-origin beacon request, which forces a preflight the beacon's host does not answer. One
+    blocked load logs TWO console lines — the CORS sentence at the page's URL, and `Failed to load
+    resource: net::ERR_FAILED` at the beacon's (I-76) — and both are forgiven, each tied to the
+    beacon's URL, and counted;
+  - in both modes, the deal's DESIGNED 409 on `GET …/api/games/<id>/deal` — a table that flipped to
+    playing between two of the browser's requests, the refusal the dealing screen branches on — in
+    both of its arms, the failed response and its console line (I-81), counted as `dealAnswers`.
+
+  Every other status of 400 or more, and every other console error, is breakage.
+- **The live corpus replay** (`worker/scripts/live-replay.mjs`, spec §5.3's live half): the walk the
+  committed corpus was cut from, sent to the Worker as the walk's own `.test` identities, every
+  status and every named body compared with `web/src/wire/`:
+
+  ```sh
+  cd worker && node scripts/live-replay.mjs   # and again, once the first has finished
+  ```
+
+  **Twice, one after the other**: the second run is the repeatability evidence, its two first sends
+  answering the once-rule's 200. **Never beside the Playwright tier**: the two share the house
+  chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP
+  the owner's own login is the operator (§6.3).
+- **Bot Fight Mode's 403.** The zone's Bot Fight Mode and JavaScript detections — ON, by the owner's
+  decision — answer a bot-shaped request BEFORE Access sees it: 403, `cf-mitigated: challenge`, and
+  a `text/html` "Just a moment…" body of about 5,259 B (§6.8, reading 1). Both tiers print a body
+  that is not the API's JSON error by its type and size, never its text, so a 403 that reads as a
+  `text/html` body of about 5,259 B is the zone's, and the cure is to run over WARP.
+
+#### The quota guard
+
+Workers Free counts requests per UTC day, and Durable Object rows read and written besides. The
+owner's line for this cycle is **80,000 Worker requests per UTC day, account-wide** (the
+orchestrator's ruling I-82): read the day's figures before a live run and again after it, and HOLD a
+run that could cross the line until the next UTC day. The GraphQL Analytics API gives them — `POST
+https://api.cloudflare.com/client/v4/graphql` with a token that can read the account's analytics,
+or the Cloudflare MCP's `execute` — ONE dataset per query, since one error fails the whole query:
+
+```graphql
+query ($account: string!, $start: Time!, $end: Time!) {
+  viewer { accounts(filter: { accountTag: $account }) {
+    workersInvocationsAdaptive(limit: 1000, filter: { datetime_geq: $start, datetime_leq: $end }) {
+      sum { requests } dimensions { scriptName }
+    }
+  } }
+}
+```
+
+```graphql
+query ($account: string!, $date: Date!) {
+  viewer { accounts(filter: { accountTag: $account }) {
+    durableObjectsPeriodicGroups(limit: 1000, filter: { date: $date }) { sum { rowsWritten rowsRead } }
+  } }
+}
+```
+
+`$start` is the UTC day's midnight and `$end` now; the requests are summed over every script, since
+the line is the account's; the figures lag by some minutes. **What a run costs**, read this way on
+2026-09-24 (the ledger's quota readings):
+
+- one `two_browsers` game — 2,862 moves, with `joins_by_link` and the cleanups — cost about
+  **38,350 Worker requests** (about 13.4 a move: three live pages each refetching on every frame,
+  and the harness's own probes), about **7,000 rows written** (2.5 a move) and about **1.34 million
+  rows read** (470 a move). The game's length varies about twice over between runs, so a second one
+  on a day that has already spent some 44,000 requests could cross the line;
+- `joins_by_link` alone, about 100 requests; the replay, about 2,300 a run.
+
+A past run that had no tail reads through the Workers Observability query API, `POST
+/accounts/<account id>/workers/observability/telemetry/query` over the dataset `cloudflare-workers`,
+grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with filters.
+
+#### What a live run leaves on the account
+
+- **Two 90-day MARKERS per Playwright run**, at fresh `sim-` ids: each spec abandons its table in
+  its `afterEach`, and the marker answers every request there for 90 days, then ends on its alarm.
+- **Saves under the bucket's `test/` root**: `test/rev7/over/` and `test/rev7/abandoned/` pairs for
+  the `.test` identities' finished and abandoned games. No lifecycle rule removes them; the choice
+  is the owner's, carried to the cleanup cycle.
+- **The replay's own saves**: its two first sends' pairs,
+  `test/browser/red_at_wire.test/rev7/over/wire.json` and
+  `test/browser/red_at_wire.test/rev7/abandoned/wire.json`, each with its `.table.json` — kept for
+  good, by the owner's direction — and the walk's own game-over pair under `test/rev7/over/`.
+- **A PERMANENT house-chat post per replay run**: Red (`red@wire.test`), "anyone up for a second
+  table?", which real people see in the lobby until 500 newer messages trim it.
+- While a Playwright run lasts, the live lobby lists its tables, each with a long name and a
+  password.
+
+#### The replay's reset
+
+Every run after the first meets the saves its two first sends left, and reads the once-rule's 200.
+A `wire` record whose bytes have changed since — a version bump, a walk that applies other moves, a
+record format change — meets them as a **409** instead. The replay then stops, names the cause, and
+prints the reset (`resetRecipe`, R3's M-1), to run in `worker/` with wrangler's own login, since the
+owner's R2 key is read-only (spec §7) — and then the replay again:
+
+```sh
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/over/wire.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/over/wire.table.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/abandoned/wire.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/abandoned/wire.table.json" --remote
+```
+
+The walk's own game-over pair under `test/rev7/over/` blocks nothing, since no payload reads it; a
+later game over at that id with other bytes meets it and logs `archive-conflict`.
 
 ### 6.8 M6.5c's skeleton is live — the fourteenth deployment, 2026-09-23 (a record, not a plan)
 
@@ -2598,6 +2780,12 @@ the spike's one unexplained error (reading 6, the beacon) is explained; neither 
     sees no error, and neither does a harness that scopes the credential to this origin. The zone
     stays exactly as it is — Web Analytics, Bot Fight Mode and JavaScript detections ON — no
     allow-list is needed, and the live test tiers scope the credential per origin.
+  - **Corrected forward** (the live tiers, §6.7; the orchestrator's ruling I-75): the live
+    Playwright tier, built after this reading, sends the CLAIMED address context-wide, because a
+    page's own WebSocket upgrade needs it and Playwright's request routing does not reach one. So
+    the beacon's CORS error recurs there, as the same harness artifact, and that tier's walk
+    forgives exactly its two console lines. "No allow-list is needed" holds for a real browser and
+    for this reading script; the credential itself is kept to this origin by every tier.
 - **Against the spike (spec §0.3):**
   - row 1, identity — the same;
   - row 2, startup and size — the same class: 2 ms, and 1,260.83 KiB against the spike's 1,172.84 KiB,

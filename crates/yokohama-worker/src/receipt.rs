@@ -37,8 +37,9 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use yokohama_web::archive::{paths, Archive, PutError, PutOutcome, Why};
+use yokohama_web::archive::{caller_segment, paths, Archive, PutError, PutOutcome, Why};
 use yokohama_web::games::Games;
+use yokohama_web::identity::User;
 use yokohama_web::store::Doc;
 use yokohama_web::table::TableDoc;
 use yokohama_web::ApiError;
@@ -61,6 +62,14 @@ const DEFERRED: &str = "deferred to the host";
 /// Archive object.
 const NO_CALLER: &str =
     "a browser's save is filed by its Archive object's address, and this instance was given none";
+
+/// A browser's save whose path segment is not this instance's caller's: the
+/// layer names the SENDER in the path, and the root is read off the object's
+/// address, so the two must be one caller (R1's L-1). Unreachable through the
+/// Worker, which names the Archive object by the address it forwards as the
+/// sender.
+const ANOTHER_CALLER: &str =
+    "a browser's save is filed by its Archive object's address, and this save was sent by another caller";
 
 /// This instance's receipt archive — the SAME `Arc` its `Games` puts through —
 /// or `None` with the archive `off`. [`crate::init_inner`] replaces it each
@@ -140,14 +149,28 @@ impl ReceiptArchive {
     /// A plan with no address to read is REFUSED rather than keyed at the
     /// bucket's top, where a test identity's save would join the owner's
     /// training data. So is a plan under any other prefix: the layer passes no
-    /// third, and a plan this archive cannot root is keyed nowhere.
+    /// third, and a plan this archive cannot root is keyed nowhere. And so is a
+    /// browser's save whose segment is not `caller_segment` of this archive's
+    /// `caller` (R1's L-1): the layer names the SENDER in the path, the root is
+    /// the object's, and a save rooted by one caller and filed under another's
+    /// name would put a test identity's save in an address's training data, or
+    /// an address's save under `test/`. Segments collide by design
+    /// (`caller_segment`'s doc), so a match proves the path is this object's
+    /// segment, not that the sender spelled its address as the object does.
     fn root(&self, prefix: &str, table_json: &str) -> Result<&'static str, PutError> {
         let test = match prefix {
             "" => creator_of(table_json)
                 .ok_or_else(|| PutError::Failed("the table document names no creator".to_string()))?
                 .ends_with(TEST_DOMAIN),
             browser if browser.starts_with("browser/") => {
-                self.caller.as_deref().ok_or_else(|| PutError::Failed(NO_CALLER.to_string()))?.ends_with(TEST_DOMAIN)
+                let caller = self.caller.as_deref().ok_or_else(|| PutError::Failed(NO_CALLER.to_string()))?;
+                // `init` normalized the caller through this same parse, so it
+                // reads; one that did not would root nothing.
+                let own = User::parse(caller).map(|user| format!("browser/{}/", caller_segment(&user)));
+                if own.as_deref() != Ok(browser) {
+                    return Err(PutError::Failed(ANOTHER_CALLER.to_string()));
+                }
+                caller.ends_with(TEST_DOMAIN)
             }
             other => return Err(PutError::Failed(format!("the archive keeps no root for the prefix {other:?}"))),
         };
@@ -362,15 +385,19 @@ fn stamped(games: &Games, id: &str) -> bool {
 /// **One arm answers otherwise.** Where a game is still RESIDENT under `id`
 /// while its table is gone or names no creator, `handle` answers `Ok`, and
 /// this answers a host-written 500: `"{id:?} has a game in play but no table
-/// document that names its creator"`, not the 404 the layer's `delete` would
-/// give. No public layer call answers the table read's own refusal without a
-/// caller or a rebuild, and restating the layer's sentence here would be a copy
-/// that drifts
-/// (the orchestrator's ruling on the review's I1: the sentence joins spec §4's
-/// host-written list). The shell cannot reach that state: `load` only creates,
-/// so it never replaces a table, and only the house's `put_copy` and
-/// `remove_copy` write `Doc::Table` under a live id — calls the shell makes on
-/// the house's own instance, where no game is played.
+/// document that names its creator"`, not the refusal the layer's `delete`
+/// would give: a 404 for a table that is gone, and a 500 for a table document
+/// that does not read, which one whose `created_by` is not a string is. No
+/// public layer call answers the table read's own refusal without a caller or
+/// a rebuild, and restating the layer's sentence here would be a copy that
+/// drifts (the orchestrator's ruling on the review's I1: the sentence joins
+/// spec §4's host-written list). The shell cannot reach that state. `load` only
+/// creates, so it never replaces a table. The layer's own writes of
+/// `Doc::Table` under a live id — a join, a keep, an unlock, a stamp, the turn
+/// mirror — keep a document that names its creator, and its delete drops the
+/// handle with the table. The only calls that could replace or remove a table
+/// under a resident game are the house's `put_copy` and `remove_copy`, which
+/// the shell makes on the house's own instance, where no game is played.
 pub fn expire_inner(id: &str) -> ReplyData {
     let creator = read_inner("table", id).ok().flatten().as_deref().and_then(creator_of);
     match creator {
@@ -736,6 +763,42 @@ mod tests {
                 None
             ),
         );
+    }
+
+    /// **The root and the path name ONE caller** (R1's L-1, fail-closed). The
+    /// layer files a browser's save under its SENDER's segment,
+    /// `browser/<caller_segment>/`, and this archive roots it by the address
+    /// its Archive object was initialized with — so the two must be one
+    /// caller. Probe P2's two mismatches, a test identity's save at another
+    /// address's object and the reverse, are refused in the layer's words and
+    /// defer nothing: the first would have filed a test identity's save in
+    /// that address's training data, the second an address's save under
+    /// `test/`. The anti-vacuity partner is the matching pair, whose plan is
+    /// deferred under its root.
+    #[test]
+    fn a_browsers_save_sent_by_another_caller_than_the_objects_is_refused() {
+        let _s = serial();
+        let _p = pin(1_789_001_000);
+        let save = the_committed_save();
+        let refused = json!({
+            "error": "the archive could not be written: a browser's save is filed by its Archive object's address, \
+                      and this save was sent by another caller"
+        })
+        .to_string();
+        for (object, sender) in [("someone@example.com", RED), (RED, "someone@example.com")] {
+            init_inner(&r2(Some(object))).unwrap();
+            let r = call(sender, "POST", "/api/archive", Some(&save));
+            assert_eq!(
+                (r.status, r.body.as_str(), r.archive.as_deref()),
+                (500, refused.as_str(), None),
+                "{sender} at {object}'s object: refused, and nothing deferred",
+            );
+        }
+        init_inner(&r2(Some(RED))).unwrap();
+        let r = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(r.status, 500, "premise: the matching pair defers — {}", r.body);
+        let base = format!("test/browser/red_at_t.test/rev7/over/{OWED}");
+        assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
     }
 
     /// The `test/` root's cell's twin for OUTCOMES: a browser's save meets each

@@ -9,7 +9,8 @@
 //! arm against it: that arm re-asks a value source at once
 //! (`web/src/signal.ts`), so an immediate answer to it would spin against the
 //! object. What asks with `wait` here is spec §2.7's probe, which Task 8 adds to
-//! the client: after a close the WebSocket arm did not make, it calls the
+//! the client: after a socket that fails to open, or one that closes when the
+//! arm did not close it and no `end` frame came before the close, it calls the
 //! source's own `once()` one time — `wait=25` for a game — and needs an
 //! immediate answer. A held request would keep an object invocation open for
 //! nothing.
@@ -38,10 +39,10 @@ const MAX_WAIT_SECONDS: u64 = 25;
 ///    restated word for word;
 /// 4. **the reading** — `api::events_at`, the one function axum's handler and
 ///    its stream both answer with: `Ok` serialized at 200, `Err` in the layer's
-///    error shape ([`error_body`]).
+///    error shape (`error_body`).
 ///
 /// The first three refuse before the `Games` is touched. The fourth answers
-/// through [`from_the_layer`], the drain `dispatch` answers through, because
+/// through `from_the_layer`, the drain `dispatch` answers through, because
 /// `events_at` can build a cold handle — and a handle rebuilt with a bot to move
 /// pumps that move and persists it (plan re-review m-c).
 pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {

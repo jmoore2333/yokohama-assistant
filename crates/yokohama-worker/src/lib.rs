@@ -14,11 +14,18 @@
 //! `platform_calls_stay_behind_the_server_feature` names, reading each file
 //! down to its first top-level `#[cfg(test)]`.
 //!
-//! **Every export is a thin wrapper over a pure-Rust `_inner` function** (spec
-//! §2.2). The cells call the inner ones, because `wasm-bindgen`'s non-wasm
-//! stubs cannot make a `JsValue` — so the wrappers carry no logic beyond the
-//! conversion a JS caller needs, and everything that could be wrong is
-//! reachable under `cargo test`.
+//! **Every export but two is a thin wrapper over a pure-Rust `_inner`
+//! function** (spec §2.2). The cells call the inner ones, because
+//! `wasm-bindgen`'s non-wasm stubs cannot make a `JsValue` — so those wrappers
+//! carry no logic beyond the conversion a JS caller needs, and everything that
+//! could be wrong is reachable under `cargo test`. The two: [`set_clock`],
+//! whose logic is the export itself — it takes and answers plain numbers, so
+//! the cells call it as it is — and `debug_trap`, the battery's trap hook,
+//! which is its own body (`--features debug` only).
+//!
+//! `build.rs` runs on the build host, never in the module: it digests the
+//! CLI's and the layer's sources into the picker row's code identity
+//! (`picker.rs`), and the scan above reads `src/` alone.
 
 mod config;
 mod create;
@@ -137,8 +144,11 @@ const HOST: Host =
 /// one — the `Games`, its store, its signal and its archive together, an empty
 /// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
 /// with no receipt and no pending plan, under `off` none. A refused
-/// configuration changes nothing, and its refusal names what it refused (spec
-/// §2.2). The clock is not reset: [`set_clock`] is its only writer.
+/// configuration changes nothing. A bad VALUE's refusal names its variable
+/// (spec §2.2); a configuration of the wrong shape — not the object of its five
+/// keys, an unknown key, a value of the wrong JSON type — is refused in serde's
+/// words, which name none (`config.rs`), and the shell never builds one. The
+/// clock is not reset: [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
     let config::Config { chat, archive } = config::parse(config)?;
     let store = Arc::new(MemStore::default());
@@ -192,6 +202,11 @@ pub struct ReplyData {
     /// `"[]"` when a list existed and was cleared, which the shell reads as
     /// "delete the row". `None` when neither happened (`picker.rs`).
     pub picker: Option<String>,
+    /// A stored picker row `restore_picker` cleared for its CODE — built under
+    /// code other than this build's (the orchestrator's ruling I-85) — as
+    /// `{"stored": <its code, or null>, "running": <this build's>}`, which the
+    /// shell logs as `picker-dropped`. `None` from every other call.
+    pub dropped: Option<String>,
 }
 
 /// [`ReplyData`] as a JS class with getters — `wasm-bindgen` cannot hand a
@@ -236,6 +251,13 @@ impl Reply {
     pub fn picker(&self) -> Option<String> {
         self.data.picker.clone()
     }
+
+    /// `{"stored", "running"}` when `restore_picker` cleared a row for its
+    /// code, and `undefined` otherwise.
+    #[wasm_bindgen(getter)]
+    pub fn dropped(&self) -> Option<String> {
+        self.data.dropped.clone()
+    }
 }
 
 /// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
@@ -266,7 +288,14 @@ pub(crate) fn sha256_hex(text: &str) -> String {
 /// [`error_body`]'s, and its `bumps` is empty because this call signalled
 /// nothing.
 pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
-    ReplyData { status: e.status.as_u16(), body: error_body(&e), bumps: Vec::new(), archive: None, picker: None }
+    ReplyData {
+        status: e.status.as_u16(),
+        body: error_body(&e),
+        bumps: Vec::new(),
+        archive: None,
+        picker: None,
+        dropped: None,
+    }
 }
 
 /// Who the caller is, by the `worker` mode's ONE header (spec §2.3): the value
@@ -277,7 +306,12 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
 /// A value no header can carry — one holding a control character other than a
 /// tab — never reaches `resolve`: `User::parse` answers it instead, trimming it
 /// as `resolve` would and refusing any control character that remains, in the
-/// sentence the layer's 401 carries for a malformed caller.
+/// sentence the layer's 401 carries for a malformed caller. It is a 401 either
+/// way, with one difference in wording: a value whose only such characters
+/// are at its ends, which the trim removes, and which trims to nothing or to
+/// `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence, where
+/// `resolve` would answer its absent-caller sentence had a header carried it.
+/// No header can.
 pub fn identity_of(user: Option<&str>) -> Result<User, String> {
     let mut headers = http::HeaderMap::new();
     if let Some(raw) = user {
@@ -301,7 +335,7 @@ pub fn identity_inner(user: Option<&str>) -> ReplyData {
         Ok(u) => (200, serde_json::json!({ "user": u.as_str() }).to_string()),
         Err(sentence) => (401, serde_json::json!({ "error": sentence }).to_string()),
     };
-    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None }
+    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None }
 }
 
 #[wasm_bindgen]
@@ -316,7 +350,7 @@ pub fn identity(user: Option<String>) -> Reply {
 /// layer's 401 — so `/api/me` answers `user: null` and every route that needs
 /// a caller refuses in the `worker` mode's own words.
 ///
-/// It answers through [`from_the_layer`], so the signal is drained while the
+/// It answers through `from_the_layer`, so the signal is drained while the
 /// `Games` is still held — and with spec §2.4's picker step around the layer's
 /// call (`picker::around`), which reads the record before and after it and
 /// answers `Reply.picker`.
@@ -412,8 +446,10 @@ pub fn expire(id: &str) -> Reply {
 
 /// [`house_frame_inner`] for the shell, which passes each counter as a JS
 /// `number`: the parameters are `u32` because `wasm-bindgen` types a `u64`
-/// parameter `bigint` (the orchestrator's ruling I-22), and they widen to the
-/// layer's `u64` without loss.
+/// parameter `bigint` (the orchestrator's ruling I-22). The JS `number` to
+/// `u32` step is the lossy one — `wasm-bindgen` wraps a value above 2^32 − 1
+/// and drops a fraction, the cost that ruling accepted — and the `u32` then
+/// widens to the layer's `u64` without loss.
 #[wasm_bindgen]
 pub fn house_frame(seq: u32, chat: u32) -> String {
     house_frame_inner(u64::from(seq), u64::from(chat))
@@ -438,7 +474,7 @@ pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<S
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
     let (status, body, picker) = call(games);
-    ReplyData { status, body, bumps: drain_bumps(), archive: receipt::drain_plan(), picker }
+    ReplyData { status, body, bumps: drain_bumps(), archive: receipt::drain_plan(), picker, dropped: None }
 }
 
 /// Everything the layer signalled since the last drain.
@@ -595,7 +631,35 @@ mod tests {
         assert!(err.contains("YOKOHAMA_WEB_LOBBY_CHAT"), "{err}");
         init_inner(r#"{"archive":"off","caller":null,"lobby_chat":"off","chat_keep":"all","chat_text":"280"}"#).unwrap();
         let body = dispatch_inner(Some("red@wire.test"), "GET", "/api/health", "", None, b"").body;
-        assert!(body.contains(r#""lobby_chat":false"#) && body.contains(r#""chat_text":280"#), "{body}");
+        for fact in [r#""lobby_chat":false"#, r#""chat_keep":null"#, r#""chat_text":280"#] {
+            assert!(body.contains(fact), "{fact} in {body}");
+        }
+        // Anti-vacuity: the defaults read otherwise, so each fact above is
+        // the variable's.
+        init_inner(&config("off")).unwrap();
+        let body = dispatch_inner(Some("red@wire.test"), "GET", "/api/health", "", None, b"").body;
+        for fact in [r#""lobby_chat":true"#, r#""chat_keep":500"#, r#""chat_text":500"#] {
+            assert!(body.contains(fact), "the default {fact} in {body}");
+        }
+    }
+
+    /// `init` reads its configuration ONLY as the object the shell builds
+    /// (R1's L-3). serde's derived `Deserialize` also reads a struct from a
+    /// positional ARRAY, a form `deny_unknown_fields` does not govern, so an
+    /// array is refused before serde reads it — the rule this crate keeps for
+    /// a create body, the picker row and a receipt's outcome. The refusal
+    /// echoes nothing: the configuration carries the Archive object's address.
+    #[test]
+    fn init_refuses_its_configuration_as_a_positional_array() {
+        let _s = serial();
+        for array in [r#"["off",null,null,null,null]"#, r#"["r2","red@t.test",null,null,null]"#] {
+            let err = init_inner(array).unwrap_err();
+            assert_eq!(
+                err, "the module's init configuration is the object of its five keys — archive, caller, lobby_chat, chat_keep and chat_text",
+                "{array}"
+            );
+        }
+        init_inner(&config("off")).unwrap();
     }
 
     /// The side channel IN and OUT, over all four kinds, and `load` is a CREATE.
@@ -647,8 +711,10 @@ mod tests {
         let bytes = body.map(|b| b.as_bytes().to_vec()).unwrap_or_default();
         dispatch_inner(Some(user), method, path, "", body.map(|_| "application/json"), &bytes)
     }
+    /// The reply's bumps as the shell reads them: through `Reply`'s own
+    /// `bumps` getter (Task 2's M5), not a second serialization of the list.
     pub(crate) fn tagged(r: &ReplyData) -> String {
-        serde_json::to_string(&r.bumps).unwrap()
+        Reply::from(r.clone()).bumps()
     }
 
     /// Every layer bump site reaches the reply, tagged and in call order — driven
@@ -753,8 +819,8 @@ mod tests {
 
     /// Every id the layer's store holds a `doc` under — read through the
     /// `Games`, so it is the store every create writes. A refused create must
-    /// leave it empty under ANY id: a body that does not name the object would
-    /// have its table stored under an id the layer drew.
+    /// leave it empty under ANY id: a body that names no id would have its
+    /// table stored under an id the layer drew.
     fn stored(doc: Doc) -> Vec<String> {
         GAMES.lock().unwrap().as_ref().unwrap().store().list(doc).unwrap()
     }

@@ -99,6 +99,12 @@ export class Archive extends DurableObject<Env> {
     // the bucket bound, so it is bound here.
     const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan);
     logOutcome(id, "browser", plan, outcome);
+    // The same reading, as the table's second dispatch takes it (spec §2.6).
+    // No cell can observe this pin: a browser's save puts the table it was
+    // sent, which the layer does not stamp, so its plan carries no reading —
+    // measured equivalent by the whole-branch review's battery (r17b). Were
+    // the layer ever to stamp a browser's save, the browser-save cell would
+    // have to run on a ticking clock to see it.
     const again = this.dispatch(id, instance, incoming, at, { plan, outcome });
     return again instanceof Response ? again : respond(again.status, again.body);
   }

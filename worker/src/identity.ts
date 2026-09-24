@@ -35,6 +35,20 @@ export function asciiLower(s: string): string {
 }
 
 /**
+ * Whether `email` — trimmed and ASCII-lowercased, as `address` answers it and
+ * as `shellConfig` reads an operator — is an ADDRESS by the layer's
+ * `User::parse` rule: at most 254 bytes, no whitespace or control character,
+ * and exactly one `@` with something on both sides. `User::parse` answers
+ * nothing else, so a value outside the rule names no caller the layer would
+ * accept (R1's L-2) and no operator one could match. Wherever a CALLER is read
+ * the value is visible ASCII with tabs and spaces (`forwardable`), where this
+ * test and `User::parse`'s agree character for character.
+ */
+export function isAddress(email: string): boolean {
+  return new TextEncoder().encode(email).length <= 254 && /^[^@\s\p{Cc}]+@[^@\s\p{Cc}]+$/u.test(email);
+}
+
+/**
  * The address a raw value names: `raw` judged by `forwardable` BEFORE
  * anything else is done to it, then trimmed and ASCII-lowercased as the
  * layer's `User::parse` reads a caller — or `undefined` for a raw value that
@@ -48,7 +62,12 @@ function address(raw: string): string | undefined {
 
 /** R-6.5c.3, in order. A missed Access destination, a forged token, another
  *  application's token and an expired one ALL fail closed: `none`, and the
- *  layer's own 401 answers.
+ *  layer's own 401 answers. So does a token whose header names no `kid` —
+ *  none is ever matched to a key that names none (the orchestrator's F-3) —
+ *  and, at the dev door, a claimed value that is no address (`isAddress`;
+ *  R1's L-2), which would otherwise be forwarded as a caller the layer
+ *  refuses, and at `POST /api/archive` name an Archive object whose `init`
+ *  refuses it.
  *
  *  The brief's text, with ONE change the orchestrator ruled at Task 11's
  *  review (I1 — the spec over the brief): the address, the `email` claim or
@@ -70,6 +89,9 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
     return { kind: "none" };
   }
   if (head.alg !== "RS256") return { kind: "none" };
+  // A header with no string `kid` names no key: comparing `undefined` would
+  // pick a key that names none. No refresh can find one, so it is plain `none`.
+  if (typeof head.kid !== "string") return { kind: "none" };
   const jwk = keys.keys.find((k) => k.kid === head.kid);
   if (!jwk) return { kind: "none", unknownKid: true }; // the caller may refresh the keys once
   const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
@@ -86,7 +108,7 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
   }
   if (c.devDoor && claims.common_name === c.devDoorClientId) {
     const claimed = address(h.get("x-yokohama-claimed-user") ?? "");
-    if (claimed) return { kind: "dev", email: claimed };
+    if (claimed !== undefined && isAddress(claimed)) return { kind: "dev", email: claimed };
   }
   return { kind: "none" };
 }

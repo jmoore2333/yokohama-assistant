@@ -18,10 +18,12 @@
 export const HOUSE_NAME = "house";
 
 /**
- * A table's generation: `at` is a P-2 reading (the module's seconds) — the
- * create's, which is the table's `created_at`, for every table this shell
- * creates — and `rand` is 16 lowercase hex digits, 64 random bits. Ordered by
- * `cmpGen`.
+ * A table's generation: `at` is the shell's `Date.now()` when the table's
+ * first batch drew it, in MILLISECONDS (the orchestrator's rulings I-43/I-44
+ * and F-2) — not the table's `created_at`, the layer's seconds — and `rand`
+ * is 16 lowercase hex digits, 64 random bits. Ordered by `cmpGen`. A table
+ * an earlier deployment created keeps the generation it drew then, whose `at`
+ * is a P-2 reading in seconds; every generation drawn since orders after it.
  */
 export type Generation = { at: number; rand: string };
 

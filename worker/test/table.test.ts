@@ -165,8 +165,10 @@ describe("the table object (spec §2.4)", () => {
 
   // The picker row takes the wake's reply first and the request's after it
   // (the plan's Task 9, step 6): a stale row the wake CLEARS gives way to the
-  // picker the same request opens. The stale row is a well-formed list built at
-  // another record, which `restore_picker` clears without re-feeding (Task 4).
+  // picker the same request opens. The stale row is a list built at another
+  // record that names no code, as a row an earlier build wrote would, which
+  // `restore_picker` clears without re-feeding (Task 4; the orchestrator's
+  // ruling I-85).
   // Mutant: the wake's `"[]"` over the request's list — the new picker is lost
   // at the next eviction.
   it("a stale picker row the wake clears gives way to the picker the same request opens", async () => {
@@ -377,9 +379,9 @@ describe("the table object (spec §2.4)", () => {
     expect((await call(stub, RED, "GET", "/api/games/reset-then-trap")).status, "not poisoned").toBe(200);
   });
 
-  // The poison names the kind whose LOAD trapped. Every other trapping cell
-  // traps in `restore_picker`, the record's replay; this one traps loading the
-  // TABLE. Mutant: the kind written as `record` whatever trapped.
+  // The poison names the kind whose LOAD trapped. Every other cell whose LOAD
+  // traps does so in `restore_picker`, the record's replay; this one traps
+  // loading the TABLE. Mutant: the kind written as `record` whatever trapped.
   it("the poison names the kind whose load trapped", async () => {
     const stub = await seedPlaying("poisoned-table");
     const original = Instance.prototype.get;
@@ -609,30 +611,74 @@ describe("the table object (spec §2.4)", () => {
   });
 
   // `meta.wakes` (spec §2.4): once per NEW instance, only where the object
-  // holds a table, and only with the switch on. Mutants: every request
-  // counted; a wake counted with the switch off.
-  it("a wake is counted once per new instance, and only with the switch on", async () => {
+  // holds a table, and only with the switch on — and each counted wake is
+  // logged `wake {id, wakes}` once its batch has committed, the new count in
+  // it, which is how the exit reads the count off the tail (the orchestrator's
+  // ruling I-84). Mutants: every request counted; a wake counted with the
+  // switch off; no line, a line with the old count, or a line with the switch
+  // off.
+  it("a wake is counted once per new instance, and only with the switch on — and logged", async () => {
     const stub = await seedPlaying("counted");
     const wakes = async () => (await sqlOf(stub, "SELECT v FROM meta WHERE k = 'wakes'")).map((r) => r.v);
+    const wakeLines = (lines: unknown[]) => lines.filter((l) => (l as { event: string }).event === "wake");
     expect(await wakes(), "the create woke with no table stored, and the rest ran on that instance").toEqual([]);
     await evictDurableObject(stub);
-    expect((await call(stub, RED, "GET", "/api/games/counted")).status).toBe(200);
+    const first = await logsDuring(() => call(stub, RED, "GET", "/api/games/counted"));
+    expect(first.result.status).toBe(200);
     expect(await wakes()).toEqual(["1"]);
-    expect((await call(stub, BLUE, "GET", "/api/games/counted/table")).status).toBe(200);
+    expect(wakeLines(first.lines)).toEqual([{ event: "wake", id: "counted", wakes: 1 }]);
+    const warm = await logsDuring(() => call(stub, BLUE, "GET", "/api/games/counted/table"));
+    expect(warm.result.status).toBe(200);
     expect(await wakes(), "the same instance: no wake").toEqual(["1"]);
+    expect(wakeLines(warm.lines), "and no line").toEqual([]);
     await evictDurableObject(stub);
-    expect((await call(stub, RED, "GET", "/api/games/counted")).status).toBe(200);
+    const second = await logsDuring(() => call(stub, RED, "GET", "/api/games/counted"));
+    expect(second.result.status).toBe(200);
     expect(await wakes()).toEqual(["2"]);
+    expect(wakeLines(second.lines)).toEqual([{ event: "wake", id: "counted", wakes: 2 }]);
     const on = configModule.shellConfig(env);
     if ("error" in on) throw new Error(on.error);
     const off = vi.spyOn(configModule, "shellConfig").mockReturnValue({ ...on, countWakes: false });
     try {
       await evictDurableObject(stub);
-      expect((await call(stub, RED, "GET", "/api/games/counted")).status).toBe(200);
+      const unswitched = await logsDuring(() => call(stub, RED, "GET", "/api/games/counted"));
+      expect(unswitched.result.status).toBe(200);
+      expect(wakeLines(unswitched.lines), "the switch off: no line").toEqual([]);
     } finally {
       off.mockRestore();
     }
     expect(await wakes(), "the switch off: a wake is not counted").toEqual(["2"]);
+  });
+
+  // The orchestrator's ruling I-85, the shell's half: a picker row the module
+  // clears for its CODE — built under code other than this build's, as at a
+  // deploy that changes the CLI or the layer — is logged `picker-dropped
+  // {id, stored, running}` at the wake and deleted in the request's batch, and
+  // the player's next click is `Input::expect`'s 409 with nothing applied. The
+  // running code is the one the module stamps on every row it writes.
+  // Mutants: no line; the row kept; the line's two codes swapped.
+  it("a picker row built under other code is dropped at the wake: logged, deleted, and nothing re-fed", async () => {
+    const stub = await seedPlaying("picker-code");
+    const input = (line: string, expect?: string) =>
+      call(stub, RED, "POST", "/api/games/picker-code/input", JSON.stringify(expect === undefined ? { line } : { line, expect }));
+    const opened = await input("1");
+    expect([opened.status, (await opened.json<Play>()).prompt.kind], "premise: `1` opens PlaceA").toEqual([200, "place_a"]);
+    const [row] = await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'");
+    const running = (JSON.parse(String(row?.json)) as { code: string }).code;
+    expect(running, "premise: the module stamps its code on the row").toMatch(/^[0-9a-f]{64}$/);
+    const other = "0".repeat(64);
+    await runInDurableObject(stub, (_o, state) => {
+      state.storage.transactionSync(() => upsertDoc(state.storage.sql, "picker", String(row?.json).replace(running, other), Date.now()));
+    });
+    await evictDurableObject(stub);
+    const before = await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'");
+    const { result, lines } = await logsDuring(() => input("A09", "place_a"));
+    expect(result.status, "the picker starts closed: the click is `Input::expect`'s 409").toBe(409);
+    expect(lines.filter((l) => (l as { event: string }).event === "picker-dropped")).toEqual([
+      { event: "picker-dropped", id: "picker-code", stored: other, running },
+    ]);
+    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'picker'"), "the row is deleted").toEqual([]);
+    expect(await sqlOf(stub, "SELECT json FROM docs WHERE kind = 'record'"), "nothing applied").toEqual(before);
   });
 
   // The orchestrator's ruling (Task 4's wake contract): a restore the layer
@@ -657,7 +703,12 @@ describe("the table object (spec §2.4)", () => {
     const before = await storedRows(stub);
     const { result: res, lines } = await logsDuring(() => call(stub, RED, "GET", "/api/games/unreadable/table"));
     expect(res.status, "the request's own dispatch answered it").toBe(200);
-    expect(lines).toEqual([{ event: "restore-refused", id: "unreadable", status: refused.status, body: refused.body }]);
+    expect(lines).toEqual([
+      { event: "restore-refused", id: "unreadable", status: refused.status, body: refused.body },
+      // The pool counts wakes (the orchestrator's ruling I-84): this request's
+      // is the object's first since it was created.
+      { event: "wake", id: "unreadable", wakes: 1 },
+    ]);
     const game = await call(stub, RED, "GET", "/api/games/unreadable");
     expect([game.status, await game.text()], "a route that needs the replay").toEqual([refused.status, refused.body]);
     expect((await storedRows(stub)).docs, "the picker row and the record as they were").toEqual(before.docs);

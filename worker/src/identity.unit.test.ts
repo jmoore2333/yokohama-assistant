@@ -207,6 +207,49 @@ describe("resolveIdentity (R-6.5c.3)", () => {
     const token = await key.sign(personClaims("red@t.test", at), { alg: "RS256", kid: "k-rotated", typ: "JWT" });
     expect(await resolve(token)).toEqual({ kind: "none", unknownKid: true });
   });
+
+  // F-3 (the orchestrator's reading of the shell): an assertion whose header
+  // names no `kid` matches no key — never a key that names none, which a set
+  // could hold (Access's does not). No refresh can find a key for it, so it is
+  // plain `none`. Mutant: the kid's type check dropped — `undefined ===
+  // undefined` picks the kid-less key, and the token verifies against it.
+  it("(F-3) answers none for a token that names no kid, even beside a key that names none", async () => {
+    const { kid: _named, ...bare } = key.jwk;
+    const kidless: JwkSet = { keys: [bare] };
+    const token = await key.sign(personClaims("red@t.test", at), { alg: "RS256", typ: "JWT" });
+    expect(await resolveIdentity(headers(token), kidless, CONFIG)).toEqual({ kind: "none" });
+    const numbered = await key.sign(personClaims("red@t.test", at), { alg: "RS256", kid: 1, typ: "JWT" });
+    expect(await resolveIdentity(headers(numbered), kidless, CONFIG), "a kid that is not a string").toEqual({ kind: "none" });
+    // Anti-vacuity: the same key under its kid, and a token naming it, is the person.
+    expect(await resolve(await key.sign(personClaims("red@t.test", at)))).toEqual({ kind: "person", email: "red@t.test" });
+  });
+
+  // R1's L-2: the dev door's claimed value is an ADDRESS by the layer's
+  // `User::parse` rule — exactly one `@` with something on both sides, no
+  // whitespace or control character, at most 254 bytes — or it is no one, and
+  // the layer's own 401 answers. A non-address was the dev identity, and at
+  // `POST /api/archive` it named an Archive object whose `init` refused it: a
+  // 500 no spec lists. Mutant: the rule dropped.
+  it.each([
+    ["no @", "not-an-email"],
+    ["two @", "a@b@c.test"],
+    ["nothing before the @", "@t.test"],
+    ["nothing after the @", "red@"],
+    ["an inner space", "red @t.test"],
+    ["an inner tab", "red@t.\ttest"],
+    ["255 bytes", `${"a".repeat(248)}@t.test`],
+  ])("(L-2) answers none for a claimed value that is no address: %s", async (_what, claimed) => {
+    const token = await key.sign(credentialClaims(CLIENT, at));
+    expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed })).toEqual({ kind: "none" });
+  });
+  // The boundary's other side, and the anti-vacuity partner: 254 bytes is an
+  // address, as it is to `User::parse`.
+  it("(L-2) takes a claimed address of exactly 254 bytes", async () => {
+    const token = await key.sign(credentialClaims(CLIENT, at));
+    const claimed = `${"a".repeat(247)}@t.test`;
+    expect(claimed.length, "premise").toBe(254);
+    expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed })).toEqual({ kind: "dev", email: claimed });
+  });
 });
 
 describe("refreshDue (plan review m14)", () => {

@@ -63,6 +63,9 @@ use crate::STORE;
 ///
 /// Refused, with a sentence that carries the reason:
 ///
+/// - the store's own refusal to read `id`: one it will not use, such as an id
+///   the store reserves. The shell never meets it, since it asks only for the
+///   id it has just loaded a document under (`copyOf`);
 /// - a stored document that does not parse. Never `None`, which says that no
 ///   table is stored here, when one is (`Games::read_table`'s rule for the same
 ///   case);
@@ -81,7 +84,7 @@ pub fn house_copy_inner(id: &str) -> Result<Option<String>, String> {
 /// follow-up's concern). No stored document reaches that check through the
 /// real scrub, so its cell hands this function a defective one. Production
 /// passes [`scrub`] and nothing else.
-pub(crate) fn house_copy_with(id: &str, scrub: impl Fn(&mut TableDoc)) -> Result<Option<String>, String> {
+pub(crate) fn house_copy_with(id: &str, scrubbed: impl Fn(&mut TableDoc)) -> Result<Option<String>, String> {
     let Some((stored, _)) = store().read(Doc::Table, id)? else {
         return Ok(None);
     };
@@ -89,7 +92,7 @@ pub(crate) fn house_copy_with(id: &str, scrub: impl Fn(&mut TableDoc)) -> Result
         serde_json::from_str(&stored).map_err(|e| format!("{id:?}'s table document does not parse: {e}"))?;
     check_shape(&doc)
         .map_err(|why| format!("{id:?}'s table document is malformed, so the house would not list it: {why}"))?;
-    scrub(&mut doc);
+    scrubbed(&mut doc);
     check_shape(&doc).map_err(|why| format!("{id:?}'s house copy is malformed, so the house would not list it: {why}"))?;
     Ok(Some(serde_json::to_string(&doc).expect("a table document serializes")))
 }
@@ -458,18 +461,19 @@ mod tests {
         }
     }
 
-    /// A scrub defect is loud at the source (R-6.5c.8): a copy `check_shape`
-    /// rejects is refused with its reason, never listed.
+    /// **A stored document of a newer schema is refused at the source**
+    /// (R-6.5c.8), with `check_shape`'s own reason, and never listed.
     ///
     /// The document is a table the layer wrote, with `"schema": 99` its ONE
     /// change. The scrub keeps `schema`, so the copy would carry the 99 too,
-    /// but the check on the stored original refuses it first, with
-    /// `check_shape`'s own sentence. (No stored document reaches the check on
-    /// the copy through the real scrub; its cell hands `house_copy_with` a
-    /// defective one.) The same document at the schema the layer wrote has a
-    /// copy.
+    /// but the check on the stored original refuses it first. The check on
+    /// the COPY has its own cell,
+    /// `a_defective_scrub_is_refused_by_the_check_on_the_copy`, which hands
+    /// `house_copy_with` a defective scrub, since no stored document reaches
+    /// that check through the real one. The same document at the schema the
+    /// layer wrote has a copy.
     #[test]
-    fn house_copy_refuses_a_copy_that_check_shape_rejects() {
+    fn house_copy_refuses_a_stored_document_of_a_newer_schema() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
         create("future", two_seats(SEED, json!({ "open": true })));

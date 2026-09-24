@@ -73,20 +73,35 @@ describe("YOKOHAMA_WEB_ADMINS (spec §2.9)", () => {
   it("is the comma-separated addresses, each trimmed and lowercased as the layer reads a caller", () => {
     expect(accepted(env({ YOKOHAMA_WEB_ADMINS: " A@b.com, c@d.com " })).admins).toEqual(["a@b.com", "c@d.com"]);
   });
-  it.each(["a@b.com,,c@d.com", "a@b.com,", ""])("refuses an empty entry in %j", (value) => {
-    expect(refused(env({ YOKOHAMA_WEB_ADMINS: value }))).toMatch(/^YOKOHAMA_WEB_ADMINS has an empty entry/);
+  // R3's M-6: the list is the operator's ADDRESS, and a refusal is the 500
+  // body of every `/api/*` request, so it names the variable and the entry's
+  // POSITION and never echoes a value. Mutant: the value, or an entry of it,
+  // echoed.
+  it.each<[string, string]>([
+    ["a@b.com,,c@d.com", "entry 2 of 3"],
+    ["a@b.com,", "entry 2 of 2"],
+    ["", "entry 1 of 1"],
+  ])("refuses an empty entry in %j, naming its position and echoing nothing", (value, position) => {
+    const sentence = refused(env({ YOKOHAMA_WEB_ADMINS: value }));
+    expect(sentence).toBe(`YOKOHAMA_WEB_ADMINS ${position} is empty`);
+    for (const entry of value.split(",").filter((e) => e !== "")) expect(sentence).not.toContain(entry);
   });
   // An entry no caller could ever be would lock the operator out with a 403
-  // that names nothing wrong; refused here instead, naming it.
+  // that names nothing wrong; refused here instead, by its position.
   it.each<[string, string]>([
-    ["operator", "operator"],
-    ["a@b.com c@d.com", "a@b.com c@d.com"],
-    ["a@b@c.com", "a@b@c.com"],
-    ["@b.com", "@b.com"],
-  ])("refuses %j, which is no address", (value, entry) => {
-    expect(refused(env({ YOKOHAMA_WEB_ADMINS: value }))).toBe(
-      `YOKOHAMA_WEB_ADMINS entry ${JSON.stringify(entry)} is not an address — one @ with something on both sides, and no spaces or control characters`,
+    ["operator", "entry 1 of 1"],
+    ["a@b.com c@d.com", "entry 1 of 1"],
+    ["a@b@c.com", "entry 1 of 1"],
+    ["@b.com", "entry 1 of 1"],
+    ["boss@t.test, not-an-address", "entry 2 of 2"],
+    [`boss@t.test,${"a".repeat(248)}@t.test`, "entry 2 of 2"],
+  ])("refuses %j, which holds no address, naming its position and echoing nothing", (value, position) => {
+    const sentence = refused(env({ YOKOHAMA_WEB_ADMINS: value }));
+    expect(sentence).toBe(
+      `YOKOHAMA_WEB_ADMINS ${position} is not an address — one @ with something on both sides, ` +
+        "no spaces or control characters, and at most 254 bytes",
     );
+    for (const entry of value.split(",")) expect(sentence).not.toContain(entry.trim());
   });
 });
 

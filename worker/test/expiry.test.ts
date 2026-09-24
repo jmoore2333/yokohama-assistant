@@ -97,9 +97,11 @@ async function sentenceAt(stub: DurableObjectStub<Table>, id: string, user: stri
 }
 
 /** The shell's lines among `lines`, less the slot's push and acknowledgement
- *  — the house's side of every ending, which `test/slot.test.ts` pins. */
+ *  — the house's side of every ending, which `test/slot.test.ts` pins — and
+ *  a counted wake's `wake` line, which `test/table.test.ts` pins (the
+ *  orchestrator's ruling I-84; the pool counts wakes). */
 function ends(lines: unknown[]): unknown[] {
-  return lines.filter((l) => !["slot-pushed", "slot-acked"].includes(String((l as { event?: unknown }).event)));
+  return lines.filter((l) => !["slot-pushed", "slot-acked", "wake"].includes(String((l as { event?: unknown }).event)));
 }
 
 /** The alarm, run, with every line it logs and every side channel it started
@@ -126,7 +128,13 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
     const stub = await seedPlaying(id);
     expect((await call(stub, BLUE, "POST", `/api/games/${id}/chat`, '{"text":"first"}')).status).toBe(201);
     await settle(stub);
-    expect(await alarmOf(stub), "premise: the last acknowledgement armed the expiry deadline").not.toBeNull();
+    // Which write was the last activity when the last acknowledgement ran
+    // depends on when its push landed, so the premise is that the alarm is
+    // one of the table's writes plus the TTL — an expiry deadline.
+    const deadlines = (await sqlOf(stub, "SELECT written_at FROM docs WHERE kind IN ('record', 'table', 'chat')")).map(
+      (r) => Number(r.written_at) + TTL,
+    );
+    expect(deadlines, "premise: the last acknowledgement armed an expiry deadline").toContain(await alarmOf(stub));
     await backdate(stub, idle());
     const before = Date.now();
     expect((await call(stub, BLUE, "POST", `/api/games/${id}/chat`, '{"text":"still here"}')).status).toBe(201);
@@ -440,8 +448,9 @@ describe("the marker (spec §2.4 steps 5–6)", () => {
   // answered 404 UNUPGRADED so the client's probe reads it (spec §2.7) — for
   // the creator, another player and no one alike. A create at the id is 409:
   // before the house has acknowledged the removal, and after it, under the
-  // FROZEN clock — the same second as the table it replaced, whose generation
-  // would tie (Task 12's M4, closed here). Mutants: the marker dropped (the
+  // FROZEN clock — the same second as the table it replaced (Task 12's M4,
+  // closed here): the marker refuses the create, whatever the two tables'
+  // generations would read. Mutants: the marker dropped (the
   // layer's bare "no game named …"); the upgrade accepted and closed; the 409
   // only while the removal waits; a 409 that writes.
   it("while a marker stands every request is its 404 — an upgrade unupgraded — and a create is 409, before the ack and after it (battery 31)", async () => {
@@ -567,7 +576,7 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
       const stub = await owedGameOver(id);
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
       await settle(stub);
-      expect(archivedAt(await docOf(stub, "table")), "premise: stamped at game over").not.toBeNull();
+      expect(archivedAt(await docOf(stub, "table")), "premise: stamped at game over, at the pool's frozen reading").toBe(1_789_000_000);
       return { stub, creator: LOCAL };
     }
     const stub = tableStub(id);
@@ -612,6 +621,7 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
   )("%s: %s", async (head, arranged) => {
     const id = `tail-${arranged}-${head}`;
     const { stub, creator } = await arrange(arranged, id);
+    const record = await docOf(stub, "record");
     const off = SWITCHED_OFF.includes(arranged) ? archiveOff() : undefined;
     try {
       if (off !== undefined) await rebuilt(stub);
@@ -625,7 +635,7 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
     const abandonedKey = `${creator === LOCAL ? "" : "test/"}rev7/abandoned/${id}.json`;
     expect((await bucketText(abandonedKey)) !== null, "this ending made a save exactly when it had a game to save").toBe(arranged === "saved");
     if (arranged === "stamped" || arranged === "stamped-off") {
-      expect(await bucketText(`rev7/over/${id}.json`), "the game over's save is still in the bucket").not.toBeNull();
+      expect(await bucketText(`rev7/over/${id}.json`), "the game over's save is still in the bucket, its record's bytes").toBe(record);
     }
   });
 });

@@ -194,6 +194,14 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
   // `archived_at` differs, its plan is another, and it is deferred again (a
   // 500, and a second reading taken). The pair lands under the `test/` root,
   // RED being a test identity (spec §2.6).
+  //
+  // This row's catchers are the TABLE's sites, this cell and the owed save's
+  // stamp below. The ARCHIVE object pins its second dispatch to its one
+  // reading too (`archive.ts`), and no cell can see that pin: a browser's
+  // save puts the table it was sent, which the layer does not stamp, so its
+  // plan carries no reading and a second reading changes nothing — measured
+  // by the whole-branch review's battery (its mutant r17b answered the same
+  // 201 with two readings handed out), and recorded as equivalent.
   it("an abandon whose put lands deletes, its pair keyed under test/ at the one reading it took (battery 17)", async () => {
     const id = "ab-land";
     const stub = await seedPlaying(id);
@@ -263,6 +271,7 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
   ] as const)("a create-if-absent put that meets a record put before it is refused by the bucket: %s", async (_what, id, outcome) => {
     const stub = await seedPlaying(id);
     const record = await docOf(stub, "record");
+    const table = await docOf(stub, "table");
     const recordKey = `test/rev7/abandoned/${id}.json`;
     const raced = outcome === "conflict" ? ANOTHER_RECORD : undefined;
     const racing = await swapBucket(stub, async (real, key, value, options) => {
@@ -282,7 +291,7 @@ describe("the abandon's receipt loop (spec §2.6)", () => {
         { error: `the archive could not be written (${recordKey} holds a different record — a game is archived once) — the table was not deleted` },
       ]);
       expect(await bucketText(recordKey), "the racer's record stands").toBe(ANOTHER_RECORD);
-      expect(await docOf(stub, "table"), "nothing deleted").toBeDefined();
+      expect([await docOf(stub, "table"), await docOf(stub, "record")], "nothing deleted, and nothing written").toEqual([table, record]);
     } else {
       expect(answered.result.status).toBe(204);
       expect(await bucketText(recordKey)).toBe(record);
@@ -454,15 +463,20 @@ describe("game over (spec §2.6)", () => {
       await settle(stub);
       const failing = await swapBucket(stub, failingPuts(2));
       try {
+        const failedFrom = Date.now();
         const first = await logsDuring(async () => {
           expect((await input("1")).status, "premise: the last move ends the game again").toBe(200);
           await settle(stub);
         });
+        const failedTo = Date.now();
         expect(archiveLines(first.lines), "premise: the upload after the reply failed").toEqual([
           overLine("failed", id, recordKey, 0, R2_UNREACHABLE),
         ]);
         expect((await owedOf(stub))?.attempt, "the failure is counted").toBe(1);
-        expect(await alarmOf(stub), "and its retry armed").not.toBeNull();
+        // The first rung, 30 s, from a moment of the failing request's.
+        const retry = await alarmOf(stub);
+        expect(retry, "and its retry armed at the first rung").toBeGreaterThanOrEqual(failedFrom + 30_000);
+        expect(retry).toBeLessThanOrEqual(failedTo + 30_000);
         const before = Date.now();
         const second = await logsDuring(async () => {
           expect(await runDurableObjectAlarm(stub)).toBe(true);
@@ -584,7 +598,10 @@ describe("game over (spec §2.6)", () => {
     const recordKey = `rev7/over/${id}.json`;
     const ticks = ticking(1_797_000_000);
     try {
-      // Not restored: the eviction below discards the swapped copy.
+      // Not restored, by design: the eviction below discards the swapped
+      // copy with the instance. Should an assertion fail before it, the
+      // one-shot `failingPuts(1)` stays on that instance — at most one more
+      // failed put, on an id no other cell uses.
       await swapBucket(stub, failingPuts(1));
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
       await settle(stub);
@@ -731,7 +748,7 @@ describe("game over (spec §2.6)", () => {
     }
     expect(await docOf(stub, "chat")).toContain("good game");
     expect(await owedOf(stub)).toBeUndefined();
-    expect(archivedAt(await docOf(stub, "table"))).not.toBeNull();
+    expect(archivedAt(await docOf(stub, "table")), "stamped at the reading the save was owed at: the pool's frozen one").toBe(1_789_000_000);
   });
 });
 
@@ -861,15 +878,19 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
     const stub = await owedGameOver(id);
     const recordKey = `rev7/over/${id}.json`;
     const failing = await swapBucket(stub, failingPuts(1));
+    const failedFrom = Date.now();
     try {
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
       await settle(stub);
     } finally {
       await failing.restore();
     }
+    const failedTo = Date.now();
     const owed = await owedOf(stub);
     expect(owed?.attempt, "premise: a save is owed").toBe(1);
-    expect(await alarmOf(stub), "premise: its retry is armed").not.toBeNull();
+    const retry = await alarmOf(stub);
+    expect(retry, "premise: its retry is armed at the first rung").toBeGreaterThanOrEqual(failedFrom + 30_000);
+    expect(retry).toBeLessThanOrEqual(failedTo + 30_000);
 
     const off = archiveOff();
     try {
