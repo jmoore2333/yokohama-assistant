@@ -9,10 +9,11 @@
 // `WAKE_PAUSE_MS=<ms>` sets the four long pauses: 45 000 by default, past the
 // ~35 s of idleness after which the spike measured an object evicted.
 // `EXIT_SCREEN=<width>x<height>` is the screen the three windows are laid out
-// on, side by side, in its logical pixels: 1280x832 by default. No other
-// window may cover a column entirely while it runs — the terminal with the
-// tail included — or that window reads hidden and the run fails its own
-// precondition.
+// on, in its logical pixels: 1280x832 by default — three columns where three
+// of Chromium's narrowest windows fit across, else a grid of two rows. No
+// other window may cover one of the three entirely while it runs — the
+// terminal with the tail included — or that window reads hidden and the run
+// fails its own precondition.
 //
 // **Opt-in twice over.** It plays on the owner's account and spends real
 // minutes, so no run that did not ask for it by name plays it:
@@ -51,16 +52,21 @@
 // hidden page lets its table's socket go by design (R-P8), so a window
 // minimized, or left on another Space, would fail the one-socket claims for a
 // reason that is not the product's. Each page's visibility is watched from
-// before its first navigation, and at every checkpoint — before each long
-// pause, once the move after it has landed, and at the end of play — all
-// three pages must read `visible` and have reported nothing else since; a
-// run that breaks that fails saying it is not a finding about the product
-// (`live.ts`'s `mustBeVisible`). The exit's run launches Chromium with the
-// two switches meant to keep a covered window visible (`playwright.config.ts`),
-// and on macOS they do not: on the first headed run (deployment 19) the three
-// windows stacked and x's read hidden at move 5. So the spec also puts its
-// three windows side by side, none covering another, in the columns of the
-// screen `EXIT_SCREEN` names (`1280x832` unless set).
+// before its first navigation; what it reported while the three windows were
+// opening and being placed, and the table seated, is forgotten (and printed)
+// once play starts; and at every checkpoint from then — at the start of play,
+// before each long pause, once the move after it has landed, and at the end
+// of play — all three pages must read `visible` and have reported nothing
+// else since; a run that breaks that fails saying it is not a finding about
+// the product (`live.ts`'s `mustBeVisible`). The exit's run launches Chromium
+// with the two switches meant to keep a covered window visible
+// (`playwright.config.ts`), and on macOS they do not: on the first headed run
+// (deployment 19) the three windows stacked and x's read hidden at move 5. On
+// the second, three columns too narrow for Chromium overlapped. So the spec
+// lays its windows out by what Chromium draws, under the menu bar the window
+// manager keeps them below, and READS the placement BACK: two windows that
+// overlap, or one that leaves the screen, fail the same precondition
+// (`exitLayout`, `mustBeApart`).
 //
 // **What it leaves on the account**: what any live spec's abandon leaves —
 // the game's save under the bucket's `test/` root (all three people are
@@ -76,13 +82,16 @@ import {
   EXIT,
   LIVE,
   abandonAsCreator,
+  describeBounds,
   exitLayout,
+  forgetHidden,
   liveContextOptions,
   liveRequest,
+  mustBeApart,
   mustBeVisible,
   placeWindow,
   watchVisibility,
-  type WindowBounds,
+  type ExitLayout,
 } from "./live";
 import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo, unfold } from "./shared_table";
 
@@ -251,28 +260,31 @@ test("two people and a watcher play a paced game across four hibernations, and i
   const PASSWORD = `exit-${stamp}`;
   const pick = rng(0x4558_4954); // "EXIT"
 
-  // **Three windows side by side, none covering another** (exit game run 1,
-  // deployment 19): the windows stacked, and macOS marked the covered ones
-  // hidden whatever the launch switches read. Each page's window is put in a
-  // column of its own the moment the page exists — before it navigates — and
-  // each context emulates its column's viewport (`live.ts`, `exitLayout`).
-  // `EXIT_SCREEN` is the screen's logical size; a value that cannot be read
-  // is refused here, before a table is opened.
-  const layout = exitLayout(process.env.EXIT_SCREEN);
-  const open = async (email: string, column: WindowBounds) => {
-    const context = await newContextWithoutWorker(browser, {
-      ...(await liveContextOptions(email)),
-      viewport: layout.viewport,
-    });
-    const page = await context.newPage();
-    return { page, placed: await placeWindow(page, column) };
-  };
-  const { page: x, placed: placedX } = await open(X, layout.columns[0]);
-  const { page: y, placed: placedY } = await open(Y, layout.columns[1]);
-  const { page: w, placed: placedW } = await open(W, layout.columns[2]);
-  /** A window's bounds as the window manager reported them. */
-  const bounds = (b: Partial<WindowBounds>) =>
-    `${b.width ?? "?"}x${b.height ?? "?"} at ${b.left ?? "?"},${b.top ?? "?"}`;
+  // **Three windows, none covering another** (exit game runs 1 and 2,
+  // deployment 19): stacked, a covered window read hidden; in three columns
+  // too narrow for Chromium, they overlapped. So the layout is chosen by what
+  // Chromium draws (`live.ts`, `exitLayout`), under the top inset the window
+  // manager keeps windows below — read off x's first placement — and every
+  // window is placed before its page navigates, with the viewport of its
+  // window, and READ BACK: two that overlap, or one that leaves the screen,
+  // fail the spec's own precondition (`mustBeApart`). `EXIT_SCREEN` is the
+  // screen's logical size; a value that cannot be read, or a screen too small,
+  // is refused before a table is opened.
+  const probeLayout = exitLayout(process.env.EXIT_SCREEN, 0);
+  const open = async (email: string, viewport: ExitLayout["viewport"]) =>
+    (await newContextWithoutWorker(browser, { ...(await liveContextOptions(email)), viewport })).newPage();
+  const x = await open(X, probeLayout.viewport);
+  const probe = await placeWindow(x, probeLayout.windows[0]);
+  const layout = exitLayout(process.env.EXIT_SCREEN, Math.max(0, (probe.top ?? 0) - probeLayout.windows[0].top));
+  await x.setViewportSize(layout.viewport);
+  const y = await open(Y, layout.viewport);
+  const w = await open(W, layout.viewport);
+  const placed = [
+    ["x", await placeWindow(x, layout.windows[0])],
+    ["y", await placeWindow(y, layout.windows[1])],
+    ["w", await placeWindow(w, layout.windows[2])],
+  ] as const;
+  mustBeApart(placed, layout.screen, "once the three windows were placed");
   // The precondition's record starts here, before any page navigates.
   const windows = [
     ["x", x, await watchVisibility(x)],
@@ -389,15 +401,24 @@ test("two people and a watcher play a paced game across four hibernations, and i
   expect(await ownHand(w), "a watcher is dealt no hand").toEqual([]);
   await unfold(w);
   const seated = Math.round((Date.now() - started) / 1000);
+  // **The precondition is read from the first move on** (the second headed
+  // run): what a window reported as not visible while the three were opening
+  // over one another and being placed, and while the table was seated, is
+  // not the claim. It is forgotten here — and said in the line below — and
+  // every checkpoint from now reads what came after it, starting at once.
+  const forgotten = forgetHidden(windows);
   // eslint-disable-next-line no-console
   console.log(
     `exit phase 1, seating: table ${id} ("${NAME}") opened locked by ${X}; ${Y} read x's lobby line, ` +
       `said its own, and joined through the lobby's Open tables link with the password; both kept; ` +
-      `${W} unlocked it and is watching with no hand; windows x ${bounds(placedX)}, y ${bounds(placedY)}, ` +
-      `w ${bounds(placedW)} (EXIT_SCREEN ${layout.screen.width}x${layout.screen.height}: columns ` +
-      `${bounds(layout.columns[0])}, ${bounds(layout.columns[1])}, ${bounds(layout.columns[2])} asked; ` +
-      `viewport ${layout.viewport.width}x${layout.viewport.height}); ${seated}s`,
+      `${W} unlocked it and is watching with no hand; the windows — ` +
+      `${layout.kind === "grid" ? "a grid, x and y above and w below x" : "three columns"}, under a ` +
+      `${layout.inset} px top inset — read back x ${describeBounds(placed[0][1])}, y ${describeBounds(placed[1][1])}, ` +
+      `w ${describeBounds(placed[2][1])} (EXIT_SCREEN ${layout.screen.width}x${layout.screen.height}; viewport ` +
+      `${layout.viewport.width}x${layout.viewport.height}); reported not visible while they opened and the table ` +
+      `was seated, and forgotten: ${forgotten.length === 0 ? "nothing" : forgotten.join(", ")}; ${seated}s`,
   );
+  await visible("at the start of play");
 
   // ---- phase 2: the paced game -------------------------------------------
   const opensAtStart = { x: opens.x, y: opens.y };

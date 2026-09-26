@@ -206,7 +206,8 @@ export default defineConfig({
     // (`e2e/live.ts`), which Playwright 1.62.1 already passes to every
     // Chromium — named here so the exit's precondition does not rest on a
     // default. On macOS they do not keep a covered window visible (the exit's
-    // first headed run), so the spec lays its windows out side by side as well.
+    // first headed run), so the spec lays its windows out so that none covers
+    // another as well.
     // Every spec of an exit run is launched with them; no other run changes.
     ...(EXIT ? { launchOptions: { args: [...EXIT_LAUNCH_ARGS] } } : {}),
   },

@@ -83,9 +83,9 @@ export const EXIT = process.env.YOKOHAMA_WEB_EXIT === "1";
  * exit's run all the same, so its precondition does not rest on a default an
  * upgrade could drop. **On macOS they are not enough**: on the exit's first
  * headed run (deployment 19) the three windows stacked and the covered one
- * read hidden at move 5 — which is why the spec also lays its windows out side
- * by side ([`exitLayout`], [`placeWindow`]). The spec checks the precondition
- * itself ([`mustBeVisible`]).
+ * read hidden at move 5 — which is why the spec also lays its windows out so
+ * that none covers another ([`exitLayout`], [`placeWindow`], [`mustBeApart`]).
+ * The spec checks the precondition itself ([`mustBeVisible`]).
  */
 export const EXIT_LAUNCH_ARGS = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"] as const;
 
@@ -363,13 +363,21 @@ export async function mustBeVisible(
   }
 }
 
-// ---- the exit's windows, side by side (exit game run 1, deployment 19) ----
+// ---- the exit's windows, none covering another (exit game runs 1 and 2) --
 //
-// MEASURED on the exit's first headed run: the three windows opened STACKED
-// over one another, and macOS's occlusion marked the covered ones hidden
-// whatever the two launch switches read — x's before the pause after move 5,
-// which the precondition above reported as it should. So the spec puts each
-// window in a column of its own, none covering another.
+// MEASURED on the exit's first headed run (deployment 19): the three windows
+// opened STACKED over one another, and macOS's occlusion marked the covered
+// ones hidden whatever the two launch switches read — x's before the pause
+// after move 5, which the precondition above reported as it should. On the
+// second, three columns of 420 px were asked for, and Chromium widened every
+// window to its narrowest, 500 ([`CHROMIUM_MIN_WINDOW_WIDTH`]) — so they
+// overlapped by 74 px, the last ran past the screen's edge — and the window
+// manager kept every window below the menu bar, at top 38. So the layout is
+// chosen by what Chromium will draw, under the top inset the window manager
+// keeps; the placement is read back and refused if two windows overlap or
+// one leaves the screen ([`mustBeApart`]); and what a window reported hidden
+// while the three were opening and being placed is forgotten once the table
+// is seated ([`forgetHidden`]).
 
 /** A window's place on the screen, in the screen's logical pixels. */
 export interface WindowBounds {
@@ -379,11 +387,15 @@ export interface WindowBounds {
   height: number;
 }
 
-/** Where the exit's three windows go, and the viewport each context emulates
- *  inside its window. */
+/** Where the exit's three windows go — x, y, w — the top inset they were laid
+ *  out under, and the viewport each context emulates inside its window. */
 export interface ExitLayout {
+  /** `columns`: three side by side. `grid`: x and y side by side on the top
+   *  row, w below x on the bottom row. */
+  kind: "columns" | "grid";
   screen: { width: number; height: number };
-  columns: [WindowBounds, WindowBounds, WindowBounds];
+  inset: number;
+  windows: [WindowBounds, WindowBounds, WindowBounds];
   viewport: { width: number; height: number };
 }
 
@@ -391,25 +403,44 @@ export interface ExitLayout {
  *  nothing: the orchestrator's Mac, "2560 x 1664 Retina", in logical pixels. */
 export const DEFAULT_EXIT_SCREEN = "1280x832";
 
-/** The smallest viewport a column may leave, either way: 320 is the narrowest
- *  width the client is laid out for (its width gate reads 320 to 2560). */
-const MIN_VIEWPORT = 320;
+/** Chromium's narrowest window, in logical pixels: a window asked to be
+ *  narrower is drawn this wide (the exit's second headed run asked 420 and
+ *  read back 500). */
+export const CHROMIUM_MIN_WINDOW_WIDTH = 500;
+
+/** The space kept between two windows, and at the screen's edge below them. */
+const GUTTER = 6;
+
+/** A window's own frame and toolbar, which its viewport is laid out inside. */
+const CHROME = { width: 16, height: 90 };
+
+/** The smallest viewport a window may leave: 320 wide is the narrowest the
+ *  client is laid out for (its width gate reads 320 to 2560); 280 tall, since
+ *  two rows of windows on a laptop's screen, under its menu bar, leave about
+ *  300 (1280x832 under 38 px: 301). */
+const MIN_VIEWPORT = { width: 320, height: 280 };
 
 /**
  * The exit's three windows on the screen `screen` names (`EXIT_SCREEN`,
- * `<width>x<height>` in logical pixels; unset or empty is the default): three
- * columns a third of the screen's width apart, each 6 px narrower than that
- * and 12 px shorter than the screen, at its top. Each context's viewport is
- * its column less 16 px across and 90 px down — room for the window's own
- * frame and toolbar — because Playwright emulates a viewport whatever the
- * window's size, so the two must agree or the page is clipped. At the default a column is
- * 420 px wide, which is the client's narrow layout (`joins_by_link` reads it
- * live at 390).
+ * `<width>x<height>` in logical pixels; unset or empty is the default), laid
+ * out under a top inset of `inset` px — a menu bar the window manager keeps
+ * windows below, read off the first window placed.
  *
- * A value that is not `<width>x<height>` is refused by NAME, as is a screen
- * whose columns would leave a viewport under 320 by 320.
+ * - **Three columns** where three of Chromium's narrowest windows and their
+ *   gutters fit across: a third of the width apart, each a gutter narrower,
+ *   and as tall as the screen under the inset, less a gutter above and below.
+ * - **Else a grid**: x and y side by side on the top row, each half the width
+ *   less a gutter; w on the bottom row, under x; each row half the height
+ *   under the inset, less a gutter.
+ *
+ * Each context's viewport is its window less 16 px across and 90 px down —
+ * room for the window's own frame and toolbar — because Playwright emulates a
+ * viewport whatever the window's size, so the two must agree or the page is
+ * clipped. Refused by NAME: a value that is not `<width>x<height>`, a screen
+ * that cannot hold two of Chromium's windows side by side, and one that
+ * leaves a viewport under 320 by 280.
  */
-export function exitLayout(screen: string | undefined): ExitLayout {
+export function exitLayout(screen: string | undefined, inset: number): ExitLayout {
   const raw = screen === undefined || screen === "" ? DEFAULT_EXIT_SCREEN : screen;
   const read = /^([1-9][0-9]*)x([1-9][0-9]*)$/.exec(raw);
   if (read === null) {
@@ -419,17 +450,120 @@ export function exitLayout(screen: string | undefined): ExitLayout {
   }
   const width = Number(read[1]);
   const height = Number(read[2]);
-  const pitch = Math.floor(width / 3);
-  const column = { width: pitch - 6, height: height - 12 };
-  const viewport = { width: column.width - 16, height: column.height - 90 };
-  if (viewport.width < MIN_VIEWPORT || viewport.height < MIN_VIEWPORT) {
+  const usable = height - inset;
+  const third = Math.floor(width / 3);
+  const half = Math.floor(width / 2);
+  let kind: ExitLayout["kind"];
+  let windows: ExitLayout["windows"];
+  if (third - GUTTER >= CHROMIUM_MIN_WINDOW_WIDTH) {
+    kind = "columns";
+    const column = (i: number): WindowBounds => ({
+      left: i * third,
+      top: inset,
+      width: third - GUTTER,
+      height: usable - 2 * GUTTER,
+    });
+    windows = [column(0), column(1), column(2)];
+  } else if (half - GUTTER >= CHROMIUM_MIN_WINDOW_WIDTH) {
+    kind = "grid";
+    const row = Math.floor(usable / 2);
+    const cell = (col: number, line: number): WindowBounds => ({
+      left: col * half,
+      top: inset + line * row,
+      width: half - GUTTER,
+      height: row - GUTTER,
+    });
+    windows = [cell(0, 0), cell(1, 0), cell(0, 1)];
+  } else {
     throw new Error(
-      `EXIT_SCREEN ${raw} leaves each window a ${viewport.width} by ${viewport.height} viewport, and the columns need ` +
-        `at least ${MIN_VIEWPORT} by ${MIN_VIEWPORT} — give the screen's logical size (the default is ${DEFAULT_EXIT_SCREEN})`,
+      `EXIT_SCREEN ${raw} cannot hold two of Chromium's narrowest windows, ${CHROMIUM_MIN_WINDOW_WIDTH} px each, side by side — ` +
+        `give the screen's logical size (the default is ${DEFAULT_EXIT_SCREEN})`,
     );
   }
-  const at = (i: number): WindowBounds => ({ left: i * pitch, top: 0, ...column });
-  return { screen: { width, height }, columns: [at(0), at(1), at(2)], viewport };
+  const viewport = { width: windows[0].width - CHROME.width, height: windows[0].height - CHROME.height };
+  if (viewport.width < MIN_VIEWPORT.width || viewport.height < MIN_VIEWPORT.height) {
+    throw new Error(
+      `EXIT_SCREEN ${raw}${inset > 0 ? ` under a ${inset} px top inset` : ""} leaves each window a ${viewport.width} by ` +
+        `${viewport.height} viewport, and the windows need at least ${MIN_VIEWPORT.width} by ${MIN_VIEWPORT.height} — ` +
+        `give the screen's logical size (the default is ${DEFAULT_EXIT_SCREEN})`,
+    );
+  }
+  return { kind, screen: { width, height }, inset, windows, viewport };
+}
+
+/** A window's bounds as the exit's lines print them: `<w>x<h> at <left>,<top>`,
+ *  with `?` for what was not reported. */
+export function describeBounds(b: Partial<WindowBounds>): string {
+  return `${b.width ?? "?"}x${b.height ?? "?"} at ${b.left ?? "?"},${b.top ?? "?"}`;
+}
+
+/**
+ * **The exit's own precondition, at placement** (the second headed run): every
+ * window, where it was READ BACK, lies on the screen and covers no part of
+ * another — edges that touch are not an overlap. What was asked is not what
+ * this reads: Chromium widens a window narrower than it draws, and a window
+ * manager moves one clear of its menu bar. A window another covers can read
+ * hidden, and a hidden page lets its table's socket go, so this throws —
+ * naming every window that leaves the screen and every pair that overlaps —
+ * saying it is not a finding about the product. A window that reported no
+ * bounds cannot be read at all, and is refused as that.
+ */
+export function mustBeApart(
+  placed: ReadonlyArray<readonly [who: string, bounds: Partial<WindowBounds>]>,
+  screen: { width: number; height: number },
+  where: string,
+): void {
+  const read: Array<readonly [string, WindowBounds]> = [];
+  for (const [who, b] of placed) {
+    for (const field of ["left", "top", "width", "height"] as const) {
+      if (b[field] === undefined) {
+        throw new Error(
+          `the exit's own precondition cannot be read ${where}: ${who}'s window reported no ${field}, ` +
+            "so this run cannot tell whether a window covers another",
+        );
+      }
+    }
+    read.push([who, b as WindowBounds]);
+  }
+  const problems: string[] = [];
+  for (const [who, b] of read) {
+    if (b.left < 0 || b.top < 0 || b.left + b.width > screen.width || b.top + b.height > screen.height) {
+      problems.push(`${who}'s window (${describeBounds(b)}) leaves the ${screen.width}x${screen.height} screen`);
+    }
+  }
+  read.forEach(([a, A], i) => {
+    for (const [b, B] of read.slice(i + 1)) {
+      const apart =
+        A.left + A.width <= B.left || B.left + B.width <= A.left || A.top + A.height <= B.top || B.top + B.height <= A.top;
+      if (!apart) problems.push(`${a}'s window (${describeBounds(A)}) and ${b}'s (${describeBounds(B)}) overlap`);
+    }
+  });
+  if (problems.length > 0) {
+    throw new Error(
+      `the exit's own precondition failed ${where}: ${problems.join("; ")}. A window another covers can read hidden, and a ` +
+        "hidden page lets its table's socket go, by design (R-P8), so this run could say nothing about the sockets " +
+        "surviving a hibernation — it is not a finding about the product. Set EXIT_SCREEN to the screen's logical size, " +
+        "and run it again.",
+    );
+  }
+}
+
+/**
+ * Forget what `watches` recorded as not visible until now, and say what it
+ * was, as `<who>: <what>` — keeping their report counts, which say the watch
+ * is running. The exit calls this once its three windows are placed and its
+ * table seated: a window reported hidden while the three were opening over one
+ * another, and before they were placed, is not the claim (the second headed
+ * run), and the precondition is read from the first move on.
+ */
+export function forgetHidden(
+  watches: ReadonlyArray<readonly [who: string, page: Page, watch: VisibilityWatch]>,
+): string[] {
+  const forgotten: string[] = [];
+  for (const [who, , watch] of watches) {
+    for (const was of watch.hidden.splice(0)) forgotten.push(`${who}: ${was}`);
+  }
+  return forgotten;
 }
 
 /**

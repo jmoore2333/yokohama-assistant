@@ -33,7 +33,10 @@ import {
   cookiesFrom,
   credential,
   identityHeaders,
+  CHROMIUM_MIN_WINDOW_WIDTH,
   exitLayout,
+  forgetHidden,
+  mustBeApart,
   mustBeVisible,
   placeWindow,
   reportVisibility,
@@ -542,7 +545,7 @@ describe("watchVisibility and mustBeVisible — the exit's own precondition", ()
   // The config's side, read from its SOURCE as `BASE_URL` is above: the
   // exit's run launches Chromium with the two switches meant to keep a covered
   // window visible — not enough on macOS, which is why the spec also lays its
-  // windows out side by side (below).
+  // windows out so that none covers another (below).
   it("is launched, in the exit's run, with the switches meant to keep a covered window visible", () => {
     expect(EXIT_LAUNCH_ARGS).toEqual(["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding"]);
     const here = dirname(fileURLToPath(import.meta.url));
@@ -551,58 +554,181 @@ describe("watchVisibility and mustBeVisible — the exit's own precondition", ()
   });
 });
 
-// ---- the exit's windows, side by side (exit game run 1, deployment 19) ----
+// ---- the exit's windows, none covering another (exit game runs 1 and 2) --
 //
-// MEASURED on the exit's first headed run: its three windows STACKED, and
-// macOS's occlusion marked the covered ones hidden whatever the two launch
-// switches read — so the spec's own precondition failed at move 5. The spec
-// now puts its three windows in three NON-overlapping columns of the screen
-// `EXIT_SCREEN` names, through the browser protocol, and gives each context
-// the viewport of its column: Playwright emulates a viewport whatever the
-// window's size, so the two must agree or the page is clipped.
+// MEASURED on the exit's first headed run (deployment 19): its three windows
+// STACKED, and macOS's occlusion marked a covered one hidden whatever the two
+// launch switches read. On the second, the three columns asked 420 px each —
+// and Chromium widened every window to its narrowest, 500, so they overlapped
+// by 74 px, the last ran past the screen's edge, and every window was kept
+// below the menu bar at top 38. So the layout is chosen by what Chromium will
+// actually draw — three columns where three of its narrowest windows fit,
+// else a grid of two rows — under the window manager's top inset, read off
+// the first window placed; the placement is READ BACK and refused as the
+// spec's own precondition if two windows overlap or one leaves the screen;
+// and each context's viewport matches its window, since Playwright emulates a
+// viewport whatever the window's size.
 
-describe("exitLayout — three windows side by side, none covering another", () => {
-  it("is three columns of the default screen, this Mac's logical 1280x832", () => {
-    expect(exitLayout(undefined)).toEqual({
+describe("exitLayout — three windows, none covering another, sized by what Chromium draws", () => {
+  it("is a GRID on this Mac's 1280x832, where three of Chromium's narrowest windows do not fit side by side", () => {
+    expect(CHROMIUM_MIN_WINDOW_WIDTH).toBe(500);
+    expect(exitLayout(undefined, 0)).toEqual({
+      kind: "grid",
       screen: { width: 1280, height: 832 },
-      columns: [
-        { left: 0, top: 0, width: 420, height: 820 },
-        { left: 426, top: 0, width: 420, height: 820 },
-        { left: 852, top: 0, width: 420, height: 820 },
+      inset: 0,
+      windows: [
+        { left: 0, top: 0, width: 634, height: 410 },
+        { left: 640, top: 0, width: 634, height: 410 },
+        { left: 0, top: 416, width: 634, height: 410 },
       ],
-      viewport: { width: 404, height: 730 },
+      viewport: { width: 618, height: 320 },
     });
-    expect(exitLayout(""), "an empty variable is the default").toEqual(exitLayout(undefined));
+    expect(exitLayout("", 0), "an empty variable is the default").toEqual(exitLayout(undefined, 0));
   });
 
-  it("sizes the columns from the screen it is given: none reaches the next, the screen's edge, or past its own viewport", () => {
-    for (const screen of ["1280x832", "1100x700", "1512x982", "1920x1080", "2560x1440"]) {
-      const { screen: s, columns, viewport } = exitLayout(screen);
-      expect(`${s.width}x${s.height}`).toBe(screen);
-      columns.forEach((c, i) => {
-        const next = i < columns.length - 1 ? columns[i + 1]!.left : s.width;
-        expect(c.left + c.width, `${screen}: column ${i} reaches ${next}`).toBeLessThan(next);
-        expect(c.top + c.height, `${screen}: column ${i} is taller than the screen`).toBeLessThan(s.height);
-        expect(viewport.width, `${screen}: the viewport is wider than its window`).toBeLessThan(c.width);
-        expect(viewport.height, `${screen}: the viewport is taller than its window`).toBeLessThan(c.height);
-      });
+  it("lays the grid under the window manager's top inset — run 2's menu bar, 38 px — so the rows do not meet", () => {
+    expect(exitLayout("1280x832", 38)).toEqual({
+      kind: "grid",
+      screen: { width: 1280, height: 832 },
+      inset: 38,
+      windows: [
+        { left: 0, top: 38, width: 634, height: 391 },
+        { left: 640, top: 38, width: 634, height: 391 },
+        { left: 0, top: 435, width: 634, height: 391 },
+      ],
+      viewport: { width: 618, height: 301 },
+    });
+  });
+
+  it("is three COLUMNS on a screen wide enough for three of Chromium's narrowest windows and their gutters", () => {
+    expect(exitLayout("1600x900", 0)).toEqual({
+      kind: "columns",
+      screen: { width: 1600, height: 900 },
+      inset: 0,
+      windows: [
+        { left: 0, top: 0, width: 527, height: 888 },
+        { left: 533, top: 0, width: 527, height: 888 },
+        { left: 1066, top: 0, width: 527, height: 888 },
+      ],
+      viewport: { width: 511, height: 798 },
+    });
+    // The line between the two: three windows of 500 and their gutters.
+    expect(exitLayout("1518x900", 0).kind).toBe("columns");
+    expect(exitLayout("1517x900", 0).kind).toBe("grid");
+  });
+
+  it("never lays a window over another or off the screen, nor a viewport past its window, at any screen or inset", () => {
+    for (const screen of ["1100x832", "1280x832", "1440x900", "1517x982", "1518x982", "1600x900", "1920x1080", "2560x1440"]) {
+      for (const inset of [0, 25, 38]) {
+        const { screen: s, windows, viewport } = exitLayout(screen, inset);
+        const at = `${screen} under ${inset}`;
+        windows.forEach((a, i) => {
+          expect(a.width, `${at}: window ${i} narrower than Chromium draws`).toBeGreaterThanOrEqual(CHROMIUM_MIN_WINDOW_WIDTH);
+          expect(a.top, `${at}: window ${i} above the inset`).toBeGreaterThanOrEqual(inset);
+          expect(a.left + a.width, `${at}: window ${i} past the right edge`).toBeLessThanOrEqual(s.width);
+          expect(a.top + a.height, `${at}: window ${i} past the bottom`).toBeLessThanOrEqual(s.height);
+          expect(viewport.width, `${at}: the viewport is wider than its window`).toBeLessThan(a.width);
+          expect(viewport.height, `${at}: the viewport is taller than its window`).toBeLessThan(a.height);
+          windows.slice(i + 1).forEach((b, j) => {
+            const apart = a.left + a.width <= b.left || b.left + b.width <= a.left || a.top + a.height <= b.top || b.top + b.height <= a.top;
+            expect(apart, `${at}: windows ${i} and ${i + 1 + j} overlap`).toBe(true);
+          });
+        });
+      }
     }
   });
 
-  it("refuses a screen it cannot read, and one whose columns are too small to play in, naming EXIT_SCREEN", () => {
+  it("refuses a screen it cannot read, one too narrow for two of Chromium's windows, and one too short for two rows, naming EXIT_SCREEN", () => {
     for (const bad of ["1280", "1280x", "x832", "1280\u00d7832", "1280x832x2", "-1280x832", "1280.5x832", "wide"]) {
-      expect(() => exitLayout(bad), bad).toThrow(/^EXIT_SCREEN must be the screen's logical size/);
+      expect(() => exitLayout(bad, 0), bad).toThrow(/^EXIT_SCREEN must be the screen's logical size/);
     }
-    expect(() => exitLayout("900x600")).toThrow(
-      "EXIT_SCREEN 900x600 leaves each window a 278 by 498 viewport, and the columns need at least 320 by 320",
+    expect(() => exitLayout("1000x832", 0)).toThrow(
+      "EXIT_SCREEN 1000x832 cannot hold two of Chromium's narrowest windows, 500 px each, side by side",
     );
-    expect(() => exitLayout("1280x400")).toThrow(
-      "EXIT_SCREEN 1280x400 leaves each window a 404 by 298 viewport, and the columns need at least 320 by 320",
+    expect(() => exitLayout("1280x600", 38)).toThrow(
+      "EXIT_SCREEN 1280x600 under a 38 px top inset leaves each window a 618 by 185 viewport, and the windows need at least 320 by 280",
     );
   });
 });
 
-describe("placeWindow — a window put in its column through the browser protocol", () => {
+describe("mustBeApart — the placement READ BACK, as the spec's own precondition", () => {
+  const screen = { width: 1280, height: 832 };
+
+  it("passes a grid read back apart and on the screen — edges that touch are not an overlap", () => {
+    expect(() =>
+      mustBeApart(
+        [
+          ["x", { left: 0, top: 38, width: 634, height: 391 }],
+          ["y", { left: 640, top: 38, width: 634, height: 391 }],
+          ["w", { left: 0, top: 435, width: 634, height: 391 }],
+        ],
+        screen,
+        "once the windows were placed",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      mustBeApart(
+        [
+          ["x", { left: 0, top: 0, width: 640, height: 400 }],
+          ["y", { left: 640, top: 0, width: 640, height: 400 }],
+          ["w", { left: 0, top: 400, width: 640, height: 400 }],
+        ],
+        screen,
+        "once the windows were placed",
+      ),
+    ).not.toThrow();
+  });
+
+  it("refuses run 2's read-back — three windows of 500 overlapping, the last past the edge, all below it — naming each", () => {
+    const run2 = [
+      ["x", { left: 0, top: 38, width: 500, height: 820 }],
+      ["y", { left: 426, top: 38, width: 500, height: 820 }],
+      ["w", { left: 852, top: 38, width: 500, height: 820 }],
+    ] as const;
+    let said = "";
+    try {
+      mustBeApart(run2, screen, "once the windows were placed");
+    } catch (e) {
+      said = (e as Error).message;
+    }
+    expect(said).toMatch(/^the exit's own precondition failed once the windows were placed: /);
+    expect(said).toContain("x's window (500x820 at 0,38) leaves the 1280x832 screen");
+    expect(said).toContain("w's window (500x820 at 852,38) leaves the 1280x832 screen");
+    expect(said).toContain("x's window (500x820 at 0,38) and y's (500x820 at 426,38) overlap");
+    expect(said).toContain("y's window (500x820 at 426,38) and w's (500x820 at 852,38) overlap");
+    expect(said).not.toContain("x's window (500x820 at 0,38) and w's");
+    expect(said).toContain("it is not a finding about the product");
+  });
+
+  it("refuses a window that reported no bounds: then the placement cannot be read at all", () => {
+    expect(() =>
+      mustBeApart([["x", { left: 0, top: 38, width: 634 }]], screen, "once the windows were placed"),
+    ).toThrow("the exit's own precondition cannot be read once the windows were placed: x's window reported no height");
+  });
+});
+
+describe("forgetHidden — the precondition read from the first move on", () => {
+  it("forgets what the seating reported and says what it was, keeps the count of reports, and fails on the next hidden", async () => {
+    const x = visibilityPage();
+    const wx = await watchVisibility(x.page, () => new Date(Date.UTC(2026, 8, 26, 6, 8, 10)));
+    x.report("visible");
+    x.report("hidden");
+    x.report("visible");
+    const y = visibilityPage();
+    const wy = await watchVisibility(y.page);
+    y.report("visible");
+    const windows = [["x", x.page, wx], ["y", y.page, wy]] as const;
+    expect(forgetHidden(windows)).toEqual(["x: hidden at 06:08:10Z"]);
+    expect(wx).toEqual({ reports: 3, hidden: [] });
+    await expect(mustBeVisible(windows, "at the start of play")).resolves.toBeUndefined();
+    x.report("hidden");
+    await expect(mustBeVisible(windows, "before the pause after move 5")).rejects.toThrow(
+      "the exit's own precondition failed before the pause after move 5: x's window was not visible (hidden at 06:08:10Z)",
+    );
+  });
+});
+
+describe("placeWindow — a window put in its place through the browser protocol", () => {
   /** A page whose context hands out ONE fake session, for THIS page only. */
   function protocolPage(answer: (method: string, params: unknown) => unknown) {
     const sent: Array<[string, unknown]> = [];
