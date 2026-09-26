@@ -35,7 +35,7 @@ the artifact wins.
 
 ## 1. Where things stand
 
-- **Branch `web-room-m6.5c`** at the docs commit that follows `754b80ae`, **PR #{{TBD: number}}** against
+- **Branch `web-room-m6.5c`** at the docs commit that follows `754b80ae`, **PR #38** against
   `web-room-m6.5b2`: eight pull requests stacked from #31 against master, nothing merged, **the merge
   order is the owner's**. The code close head is `754b80ae`; its shipped code is `bd8ce497`'s, since
   the three commits after that (`f2c27a3f`, `528b1285`, `754b80ae`) move only the exit spec and its

@@ -42,7 +42,7 @@ ships is the fix-wave follow-up `bd8ce497`'s, since the three commits after that
 §6.8–§6.11 record deployments 14–17; the close's docs commit adds the records of deployments 18, 19
 and 20, the live runs and the exit (drafted as §6.12–§6.14; §6.12–§6.14, in the docs commit that follows `754b80ae`). The NAS is untouched: `yokohama-web:0.5.0-m6.5b2.1` at
 `yokohama-nas.moore.nyc` (RUNBOOK §3.16), `claimed`, SSE, the directory archive. The branch is **PR
-#{{TBD: number}}** against `web-room-m6.5b2`, the eighth of an unmerged stack whose **merge order is
+#38** against `web-room-m6.5b2`, the eighth of an unmerged stack whose **merge order is
 the owner's**.
 
 ---
@@ -1205,7 +1205,7 @@ Most are design debts rather than defects, and the M6.5c2 handover carries them 
 3. **The phones** — the iPhone exit as R-6.5b2.17 words it, and the Android handset as the second
    reading, now against the Worker; recorded, not gated. not taken this session; the owner's, recorded not gated.
 4. **The PR merge order.** Eight pull requests, a stack, nothing merged: `web-room` #31 against
-   master, then #32 … #37, and this cycle's #{{TBD: number}} against `web-room-m6.5b2`.
+   master, then #32 … #37, and this cycle's #38 against `web-room-m6.5b2`.
 5. **The NAS-era RUNBOOK §3 spells the owner's address** as an Access-policy identity in FIVE lines
    committed in earlier cycles — at `bd8ce497`, lines 572 and 581 (§3.7), 658 (§3.8), and 1413 and
    1417 (§3.14's Step 4b). P-1 held for everything this cycle wrote; whether §3 is scrubbed before the
