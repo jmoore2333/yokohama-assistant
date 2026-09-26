@@ -1,32 +1,102 @@
 # `worker/` — the Cloudflare host
 
-This directory is the hosted-multiplayer deployment of the Yokohama browser client: a Cloudflare
-Worker named `yokohama-web`, three classes of SQLite-backed Durable Object, and an R2 bucket,
-serving `https://yokohama.moore.nyc` behind a Cloudflare Access application. It was built in the
-M6.5c cycle, "the objects", and has been live since its first deployment on 2026-09-23.
+This directory is the hosted-multiplayer deployment of the Yokohama browser client. It runs on
+Cloudflare: a **Worker** named `yokohama-web` (a small program Cloudflare runs on demand), three
+classes of **Durable Object** (named instances that each keep their own storage, here SQLite), and
+an **R2** bucket (Cloudflare's object storage). It serves `https://yokohama.moore.nyc` behind
+**Cloudflare Access**, a login gate in front of the whole hostname. It was built in the M6.5c
+cycle, "the objects", and has been live since its first deployment on 2026-09-23.
 
-This README explains **why** the host has the shape it has and **how** each part works, for an
-engineer who knows web systems but not this repository. Every mechanism is described as the code
-does it at the M6.5c close. Every figure is a reading taken during that cycle, named with where it
-was taken, and a behaviour that was designed but never observed live says so.
+It is written for engineers and would-be contributors who know web systems but not Cloudflare, and
+not this repository. If a Cloudflare word is new, [the terms section](#the-cloudflare-terms-this-readme-uses)
+defines each one in a few lines. §2 to §5 then explain the platform, its free plan, the CPU budget
+that shaped the design, and what a game costs; the rest explains **why** the host has the shape it
+has and **how** each part works. Every mechanism is described as the code does it at the M6.5c
+close. Every figure is either a reading, named with where it was taken, or, in §5, an estimate
+derived from readings and labelled as one. The readings are this cycle's own measurements, and
+Cloudflare's documentation as fetched on 2026-09-26. A behaviour that was designed but never
+observed live says so.
 
 It is a map, not an authority. The authority is the spec,
 [`docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md`](../docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md),
 read with the corrections execution recorded in the close,
-[`docs/plans/2026-09-24-web-frontend-m6.5c-close.md`](../docs/plans/2026-09-24-web-frontend-m6.5c-close.md).
-The operating manual is [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) §6. Where this file and the code
-disagree, the code is right and this file has a bug.
+[`docs/plans/2026-09-26-web-frontend-m6.5c-close.md`](../docs/plans/2026-09-26-web-frontend-m6.5c-close.md).
+The operating manual is [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) §6. Where this file and the
+code disagree, the code is right and this file has a bug.
 
-**Contents**
+**Contents.** Start with [the Cloudflare terms](#the-cloudflare-terms-this-readme-uses) if the
+platform is new to you.
 
 1. [What it is, and where it runs](#1-what-it-is-and-where-it-runs)
-2. [Why Workers, Durable Objects and R2](#2-why-workers-durable-objects-and-r2)
-3. [The parts](#3-the-parts)
-4. [The transport](#4-the-transport)
-5. [Testing, building and deploying](#5-testing-building-and-deploying)
-6. [Operating it](#6-operating-it)
-7. [What it does not do](#7-what-it-does-not-do)
-8. [Where to read next](#8-where-to-read-next)
+2. [What a Durable Object is, and what serverless means here](#2-what-a-durable-object-is-and-what-serverless-means-here)
+3. [Free vs Paid, and how this was optimized for Free](#3-free-vs-paid-and-how-this-was-optimized-for-free)
+4. [Lessons from the 10 ms CPU budget, and how the core crates run inside it](#4-lessons-from-the-10-ms-cpu-budget-and-how-the-core-crates-run-inside-it)
+5. [Estimates for concurrent and ongoing games](#5-estimates-for-concurrent-and-ongoing-games)
+6. [Why Workers, Durable Objects and R2](#6-why-workers-durable-objects-and-r2)
+7. [The parts](#7-the-parts)
+8. [The transport](#8-the-transport)
+9. [Testing, building and deploying](#9-testing-building-and-deploying)
+10. [Operating it](#10-operating-it)
+11. [What it does not do](#11-what-it-does-not-do)
+12. [Where to read next](#12-where-to-read-next)
+
+---
+
+## The Cloudflare terms this README uses
+
+In the order they matter here. Where a sentence states a fact about the platform, its source is
+Cloudflare's documentation as read on 2026-09-26; §3.1 lists the pages.
+
+- **The edge.** Cloudflare's own network of data centres. Code that runs "at the edge" runs in
+  whichever data centre received the request, not on a server this project owns.
+- **A Worker.** A program, here TypeScript, that Cloudflare runs when a request arrives. A Worker
+  is stateless: nothing it holds in memory is promised to survive to the next request, which may
+  run in another data centre. On the Workers Free plan a request gets 10 ms of CPU time. This
+  host's Worker is `src/index.ts`.
+- **An isolate.** The sandbox a Worker runs in: a V8 isolate, from the JavaScript engine in Chrome,
+  which Cloudflare calls "a sandbox for your function to run in". It is not a container or a virtual
+  machine, and "a single instance of the runtime can run hundreds or thousands of isolates" (*How
+  Workers works*). One isolate can also run many Durable Objects (*Durable Objects pricing*).
+- **Static assets.** Files uploaded with a Worker, here the web client, its service worker and the
+  card art, which Cloudflare serves directly without running the Worker. Requests for them are
+  free and unlimited.
+- **A Durable Object.** A named, single-threaded instance of a JavaScript class, with storage only
+  it can reach. §2 explains it in full. This host has three classes: `Table`, `House` and
+  `Archive`.
+- **SQLite-backed storage.** Each Durable Object can own a SQLite database, which its code queries
+  synchronously. The Workers Free plan allows only this kind of Durable Object.
+- **Hibernation, and hibernatable WebSockets.** An idle Durable Object is removed from memory and
+  rebuilt from its storage on its next event, when its constructor runs again (*Lifecycle of a
+  Durable Object*). A WebSocket accepted through Cloudflare's Hibernation API stays connected
+  meanwhile, and a small attachment the object wrote to it persists (*Durable Objects:
+  WebSockets*). An auto-response the object registers answers a fixed message, here `ping` with
+  `pong`, "without waking WebSockets in hibernation and incurring billable duration charges"
+  (*Durable Object state*).
+- **An alarm.** A time a Durable Object sets for itself, one per object. When it comes, the platform
+  runs the object's `alarm()` handler, waking it if it was hibernated.
+- **A binding, and RPC.** A binding is how code reaches a resource: `env.TABLE` is the namespace of
+  table objects, `env.ARCHIVE` the bucket, `env.ASSETS` the static assets, each declared in
+  `wrangler.jsonc`. RPC is calling a public method of another object's class through a stub; here a
+  table object calls the house object's `apply`.
+- **R2.** Cloudflare's object storage, compatible with Amazon S3's API: a bucket of keys, each
+  holding a body. This host archives finished and abandoned games to the bucket `yokohama-archive`.
+- **Cloudflare Access.** Cloudflare's login gate, part of its Zero Trust products. An Access
+  *application* covers a hostname: nobody reaches it without signing in, and every request Access
+  lets through carries a signed JSON Web Token (a JWT) that names who signed in.
+- **A service token.** A credential for a machine rather than a person: a client id and a secret,
+  sent as two request headers, which Access admits in place of a login. Access calls this Service
+  Auth. This host's test harnesses use one, named `yokohama-worker`.
+- **WARP.** Cloudflare's device client. A computer enrolled in the team's Zero Trust organization is
+  recognized by Access as its signed-in user, which is how the owner's own shell reaches the
+  operator routes with plain `curl`.
+- **wrangler.** Cloudflare's command-line tool. It deploys a Worker with its assets and bindings
+  (`npx wrangler deploy`), streams its live log (`npx wrangler tail`), and manages its secrets and
+  buckets.
+- **A secret.** A Worker variable set with `wrangler secret put`. Its value is never shown again,
+  and a deploy leaves it in place.
+- **Bot Fight Mode.** A setting of the Cloudflare zone (the domain `moore.nyc`) that challenges
+  requests that look automated. A plain `curl` from outside WARP meets its challenge before it
+  reaches Access.
 
 ---
 
@@ -70,6 +140,20 @@ The client is ONE static release, `web/dist`, with its service worker. The NAS s
 own binary, and Cloudflare serves it from its asset layer. Single player runs from that release on
 either hostname and makes no server call until a game ends.
 
+In one picture, with the crates each host is built from:
+
+```mermaid
+flowchart TB
+  core["yokohama-core<br/>the engine: rules, moves, the bot"]
+  cli["yokohama-cli<br/>the terminal's model and words"]
+  layer["yokohama-web<br/>the table layer: api::dispatch over Games"]
+  core --> layer
+  cli --> layer
+  layer --> nas["The NAS host<br/>the layer's server half, axum in Docker<br/>yokohama-nas.moore.nyc · SSE · a directory archive"]
+  layer --> browser["The browser host<br/>yokohama-wasm in a Web Worker<br/>single player · no server"]
+  layer --> cf["The Cloudflare host<br/>yokohama-worker, one instance per Durable Object<br/>yokohama.moore.nyc · WebSockets · R2"]
+```
+
 ### 1.2 What this host may change, and what it may not
 
 The cycle ran under one rule, R-6.5c.4: a Cloudflare-specific problem gets its solution inside
@@ -77,17 +161,17 @@ The cycle ran under one rule, R-6.5c.4: a Cloudflare-specific problem gets its s
 Two layer changes were made, each for a reason no host code could supply:
 
 - **`Games::archive_over_retry(id)`** (`crates/yokohama-web/src/games.rs`). On this host a game-over
-  save is uploaded after the move has been answered (§3.5), so the stamp that records "this game is
+  save is uploaded after the move has been answered (§7.5), so the stamp that records "this game is
   archived" runs later, as a retry. That stamp must be the layer's own code.
 - **`tables::check_shape` became `pub`** (`crates/yokohama-web/src/tables.rs`). The house refuses,
-  loudly, a table copy that the layer's own listing would drop without a word (§3.4). It has to,
+  loudly, a table copy that the layer's own listing would drop without a word (§7.4). It has to,
   because the layer's diagnostics are `eprintln!`, and `eprintln!` prints nothing on
   `wasm32-unknown-unknown`.
 
 Nothing else in the layer moved. The engine and the other fenced crates, the CLI and the browser
 host's crate (`crates/yokohama-wasm`) are byte-identical to the cycle's base, and `SEMANTICS_REV`,
 the version that keys every saved record, is still 7. Outside the crates, the client gained the
-socket arm of §4 and one branch in its outbox, and the corpus emitter gained two request scripts.
+socket arm of §8 and one branch in its outbox, and the corpus emitter gained two request scripts.
 
 That restraint buys the central property of this host: **every payload a player reads is the
 layer's own bytes.** The repository commits a wire corpus: every payload shape the client reads,
@@ -100,56 +184,415 @@ switch, `/api/me` reports `mode: "cf-access"`, and `/api/art` is compared by val
 
 ### 1.3 One move, end to end
 
-```text
- browser ──HTTPS──▶ Cloudflare edge ──▶ Access, the `yokohama` application (signs a JWT)
-                                              │
-                          ┌───────────────────┴───────────────────┐
-                          │ a file of the release?                 │ /api/*, /enter,
-                          ▼                                        ▼ or no such file
-                 the asset layer answers               Worker `yokohama-web` (src/index.ts)
-                 (the Worker is NOT invoked)             route · Origin check · configuration
-                                                         2 MiB body bound · verify the JWT
-                                                         strip x-yokohama-* · set X-Yokohama-User
-                                                              │ TABLE.idFromName(<table id>)
-                                                              ▼
-                                              Table object (src/table.ts), one per table
-                                                wake: a new module instance, the documents
-                                                      loaded from SQLite, an open picker re-fed
-                                                call: dispatch(...) inside the module
-                                                ONE synchronous batch: documents, the house
-                                                      slot, an owed save, the alarm
-                                                reply ─▶ held by the output gate until durable
-                                                then: frames to sockets · push the slot · upload
-                                                  │ RPC House.apply(slot)      │ put
-                                                  ▼                            ▼
-                                        House object (src/house.ts)    R2 bucket yokohama-archive
-                                          the lobby, over scrubbed copies
+A move, from the player's browser to the table's object, and on to the lobby and the bucket:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser
+  participant A as Access, at the edge
+  participant W as Worker (stateless)
+  participant T as Table object
+  participant H as House object
+  participant R as R2 bucket
+  B->>A: POST /api/games/{id}/input
+  A->>W: the request, with a signed JWT
+  W->>W: verify the JWT, strip x-yokohama-*, set X-Yokohama-User
+  W->>T: fetch, to the object named {id}
+  Note over T: the wake, if evicted: a new module instance, the documents loaded from SQLite, an open picker re-fed
+  T->>T: the call: dispatch inside the module
+  T->>T: ONE synchronous batch: the documents, the house slot, an owed save, the alarm
+  T-->>B: one frame per open socket, each for its own viewer
+  T-->>B: the reply
+  Note over T,B: the output gate holds the frames and the reply until the batch is durable
+  T->>H: apply(slot), over RPC
+  H-->>T: acknowledgement of (generation, revision)
+  T->>R: upload a save the batch made owed
+  R-->>T: the outcome, installed as a receipt
 ```
 
 Two properties hold along the whole path. Between reading a request's body and committing its one
 batch, the table object awaits nothing, so no other request can interleave with a move. And every
-side channel after the reply (the frames, the house push, the upload) is keyed, so a late or
+side channel after the batch (the frames, the house push, the upload) is keyed, so a late or
 repeated delivery cannot undo a newer one, and the alarm set in the batch finishes any delivery
-that cannot finish at once. §3 takes each box in turn.
+that cannot finish at once. §7 takes each part in turn.
+
+### 1.4 What a player sees
+
+These screenshots were taken on the live Worker on 2026-09-26 with three test identities. Alice
+(`alice@readme.test`) opens a table named "Friday game" with a password, Ben (`ben@readme.test`)
+joins it, and Carol (`carol@readme.test`) watches. The client is the same program on every host;
+only where its answers come from differs.
+
+![The first screen on a desktop browser: the title Yokohama over the line "The board game, played in this browser"; under "On this device", a Play the bot here button, a note that no game is on this device yet, a sentence on how much of the browser's storage is in use, a Back up everything button and a Restore from a backup file picker; then a Play with others button and the line "Preparing to play offline…"](docs/img/door-desktop.png)
+
+*The door, the first screen. It asks the server for nothing. "Play the bot here" starts a game that
+runs entirely in the browser; "Play with others" leads to the lobby; "Preparing to play offline…"
+is the service worker installing the release.*
+
+<img src="docs/img/door-phone.png" width="320" alt="The same first screen at a phone's width of 390 pixels, its buttons and notes in a single column">
+
+*The door at 390 px, a phone's width.*
+
+![The lobby as Ben sees it: under Open tables, one row reads Friday game, 2P, open, 1 of 2 seated, alice@readme.test and an open seat, with a lock symbol; Your games and Games in progress are empty, and the lobby chat is folded](docs/img/lobby-desktop.png)
+
+*The lobby, which the house object answers from its scrubbed copies of every table (§7.4). "Friday
+game" is listed as an open table, locked with a password.*
+
+![Alice's view of her open table: Friday game, waiting for 1 more player, password required; Seat 0 Red is alice@readme.test and Seat 1 Blue is an open seat; below them the table's link with a copy button, a folded chat, and Abandon and Lobby buttons](docs/img/open-table-desktop.png)
+
+*The creator's view of the open table: the seats, the link to share, and the table's chat.*
+
+![Ben's view of the same table: take a seat, password required, with fields for his name and the password, Alice in Seat 0 Red, and a sit here button on Seat 1 Blue](docs/img/join-desktop.png)
+
+*A stranger at the locked table. The table document keeps only a salted hash of the password, and
+the lobby's copy keeps not even that (§7.4).*
+
+![Alice choosing her starting card: the ten area tiles of the board laid out as a staggered pyramid on the left, and on the right the heading Choose your card over two order cards, 024 English with a Keep score of 41 and 023 French with a Keep score of 57, while Blue, Ben, is waiting](docs/img/deal-desktop.webp)
+
+*The deal. Each seat is shown its own two cards and no one else's; the Keep score under each is
+what the built-in bot would prefer.*
+
+![Alice's turn: the board on the left; on the right the phase ladder for turn 1, the prompt Seat 0 — Additional actions (before) with its one option, End additional-action phase, an Apply the only option button and an Undo button, and both players' dashboards below](docs/img/game-desktop-player.webp)
+
+*A player's turn. The move goes to the table object as a POST, and the other screens learn of it
+over their sockets (§8).*
+
+![The same moment for Carol, the watcher: the banner reads You are watching, there is no Suggest button, and the side column reads Seat 0 is deciding, Waiting on seat 0, Nothing here is yours to answer](docs/img/game-desktop-watcher.webp)
+
+*The watcher's view. Every hand is a count and there is no hand panel, and nothing a watcher's
+socket sends can reach the game (§7.3).*
+
+<img src="docs/img/game-phone.webp" width="320" alt="The game at a phone's width of 390 pixels: the banner wraps onto several lines, the board's tiles scroll sideways, and the prompt with its Apply the only option button sits below the board">
+
+*The game at 390 px.*
+
+![Ben's lobby after the table was abandoned: an orange line reads "this table was abandoned on 2026-09-26 — no move had been made, so there was nothing to keep", and Open tables now reads "no table is waiting for players"](docs/img/marker-404.png)
+
+*After Alice abandoned the table, on which no move had been made, Ben's screen shows the marker's
+sentence (§7.7), over a lobby that no longer lists the table.*
 
 ---
 
-## 2. Why Workers, Durable Objects and R2
+## 2. What a Durable Object is, and what serverless means here
 
-### 2.1 The problem the shape solves
+**Serverless, as Cloudflare means it.** There is no machine to rent, patch or keep running. You
+upload code, Cloudflare runs it in whichever of its data centres receives a request, and the bill
+counts requests and CPU time rather than servers (*Workers pricing*). The catch is that an ordinary
+Worker is stateless and short-lived: it answers a request and keeps nothing, and the next request
+may run somewhere else. A Worker alone cannot hold a game.
 
-A game is a record that moves forward one move at a time, and its correctness rests on ONE writer
-per game: two players answering at once must be applied in some order, and the second must see the
-first. The NAS gets that from a lock per table inside one process, and a compare-and-swap on the
-record's digest. A hosted version needs the same guarantee without one process that owns every
-table.
+**A Durable Object is Cloudflare's answer for state.** Cloudflare calls it "a special kind of
+Cloudflare Worker which uniquely combines compute with storage" (*What are Durable Objects?*). It
+is an instance of a JavaScript class (here `Table`, `House` or `Archive`, in `src/`), and four
+properties make it useful:
 
-A Durable Object gives it by construction. `env.TABLE.idFromName("<table id>")` names exactly one
-object in the world, and every request for that table reaches it. The object runs one event at a
-time, and it keeps its own SQLite database beside its code. So **one object per table is one writer
-per game**, and the lock is the platform's addressing rather than code this host has to get right.
+- **It has a name, and one instance in the world.** Each object has "a globally-unique name, which
+  allows you to send requests to a specific object from anywhere in the world" (*What are Durable
+  Objects?*). Here `env.TABLE.idFromName("sim-9eb12ae27236a2e8")` names one table's object, and
+  every request for that table, from any player anywhere, reaches that one instance.
+- **It runs one event at a time.** Durable Objects "are single-threaded and cooperatively
+  multi-tasked, just like code running in a web browser" (the same page).
+- **It owns its storage.** Its SQLite database is "accessible only within that object" (the same
+  page). Nothing outside can query it; the only way in is a request to the object, whose own code
+  decides what to read.
+- **It lives only while it is used.** An object is created on its first request. Once idle for 10
+  seconds with nothing pending, it is hibernated, "removed from memory" with its WebSocket clients
+  still connected, and its constructor runs again on the next event (*Lifecycle of a Durable
+  Object*). While hibernated it is not billed for time (*Durable Objects pricing*).
 
-Five platform properties carry the rest of the design:
+So **one object per table is the lock, the store and the signal at once.** It is the lock because
+it runs one request at a time; the store, because the table's documents live in its SQLite; the
+signal, because it holds the sockets of everyone watching the table. The hosting umbrella chose it
+for exactly that: hosted multiplayer runs on Workers and Durable Objects (R-6.5.1), and "a table's
+documents live in its Durable Object's SQLite … Keeping a database beside the objects would
+re-introduce the cross-process conflict machinery the actor model removes" (R-6.5.2, in
+[`docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`](../docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md)).
+
+**What it is not.**
+
+- **Not a database server.** There is no connection string and no query language across objects.
+  The lobby, which needs every table, reads copies the tables push to one object of its own (§7.4).
+- **Not a container or a virtual machine.** There is no process to log into and no filesystem. It
+  runs JavaScript and WebAssembly in an isolate, within 128 MB of memory (*Workers limits*).
+- **Not always on.** It exists while it has work. A hibernated table with open sockets costs
+  nothing but its stored rows.
+
+**What it costs to reach.** Every request to an object is a Durable Object request, of which the
+Free plan allows 100,000 a day (§3). A request to a hibernated object also pays for its wake: here
+that is building a module instance and replaying the table's record, which cost 6 to 9 ms of CPU
+at the exit's 40-move table (§8).
+
+**Why the game fits.** A table has one writer at a time by the game's own rules: players take turns,
+and the engine applies each move to the record in order. Tables never touch each other; only the
+lobby reads across them, and it reads copies. And a turn-based game is idle almost all the time,
+which is exactly when an object costs nothing.
+
+---
+
+## 3. Free vs Paid, and how this was optimized for Free
+
+The account this host runs on is on the **Workers Free plan** (ruling R-6.5b.16, which amended the
+umbrella's R-6.5.12 from Paid to Free). Its daily quotas are the account's, shared with every other
+Worker on it: in the week before the cycle those used 17,000 to 33,000 of the 100,000 Worker
+requests a day (spec §0.5).
+
+### 3.1 The ceilings that matter here
+
+Every figure is Cloudflare's, read on 2026-09-26 from the pages listed under the table, each with
+the date the page says it was last updated. "Paid" is the Workers Paid plan, whose minimum charge
+is $5 a month.
+
+| What | Workers Free | Workers Paid | Page |
+|---|---|---|---|
+| Worker requests | 100,000 a day | 10 million a month included, then $0.30 a million | Workers pricing |
+| Requests for static assets | free and unlimited | free and unlimited | Workers pricing |
+| Worker CPU time per request | 10 ms | 30 s by default, up to 5 minutes; 30 million CPU-ms a month included, then $0.02 a million | Workers limits, Workers pricing |
+| Worker memory | 128 MB | 128 MB | Workers limits |
+| Durable Object requests (HTTP, RPC and alarms; incoming WebSocket messages counted 20 to one) | 100,000 a day | 1 million a month included, then $0.15 a million | Durable Objects pricing |
+| Durable Object duration: wall time while running, or idle but not hibernatable, billed at 128 MB | 13,000 GB-s a day | 400,000 GB-s a month included, then $12.50 a million GB-s | Durable Objects pricing |
+| Durable Object CPU time per request | see the note below | 30 s by default, configurable to 5 minutes | Durable Objects limits |
+| SQLite rows read | 5 million a day | 25 billion a month included, then $0.001 a million | Durable Objects pricing |
+| SQLite rows written (each `setAlarm` counts as a row, and so does each delete) | 100,000 a day | 50 million a month included, then $1.00 a million | Durable Objects pricing |
+| SQLite storage | 5 GB in total, 1 GB per object | 5 GB-month included, then $0.20 a GB-month; 10 GB per object | Durable Objects pricing and limits |
+| R2 storage (Standard class) | 10 GB-month free each month | $0.015 a GB-month beyond that | R2 pricing |
+| R2 Class A operations (those that change state, such as a put) | 1 million free each month | $4.50 a million beyond that | R2 pricing |
+| R2 Class B operations (those that read, such as a get) | 10 million free each month | $0.36 a million beyond that | R2 pricing |
+
+The pages: *Workers pricing*, <https://developers.cloudflare.com/workers/platform/pricing/>
+(updated 2026-08-28); *Workers limits*, <https://developers.cloudflare.com/workers/platform/limits/>
+(2026-09-05); *Durable Objects pricing*,
+<https://developers.cloudflare.com/durable-objects/platform/pricing/> (2026-08-25); *Durable Objects
+limits*, <https://developers.cloudflare.com/durable-objects/platform/limits/> (2026-06-01); *R2
+pricing*, <https://developers.cloudflare.com/r2/pricing/> (2026-08-07); *Static assets: billing and
+limitations*, <https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/>
+(2026-04-23); *What are Durable Objects?*,
+<https://developers.cloudflare.com/durable-objects/concepts/what-are-durable-objects/> (2026-07-15);
+*Lifecycle of a Durable Object*,
+<https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/> (2026-07-03);
+*Durable Objects: WebSockets*,
+<https://developers.cloudflare.com/durable-objects/best-practices/websockets/> (2026-06-19);
+*Durable Object state*, <https://developers.cloudflare.com/durable-objects/api/state/>
+(2026-08-26); and *How Workers works*,
+<https://developers.cloudflare.com/workers/reference/how-workers-works/> (2026-09-18).
+Cloudflare changes these pages; check them before relying on a figure.
+
+**What happens when a Free quota runs out.** Cloudflare's words for the Free plan are: "If you
+exceed any one of the free tier limits, further operations of that type will fail with an error."
+The daily limits "reset at 00:00 UTC" (*Durable Objects pricing*). For the Worker, a request that
+matches `run_worker_first` (here every `/api/*` path, and `/enter`) then gets a 429 "instead of
+falling back to static asset serving" (*Static assets: billing and limitations*), while requests for
+real files go on being served. So on a day that runs out, multiplayer stops until midnight UTC, and
+single player in the browser keeps working.
+
+**The note on an object's CPU on Free.** Cloudflare's pages disagree. The Durable Objects limits
+table gives "30 seconds (default)" per request, while the same page's answers to common questions
+say objects "have the same per invocation CPU limits as any Workers do", which on Free is 10 ms. The
+owner ruled to build on 30 s and let the logs say otherwise (R-6.5c.5). The spike's one heavy
+invocation, 376 ms of CPU, completed on Free (spec §0.3), and nothing measured since has come near
+10 ms per move (§4).
+
+### 3.2 How the design follows from Free
+
+R-6.5b.16 set the rule before any of this host was written: "on Free the routing Worker has a 10 ms
+CPU budget per request and a SQLite-backed object 30 s, so gameplay, replay, `suggest`, `why` and
+the archive's strict replay run INSIDE objects …, static assets are served without the Worker, and
+the daily Free quotas … are BUDGETED before the first deploy and MEASURED in the live setup"
+([`docs/plans/2026-09-20-web-frontend-m6.5b-single-player-spec.md`](../docs/plans/2026-09-20-web-frontend-m6.5b-single-player-spec.md)).
+What that became:
+
+- **All the computation runs inside the objects**, whose CPU allowance is the long one: the
+  engine, the production bot (about 1.5 ms a decision natively, the figure the M6.5b free-tier
+  review worked from), a cold replay of a record, `suggest`, `why`, and the strict replay that
+  checks a browser's uploaded save.
+- **The Worker does only routing, the Access JWT check and header hygiene.** It never loads the
+  WebAssembly module (§7.1). Measured at the first deployment: 0 to 2 ms of CPU a request, 1 ms
+  typical, the JWT's signature check included.
+- **Static assets are served without invoking the Worker.** The client, its service worker and
+  the card art cost no request at all: the first deployment's tail read zero Worker invocations for
+  every real file, and exactly one for a missing one. A game against the bot in the browser costs
+  nothing per move, and at most two requests when it ends (a health read and the save's upload).
+- **Idle tables cost nothing.** A table hibernates between moves, its sockets held by the platform,
+  and the client's keep-alive is answered by the object's auto-response, which Cloudflare says
+  incurs no wall-clock time (*Durable Objects pricing*).
+- **Writes are kept few.** A table's last activity costs no row of its own (it is the newest
+  `written_at` of its documents, §7.3); a move that leaves the table document alone sends the lobby
+  nothing (§7.4); `setAlarm` replaces a pending alarm rather than adding one (§7.8); and the wake
+  counter, which would cost a row on almost every move, is off except in a measuring window
+  (§9.5).
+- **The instruments are cheap.** The live corpus replay costs about 2,300 requests a run, and every
+  deployment reading is a handful of `curl` calls.
+- **The quota guard is standing practice**: read the day's figures before and after any live run,
+  and hold a run that could cross the line (§10.3).
+
+---
+
+## 4. Lessons from the 10 ms CPU budget, and how the core crates run inside it
+
+**The budget.** On Free, a Worker request gets 10 ms of CPU time, and "waiting on network requests
+… does **not** count toward CPU time" (*Workers limits*). For scale, the same page says "the average
+Worker uses approximately 2.2 ms per request". A game is heavier than that by nature: to answer
+anything about a table, the engine rebuilds the game by applying every recorded move again.
+
+**How the core crates run inside it.** The engine (`crates/yokohama-core`), the terminal's model
+(`crates/yokohama-cli`) and the table layer (`crates/yokohama-web`) are compiled together with this
+host's glue (`crates/yokohama-worker`) into one WebAssembly module, built for size: `opt-level =
+"z"`, fat link-time optimization, one codegen unit, then `wasm-opt -Oz`. The module has been
+1,221,719 B since the fix wave. Each object owns its own instance of it (§6.3), so the Rust runs
+where the long CPU allowance is, and the Worker never loads it.
+
+**What the spike measured** (spec §0.3, on the real account, before the design was written):
+
+- the module then (the browser host's, reused): 1,783,435 B before `wasm-opt` and 1,175,167 B
+  after; the Worker's upload 1,172.84 KiB, 453.90 KiB gzipped; a startup of 1 to 3 ms;
+- the cold path of a finished 595-event game in an object (a fresh instance, the record and table
+  loaded from SQLite, the game rebuilt, a frame computed): 19, 27, 22 and 28 ms in four readings;
+- `why`, which replays the game to a bot's move and runs its decision again: about 50 ms per bot
+  move. One object invocation doing a cold replay of 595 events and seven `why` reconstructions took
+  376 ms of CPU, and completed on Free;
+- a table's create inside an object, drawing its random id and setup seed: 20 ms of CPU;
+- the spike's routing Worker, which decoded the Access token without verifying it: 0 to 1 ms.
+
+Natively, the production bot takes about 1.5 ms a decision, the figure the M6.5b free-tier review
+worked from. Nothing in this cycle timed one bot decision inside an object on its own.
+
+**What the deployments and the exit measured:**
+
+- the Worker, verifying the JWT's RS256 signature: 0 to 2 ms of CPU a request, 1 ms typical, and 10
+  to 19 ms of wall time (the first deployment);
+- a table object per move, over the exit game's 40 moves: a median of 2 ms of CPU, the most 15 ms;
+- a wake after each 60 s pause at that 40-move table: 6 to 9 ms of CPU, 16 to 60 ms of wall time;
+- the Worker's own half of an exit move: 2 ms.
+
+**What stays unmeasured:**
+
+- a strict replay of a very large record, which is what a browser's save of a long game costs its
+  Archive object, and the heaviest call an object makes;
+- a wake on a record of thousands of events. The live two-browser game's record reached 2,180
+  events, and the CPU of its wakes was not read; the spike's 19 to 28 ms at 595 events says only
+  that the cost grows with the record;
+- the objects' duration against the Free plan's 13,000 GB-s a day, which no reading of this cycle
+  took.
+
+**The lessons:**
+
+- **Keep the Worker to about a millisecond.** It routes, verifies one signature, removes headers
+  and forwards. It parses one kind of request body, a create's, for its `id`; a browser's save of up
+  to 2 MiB passes through unparsed to the caller's own Archive object.
+- **Let the object pay for the game.** Everything that touches a record (a move, a replay, a bot's
+  decision, `suggest`, `why`, a strict replay) runs in an object, where the measured cost is a
+  couple of milliseconds a move and the allowance is far larger.
+- **Waiting costs no CPU.** The table object's R2 upload between an abandon's two dispatches costs
+  it wall time, which counts as duration, but not CPU time (*Workers limits*).
+- **The wake is the price of hibernation.** An object that sleeps between turns rebuilds the game
+  on its next move. At the exit that cost 6 to 9 ms, and it grows with the record: the unmeasured
+  wake on a long record is where the design's bet (a few milliseconds per wake, for nothing while
+  idle) would first show strain.
+
+---
+
+## 5. Estimates for concurrent and ongoing games
+
+**Every number in this section after the first list is an ESTIMATE**, derived by arithmetic from
+this cycle's readings and Cloudflare's ceilings (§3.1). The assumptions are stated where they are
+used.
+
+### 5.1 What was measured
+
+The account's analytics were read before and after each live run (RUNBOOK §6.7, and the close's
+quota readings). The unit is an **input**: one line the Playwright harness sent to the table, a move or one
+step of a multi-step move.
+
+| What was played | Worker requests | Durable Object requests | Rows written | Rows read |
+|---|---|---|---|---|
+| the two-browser game: 2,862 inputs, two players and a watcher on three live pages, plus the join spec and the cleanups | about 38,350, **13.4 an input** | about 39,100, **13.7 an input** (the day's object requests rose from 129 to 39,234 across the run) | about 7,000, **2.5 an input** | about 1.34 million, **470 an input** |
+| the same spec again: 2,510 inputs | about 32,000, **12.8 an input** | — | — | — |
+| the exit's game: 40 paced inputs, chat both ways, a watcher | about 1,400, **about 35 an input** | — | — | — |
+| the corpus replay, one run | about 2,300 | — | — | — |
+
+The harness costs more than play would. Each of its three pages refetches on every frame, and the
+harness itself asks the server once per input. The exit's figure is high for another reason: its
+40 inputs came with 22 chat messages and a watcher, spread over long pauses. **A plain two-person
+game, without the harness, was not measured.** The live game's record held 2,180 events for its
+2,862 inputs.
+
+### 5.2 Which ceiling binds first
+
+At the harness's rates, 1,000 inputs use this share of each Free daily ceiling:
+
+| Ceiling (a day) | 1,000 inputs use | So one day allows about |
+|---|---|---|
+| 100,000 Worker requests | 13,400, 13.4 % | 7,460 inputs; 5,000 to 6,200 after the account's other Workers |
+| 100,000 Durable Object requests | 13,700, 13.7 % | 7,300 inputs |
+| 5 million rows read | 470,000, 9.4 % | 10,600 inputs |
+| 100,000 rows written | 2,500, 2.5 % | 40,000 inputs |
+
+**The request quotas bind first, not rows read.** The Worker requests go soonest, because the
+account's other Workers use 17,000 to 33,000 of them a day (spec §0.5), which leaves this host
+67,000 to 83,000 (spec §2.8). The Durable Object requests come next; the account's other objects
+use only 300 to 1,800 a day (spec §0.5). Rows read is the cost this cycle did not reduce (every
+request re-reads the table's three documents up to three times, the whole-branch review's F-4), and
+it is the third limit to bind, not the first.
+
+### 5.3 Games per day
+
+A game's size is the assumption that matters most, and no human game was measured on this host.
+Two sizes bracket it: **900 inputs**, the spec's estimate for a two-person game of 400 to 600 events
+(spec §2.8; the committed browser-played game has 595 events), and **250 inputs**, the round figure
+the cycle's own estimate used after the first live run.
+
+| Assumed game | At the harness's 13.4 requests an input | At the exit's 35 requests an input |
+|---|---|---|
+| 900 inputs | about 12,100 requests: 8 games on 100,000 requests, 5 to 6 after the account's other Workers | about 31,500 requests: 3 games, 2 after the other Workers |
+| 250 inputs | about 3,350 requests: 29 games, 20 to 24 after the other Workers | about 8,750 requests: 11 games, 7 to 9 after the other Workers |
+
+So a Free day holds somewhere between two and thirty games, depending on the game's length and how
+much its players chat; plain play costs less than the harness, by an amount not measured. The
+cycle's round figure after the first live run, 30 to 40 games of about 250 moves, is this table's
+250-input cell at the harness's rate before the account's other Workers are deducted; its upper end
+came from rows read, which do not bind first.
+
+### 5.4 What "simultaneous" means on a daily budget
+
+The Free quotas are daily totals, not limits on how many games run at once. A day's budget can be
+spent by games one after another, or by several at the same time; nothing refuses the second game
+because the first is running. Each table is its own object, and the only per-moment limit that
+applies is Cloudflare's soft limit of about 1,000 requests a second for one object (*Durable Objects
+limits*). The one object every table shares is the house, which sees each lobby read and each
+delivered copy, far below that at human pace.
+
+So a simultaneous-games figure is an average rate, the daily total spread over the hours people
+play. For example, if a game takes an hour (an assumption, not a reading), twenty games a day is
+nearly one game at a time on average across the whole day, or five at once for four evening hours.
+Bursts are fine until the day's total is spent. Then every API request fails (a 429 from the
+Worker, an error from the objects) until 00:00 UTC, while single player goes on working (§3.1).
+
+### 5.5 What Paid changes
+
+On Paid there is no daily wall: usage beyond each included monthly amount is billed, rounded up to
+the next billing unit, a million requests for example (*Durable Objects pricing*). At the harness's
+rates:
+
+- **Included each month:** 10 million Worker requests is about 746,000 inputs; 1 million Durable
+  Object requests about 73,000 inputs, the first allowance a busy month would pass; 50 million rows
+  written about 20 million inputs; 25 billion rows read about 53 million inputs.
+- **Beyond them**, 1,000 inputs cost about $0.009: $0.0040 of Worker requests, $0.0021 of object
+  requests, $0.0025 of rows written and $0.0005 of rows read. That is under a cent for a 900-input
+  game, on top of the $5 monthly minimum. The objects' duration, which this cycle did not read, is
+  not in that figure.
+- **The Worker's CPU limit** rises from 10 ms to 30 s by default. This design needs none of it: the
+  Worker's work was measured at about 1 ms.
+
+---
+
+## 6. Why Workers, Durable Objects and R2
+
+### 6.1 The platform properties the design rests on
+
+§2 explained why one object per table is the right unit: it is the table's lock, store and signal.
+The NAS gets the same one-writer guarantee from a lock per table inside one process, and a
+compare-and-swap on the record's digest; here it is the platform's addressing rather than code this
+host has to get right. Five platform properties carry the rest of the design:
 
 - **Synchronous storage.** A SQLite-backed object's `ctx.storage.sql.exec` and
   `ctx.storage.transactionSync` do not return promises. The table object reads its documents, runs
@@ -167,7 +610,7 @@ Five platform properties carry the rest of the design:
   waking the object. A turn-based game is idle most of the time, and the design assumes the object
   is evicted between turns (R-6.5c.7), so a table nobody is moving at costs nothing.
 - **Alarms.** Each object has one alarm, which runs `alarm()` at a set time. Retries, expiry and a
-  deleted table's cleanup all hang off it (§3.8).
+  deleted table's cleanup all hang off it (§7.8).
 - **Probing is free.** An object that has never been written leaves nothing behind. The constructor
   writes nothing, so a request for an id nobody created answers the layer's 404 and costs no
   storage (a pool cell reads `sqlite_master` to prove it).
@@ -178,7 +621,7 @@ S3 client is a directory the CLI loads. At the exit the bucket was copied down w
 and a read-only key; the CLI loaded a finished two-person record of 2,180 events from it, and its
 `why` command reconstructed a bot's move from a second record.
 
-### 2.2 Why a TypeScript shell over a wasm-bindgen module, and not workers-rs
+### 6.2 Why a TypeScript shell over a wasm-bindgen module, and not workers-rs
 
 The umbrella hosting spec named workers-rs, the Rust SDK for Workers. This cycle's spec reversed
 that (R-6.5c.2) on evidence read from workers-rs 0.8.6's own tree:
@@ -193,7 +636,7 @@ So the platform code is TypeScript, written against Cloudflare's documented APIs
 stays a plain library: `crates/yokohama-worker`, compiled by the pinned toolchain for
 `wasm32-unknown-unknown` and wrapped by `wasm-bindgen`, exactly as the browser host is built.
 
-### 2.3 Why one module instance per object
+### 6.3 Why one module instance per object
 
 `wasm-bindgen`'s `--target web` glue keeps its state at module scope (`let wasm`), and its
 `initSync` returns early once that is set. A Workers isolate evaluates a JavaScript module once and
@@ -214,7 +657,7 @@ Another table never notices. The price is memory: a new instance starts with its
 18 pages or 1.125 MiB (read off the release build), and the spike read 1,441,792 B after a
 595-event replay.
 
-### 2.4 What the spike measured before the design was written
+### 6.4 What the spike measured before the design was written
 
 The owner authorized a throwaway Worker on the real account on 2026-09-22, deployed once at the
 real hostname and torn down, so the design would rest on readings rather than documentation (spec
@@ -229,57 +672,14 @@ real hostname and torn down, so the design would rest on readings rather than do
 | A trap | caught at the JavaScript boundary; the next request re-instantiated, reloaded from SQLite and replayed correctly | never provoked live (every tail read `trap` 0); the pool's cells are the evidence |
 | CPU on Workers Free | one object invocation, a cold replay of 595 events plus seven bot-move explanations, took 376 ms of CPU and completed; the cold path for a finished 595-event game was 19–28 ms | the Worker, JWT verification included, 0–2 ms; an object, 2 ms per move (median of 40, maximum 15 ms) and 6–9 ms per wake |
 | Hibernation | after 35 s idle the next message found the object evicted and rebuilt, its socket still open and its attachment intact | at the exit, the object woke on the first move after each of four 60 s pauses |
-| Static assets | the platform's defaults redirected `/index.html` (which the service worker's install refuses) and answered HTML for a missing script | the configuration of §3.1 below: every real file served with no Worker invocation, one invocation for a missing file, the service worker installed whole |
+| Static assets | the platform's defaults redirected `/index.html` (which the service worker's install refuses) and answered HTML for a missing script | the configuration of §7.1 below: every real file served with no Worker invocation, one invocation for a missing file, the service worker installed whole |
 | The edge | the zone's JavaScript detections inject a script into page navigations, but not into the service worker's own fetch | the same, 3,325 B served against the 2,387 B built |
-
-### 2.5 The free plan, and what a game costs
-
-The account runs on Workers Free (R-6.5b.16). Its daily quotas are the account's, shared with every
-other Worker on it: in the week before the cycle those used 17,000–33,000 of the 100,000 Worker
-requests a day (spec §0.5). Static-asset requests count against no quota. The limits this host
-meets:
-
-- **Worker requests**: 100,000 a day, account-wide. Durable Object requests have a quota of their
-  own of the same size.
-- **Durable Object SQLite**: 100,000 rows written and 5 million rows read a day.
-- **CPU**: 10 ms per request for the stateless Worker, which is why it never loads the module
-  (§3.1). An object invocation is assumed to have 30 s (R-6.5c.5, the owner's working assumption;
-  Cloudflare's documentation contradicts itself), and the logs' `exceededCpu` would reopen it.
-  Nothing measured came close.
-- **R2**: 10 GB stored and a million writes a month. A save is two small files: the record of a
-  595-event game is 54,103 B, and of a 2,180-event game 180,493 B.
-
-What a hosted game cost, read off the account's analytics during the cycle (RUNBOOK §6.7, and the
-close's quota section):
-
-| What was played | Worker requests | Rows written | Rows read |
-|---|---|---|---|
-| the two-browser Playwright game: 2,862 moves on three live pages | about 38,350, **13.4 a move** | about 7,000, **2.5 a move** | about 1.34 million, **470 a move** |
-| the same spec re-run: 2,510 moves | about 32,000, **12.8 a move** | — | — |
-| the exit's paced game: 40 moves over pauses, chat both ways, a watcher | about 1,400, **about 35 a move** | — | — |
-| the corpus replay, one run | about 2,300 | — | — |
-| the join spec, one run | about 100 | — | — |
-
-The harness costs more than play: three pages each refetch on every frame, and the harness asks the
-server once per move itself. Chat adds frames too, and the exit game's 35 a move includes chat both
-ways and the harness's own reads, spread over its pauses. **A plain two-person game, without the
-harness, was not measured on its own.** The cycle's estimate after the first live run, at the
-harness's rates, was that Free's day holds about 30 to 40 human-paced games of about 250 moves. Rows
-read is the cost this cycle did not reduce: each request re-reads the table's three documents up to
-three times (the whole-branch review's F-4, a cleanup item). The push design R-6.5c.6 deferred stays
-deferred: at the owner's usage neither requests nor rows written bind.
-
-**Single player costs almost nothing.** Opening the site and playing a local game to the end
-invoke the Worker zero times, because every file is a static asset and a local game asks no server.
-A finished local game costs at most two invocations: a health read, skipped when a remembered answer
-is under an hour old, and the outbox's upload of the game to the archive. "Abandon and save" is two
-as well, and a plain local Abandon one.
 
 ---
 
-## 3. The parts
+## 7. The parts
 
-### 3.1 The static release, and the stateless Worker (`src/index.ts`, `src/route.ts`, `src/config.ts`)
+### 7.1 The static release, and the stateless Worker (`src/index.ts`, `src/route.ts`, `src/config.ts`)
 
 **The static release is not the Worker's.** `wrangler.jsonc` points the platform's asset layer at
 `worker/assets/`, which `npm run build:assets` assembles from `web/dist`, the card art in
@@ -318,7 +718,7 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    | `POST /api/games` | the `Table` the body names, or a drawn name (step 7) |
    | `/api/games/{id}` and below, `…/events` and a `…/stream` upgrade among them | the `Table` named `{id}`, the segment taken raw, exactly as the layer binds it |
    | `POST /api/archive` | the caller's own `Archive` object |
-   | `/api/admin` and below | the operator gate (§3.7) |
+   | `/api/admin` and below | the operator gate (§7.7) |
    | every other `/api/*` path | the `House` |
 
    A segment that cannot name a table (empty, holding a lone UTF-16 surrogate, or over the layer's
@@ -339,7 +739,7 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    forwarded is exactly the bytes that were bounded.
 5. **Answer `/api/art`**: the static art manifest, projected onto the nine maps the layer's
    `ArtManifest` declares, because the file carries two generator keys the NAS's typed route drops.
-6. **Resolve the caller** by verifying Access's assertion (§3.6).
+6. **Resolve the caller** by verifying Access's assertion (§7.6).
 7. **Strip and forward.** A fresh set of headers is built without ANY client header whose name
    starts `x-yokohama-`, and `X-Yokohama-User` is set when there is a caller. Those names are the
    ones the objects trust, and only the Worker can reach the objects, so no client can speak for
@@ -357,7 +757,7 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
 The deployment readings put the Worker's own CPU, JWT verification included, at 0–2 ms a request
 (1 ms typical), inside Free's 10 ms.
 
-### 3.2 The module (`crates/yokohama-worker`)
+### 7.2 The module (`crates/yokohama-worker`)
 
 The Rust half is a `cdylib` over `yokohama-web` with `default-features = false`, so axum, tokio and
 the NAS's server half never enter its graph. It is `crates/yokohama-wasm`'s shape (the browser's
@@ -367,14 +767,14 @@ holds:
 - **ONE `Games`** over an in-memory store (`MemStore`). The shell loads each document the object
   has stored with `load(doc, id, text)`, and reads back what the layer wrote with `read(doc, id)`.
   The crate also keeps its own handle on that store, which is how the house replaces and removes
-  its copies (§3.4). SQLite is the shell's; the module only ever sees strings.
+  its copies (§7.4). SQLite is the shell's; the module only ever sees strings.
 - **A recording signal** (`src/signal.rs`). The layer calls its signal whenever it writes: `bump`
   (the table and the lobby moved), `bump_table` (the table moved), `bump_house_chat` (the lobby chat
   moved) and `end` (the table is gone). On the NAS those calls wake a server-sent-events channel.
   Here they are only RECORDED, and returned with the reply, because the write they announce has so
   far reached nothing but the module's memory. Sending is the shell's, after its batch has
   committed.
-- **The archive the switch names**: `NoArchive`, or the receipt archive of §3.5.
+- **The archive the switch names**: `NoArchive`, or the receipt archive of §7.5.
 - **A settable clock.** Live, it is `Date.now()` in whole seconds. The shell PINS it before every
   call that can reach the layer's clock, through `set_clock`, which returns the setting it replaced
   so a caller can restore it.
@@ -392,8 +792,8 @@ functions (`dispatch_inner` and so on), which is where the logic lives, so `carg
 yokohama-worker` reaches all of it natively. The calls that reach the layer answer a `Reply`: the
 layer's `status` and `body`; the `bumps`, every signal call made during the call, in order, as JSON
 (`{"bump": id}`, `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`); an `archive`
-plan when a put was deferred (§3.5); and the `picker` row, or a `dropped` one, when it changed
-(§3.3).
+plan when a put was deferred (§7.5); and the `picker` row, or a `dropped` one, when it changed
+(§7.3).
 
 **Two routes are this host's, not the layer's**, because on the NAS they belong to axum's router
 rather than to `dispatch`:
@@ -411,14 +811,14 @@ rather than to `dispatch`:
   order: the caller, the query through the layer's own parser, then a `wait` above 25 s refused with
   the handler's own sentence. Then it answers AT ONCE: `wait` is validated and never held. A held
   request would keep an object invocation open for nothing, and the only client that asks with
-  `wait` on this host is the socket arm's one probe (§4), which wants an immediate answer.
+  `wait` on this host is the socket arm's one probe (§8), which wants an immediate answer.
 
 A refusal the module writes itself restates the layer's error body, `{"error": …}`, because the
 layer's own builder is private to its crate; a cell pins the two equal. The crate's platform scan,
 `this_host_makes_no_platform_call_but_the_clock`, holds its sources to one platform call, the
 clock, beside the bindgen glue.
 
-### 3.3 The table object (`src/table.ts`, `src/storage.ts`, `src/module.ts`, `src/frames.ts`)
+### 7.3 The table object (`src/table.ts`, `src/storage.ts`, `src/module.ts`, `src/frames.ts`)
 
 One `Table` object per table, named by the table's id. It answers every `/api/games/{id}` route and
 the create that names it, holds the table's documents in its own SQLite, and owns the table's
@@ -432,9 +832,9 @@ never by its constructor, so an id that was only probed leaves `sqlite_master` e
   `Date.now()` at the write, so a table's last activity is the newest `written_at` of its three
   documents and costs no row of its own.
 - `meta(k, v)` holds the object's own facts: `generation`, `revision`, `slot` and `acked` (the house
-  delivery, §3.4); `copy_owed` (a house copy whose computation trapped); `archive_owed` (§3.5);
-  `marker`, `held` and `expiry_failed` (§3.7); `load_traps` and `poison` (the traps, below); and
-  `wakes`, counted only in the exit's measuring window (§5.5). It holds no id: the object's name is
+  delivery, §7.4); `copy_owed` (a house copy whose computation trapped); `archive_owed` (§7.5);
+  `marker`, `held` and `expiry_failed` (§7.7); `load_traps` and `poison` (the traps, below); and
+  `wakes`, counted only in the exit's measuring window (§9.5). It holds no id: the object's name is
   the id.
 
 **The strings rule.** The shell never parses a record or a table document. A record carries its
@@ -448,7 +848,7 @@ the LAYER stamps — a table's `created_at`, a save's `archived_at` — comes fr
 in seconds, and the shell pins that clock to one reading before every call that can reach it
 (`nextReading` in `src/clock.ts`: the wall clock, or a test configuration's frozen or ticking one).
 One reading per call is what lets an archive plan be dispatched twice and stamp the same second
-(§3.5). Every time the SHELL keeps for itself — `written_at`, every alarm deadline, a marker's date,
+(§7.5). Every time the SHELL keeps for itself — `written_at`, every alarm deadline, a marker's date,
 a generation's time — is `Date.now()` in milliseconds.
 
 **The wake.** A request that finds no module builds one. That is every request after the object was
@@ -468,18 +868,18 @@ pause answered in 67–75 ms, against a median of 58 ms for the other 36.
    three documents read back out of the module;
 4. **the ONE batch** (`commit`): each document the module now holds differently is upserted with
    its `written_at`, or deleted if the module no longer holds it; the picker row; the wake's count;
-   and anything the change makes due — the house slot (§3.4), an owed save (§3.5), a marker (§3.7) —
+   and anything the change makes due — the house slot (§7.4), an owed save (§7.5), a marker (§7.7) —
    with the alarm set beside them. The SQL runs inside one `ctx.storage.transactionSync`, and the
    `setAlarm` is issued in the same synchronous turn before any `await`: the platform documents
    writes issued without an intervening `await` as submitted atomically, though it does not name a
-   transaction and an alarm together (§7). A request that changes nothing writes nothing;
+   transaction and an alarm together (§11). A request that changes nothing writes nothing;
 5. the reply, and then the side channels (`finish`): the frames, and — under `ctx.waitUntil`, so
    they outlive the reply — the slot's push and an owed save's upload.
 
 Every request commits after its call, whatever its method, because even a GET can write: a handle
 rebuilt at a table where a bot is to move plays the bot's owed move and persists it. A DELETE runs
 the same path whole under `ctx.blockConcurrencyWhile`, because an abandon must upload its save
-between two dispatches and nothing else may reach the table meanwhile (§3.5).
+between two dispatches and nothing else may reach the table meanwhile (§7.5).
 
 **The frames** (`sendFrames`, `src/frames.ts`). After a reply whose bumps name this table, every
 open socket gets ONE frame, however many bumps the reply carried. A finalizing keep carries two, and
@@ -503,7 +903,7 @@ throws on a longer one. Any other answer sends nothing. A delete sends every soc
   fresh module, a house copy still owed is recomputed, and a stamp is retried by the alarm.
 - A trap while LOADING a stored document is counted in `meta.load_traps`. At two in a row the table
   is POISONED: it is not loaded again, every request answers 500 `this table's stored <kind> cannot
-  be loaded`, it never expires on its own, and the operator's force (§3.7) is its way out. Any
+  be loaded`, it never expires on its own, and the operator's force (§7.7) is its way out. Any
   successful load resets the count.
 - The house copy is computed on a second, throwaway instance that holds only the table document
   (`copyOf`), so a trap there can never empty the instance the frames read: an emptied module would
@@ -540,10 +940,10 @@ again. Every deploy that changes those sources therefore drops every open picker
 where before the stamp such a deploy could have applied a move nobody clicked.
 
 **A create at an ended id** is refused 409 `this name was used recently — try another` while the
-object holds a marker or a removal the house has not acknowledged (§3.7), so a new table's first
+object holds a marker or a removal the house has not acknowledged (§7.7), so a new table's first
 copy can never overwrite a removal the lobby has not received.
 
-### 3.4 The house and the slot (`src/house.ts`, `src/slot.ts`, `crates/yokohama-worker/src/house.rs`)
+### 7.4 The house and the slot (`src/house.ts`, `src/slot.ts`, `crates/yokohama-worker/src/house.rs`)
 
 The lobby lists every table, and asking every table object on every lobby read would cost one
 request per table. So the house is a PROJECTION: ONE object, named `house`, whose module is a second
@@ -593,11 +993,40 @@ also holds a **revision** counter.
    already delivered. The clear, the `acked` and the alarm's re-arm are one batch.
 6. A push that fails is retried by the alarm: 30 s, then 2 min, then 10 min, then hourly.
 
+The same rules, played out on one table: a delayed push, a removal, and a re-created table.
+
+```mermaid
+sequenceDiagram
+  participant T as Table object
+  participant H as House object
+  Note over T: the first batch draws generation g = (time in ms, 64 random bits)
+  T->>H: push (g, 1), the copy after the create
+  Note over H: applied: nothing listed for the id, and g is not retired
+  H-->>T: ack (g, 1)
+  Note over T: slot cleared, acked = (g, 1)
+  T-)H: push (g, 2) after a join, delayed in flight
+  Note over T: a keep rewrites the slot to (g, 3)
+  T->>H: push (g, 3)
+  Note over H: applied: 3 is higher than 1
+  H-->>T: ack (g, 3)
+  Note over T: slot cleared, acked = (g, 3)
+  Note over H: the delayed (g, 2) arrives: ignored, 2 is not higher than 3
+  H-->>T: ack (g, 2), since every push is acknowledged
+  Note over T: nothing written: the slot does not hold (g, 2), and (g, 2) does not advance acked
+  T->>H: push (g, 4), a REMOVAL at the abandon
+  Note over H: applied: the row deleted, generation g retired
+  H-->>T: ack (g, 4)
+  Note over T: once the object has ended, a new create at the id draws g2, later than g
+  T->>H: push (g2, 1)
+  Note over H: applied: g2 is not retired and orders after every retired generation
+  H-->>T: ack (g2, 1)
+```
+
 The copy is the TABLE document, so most moves deliver nothing: the turn passing, a join, a keep,
 game over and the archive stamp change it, and a move within a turn does not. A table's create, its
 final move and its removal need no later activity to reach the lobby: the push after the reply
 delivers each, and the alarm written with the slot delivers it if that push fails. The
-generation's time is in milliseconds so that a force and a re-create of one id cannot tie (§7).
+generation's time is in milliseconds so that a force and a re-create of one id cannot tie (§11).
 
 **The lobby socket**, `GET /api/stream`, is the house's. It is admitted by the module's `identity`
 export, whose 401 is answered unupgraded, and accepted under the tag `lobby`. Like the NAS's lobby
@@ -614,7 +1043,7 @@ of poisoning the house, so the lobby never stays down over its chat.
 thousand tables is about 600 KB (spec §2.5). Expiry bounds the copies, and the 90-day pruning the
 retired sets.
 
-### 3.5 The archive on R2 (`src/archive.ts`, `src/r2.ts`, `crates/yokohama-worker/src/receipt.rs`)
+### 7.5 The archive on R2 (`src/archive.ts`, `src/r2.ts`, `crates/yokohama-worker/src/receipt.rs`)
 
 **The switch** is `YOKOHAMA_WEB_ARCHIVE`: `r2` or `off`, and absent means off (R-6.5c.14). `r2`
 needs the bucket bound as `ARCHIVE`, and without it the API answers 500, naming the variable. With
@@ -651,6 +1080,31 @@ table body it puts, so a second dispatch a second later would make a different p
 its receipt. The shell records the reading beside the plan, and pins the module's clock to it for
 every call that drives that plan.
 
+The loop for one plan, with the clock pinned to one reading throughout:
+
+```mermaid
+sequenceDiagram
+  participant S as Table shell (TypeScript)
+  participant M as Module (the layer, WebAssembly)
+  participant R as R2 bucket
+  S->>M: dispatch, the clock pinned to reading t
+  M-->>S: the put deferred, a plan (two keys, two bodies)
+  S->>R: GET the record key
+  R-->>S: absent (identical or conflict would end it here)
+  S->>R: PUT the table key, unconditionally
+  S->>R: PUT the record key, only if absent
+  R-->>S: created
+  S->>M: receipt(plan key, landed)
+  alt an abandon or a browser's save
+    S->>M: the SAME request again, the clock pinned to t
+    M-->>S: the layer's answer, its put met by the receipt
+  else game over, since a move cannot run twice
+    S->>M: stamp_archive(id), the clock pinned to t
+    M-->>S: stamped
+    Note over S: one batch stores the stamped table and clears archive_owed
+  end
+```
+
 **The three sites:**
 
 - **An abandon**, the creator's `DELETE`, runs whole under `blockConcurrencyWhile`. Its first
@@ -678,7 +1132,7 @@ every call that drives that plan.
   backoff.
 
 **A `conflict` is final at every site**: game over logs it and stops, an abandon is refused with it,
-and an expiry marks the table `held` (§3.7).
+and an expiry marks the table `held` (§7.7).
 
 **The keys** are the layer's `archive::paths`, so a copy of the bucket is a directory the CLI loads:
 `rev7/over/<id>.json` and `rev7/abandoned/<id>.json`, each beside its `<id>.table.json`, and a
@@ -694,7 +1148,7 @@ nothing while off; the alarm logs `archive-owed-kept` if it runs. Turned back on
 request or alarm resumes the save. A delete while the switch is off takes such a save with the
 table, logged `archive-owed-dropped`.
 
-### 3.6 Identity (`src/identity.ts`)
+### 7.6 Identity (`src/identity.ts`)
 
 **Access is the door.** The `yokohama` Access application covers the whole hostname, so no request,
 not even for a static file, reaches this host without passing it. Access forwards its verdict as a
@@ -737,7 +1191,7 @@ report the mode as `cf-access`, the door the client is behind.
 **The dev door is a development door, and it is on this cycle.** A holder of the credential can
 claim any identity at any table, the owner's included. That is the trust the NAS's `claimed` mode
 gives every person Access admits, narrowed to one secret, and it never grants an operator's rights
-(§3.7). It exists for the test harnesses, and it must be switched off when the site goes public
+(§7.7). It exists for the test harnesses, and it must be switched off when the site goes public
 (R-6.5c.3). Two facts about the credential matter in practice:
 
 - **Service Auth outranks WARP.** A request that presents the credential IS the credential, even
@@ -751,7 +1205,7 @@ gives every person Access admits, narrowed to one secret, and it never grants an
   cross-origin analytics beacon, and the live walk forgives exactly the two console lines it costs;
   a real browser sends no such header and logs nothing.
 
-### 3.7 How a table ends: delete, expiry, the marker, the operator (`src/marker.ts`, `src/admin.ts`)
+### 7.7 How a table ends: delete, expiry, the marker, the operator (`src/marker.ts`, `src/admin.ts`)
 
 **Every way a table ends through the layer ends the same way** (R-6.5c.8, R-6.5c.15):
 
@@ -759,7 +1213,7 @@ gives every person Access admits, narrowed to one secret, and it never grants an
    /api/games/{id}`. An expiry, and the operator's plain expire, dispatch that SAME request as the
    stored table's `created_by`, through the module's host-local `expire(id)`. The layer always keeps
    the creator seated, so all three pass the layer's checks and get its archive rule. It runs under
-   `blockConcurrencyWhile`, through the receipt loop when a save is owed (§3.5).
+   `blockConcurrencyWhile`, through the receipt loop when a save is owed (§7.5).
 2. **One batch** removes the documents; writes the MARKER, `{at, reason, ttl_days?, kept}`; puts a
    REMOVAL in the house slot; clears any owed save; and sets the alarm.
 3. Every socket is sent `end {"reason":"deleted"}` and closed 4404.
@@ -812,9 +1266,9 @@ sets `X-Yokohama-Operator`, which, like every `x-yokohama-*` header, no client c
   removal it answers 503 `the lobby has not confirmed the removal — the alarm will finish it`, and a
   create at the id is 409 meanwhile. `?force` takes no value: `?force=false` is a 400 naming the
   switch (ruling I-72), because a value that forced would drop a save the operator meant to keep.
-  The force is also what makes the live corpus replay repeatable (§6.4).
+  The force is also what makes the live corpus replay repeatable (§10.4).
 
-### 3.8 The alarm (`src/alarm.ts`, and the alarm paths of `src/table.ts`)
+### 7.8 The alarm (`src/alarm.ts`, and the alarm paths of `src/table.ts`)
 
 A table object has ONE alarm, set to the earliest of what is due: the slot's retry, an owed save's
 retry, an owed house copy's retry, the expiry deadline (unless the table is `held` or poisoned), and
@@ -843,7 +1297,7 @@ days, so the pool is this path's evidence.
 
 ---
 
-## 4. The transport
+## 8. The transport
 
 **Why WebSockets.** The NAS pushes changes over server-sent events: one long HTTP response per
 screen, held open by one resident process. On Durable Objects a held response keeps the object
@@ -885,17 +1339,38 @@ downstream knows which transport a frame came over.
   refuses with a 426. So the arm waits for the health read, for at most 5 s, and the screen reads
   "reconnecting…" meanwhile.
 
-**Measured live.** In the two-browser re-run of 2,510 moves, the watcher opened its socket once and
+**Measured live.** In the two-browser re-run of 2,510 inputs, the watcher opened its socket once and
 held it through the 1,886 applied moves it watched, and each player opened twice, both before the
 first move: once at the open table and once at the game. Nobody reconnected during play. At the
 exit, the sockets of two players and a watcher stayed open through four 60 s pauses in which the
 object hibernated.
 
+One of those pauses, as a timeline:
+
+```mermaid
+sequenceDiagram
+  participant P as A player's page
+  participant C as Cloudflare's runtime
+  participant T as Table object
+  P->>T: move 5, a POST
+  T-->>P: the reply, and a frame on every socket
+  Note over T: idle 10 s with nothing pending, so the platform hibernates it
+  Note over P,T: a 60 s pause, the socket held open by the platform
+  loop every 30 s
+    P->>C: ping
+    C-->>P: pong, the auto-response, the object not woken
+  end
+  P->>T: move 6, a POST
+  Note over T: the wake: constructor, new module instance, documents loaded, record replayed, picker re-fed
+  T-->>P: answered in 67 to 75 ms, against a 58 ms median awake
+  Note over T: the wake cost 6 to 9 ms of CPU, against a 2 ms median per move
+```
+
 ---
 
-## 5. Testing, building and deploying
+## 9. Testing, building and deploying
 
-### 5.1 The tests, and where each runs
+### 9.1 The tests, and where each runs
 
 | Tier | Command | What it proves | Runs |
 |---|---|---|---|
@@ -913,7 +1388,7 @@ twice, at the whole-branch review's head and again after its fix wave: 38 are ca
 (native, pool and the client's own), and row 4, a frame sent before its batch, is recorded as
 uncatchable, because the platform's output gate makes it equivalent.
 
-### 5.2 The build
+### 9.2 The build
 
 Prerequisites: the pinned Rust toolchain with its `wasm32-unknown-unknown` target, `wasm-bindgen-cli
 0.2.128` (exactly the crate's version), binaryen's `wasm-opt` (version 133 built every deployed
@@ -950,7 +1425,7 @@ The order matters twice. `web/`'s build comes first, because its browser walk le
 in `web/dist`. And after a release build, `npm run build:module:debug` comes before `npm test` in
 `worker/`, because the pool needs the debug module.
 
-### 5.3 The deploy guard
+### 9.3 The deploy guard
 
 `npm run deploy` is `node scripts/deploy-guard.mjs && wrangler deploy`, so nothing ships unless all
 nine checks hold, and every failure is named, not only the first:
@@ -983,7 +1458,7 @@ Checks 3 to 7 need no build, and `npm run test:scripts` runs them over the commi
 how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, so they run only on the
 workstation that deploys.
 
-### 5.4 Configuration and secrets
+### 9.4 Configuration and secrets
 
 `wrangler.jsonc` is production's configuration and `wrangler.test.jsonc` the pool's, a Worker named
 `yokohama-web-test` that is never deployed. Production binds `ASSETS`; the three object namespaces
@@ -993,10 +1468,10 @@ deploy, so a class added later needs a tag of its own; and the private bucket `y
 
 `wrangler deploy` REPLACES the Worker's variables with the file's `vars`, so that file is the whole
 list; secrets survive a deploy. RUNBOOK §6.3 gives every variable and what its absence means. In
-brief: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `DEV_DOOR_CLIENT_ID` configure identity (§3.6);
+brief: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `DEV_DOOR_CLIENT_ID` configure identity (§7.6);
 `YOKOHAMA_DEV_DOOR` is `on` this cycle; `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90`; the NAS's three chat variables keep the NAS's defaults;
-`YOKOHAMA_WEB_COUNT_WAKES` is unset (§5.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
+`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
 file. A bad value answers the API's requests 500, naming the variable, and leaves the static release
 alone; RUNBOOK §6.3 lists the few answers that come before the configuration is read, and the
 recipes "to deploy with no archive" and "to keep every table".
@@ -1012,7 +1487,7 @@ recipes "to deploy with no archive" and "to keep every table".
 - **A read-only R2 key**, scoped to this bucket, lives in `.dev.vars` for copying the bucket down.
 - **The account** is reached through `wrangler`'s own OAuth login (`npx wrangler whoami`).
 
-### 5.5 The exit window: counting wakes
+### 9.5 The exit window: counting wakes
 
 `YOKOHAMA_WEB_COUNT_WAKES=on` makes every wake at a table that holds a table document add one to
 `meta.wakes` in its request's batch and log `wake {id, wakes}`: the one way to read hibernation off
@@ -1029,13 +1504,13 @@ file's again, which omit it. Every deploy restarts every object and closes every
 between games. At the M6.5c exit the window read four `wake` lines, one on the first move after each
 60 s pause.
 
-### 5.6 Deploying, and rolling back
+### 9.6 Deploying, and rolling back
 
 Every deploy runs `web/`'s release build, `worker/`'s build and `npm run deploy`, then reads the
 result with the tail listening (RUNBOOK §6.5); RUNBOOK §6.8 on records each one, numbered on from
 the NAS's deployments, so this host's first was the fourteenth. **A deploy restarts every object
 and closes every socket** with 1006: the client probes once and reconnects, an open picker is
-re-fed or dropped (§3.3), and no acknowledged move is lost, but everyone reconnects, so deploy
+re-fed or dropped (§7.3), and no acknowledged move is lost, but everyone reconnects, so deploy
 between games.
 
 **Never `wrangler delete`.** It deletes the Worker "and all associated Cloudflare developer platform
@@ -1058,9 +1533,9 @@ consequences (RUNBOOK §6.6). Rolling forward again needs nothing.
 
 ---
 
-## 6. Operating it
+## 10. Operating it
 
-### 6.1 Reading a live deployment
+### 10.1 Reading a live deployment
 
 - **Health**, over WARP as the owner: `curl -s https://yokohama.moore.nyc/api/health` reads
   `identity: "cf-access"`, `signal: "ws"` and the archive's switch.
@@ -1075,7 +1550,7 @@ consequences (RUNBOOK §6.6). Rolling forward again needs nothing.
 - **The bucket**, through wrangler's login: `npx wrangler r2 object get "yokohama-archive/<key>"
   --remote --file <path>`.
 
-### 6.2 The log lines
+### 10.2 The log lines
 
 The layer's own diagnostics print nothing on this host, so the shell logs what it can observe: one
 JSON object per line, `{"event": …}`, kept by Workers Logs. RUNBOOK §6.5 is the full vocabulary,
@@ -1097,7 +1572,7 @@ document that does not parse is a table only the operator's force will end, whil
 refusal, with R2's reason inside it, means wait for R2, because a force there drops the game the
 expiry was saving.
 
-### 6.3 The quota guard
+### 10.3 The quota guard
 
 Before and after any live run, read the UTC day's figures from the account's GraphQL Analytics
 API, one dataset per call (RUNBOOK §6.7 has the queries): Worker requests by script
@@ -1105,7 +1580,7 @@ API, one dataset per call (RUNBOOK §6.7 has the queries): Worker requests by sc
 (`durableObjectsPeriodicGroups`). The owner's HOLD line this cycle was 80,000 a UTC day for each of
 the Worker requests and the rows written; a run that could cross it waits for the next UTC day.
 
-### 6.4 The live tiers, and what they leave behind
+### 10.4 The live tiers, and what they leave behind
 
 Both live tiers are the operator's to run, from the owner's workstation over WARP, with the
 credential in `.dev.vars` (RUNBOOK §6.7). Run one at a time, and never the replay beside the
@@ -1131,7 +1606,7 @@ What a run leaves on the account:
   and two per exit run, which real people see until 500 newer messages trim them;
 - while a run lasts, its tables in the live lobby.
 
-### 6.5 The `test/` root and the replay's reset
+### 10.5 The `test/` root and the replay's reset
 
 Every save a `.test` identity makes lands under `test/`, apart from the owner's paths. The replay's
 two first sends therefore meet their own earlier saves on every run after the first, and the
@@ -1143,7 +1618,7 @@ delete "yokohama-archive/test/browser/red_at_wire.test/…" --remote` lines, run
 wrangler's login, since the owner's R2 key is read-only. RUNBOOK §6.7 ("The replay's reset") has
 them in full.
 
-### 6.6 The operator's playbook
+### 10.6 The operator's playbook
 
 RUNBOOK §6.3 is the playbook: setting, listing and deleting the `YOKOHAMA_WEB_ADMINS` secret, and
 the three curl calls (the listing, an expire, a force), sent over WARP as the owner and never with
@@ -1151,7 +1626,7 @@ the credential, which is never an operator.
 
 ---
 
-## 7. What it does not do
+## 11. What it does not do
 
 - **It is not public.** Access covers the whole hostname (R-6.5c.1). The path-scoped Access door
   that would open the single-player site to the public is built and proven locally but not
@@ -1160,7 +1635,7 @@ the credential, which is never an operator.
   public door, a scanner's misses would each be a Worker invocation.
 - **It did not reduce rows read.** About 470 rows read per move in the three-page harness, because
   every request re-reads the table's three documents up to three times (F-4); the cleanup cycle is
-  to read them once.
+  to read them once. §5 sets it beside the other ceilings.
 - **A poisoned or `held` table needs the operator.** Nothing sweeps either, and the operator's
   listing does not flag them; the log does (`poison`, `held`, `expiry-blocked`). The listing's
   `last_active` and `bytes` also lag any activity that changes no copy.
@@ -1171,7 +1646,7 @@ the credential, which is never an operator.
 - **The same-second re-create, before its fix.** At the fifteenth to eighteenth deployments, a force
   then a re-create of one id within one second left the new table off the lobby for 90 days about
   half the time. Millisecond generations fixed it from the nineteenth; a rollback across the fix
-  wave brings back a relative of it (§5.6).
+  wave brings back a relative of it (§9.6).
 - **The refinish.** On this host, and never on the NAS, a one-person table can be stranded. An undo
   that lands during a game-over upload's I/O leaves the first completion in the bucket unstamped;
   a replay to a DIFFERENT end then meets it as a `conflict`, so the creator's Abandon is refused for
@@ -1196,17 +1671,20 @@ the credential, which is never an operator.
 
 ---
 
-## 8. Where to read next
+## 12. Where to read next
 
 - **The spec**,
   [`docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md`](../docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md):
   §1 the owner's rulings with their reasons, §2 the mechanism, §5 the tests and the mutation
   battery, §6 what it does not claim, §9 what each review changed.
 - **The close**,
-  [`docs/plans/2026-09-24-web-frontend-m6.5c-close.md`](../docs/plans/2026-09-24-web-frontend-m6.5c-close.md):
+  [`docs/plans/2026-09-26-web-frontend-m6.5c-close.md`](../docs/plans/2026-09-26-web-frontend-m6.5c-close.md):
   what shipped task by task, every deployment and its readings, the live tiers and the exit, every
   ruling taken in execution with its cost, the corrections to the spec, and what the cycle does NOT
   claim.
+- **The next cycle's entry**,
+  [`docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md`](../docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md):
+  the cleanup cycle that reconciles this host with the NAS.
 - **The plan**,
   [`docs/plans/2026-09-23-web-frontend-m6.5c-plan.md`](../docs/plans/2026-09-23-web-frontend-m6.5c-plan.md),
   and the hosting umbrella,
@@ -1217,5 +1695,6 @@ the credential, which is never an operator.
   record from §6.8 on. Its §0–§3 and §5 are the NAS host's.
 - **[`CLAUDE.md`](../CLAUDE.md)**: the gate commands, the fences every cycle of the web lane keeps,
   and the lane's standing rules.
+- **Cloudflare's own pages**, listed with their dates in §3.1.
 - **The code's own documents**, which are written to be read: the module comment at the top of each
   file in `worker/src/` and `worker/scripts/`, and `crates/yokohama-worker/src/lib.rs`.

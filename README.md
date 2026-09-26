@@ -303,9 +303,14 @@ Cloudflare Access application.
   Moves reach the other screens over hibernatable WebSockets, finished and abandoned games are
   archived to an R2 bucket in the NAS archive's own layout, and a table idle for 90 days is saved
   and expires. **[`worker/README.md`](worker/README.md) explains the design, its reasoning and its
-  mechanics in detail**; [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) §6 is how it is built, deployed
-  and read; the cycle's record is
-  [its close](docs/plans/2026-09-24-web-frontend-m6.5c-close.md).
+  mechanics in detail, for readers new to Cloudflare** — start with
+  [what a Durable Object is](worker/README.md#2-what-a-durable-object-is-and-what-serverless-means-here),
+  [Free vs Paid](worker/README.md#3-free-vs-paid-and-how-this-was-optimized-for-free),
+  [the 10 ms CPU budget](worker/README.md#4-lessons-from-the-10-ms-cpu-budget-and-how-the-core-crates-run-inside-it)
+  and [what a game costs](worker/README.md#5-estimates-for-concurrent-and-ongoing-games).
+  [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) §6 is how it is built, deployed and read. The cycle's
+  record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md), and the cleanup cycle
+  after it starts from [its handover](docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md).
 - **The NAS, at `yokohama-nas.moore.nyc`: the self-host path.** A container on the owner's Synology
   NAS since 2026-09-01, reached only through the existing cloudflared tunnel; it moved to this
   hostname on 2026-09-21, leaving `yokohama.moore.nyc` to the Worker. The current build,
@@ -412,7 +417,7 @@ each cycle's own record is its close —
 [M6.5a](docs/plans/2026-09-20-web-frontend-m6.5a-close.md),
 [M6.5b](docs/plans/2026-09-21-web-frontend-m6.5b-close.md),
 [M6.5b2](docs/plans/2026-09-22-web-frontend-m6.5b2-close.md) and
-[M6.5c](docs/plans/2026-09-24-web-frontend-m6.5c-close.md).
+[M6.5c](docs/plans/2026-09-26-web-frontend-m6.5c-close.md).
 
 ## Status (2026-08-30)
 
