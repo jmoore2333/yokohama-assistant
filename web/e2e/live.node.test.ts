@@ -26,8 +26,12 @@
 // a bracketed key — because the calls later made on it carry no name the scan
 // knows (R3's R-N2, ruling I-91). Inside liveRequest's function as well: an
 // alias made there can be called from a callback nested in it, the escape the
-// nested-call rule closes for a direct call. `r.request()` — a browser
-// request's own method — reads no context. What it reads:
+// nested-call rule closes for a direct call. And a request context MADE from
+// one — `<x>.request.newContext(…)` — is refused wherever it is, inside
+// liveRequest's function too: it holds the live cookie, and every call made on
+// it later is named after it (R3's R-N7). `r.request()` — a browser request's
+// own method — reads no context, and `browser.newContext()` makes a browser's.
+// What it reads:
 //
 //   - every helper module in this directory — every `.ts` that is not a spec
 //     or a test, since a live spec may import any of them;
@@ -47,10 +51,9 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { EXIT_SPEC, LIVE_SPECS } from "./live";
 
-/** The `APIRequestContext` methods that SEND — and `newContext`, which makes a
- *  context whose own calls would be named after it rather than `request`, so a
- *  live file that needs one has to say why in this list. */
-const SENDS = new Set(["get", "post", "put", "patch", "delete", "head", "fetch", "newContext"]);
+/** The `APIRequestContext` methods that SEND. `newContext` is not one of
+ *  them: it MAKES a context, which is refused wherever it is ([`madeFrom`]). */
+const SENDS = new Set(["get", "post", "put", "patch", "delete", "head", "fetch"]);
 
 /** Whether `key` names `request`: as a name, a string, or a bracketed
  *  string. */
@@ -108,6 +111,18 @@ function sentBy(read: ts.Node): ts.CallExpression | undefined {
   return isCallee(verb) ? (verb.parent as ts.CallExpression) : undefined;
 }
 
+/** Where a request context is MADE from a context read — `<read>.newContext`,
+ *  called or not — or `undefined` (R3's R-N7). The made context holds the
+ *  live cookie, and every call made on it is named after it rather than after
+ *  `request`, so no place it is made is one this scan can follow — inside
+ *  `liveRequest`'s function as well. A browser's `browser.newContext()` reads
+ *  no API context, and is not this. */
+function madeFrom(read: ts.Node): ts.Node | undefined {
+  const made = read.parent;
+  if (!ts.isPropertyAccessExpression(made) || made.expression !== read || made.name.text !== "newContext") return undefined;
+  return isCallee(made) ? made.parent : made;
+}
+
 /** Whether `node`'s NEAREST enclosing function is the function handed to
  *  `liveRequest(…)` as its argument. The nearest, and not any: a call inside
  *  a callback nested in that function rejects somewhere `liveRequest` is not
@@ -140,8 +155,14 @@ function scan(file: string, source: string): { refused: string[]; wrapped: numbe
     `${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}: ${n.getText(sf).split("\n")[0]}`;
   const visit = (n: ts.Node): void => {
     if (readsContext(n)) {
+      const made = madeFrom(n);
       const call = sentBy(n);
-      if (call === undefined) {
+      if (made !== undefined) {
+        refused.push(
+          `${where(made)} — a request context made from an API context, inside liveRequest(…) or out: it holds the ` +
+            "live cookie, and the calls made on it carry no name this scan can follow",
+        );
+      } else if (call === undefined) {
         refused.push(
           `${where(n)} — an API context taken where this scan cannot follow it (an alias, an argument, a destructure): ` +
             "call it as <x>.request.<verb>(…) directly inside liveRequest(…)",
@@ -211,6 +232,35 @@ describe("scan — the rule, on sources written for it", () => {
       wrap("await liveRequest(async () => { void [1].map(() => page.request.get(url)); return 1; });"),
     );
     expect(refused).toHaveLength(1);
+  });
+
+  // **R3's R-N7: a request context MADE from an API context is refused
+  // wherever it is — inside liveRequest's function as well.** It holds the
+  // live context's cookie, and every call made on it later is named after
+  // it, not after `request`: `liveRequest(() => x.request.newContext())`
+  // counted as one wrapped call, and the `ctx.get(url)` after it — whose
+  // failure would print the cookie — was a call the scan never saw. A
+  // BROWSER's `browser.newContext()` is another receiver, and stays allowed
+  // (the "reads what is CODE" cell below).
+  it("refuses a request context made from an API context, inside liveRequest or out — so nothing escapes to a name the scan cannot follow", () => {
+    const { refused, wrapped } = scan(
+      "made.ts",
+      wrap(
+        [
+          "const ctx = await liveRequest(() => x.request.newContext());",
+          "await ctx.get(url);",
+          "const fixture = await request.newContext({ baseURL });",
+          "const later = x.request.newContext;",
+        ].join("\n"),
+      ),
+    );
+    expect(refused.map((r) => r.split(" — ")[0])).toEqual([
+      "made.ts:2: x.request.newContext()",
+      "made.ts:4: request.newContext({ baseURL })",
+      "made.ts:5: x.request.newContext",
+    ]);
+    expect(refused[0]).toContain("a request context made from an API context");
+    expect(wrapped, "a context made inside liveRequest is not a wrapped call").toBe(0);
   });
 
   it("refuses a context of its own, and toBeOK anywhere", () => {
