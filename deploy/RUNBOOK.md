@@ -2663,8 +2663,9 @@ npm run deploy                                                                  
 #### The quota guard
 
 Workers Free counts requests per UTC day, and Durable Object rows read and written besides. The
-owner's line for this cycle is **80,000 Worker requests per UTC day, account-wide** (the
-orchestrator's ruling I-82): read the day's figures before a live run and again after it, and HOLD a
+owner's line for this cycle is **80,000 per UTC day, account-wide, for EACH of the two guarded
+figures** — the Worker requests and the Durable Object rows written (the owner's ruling of
+2026-09-23; the orchestrator's I-82 applies it): read the day's figures before a live run and again after it, and HOLD a
 run that could cross the line until the next UTC day. The GraphQL Analytics API gives them — `POST
 https://api.cloudflare.com/client/v4/graphql` with a token that can read the account's analytics,
 or the Cloudflare MCP's `execute` — ONE dataset per call, since one error fails the whole call (the
@@ -3139,7 +3140,7 @@ deployment armed, for an expiry or a marker's end, runs the older alarm work the
 nothing. That code never reads a marker either:
 
 - a table whose marker stands answers the layer's own `no game named …` in place of the marker
-  sentence, and its object keeps its `meta` rows, since only this deployment's code ends a marker;
+  sentence, and its object keeps its `meta` rows, since only this deployment's code ends a marker — unless the marker's removal was still waiting in the slot at the rollback: the older code pushes it, and its acknowledgement runs `deleteAll()`, which ends the object before its 90 days;
 - a create at such an id is no longer refused once the lobby has acknowledged the removal. It
   reuses the generation the object still holds, which the lobby retired at the removal, so for 90
   days from the removal the lobby ignores the new table's copies (`slot-ignored`) and does not list
@@ -3147,3 +3148,240 @@ nothing. That code never reads a marker either:
   name, so only a create that names its id can meet one.
 
 What a rollback does with the secret was not read.
+
+### 6.12 The client knows its transport before it connects — the eighteenth deployment, 2026-09-24 (a record, not a plan)
+
+From `d025ba43`, Task 15's second fix round, its scoped re-review clean. It brings the two client
+fixes the first live run found (§6.7): no stream or socket opens before the deployment's transport
+is known, and the keep-alive stops at hang-up and sends only while the socket is OPEN. The deal's
+designed 409, the third finding, is the harness's to forgive, and no deployed code moved for it. **No
+crate moved**: the Worker's code is the seventeenth's. **Version
+`93f73009-0e3e-4c21-a73f-e164ee5d58a5`** — every event of its tail carries it. Every reading holds.
+The readings ran through the credential as claimed `.test` identities, and over WARP as the owner
+for the replay's forces.
+
+- **Build:** `web/`'s `npm run build`, REQUIRED because the last local e2e had left the DEBUG module
+  in `web/dist` — `precache: 153 entries, 9,938,696 B`, the cache
+  `yokohama-release-b4f28a3400c79f9c`, and `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js`
+  **0**. `worker/`'s `npm run build` — the module **1,220,664 B**, unchanged; the assembly **153
+  entries verified**, 156 files, 9,968,109 B; the release smoke **200**.
+- **The deploy (`npm run deploy`):** the guard PASSED all seven checks. Wrangler uploaded **3** new or
+  modified assets — the client bundle `index-J8fhXo2G.js` among them — and found 151 already
+  uploaded. `/api/health` **200**: `identity: "cf-access"`, `signal: "ws"`, `archive: "r2"`.
+- **Reading 1 — `joins_by_link` LIVE: PASSED** (1 passed, 4.3 s). Table `sim-55b67d78eca70411`, 6
+  moves across two browsers in 4 s. The deal's designed 409 was forgiven on page a twice (its record
+  and its console line) and on page b not at all; the beacon's CORS pair a 2 / b 2. **No 426 on
+  `/api/stream`**: the transport wait held live. The 390 px readings printed as the first live run's
+  did, but for the who-strip, now 47 px tall (71 px at the first run).
+- **Reading 2 — the corpus replay, TWICE: both HOLD**, exit 0.
+  - **Run 1:** the forces before `wire2 204, wire 204, wire4 204` (objects holding nothing answer
+    204); the house chat's base `last 0`; **2,209 of 2,209 rows run, 86 named rows compared, 13
+    exemptions spent** — the lobby filter ×4 with 0 foreign rows dropped; five host fields,
+    `health.identity` `claimed → cf-access`, `signal` `sse → ws`, `archive` `off → r2`, and
+    `me.mode` and `me_signed_out.mode` `claimed → cf-access`; the house chat ×2; the two first sends
+    "201, the first send landed"; 0 lobby re-reads of the bound (5 per row, 500 ms apart);
+    **mismatches none**; the forces after all 204.
+  - **Run 2:** the same from base `last 1` (run 1's own post), the house chat taken back by 1 with 1
+    other message dropped, and **both first sends "200, the once-rule's `identical: true`"** — the
+    repeatability evidence.
+- **Reading 3 — the tail over readings 1 and 2** (`wrangler tail --format json`, parsed by whole
+  objects): **9,292 events** — `ok` 9,274, `canceled` 9, `responseStreamDisconnected` 4, `unknown`
+  5 — and **0 exceptions**. The lines: `operator` ×10, `forced` ×6; `slot-pushed` 394 / `slot-acked`
+  394 / `slot-ignored` 0; `archive-landed` 3, `archive-identical` 5, `archive-conflict` 2 (the
+  replay's own 409 rows), `archive-failed` 0; and `trap`, `load-trap`, `held`, `expired`,
+  `init-refused`, `frame-failed` and `identity-failed` all **0**.
+- **The quota** (§6.7): before these readings, at 06:48 UTC — after the day's first live run, on the
+  seventeenth deployment — **44,270** Worker requests account-wide (`yokohama-web` 38,390), 7,259 object rows written and 1,344,253 read; after
+  readings 1 and 2, at 10:16 UTC, **51,467** (`yokohama-web` 42,524, 0 errors — the join and the two
+  replays added about 4,100), 14,939 rows written and 1,562,634 read. The headroom to the owner's
+  80,000 line was then about 28,500: the two-browser re-run, some 17,000–38,000 requests, waited for
+  another UTC day.
+
+#### What this deployment does NOT claim
+
+- **A two-browser game was not played on it.** The first live run's game (the seventeenth deployment,
+  §6.7) played to a winner before these fixes; the console-clean whole game is the nineteenth
+  deployment's (§6.13).
+- **The keep-alive fix was not exercised live here**: `joins_by_link` lasted 4.3 s, under the 30 s
+  keep-alive, and the replay opens no socket. Its live witness is the nineteenth deployment's
+  two-browser re-run (§6.13).
+- **The five `unknown` outcomes are unexplained.** The Workers Observability query API can classify
+  them (§6.7); the ledger leaves them for the cleanup cycle.
+- **No alarm fired** that the tail's reading names.
+
+#### Rollback
+
+§6.6. The earlier version is the seventeenth's live one, `0b7575a8-7b56-4c53-8619-a82b52b3a63b`. No
+migration was added and no crate moved, so `npx wrangler rollback` can return to it with the same
+Worker code and the same variables. It brings back the client that opened the lobby's house channel
+as SSE before `/api/health` answered — a 426 and a console error on this host — and that could send a
+keep-alive into a closing socket.
+
+### 6.13 The fix wave, and the exit's window — the nineteenth deployment, 2026-09-24 (a record, not a plan)
+
+From `bd8ce497`, the fix wave's follow-up, every re-review and re-check clean (the close §4). It
+brings the whole-branch review's fixes to the Worker and the client: an exception escaping an object
+answers the API's 500 `the server could not answer — try again`, logged `object-failed`; a
+generation's time is milliseconds; a token without a string `kid` is no one; a dev-door claim must be
+an address; a picker row carries its code's digest and a row under other code, or none, is dropped;
+the `wake` line; and the client's transport wait bounded by `BOUND_MS`. **It also opens the exit's
+window**: `YOKOHAMA_WEB_COUNT_WAKES` reads `on`, so every counted wake writes `meta.wakes` and logs
+`wake {id, wakes}` (§6.7, "The exit's window"). **Version `204aba6b-2794-4e95-8567-7558cf7c44b2`**
+(deployment `f41c4d25…`). The window stayed open from 2026-09-24 10:49:45 UTC to the twentieth
+deployment, across the two-day stop at the account's weekly limit. Every reading holds. The readings
+ran through the credential as claimed `.test` identities.
+
+- **Build:** `web/`'s `npm run build` — 153 precache entries, the cache
+  `yokohama-release-3d7b48a6d2d78e74`, `debug_trap` **0**. `worker/`'s `npm run build` — the module
+  **1,855,780 → 1,221,719 B** with `wasm-opt` 133 (the code stamp grew it by 1,055 B); the assembly
+  **153 entries verified**; the release smoke **200**.
+- **The deploy, which opens the window**, run in `worker/`:
+
+  ```sh
+  node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on
+  ```
+
+  The guard PASSED all **nine** checks, the two freshness checks among them — "built from the sources
+  as they are" and "assembled from the current web/dist and worker/static". Wrangler uploaded **3**
+  new or modified assets, the client bundle `index-DqiipaaU.js` among them, and found 151 already
+  there. **Worker Startup Time 1 ms.** The bindings list shows `env.YOKOHAMA_WEB_COUNT_WAKES
+  ("(hidden)")`: wrangler hides a `--var`'s value. `/api/health` **200**: `identity: "cf-access"`,
+  `signal: "ws"`, `archive: "r2"`.
+- **Reading 1 — the exit game, run 1** (2026-09-24 10:50 UTC, headed, `WAKE_PAUSE_MS=60000`). Its
+  seating PASSED LIVE in 5 s: table `sim-856c9a6ea7a81c37` opened locked by `x@exit.test`;
+  `y@exit.test` read x's lobby line, posted its own and joined through the lobby's Open-tables link
+  with the password; both kept; `w@exit.test` unlocked it and watched with no hand. Then the spec's
+  own precondition stopped it before the pause after move 5: x's window read hidden at 10:50:28 UTC.
+  The three headed windows stacked on the display, and macOS marks a covered window hidden whatever
+  Chromium's two occlusion switches read. Not a finding about the product. The `afterEach` abandoned
+  the table.
+- **Reading 2 — the headed walk at 390 px** (2026-09-24; headed Chromium at 390×844 @2×, two `.test`
+  contexts, the orchestrator's eye on 16 + 16 screenshots). The door, the lobby with its back-link, the
+  create form, the open table in the creator's view and a stranger's, the deal, the board and the
+  folded chat panel: clean, no layout defect. ONE error strip provoked in the browser — the unlock
+  strip, the open table's password refusal for a stranger (a wrong password at "sit here" → 403 on
+  `/join`, "wrong password for this table"); not provoked: the create form's (a spaced name is a
+  legal display name), the deal's (the page's guard prevents a second keep; the 409 read through the
+  API) and the chat panel's (the input eluded the script; the empty post's 400 read through the
+  API); the open table's own strip was not attempted. The console: the beacon's two-line artifact and
+  the designed refusals — nothing else.
+- **Reading 3 — the bucket, and a bot move reconstructed** (2026-09-24), synced with the owner's
+  read-only key in ONE command's environment: `test/rev7/over/sim-552c786c4ba671ff.json` (180,493 B,
+  the first live run's two-person game: 2,180 events, `over: true`, `winner: 0`, `archived_at`
+  1790232277) and its table; the exit's and two bot games' abandoned pairs; the replay's saves. The
+  finished record loads in the CLI, its `log` 2,180 lines long. The bot game `exit-bot-1790247143`
+  loads, and **`why 0` reconstructs the bot's first move** — `v4-step9-draft1`, "Only legal
+  option", decision seed `0x2e874e72bec9ed69`, the 34-row explain table, TOTAL 15: the honesty gate
+  passed under this build's constants.
+- **The stop.** The account's weekly limit stopped the session at ~10:58 UTC on 2026-09-24, and it
+  resumed at ~06:04 UTC on 2026-09-26. The tail of the 24th had died at 10:55 UTC; a fresh one
+  (`tail19b.json`) ran for the readings below. The WARP client read Connected, but its device's
+  Access login had EXPIRED: every request from the workstation without the credential answered
+  Access's 302 "Please authenticate via the warp client" (a curl-shaped one met Bot Fight Mode's
+  challenge first). The owner re-authorized it on the 26th. No reading below needed it: the exit, the
+  re-run, the deploys (wrangler's OAuth) and the bucket's sync do not.
+- **Reading 4 — the exit game, run 2** (2026-09-26 06:08 UTC). Its seating PASSED again in 4 s
+  (`sim-6a7ae105764b7f76`). The windows were placed side by side, but Chromium widens a window to its
+  MINIMUM width, 500 px: asked 420×820 at 0, 426 and 852, they read back 500×820 at those lefts, 38 px
+  down — still overlapping by 74 px — and x read hidden at 06:08:10 UTC. The precondition stopped the
+  run again; not a product finding. Its failure context named `CF_Authorization` once, the cookie's
+  NAME in a source comment, with 0 value-shaped matches. The spec then lays a 2×2 GRID when three
+  minimum-width windows cannot share the width (`754b80ae`).
+- **Reading 5 — the two-browser live re-run** (06:12–06:22 UTC, the fixed client): **PASSED**, 1
+  passed in 10.1 min. Game `sim-1a8263683952c0b4` **finished in 2,510 moves**, 601 s, 0 idle looks,
+  the largest hand seen 3. **The watcher held to 1,886 applied moves, asked `/events` 0 times and
+  opened `/stream` ONCE at every checkpoint**; each player opened the table's stream twice, both
+  before the first move. The deal's 409 forgiven 0 times; the beacon's CORS pair a 2 / b 2 / c 2;
+  **no other console error on any of the three pages** — the first live run's "WebSocket is already
+  in CLOSING or CLOSED state" lines are gone, and no 426 appeared. No "Call log".
+- **Reading 6 — the exit game, run 3** (06:20–06:26 UTC, `754b80ae`'s grid): **PASSED**, 1 passed in
+  5.2 min. Table `sim-6334a4d57da5499f`. Seating in 4 s, the grid read back x 634×391 at 0,38, y at
+  640,38 and w at 0,435, under a 38 px menu-bar inset, each with a 618×301 viewport. **Forty moves in
+  307 s**; four long pauses of **60.0 s**, after moves 5, 15, 25 and 35, with nothing asked
+  meanwhile, each followed by the move's `POST …/input` answering in **69, 69, 75 and 67 ms** against
+  an awake median of **58 ms** over the other 36 — the wake as the page sees it, about 10–15 ms.
+  Table chat x 10 / y 10, the watcher's panel holding 20 lines; lobby chat x 1 / y 1; the watcher held
+  to 31 applied moves with no hand; all three windows visible at 10 checkpoints; the table's stream
+  opened w 1, x 3 → 3, y 3 → 3 — no reopen during play. The abandon: the address answers **404**
+  `this table was abandoned on 2026-09-26 — its game is in the archive`, and x, y and w were told.
+  Forgiven: the beacon 2 / 2 / 2, the deal's 409 on x twice. Every console clean. No "Call log".
+- **Reading 7 — the wake witness**, off the tail (`tail19b.json`: 41,578 events on this version, 1,230
+  of them the exit table's). **Four `wake` lines, `wakes` 1 → 2 → 3 → 4**, each on the first POST
+  after a 60 s pause: 06:21:43.726 (CPU 8 ms, wall 19 ms), 06:23:00.569 (7 / 18), 06:24:17.630
+  (9 / 60) and 06:25:34.840 (6 / 16). **The object hibernated in every pause and came back on the next
+  move.** A wake costs the object **6–9 ms of CPU**, against a **2 ms** median (the maximum 15) over
+  the 40 object-side move POSTs; the stateless Worker's own half is 2 ms. The table's other lines:
+  `slot-pushed` 10, `slot-acked` 11, `archive-landed` 1 (the abandon's save), `trap` 0, 0 exceptions.
+- **Reading 8 — the bucket, re-synced**: `test/rev7/abandoned/sim-6334a4d57da5499f.json` (3,465 B,
+  the 40-move exit game) and its table; `test/rev7/over/sim-1a8263683952c0b4.json` (157,033 B, the
+  re-run's game — a SECOND finished game) and its table; and the first live run's
+  `sim-552c786c4ba671ff`, still there.
+- **The quota** (§6.7): at 06:05 UTC on the 26th, **7,547** Worker requests account-wide
+  (`yokohama-web` 0) and 81 rows written; at 06:26 UTC, **42,036** (`yokohama-web` 34,241), 6,466 rows
+  written, 1,202,112 read, and 34,883 object invocations (18 non-`ok`, the cancels and disconnects
+  kind). The re-run cost about 32,000 requests, **12.8 a move**; the exit game about 1,400 for 40 paced
+  moves, **35 a move** with three pages and chat.
+- **Against the spike (spec §0.3):** row 4 (a trap live) still never provoked — every tail read `trap`
+  0; row 5 (an object's CPU) now read live — 2 ms a move, 6–9 ms a wake; row 6 (hibernation) SAME in
+  substance — the spike saw a wake after 35 s idle, the exit saw one after each 60 s pause.
+
+#### What this deployment does NOT claim
+
+- **The window was open for two days** (the stop): every counted wake in that time wrote `meta.wakes`
+  in its batch and logged its line. No table is known to have been played meanwhile.
+- **No `picker-dropped` line is recorded.** By design, every picker row an earlier deployment stored is
+  dropped at its table's next request under this code (`stored: null`); the ledger's readings name
+  no such row.
+- **No alarm-driven line is named** in the readings of either tail, so `ctx.id.name` inside a
+  production `alarm()` is still unread live.
+- **The `slot-acked` count is one above `slot-pushed`** for the exit table (11 against 10); the ledger
+  does not explain it.
+- **The operator surface was not read on this version**: the workstation's WARP login had expired
+  (above), and the operator is a person over WARP. The seventeenth deployment's operator readings
+  stand.
+- **The live corpus replay was not run on this version**; it last ran on the eighteenth. This
+  version's server changes move no payload, and the pool replayed the whole corpus at `bd8ce497`.
+
+#### Rollback
+
+§6.6. The earlier version is the eighteenth's, `93f73009-0e3e-4c21-a73f-e164ee5d58a5`. No migration
+was added, so `npx wrangler rollback` can return to it — but it is a **generation-order rollback**
+and it **drops every open picker** this version stored (§6.6's two bullets). A rollback also returns
+the unbounded transport wait, the platform's plain 500 for an object's exception, and a generation's
+time in seconds. A `--var` is a binding, so a rollback to the eighteenth also closes the exit's
+window.
+
+### 6.14 The exit's window closed — the twentieth deployment, 2026-09-26 (a record, not a plan)
+
+From `754b80ae`, the code close head, whose shipped code is `bd8ce497`'s — the three commits after
+that (`f2c27a3f`, `528b1285` and `754b80ae`) move only `web/e2e/` and the Playwright configuration.
+It closes the exit's window: the plain deploy replaces the Worker's variables with
+`wrangler.jsonc`'s, which name no `YOKOHAMA_WEB_COUNT_WAKES`, so the switch reads off. Deployed at
+06:38:27 UTC on the owner's go, which came after the owner re-authorized the WARP client's login.
+**Version `6da906a5-a088-442e-bc43-d94904630982`.**
+
+```sh
+npm run deploy   # in worker/, after npm run build in web/ and in worker/
+```
+
+- **The build:** `web/` and `worker/` rebuilt for release; `debug_trap` 0; the module 1,221,719 B
+  through `wasm-opt` 133, the nineteenth's size; 153 assets verified.
+- **The deploy:** the guard's nine checks passed; NO asset changed since the nineteenth, so the
+  service worker is the nineteenth's, cache `yokohama-release-3d7b48a6d2d78e74`; startup 2 ms;
+  `YOKOHAMA_WEB_COUNT_WAKES` is no longer among the bindings, so the window is CLOSED.
+- **Health:** `/api/health` 200, `cf-access`, `ws`, `r2`.
+- **The tail:** `tail19b.json`, running since the exit's second run, is recorded as stopped at
+  this deployment.
+
+#### What this deployment does NOT claim
+
+- Everything §6.13 does not claim, but for the open window.
+- **No request was read for the absence of a `wake` line.** The switch's absence from the bindings
+  list is the reading that the window is closed.
+
+#### Rollback
+
+§6.6. The earlier version is the nineteenth's, `204aba6b-2794-4e95-8567-7558cf7c44b2` — the same
+code with the window open. Rolling back to it re-opens the window.
+
+---
