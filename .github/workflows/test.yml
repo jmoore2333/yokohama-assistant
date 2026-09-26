@@ -2,6 +2,35 @@ name: test
 on:
   push:
   pull_request:
+
+# **What runs here, and what stays local** (the M6.5c close; spec §5.6 of
+# docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md). CI runs the
+# deterministic suites a clean checkout can build on a runner: the engine
+# crate (`test`); the layer, both WebAssembly hosts, and the Cloudflare
+# Worker's shell, pool and module (`web-server`); and the client
+# (`web-client`). There is no paths filter, so every push runs every job, and
+# a change under `worker/` is always checked.
+#
+# Deliberately NOT here, each for its reason:
+# - the browser walk (`npm run e2e` in `web/`): it wants a release build and a
+#   Chromium download, and stays local by the owner's ruling on M3.5's fork 4;
+# - the live tiers — the live Playwright specs, the live corpus replay
+#   (`worker/scripts/live-replay.mjs`) and the opt-in exit spec: they play on
+#   the owner's Cloudflare account through a credential and the owner's WARP
+#   login, spend its shared daily quota, and leave markers and saves behind
+#   (deploy/RUNBOOK.md §6.7);
+# - the fifteen release-tier gates, which run before merges and closes;
+# - the deploy guard's build-dependent checks (`worker/scripts/deploy-guard.mjs`
+#   checks 1, 2, 8 and 9: the release module, the assets tree, and whether
+#   each is the build of the current sources), which read the deploying
+#   workstation's own build. Its checks of the committed configurations, 3 to
+#   7, DO run here, inside `npm run test:scripts`.
+#
+# No job reads a secret or `.dev.vars`, and none deploys: the Worker ships from
+# the owner's workstation through `npm run deploy` (RUNBOOK §6.2). The other
+# per-edit Rust suites (the CLI, the oracle, difftest, the bridge and the two
+# example targets) and the clippy lint gate run locally, as CLAUDE.md's
+# Commands list them; nothing here claims them.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -74,40 +103,43 @@ jobs:
       # emits 1.78 MB and the pass takes it to 1.17 MB, which is the figure the
       # release budget and every §0.3 measurement are stated at.
       #
-      # **Pinned to the upstream release binary rather than apt's package.**
-      # `ubuntu-latest`'s `binaryen` is several versions behind 132, the version
-      # `deploy/RUNBOOK.md`'s byte figures of §1 to §3 were taken on, so
-      # `apt-get install binaryen` would optimize with a compiler no recorded
-      # figure was taken on — a size regression CI could not see. The
-      # workstation has read binaryen 133 since (`wasm-opt version 133`), and
-      # every Worker deployment of M6.5c built its modules with 133 (RUNBOOK §1;
-      # the orchestrator's ruling I-87). This job builds modules and deploys
-      # none, and nothing here says 132 and 133 emit the same bytes. The tarball
-      # is one static binary; the cache key carries the version, so a bump here
-      # invalidates the cache rather than restoring the old one.
+      # **Pinned to the upstream release binary rather than apt's package, and
+      # to 133 since the M6.5c close.** 133 is the workstation's reading
+      # (`wasm-opt version 133`) and the optimizer of every Worker module M6.5c
+      # deployed (deploy/RUNBOOK.md §1; the orchestrator's ruling I-87), so the
+      # modules this job builds and replays come from the version that built
+      # the shipped ones. The byte figures of RUNBOOK §1 to §3 were taken on
+      # 132, and `deploy/Dockerfile` still installs 132 for the NAS image;
+      # aligning it is the cleanup cycle's. `apt-get install binaryen` on
+      # `ubuntu-latest` gives 120, which emits a different module, a size
+      # change CI could not see. Nothing here measures whether this tarball's
+      # 133 and the workstation's emit the same bytes. The cache key carries
+      # the version, so a bump here invalidates the cache rather than
+      # restoring the old binary.
       #
       # **The download is CHECKSUMMED before anything is unpacked.** The URL
       # promises a name, not bytes, and what comes back is then RUN over the
-      # module this job ships. `sha256sum -c` fails the step loudly on a
-      # mismatch. Measured 2026-09-21 over 117,057,408 bytes, agreed by three
-      # independent downloads; `deploy/Dockerfile` pins the same hash for the
-      # same file, and a binaryen bump changes BOTH.
+      # modules this job builds. `sha256sum -c` fails the step loudly on a
+      # mismatch. The 133 hash was measured on 2026-09-26 over 111,200,018
+      # bytes, and it equals the `.sha256` file binaryen publishes beside the
+      # tarball, whose 132 file equals the 132 hash this step pinned before.
+      # `deploy/Dockerfile` pins that 132 hash for its own download.
       - uses: actions/cache@v4
         with:
           path: ~/.local/bin/wasm-opt
-          key: binaryen-132-x86_64-linux
-      - name: Install binaryen 132 (wasm-opt)
+          key: binaryen-133-x86_64-linux
+      - name: Install binaryen 133 (wasm-opt)
         run: |
           mkdir -p ~/.local/bin
           if [ ! -x ~/.local/bin/wasm-opt ]; then
             curl -fsSL -o /tmp/binaryen.tar.gz \
-              https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz
-            echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c -
-            # One member out of twenty-two: the release ships the whole suite
-            # and a static `libbinaryen.a`, so `wasm-opt` needs nothing beside
-            # it and unpacking the rest would cost 100 MB of runner disk.
-            tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt
-            cp /tmp/binaryen-version_132/bin/wasm-opt ~/.local/bin/wasm-opt
+              https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+            echo "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489  /tmp/binaryen.tar.gz" | sha256sum -c -
+            # One file of the seventeen the release ships: the whole suite and
+            # a static `libbinaryen.a`, 319 MB unpacked. Its `wasm-opt` is a
+            # static-pie binary that needs nothing beside it.
+            tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_133/bin/wasm-opt
+            cp /tmp/binaryen-version_133/bin/wasm-opt ~/.local/bin/wasm-opt
             chmod +x ~/.local/bin/wasm-opt
           fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -155,7 +187,10 @@ jobs:
       # The node half: the build scripts' cells (the factory transform, the
       # asset assembly, the deploy guard — whose checks of the two committed
       # wrangler configurations make a drifted `assets` block red here) and
-      # the shell's pure modules.
+      # the shell's pure modules. One cell runs `cargo metadata --offline` to
+      # hold the freshness digest's source list to the module's crate graph
+      # (R3's R-N1), so this step needs `cargo` on the PATH: it belongs in this
+      # job, after the toolchain step, never in a node-only job.
       - run: npm run test:scripts
         working-directory: worker
       # The pool: the shell's cells inside workerd, over the module built above.

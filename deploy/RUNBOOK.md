@@ -94,9 +94,10 @@ that it produced an UNOPTIMIZED module — **do not cut a deploy from one**: it 
 taken with `wasm-opt version 132`, the workstation's reading when they were
 recorded. The workstation has read **`wasm-opt version 133`** since, and every
 Worker deployment of M6.5c, the fourteenth to the eighteenth (§6), built both
-modules with 133 (the orchestrator's ruling I-87). CI and `deploy/Dockerfile`
-install **132** from the upstream release tarball, pinned by SHA-256, and CI
-builds modules and never deploys one. Nothing here says that 132 and 133 emit
+modules with 133 (the orchestrator's ruling I-87). Since the M6.5c close CI
+installs **133** from the upstream release tarball, pinned by SHA-256, and
+builds modules but never deploys one; `deploy/Dockerfile` still installs **132**
+the same way. Nothing here says that 132 and 133 emit
 the same bytes; aligning the two pins is the cleanup cycle's. `apt-get install
 binaryen` on Debian or Ubuntu gives **120**, which emits a different module (1,174,709 B against 132's 1,173,055 B on the
 same input). That is fine for developing on a Linux box and it is NOT the build

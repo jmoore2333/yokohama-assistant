@@ -59,8 +59,9 @@ RUN apt-get update \
 # replaced asset stops the build instead of optimizing the module with whatever
 # arrived. The hash was measured on 2026-09-21 over 117,057,408 bytes, by two
 # independent downloads on this workstation and a third elsewhere, all three
-# agreeing. `.github/workflows/test.yml` pins the same hash for the same file;
-# a binaryen bump changes BOTH.
+# agreeing. `.github/workflows/test.yml` pinned the same file until the M6.5c
+# close, when CI moved to 133, the version every Worker module was deployed
+# with; this image stays on 132 until the cleanup cycle aligns the two.
 #
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
 # With the SAME `wasm-opt 132` on both hosts, this stage's module and the
