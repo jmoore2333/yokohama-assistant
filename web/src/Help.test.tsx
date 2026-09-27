@@ -147,7 +147,7 @@ describe("the help panel and the lobby", () => {
     expect(text).not.toContain("Sign in first");
   });
 
-  // **The name field, in the paragraph that describes the LOBBY** (spec §6.6's
+  // **The corner, in the paragraph that describes the LOBBY** (spec §6.6's
   // third edit, ruling R-7-1). The same fact is stated again in the Talking
   // section, deliberately — a player setting up a table and a player about to
   // say something both need it, and neither reads the other's section first.
@@ -155,20 +155,18 @@ describe("the help panel and the lobby", () => {
   // So this cell is SCOPED, and that is the whole of its value: read over the
   // whole panel it would be satisfied by the Talking section's copy and would
   // go on passing with the lobby's own sentence gone.
-  it("says in the lobby's own paragraph what the name field is for", () => {
+  it("says in the lobby's own paragraph what the corner is for", () => {
     render(<Help />);
     const text = section("Starting a game");
-    expect(text).toContain("Your name");
-    // Named by where it sits, because that is how a reader finds it — and bound
-    // to THIS sentence rather than to the two words. The same section already
-    // carries "You are shown your own two cards", so a bare `"You are"` went on
-    // passing with the new sentence gone (final review, minor 13's sibling).
-    expect(text).toContain("Beside You are at the top of the lobby");
+    expect(text).toContain("playing as");
+    expect(text).toContain("switch player");
+    expect(text).toContain("change name");
     expect(text).toContain("this browser remembers it");
     expect(text).toContain("leave it blank and your address is used");
-    // And it is not the form's own display name, which the next paragraph
-    // offers a reader could take for the same control.
+    // And it is still not the form's own display name, which the next
+    // paragraph offers a reader could take for the same control.
     expect(text).toContain("not the display name on the form below");
+    expect(text).not.toContain("Beside You are at the top of the lobby");
   });
 
   // **The lobby has THREE lists since M6.3** (final review, minor 8): this
@@ -318,15 +316,15 @@ describe("the help panel and talking (M6.4)", () => {
   // both.** An operator can turn the house chat off, and then the section is
   // simply not there — which a player who had read about it would otherwise
   // report as a bug.
-  it("names the lobby chat, its switch and the name field", () => {
+  it("names the lobby chat, its switch and where the name comes from", () => {
     render(<Help />);
     const text = section("Talking");
     expect(text).toContain("Lobby chat");
     expect(text).toContain("switch it off");
-    // The field the name comes from, named by where it sits rather than by its
-    // label — the label is the lobby's own cell, and this is the sentence that
-    // tells a reader which of the four fields feeds their messages.
-    expect(text).toContain("The name you type beside");
+    // Where the name comes from, named by where it sits — the lobby's corner —
+    // and bound to THIS sentence, the one that tells a reader which name their
+    // messages carry (`&rsquo;` renders as the typographic apostrophe).
+    expect(text).toContain("The name in the lobby\u2019s corner");
     expect(text).toContain("your address is used");
   });
 

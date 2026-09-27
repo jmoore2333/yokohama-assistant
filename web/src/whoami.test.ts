@@ -6,11 +6,11 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { CLAIMED_USER_KEY } from "./api";
+import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY } from "./api";
 import type { Channel } from "./route";
 import { stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
-import { doorSentence, useMe } from "./whoami";
+import { doorSentence, failureOf, useMe } from "./whoami";
 
 /** `/api/me` answered the way the SERVER answers it: from the header this
  *  browser is sending, which `api.ts` attaches from storage. A stub that
@@ -99,7 +99,32 @@ describe("useMe", () => {
     );
     const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.error).toBe(wire.error.error));
+    expect(result.current.failure).toBe("refused");
     expect(result.current.me).toBeNull();
+  });
+
+  // **How the door failed decides which card is drawn** (M6.5c2, spec §2.1): no
+  // answer at all is state C; the EDGE's challenge is state A.
+  it("says HOW the door failed: no answer at all, and the edge's challenge", async () => {
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    const offline = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(offline.result.current.failure).toBe("network"));
+    expect(offline.result.current.error).toBe("TypeError: Failed to fetch");
+    offline.unmount();
+
+    stubApi((call) =>
+      call.path.endsWith("/api/me")
+        ? new Response("<html>", {
+            status: 401,
+            headers: { "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"' },
+          })
+        : undefined,
+    );
+    const expired = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(expired.result.current.failure).toBe("challenge"));
+    expect(expired.result.current.error).toBe(ACCESS_CHALLENGE);
   });
 
   // **The LOCAL channel asks nothing** (R-6.5b2.7, spec §2.2): the front door
@@ -126,6 +151,18 @@ describe("useMe", () => {
     rerender({ c: "local" });
     await waitFor(() => expect(result.current.me).toEqual(wire.me));
     expect(stub.matching("GET", "/api/me")).toHaveLength(1);
+  });
+});
+
+describe("failureOf", () => {
+  // An `ApiError` is an ANSWER — the server's or the edge's — and anything else
+  // is `fetch` failing with none (`api.ts`'s `call` turns every status into one).
+  it("tells the edge's challenge from the server's refusal from no answer at all", () => {
+    expect(failureOf(new ApiError(ACCESS_CHALLENGE, 401))).toBe("challenge");
+    expect(failureOf(new ApiError("the store could not be read", 500))).toBe("refused");
+    // This API's OWN 401 is a refusal, not the edge's challenge.
+    expect(failureOf(new ApiError("no identity reached the server", 401))).toBe("refused");
+    expect(failureOf(new TypeError("Failed to fetch"))).toBe("network");
   });
 });
 

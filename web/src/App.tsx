@@ -15,6 +15,7 @@ import {
   useArchiveFact,
 } from "./api";
 import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
+import { IdentityCorner } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { projectLink } from "./projectLink";
@@ -181,10 +182,23 @@ export function App() {
    *  R-6.5b.2).
    *
    *  `null` until it answers, which is a real third state: nothing has come
-   *  back yet, and "not connected" would be a claim this browser cannot make.
-   *  It is the health read and not the door's because the door has four
-   *  answers of its own and only one of them is about reachability. */
+   *  back yet, and "can't reach the server" would be a claim this browser
+   *  cannot make. It is the health read and not the door's because the door
+   *  has answers of its own and only one of them is about reachability. */
   const [serverUp, setServerUp] = useState<boolean | null>(null);
+  /** Bumped by "Try again" (state C), which re-runs the health read below —
+   *  its latch is already released by the failure or the bound that drew the
+   *  card. */
+  const [healthTick, setHealthTick] = useState(0);
+  /** "Try again" on a server that could not be reached (M6.5c2, state C): both
+   *  reads again — the door's and the health — and the screen back to
+   *  "connecting" until one answers. A health read that LANDED keeps its answer:
+   *  only a failed one is forgotten. */
+  const retry = useCallback(() => {
+    setServerUp((up) => (up === false ? null : up));
+    setHealthTick((n) => n + 1);
+    refresh();
+  }, [refresh]);
   const [state, setState] = useState<ClientState | null>(null);
   /** The table being DEALT, when there is one (M6.1 §7.4).
    *
@@ -882,8 +896,17 @@ export function App() {
     // whatever the health read is doing. An unconditional `false` here took a
     // working lobby off the screen and replaced it with "not connected"
     // whenever the health read alone was the slow one.
-    bounded(health, BOUND_MS).catch(() => setServerUp((v) => v ?? false));
-  }, [channel]);
+    //
+    // **And the latch goes at the bound too** (M6.5c2, state C): a read that
+    // has not landed by now has recorded nothing, exactly as a rejected one
+    // has, and holding the latch for it left "Try again" re-running this
+    // effect onto the early return above — "Connecting to the server…" over no
+    // health read at all. A late answer still lands through the chain above.
+    bounded(health, BOUND_MS).catch(() => {
+      askedFacts.current = false;
+      setServerUp((v) => v ?? false);
+    });
+  }, [channel, healthTick]);
 
   useEffect(() => {
     // **A local game reaching game over is the second read point** (spec §2.2).
@@ -1266,23 +1289,18 @@ export function App() {
   // R-6.5b.8). They were four `return`s here — a refusal, a silence, the
   // sign-in form and the sentence naming the expected header — and each of
   // them drew nothing else at all, including the games in this browser's own
-  // IndexedDB, which need no door to play. `Door` renders the same four
-  // bodies, in the same order and for the same reasons, as the CONTENT of the
-  // part of the first screen the server owns; `lobbyScreen` below is what puts
-  // them there.
+  // IndexedDB, which need no door to play. `Door` renders them as the CONTENT
+  // of the part of the first screen the server owns — since M6.5c2 as states,
+  // each a card (`Door.tsx` holds their order, which is the rule);
+  // `lobbyScreen` below is what puts them there.
   const signedIn = door.me?.user ?? null;
-  /** The API could not be reached AT ALL: the health read failed and the door
-   *  has never answered either.
-   *
-   *  **One sentence beats two complaints.** Both reads failed for the same
-   *  reason, and the door's own words for it — "TypeError: Failed to fetch",
-   *  or a sign-in form over a server that would take a name and lose it — say
-   *  less than "not connected" and offer more. Where the door DID answer, its
-   *  four answers stand: the server is demonstrably reachable, whatever the
-   *  health read made of it. */
-  const unreachable = serverUp === false && door.me === null;
-  const doorContent =
-    signedIn || unreachable ? null : <Door door={door} onSignedIn={() => refresh()} />;
+  // **The server's part of the lobby while nobody is signed in** (M6.5c2, spec
+  // §2.1): the door's states A–D, the name step and state B are all `Door`'s —
+  // including the one decided here until this cycle, a server nothing answered,
+  // which is state C and reads `serverUp` itself.
+  const doorContent = signedIn ? null : (
+    <Door door={door} serverUp={serverUp} onSignedIn={() => refresh()} onRetry={retry} />
+  );
 
   // **Who you are, and how to stop being them.**
   //
@@ -1357,7 +1375,7 @@ export function App() {
   );
 
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
-   *  answer, or the one line that says the API cannot be reached.
+   *  answer, or the card that says the server cannot be reached.
    *
    *  **Every screen behind a door lands here when there is no user** (spec
    *  §2.5). The four `return`s that used to do that job drew nothing else;
@@ -1367,11 +1385,12 @@ export function App() {
   const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
-      who={signedIn ? who : undefined}
+      corner={signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined}
       notice={notice ?? null}
       door={doorContent}
       serverUp={serverUp}
       onReached={() => setServerUp(true)}
+      onRetry={retry}
     />
   );
 
@@ -1768,10 +1787,11 @@ export function App() {
         {/* **What the poll can say for itself, and `live` says nothing.**
             A permanent "connected" mark is a thing people stop seeing, and the
             banner is GATED at one row at 1440 and 1280 with 22px of room
-            measured — so the resting state costs no width at all. The two words
-            that do appear are the two a player would otherwise have to guess
+            measured — so the resting state costs no width at all. The words
+            that do appear are the ones a player would otherwise have to guess
             at: the board is as old as the tab was hidden ("refreshing"), or
-            this browser cannot reach the server ("reconnecting"). */}
+            this browser cannot reach the server ("connecting" before its first
+            connection, "reconnecting" once one is lost). */}
         {link !== "live" && (
           <span className="meta link" role="status">
             {link}&hellip;

@@ -164,3 +164,31 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
   }
   expect(watch.failures).toEqual([]);
 });
+
+test("the name step at 390: one field, Continue, the honest sentence, nothing sideways — and a name typed with capitals and spaces signs in under its key", async ({
+  page,
+}) => {
+  const watch = watchForBreakage(page);
+  await page.setViewportSize(PHONE);
+  await page.goto("/#/lobby");
+  // An `h3`: the band's last crumb, "Lobby", is the page's `h2` (`Band.tsx`).
+  await expect(page.getByRole("heading", { level: 3, name: "Choose a name" })).toBeVisible();
+  await expect(page.getByText(/doesn.t check who anyone is/)).toBeVisible();
+  await noSidewaysScroll(page, "the name step at 390px");
+  expect(await height(page, "button", "Continue"), "Continue, thumb-sized").toBeGreaterThanOrEqual(44);
+  expect(await images(page), "the name step draws no <img>").toBe(0);
+  await look(page, "name-step-390");
+
+  // **Review Focus 1 against the real server**: one key, shown as typed. The
+  // header carries the key; `/api/me` answers it; the corner shows the name.
+  await page.getByLabel("Name", { exact: true }).fill("  Ben   Castle ");
+  await page.getByRole("button", { name: "Continue" }).click();
+  const pill = page.locator(".identity-pill");
+  await expect(pill).toBeVisible();
+  await expect(pill).toContainText("Ben Castle");
+  await expect(page.locator(".identity-corner").getByTitle("ben castle", { exact: true })).toBeAttached();
+  expect(await page.evaluate(() => localStorage.getItem("yokohama.claimed_user"))).toBe("ben castle");
+  await noSidewaysScroll(page, "the signed-in lobby at 390px");
+  await look(page, "lobby-signed-in-390");
+  expect(watch.failures).toEqual([]);
+});

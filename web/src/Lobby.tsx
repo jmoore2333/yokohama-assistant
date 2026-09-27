@@ -30,8 +30,10 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
-import { api, ApiError, clearDisplayName, displayName, lobbyChat, setDisplayName } from "./api";
+import { api, ApiError, lobbyChat } from "./api";
+import { LobbyBand } from "./Band";
 import { Chat } from "./Chat";
+import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
@@ -124,11 +126,12 @@ function unique(tables: TableView[]): TableView[] {
 
 export function Lobby({
   me,
-  who,
+  corner,
   notice,
   door,
   serverUp,
   onReached,
+  onRetry,
 }: {
   /** Who this browser plays as, from the door — `null` when the door has not
    *  opened, which since M6.5b is a screen this component still draws.
@@ -145,7 +148,10 @@ export function Lobby({
    *  what the door being a GATE used to prevent and what the door being
    *  CONTENT has to go on preventing. */
   me: string | null;
-  who?: ReactNode;
+  /** Who is playing, drawn in the band's corner — `App`'s `IdentityCorner`
+   *  once somebody is signed in (M6.5c2, spec §2.1). Absent while nobody is,
+   *  when the corner is the way back to this device's games instead. */
+  corner?: ReactNode;
   /** A sentence from OUTSIDE the lobby, drawn ABOVE the lobby's two lists.
    *
    *  **The lobby is where a refused SERVER table lands** (spec §5.1): a
@@ -165,14 +171,13 @@ export function Lobby({
    *  foot, beside the lists they are about. */
   notice?: string | null;
   /** What the SERVER's part of this screen says when there is no open door
-   *  (M6.5b, spec §2.5): the door's error, its silence, the sign-in form or
-   *  the sentence naming the header that was expected. Built by `App` and
+   *  (M6.5b, spec §2.5): the door's states and the name step (`Door.tsx`). Built by `App` and
    *  drawn HERE, in the place the four sections would be — where those four
    *  answers used to stand in front of the whole page, the games in this
    *  browser included. */
   door?: ReactNode;
   /** Whether `GET /api/health` landed. `null` until it answers; `false`
-   *  replaces the four sections with one line, because a screen drawing
+   *  replaces the actions and the lists with state C's card, because a screen drawing
    *  "none yet" over an API it cannot reach says something false about the
    *  player's own games. */
   serverUp?: boolean | null;
@@ -181,6 +186,9 @@ export function Lobby({
    *  screen reports its own refusals in its error strip, and the line above is
    *  about the health read. */
   onReached?: () => void;
+  /** "Try again" on the card that says the server cannot be reached (state C):
+   *  `App`'s `retry`, which asks both reads again. */
+  onRetry?: () => void;
 }) {
   const [lists, setLists] = useState<Lists | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -205,13 +213,6 @@ export function Lobby({
    *  exists so that a later `"value"` consumer could tell the two apart; this
    *  one does not. */
   const [tick, setTick] = useState(0);
-  /** The name this browser plays under, on ONE key with the door, the New table
-   *  form and the seat picker (R-6.4.3). Written as TYPED rather than on a
-   *  submit, because this screen has none — and an emptied field REMOVES the
-   *  key, so "leave it blank and your address is used" is true of the browser
-   *  as well as of the help. */
-  const [name, setName] = useState(() => displayName() ?? "");
-
   /** The host's "a read landed" callback, held so that `take` does not depend
    *  on it.
    *
@@ -312,65 +313,46 @@ export function Lobby({
   const mine = lists ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
   const nextCursor = paged ? paged.next : (lists?.mine.next ?? null);
 
+  /** The way back to the games on this device (R-6.5b2.1): in the band's corner
+   *  while nobody is signed in — the states a player most needs it in are the
+   *  ones where nothing else here is pressable — and beside New table once
+   *  somebody is. An ANCHOR for `lobbyRow`'s reason; its arrow is decoration,
+   *  so its NAME is the destination. */
+  const toDevice = (
+    <a className="to-door" href={hashOf({ kind: "door" })}>
+      <span aria-hidden="true">&larr; </span>Games on this device
+    </a>
+  );
+
   return (
-    <div className="setup lobby">
-      {who && (
-        <div className="who-strip">
-          {who}
-          <label className="your-name">
-            Your name
-            <input
-              value={name}
-              placeholder="optional"
-              onChange={(e) => {
-                setName(e.target.value);
-                const trimmed = e.target.value.trim();
-                if (trimmed) setDisplayName(trimmed);
-                else clearDisplayName();
-              }}
-            />
-          </label>
-          {link !== "live" && (
-            <span className="meta link" role="status">
-              {link}&hellip;
-            </span>
-          )}
-        </div>
-      )}
-      <h2>Lobby</h2>
-      {/* **The one way back to the door** (R-6.5b2.1). "On this device" stood
-          above these lists until this cycle; single player is a channel of its
-          own now, at `#/`, and this screen is no longer the first one. It is an
-          ANCHOR for `lobbyRow`'s reason — the control's whole job is to go to an
-          address — and it is drawn OUTSIDE the three states below, so a player
-          who is not signed in, or whose API cannot be reached, can still reach
-          the games in their own browser from here. */}
-      <a className="to-door" href={hashOf({ kind: "door" })}>
-        Play on this device
-      </a>
-      {notice && <Refusal sentence={notice} />}
+    <div className="lobby">
+      <LobbyBand crumbs={["Lobby"]} corner={corner ?? (me === null ? toDevice : null)} />
+      <div className="lobby-body">
+        {notice && <Refusal sentence={notice} />}
 
-      {/* **The part of this screen the SERVER owns, and its three states**
-          (M6.5b, spec §2.5). The door's four answers used to be four `return`s
-          in front of the whole page; they are drawn here now, so everything
-          above — the frame and the games in this browser — is on screen in
-          every one of them.
-
-          **The DOOR wins when there is one**, and that is `App`'s decision
-          rather than this screen's: a door that answered is a server this
-          browser can reach, so its words are the useful ones. `App` withholds
-          them only where nothing answered at all, which is the one line below.
-          The listing behind it keeps trying, and one landed read brings the
-          sections back. */}
-      {door ? (
-        door
-      ) : serverUp === false ? (
-        <p className="muted">not connected</p>
-      ) : (
-        <>
-          <button type="button" className="primary" onClick={() => navigate({ kind: "new" })}>
-            New table
-          </button>
+        {/* **The part of this screen the SERVER owns** (M6.5b, spec §2.5;
+            M6.5c2, spec §2.1). The door's states are `Door`'s and `App` hands
+            them in when nobody is signed in; a signed-in lobby whose health read
+            failed is state C here; otherwise the actions and the lists. The
+            listing keeps trying behind C, and one landed read brings the lists
+            back (`onReached`). */}
+        {door ? (
+          <div className="lobby-door">{door}</div>
+        ) : serverUp === false ? (
+          <Unreachable onRetry={onRetry ?? (() => {})} />
+        ) : (
+          <>
+            <div className="lobby-actions">
+              <button type="button" className="primary" onClick={() => navigate({ kind: "new" })}>
+                New table
+              </button>
+              {toDevice}
+              {link !== "live" && (
+                <span className="meta link-word" role="status">
+                  {link}&hellip;
+                </span>
+              )}
+            </div>
 
           {/* **`your-games` is a NAME and not decoration.** Until M6.3 this was the
               one section that was not `.open-tables`, and a browser cell scoped its
@@ -436,10 +418,11 @@ export function Lobby({
               <Chat scope={{ kind: "house" }} tick={tick} sendName heading="h3" />
             </section>
           )}
-        </>
-      )}
+            </>
+        )}
 
-      {error && <Refusal sentence={error} />}
+        {error && <Refusal sentence={error} />}
+      </div>
     </div>
   );
 }

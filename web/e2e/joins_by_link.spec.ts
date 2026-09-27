@@ -88,89 +88,38 @@ test("a person holding only a link joins a locked open table and plays", async (
   await signIn(a, "a@e2e.test");
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
 
-  // **The who-strip still reads as one line of small print on a phone** (live
-  // review, M-1). M6.4 put "Your name" (R-6.4.3 — a label plus a 9rem input)
-  // into a `flex` row with no `flex-wrap`, so at 390px the lobby's first line
-  // became a 51px block with the address broken across THREE lines and "sign
-  // out" across two. Nothing overflowed and nothing was clipped, which is why
-  // neither the width gate nor the overflow read below can see it.
-  //
-  // **The oracle is the SAME elements at desktop width**, not a pixel constant:
-  // what is claimed is that narrowing the window does not make these two pieces
-  // of text taller, and a magic number would be a second design figure to keep
-  // in step. Read before the resize and again after it.
+  // **The corner is a pill on a phone, and nothing on the lobby scrolls
+  // sideways** (M6.5c2, spec §2.2). It replaces M6.4's who-strip measure, whose
+  // "Your name" field the corner's own control replaced. At desktop width the
+  // corner reads "Playing as …" beside its one action; at 390px the same corner
+  // is a pill and the action is one tap away. Live the door is the Worker's, so
+  // the action is "change name"; locally it is the open door's "switch player".
   {
     const desktop = a.viewportSize()!;
-    const strip = a.locator(".who-strip");
-    const parts = () =>
-      strip.evaluate((el) => {
-        const who = el.querySelector(".who")!;
-        // `null` where the strip draws no sign-out — which is the edge's door,
-        // live (asserted below).
-        const out = el.querySelector("button");
-        const name = el.querySelector(".your-name input")!;
-        const box = (n: Element) => Math.round(n.getBoundingClientRect().height);
-        return {
-          who: box(who),
-          out: out ? box(out) : null,
-          name: Math.round(name.getBoundingClientRect().width),
-          nameTop: Math.round(name.getBoundingClientRect().top),
-          whoBottom: Math.round(who.getBoundingClientRect().bottom),
-          strip: Math.round(el.getBoundingClientRect().height),
-          wrap: getComputedStyle(el).flexWrap,
-        };
-      });
-    const wide = await parts();
+    const corner = a.locator(".identity-corner");
+    const action = corner.getByRole("button", { name: LIVE ? "change name" : "switch player" });
+    const pill = corner.locator(".identity-pill");
+    await expect(corner.getByText("Playing as")).toBeVisible();
+    await expect(action).toBeVisible();
+    await expect(pill).toBeHidden();
+
     await a.setViewportSize({ width: 390, height: 844 });
-    // The layout has to be DONE before it is read (the width gate's own note).
     await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
-    const narrow = await parts();
-
-    // Anti-vacuity: every piece of the strip is really on the phone screen. A
-    // strip that had dropped its name field would satisfy the heights below
-    // for the wrong reason.
-    expect(wide.who, "the address has a box at desktop width").toBeGreaterThan(0);
-    expect(narrow.name, "the name field is still on the screen at 390px").toBeGreaterThan(0);
-
-    expect(
-      narrow.who,
-      `the address wraps at 390px: ${narrow.who}px against ${wide.who}px at ${desktop.width}`,
-    ).toBeLessThanOrEqual(wide.who);
-    if (LIVE) {
-      // **The edge's door draws no sign-out**: the Worker's door is
-      // `cf-access`, and `App.tsx` draws the button under `open` ONLY. So
-      // live there is none to measure — and its absence is the reading: a
-      // sign-out under Access would look like it logged you out while Access
-      // kept letting you in.
-      expect(wide.out, "no sign-out under the edge's door").toBeNull();
-      expect(narrow.out, "no sign-out under the edge's door").toBeNull();
-    } else {
-      expect(
-        narrow.out,
-        `"sign out" wraps at 390px: ${narrow.out}px against ${wide.out}px at ${desktop.width}`,
-      ).toBeLessThanOrEqual(wide.out!);
-    }
-    // And the field is on its OWN line rather than sharing one — the other half
-    // of the fix, and the half that says the row wrapped where it was told to.
-    // A field that lands beside a short address on one screen and under it on
-    // the next is worse than one that is always in the same place.
-    expect(
-      narrow.nameTop,
-      `the name field shares a line with the address at 390px (top ${narrow.nameTop}, ` +
-        `the address ends at ${narrow.whoBottom})`,
-    ).toBeGreaterThanOrEqual(narrow.whoBottom);
-
+    await expect(pill).toBeVisible();
+    await expect(action, "the action waits behind the pill").toBeHidden();
     const read = await readOverflow(a);
     expect(
       read.docScrollWidth - read.docClientWidth,
       `the lobby scrolls sideways at 390px: ${blame(read)}`,
     ).toBeLessThanOrEqual(0);
-    // eslint-disable-next-line no-console
-    console.log(
-      `who-strip at 390px: address ${narrow.who}px (desktop ${wide.who}) · ` +
-        `${narrow.out === null ? "no sign out" : `sign out ${narrow.out}px (desktop ${wide.out})`} · strip ${narrow.strip}px ` +
-        `(desktop ${wide.strip}) · flex-wrap ${narrow.wrap} · name field ${narrow.name}px`,
-    );
+    await pill.click();
+    await expect(action, "one tap opens the corner").toBeVisible();
+    const opened = await readOverflow(a);
+    expect(
+      opened.docScrollWidth - opened.docClientWidth,
+      `the open corner pushes the lobby sideways at 390px: ${blame(opened)}`,
+    ).toBeLessThanOrEqual(0);
+    await pill.click();
 
     await a.setViewportSize(desktop);
     await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));

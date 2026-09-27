@@ -190,16 +190,18 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         plays in this browser &mdash; nobody signs in, the door lists those games under{" "}
         <strong>On this device</strong>, and the last section of this page is about them.{" "}
         <strong>Play with friends</strong>{" "}
-        goes to the server, which has to know who you are before it will show you a table: under
-        this deployment that is an email address you type once and it remembers. What you land on
+        goes to the server, which has to know who you are before it will show you a table: on a server
+        with no sign-in of its own you choose a name once and this browser remembers it; behind
+        Cloudflare Access it is your Access sign-in. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
         door at the top of it. It has three lists &mdash; <em>Your games</em>, the
         tables you already sit at; <em>Open tables</em>, every table on the server still waiting
         for players, whoever opened it; and <em>Games in progress</em>, the ones you can watch
-        &mdash; and <em>New table</em>, which is the form. Beside <strong>You are</strong> at the
-        top of the lobby is a <strong>Your name</strong> field: it is optional, this browser
-        remembers it, and it is the name the seats you take and the messages you send are
-        labelled with &mdash; leave it blank and your address is used. (It is not the{" "}
+        &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
+        you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
+        choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
+        <em>change name</em> sets the name the seats you take and the messages you send are labelled
+        with, and this browser remembers it; leave it blank and your address is used. (It is not the{" "}
         <em>display name</em> on the form below, which names you at one table.)
       </p>
       <p>
@@ -279,9 +281,9 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
       <p>
         The lobby has a chat of its own, <strong>Lobby chat</strong>, under the three lists, folded
         the same way &mdash; open it to join in. Whoever runs the server can switch it off, and then
-        the section is simply not there. The name you type beside <em>You are</em> on the lobby is
-        the name your messages carry, and the name a seat you take is labelled with; leave it blank
-        and your address is used.
+        the section is simply not there. The name in the lobby&rsquo;s corner is the name your
+        messages carry, and the name a seat you take is labelled with; with none, your address is
+        used.
       </p>
 
       <h3>Saving, and coming back</h3>

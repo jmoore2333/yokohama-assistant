@@ -11,7 +11,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
-import { DISPLAY_NAME_KEY, setLobbyChat } from "./api";
+import { setLobbyChat } from "./api";
 import { OPEN_KEY } from "./chatFold";
 import { fakeStream, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
@@ -58,9 +58,7 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
       return { ...wire.houseChat, messages: [], last: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
-  render(
-    <Lobby me={ME} who={<span className="meta who">You are {ME}</span>} />,
-  );
+  render(<Lobby me={ME} corner={<span className="identity-corner">{ME}</span>} />);
   return { stub, user: userEvent.setup() };
 }
 
@@ -325,9 +323,9 @@ describe("the lobby", () => {
     expect(screen.queryByText(/none yet/)).toBeNull();
   });
 });
-// ---- M6.4: the lobby chat and the name beside the address -----------------
+// ---- M6.4: the lobby chat -------------------------------------------------
 
-describe("the lobby's chat and its name field", () => {
+describe("the lobby's chat", () => {
   // **A fourth section, and ABSENT rather than empty when the deployment has
   // the house chat off (R-6.4.6).** The switch is a launch variable read once
   // from `/api/health`, so what the client owes it is not to draw a panel whose
@@ -362,21 +360,6 @@ describe("the lobby's chat and its name field", () => {
     } finally {
       setLobbyChat(true);
     }
-  });
-
-  // **The name is the LOBBY's, and it is one key (R-6.4.3).** The New table
-  // form and the open table's seat picker already read it; this is where a
-  // person who has not opened either can set it, and it is written as typed
-  // rather than on a submit this screen does not have. An emptied field REMOVES
-  // the key, so "leave it blank and your address is used" is true of the
-  // browser as well as of the sentence.
-  it("offers Your name beside the address and remembers it as typed", async () => {
-    const { user } = show();
-    const field = await screen.findByLabelText("Your name");
-    await user.type(field, "Captain Red");
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Captain Red");
-    await user.clear(field);
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
   });
 
   // **The house frame is a WAKE, and the panel's tick is this screen's own**
@@ -421,12 +404,25 @@ describe("the lobby's chat and its name field", () => {
 // two states a player most needs it in are the two where nothing else on this
 // screen is pressable.
 describe("the server area", () => {
-  it("carries one way back to the door, above the lists", async () => {
+  // **The band is the lobby's heading, and its corner is who is playing**
+  // (M6.5c2, spec §2.2): the corner is the node the host hands in, and the way
+  // back is not in it once somebody is signed in.
+  it("draws the band — the product, the lobby, and the corner it is handed", async () => {
     show();
-    const back = await screen.findByRole("link", { name: "Play on this device" });
-    // An ADDRESS and not a button, for `lobbyRow`'s reason: the control's whole
-    // job is to go to `#/`, so the browser does the navigating.
+    expect(await screen.findByRole("heading", { level: 2, name: "Lobby" })).toBeInTheDocument();
+    const band = document.querySelector<HTMLElement>("header.lobby-band")!;
+    expect(within(band).getByRole("heading", { level: 1, name: "Yokohama" })).toBeInTheDocument();
+    expect(band.querySelector(".band-corner .identity-corner")).toHaveTextContent(ME);
+    expect(within(band).queryByRole("link", { name: "Games on this device" })).toBeNull();
+  });
+
+  it("carries one way back to the door, beside New table and above the lists", async () => {
+    show();
+    const back = await screen.findByRole("link", { name: "Games on this device" });
+    // An ADDRESS, and in the actions row once somebody is signed in: the band's
+    // corner is the identity's then.
     expect(back).toHaveAttribute("href", "#/");
+    expect(back.closest(".lobby-actions")).not.toBeNull();
     const lists = await screen.findByRole("heading", { name: "Your games" });
     // Order, and not merely presence: a way out that sits below two listings is
     // a way out a player on a phone scrolls past.
@@ -441,8 +437,10 @@ describe("the server area", () => {
     expect(await screen.findByText("the door says so")).toBeInTheDocument();
     // **And the way back is drawn in THIS state too.** A player who is not
     // signed in has nothing else on this screen to press, and the games in
-    // their own browser need no door at all.
-    expect(screen.getByRole("link", { name: "Play on this device" })).toBeInTheDocument();
+    // their own browser need no door at all. In the band's corner, where the
+    // identity would be: the one control on this screen that needs no door.
+    const back = screen.getByRole("link", { name: "Games on this device" });
+    expect(back.closest("header.lobby-band")).not.toBeNull();
     // **Every `/api/games` route is a 401 without an identity** (M6.1), so a
     // lobby that listed first would show a refusal as the player's first
     // screen — the reason the door was a gate in the first place, kept.
@@ -451,7 +449,7 @@ describe("the server area", () => {
     expect(stub.calls).toHaveLength(0);
   });
 
-  it("says not connected in place of the four sections, and goes on reading", async () => {
+  it("says it can't reach the server in place of the lists, offers to try again, and goes on reading", async () => {
     const stub = stubApi((call) => {
       const l = lists(call);
       if (l !== undefined) return l;
@@ -460,14 +458,17 @@ describe("the server area", () => {
         return { ...wire.houseChat, messages: [], last: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
-    render(<Lobby me={ME} serverUp={false} />);
-    expect(await screen.findByText("not connected")).toBeInTheDocument();
+    const retry = vi.fn();
+    render(<Lobby me={ME} serverUp={false} onRetry={retry} />);
+    expect(await screen.findByRole("heading", { level: 3, name: "Can't reach the server" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Open tables" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Games in progress" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
-    // **The read is still going out.** The line says what is true of the last
-    // health read, not that this screen has given up: the sections come back
+    await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+    // **The read is still going out**: the card says what is true of the last
+    // health read, not that this screen has given up — the sections come back
     // when a read lands.
     await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1));
   });

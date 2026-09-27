@@ -90,8 +90,12 @@ const HELD_WAIT_S = 25;
 /** What the signal can currently say for itself.
  *
  *  `live` is the resting state and shows NOTHING on screen — a permanent green
- *  dot is a thing people stop seeing. The other two are worth a word each. */
-export type Link = "live" | "refreshing" | "reconnecting";
+ *  dot is a thing people stop seeing. The other three are worth a word each:
+ *  `connecting` until this signal's FIRST connection is made (R-N3: a first
+ *  visit used to read "reconnecting…" about a link it never had),
+ *  `reconnecting` once a connection it made has gone, and `refreshing` for a
+ *  tab come back from hidden. */
+export type Link = "connecting" | "live" | "refreshing" | "reconnecting";
 
 /** How long to wait after `failures` consecutive failures. Clamped at both
  *  ends, so a caller can hand it any count including a negative one. */
@@ -258,6 +262,12 @@ export function usePolled<T>(
     // tree.
     let stopped = false;
     let controller: AbortController | null = null;
+    /** Whether THIS run of the effect has connected at least once (R-N3). A
+     *  signal that has lost nothing is "connecting"; only a connection that was
+     *  made and then lost is "reconnecting". A new resource re-runs the effect,
+     *  so its first connection is a first one. */
+    let connected = false;
+    const lost = (): Link => (connected ? "reconnecting" : "connecting");
     const visible = () => document.visibilityState === "visible";
 
     const schedule = (ms: number) => {
@@ -308,7 +318,7 @@ export function usePolled<T>(
         // The STREAM is still good and the re-read is what failed, so this is
         // not a trip round the ladder — the next frame tries again. The word on
         // screen is the true one meanwhile.
-        setLink("reconnecting");
+        setLink(lost());
       } finally {
         reading = false;
       }
@@ -367,6 +377,7 @@ export function usePolled<T>(
       // its `open` event (`ws.ts`).
       const onConnected = () => {
         if (stopped) return;
+        connected = true;
         failures.current = 0;
         setLink("live");
       };
@@ -383,13 +394,14 @@ export function usePolled<T>(
         const pending = transportWait(failures.current > 0);
         if (pending !== null) {
           // **Nothing is connected while the transport is being asked, so the
-          // word stops saying "live"** (spec §5.1; ruling I-86) — the resting
+          // word stops saying "live"** (it says connecting, or reconnecting
+          // once a connection has been made; spec §5.1; ruling I-86) — the resting
           // word the effect set on mount, which a wait on a health read that
           // never settles left on screen over no connection at all. A tab
           // come back keeps "refreshing", the truer word about a board as old
           // as the tab was hidden; either gives way to "live" at the
           // connection, as every other word here does.
-          setLink((word) => (word === "live" ? "reconnecting" : word));
+          setLink((word) => (word === "live" ? lost() : word));
           await pending;
           if (stopped || mine.signal.aborted) return;
         }
@@ -406,6 +418,7 @@ export function usePolled<T>(
           // with a reply in flight, for the same reason.
           const v = await src.current.once();
           if (stopped) return;
+          connected = true;
           failures.current = 0;
           setLink("live");
           latest.current(v);
@@ -428,7 +441,7 @@ export function usePolled<T>(
           // (spec §5.1) — at the close, not once the probe has answered: a
           // probe that hangs would otherwise leave "live" on screen over no
           // connection at all.
-          setLink("reconnecting");
+          setLink(lost());
           // THE PROBE: one plain fetch through `call`, so an expired Access
           // session is classified exactly as the stream arm classifies it (the
           // catch below ends the source with the `/enter` remedy); an answer is
@@ -469,7 +482,7 @@ export function usePolled<T>(
         // says. The error itself is deliberately not carried up — a sentence in
         // the error strip every few seconds would bury the refusals that are
         // about a move the player actually made.
-        setLink("reconnecting");
+        setLink(lost());
         const wait = nextDelay(failures.current);
         failures.current += 1;
         schedule(wait);

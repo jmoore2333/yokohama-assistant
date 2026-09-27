@@ -239,6 +239,9 @@ export const WALKER = "walker@e2e.test";
  * stand-in and said so. It is a form now, so the walk types into it — which is
  * the only thing that also tests the screen that puts the name there.
  *
+ * The form is the NAME STEP since M6.5c2 (the open door): it takes an address
+ * as well as a name, and the walk types the address it has always used.
+ *
  * **`email` is a parameter because two browsers are two people.** Every walk but
  * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
  * signs its two contexts in under two different addresses, and the identity a
@@ -246,7 +249,7 @@ export const WALKER = "walker@e2e.test";
  *
  * Idempotent, because several specs navigate more than once in a test and the
  * name survives inside a page's storage: if the door is already open this just
- * waits for the strip that says so. The wait is on EITHER, because `App` draws
+ * waits for the corner, or the strip, that says so. The wait is on EITHER, because `App` draws
  * nothing at all until `/api/me` answers — a bare `count()` would read zero for
  * a player who is signed in perfectly well.
  *
@@ -258,14 +261,20 @@ export const WALKER = "walker@e2e.test";
  */
 export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby"): Promise<void> {
   await page.goto(url);
-  const form = page.getByRole("heading", { name: "Sign in" });
-  const strip = page.getByText(new RegExp(`^You are ${email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
-  await expect(form.or(strip).first()).toBeVisible();
-  if (await form.count()) {
-    await page.getByLabel("Email").fill(email);
-    await page.getByRole("button", { name: "Sign in" }).click();
+  const step = page.getByRole("heading", { name: "Choose a name" });
+  // Signed in reads two ways: the lobby's corner, whose title is the identity
+  // (M6.5c2), and the "You are …" strip every other screen still draws.
+  const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const signedIn = page
+    .locator(".identity-corner")
+    .getByTitle(email, { exact: true })
+    .or(page.getByText(new RegExp(`^You are ${escaped}$`)));
+  await expect(step.or(signedIn).first()).toBeVisible();
+  if (await step.count()) {
+    await page.getByLabel("Name", { exact: true }).fill(email);
+    await page.getByRole("button", { name: "Continue" }).click();
   }
-  await expect(strip.first()).toBeVisible();
+  await expect(signedIn.first()).toBeVisible();
 }
 
 /**

@@ -821,9 +821,9 @@ test("the first screen renders On this device with the API refused, and a local 
   // **The door reports nothing about a server it never asks** (R-6.5b2.7). The
   // line that does report one is the LOBBY's, one hash away, and it is still
   // there — so the claim this cell has always made is read where it now lives.
-  await expect(page.getByText("not connected")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Can't reach the server" })).toHaveCount(0);
   await page.goto("/#/lobby");
-  await expect(page.getByText("not connected")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Can't reach the server" })).toBeVisible();
 
   const game = await startGame(page, { local: true, signedOut: true });
   const pick = rng(0x4f46_464c); // "OFFL"

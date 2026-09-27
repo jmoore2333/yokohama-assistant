@@ -299,7 +299,29 @@ describe("the signal, over the stream", () => {
 });
 
 describe("what the link word rests on (review I-1, M-2, M-3)", () => {
-  it("stays reconnecting while the reopen's request is in flight, and says live when the 200 lands", async () => {
+  // **R-N3: the first connection's word** (M6.5c close §6.3 item 11). A signal
+  // that has never connected says "connecting"; only a connection that was made
+  // and then lost says "reconnecting" — a first visit used to read
+  // "reconnecting…" about a link it never had.
+  it("says connecting until its first connection, and reconnecting only once one is lost (R-N3)", async () => {
+    let opens = 0;
+    const stream = fakeStream();
+    stubApi((call) => {
+      if (!call.path.endsWith("/stream")) return undefined;
+      opens += 1;
+      return opens === 1 ? { status: 502, body: { error: "gone" } } : stream.reply(call);
+    });
+    const { result } = renderHook(() => useSignal("wire", true, () => {}));
+    await until(() => result.current === "connecting", "the first open failed");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 10);
+    });
+    await until(() => result.current === "live", "the first connection");
+    stream.close();
+    await until(() => result.current === "reconnecting", "the connection it made was lost");
+  });
+
+  it("stays connecting while the reopen's request is in flight, and says live when the 200 lands", async () => {
     // **A request that has gone out is not a connection.** Saying `"live"` when
     // the `fetch` is ISSUED rather than when it is answered has two costs, and
     // both are on screen: during an outage the word blinks off at every rung of
@@ -314,7 +336,7 @@ describe("what the link word rests on (review I-1, M-2, M-3)", () => {
       return opens === 1 ? { status: 502, body: { error: "gone" } } : held.promise;
     });
     const { result } = renderHook(() => useSignal("wire", true, () => {}));
-    await until(() => result.current === "reconnecting", "the first open failed");
+    await until(() => result.current === "connecting", "the first open failed");
 
     // The ladder's first rung opens again, and the answer is withheld.
     await act(async () => {
@@ -324,7 +346,7 @@ describe("what the link word rests on (review I-1, M-2, M-3)", () => {
     expect(stub.matching("GET", "/stream")).toHaveLength(2);
     // **The request is out and the word has NOT moved.** This is the assertion
     // the old line could not pass.
-    expect(result.current).toBe("reconnecting");
+    expect(result.current).toBe("connecting");
 
     held.resolve(openStream());
     await until(() => result.current === "live", "the connection was made");
@@ -409,7 +431,7 @@ describe("what the link word rests on (review I-1, M-2, M-3)", () => {
         () => {},
       ),
     );
-    await until(() => result.current === "reconnecting", "the first open failed");
+    await until(() => result.current === "connecting", "the first open failed");
 
     // The first rung connects, and says nothing.
     await act(async () => {
@@ -734,7 +756,7 @@ describe("the hook's own rules, whatever the transport", () => {
       initialProps: { active: true },
     });
     await settle();
-    expect(result.current).toBe("reconnecting");
+    expect(result.current).toBe("connecting");
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
     rerender({ active: false });
     expect(result.current).toBe("live");
@@ -1173,7 +1195,7 @@ describe("the transport is known before anything opens (M6.5c live tier)", () =>
     await api.health().catch(() => {});
     const { result } = renderHook(() => usePolled(house, true, () => {}));
     await settle();
-    expect(result.current, "the word says so").toBe("reconnecting");
+    expect(result.current, "the word says so").toBe("connecting");
     // The first attempt asks nothing of its own: the entry read is App's.
     expect(healths).toBe(1);
     expect(stub.matching("GET", "/api/stream")).toEqual([]);
@@ -1198,7 +1220,7 @@ describe("the transport is known before anything opens (M6.5c live tier)", () =>
   // So the wait is App's own `BOUND_MS`, measured from the read's start, and
   // after it the transport this page HAS is used — the remembered one, or the
   // default.
-  it("waits for a health read that never settles only as long as the bound, saying reconnecting and never live, then opens the transport it has (the NAS)", async () => {
+  it("waits for a health read that never settles only as long as the bound, saying connecting and never live, then opens the transport it has (the NAS)", async () => {
     const stream = fakeStream();
     const stub = stubApi((call) => {
       if (call.path.endsWith("/api/health")) return new Promise<Reply>(() => {});
@@ -1211,12 +1233,12 @@ describe("the transport is known before anything opens (M6.5c live tier)", () =>
     // **Not "live" while nothing is connected** (spec §5.1): the transport is
     // being asked, and the word is the one a connection that is not there yet
     // reads.
-    expect(result.current, "the word while the transport is being asked").toBe("reconnecting");
+    expect(result.current, "the word while the transport is being asked").toBe("connecting");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(BOUND_MS - 100);
     });
     expect(stub.matching("GET", "/api/stream"), "no stream before the bound").toEqual([]);
-    expect(result.current).toBe("reconnecting");
+    expect(result.current).toBe("connecting");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
@@ -1254,7 +1276,7 @@ describe("the transport is known before anything opens (M6.5c live tier)", () =>
     });
     await until(() => stub.matching("GET", "/api/stream").length === 1, "the default transport, once the bound had passed");
     await settle();
-    expect(result.current).toBe("reconnecting");
+    expect(result.current).toBe("connecting");
     expect(healths, "nothing re-asked before the ladder's first rung").toBe(1);
 
     await act(async () => {

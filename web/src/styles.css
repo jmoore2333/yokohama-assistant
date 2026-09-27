@@ -954,14 +954,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
 
-/* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
-   (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
-   box — the one they had when each of them WAS the page — so nested inside
-   this one they would centre a 52rem column inside a 52rem column and push
-   themselves three rems down from a heading they belong under. The box is
-   theirs where they stand alone and flat where they stand here; nothing in
-   those components moves for it. */
-.lobby > .setup { max-width: none; margin: 0; padding: 0; }
 .on-this-device .local-fault { color: var(--fg-dim); }
 
 /* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
@@ -1057,14 +1049,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   color: var(--vp); font: inherit; cursor: pointer; text-decoration: underline;
 }
 .linkish:hover { color: var(--fg); }
-/* The way back, for the same reason and in `button.ghost`'s box. */
-.lobby a.to-door {
-  display: inline-block;
-  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
-  margin-bottom: 0.6rem;
-}
-.lobby a.to-door:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
    is the setup screens' own `.setup` box and the rows are their `.field
@@ -1154,13 +1138,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 /* The door's refusal: a sentence and nothing to click, so it reads as prose
    rather than as a failed form. */
 .door-error { color: var(--warn); max-width: 34rem; }
-
-.sign-in .field { max-width: 26rem; }
-.sign-in form { margin-top: 1rem; }
-.sign-in button.primary { margin-top: 0.6rem; }
-/* Why the player is at this door, when they did not choose to be. Above the
-   form, and given the room a sentence needs. */
-.sign-in .door-notice { margin: 0 0 0.9rem; max-width: 34rem; }
 
 /* One table in the Game menu's list: the name is a control, the rest is not.
    The facts can carry three or four emails at 4P, so the row wraps rather than
@@ -1592,28 +1569,13 @@ ol.account .mover { font-weight: 700; }
 .chat form input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 11.5px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.2rem 0.4rem; }
 .chat form .ghost { font-size: 10px; padding: 0 0.5rem; letter-spacing: 0; text-transform: none; }
 
-/* **The name beside the address (M6.4, R-6.4.3).** In the who-strip, which is
- * one line of small print above the lobby's heading — so the field is sized to
- * that line rather than to the form fields below it, and reads as a setting
- * rather than as something to fill in. */
-.who-strip .your-name { display: inline-flex; align-items: center; gap: 0.35rem; margin-left: 0.75rem; font-size: 11.5px; color: var(--fg-dim); }
-.who-strip .your-name input { font: inherit; font-size: 11.5px; width: 9rem; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.1rem 0.35rem; }
-
-/* **On a phone the name takes its own line, and the strip stops breaking its
- * words** (live review, M-1). The field is a label plus a 9rem input — 177px —
- * and it joined a `flex` row with no `flex-wrap`, so at 390px the address broke
- * across three lines and "sign out" across two: a 51px block where the design
- * is one line of small print. Nothing overflowed and nothing was clipped, which
- * is why this is a reading of two BOXES in `joins_by_link.spec.ts` and not a
- * width gate.
- *
- * The row wraps, and the name is given the whole second line rather than left
- * to wrap where it happens to land — a field that lands beside a short address
- * on one screen and under it on the next is worse than one that is always in
- * the same place. `flex-end` because that is the strip's own alignment. */
+/* **On a phone the strip wraps rather than breaking its words** (live review,
+ * M-1): a `flex` row with no `flex-wrap` broke a long address across three
+ * lines and "sign out" across two. The lobby's name field that forced it is
+ * gone (M6.5c2 — the band's corner is its successor); the screens that still
+ * draw the strip keep the wrap. */
 @media (max-width: 480px) {
   .who-strip { flex-wrap: wrap; }
-  .who-strip .your-name { margin-left: 0; width: 100%; justify-content: flex-end; }
 }
 
 /* ---- M5: the strips on the table ---------------------------------------- */
@@ -2177,4 +2139,87 @@ a.primary-link {
     display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
   }
   .door-foot { justify-content: center; }
+}
+
+/* ---- M6.5c2: the lobby's frame and the door's states (R-6.5c2.4; spec §2.1;
+   mocks 03, 05) ------------------------------------------------------------- */
+/* The lobby: the band full width, the body a 72rem column under it (the
+   band's padding lines its content up with this one's). */
+.lobby { min-height: 100vh; }
+.lobby-body { max-width: 72rem; margin: 0 auto; padding: 1.1rem 2rem 2.5rem; }
+.lobby-body > .error { margin: 0 0 0.9rem; }
+/* INTERIM, and Task 5's to delete with the sections it restyles: the lobby's
+   root was a `.setup` box until M6.5c2, and `.setup h3` sized these three
+   headings. Restated for exactly them, so the lists look as they did until
+   they are rebuilt. */
+.lobby-body > .saved > h3 { font-size: 1rem; margin: 1.6rem 0 0.4rem; }
+.lobby-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; margin: 0.4rem 0 1.1rem; }
+.lobby-actions .to-door, .band-corner .to-door {
+  font-size: 12px; color: var(--fg-dim); text-decoration: underline;
+  text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.lobby-actions .link-word {
+  margin-left: auto; font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; color: var(--warn);
+}
+/* A state is a card, centred where the lists would be. Its title is an `h3`
+   (the band's last crumb is the page's `h2`), so it carries the card title's
+   look here: the shared block styles `.raised-card h2` only. */
+.lobby-door { display: flex; justify-content: center; padding: 1.6rem 0 1rem; }
+.state-card { width: 100%; max-width: 27.5rem; }
+.state-card > .card-band { height: 5px; }
+.state-card h3 { font-size: 21px; font-weight: 600; margin: 0.25rem 0 0.4rem; }
+.state-card .lede { font-size: 12.5px; }
+.state-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; }
+.state-actions a {
+  color: var(--fg-dim); text-decoration: underline; text-decoration-color: var(--line-bright);
+  text-underline-offset: 3px;
+}
+.operator-note {
+  margin-top: 0.9rem; padding-top: 0.6rem; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--fg-faint);
+}
+.operator-note summary { cursor: pointer; color: var(--fg-dim); font-weight: 600; }
+.operator-note p { margin: 0.4rem 0 0; overflow-wrap: anywhere; }
+/* The name step (mock 03). */
+.name-step > .card-band { height: 6px; }
+.name-step h3 { font-size: 26px; }
+.name-step input {
+  display: block; width: 100%; font: inherit; font-size: 15px; color: var(--fg);
+  background: var(--bg-sunken); border: 1px solid var(--line-bright); border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+}
+.name-step .hint { margin: 0.4rem 0 1rem; font-size: 11.5px; color: var(--fg-faint); }
+.name-step .door-notice { margin: 0 0 0.8rem; }
+.name-step .fine {
+  margin: 1.1rem 0 0; padding-top: 0.75rem; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--fg-faint);
+}
+/* State D: three dots and the skeleton of the lists to come. */
+.connecting-state { width: 100%; max-width: 35rem; margin: 0 auto; padding-top: 0.6rem; }
+.connecting-line { color: var(--fg-dim); margin: 0 0 0.9rem; }
+.connecting-dots { display: inline-flex; gap: 4px; margin-right: 8px; vertical-align: middle; }
+.connecting-dots i {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--vp); opacity: 0.5;
+  animation: connecting-pulse 1.2s ease-in-out infinite;
+}
+.connecting-dots i:nth-child(2) { animation-delay: 0.2s; }
+.connecting-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes connecting-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+.skeleton-rows > div {
+  height: 46px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-raised);
+}
+.skeleton-rows > div:nth-child(1) { opacity: 0.7; }
+.skeleton-rows > div:nth-child(2) { opacity: 0.5; }
+.skeleton-rows > div:nth-child(3) { opacity: 0.3; }
+@media (prefers-reduced-motion: reduce) { .connecting-dots i { animation: none; } }
+@media (max-width: 600px) {
+  .lobby-body { padding: 0.9rem 1rem 2rem; }
+  .lobby-door { padding-top: 0.8rem; }
+  .name-step button.primary, .state-card a.primary-link {
+    display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
+  }
+  /* Thumb-sized on a phone: New table takes the row beside the way back (mock
+     11), and state C's Try again is as tall as every other card's control. */
+  .lobby-actions button.primary { flex: 1 1 auto; min-height: 44px; }
+  .state-actions button.ghost { min-height: 44px; }
 }
