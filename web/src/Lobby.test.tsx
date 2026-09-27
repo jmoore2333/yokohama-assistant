@@ -13,9 +13,9 @@ import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
 import { setLobbyChat } from "./api";
 import { OPEN_KEY } from "./chatFold";
-import { fakeStream, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
-import { seatName } from "./tables";
+import { fakeStream, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import productionBot from "./wire/production_bot.json";
 
 /** All three scopes, from the corpus's own listings.
  *
@@ -77,13 +77,13 @@ const section = (heading: string): HTMLElement =>
 describe("the lobby", () => {
   it("draws both sections from the two scopes, with the same row in each", async () => {
     const { stub } = show();
-    await screen.findByRole("heading", { name: "Your games" });
+    await screen.findByRole("heading", { name: "Your tables" });
     // **Both scopes were really asked for.** Without this the cell passes on a
     // client that asked once and drew the same answer twice.
     await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "open"))).toHaveLength(1));
     expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1);
 
-    const mine = section("Your games");
+    const mine = section("Your tables");
     const open = section("Open tables");
     // `wire.games` is the caller's two tables; `wire.gamesOpen` is every open
     // table on the server, which here is the same two read from outside.
@@ -93,16 +93,16 @@ describe("the lobby", () => {
     expect(within(open).getByRole("link", { name: "wire2" })).toBeInTheDocument();
   });
 
-  // **The third section (R-3.9): a game you can WATCH, found without a link.**
-  // The rows are the other two sections' — `tableWord` says "waiting on <name>"
-  // or names the winner, the lock marker says a password will be wanted — and
-  // the one thing this section must NOT carry is the Abandon control, which is
-  // the creator's and belongs to Your games alone (M6.2 ruling #13).
+  // **The third section (R-3.9): a game you can SPECTATE, found without a
+  // link.** The rows are the other two sections' (the chips say who is moving,
+  // the password tag says a password will be wanted) and the action is
+  // Spectate; the one thing this section must NOT carry is the Abandon control,
+  // which is the creator's and belongs to Your tables alone (M6.2 ruling #13).
   it("lists the games in progress, with no abandon control on them", async () => {
     const { stub } = show((call) =>
       isGamesList(call, "playing") ? wire.gamesPlaying : undefined,
     );
-    const playing = section("Games in progress");
+    const playing = section("Being played");
     const row = (await within(playing).findByRole("link", { name: "wire" })).closest("li")!;
     // The scope was really asked for, alongside the other two.
     expect(stub.calls.filter((c) => isGamesList(c, "playing"))).toHaveLength(1);
@@ -115,7 +115,8 @@ describe("the lobby", () => {
       "href",
       "#/t/wire",
     );
-    expect(row).toHaveTextContent("2P ·");
+    expect(row).toHaveTextContent("2 players");
+    expect(within(row).getByRole("button", { name: "Spectate: wire" })).toBeInTheDocument();
     // The corpus's playing table is locked, so the mark a watcher needs before
     // they click is on the row.
     expect(wire.gamesPlaying.games[0]!.locked).toBe(true);
@@ -127,23 +128,25 @@ describe("the lobby", () => {
     expect(within(playing).queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
-  it("says what each table is doing, and who is at it", async () => {
+  // **A row is its size and what matters about it, then a chip per seat**
+  // (mock 02). The words are `tables.ts`'s (`rowMeta`, `seatChips`), so the row
+  // and the cells that read it have one source.
+  it("says what each table is doing and who is at it: its size, then a chip per seat", async () => {
     show();
-    const mine = section("Your games");
+    const chips = (li: Element) => [...li.querySelectorAll(".seat-chip")].map((c) => c.textContent);
+    const mine = section("Your tables");
     const dealing = (await within(mine).findByRole("link", { name: "wire" })).closest("li")!;
-    expect(dealing).toHaveTextContent("2P · dealing");
-    // §5.6, on the surface that prints it: the row reads the NAME each seat
-    // gave, and the address only where there is none.
-    for (const seat of wire.games.games[0]!.seats) {
-      expect(dealing).toHaveTextContent(seatName(seat));
-    }
-    expect(dealing).toHaveTextContent("Red, Blue");
-    // The open row counts the seats rather than guessing a turn.
+    expect(dealing.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 dealing");
+    // The caller's own seat is "you", the other the name it joined under.
+    expect(chips(dealing)).toEqual(["you", "Blue"]);
     const filling = within(mine).getByRole("link", { name: "wire2" }).closest("li")!;
-    expect(filling).toHaveTextContent("2P · open · 1 of 2 seated");
-    // And the unnamed seat falls back to the address, on the same screen as the
-    // named one above — so the row is reading the field and not a constant.
-    expect(filling).toHaveTextContent("red@wire.test, open seat");
+    expect(filling.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 waiting for 1 more");
+    expect(chips(filling)).toEqual(["you", "open seat"]);
+    // Read from OUTSIDE (the open list is a stranger's view), the unnamed seat
+    // falls back to its address, on the same screen as the named one above.
+    const stranger = within(section("Open tables")).getByRole("link", { name: "wire2" }).closest("li")!;
+    expect(chips(stranger)).toEqual(["red@wire.test", "open seat"]);
+    expect(stranger.querySelector(".row-meta")!.textContent).toMatch(/^2 players \u00b7 opened /);
   });
 
   // **The two rows a player comes back to the lobby for**, neither of which the
@@ -151,24 +154,25 @@ describe("the lobby", () => {
   // committed payload has the turn inside `my_seats` or a finished game with a
   // winner on it. One field moved on a real payload, which is the pattern
   // `tables.test.ts` already uses.
-  it("says whose turn it is, and who won", async () => {
+  it("marks whose turn it is in gold, and says who won", async () => {
     const yours = { ...wire.table, id: "yours", name: null, my_seats: [wire.table.to_move!] };
     const done = { ...wire.table, id: "done", name: null, over: true, winner: 1 };
     show((call) =>
       isGamesList(call, "mine") ? { ...wire.games, games: [yours, done] } : undefined,
     );
-    const mine = section("Your games");
-    expect((await within(mine).findByRole("link", { name: "yours" })).closest("li")).toHaveTextContent(
-      "your turn",
-    );
-    expect(within(mine).getByRole("link", { name: "done" }).closest("li")).toHaveTextContent(
-      "over · Blue won",
-    );
+    const mine = section("Your tables");
+    const turn = (await within(mine).findByRole("link", { name: "yours" })).closest("li")!;
+    expect(turn.querySelector(".seat-chip.to-move")).toHaveTextContent("you \u00b7 your move");
+    expect(within(turn).getByRole("button", { name: "Play: yours" })).toHaveClass("primary");
+    const over = within(mine).getByRole("link", { name: "done" }).closest("li")!;
+    expect(over.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 over \u00b7 Blue won");
+    expect(over.querySelector(".seat-chip.to-move")).toBeNull();
+    expect(within(over).getByRole("button", { name: "View: done" })).toBeInTheDocument();
   });
 
   it("marks the table that needs a password, and only that one", async () => {
     show();
-    await screen.findByRole("heading", { name: "Your games" });
+    await screen.findByRole("heading", { name: "Your tables" });
     const open = section("Open tables");
     const locked = wire.gamesOpen.games[0]!;
     const unlocked = wire.gamesOpen.games[1]!;
@@ -187,7 +191,7 @@ describe("the lobby", () => {
     expect(within(row(unlocked.id)).queryByLabelText("password required")).toBeNull();
   });
 
-  it("pages Your games with the cursor the server handed it, once", async () => {
+  it("pages Your tables with the cursor the server handed it, once", async () => {
     const second = { ...wire.table, id: "older", name: null };
     const { stub, user } = show((call) => {
       if (!isGamesList(call, "mine")) return undefined;
@@ -197,7 +201,7 @@ describe("the lobby", () => {
         ? { ...wire.games, games: [second], next: null }
         : wire.gamesNext;
     });
-    const mine = section("Your games");
+    const mine = section("Your tables");
     await within(mine).findByRole("link", { name: "wire" });
     await user.click(within(mine).getByRole("button", { name: "more" }));
     await within(mine).findByRole("link", { name: "older" });
@@ -216,7 +220,7 @@ describe("the lobby", () => {
 
   it("offers no more when the first page is the last", async () => {
     show();
-    await screen.findByRole("heading", { name: "Your games" });
+    await screen.findByRole("heading", { name: "Your tables" });
     expect(wire.games.next).toBeNull();
     expect(screen.queryByRole("button", { name: "more" })).toBeNull();
   });
@@ -232,7 +236,7 @@ describe("the lobby", () => {
   // question, and `App`'s route effect is what asks the server.
   it("opens a table by setting the hash, and fetches nothing itself", async () => {
     const { stub, user } = show();
-    const mine = section("Your games");
+    const mine = section("Your tables");
     const link = await within(mine).findByRole("link", { name: "wire" });
     // **The address is in the markup, not only in a handler.** That is what
     // makes the row openable in a new tab and copyable from a context menu —
@@ -242,6 +246,139 @@ describe("the lobby", () => {
     await user.click(link);
     expect(window.location.hash).toBe("#/t/wire");
     expect(stub.calls.filter((c) => c.path.includes("/api/games/"))).toHaveLength(0);
+  });
+
+  it("offers one action per row: Play and Copy link for yours, Take a seat and Spectate for the others'", async () => {
+    const { stub, user } = show((call) => (isGamesList(call, "playing") ? wire.gamesPlaying : undefined));
+    const mine = section("Your tables");
+    const dealing = (await within(mine).findByRole("link", { name: "wire" })).closest("li")!;
+    // `wire` is dealing and this caller's card is already chosen: Play, and not gold.
+    expect(wire.games.games[0]!.chosen[0]).toBe(true);
+    const play = within(dealing).getByRole("button", { name: "Play: wire" });
+    expect(play).not.toHaveClass("primary");
+    const filling = within(mine).getByRole("link", { name: "wire2" }).closest("li")!;
+    expect(within(filling).getByRole("button", { name: "Copy link: wire2" })).toBeInTheDocument();
+    expect(within(section("Open tables")).getByRole("button", { name: "Take a seat: wire2" })).toBeInTheDocument();
+    expect(within(section("Being played")).getByRole("button", { name: "Spectate: wire" })).toBeInTheDocument();
+    // ONE action per row: every row's action cell holds one of them.
+    for (const li of document.querySelectorAll(".lobby-row")) {
+      expect(li.querySelectorAll(".row-action .row-go"), li.textContent ?? "").toHaveLength(1);
+    }
+    // The action goes where the name goes, and fetches nothing itself.
+    await user.click(play);
+    expect(window.location.hash).toBe("#/t/wire");
+    expect(stub.calls.filter((c) => c.path.includes("/api/games/"))).toHaveLength(0);
+    // **One LINK per row**, the name, so a walk that counts the links to a
+    // table (`exit_game.spec.ts`) counts one.
+    for (const li of document.querySelectorAll(".lobby-row")) {
+      expect(li.querySelectorAll("a"), li.textContent ?? "").toHaveLength(1);
+      expect(li.querySelector("a")).toHaveClass("row-link");
+    }
+  });
+
+  it("draws a gold edge on your own tables, and on no other row", async () => {
+    show((call) => (isGamesList(call, "playing") ? wire.gamesPlaying : undefined));
+    const mine = section("Your tables");
+    await within(mine).findByRole("link", { name: "wire" });
+    for (const li of within(mine).getAllByRole("listitem")) expect(li).toHaveClass("mine");
+    for (const other of [section("Open tables"), section("Being played")]) {
+      const rows = within(other).getAllByRole("listitem");
+      expect(rows.length).toBeGreaterThan(0);
+      for (const li of rows) expect(li).not.toHaveClass("mine");
+    }
+  });
+
+  // **The password flag** (R-6.5c2.7): the tag after the name on every locked
+  // row, and the padlock on the action only where a password is still wanted.
+  // `wire.tableWatchable` is a locked game this caller has not unlocked.
+  it("puts the padlock on the action only where a password is still wanted", async () => {
+    show((call) =>
+      isGamesList(call, "playing") ? { ...wire.gamesPlaying, games: [wire.tableWatchable] } : undefined,
+    );
+    const open = section("Open tables");
+    const locked = (await within(open).findByRole("link", { name: "wire" })).closest("li")!;
+    expect(within(locked).getByRole("button", { name: "Take a seat: wire" }).querySelector("svg.padlock")).not.toBeNull();
+    const unlocked = within(open).getByRole("link", { name: "wire2" }).closest("li")!;
+    expect(within(unlocked).getByRole("button", { name: "Take a seat: wire2" }).querySelector("svg.padlock")).toBeNull();
+    expect(within(unlocked).queryByLabelText("password required")).toBeNull();
+    expect(
+      within(section("Being played")).getByRole("button", { name: "Spectate: wire" }).querySelector("svg.padlock"),
+    ).not.toBeNull();
+    // Yours asks you for nothing: the tag, and no padlock on Play.
+    const yours = within(section("Your tables")).getByRole("link", { name: "wire" }).closest("li")!;
+    expect(within(yours).getByLabelText("password required")).toBeInTheDocument();
+    expect(within(yours).getByRole("button", { name: "Play: wire" }).querySelector("svg.padlock")).toBeNull();
+  });
+
+  // **The bot's version** (R-6.5c2.10, mock 10), from the row's own
+  // `TableView.bot`: the corpus's undealt vs-bot table (`table_bot.json`,
+  // which shows the production bot) and its foreign one (`table_foreign.json`,
+  // a bot this build does not run). One field moved on the foreign table,
+  // `created_by`, to this browser, so its creator's Abandon has a row to be on.
+  it("names the bot and its version, and says so where this server cannot continue a game", async () => {
+    expect(wire.tableBot.bot).toEqual({ label: productionBot.label, runs_here: true });
+    expect(wire.tableForeign.bot!.runs_here).toBe(false);
+    const foreign = { ...wire.tableForeign, created_by: ME };
+    show((call) =>
+      isGamesList(call, "mine") ? { ...wire.games, games: [wire.tableBot, foreign] } : undefined,
+    );
+    const mine = section("Your tables");
+    await within(mine).findByRole("link", { name: wire.tableBot.id });
+    const row = (name: string) => within(mine).getByRole("link", { name }).closest("li")!;
+    expect(within(row(wire.tableBot.id)).getByText(`the bot \u00b7 ${productionBot.label}`)).toHaveClass("seat-chip");
+    // Not over, and its bot is one this build does not run: nothing to open,
+    // and its creator can still abandon it.
+    expect(row(foreign.id)).toHaveTextContent("can\u2019t continue here");
+    expect(row(foreign.id).querySelector("span.stranded")).not.toBeNull();
+    expect(within(row(foreign.id)).queryByRole("button", { name: /^(Play|View):/ })).toBeNull();
+    expect(within(row(foreign.id)).getByRole("button", { name: `abandon ${foreign.id}` })).toBeInTheDocument();
+    cleanup();
+    // Finished, it opens as ever (spec section 2.4). One field moved, `over`.
+    show((call) =>
+      isGamesList(call, "mine") ? { ...wire.games, games: [{ ...wire.tableForeign, over: true }] } : undefined,
+    );
+    const done = (await within(section("Your tables")).findByRole("link", { name: foreign.id })).closest("li")!;
+    expect(within(done).getByRole("button", { name: `View: ${foreign.id}` })).toBeInTheDocument();
+    expect(done).not.toHaveTextContent("can\u2019t continue here");
+  });
+
+  it("copies a table's address, and says it did", async () => {
+    const { user } = show();
+    const mine = section("Your tables");
+    await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
+    // `userEvent.setup()` installs the clipboard this reads back.
+    expect(await navigator.clipboard.readText()).toBe(new URL("#/t/wire2", window.location.href).href);
+    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
+  });
+
+  // **A table you sit at is YOURS**, listed under Your tables and not again
+  // under Open tables, whose rows are for a table you could take a seat at
+  // (mock 02). `wire.games.games[1]` is this caller's open table read AS this
+  // caller: `my_seats` is [0].
+  it("lists a table you sit at under Your tables only", async () => {
+    const yoursOpen = wire.games.games[1]!;
+    expect(yoursOpen.my_seats).toEqual([0]);
+    show((call) => (isGamesList(call, "open") ? { ...wire.gamesOpen, games: [yoursOpen] } : undefined));
+    await within(section("Your tables")).findByRole("link", { name: yoursOpen.name! });
+    expect(within(section("Open tables")).queryByRole("link", { name: yoursOpen.name! })).toBeNull();
+    expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
+  });
+
+  // **The headings at once, the rows when they land.** This is the lobby's own
+  // wait, not the door's state D: the door has answered by the time the lists
+  // are asked for. Until the three scopes land, Your tables reads "loading..."
+  // over skeleton rows, and never "none yet", which would be a claim.
+  it("draws skeleton rows under Your tables until the lists land, and never an empty list", async () => {
+    const held = gate<Reply>();
+    show((call) => (isGamesList(call, "mine") ? held.promise : undefined));
+    const mine = section("Your tables");
+    expect(within(mine).getByText("loading\u2026")).toBeInTheDocument();
+    expect(mine.querySelector(".skeleton-rows")).not.toBeNull();
+    expect(within(mine).queryByText(/none yet/)).toBeNull();
+    held.resolve(wire.games);
+    expect(await within(mine).findByRole("link", { name: "wire" })).toBeInTheDocument();
+    expect(mine.querySelector(".skeleton-rows")).toBeNull();
+    expect(within(mine).queryByText("loading\u2026")).toBeNull();
   });
 
   // ---- abandoning a table, from the row (R-13) ------------------------------
@@ -259,7 +396,7 @@ describe("the lobby", () => {
     // deletes, and what the lobby does afterwards.
     it("abandons the table the row names, and re-reads the lists", async () => {
       const { stub, user } = show((call) => (call.method === "DELETE" ? null : undefined));
-      const mine = section("Your games");
+      const mine = section("Your tables");
       await user.click(await within(mine).findByRole("button", { name: "abandon wire2" }));
       await user.click(within(mine).getByRole("button", { name: "confirm abandon wire2" }));
       // **Matched on the WHOLE path.** `matching` is a substring test and
@@ -275,14 +412,14 @@ describe("the lobby", () => {
       );
     });
 
-    // **Your games only** (R-13, and the reason the row takes a flag). A table
+    // **Your tables only** (R-13, and the reason the row takes a flag). A table
     // that is both yours and open is listed in BOTH sections, and a control
     // drawn in each puts two buttons with the same accessible name on one
     // screen — which is also an ambiguity every query here would have to work
     // around.
-    it("draws the control in Your games and not in Open tables", async () => {
+    it("draws the control in Your tables and not in Open tables", async () => {
       show();
-      const mine = section("Your games");
+      const mine = section("Your tables");
       const open = section("Open tables");
       // Anti-vacuity: the SAME table is in both sections and was opened by this
       // browser, so the two reads below differ only in which section they are.
@@ -296,7 +433,7 @@ describe("the lobby", () => {
       show((call) =>
         isGamesList(call, "mine") ? { ...wire.games, games: [theirs] } : undefined,
       );
-      const mine = section("Your games");
+      const mine = section("Your tables");
       // The row is there — this caller sits at the table — and the control is
       // not, which is the whole claim.
       expect(await within(mine).findByRole("link", { name: theirs.name! })).toBeInTheDocument();
@@ -347,7 +484,7 @@ describe("the lobby's chat", () => {
     const panel = heading.closest("section")!;
     expect(panel).toHaveClass("chat");
     expect(panel).toHaveClass("folded");
-    expect(panel.closest("section.saved.lobby-chat"), "wrapped by the lobby's own section").not.toBeNull();
+    expect(panel.closest("section.lobby-chat"), "wrapped by the lobby's own rail").not.toBeNull();
     expect(within(panel).getByRole("button", { name: "show" })).toBeInTheDocument();
     cleanup();
 
@@ -423,7 +560,7 @@ describe("the server area", () => {
     // corner is the identity's then.
     expect(back).toHaveAttribute("href", "#/");
     expect(back.closest(".lobby-actions")).not.toBeNull();
-    const lists = await screen.findByRole("heading", { name: "Your games" });
+    const lists = await screen.findByRole("heading", { name: "Your tables" });
     // Order, and not merely presence: a way out that sits below two listings is
     // a way out a player on a phone scrolls past.
     expect(back.compareDocumentPosition(lists) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -444,7 +581,7 @@ describe("the server area", () => {
     // **Every `/api/games` route is a 401 without an identity** (M6.1), so a
     // lobby that listed first would show a refusal as the player's first
     // screen — the reason the door was a gate in the first place, kept.
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
     expect(stub.calls).toHaveLength(0);
   });
@@ -464,9 +601,9 @@ describe("the server area", () => {
     // In the same centring box the door's own C stands in (review M1): drawn
     // bare, the card sat flush left under the band.
     expect(card.closest(".lobby-door"), "the card is centred as the door's C is").not.toBeNull();
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Open tables" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Games in progress" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Being played" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New table" })).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
     expect(retry).toHaveBeenCalledTimes(1);
@@ -474,6 +611,34 @@ describe("the server area", () => {
     // health read, not that this screen has given up — the sections come back
     // when a read lands.
     await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1));
+  });
+
+  // **A listing that got NO answer is said in a player's words** (the door's C
+  // says "Can't reach the server"). `fetch` failing rejects with the
+  // platform's own `TypeError: Failed to fetch`, which is a message to a
+  // programmer. And under the signed-in C card, which already says it, the
+  // strip does not say it a second time.
+  it("words a listing that got no answer as the server out of reach, never the platform's error", async () => {
+    const stub = stubApi((call) => {
+      if (isGamesList(call, "open")) throw new TypeError("Failed to fetch");
+      const l = lists(call);
+      if (l !== undefined) return l;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const { rerender } = render(<Lobby me={ME} />);
+    const strip = await screen.findByText("Can't reach the server. The lists come back as soon as it answers.");
+    expect(strip.closest(".lobby-body")).not.toBeNull();
+    expect(stub.calls.filter((c) => isGamesList(c, "open")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/TypeError|Failed to fetch/)).toBeNull();
+    expect(screen.queryByText(/none yet/)).toBeNull();
+    // The health read failed too: the card says it, once.
+    rerender(<Lobby me={ME} serverUp={false} />);
+    expect(screen.getByRole("heading", { level: 3, name: "Can't reach the server" })).toBeInTheDocument();
+    expect(screen.getAllByText(/Can't reach the server/)).toHaveLength(1);
+    expect(screen.queryByText(/TypeError|Failed to fetch/)).toBeNull();
   });
 
   it("does not re-read because its host re-rendered with a new callback", async () => {
@@ -493,7 +658,7 @@ describe("the server area", () => {
     const { rerender } = render(<Lobby me={ME} onReached={() => {}} />);
     await waitFor(() => expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1));
     for (let i = 0; i < 3; i += 1) rerender(<Lobby me={ME} onReached={() => {}} />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Your tables" })).toBeInTheDocument());
     expect(stub.calls.filter((c) => isGamesList(c, "mine"))).toHaveLength(1);
   });
 

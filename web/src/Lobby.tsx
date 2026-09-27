@@ -1,98 +1,55 @@
-// The SERVER's first screen (spec §5.2): the tables you sit at, and the tables
-// waiting for someone to sit down.
+// The SERVER's first screen (spec section 5.2; M6.5c2, R-6.5c2.7, mock 02):
+// the band, then three lists as rows (the tables you sit at, the tables
+// waiting for someone to sit down, and the games being played) with the lobby
+// chat in a rail beside them, and below them on a phone.
 //
 // **At `#/lobby` since M6.5b2, and no longer the screen a visitor lands on.**
 // `#/` is the front door (R-6.5b2.1), which draws from this browser alone; the
 // Access turnstile `/enter` redirects here, which is why the lobby needed an
-// address of its own. "On this device" went with the door — it is a channel
-// now, not a section above these lists — and what is left here is one link
-// back to it.
+// address of its own. What is left of "On this device" here is one link back
+// to it.
 //
-// **Two scopes, ONE signal** (R-plan-4). `mine` and `open` are two questions
-// about the same store and a player reads them together, so one `usePolled`
-// asks both in one `Promise.all` and hands over one object. Two hooks would be
-// two connections, two "reconnecting" words for one link, and — the half that
-// shows — a screen where half the lobby is older than the other half.
+// **Three scopes, ONE signal** (R-plan-4). `mine`, `open` and `playing` are
+// three questions about the same store and a player reads them together, so
+// one `usePolled` asks all three in one `Promise.all` and hands over one
+// object. Three hooks would be three connections and a screen where part of
+// the lobby is older than the rest.
 //
 // **The stream it listens to is the HOUSE channel**, `/api/stream`, and a frame
 // off it is two counters and never a table (M6.3 R-3.4, M6.4 R-6.4.7): a
-// `watch` channel coalesces, so two bumps naming two different tables inside
-// one wake would lose one, and a frame naming a table would therefore sometimes
-// name the wrong one. The lobby re-reads ALL its lists on any bump instead,
-// which is what `Source`'s default `frames: "wake"` mode does — `once` is the
-// answer and the frame is only the wake-up, so neither counter is READ here.
+// `watch` channel coalesces, so a frame naming a table would sometimes name the
+// wrong one. The lobby re-reads ALL its lists on any bump instead, which is
+// what `Source`'s default `frames: "wake"` mode does; `once` is the answer and
+// the frame is only the wake-up, so neither counter is READ here.
 //
 // **The first load is this component's, not the hook's.** The house stream says
 // NOTHING on connect (deliberately: the lobby has just fetched its lists to
 // render at all, and a frame at connect would make it fetch them again on every
-// navigation), so an unaided hook would show "loading…" until somebody else
-// moved.
+// navigation), so an unaided hook would show nothing until somebody else moved.
+// The three headings are static and drawn at once; until the lists land, Your
+// tables reads "loading..." over skeleton rows. That is the lobby's own wait
+// and not the door's state D, which is over by the time the lists are asked
+// for.
+//
+// **A row is the table's name and age, a chip per seat, and ONE action**
+// (R-6.5c2.7; the words are `tables.ts`'s). The name is the row's one LINK
+// (R-14) and the action is a button to the same address, so a table is never
+// two links (`exit_game.spec.ts` counts one). The creator's own rows keep
+// `Abandon` beside the action: the lobby is the only place a dealing or playing
+// server table can be abandoned (R-13).
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
 import { api, ApiError, lobbyChat } from "./api";
 import { LobbyBand } from "./Band";
 import { Chat } from "./Chat";
+import { Padlock, PasswordTag, SeatChip } from "./Chips";
 import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
-import { TableFacts } from "./TableFacts";
+import { rowAction, rowMeta, seatChips, type Section } from "./tables";
 import type { GamesList, TableView } from "./types";
-
-/** One row: what the table is CALLED, then what it is. The words are
- *  `tables.ts`'s and the facts are `TableFacts`' — the same line the Game menu
- *  draws, so one table cannot read two ways depending on which list you are
- *  looking at.
- *
- *  **The name is a LINK and not a button** (spec §5.2, R-14). The row's whole
- *  job is to go to `#/t/<id>`, which is an address — so it is an anchor with
- *  that address in its `href`, and the browser does the navigating. That is
- *  what makes the row openable in a new tab, copyable from the context menu
- *  and readable as a destination by a screen reader; a button with an
- *  `onClick` calling `navigate` is the same jump with none of it.
- *
- *  **Exported, and a `function` rather than a `const`, since M6.5b.** "On this
- *  device" draws the same row for a game in this browser (R-6.5b.8), and one
- *  wording is the point of sharing it. The two modules import each other — the
- *  lobby renders that section and that section draws these rows — so the
- *  declaration is hoisted, which is what keeps the cycle safe whichever side
- *  the bundler evaluates first.
- *
- *  `extra` is whatever the CALLING listing puts beside a row, and each one
- *  decides for itself — the row builder knows nothing about it, which is the
- *  point of it being a node rather than a flag (a control's `onDone` and
- *  `onError` belong to the listing that drew it). Today there are two:
- *
- *    - the LOBBY's own Your-games rows pass the creator's Abandon (M6.2 ruling
- *      #13); Open tables and Games in progress pass nothing, because a table of
- *      yours that is playing is listed twice;
- *    - "On this device" passes a Back up control (M6.5b2, R-6.5b2.10), and NOT
- *      an abandon — a local game is abandoned on its own screen, where the tab
- *      holds its lock (P-6).
- *
- *  It was called `abandon` until M6.5b2 and its doc said a local row withheld
- *  one, which the second caller made false the day it landed (review M-1). */
-export function lobbyRow(t: TableView, extra?: ReactNode): ReactNode {
-  return (
-    <li key={t.id}>
-      <a className="ghost row-link" href={hashOf({ kind: "table", id: t.id })}>
-        {t.name ?? t.id}
-      </a>
-      <TableFacts table={t} />
-      {/* A table you need a password for, said BEFORE you click it. The mark is
-          labelled rather than left as an emoji: a lock glyph announces as
-          nothing useful, and this is the one fact on the row that changes what
-          happens next. */}
-      {t.locked && (
-        <span className="meta lock" aria-label="password required">
-          🔒
-        </span>
-      )}
-      {extra}
-    </li>
-  );
-}
 
 /** All three lists, as one answer. */
 type Lists = { mine: GamesList; open: GamesList; playing: GamesList };
@@ -124,6 +81,20 @@ function unique(tables: TableView[]): TableView[] {
   return tables.filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
 }
 
+/** A table you sit at is YOURS: it is listed under Your tables, and not again
+ *  under Open tables or Being played, whose rows are for a table you could take
+ *  a seat at or spectate (mock 02). `my_seats` is the server's answer for this
+ *  caller, so the rule guesses nothing. */
+const notMine = (t: TableView): boolean => t.my_seats.length === 0;
+
+/** A listing that got NO answer, in a player's words: the door's state C says
+ *  "Can't reach the server", and the platform's own `TypeError: Failed to
+ *  fetch` is a message to a programmer. `api.ts`'s `call` turns every HTTP
+ *  status into an `ApiError`, so anything else is `fetch` failing with none
+ *  (`whoami.ts`'s `failureOf`, the same rule). True as written: the poll goes
+ *  on asking, and the first read that lands clears the strip (`take`). */
+const UNREACHED = "Can't reach the server. The lists come back as soon as it answers.";
+
 export function Lobby({
   me,
   corner,
@@ -152,7 +123,7 @@ export function Lobby({
    *  once somebody is signed in (M6.5c2, spec §2.1). Absent while nobody is,
    *  when the corner is the way back to this device's games instead. */
   corner?: ReactNode;
-  /** A sentence from OUTSIDE the lobby, drawn ABOVE the lobby's two lists.
+  /** A sentence from OUTSIDE the lobby, drawn ABOVE the lobby's lists.
    *
    *  **The lobby is where a refused SERVER table lands** (spec §5.1): a
    *  `#/t/<id>` the caller cannot see is a 403, and the screen it goes back to
@@ -213,6 +184,9 @@ export function Lobby({
    *  exists so that a later `"value"` consumer could tell the two apart; this
    *  one does not. */
   const [tick, setTick] = useState(0);
+  /** The row whose link was just copied, for the two seconds its button says
+   *  so. */
+  const [copied, setCopied] = useState<string | null>(null);
   /** The host's "a read landed" callback, held so that `take` does not depend
    *  on it.
    *
@@ -234,7 +208,7 @@ export function Lobby({
     // player who opened the page while the API was down.
     reached.current?.();
   }, []);
-  const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
+  const said = (e: unknown) => (e instanceof ApiError ? e.message : UNREACHED);
 
   // The opening read. The poll takes it from here — see the note at the top of
   // the file for why this is not the hook's job.
@@ -276,7 +250,7 @@ export function Lobby({
     }
   };
 
-  /** What follows an abandon: re-read both listings, so the screen agrees with
+  /** What follows an abandon: re-read the listings, so the screen agrees with
    *  the store.
    *
    *  **The pager is dropped too.** Its pages were fetched around a table that no
@@ -292,31 +266,96 @@ export function Lobby({
     take(await fetchLists());
   };
 
-  /** One of this screen's rows: `lobbyRow`'s wording, with the abandon control
-   *  wired to THIS listing.
+  /** Put a table's address on the clipboard (mock 02's Copy link). A browser
+   *  that refuses (an insecure origin has no clipboard) gets the address in
+   *  the error strip instead, which a player can still copy by hand. */
+  const copyLink = async (t: TableView) => {
+    const url = new URL(hashOf({ kind: "table", id: t.id }), window.location.href).href;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(t.id);
+      setTimeout(() => setCopied((c) => (c === t.id ? null : c)), 2000);
+    } catch {
+      setError(`the link could not be copied \u2014 it is ${url}`);
+    }
+  };
+
+  /** One row: the name (the row's one LINK) with the password tag, the line
+   *  under it, a chip per seat, and the one action.
    *
-   *  **Abandoning is the CREATOR's, on the YOUR-GAMES rows** (R-13). It was
-   *  the setup screen's saved-list control until M6.2; the list moved here, so
-   *  the control did, and it reaches the dealing and playing tables the open
-   *  table's own screen cannot.
-   *
-   *  `yours` and not `created_by === me` alone: a table that is both yours and
-   *  open is listed in BOTH sections, and drawing the control in each puts two
-   *  buttons with the same accessible name on one screen. The ruling names
-   *  Your games, so that is where it is. */
-  const row = (t: TableView, yours: boolean) =>
-    lobbyRow(
-      t,
-      yours && t.created_by === me ? <Abandon table={t} onDone={reread} onError={setError} /> : null,
+   *  **Abandoning is the CREATOR's, on the Your-tables rows** (R-13), beside the
+   *  action and quieter than it. A table you sit at is listed under Your tables
+   *  alone (`notMine`), so the control is never drawn twice. The action and
+   *  Abandon both NAME the table in their accessible names, so a control can
+   *  never be about another row. */
+  const row = (t: TableView, section: Section) => {
+    const action = rowAction(t, section);
+    const name = t.name ?? t.id;
+    const yours = section === "mine" && t.created_by === me;
+    return (
+      <li key={t.id} className={section === "mine" ? "lobby-row mine" : "lobby-row"}>
+        <div className="row-title">
+          <div className="row-name">
+            <a className="row-link" href={hashOf({ kind: "table", id: t.id })}>
+              {name}
+            </a>
+            {t.locked && <PasswordTag />}
+          </div>
+          <div className="row-meta">{rowMeta(t, section)}</div>
+        </div>
+        <div className="row-seats">
+          {seatChips(t).map((chip, i) => (
+            <SeatChip key={i} color={chip.color} label={chip.label} open={chip.open} toMove={chip.toMove} />
+          ))}
+        </div>
+        <div className="row-action">
+          {action.kind === "go" && (
+            <button
+              type="button"
+              className={action.primary ? "primary yen row-go" : "ghost row-go"}
+              aria-label={`${action.label}: ${name}`}
+              onClick={() => navigate({ kind: "table", id: t.id })}
+            >
+              {action.padlock && <Padlock />}
+              {action.label}
+            </button>
+          )}
+          {action.kind === "copy" && (
+            <button
+              type="button"
+              className="ghost row-go"
+              aria-label={`${copied === t.id ? "Copied" : "Copy link"}: ${name}`}
+              onClick={() => void copyLink(t)}
+            >
+              {copied === t.id ? "Copied" : "Copy link"}
+            </button>
+          )}
+          {action.kind === "stranded" && (
+            <span
+              className="stranded"
+              title={t.bot ? `played against ${t.bot.label}, which this server does not run` : undefined}
+            >
+              can&rsquo;t continue here
+            </span>
+          )}
+          {yours && <Abandon table={t} onDone={reread} onError={setError} />}
+        </div>
+      </li>
     );
+  };
 
   const mine = lists ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
+  const open = lists ? lists.open.games.filter(notMine) : [];
+  const playing = lists ? lists.playing.games.filter(notMine) : [];
   const nextCursor = paged ? paged.next : (lists?.mine.next ?? null);
+  /** Whether this deployment answers the house chat (R-6.4.6): the rail, or
+   *  one column with no rail at all. */
+  const rail = lobbyChat();
 
   /** The way back to the games on this device (R-6.5b2.1): in the band's corner
    *  while nobody is signed in — the states a player most needs it in are the
    *  ones where nothing else here is pressable — and beside New table once
-   *  somebody is. An ANCHOR for `lobbyRow`'s reason; its arrow is decoration,
+   *  somebody is. An ANCHOR (R-14); its arrow is decoration,
    *  so its NAME is the destination. */
   const toDevice = (
     <a className="to-door" href={hashOf({ kind: "door" })}>
@@ -356,74 +395,94 @@ export function Lobby({
               )}
             </div>
 
-          {/* **`your-games` is a NAME and not decoration.** Until M6.3 this was the
-              one section that was not `.open-tables`, and a browser cell scoped its
-              reads that way — which a third section silently made ambiguous
-              (measured: the join-by-link walk resolved two rows for one table).
-              Every section on this screen now says which one it is. */}
-          <section className="saved your-games">
-            <h3>Your games</h3>
-            {lists === null ? (
-              <p className="muted">loading&hellip;</p>
-            ) : mine.length === 0 ? (
-              <p className="muted">none yet — open a table, or take a seat at one below.</p>
-            ) : (
-              <ul>{mine.map((t) => row(t, true))}</ul>
-            )}
-            {nextCursor && (
-              <button type="button" className="ghost" onClick={() => void page(nextCursor)}>
-                more
-              </button>
-            )}
-          </section>
+            <div className={rail ? "lobby-cols" : "lobby-cols no-rail"}>
+              <div className="lobby-lists">
+                {/* **`your-games` is a NAME and not decoration**: the browser
+                    walks scope their reads by these three classes, and a
+                    heading's words may change (M6.5c2 renamed two) while the
+                    class does not. */}
+                <section className="lobby-section your-games">
+                  <header className="section-head">
+                    <h3>Your tables</h3>
+                  </header>
+                  {lists === null ? (
+                    // The lobby's own wait (the header comment). A read that
+                    // REFUSED says so in the strip below instead, never
+                    // "loading..." over it.
+                    error === null && (
+                      <>
+                        <p className="muted">loading&hellip;</p>
+                        <div className="skeleton-rows" aria-hidden="true">
+                          <div />
+                          <div />
+                        </div>
+                      </>
+                    )
+                  ) : mine.length === 0 ? (
+                    <p className="muted">none yet &mdash; open a table, or take a seat at one below.</p>
+                  ) : (
+                    <ul className="lobby-rows">{mine.map((t) => row(t, "mine"))}</ul>
+                  )}
+                  {nextCursor && (
+                    <button type="button" className="ghost more" onClick={() => void page(nextCursor)}>
+                      more
+                    </button>
+                  )}
+                </section>
 
-          {/* **Every open table on the server, not only the ones you were told
-              about** (R-2.7). A join link is an address, and this is the other way
-              in: a table filling its seats is a public thing until it starts. */}
-          <section className="saved open-tables">
-            <h3>Open tables</h3>
-            {lists === null ? null : lists.open.games.length === 0 ? (
-              <p className="muted">no table is waiting for players.</p>
-            ) : (
-              <ul>{lists.open.games.map((t) => row(t, false))}</ul>
-            )}
-          </section>
+                {/* Every open table on the server that is not already yours
+                    (R-2.7): a join link is an address, and this is the other
+                    way in. */}
+                <section className="lobby-section open-tables">
+                  <header className="section-head">
+                    <h3>Open tables</h3>
+                    <span className="section-hint">take a free seat</span>
+                  </header>
+                  {lists === null ? null : open.length === 0 ? (
+                    <p className="muted">no table is waiting for players.</p>
+                  ) : (
+                    <ul className="lobby-rows">{open.map((t) => row(t, "open"))}</ul>
+                  )}
+                </section>
 
-          {/* **Every game still being played, so a watcher can find one without a
-              link** (R-3.9). A row here opens `#/t/<id>` exactly as the other two
-              do, and what that lands on is the spectator screen — or, at a locked
-              table, the face that asks for its password, which is what the lock
-              marker on the row is warning about.
-
-              **No Abandon control, and that is the section rather than the test**
-              (M6.2 ruling #13): abandoning is the creator's, on the Your-games
-              rows, and a table of yours that is playing is listed in BOTH — two
-              buttons with one accessible name on one screen. `row(t, false)` is how
-              Open tables withholds it too. */}
-          <section className="saved playing-tables">
-            <h3>Games in progress</h3>
-            {lists === null ? null : lists.playing.games.length === 0 ? (
-              <p className="muted">nothing is being played right now.</p>
-            ) : (
-              <ul>{lists.playing.games.map((t) => row(t, false))}</ul>
-            )}
-          </section>
-
-          {/* The house chat (R-6.4.5, R-6.4.6): a fourth section, folded by default —
-              opening it is entering the lobby chat — and absent when the server says
-              the lobby chat is off, because a panel whose every request is a 404 is
-              worse than no panel. The SECTION is this screen's and the panel keeps
-              its own root, so the lobby styles a component it did not write. Its
-              tick is this screen's own wake. */}
-          {lobbyChat() && (
-            <section className="saved lobby-chat">
-              <Chat scope={{ kind: "house" }} tick={tick} sendName heading="h3" />
-            </section>
-          )}
+                {/* Every game being played that is not yours, so a spectator
+                    can find one without a link (R-3.9). A row opens `#/t/<id>`
+                    as the other two do, and what that lands on is the
+                    spectator screen, or at a locked table the face that asks
+                    for its password, which the padlock on Spectate is warning
+                    about. No Abandon: that is the creator's, under Your
+                    tables. */}
+                <section className="lobby-section playing-tables">
+                  <header className="section-head">
+                    <h3>Being played</h3>
+                    <span className="section-hint">spectate a game</span>
+                  </header>
+                  {lists === null ? null : playing.length === 0 ? (
+                    <p className="muted">nothing is being played right now.</p>
+                  ) : (
+                    <ul className="lobby-rows">{playing.map((t) => row(t, "playing"))}</ul>
+                  )}
+                </section>
+              </div>
+              {/* The house chat (R-6.4.5, R-6.4.6), in the RAIL: folded by
+                  default (opening it is entering the lobby chat) and absent
+                  when the server says the lobby chat is off, because a panel
+                  whose every request is a 404 is worse than no panel. The rail
+                  is this screen's and the panel keeps its own root. Its tick
+                  is this screen's own wake. */}
+              {rail && (
+                <section className="lobby-rail lobby-chat">
+                  <Chat scope={{ kind: "house" }} tick={tick} sendName heading="h3" />
+                </section>
+              )}
+            </div>
             </>
         )}
 
-        {error && <Refusal sentence={error} />}
+        {/* The lobby's own strip: its listings' refusals, a copy the browser
+            refused, and Abandon's. **Not a second "Can't reach the server"
+            under state C's card**, which says it already. */}
+        {error && !(serverUp === false && error === UNREACHED) && <Refusal sentence={error} />}
       </div>
     </div>
   );

@@ -279,7 +279,7 @@ export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby
 }
 
 /**
- * Open a table from the LOBBY's Your games, BY ID.
+ * Open a table from the LOBBY's Your tables, BY ID.
  *
  * The lobby is the only way into a table this browser did not create, which is
  * how the second person at a two-browser table gets to it (M6.2 §5.2). A row's

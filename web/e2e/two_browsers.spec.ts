@@ -180,7 +180,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // ---- the third browser, which is here to watch (spec §9.4) --------------
   //
   // It arrives at the table's own address and nothing else: C holds no seat, so
-  // the lobby's Your games does not list this table for it, and the only way in
+  // the lobby's Your tables does not list this table for it, and the only way in
   // is the link somebody would have sent.
   const c = await (await newContextWithoutWorker(browser, await liveContextOptions(WATCHER))).newPage();
   const watchC = watchForBreakage(c);

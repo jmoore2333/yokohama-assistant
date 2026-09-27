@@ -409,14 +409,14 @@ test("a person holding only a link joins a locked open table and plays", async (
     );
   }
 
-  // And the table is in A's lobby, under Your games, saying who is at it and
+  // And the table is in A's lobby, under Your tables, saying who is at it and
   // whose turn it is — the words `tables.ts` gives every list.
   await a.locator("details.game-menu > summary").click();
   await a.getByRole("button", { name: "Lobby" }).click();
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   // **Scoped to YOUR GAMES by NAME, and it used to be by exclusion.** A table
   // can be listed in more than one section — in Open tables while it is still
-  // filling, and since M6.3 in Games in progress once it is not — so
+  // filling, and since M6.3 in Being played once it is not — so
   // `:not(.open-tables)` stopped meaning "yours" the moment a third section
   // arrived and resolved two rows for one table. The section says which one it
   // is instead.
@@ -425,7 +425,7 @@ test("a person holding only a link joins a locked open table and plays", async (
     .filter({ has: a.getByRole("link", { name: "Link test", exact: true }) });
   await expect(row).toBeVisible();
   await expect(row, "the row names the person who followed the link").toContainText("Bob");
-  await expect(row, "and says whose turn it is").toContainText(/your turn|waiting on/);
+  await expect(row, "and says whose turn it is").toContainText(/your move|to move/);
 
   // eslint-disable-next-line no-console
   console.log(

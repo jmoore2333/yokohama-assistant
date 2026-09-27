@@ -12,6 +12,9 @@
 // One spec for every screen this cycle rebuilds, so the width rule is written
 // once: the door first, then the name step and the lobby as their tasks land.
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
@@ -19,13 +22,25 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { blame, readOverflow, watchForBreakage } from "./harness";
+import { blame, readOverflow, signIn, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
 const DESKTOP = { width: 1440, height: 900 };
 const PHONE = { width: 390, height: 844 };
+
+/** The label the build ships for its bot (`production_bot.json`), read the way
+ *  this directory reads a committed file (`offline.spec.ts`): the package is
+ *  an ES module, where a bare JSON `import` needs an import attribute. */
+const PRODUCTION_LABEL = (
+  JSON.parse(
+    fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "wire", "production_bot.json"),
+      "utf8",
+    ),
+  ) as { label: string }
+).label;
 
 /** Nothing on the page is wider than its window — read once the layout is DONE
  *  (the width gate's own note, `harness.ts`). */
@@ -190,5 +205,112 @@ test("the name step at 390: one field, Continue, the honest sentence, nothing si
   expect(await page.evaluate(() => localStorage.getItem("yokohama.claimed_user"))).toBe("ben castle");
   await noSidewaysScroll(page, "the signed-in lobby at 390px");
   await look(page, "lobby-signed-in-390");
+  expect(watch.failures).toEqual([]);
+});
+
+// **The lobby's lists** (M6.5c2, R-6.5c2.7; mocks 02 and 11): three tables
+// opened over the API, one locked, one against the bot, one somebody else's,
+// read at both widths. The rows' words are `tables.ts`'s and jsdom pins them;
+// what only a browser can say is the layout: name, seats and action on one line
+// at desktop width, the rail beside the lists and then below them, the corner a
+// pill on the phone, and the controls thumb-sized.
+test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat beside the lists, then below them; the corner a pill on the phone", async ({
+  page,
+  request,
+}) => {
+  const watch = watchForBreakage(page);
+  const as = (who: string) => ({ "x-yokohama-claimed-user": who });
+  /** A table, opened over the API as `who` (the open door reads the header;
+   *  `it_explains.spec.ts`'s shape), and its id. */
+  const create = async (who: string, data: Record<string, unknown>): Promise<string> => {
+    const res = await request.post("/api/games", { headers: as(who), data });
+    expect(res.status(), await res.text()).toBe(201);
+    return String(((await res.json()) as { id: string }).id);
+  };
+  const OTHER = "someone@e2e.test";
+  const opened: [string, string][] = [];
+  try {
+    opened.push([
+      await create(WALKER, {
+        players: 2,
+        colors: ["Red", "Blue"],
+        start_seat: 0,
+        seats: [{ user: WALKER }, { open: true }],
+        name: "Width check",
+        password: "pw",
+      }),
+      WALKER,
+    ]);
+    opened.push([
+      await create(WALKER, {
+        players: 2,
+        colors: ["Red", "Blue"],
+        start_seat: 0,
+        seats: [{ user: WALKER }, { bot: true }],
+        name: "Against the bot",
+      }),
+      WALKER,
+    ]);
+    opened.push([
+      await create(OTHER, {
+        players: 3,
+        colors: ["Red", "Blue", "Yellow"],
+        start_seat: 0,
+        seats: [{ user: OTHER }, { open: true }, { open: true }],
+        name: "Someone else's",
+      }),
+      OTHER,
+    ]);
+    await signIn(page, WALKER);
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      await page.goto("/#/lobby");
+      const mine = page.locator(".lobby section.your-games");
+      const rowOf = (name: string) =>
+        mine.locator("li.lobby-row").filter({ has: page.getByRole("link", { name, exact: true }) });
+      await expect(rowOf("Width check")).toBeVisible();
+      await expect(rowOf("Width check").getByRole("img", { name: "password required" })).toBeVisible();
+      // The bot's version, from the table's own `TableView.bot` (an undealt
+      // table shows the production bot, spec section 2.4).
+      await expect(rowOf("Against the bot")).toContainText(`the bot \u00b7 ${PRODUCTION_LABEL}`);
+      await expect(
+        page.locator(".lobby section.open-tables").getByRole("button", { name: "Take a seat: Someone else's" }),
+      ).toBeVisible();
+      await noSidewaysScroll(page, `the lobby at ${size.width}px`);
+      expect(await images(page), `the lobby draws no <img> at ${size.width}px`).toBe(0);
+
+      const lists = (await page.locator(".lobby .lobby-lists").boundingBox())!;
+      const rail = (await page.locator(".lobby section.lobby-chat").boundingBox())!;
+      const pill = page.locator(".identity-pill");
+      if (size === DESKTOP) {
+        expect(rail.x, "the chat sits in a rail beside the lists").toBeGreaterThanOrEqual(lists.x + lists.width - 1);
+        await expect(pill).toBeHidden();
+        await expect(page.locator(".identity-corner").getByText("Playing as")).toBeVisible();
+        // Name, seats and action on ONE line: the three share the row's middle.
+        const middles = await rowOf("Width check").evaluate((li) =>
+          [".row-title", ".row-seats", ".row-action"].map((s) => {
+            const r = li.querySelector(s)!.getBoundingClientRect();
+            return Math.round(r.top + r.height / 2);
+          }),
+        );
+        expect(Math.max(...middles) - Math.min(...middles), `one line per row: ${middles}`).toBeLessThanOrEqual(12);
+      } else {
+        expect(rail.y, "the chat sits below the lists on a phone").toBeGreaterThanOrEqual(lists.y + lists.height - 1);
+        await expect(pill).toBeVisible();
+        await expect(page.getByRole("button", { name: "switch player" })).toBeHidden();
+        await pill.click();
+        await expect(page.getByRole("button", { name: "switch player" })).toBeVisible();
+        await noSidewaysScroll(page, "the lobby at 390px with the corner open");
+        await pill.click();
+        expect(await height(page, "button", "Copy link: Width check"), "a row's action, thumb-sized").toBeGreaterThanOrEqual(44);
+        expect(await height(page, "button", "New table"), "New table, thumb-sized").toBeGreaterThanOrEqual(44);
+      }
+      await look(page, `lobby-${size.width}`);
+    }
+  } finally {
+    // The run's server is scratch, but a later spec's lobby should not list
+    // this cell's tables.
+    for (const [id, who] of opened) await request.delete(`/api/games/${id}`, { headers: as(who) });
+  }
   expect(watch.failures).toEqual([]);
 });

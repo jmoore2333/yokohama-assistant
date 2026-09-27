@@ -120,7 +120,7 @@ describe("the help panel and the lobby", () => {
     const { container } = render(<Help />);
     const text = container.textContent ?? "";
     expect(text).toMatch(/\blobby\b/i);
-    expect(text).toContain("Your games");
+    expect(text).toContain("Your tables");
     expect(text).toContain("Open tables");
     expect(text).toMatch(/link/i);
     expect(text).toMatch(/password/i);
@@ -177,9 +177,9 @@ describe("the help panel and the lobby", () => {
     render(<Help />);
     const text = section("Starting a game");
     expect(text).toContain("three lists");
-    expect(text).toContain("Your games");
+    expect(text).toContain("Your tables");
     expect(text).toContain("Open tables");
-    expect(text).toContain("Games in progress");
+    expect(text).toContain("Being played");
     expect(text).not.toContain("two lists");
   });
 });
@@ -196,7 +196,7 @@ describe("the help panel and watching (R-8.1)", () => {
   it("names the lobby's third list and the link as the two ways in", () => {
     render(<Help />);
     const text = watchingSection();
-    expect(text).toContain("Games in progress");
+    expect(text).toContain("Being played");
     expect(text).toMatch(/link/i);
   });
 

@@ -194,9 +194,9 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         with no sign-in of its own you choose a name once and this browser remembers it; behind
         Cloudflare Access it is your Access sign-in. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
-        door at the top of it. It has three lists &mdash; <em>Your games</em>, the
+        door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
         tables you already sit at; <em>Open tables</em>, every table on the server still waiting
-        for players, whoever opened it; and <em>Games in progress</em>, the ones you can watch
+        for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
         &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
         you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
         choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
@@ -247,7 +247,7 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
       <h3>Watching a game</h3>
       <p>
         You can watch a game you are not playing in. The lobby&rsquo;s third list,{" "}
-        <em>Games in progress</em>, is every game on the server still being played or
+        <em>Being played</em>, is every game on the server still being played or
         already finished, and pressing one opens it &mdash; as does a{" "}
         <strong>link</strong> to the table, from whoever is at it. If the table was
         opened with a password, you are asked for it once, on a screen that names the
@@ -279,7 +279,7 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         abandoned.
       </p>
       <p>
-        The lobby has a chat of its own, <strong>Lobby chat</strong>, under the three lists, folded
+        The lobby has a chat of its own, <strong>Lobby chat</strong>, beside the three lists (under them on a phone), folded
         the same way &mdash; open it to join in. Whoever runs the server can switch it off, and then
         the section is simply not there. The name in the lobby&rsquo;s corner is the name your
         messages carry, and the name a seat you take is labelled with; with none, your address is
@@ -290,7 +290,7 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save
         button and nothing to remember. Leave and come back and the table is under{" "}
-        <em>Your games</em> in the lobby, where it resumes exactly where you left it. You do not
+        <em>Your tables</em> in the lobby, where it resumes exactly where you left it. You do not
         have to leave to find it: the banner&rsquo;s leftmost control names the game you are in,
         and opening it offers <em>Lobby</em> at the top and your other tables under it to switch
         between. A table you opened yourself can be abandoned, from its own screen while it is

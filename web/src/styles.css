@@ -935,25 +935,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
 
-/* The lobby's two lists ARE the setup screen's `.saved` sections, deliberately:
-   the rows are the same rows and a second set of rules is a second place for
-   them to drift. Only the lock marker is new, and it is a fact on the row
-   rather than a control. */
-.lobby .lock { font-size: 11px; }
-.lobby .open-tables li .table-facts { color: var(--fg-dim); }
-/* The row's name is an ANCHOR since M6.2 (R-14) — the row's job is to go to an
-   address, so it carries one — and it wears `button.ghost`'s box, which is
-   styled on the element and so does not reach an `<a>`. Restated here rather
-   than widening `button.ghost` to `.ghost`: every other `.ghost` in this client
-   is a real button, and a selector that stopped naming the element would start
-   styling the `<summary>`s that deliberately do not carry it (see the banner's
-   note above). */
-.lobby .saved li a.row-link {
-  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
-}
-.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
-
 .on-this-device .local-fault { color: var(--fg-dim); }
 
 /* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
@@ -1093,12 +1074,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .deal-pick.chosen { border-color: var(--vp); box-shadow: 0 0 0 1px var(--vp); }
 .deal-pick:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
-
-.saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-.saved li { display: flex; gap: 0.4rem; align-items: center; }
-/* The row's second half — the size, what the table is waiting on, and who is at
-   it. It wraps rather than pushing the delete controls off a narrow screen. */
-.saved li .table-facts { font-size: 11px; }
 
 /* ---- the door (M6.1) ---------------------------------------------------- */
 
@@ -1505,13 +1480,6 @@ ol.account .mover { font-weight: 700; }
   margin: 0 0 0.5rem;
 }
 .chat h2 .fold, .chat h3 .fold { margin-left: auto; font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
-/* The rhythm the heading's `margin-top` used to supply by accident. `.setup h3`
- * gave every lobby section 1.6rem of air above it, and for the three ordinary
- * sections that margin sits OUTSIDE anything — but the chat's heading is inside
- * a bordered, padded `.panel`, so the same rule put the air INSIDE the box
- * (M-3's "26px of dead space above its one header line"). Zeroing it there and
- * putting it on the section is the same 1.6rem in the place it belongs. */
-.lobby .lobby-chat { margin-top: 1.6rem; }
 .chat-new { font-family: var(--mono); font-size: 10px; line-height: 1.4; padding: 0 0.45rem; border-radius: 999px; background: var(--reachable); color: var(--bg-sunken); }
 /* The body folds the turn account's way: clipped, never unmounted, so the
  * live region stays in the tree. **The cap does NOT lift above 1201px, which is
@@ -2148,11 +2116,6 @@ a.primary-link {
 .lobby { min-height: 100vh; }
 .lobby-body { max-width: 72rem; margin: 0 auto; padding: 1.1rem 2rem 2.5rem; }
 .lobby-body > .error { margin: 0 0 0.9rem; }
-/* INTERIM, and Task 5's to delete with the sections it restyles: the lobby's
-   root was a `.setup` box until M6.5c2, and `.setup h3` sized these three
-   headings. Restated for exactly them, so the lists look as they did until
-   they are rebuilt. */
-.lobby-body > .saved > h3 { font-size: 1rem; margin: 1.6rem 0 0.4rem; }
 .lobby-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; margin: 0.4rem 0 1.1rem; }
 .lobby-actions .to-door, .band-corner .to-door {
   font-size: 12px; color: var(--fg-dim); text-decoration: underline;
@@ -2222,4 +2185,60 @@ a.primary-link {
      11), and state C's Try again is as tall as every other card's control. */
   .lobby-actions button.primary { flex: 1 1 auto; min-height: 44px; }
   .state-actions button.ghost { min-height: 44px; }
+}
+
+/* ---- M6.5c2: the lobby's lists (R-6.5c2.7; spec section 2.2; mocks 02, 11) */
+/* The lists and the chat's rail side by side; one column below 860px, where
+   the rail follows the lists. */
+.lobby-cols { display: grid; grid-template-columns: minmax(0, 1fr) 18.75rem; gap: 1.4rem; align-items: start; }
+.lobby-cols.no-rail { grid-template-columns: minmax(0, 1fr); }
+.lobby-lists, .lobby-rail { min-width: 0; }
+.lobby-section { margin-bottom: 1.2rem; }
+.lobby-section .section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.2rem 0.6rem; margin: 0 0 0.5rem; }
+.lobby-section h3 { font-size: 16px; font-weight: 600; margin: 0; }
+.section-hint { font-size: 11.5px; color: var(--fg-faint); }
+.lobby-section > .muted { margin: 0.2rem 0 0; }
+.lobby-section > button.more { margin-top: 0.5rem; }
+/* A row: name and age, the seats, one action (mock 02). Yours carry the gold
+   edge; the name is the row's one link. */
+.lobby-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.lobby-row {
+  display: grid; grid-template-columns: minmax(0, 15.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.9rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.9rem;
+}
+.lobby-row.mine { border-left: 3px solid var(--yen); }
+.row-title { min-width: 0; }
+.row-name { display: flex; align-items: center; flex-wrap: wrap; gap: 0.2rem 0.5rem; }
+.lobby-row a.row-link {
+  font-family: var(--display); font-size: 16px; font-weight: 600; color: var(--fg);
+  text-decoration: none; overflow-wrap: anywhere;
+}
+.lobby-row a.row-link:hover { text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 3px; }
+.row-meta { font-size: 11.5px; color: var(--fg-faint); }
+.row-seats { display: flex; flex-wrap: wrap; gap: 0.3rem; min-width: 0; }
+/* The one action, and under it the creator's Abandon (R-13) in every one of
+   its states: smaller and quieter than the action, and stacked rather than
+   beside it, so it takes no width from the seats (mock 02 keeps a row's chips
+   on one line). */
+.row-action { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 0.3rem; }
+.row-action .row-go { display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; white-space: nowrap; }
+.row-action button.ghost.row-go { color: var(--fg); border-color: var(--line-bright); padding: 0.34rem 0.8rem; }
+.row-action button.ghost.row-go:hover { border-color: var(--fg-dim); }
+.row-action > button.ghost:not(.row-go) {
+  font-size: 11px; line-height: 1.4; min-height: 24px; padding: 0.1rem 0.5rem; color: var(--fg-faint); white-space: nowrap;
+}
+.row-action > button.ghost:not(.row-go):hover { color: var(--fg); border-color: var(--line-bright); }
+.row-action > button.ghost.danger:not(.row-go):hover { color: var(--warn); border-color: var(--warn); }
+.row-action .abandon-ask { max-width: 16rem; text-align: right; }
+.row-action .row-go .padlock { color: var(--warn); }
+.row-action .stranded { font-size: 11.5px; color: var(--warn); }
+@media (max-width: 860px) {
+  .lobby-cols { grid-template-columns: minmax(0, 1fr); }
+}
+/* The phone (mock 11): the title and the action on one line, the seats wrapping
+   under both; the row's action thumb-sized. */
+@media (max-width: 600px) {
+  .lobby-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0.5rem 0.75rem; padding: 0.7rem 0.75rem; }
+  .row-seats { grid-column: 1 / -1; grid-row: 2; }
+  .row-action .row-go { min-height: 44px; }
 }

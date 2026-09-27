@@ -1529,7 +1529,7 @@ describe("the route", () => {
     // is set when the argument comes AFTER the node asked.
     const after = (el: Element) =>
       Boolean(notice.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(after(screen.getByRole("heading", { name: "Your games" }))).toBe(true);
+    expect(after(screen.getByRole("heading", { name: "Your tables" }))).toBe(true);
     expect(after(screen.getByRole("heading", { name: "Open tables" }))).toBe(true);
     expect(after(screen.getByRole("heading", { name: "Lobby" }))).toBe(false);
     // **The lobby, and the hash with it.** A screen left at `#/t/<id>` for a
@@ -3831,7 +3831,7 @@ describe("the first screen with no server", () => {
       window.location.hash = "#/lobby";
     });
     expect(await screen.findByRole("heading", { name: "Can't reach the server" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
     act(() => {
       window.location.hash = "#/";
     });
@@ -3884,7 +3884,7 @@ describe("the first screen with no server", () => {
       "the card after the bound",
     );
     // And it replaces the sections, exactly as the refused arm's does.
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
   });
 
   // **"Try again" after a read that HUNG asks again, under a bound of its own**
@@ -3943,7 +3943,7 @@ describe("the first screen with no server", () => {
     });
     window.location.hash = "#/lobby";
     render(<App />);
-    await until(() => screen.queryByRole("heading", { name: "Your games" }) !== null, "the lobby");
+    await until(() => screen.queryByRole("heading", { name: "Your tables" }) !== null, "the lobby");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -3951,7 +3951,7 @@ describe("the first screen with no server", () => {
     // The bound has passed and the health read is still out; the sections stay,
     // because something else already answered.
     expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
-    expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Your tables" })).toBeInTheDocument();
   });
 
   // **A late answer is still an answer** (review fix 1). The bound decides
