@@ -39,7 +39,7 @@ import { type Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
 import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
 // The readings every walk that SHARES a table makes — whose hand, whose move,
@@ -74,7 +74,9 @@ test.afterEach(async () => {
 
 /** The walk's own cap on MOVES. Idle looks have their own, below: the two
  *  failures are different — a game that will not end, and a table where nobody
- *  is moving — and a single counter would report the second as the first. */
+ *  is moving — and a single counter would report the second as the first.
+ *  A hit throws `capReached`, which names the cap, the turn and the
+ *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
 const CAP = 4000;
 
 /** The word the third browser has to present before it may read this table. */
@@ -409,7 +411,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
       idle = 0;
       await step(first, s1);
       moves += 1;
-      if (moves > CAP) throw await deadEnd(pages[first], { id }, moves);
+      if (moves > CAP) throw await capReached(pages[first], { id }, moves);
       continue;
     }
     const s2 = await readScreen(pages[second]);
@@ -419,7 +421,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
       await step(second, s2);
       first = second;
       moves += 1;
-      if (moves > CAP) throw await deadEnd(pages[second], { id }, moves);
+      if (moves > CAP) throw await capReached(pages[second], { id }, moves);
       continue;
     }
     // **Short looks rather than one long sleep.** The poll runs every three

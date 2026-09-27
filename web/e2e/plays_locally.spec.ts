@@ -29,7 +29,7 @@ import { type Page, type Worker } from "@playwright/test";
 // builds for itself is flagged by `newContextWithoutWorker`, for the same reason.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { archiveDir, BASE_URL, haveBrowser } from "../playwright.config";
-import { act, atTheGame, deadEnd, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
+import { act, atTheGame, capReached, deadEnd, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 import type { Affordance } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
@@ -37,7 +37,9 @@ import type { Affordance } from "./harness";
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
 /** The walk's own cap, the same figure every other walk here carries: well
- *  above what a game takes, low enough that a loop fails as a loop. */
+ *  above what a game takes, low enough that a loop fails as a loop.
+ *  A hit throws `capReached`, which names the cap, the turn and the
+ *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
 const CAP = 4000;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -264,6 +266,7 @@ test("a whole game against the bot plays in the browser with no /api/ request wh
     moves += 1;
     screen = await readScreen(page);
   }
+  if (!screen.over) throw await capReached(page, game, moves);
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);
   await expect(page.getByText("The game is over.")).toBeVisible();
 
