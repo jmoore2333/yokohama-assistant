@@ -1,13 +1,14 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2.2, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: DRAFT, revision 2.3, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
 - **Revision 2** applies every finding. §10 records each finding with its disposition.
 - **Revision 2.1** records the owner's answers to the two items revision 2 left open (§10.2).
-- **Revision 2.2** (this text) takes the owner's note on the dev door: the open door on the Worker as well, with
-  the repository's defaults staying Access (R-6.5c2.5; §10.2).
+- **Revision 2.2** takes the owner's note on the dev door: the open door on the Worker as well, with the
+  repository's defaults staying Access (R-6.5c2.5; §10.2).
+- **Revision 2.3** (this text) applies the Fable re-read of revision 2 (§10.3).
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -202,6 +203,10 @@ for this work), and builds against the committed mockups.
 **R-6.5c2.19 — The release is versioned: `0.6.0`.** Proposed in revision 1 and **ruled by the owner** (2026-09-26,
 "Bump to 0.6.0"): one release number across the workspace and both npm packages, and the release commit
 tagged.
+- **The tag is `v0.6.0`, made AFTER the merge, on master** (review R2-M2). A `v*` tag runs
+  `.github/workflows/release.yml`: three OS builds of the CLI, its tests and the `piped_dogfood` gate, then
+  `gh release create` from the tagged commit. So the tag publishes the 0.6.0 CLI release from the merged master,
+  never from a web-lane head, and its run joins the close's sequence (§3).
 - Every crate takes the workspace version, `[workspace.package] version` in the root `Cargo.toml`, still
   `0.5.0`. So every save any build has written since the V4 release says `engine_version: "0.5.0"`.
   `GameRecord`'s own doc names that field as how "a human sees which build wrote the file".
@@ -244,6 +249,11 @@ The mode lives on `AppState` and in `resolve` alone. So:
    the client draws as a plain refusal.
 3. **A body-borne plain name under `cf-access` or `worker`** (a create seating `{"user": "ben"}`) is accepted as
    a key nobody can hold, exactly as a misspelled email is today. There's no new refusal.
+4. **The module's `identity_of` fallback follows the mode rule** (review R2-m1). Today a raw value no header can
+   carry is answered by `User::parse(raw)` directly, which under the widened grammar would trim `"ben\r"` to
+   `ben` and accept it, bypassing the email shape. The fallback now applies the configured mode's rule after the
+   parse (or refuses outright), with a cell through `identity_inner`. That path is unreachable through the shell
+   today, and the cell is what keeps it so. The browser host calls `User::parse` directly and needs no mode rule.
 
 **The archive's containment is restated, not assumed** (review H1, escalation 2):
 - `caller_segment` keeps `[a-z0-9._-]` and maps everything else to `_`. For an email, `@` becomes `_at_`. For a
@@ -251,8 +261,11 @@ The mode lives on `AppState` and in `resolve` alone. So:
 - Its cell (today's email-only containment test in `archive.rs`) is **rewritten**, not left green. It feeds the
   names `.`, `..`, `. .`, `-` and `.x` to `User::parse` and asserts each is refused, and asserts the segment of
   every accepted name begins with `[a-z0-9]`.
-- **Defence in depth:** `archive::paths` refuses any path component that is `.` or `..`, and `DirArchive::put`
-  checks that the joined path stays under its root before it creates a directory.
+- **Defence in depth** (review R2-m3): `archive::paths` returns a `Result`, refusing any path component that is
+  `.` or `..`, and its callers (the archive route, `DirArchive::put`, `ReceiptArchive::put`) handle the refusal.
+  `DirArchive::put`'s "stays under its root" check is **lexical**: no `Component::ParentDir` in the joined path,
+  because `canonicalize` needs the file to exist. The review's export probe (`traversal_probe.rs`) is the
+  regression cell's template.
 
 **The rename.** The mode `claimed` becomes **`open`** (`YOKOHAMA_WEB_IDENTITY=open`), and the cargo feature
 `dev-identity` becomes **`open-door`**, still a default feature.
@@ -271,6 +284,8 @@ The mode lives on `AppState` and in `resolve` alone. So:
   - `web/playwright.config.ts`;
   - the corpus files `health.json`, `me.json` and `me_signed_out.json`;
   - `web/src/types.ts` and the client's four `claimed` literal sites;
+  - `worker/src/identity.ts`'s and `identity.unit.test.ts`'s sentences that the shell's `isAddress` agrees with
+    `User::parse` "character for character", which now describe the mode rule's email shape (review R2-m8);
   - RUNBOOK and `CLAUDE.md`.
 
 **The client.**
@@ -435,8 +450,10 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
 - **"The current production bot", with no request** (review M1). The door must ask nothing, and the local facts
   are hand-written literals (`web/src/local/facts.ts`), so a fifth literal would be a second truth.
   - `wire_fixtures` emits a **contract file**, `web/src/wire/production_bot.json`, holding
-    `{"identity": …, "label": …}` of `PROVISIONAL_DEFAULT_BOT`. It is frozen and refused when stale, exactly as
-    `site_space_words.json` is.
+    `{"identity": …, "label": …}` of `PROVISIONAL_DEFAULT_BOT`. It is **emitted and refused exactly as**
+    `site_space_words.json` is (review R2-m6). Unlike that file, which is consumed as a pin, this one is imported
+    by the three components. It joins `contract.ts`'s typed set and the leakage pins' scan; it carries no secret,
+    and the anti-vacuity partners still enumerate every file.
   - The door's bot card, the local form and the table form's bot option import it at build time.
   - When the AI lane re-points the production bot, `wire_fixtures` fails until the file is regenerated. That is
     the "pull".
@@ -468,10 +485,28 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
     lobby row shows `runs_here: false` and says so. `delete` reads the record's event count and never rebuilds,
     so Abandon still archives it.
   - **A finished game with a foreign bot opens as today:** frame, replay, `/result` and the record download.
-    The bot's label comes from the record. The session's conversion warning ("…it resumes as a HUMAN seat, so
-    you are now playing it") is **not shown**, and `why` on a move made by that seat answers the authored
-    refusal "this move was made by V4, which this server doesn't run". It **never** says the move was a
-    human's.
+    The bot's label comes from the record.
+  - `Repl::new` is the CLI's only constructor, and it converts the foreign seat to a human inside the resident
+    `Repl` (`from_provenance`). So "opens as today" rests on **the layer masking that conversion at every place
+    it shows** (review R2-M1). There are four places:
+    1. **the warning:** the session's conversion warning ("…it resumes as a HUMAN seat, so you are now playing
+       it") is not shown;
+    2. **`why`:** on a move made by that seat, `why` answers the authored refusal "this move was made by V4, which
+       this server doesn't run", built in `explain.rs` from `session.record().run` before `why::account_parts`
+       is reached. It **never** says the move was a human's. This is a **thirteenth refusal shape** on `GET
+       …/why`: it gets a corpus sample and a `contract.ts` entry, and `explain::kind_of`'s exhaustive match
+       does **not** fence it, because it is the layer's, not the CLI's (review R2-m5);
+    3. **undo:** `input`'s `undo` arm **refuses on any game whose recorded bot is foreign**, on the one-human path
+       (`api::undo_allowed` admits a one-human table with no over-check today) and the shared path alike.
+       Otherwise the CLI's undo, seeing no bot, pops the bot's final move and leaves an unplayable game;
+    4. **the Players panel:** on the web, `is_bot` derives from the record's `run.seats`, the same source as
+       `ClientState.bots`. That **re-rules `client::facts_for`'s sentence** that `is_bot` is "still the REPL's
+       own reconciled answer ([`Repl::bots`]), never re-derived here". The re-ruling is scoped to a foreign seat
+       on a finished game, and everywhere else the two agree.
+  - **An owed game-over upload that was undone during its upload** (the §2.5 race), and then meets a deploy with a
+    new bot, is not over and foreign. Its alarm's `stamp_archive` is refused, and it retries on its backoff until
+    the creator's Abandon or expiry clears `archive_owed`. Both `delete` paths never rebuild. That is bounded, not
+    a strand (review R2-o1).
   - An all-human game has no bot to mismatch and opens as today.
   - **In the browser**, the local list is the module's `TableView` listing (review o6). A not-over foreign game is
     listed under **"Will not open here"**, the `SEMANTICS_REV` pattern, with export and a two-click Remove,
@@ -493,8 +528,8 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
     the CLI's existing public `Session::set_run_id` after it. That needs no CLI change and can't trip its
     ordering assertion.
   - This follows the BGA importer's `bga-import/<table>` precedent for the field.
-  - The host is a value each host passes when it builds `Games` (`Games::with_parts` on both wasm hosts, the
-    axum constructor on the server).
+  - The host is a value each host passes to `Games::with_parts`. That is the constructor on all three hosts: the
+    server reaches it through `AppState::with_store_chat_and_archive` (review R2-m7).
   - A record written before this deploy keeps no `run_id` (review m7).
 - **A pin, on every save path:** the store, the record route, the archive on both hosts, the browser's
   IndexedDB, the export and the backup envelope carry `run` through **byte-for-byte**. The lane document gets a
@@ -543,8 +578,12 @@ Each has an architectural reason (R-6.5c.4's refinement). Sources: handover §4.
   - After the bump, that line would sit on **every existing game**.
   - The layer drops **that line only** from `ClientState.warnings`. `engine_version` is provenance only, and the
     save carries it. Other warnings still show, and the CLI's own frame is unchanged.
-  - A cell pins that a 0.5.0 record rebuilt at 0.6.0 carries no drift line in `warnings` while its record keeps
-    `engine_version: "0.5.0"`.
+  - The filter can only match the CLI's own wording, a prefix match on `warning: GameRecord.engine_version=`:
+    `Session::load_warnings` is a `pub Vec<String>`, and a typed alternative would need a CLI change. So **the pin
+    must not be vacuous** (review R2-m2). Its cell asserts that the 0.5.0 fixture pair (`browser-played-2p`: the
+    production bot, the current `rules_hash`), rebuilt at 0.6.0, carries **`warnings == []`, no warnings at
+    all**, while its record keeps `engine_version: "0.5.0"`. A cell looking for the filter's own prefix would pass
+    silently the day the CLI's wording moved; an empty-array assertion fails loudly.
 - **The positional-array `create` is refused.** serde accepts a JSON array for a struct. The layer's body
   extraction refuses any non-object body, in its own 400 shape, as the module's `init` already does.
 - **The whole-game gate's vs-bot livelock** (M6.3 close §6.3; M6.4 and M6.5c §6.1). The arm places nothing and
@@ -731,7 +770,8 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     - **`.`, `..`, `. .`, `-`, `.x` and `anonymous` are refused as names**;
     - **the rewritten containment cell**: every accepted name's segment begins with `[a-z0-9]`, and a
       traversal probe (a `..` component) is refused by `archive::paths` and `DirArchive::put`;
-    - the mode rule: under `cf-access` and `worker` a non-email header reads as absent;
+    - the mode rule: under `cf-access` and `worker` a non-email header reads as absent, including the
+      module's `identity_of` fallback (`"ben\r"` through `identity_inner`);
     - **a table whose `unlocked` list holds a plain name reads on every host**;
     - the build without the feature refuses `open` by name;
     - `/api/me` and `/api/health` say `open`.
@@ -758,7 +798,10 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     - **a not-over game with a foreign bot refuses on every game route with the typed refusal**, checked in
       `live_handle` before any rebuild;
     - **a finished foreign game opens, scores and downloads**, its `warnings` carry no conversion line, and
-      `why` on its bot's move answers the foreign-bot refusal, never "a human's move";
+      `why` on its bot's move answers the foreign-bot refusal (a corpus sample, and `contract.ts`'s entry),
+      never "a human's move";
+    - **undo on a foreign game is refused at a finished one-human table**, and the table stays finished;
+    - **the Players panel's `is_bot` and `ClientState.bots` agree** on the finished fixture pair;
     - a same-identity game opens;
     - the local "Will not open here" row, with export and Remove;
     - **`run.run_id` stamped by each host**;
@@ -793,7 +836,9 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
      first sends would meet a 409 and stop; review M4), then the live replay twice;
   6. the quota guard, then the live Playwright tier and the headed exit game;
   7. the battery;
-  8. the Fable whole-branch review.
+  8. the Fable whole-branch review;
+  9. after the close, the merge (R-6.5c2.17), then **the `v0.6.0` tag on master and its `release.yml` run**,
+     read to green (R-6.5c2.19).
 
   A live step follows the handover §4.4 rules: WARP's device login checked first, the quota guard, and one
   Playwright run at a time.
@@ -836,7 +881,8 @@ This is proposed; the plan fixes the tasks.
     shows it in its opening frame of any 0.5.0 save it resumes, which is the CLI's documented behaviour,
     unchanged;
   - **`yokohama-bridge`'s served `"version"`** (`router.rs`, `env!("CARGO_PKG_VERSION")`). Its wire output
-    changes while its source does not, and the bridge suite reads the constant itself, so it is unaffected;
+    changes while its source does not. The bridge suite is unaffected because **no bridge cell asserts the served
+    version at all** (review R2-m4);
   - `/api/health`'s `server_version`.
 - **`SEMANTICS_REV` stays 7. No bot behaviour moves.**
 - **The CLI: no change is needed.** `Session::set_run_id`, `PROVISIONAL_DEFAULT_BOT` and core's
@@ -971,3 +1017,30 @@ The owner read revision 1 in parallel with the review and answered the two items
 
 | R-6.5c2.5, noted after the read: the dev door is "a first class feature for others with a different intent" | "Open door on the Worker too", and "our default settings in the repo and documentation woudl be for access": R-6.5c2.5 rewritten; §2.1 "The Worker's two doors"; the NAS on `cf-access` (§2.10); the documents lead with Access (§2.11) | R-6.5c2.5, §2.1, §2.9, §2.10, §2.11, §3, §5, §6 |
 | The rest of the spec | "rest of the spec looks good" | — |
+
+### 10.3 The Fable re-read of revision 2 (2026-09-26, `ba448284` + `e1173ef8`)
+
+The re-read is appended to the same report.
+- **Verdict:** PLANABLE WITH TWO CORRECTIONS.
+- **Counts:** 0 CRITICAL · 0 HIGH · 2 MEDIUM · 8 MINOR · 1 OPEN.
+- **Confirmed:** 26 of §10.1's 28 dispositions hold as mechanisms, and 16 of revision 2's new sentences check
+  true.
+- **Stability:** no code moved, so every file:line and the H1 measurement stand.
+
+Every finding is **taken** in revision 2.3.
+
+| finding | disposition in revision 2.3 |
+|---|---|
+| **R2-M1** — a finished foreign game at a one-human table can be undone into an unplayable one, and its Players panel calls the bot's seat a human | TAKEN: §2.4 lists the four places the layer masks the conversion (warning, `why`, **undo fenced on foreign games**, **`is_bot` from the record**, re-ruling `facts_for`'s sentence by name); §3's cells |
+| **R2-M2** — a `v0.6.0` tag runs `release.yml` and publishes a CLI release | TAKEN: R-6.5c2.19 tags `v0.6.0` after the merge, on master, and the run joins §3's close |
+| R2-m1 `identity_of`'s fallback bypasses the mode rule | TAKEN: §2.1 rule 4, and a cell |
+| R2-m2 the drift filter's pin must not be vacuous | TAKEN: §2.6 asserts `warnings == []` on the 0.5.0 fixture pair |
+| R2-m3 the defence in depth's precision | TAKEN: §2.1 (`Result` at the callers, a lexical check, the probe as template) |
+| R2-m4 the bridge sentence's reason | TAKEN: §5 |
+| R2-m5 `why`'s thirteenth refusal shape | TAKEN: §2.4 and §3 (a corpus sample, `contract.ts`, outside `kind_of`'s fence) |
+| R2-m6 the contract file's precedent | TAKEN: §2.4 |
+| R2-m7 the constructor | TAKEN: §2.4 (`with_parts` on all three hosts) |
+| R2-m8 the shell's `isAddress` sentences | TAKEN: §2.1's ripple |
+| R2-o1 an undone owed upload meeting a new bot | TAKEN: §2.4 states it bounded (the alarm retries until Abandon or expiry) |
+
+Revision 2.2's Worker doors were not in this re-read's scope; their own re-read follows (§10.4).
