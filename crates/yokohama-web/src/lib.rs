@@ -67,6 +67,7 @@ pub mod explain;
 pub mod games;
 pub mod grammar;
 pub mod identity;
+pub mod log;
 pub mod outcome;
 pub mod signal;
 pub mod store;
@@ -482,7 +483,8 @@ impl AppState {
                 Arc::new(table::now_unix),
                 archive,
                 games::RunHost::Server,
-            ),
+            )
+            .with_log(Arc::new(log::StderrLog)),
             identity,
             heartbeat: HEARTBEAT,
             signals,

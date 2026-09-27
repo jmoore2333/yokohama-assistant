@@ -1970,7 +1970,7 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
         }),
         // The path is in the archive's own error for the operator's log; the
         // client is told what it can do about it and not where the file is.
-        Err(PutError::Conflict(_)) => Err(ApiError {
+        Err(PutError::Conflict { .. }) => Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "a different record is archived under this id".to_string(),
             table_status: None, foreign_bot: None,

@@ -26,9 +26,10 @@ use yokohama_core::{GameRecord, Rules};
 
 use crate::archive::{Archive, NoArchive};
 use crate::chat::{ChatConfig, ChatLimits};
+use crate::log::{Log, NoLog};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
-use crate::table::{TableStatus, TurnMirror};
+use crate::table::{TableDoc, TableStatus, TurnMirror};
 
 /// Why a table operation was refused, in the shapes an HTTP layer answers with.
 ///
@@ -265,6 +266,12 @@ pub struct Games {
     /// Which host this layer runs on — the `run.run_id` `finalize` stamps
     /// (M6.5c2).
     pub(crate) run_host: RunHost,
+    /// Where the layer's own lines go (M6.5c2, spec §2.6) — [`crate::log`]'s
+    /// events: a game-over save that did not land, a table the listing
+    /// skipped. [`NoLog`] unless a host hands [`Games::with_log`] its own. They
+    /// were `eprintln!`, which reaches the NAS's container log and nothing on
+    /// `wasm32-unknown-unknown`.
+    pub(crate) log: Arc<dyn Log>,
 }
 
 /// How many `Repl`s stay resident.
@@ -330,7 +337,9 @@ impl Games {
     /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
     /// The two constructors above are this one with the chat facts, the signal
     /// or the clock chosen for them. The [`RunHost`] is the host's too (M6.5c2):
-    /// it is what every record dealt here names as where it was played.
+    /// it is what every record dealt here names as where it was played. The log
+    /// is the one part defaulted — [`NoLog`] — and a host sets it with
+    /// [`Games::with_log`] (M6.5c2).
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
@@ -355,6 +364,7 @@ impl Games {
             clock,
             archive,
             run_host,
+            log: Arc::new(NoLog),
         }
     }
 
@@ -362,6 +372,16 @@ impl Games {
     /// that watches a put reaches for, as [`Games::with_clock`] is for a stamp.
     pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
         self.archive = archive;
+        self
+    }
+
+    /// This `Games` with a [`Log`] (M6.5c2, spec §2.6) — the builder step each
+    /// host takes: [`crate::log::StderrLog`] on the NAS, the Worker module's
+    /// recorder, the browser's console. A builder and not an argument of
+    /// [`Games::with_parts`], because a host that says nothing is every cell's
+    /// layer, and a constructor should not make each of them say so.
+    pub fn with_log(mut self, log: Arc<dyn Log>) -> Self {
+        self.log = log;
         self
     }
 
@@ -743,6 +763,15 @@ impl Games {
     /// which is also what keeps a vs-bot game undone past its end and finished
     /// a second time at its FIRST completion in the archive (spec §10).
     ///
+    /// **A conflict with an earlier completion of the SAME game stamps** (M6.5c2,
+    /// R-6.5c2.11, superseding the M6.5c spec §2.6 arm that stranded it). A game
+    /// undone past its end and finished again meets, at `over/<id>`, the record
+    /// of its first finish — the same `seed`, `config` and `choices`, other
+    /// events — whenever that first finish's stamp did not land (on the Worker,
+    /// an undo during the deferred upload). A record of a DIFFERENT game at the
+    /// key keeps the old answer: a line, and the save stays owed. Every outcome
+    /// that is not a stamp is a [`crate::log`] line.
+    ///
     /// Since M6.5c a host is a third retrier: [`Games::archive_over_retry`] runs
     /// this again once the host's deferred put has landed (R-6.5c.9).
     ///
@@ -764,33 +793,53 @@ impl Games {
             // Both outcomes are a landed copy: `Identical` means an earlier put
             // of these very bytes landed and only its stamp did not (M6.5b,
             // spec §2.4), so the retry stamps rather than being refused.
-            Ok(_) => {
-                // The stamp is what keeps this game to ONE archive copy: the next
-                // abandon puts under `abandoned/`, a DIFFERENT path, so a put that
-                // landed without its stamp would be archived a second time there
-                // rather than refused (`archive::paths` is per reason). Retried
-                // once on a version conflict — an `unlock` or a `join` writing the
-                // document in the same instant is the only other writer left at
-                // game over — and every other outcome is logged, because a landed
-                // copy with no stamp is the case an operator most needs to hear.
-                match self.write_table(&doc, Some(version)) {
-                    Ok(_) => {}
-                    Err(WriteError::Conflict { .. }) => match self.read_table(id) {
-                        Ok(Some((mut again, v2))) => {
-                            again.archived_at = doc.archived_at;
-                            if let Err(e) = self.write_table(&again, Some(v2)) {
-                                eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}");
-                            }
-                        }
-                        Ok(None) => eprintln!("archive of {id:?} at game over landed, but its table is gone"),
-                        Err(e) => eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}"),
-                    },
-                    Err(WriteError::Io(e)) => {
-                        eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}")
+            Ok(_) => self.stamp_over(id, doc, version),
+            // **An earlier completion of the SAME game** (M6.5c2, R-6.5c2.11):
+            // the archive keeps the first ending, and the table is stamped as on
+            // a landed put — it is owed nothing the archive will ever take.
+            Err(crate::archive::PutError::Conflict { key, held: Some(held) })
+                if same_game(&held, repl.session.record()) =>
+            {
+                self.log.line(crate::log::KEPT_EARLIER_COMPLETION, serde_json::json!({ "id": id, "key": key }));
+                self.stamp_over(id, doc, version);
+            }
+            // Another game at the key — reachable only through a caller-chosen
+            // `NewGame.id` — a held text that is no record, no held text at all,
+            // or a failed write: the save stays owed, and the line says why.
+            Err(e) => {
+                self.log.line(crate::log::OVER_PUT_REFUSED, serde_json::json!({ "id": id, "error": e.to_string() }))
+            }
+        }
+    }
+
+    /// The game-over stamp, after a landed put or a same-game conflict.
+    ///
+    /// The stamp is what keeps this game to ONE archive copy: the next abandon
+    /// puts under `abandoned/`, a DIFFERENT path, so a put that landed without
+    /// its stamp would be archived a second time there rather than refused
+    /// (`archive::paths` is per reason). Retried once on a version conflict — an
+    /// `unlock` or a `join` writing the document in the same instant is the only
+    /// other writer left at game over — and every other outcome is a line,
+    /// because a landed copy with no stamp is the case an operator most needs to
+    /// hear.
+    fn stamp_over(&self, id: &str, doc: TableDoc, version: Version) {
+        match self.write_table(&doc, Some(version)) {
+            Ok(_) => {}
+            Err(WriteError::Conflict { .. }) => match self.read_table(id) {
+                Ok(Some((mut again, v2))) => {
+                    again.archived_at = doc.archived_at;
+                    if let Err(e) = self.write_table(&again, Some(v2)) {
+                        self.log.line(crate::log::OVER_UNSTAMPED, serde_json::json!({ "id": id, "error": e.to_string() }));
                     }
                 }
+                Ok(None) => self.log.line(crate::log::OVER_TABLE_GONE, serde_json::json!({ "id": id })),
+                Err(e) => {
+                    self.log.line(crate::log::OVER_UNSTAMPED, serde_json::json!({ "id": id, "error": e.to_string() }))
+                }
+            },
+            Err(WriteError::Io(e)) => {
+                self.log.line(crate::log::OVER_UNSTAMPED, serde_json::json!({ "id": id, "error": e }))
             }
-            Err(e) => eprintln!("archive of {id:?} at game over failed: {e}"),
         }
     }
 
@@ -802,8 +851,10 @@ impl Games {
     /// version conflict stay [`Games::archive_if_over`]'s own code, never a
     /// host's copy. Idempotent: a stamped, unfinished or archive-off table puts
     /// nothing. `Ok(())` means the retry RAN, not that a stamp landed: a refused
-    /// put or a failed stamp is the layer's own log line, which a host that
-    /// cannot hear `eprintln!` learns by reading `archived_at` afterwards.
+    /// put or a failed stamp is a [`crate::log`] line — which since M6.5c2
+    /// reaches every host, the Worker's shell included — and a host still learns
+    /// the OUTCOME by reading `archived_at` afterwards, because a line is a
+    /// report and not an answer.
     ///
     /// "Unfinished" means a PLAYING game that is not yet over: `Ok(())`, and no
     /// put. A table that has no game at all answers what [`Games::handle`]
@@ -899,6 +950,17 @@ pub(crate) fn evict_down_to(live: &mut HashMap<GameId, Arc<Mutex<Repl>>>, keep: 
 /// same two sites, and calls the same pump at both.
 pub fn bring_alive(repl: &mut Repl) -> String {
     repl.pump_bots()
+}
+
+/// Whether `held` — the record already archived at a finished game's key — is
+/// an earlier completion of the SAME game as `record` (M6.5c2, R-6.5c2.11): the
+/// same `seed`, `config` and `choices`, which is the whole of a game's setup.
+/// The events may differ; that is what a refinish is. Parsed here and never in
+/// a host (the strings rule), and a held text that does not parse as a record
+/// is no game of this one's.
+fn same_game(held: &str, record: &GameRecord) -> bool {
+    serde_json::from_str::<GameRecord>(held)
+        .is_ok_and(|h| h.seed == record.seed && h.config == record.config && h.choices == record.choices)
 }
 
 #[cfg(test)]
@@ -2071,6 +2133,216 @@ mod tests {
         assert!(doc.archived_at.is_some(), "the stamp was retried over the concurrent write");
         assert!(doc.unlocked.iter().any(|u| u == "meddler@t.test"), "and the concurrent write was kept");
     }
+
+    // ---------------------------------------------------------------------
+    // The refinish rule (M6.5c2, R-6.5c2.11, spec §2.5) and the log seam
+    // (spec §2.6).
+    // ---------------------------------------------------------------------
+
+    /// **A same-game conflict at game over STAMPS** (R-6.5c2.11). The earlier
+    /// completion is this very game — the same seed, config and choices —
+    /// ending on other events, which is what an undo past the end and a
+    /// second finish leave at `over/<id>` when the first stamp did not land.
+    /// The archive keeps that first ending; the table is stamped as on a landed
+    /// put, so it is no longer owed a save the archive will always refuse, and
+    /// the line says so. Mutants: the rule removed (nothing stamped); the stamp
+    /// without the line.
+    #[test]
+    fn a_same_game_conflict_at_game_over_stamps_and_says_the_archive_keeps_the_first_ending() {
+        let games = games().with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "again");
+        // The resident handle is the opening's — `archive_over_retry_completes_…`
+        // says why the retry must rebuild from the finished record.
+        games.evict_for_test("again");
+        let stored = games.store().read(Doc::Record, "again").unwrap().unwrap().0;
+        let mut earlier: GameRecord = serde_json::from_str(&stored).expect("the finished record");
+        earlier.events.pop();
+        let held = serde_json::to_string_pretty(&earlier).expect("a record serializes");
+        assert_ne!(held, stored, "premise: the held bytes are ANOTHER ending, which is what makes the put a conflict");
+
+        let log = RecordingLog::recording();
+        let archive = RecordingArchive::conflicting(Some(held));
+        let games = games.with_archive(archive.clone()).with_log(log.clone());
+        games.archive_over_retry("again").expect("the retry");
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "premise: the put was made and met the conflict");
+        let (doc, _) = games.read_table("again").unwrap().unwrap();
+        assert!(doc.archived_at.is_some(), "a same-game conflict stamps, as a landed put does");
+        assert_eq!(log.events(), [crate::log::KEPT_EARLIER_COMPLETION]);
+        assert_eq!(
+            log.fields(0),
+            serde_json::json!({ "id": "again", "key": "rev7/over/again.json" }),
+        );
+        games.archive_over_retry("again").expect("a second retry");
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "stamped, so it is not put again");
+    }
+
+    /// **A DIFFERENT game at the key keeps today's rule** (R-6.5c2.11): on this
+    /// host the save stays OWED — no stamp — and the refusal is a line. Each
+    /// identity field is varied ALONE, so a rule that compared fewer than all
+    /// three would stamp one of these and fail; and the two shapes a held
+    /// record takes besides a record — nothing the archive can say (the
+    /// Worker's receipt until cycle C) and text that is no record — stay owed
+    /// too. One game, retried five times, because each arm leaves it owed.
+    #[test]
+    fn a_different_game_at_the_key_stays_owed_and_is_said() {
+        let games = games().with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "clash");
+        games.evict_for_test("clash");
+        let current: GameRecord =
+            serde_json::from_str(&games.store().read(Doc::Record, "clash").unwrap().unwrap().0).unwrap();
+        let varied = |edit: &dyn Fn(&mut GameRecord)| {
+            let mut record = current.clone();
+            edit(&mut record);
+            assert_ne!(record, current, "premise: the edit changed the record");
+            serde_json::to_string_pretty(&record).unwrap()
+        };
+        let arms: [(&str, Option<String>); 5] = [
+            ("another seed", Some(varied(&|r| r.seed ^= 1))),
+            ("another config", Some(varied(&|r| r.config.has_port_b = !r.config.has_port_b))),
+            ("another keep", Some(varied(&|r| r.choices[0] = yokohama_core::StartingOrderChoice::Keep(1)))),
+            ("text that is no record", Some("not a record".to_string())),
+            ("nothing the archive can say", None),
+        ];
+        let mut games = games;
+        for (what, held) in arms {
+            let log = RecordingLog::recording();
+            games = games.with_archive(RecordingArchive::conflicting(held)).with_log(log.clone());
+            games.archive_over_retry("clash").expect("the retry");
+            assert_eq!(games.read_table("clash").unwrap().unwrap().0.archived_at, None, "{what}: the save stays owed");
+            assert_eq!(log.events(), [crate::log::OVER_PUT_REFUSED], "{what}");
+            assert_eq!(
+                log.fields(0),
+                serde_json::json!({
+                    "id": "clash",
+                    "error": "rev7/over/clash.json holds a different record — a game is archived once",
+                }),
+                "{what}",
+            );
+        }
+    }
+
+    /// **The rule through the NAS's own archive** (R-6.5c2.11): `DirArchive`
+    /// READS the held record from the file, so `held` is the file's bytes and
+    /// not a double's. A different game's file keeps the save owed; the same
+    /// game's earlier ending stamps and is KEPT — its record and its table
+    /// both untouched, because the put reads the record before it writes the
+    /// table (a conflict writes nothing).
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_directory_archive_keeps_the_first_ending_and_stamps_a_refinish() {
+        use crate::archive::{paths, DirArchive, Why};
+        let dir = std::env::temp_dir().join(format!("yokohama_refinish_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let games = games().with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "refinish");
+        games.evict_for_test("refinish");
+        let current: GameRecord =
+            serde_json::from_str(&games.store().read(Doc::Record, "refinish").unwrap().unwrap().0).unwrap();
+        let (record_key, table_key) =
+            paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "refinish").expect("a safe layout");
+        std::fs::create_dir_all(dir.join(&record_key).parent().unwrap()).unwrap();
+        let first_table = "{\"the first ending's table\":true}";
+        std::fs::write(dir.join(&table_key), first_table).unwrap();
+
+        // A DIFFERENT game's record at the key: owed, and said.
+        let mut other = current.clone();
+        other.seed ^= 1;
+        std::fs::write(dir.join(&record_key), serde_json::to_string_pretty(&other).unwrap()).unwrap();
+        let log = RecordingLog::recording();
+        let games = games.with_archive(Arc::new(DirArchive::new(&dir))).with_log(log.clone());
+        games.archive_over_retry("refinish").expect("the retry");
+        assert_eq!(games.read_table("refinish").unwrap().unwrap().0.archived_at, None, "another game: owed");
+        assert_eq!(log.events(), [crate::log::OVER_PUT_REFUSED]);
+
+        // The SAME game ending earlier: stamped, said, and the archive keeps it.
+        let mut earlier = current.clone();
+        earlier.events.pop();
+        let earlier = serde_json::to_string_pretty(&earlier).unwrap();
+        std::fs::write(dir.join(&record_key), &earlier).unwrap();
+        games.archive_over_retry("refinish").expect("the retry");
+        assert!(games.read_table("refinish").unwrap().unwrap().0.archived_at.is_some(), "the same game: stamped");
+        assert_eq!(log.events(), [crate::log::OVER_PUT_REFUSED, crate::log::KEPT_EARLIER_COMPLETION]);
+        assert_eq!(std::fs::read_to_string(dir.join(&record_key)).unwrap(), earlier, "the first ending is kept");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&table_key)).unwrap(),
+            first_table,
+            "and its table beside it: a conflict writes nothing",
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A landed copy whose stamp does not land is SAID** (spec §2.6) — two of
+    /// `stamp_over`'s three arms, each through the seam: the table gone under
+    /// the stamp, and a stamp the store refuses. The third arm (a retry's own
+    /// write refused after a re-read) writes the second arm's event from the
+    /// same shape; `the_layer_prints_only_through_its_log` holds it to the
+    /// seam.
+    #[test]
+    fn a_stamp_that_does_not_land_is_said() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// An archive whose put LANDS after the game has been deleted
+        /// underneath it — the table gone before the stamp.
+        struct Vanishing {
+            store: Arc<dyn Store>,
+        }
+        impl crate::archive::Archive for Vanishing {
+            fn put(&self, _: &str, _: crate::archive::Why, id: &str, _: &str, _: &str)
+                -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+                self.store.delete(id).unwrap();
+                Ok(crate::archive::PutOutcome::Landed)
+            }
+            fn kind(&self) -> &'static str {
+                "vanishing"
+            }
+        }
+        let games = games().with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "gone");
+        games.evict_for_test("gone");
+        let store = Arc::clone(games.store());
+        let log = RecordingLog::recording();
+        let games = games.with_archive(Arc::new(Vanishing { store })).with_log(log.clone());
+        games.archive_over_retry("gone").expect("the retry");
+        assert_eq!(log.events(), [crate::log::OVER_TABLE_GONE]);
+        assert_eq!(log.fields(0), serde_json::json!({ "id": "gone" }));
+
+        /// A `MemStore` that refuses TABLE writes once `failing` is set — a
+        /// stamp the disk will not take.
+        #[derive(Default)]
+        struct RefusedStamps {
+            inner: MemStore,
+            failing: AtomicBool,
+        }
+        impl Store for RefusedStamps {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(&self, doc: Doc, id: &str, json: &str, expected: Option<Version>)
+                -> Result<Version, WriteError> {
+                if doc == Doc::Table && self.failing.load(Ordering::SeqCst) {
+                    return Err(WriteError::Io("the disk went away".to_string()));
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+        let store = Arc::new(RefusedStamps::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>)
+            .with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "refused");
+        games.evict_for_test("refused");
+        store.failing.store(true, Ordering::SeqCst);
+        let log = RecordingLog::recording();
+        let games = games.with_archive(RecordingArchive::recording()).with_log(log.clone());
+        games.archive_over_retry("refused").expect("the retry");
+        assert_eq!(log.events(), [crate::log::OVER_UNSTAMPED]);
+        assert_eq!(log.fields(0), serde_json::json!({ "id": "refused", "error": "the disk went away" }));
+    }
 }
 
 /// The helpers both halves of this crate's game tests share.
@@ -2210,19 +2482,37 @@ pub(crate) mod test_support {
         pub table: String,
     }
 
-    /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts, or
-    /// refuses every one of them — the two shapes the archive-site cells need.
+    /// What a [`RecordingArchive`] answers every put with.
+    pub(crate) enum PutAnswer {
+        /// Records the put and answers `Landed`.
+        Land,
+        /// Refuses before recording: `Failed("disk on fire")`.
+        Fail,
+        /// Records the put and answers a CONFLICT at the record's key, carrying
+        /// `held` — the record already there, as `DirArchive` reads it, or
+        /// `None` where an archive cannot say (the Worker's receipt until
+        /// M6.5c2's cycle C).
+        Conflict(Option<String>),
+    }
+
+    /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts and
+    /// answers each the one way it was built to — the shapes the archive-site
+    /// cells need.
     pub(crate) struct RecordingArchive {
         pub puts: Mutex<Vec<Put>>,
-        pub fail: bool,
+        pub answer: PutAnswer,
     }
 
     impl RecordingArchive {
         pub(crate) fn recording() -> Arc<Self> {
-            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: false })
+            Arc::new(Self { puts: Mutex::new(Vec::new()), answer: PutAnswer::Land })
         }
         pub(crate) fn failing() -> Arc<Self> {
-            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: true })
+            Arc::new(Self { puts: Mutex::new(Vec::new()), answer: PutAnswer::Fail })
+        }
+        /// Every put refused as a conflict carrying `held` (M6.5c2, R-6.5c2.11).
+        pub(crate) fn conflicting(held: Option<String>) -> Arc<Self> {
+            Arc::new(Self { puts: Mutex::new(Vec::new()), answer: PutAnswer::Conflict(held) })
         }
     }
 
@@ -2235,7 +2525,7 @@ pub(crate) mod test_support {
             r: &str,
             t: &str,
         ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
-            if self.fail {
+            if let PutAnswer::Fail = self.answer {
                 return Err(crate::archive::PutError::Failed("disk on fire".to_string()));
             }
             self.puts.lock().unwrap().push(Put {
@@ -2245,10 +2535,43 @@ pub(crate) mod test_support {
                 record: r.to_string(),
                 table: t.to_string(),
             });
-            Ok(crate::archive::PutOutcome::Landed)
+            match &self.answer {
+                PutAnswer::Conflict(held) => Err(crate::archive::PutError::Conflict {
+                    key: format!("{prefix}rev7/{}/{id}.json", why.dir()),
+                    held: held.clone(),
+                }),
+                _ => Ok(crate::archive::PutOutcome::Landed),
+            }
         }
         fn kind(&self) -> &'static str {
             "recording"
+        }
+    }
+
+    /// A [`Log`](crate::log::Log) that REMEMBERS its lines — the double every
+    /// cell about a log line reads (M6.5c2).
+    #[derive(Default)]
+    pub(crate) struct RecordingLog {
+        pub lines: Mutex<Vec<(&'static str, serde_json::Value)>>,
+    }
+
+    impl RecordingLog {
+        pub(crate) fn recording() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+        /// The events logged so far, in order.
+        pub(crate) fn events(&self) -> Vec<&'static str> {
+            self.lines.lock().unwrap().iter().map(|(event, _)| *event).collect()
+        }
+        /// The `n`th line's fields.
+        pub(crate) fn fields(&self, n: usize) -> serde_json::Value {
+            self.lines.lock().unwrap()[n].1.clone()
+        }
+    }
+
+    impl crate::log::Log for RecordingLog {
+        fn line(&self, event: &'static str, fields: serde_json::Value) {
+            self.lines.lock().unwrap().push((event, fields));
         }
     }
 

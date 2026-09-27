@@ -328,7 +328,7 @@ describe("the table's sockets (spec §2.4)", () => {
       const events = mod.events;
       mod.events = () => {
         mod.events = events;
-        return { status: missing.status, body: missing.body, bumps: "[]", free() {} } as unknown as Reply;
+        return { status: missing.status, body: missing.body, bumps: "[]", logs: "[]", free() {} } as unknown as Reply;
       };
     });
     const posted = await framed(() => chat(stub, BLUE, id, "anyone?"));
@@ -503,7 +503,7 @@ describe("the table's sockets (spec §2.4)", () => {
       const events = mod.events;
       mod.events = () => {
         mod.events = events;
-        const failed = { status: 500, body: '{"error":"the store could not be read"}', bumps: "[]", free() {} };
+        const failed = { status: 500, body: '{"error":"the store could not be read"}', bumps: "[]", logs: "[]", free() {} };
         return failed as unknown as Reply;
       };
     });
@@ -596,7 +596,7 @@ describe("the table's sockets (spec §2.4)", () => {
       const events = mod.events;
       mod.events = () => {
         mod.events = events;
-        return { status: 200, body: reading, bumps: JSON.stringify([{ bump: id }]), free() {} } as unknown as Reply;
+        return { status: 200, body: reading, bumps: JSON.stringify([{ bump: id }]), logs: "[]", free() {} } as unknown as Reply;
       };
     });
     const { lines } = await logsDuring(() => chat(stub, BLUE, id, "hm"));

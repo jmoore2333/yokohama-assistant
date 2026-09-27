@@ -115,6 +115,7 @@ describe("readReply (the plan's names table)", () => {
       bumps: '[{"bump":"t"},{"bump_table":"t"},{"bump_house_chat":null},{"end":"t"}]',
       archive: '{"key":"k"}',
       picker: "[]",
+      logs: "[]",
       free: () => {
         freed = true;
       },
@@ -133,7 +134,7 @@ describe("readReply (the plan's names table)", () => {
   it.each(['[{"Bump":"t"}]', '[{"bump":1}]', '[{"end":"t","bump":"t"}]', '{"bump":"t"}'])(
     "refuses the bump list %s",
     (bumps) => {
-      const reply = { status: 200, body: "", bumps, archive: undefined, picker: undefined, free: () => {} };
+      const reply = { status: 200, body: "", bumps, archive: undefined, picker: undefined, logs: "[]", free: () => {} };
       expect(() => readReply(reply as unknown as Reply)).toThrow(/^the module's bumps/);
     },
   );

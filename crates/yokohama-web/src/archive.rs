@@ -60,9 +60,14 @@ pub enum PutOutcome {
 /// is the shape that deletes somebody's only complete copy.
 #[derive(Debug)]
 pub enum PutError {
-    /// The path holds a different record. Carries the path, for the operator's
-    /// log; the ROUTE words its own sentence and never this one.
-    Conflict(String),
+    /// The path holds a different record. `key` is the path, for the operator;
+    /// `held` is the record already there where the archive read it —
+    /// [`DirArchive`] always does, and `None` where it cannot say (the Worker's
+    /// receipt, until its shell hands the held text back) — so the game-over
+    /// site can tell an earlier completion of the SAME game from another game
+    /// (M6.5c2, R-6.5c2.11). The ROUTE words its own sentence and never this
+    /// one, and `held` is in neither: it is a whole record, the setup seed in it.
+    Conflict { key: String, held: Option<String> },
     /// The write did not happen. Carries the implementation's own reason.
     Failed(String),
 }
@@ -70,7 +75,7 @@ pub enum PutError {
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Conflict(p) => write!(f, "{p} holds a different record — a game is archived once"),
+            Self::Conflict { key, .. } => write!(f, "{key} holds a different record — a game is archived once"),
             Self::Failed(e) => f.write_str(e),
         }
     }
@@ -300,7 +305,9 @@ mod dir {
             // complete copy"), reached without even a 409.
             match std::fs::read_to_string(&record_path) {
                 Ok(existing) if existing == record_json => return Ok(PutOutcome::Identical),
-                Ok(_) => return Err(PutError::Conflict(record_path.display().to_string())),
+                Ok(existing) => {
+                    return Err(PutError::Conflict { key: record_path.display().to_string(), held: Some(existing) })
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
                     return Err(PutError::Failed(format!(
@@ -540,7 +547,7 @@ mod tests {
             Ok(PutOutcome::Identical)
         ));
         let again = a.put(&prefix, Why::Over, "local-1", "{\"r\":2}", "{\"t\":2}");
-        assert!(matches!(again, Err(PutError::Conflict(_))), "{again:?}");
+        assert!(matches!(again, Err(PutError::Conflict { .. })), "{again:?}");
         // A half pair — the table landed, the record did not — is REPAIRED by
         // the retry, which is what the two-file put is not atomic about.
         let (record, table) =
@@ -660,11 +667,20 @@ mod tests {
         // everything would pass a cell that only looked for "not written twice".
         let same = a.put("", Why::Abandoned, "sim-3", "{\"record\":1}", "{\"table\":1}");
         assert!(matches!(same, Ok(PutOutcome::Identical)), "{same:?}");
-        let second = a.put("", Why::Abandoned, "sim-3", "{\"record\":2}", "{\"table\":2}");
-        assert!(
-            matches!(second, Err(PutError::Conflict(_))),
-            "a second put of a DIFFERENT record is refused, never versioned: {second:?}"
-        );
+        // **`held` is the file's bytes, and the sentence never carries them**
+        // (M6.5c2, R-6.5c2.11): the game-over site compares the held record in
+        // Rust, while this sentence is the abandon's refusal ON THE WIRE
+        // (`Games::delete`), where a whole record — its setup seed in it — must
+        // never ride.
+        let Err(conflict) = a.put("", Why::Abandoned, "sim-3", "{\"record\":2}", "{\"table\":2}") else {
+            panic!("a second put of a DIFFERENT record is refused, never versioned");
+        };
+        let said = conflict.to_string();
+        let PutError::Conflict { key, held } = conflict else { panic!("a conflict, not a failure: {said}") };
+        assert_eq!(held.as_deref(), Some("{\"record\":1}"), "the record already there, read from the file");
+        assert_eq!(key, dir.join("rev7/abandoned/sim-3.json").display().to_string());
+        assert_eq!(said, format!("{key} holds a different record — a game is archived once"));
+        assert!(!said.contains("\"record\""), "the sentence names the key and never the held record: {said}");
         assert_eq!(std::fs::read_to_string(dir.join("rev7/abandoned/sim-3.json")).unwrap(), "{\"record\":1}");
         assert_eq!(
             std::fs::read_to_string(dir.join("rev7/abandoned/sim-3.table.json")).unwrap(),

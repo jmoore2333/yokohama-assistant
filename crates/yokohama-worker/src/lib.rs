@@ -31,6 +31,7 @@ mod config;
 mod create;
 mod events;
 mod house;
+pub mod log;
 mod picker;
 mod receipt;
 pub mod signal;
@@ -53,6 +54,7 @@ pub use crate::events::events_inner;
 pub use crate::house::{house_copy_inner, house_frame_inner, put_copy_inner, remove_copy_inner};
 pub use crate::picker::restore_picker_inner;
 pub use crate::receipt::{expire_inner, receipt_inner, stamp_archive_inner};
+use crate::log::{LogLine, ShellLog};
 use crate::receipt::ReceiptArchive;
 use crate::signal::{Bump, RecordingSignal};
 
@@ -73,6 +75,10 @@ pub(crate) static STORE: Mutex<Option<Arc<MemStore>>> = Mutex::new(None);
 /// The signal the one `Games` holds — the SAME `Arc`, so what the layer
 /// signals during a call is drained into that call's reply.
 pub(crate) static SIGNAL: Mutex<Option<Arc<RecordingSignal>>> = Mutex::new(None);
+
+/// The log the one `Games` holds — the SAME `Arc`, so what the layer logs
+/// during a call is drained into that call's reply (M6.5c2).
+pub(crate) static LOG: Mutex<Option<Arc<ShellLog>>> = Mutex::new(None);
 
 /// The clock, copied from `yokohama-wasm` (`crates/yokohama-wasm/src/lib.rs`)
 /// and never shared, because each host is its own host — with one difference:
@@ -141,10 +147,10 @@ const HOST: Host =
     Host { identity_name: "cf-access", signal_kind: "ws", serves_games: true, multiplayer_offered: true };
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the `Games`, its store, its signal and its archive together, an empty
-/// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
-/// with no receipt and no pending plan, under `off` none. A refused
-/// configuration changes nothing. A bad VALUE's refusal names its variable
+/// one — the `Games`, its store, its signal, its archive and its log together,
+/// an empty `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new
+/// receipt archive with no receipt and no pending plan, under `off` none. A
+/// refused configuration changes nothing. A bad VALUE's refusal names its variable
 /// (spec §2.2); a configuration of the wrong shape names none — JSON that is
 /// not an object is refused in this crate's own sentence, which names the five
 /// keys, and an unknown key or a value of the wrong JSON type in serde's words
@@ -164,6 +170,7 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         Some(receipts) => receipts.clone(),
         None => Arc::new(NoArchive),
     };
+    let log = Arc::new(ShellLog::default());
     let games = Games::with_parts(
         Arc::new(yokohama_core::Rules::standard()),
         store.clone(),
@@ -172,9 +179,11 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         Arc::new(now),
         layer_archive,
         yokohama_web::games::RunHost::Worker,
-    );
+    )
+    .with_log(log.clone());
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
+    *LOG.lock().expect("the host's log") = Some(log);
     *picker::PICKERS.lock().expect("the host's pickers") = Some(HashMap::new());
     *receipt::RECEIPTS.lock().expect("the host's receipts") = receipts;
     *GAMES.lock().expect("the host's games") = Some(games);
@@ -209,6 +218,10 @@ pub struct ReplyData {
     /// `{"stored": <its code, or null>, "running": <this build's>}`, which the
     /// shell logs as `picker-dropped`. `None` from every other call.
     pub dropped: Option<String>,
+    /// The layer's log lines during this call (M6.5c2, spec §2.6), in call
+    /// order, less the one deferral `log.rs` drops. Empty from a call that
+    /// never reached the layer.
+    pub logs: Vec<LogLine>,
 }
 
 /// [`ReplyData`] as a JS class with getters — `wasm-bindgen` cannot hand a
@@ -260,6 +273,13 @@ impl Reply {
     pub fn dropped(&self) -> Option<String> {
         self.data.dropped.clone()
     }
+
+    /// The layer's log lines as JSON: `[]` when it logged nothing, else one
+    /// `{"event", "fields"}` per line, which the shell logs as its own.
+    #[wasm_bindgen(getter)]
+    pub fn logs(&self) -> String {
+        serde_json::to_string(&self.data.logs).expect("a log line serializes")
+    }
 }
 
 /// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
@@ -301,6 +321,7 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
         archive: None,
         picker: None,
         dropped: None,
+        logs: Vec::new(),
     }
 }
 
@@ -343,7 +364,7 @@ pub fn identity_inner(user: Option<&str>) -> ReplyData {
         Ok(u) => (200, serde_json::json!({ "user": u.as_str() }).to_string()),
         Err(sentence) => (401, serde_json::json!({ "error": sentence }).to_string()),
     };
-    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None }
+    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None, logs: Vec::new() }
 }
 
 #[wasm_bindgen]
@@ -482,12 +503,25 @@ pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<S
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
     let (status, body, picker) = call(games);
-    ReplyData { status, body, bumps: drain_bumps(), archive: receipt::drain_plan(), picker, dropped: None }
+    ReplyData {
+        status,
+        body,
+        bumps: drain_bumps(),
+        archive: receipt::drain_plan(),
+        picker,
+        dropped: None,
+        logs: drain_logs(),
+    }
 }
 
 /// Everything the layer signalled since the last drain.
 fn drain_bumps() -> Vec<Bump> {
     SIGNAL.lock().expect("the host's signal").as_ref().expect("init() before any call into the layer").drain()
+}
+
+/// Everything the layer logged since the last drain.
+fn drain_logs() -> Vec<LogLine> {
+    LOG.lock().expect("the host's log").as_ref().expect("init() before any call into the layer").drain()
 }
 
 /// The four document kinds the layer keeps, by the names [`load`] and [`read`]
@@ -613,7 +647,7 @@ mod tests {
         assert_eq!((r.status, r.body.as_str()), (401, want.as_str()));
         let r = identity_inner(Some("Red@Wire.Test"));
         assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#), "normalized once");
-        assert!(r.bumps.is_empty() && r.archive.is_none() && r.picker.is_none(), "an identity read writes nothing");
+        assert!(r.bumps.is_empty() && r.archive.is_none() && r.picker.is_none() && r.logs.is_empty(), "an identity read writes nothing");
     }
 
     /// **The fallback follows the mode rule** (M6.5c2, spec §2.1 rule 4; review
@@ -1192,13 +1226,13 @@ mod tests {
     }
 
     /// **The crate's own scan** (spec §5.1), copied from `yokohama-wasm`'s
-    /// `this_host_makes_no_platform_call_but_the_clock`
-    /// (`crates/yokohama-wasm/src/lib.rs`) — each host is its own host, and
-    /// what the two share is the layer, never a test module. This is host code
-    /// and its ONLY platform call is the clock. The eight patterns the layer's
-    /// `platform_calls_stay_behind_the_server_feature` names are refused here
-    /// too, over EVERY `src/*.rs` of this crate with each file's top-level test
-    /// module cut out.
+    /// scan (`crates/yokohama-wasm/src/lib.rs` — named for the clock and the
+    /// console there since M6.5c2, when that host gained the console) — each
+    /// host is its own host, and what the two share is the layer, never a test
+    /// module. This is host code and its ONLY platform call is the clock. The
+    /// eight patterns the layer's `platform_calls_stay_behind_the_server_feature`
+    /// names are refused here too, over EVERY `src/*.rs` of this crate with
+    /// each file's top-level test module cut out.
     ///
     /// Two anti-vacuity partners, and the second is the one worth reading: the
     /// scan must have looked at a file, and the one allowed call must be in

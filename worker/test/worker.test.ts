@@ -2,7 +2,7 @@ import { createExecutionContext, evictDurableObject, runInDurableObject } from "
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import compiled from "../gen/yokohama_worker_bg.wasm";
-import { createModule } from "../gen/factory.js";
+import { createModule, type Reply } from "../gen/factory.js";
 import { Archive } from "../src/archive";
 import * as configModule from "../src/config";
 import type { Env } from "../src/env";
@@ -668,5 +668,47 @@ describe("the house, first cut (spec §2.5)", () => {
     expect([plain.status, plain.text]).toEqual([426, '{"error":"this host streams over WebSocket"}']);
     const posted = await worker("/api/stream", { method: "POST", token, body: "x" });
     expect([posted.status, posted.text]).toEqual([405, ""]);
+  });
+});
+
+describe("the layer's log (M6.5c2, spec §2.6)", () => {
+  // **A line the layer logs during a call is a line of the shell's log.** The
+  // layer's `eprintln!` printed nothing on this host. Now the module records
+  // each line (`crates/yokohama-worker/src/log.rs`), the reply carries it
+  // (`Reply.logs`), and `readReply` logs it as one of the shell's own. A copy
+  // the layer's listing cannot read is the one line a bare module can be made
+  // to write: `put_copy` stores what it is handed, unread (its doc), and the
+  // listing then skips it and says so. Mutants: `readReply` dropping `logs`;
+  // the drain left out of `from_the_layer`; `init` handing the layer no log.
+  it("a table the listing skips is one line of the shell's log", async () => {
+    const mod = createModule(compiled);
+    mod.init(configModule.moduleConfig(env, null));
+    mod.put_copy("unreadable", '{"schema":3}');
+    const { result, lines } = await logsDuring(async () =>
+      readReply(mod.dispatch(RED, "GET", "/api/games", "", undefined, new Uint8Array())),
+    );
+    expect(result.status, result.body).toBe(200);
+    expect(lines).toEqual([
+      { event: "listing-skipped", id: "unreadable", why: "does not parse", error: expect.stringContaining("missing field") },
+    ]);
+  });
+
+  // **A field that is not a string is refused, named** — the strings rule's
+  // reason made structural: the shell parses these lines, and a string rounds
+  // nothing, where this number would. The reply is a stand-in built to the
+  // glue's shape, since the module writes no such line. Mutant: the check
+  // dropped (the line is logged with the number rounded).
+  it("a log line whose field is not a string is refused", () => {
+    const fake = {
+      status: 200,
+      body: "",
+      bumps: "[]",
+      archive: undefined,
+      picker: undefined,
+      dropped: undefined,
+      logs: '[{"event":"listing-skipped","fields":{"id":"x","seed":18446744073709551615}}]',
+      free() {},
+    } as unknown as Reply;
+    expect(() => readReply(fake)).toThrow(/which is no line/);
   });
 });

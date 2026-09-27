@@ -368,8 +368,10 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// a backup restores, and its `check_table_alone`, over a restored table still
 /// at the deal.
 ///
-/// `pub` since M6.5c (R-6.5c.8): a host that cannot hear the layer's
-/// `eprintln!` refuses a copy its lobby would drop.
+/// `pub` since M6.5c (R-6.5c.8): a host refuses at the source a copy its lobby
+/// would drop — the house's own check (`crates/yokohama-worker`'s
+/// `house_copy_inner`) — because the listing's line arrives only once the row
+/// is gone.
 pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     if doc.schema > TABLE_SCHEMA {
         return Err(format!(
@@ -1552,8 +1554,9 @@ impl Games {
     /// missing loudly: `create` will then report the name occupied, so the
     /// player can neither see the game nor reuse the name and no surface says
     /// why. Each skip writes one line naming the id and the failure, through the
-    /// same `eprintln!` channel `main.rs` reports its own failures on, so a
-    /// corrupt table is visible in the container log.
+    /// layer's log (`Games::with_log`, M6.5c2): stderr beside `main.rs`'s own
+    /// lines on the NAS, the shell's log on the Worker, the console in the
+    /// browser — so a corrupt table is visible wherever the layer runs.
     ///
     /// **The order is `(created_at desc, id asc)` and it is TOTAL**, which is
     /// what makes the cursor exact rather than approximate: `created_at` is unix
@@ -1583,9 +1586,9 @@ impl Games {
                 Ok(Some((json, _))) => match serde_json::from_str::<TableDoc>(&json) {
                     Ok(doc) => doc,
                     Err(e) => {
-                        eprintln!(
-                            "{id:?}'s table document does not parse, so it is not in this \
-                             listing: {e}"
+                        self.log.line(
+                            crate::log::LISTING_SKIPPED,
+                            serde_json::json!({ "id": id.as_str(), "why": "does not parse", "error": e.to_string() }),
                         );
                         continue;
                     }
@@ -1594,9 +1597,9 @@ impl Games {
                 // landed in the window. Nothing is wrong and nothing is lost.
                 Ok(None) => continue,
                 Err(e) => {
-                    eprintln!(
-                        "{id:?}'s table document could not be read, so it is not in this \
-                         listing: {e}"
+                    self.log.line(
+                        crate::log::LISTING_SKIPPED,
+                        serde_json::json!({ "id": id.as_str(), "why": "could not be read", "error": e }),
                     );
                     continue;
                 }
@@ -1605,7 +1608,10 @@ impl Games {
             // deliberately does not go through it — and `seats_of` two lines
             // below is exactly the call [`check_shape`] exists to make total.
             if let Err(why) = check_shape(&doc) {
-                eprintln!("{id:?}'s table document is malformed, so it is not in this listing: {why}");
+                self.log.line(
+                    crate::log::LISTING_SKIPPED,
+                    serde_json::json!({ "id": id.as_str(), "why": "is malformed", "error": why }),
+                );
                 continue;
             }
             let keep = match scope {
@@ -2485,6 +2491,70 @@ mod tests {
             .expect("the process is alive, so the server can still open a table");
     }
 
+    /// **A table the listing skips is SAID** (M6.5c2, spec §2.6): one
+    /// `listing-skipped` line per skipped document, naming it and why, where
+    /// each was an `eprintln!` that no wasm host could hear. Three documents,
+    /// one per site — one that does not parse, one the store cannot read, one
+    /// `check_shape` refuses — in the store's own (sorted) order, and the
+    /// healthy table still listed.
+    #[test]
+    fn a_listing_says_each_table_it_skips_and_why() {
+        /// A `MemStore` whose read of one id FAILS — a present file this
+        /// process may not read.
+        struct OneUnreadable(MemStore);
+        impl Store for OneUnreadable {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.0.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if id == "unread" {
+                    return Err("permission denied".to_string());
+                }
+                self.0.read(doc, id)
+            }
+            fn write_if_version(&self, doc: Doc, id: &str, json: &str, expected: Option<Version>)
+                -> Result<Version, WriteError> {
+                self.0.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.0.delete(id)
+            }
+        }
+        let log = RecordingLog::recording();
+        let games = Games::new(Arc::new(Rules::standard()), Arc::new(OneUnreadable(MemStore::default())))
+            .with_log(log.clone());
+        let red = who("red@t.test");
+        games.create(&two_people("healthy", CORPUS_SEED), &red).expect("a neighbour table");
+        let malformed = serde_json::json!({
+            "schema": 3, "id": "malformed", "name": null, "created_by": "red@t.test",
+            "created_at": 1_789_000_000u64, "players": 2, "colors": ["Red", "Blue"],
+            // `PlayerId::new(7)` panics; `check_shape` is what refuses it first.
+            "start_seat": 7,
+            "seats": [{ "kind": "human", "user": "red@t.test" }, { "kind": "human", "user": "blue@t.test" }],
+            "keeps": [null, null], "seed": CORPUS_SEED, "status": "dealing", "turn": null,
+        })
+        .to_string();
+        for (id, text) in [("unparsed", r#"{"schema":3}"#.to_string()), ("unread", "{}".to_string()), ("malformed", malformed)] {
+            games.store().write_if_version(Doc::Table, id, &text, None).expect("the store takes what it is given");
+        }
+        let listed = games.list_for(&red).expect("one bad file does not fail the listing");
+        assert_eq!(listed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["healthy"]);
+        let said: Vec<(&str, String, String)> = log
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(event, f)| (*event, f["id"].as_str().unwrap().to_string(), f["why"].as_str().unwrap().to_string()))
+            .collect();
+        let line = |id: &str, why: &str| (crate::log::LISTING_SKIPPED, id.to_string(), why.to_string());
+        assert_eq!(
+            said,
+            [line("malformed", "is malformed"), line("unparsed", "does not parse"), line("unread", "could not be read")],
+        );
+        let unread = log.fields(2);
+        assert_eq!(unread["error"], "permission denied", "the store's own reason rides the line");
+    }
+
     // ---------------------------------------------------------------------
     // The two archive sites (M6.5a, R-6.5a.11).
     // ---------------------------------------------------------------------
@@ -2523,15 +2593,19 @@ mod tests {
         assert_eq!(archive.puts.lock().unwrap().len(), 1, "stamped tables are not put again");
     }
 
-    /// The first failure rule: a put that fails at game over is logged, the
-    /// move is still answered, and the stamp stays UNSET — the retry mark.
+    /// The first failure rule: a put that fails at game over is SAID (M6.5c2:
+    /// through the log seam, where it was an `eprintln!`), the move is still
+    /// answered, and the stamp stays UNSET — the retry mark.
     #[test]
     fn a_failing_archive_at_game_over_still_answers_the_move() {
-        let games = games().with_archive(RecordingArchive::failing());
+        let log = RecordingLog::recording();
+        let games = games().with_archive(RecordingArchive::failing()).with_log(log.clone());
         let (_, _repl) = play_to_the_end(&games, "over-fails"); // every persist returned Ok
         let (doc, _) = games.read_table("over-fails").unwrap().unwrap();
         assert_eq!(doc.archived_at, None, "unset says a retry is owed");
         assert!(games.handle("over-fails").is_ok(), "the game is still served");
+        assert_eq!(log.events(), [crate::log::OVER_PUT_REFUSED], "one line, at the persist that ended the game");
+        assert_eq!(log.fields(0), serde_json::json!({ "id": "over-fails", "error": "disk on fire" }));
     }
 
     /// The abandon site: a playing table with events is put under `abandoned/`

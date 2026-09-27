@@ -1,8 +1,10 @@
 //! The browser host (M6.5b, R-6.5b.9): ONE `Games` over `MemStore`, `NoSignal`,
-//! `NoArchive` and a settable clock, behind six `wasm-bindgen` exports.
+//! `NoArchive`, a settable clock and the console for the layer's log, behind
+//! six `wasm-bindgen` exports.
 //!
-//! This is HOST code. Its platform calls are the clock and the bindgen glue and
-//! nothing else — [`this_host_makes_no_platform_call_but_the_clock`] holds that
+//! This is HOST code. Its platform calls are the clock, the console and the
+//! bindgen glue, and nothing else —
+//! [`this_host_makes_no_platform_call_but_the_clock_and_the_console`] holds that
 //! over this crate's own non-test source, with the SAME EIGHT PATTERNS the
 //! layer's `platform_calls_stay_behind_the_server_feature` names. The two
 //! scans are not the same scan and this doc used to claim they were
@@ -67,6 +69,43 @@ fn now() -> u64 {
     }
 }
 
+/// The layer's log on this host (M6.5c2, spec §2.6): the browser's console.
+///
+/// **`console.warn`, never `console.error`.** A line here reports a table the
+/// local listing skipped — a document another build wrote, or a store that
+/// went bad — which the page survives; and the browser walk fails a run on any
+/// `console.error` (`web/e2e/harness.ts`'s `watchForBreakage`). One JSON line,
+/// the shape the Worker's shell logs, so a line reads the same on every host.
+///
+/// Natively — this crate's own cells and the lint gate — there is no console
+/// and a `wasm-bindgen` import is a stub that panics, so the line goes nowhere;
+/// `web/src/local/log.node.test.ts` reads it through the COMPILED module.
+struct ConsoleLog;
+
+impl yokohama_web::log::Log for ConsoleLog {
+    fn line(&self, event: &'static str, fields: serde_json::Value) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            console_warn(&yokohama_web::log::render(event, &fields));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (event, fields);
+        }
+    }
+}
+
+/// `console.warn` — this host's second platform call, beside the clock
+/// (M6.5c2). An import rather than a reach through `js_sys`: `js_sys` binds no
+/// console, and the probe `js_sys::global()` would take is, by its own doc,
+/// "pretty heavy code-size wise", in a module every visitor precaches.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = warn)]
+    fn console_warn(line: &str);
+}
+
 /// The deployment facts this host reports. `"none"` rather than `"sse"`:
 /// nothing in a browser store can be signalled to, and the page's local arm
 /// never opens a stream.
@@ -80,7 +119,8 @@ fn now() -> u64 {
 const HOST: Host =
     Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
 
-/// Build a FRESH `Games` over a fresh `MemStore`, replacing any earlier one.
+/// Build a FRESH `Games` over a fresh `MemStore`, whose log is the console
+/// (M6.5c2), replacing any earlier one.
 #[wasm_bindgen]
 pub fn init() {
     let games = Games::with_parts(
@@ -91,7 +131,8 @@ pub fn init() {
         Arc::new(now),
         Arc::new(yokohama_web::archive::NoArchive),
         yokohama_web::games::RunHost::Browser,
-    );
+    )
+    .with_log(Arc::new(ConsoleLog));
     *GAMES.lock().expect("the host's games") = Some(games);
 }
 
@@ -365,19 +406,20 @@ mod tests {
         assert!(b > a, "the native clock ticks: {a} then {b}");
     }
 
-    /// **The crate's own scan** (spec §2.1): this is host code and its ONLY
-    /// platform call is the clock. The eight patterns the layer's
+    /// **The crate's own scan** (spec §2.1): this is host code, and its
+    /// platform calls are the clock and, since M6.5c2, the console the layer's
+    /// log writes to. The eight patterns the layer's
     /// `platform_calls_stay_behind_the_server_feature` names are refused here
     /// too, over this crate's own `src` with each file's top-level test module
     /// cut out.
     ///
-    /// Two anti-vacuity partners, and the second is the one worth reading: the
+    /// Three anti-vacuity partners, and the second is the one worth reading: the
     /// scan must have looked at a file, and the one allowed call must be in
     /// CODE rather than in prose — a doc comment naming `js_sys::Date::now`
     /// would otherwise keep this cell green over a crate that had stopped
     /// making the call at all.
     #[test]
-    fn this_host_makes_no_platform_call_but_the_clock() {
+    fn this_host_makes_no_platform_call_but_the_clock_and_the_console() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let patterns = [
             "SystemTime",
@@ -392,6 +434,7 @@ mod tests {
         let mut escaped: Vec<String> = Vec::new();
         let mut scanned = 0usize;
         let mut clock_in_code = false;
+        let mut console_in_code = false;
         for entry in std::fs::read_dir(&src).expect("src is readable") {
             let path = entry.expect("an entry").path();
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
@@ -414,11 +457,15 @@ mod tests {
                 if !is_comment && line.contains("js_sys::Date::now") {
                     clock_in_code = true;
                 }
+                if !is_comment && line.contains("js_namespace = console") {
+                    console_in_code = true;
+                }
             }
         }
         assert!(escaped.is_empty(), "platform calls in the host crate: {escaped:#?}");
         assert!(scanned > 0, "anti-vacuity: the scan read no file");
         assert!(clock_in_code, "anti-vacuity: the one allowed platform call is CODE, not prose");
+        assert!(console_in_code, "anti-vacuity: the console import is CODE, not prose");
     }
 
     /// The module's one new export, over the COMMITTED envelope fixture

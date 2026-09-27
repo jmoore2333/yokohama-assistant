@@ -26,9 +26,10 @@
 //!
 //! **`check_shape` runs twice, and either refusal carries its reason**, which
 //! the shell logs (spec §2.8). The house's `list` would drop a document it
-//! rejects, and would say so only through the layer's `eprintln!`, which is
-//! mute on this host. So each defect is loud here, at the source, rather than
-//! a row that silently leaves the lobby:
+//! rejects, and would say so only in the layer's log line — which reaches the
+//! shell since M6.5c2, but only once the row has left the lobby. So each
+//! defect is loud here, at the source, rather than a row that silently leaves
+//! the lobby:
 //!
 //! - **on the stored ORIGINAL, first**: a defect in the table's own document.
 //!   The NAS's listing drops such an original, and the scrub would repair two
