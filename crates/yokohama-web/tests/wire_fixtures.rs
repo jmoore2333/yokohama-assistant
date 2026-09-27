@@ -1256,10 +1256,11 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // it already gave, never a rule: a miss falls back to asking about every
     // area in turn, and a hit costs one request instead of up to twenty-four.
     let mut placed_before: Option<u64> = None;
-    // A prompt that does not move is a walk that does not terminate. Three
-    // identical prompts in a row means the arm below is answering with
-    // something the game will not take, and the answer is to back out of the
-    // picker rather than to keep pushing.
+    // A prompt that does not move is a walk that does not terminate. A prompt
+    // that comes back unchanged three more times after its first — the FOURTH
+    // identical prompt in a row, `stuck` reaching 3 — means the arm below is
+    // answering with something the game will not take, and the answer is to
+    // back out of the picker rather than to keep pushing.
     let mut stuck = 0usize;
     let mut last_prompt = Value::Null;
 
