@@ -1150,4 +1150,43 @@ mod tests {
         assert_eq!(without_version_drift(vec![drift]), Vec::<String>::new());
         assert_eq!(without_version_drift(Vec::new()), Vec::<String>::new());
     }
+
+    /// **Only the FOREIGN seat's conversion line is dropped** (M6.5c2, spec
+    /// §2.4's first mask, R-6.5c2.10) — the first stage's PRECISION, which the
+    /// finished-foreign cell's `[]` cannot see: a filter that emptied every
+    /// game's warnings passes that cell. Over the committed pair re-seated
+    /// against `v2-padded` (seat 1 foreign, seat 0 a person), fed lines in the
+    /// CLI's own shapes (`BotSeats::from_provenance`'s two conversion arms,
+    /// `identity_drift_warnings`, `Session::from_record`'s `rules_hash` line):
+    /// seat 1's two conversion lines go, and a `rules_hash` line, seat 1's
+    /// version-drift line and a conversion-shaped line naming the HUMAN seat 0
+    /// all stay, in order.
+    #[test]
+    fn only_the_foreign_seats_conversion_line_is_dropped() {
+        let (record, _) = crate::games::test_support::foreign_pair("v2-padded", None);
+        let record: yokohama_core::GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let converted = "warning: seat 1 was played by controller \"v2-padded\", which this build does not know \
+                         how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
+            .to_string();
+        let refused = "warning: seat 1 was played by controller \"v2-padded\", but y — it resumes as a HUMAN \
+                       seat, so you are now playing it"
+            .to_string();
+        let rules = "warning: GameRecord.rules_hash=\"x\" does not match running rules content hash \"y\" — \
+                     replaying anyway (v1 does not refuse on a rules_hash mismatch)"
+            .to_string();
+        let drift = "warning: seat 1 records controller \"v2-padded\" at version 1, but this build runs \
+                     version 2 — the seat still plays, under the CURRENT build"
+            .to_string();
+        let human = "warning: seat 0 was played by controller \"v2-padded\", which this build does not know \
+                     how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
+            .to_string();
+        assert_eq!(
+            without_foreign_conversion(
+                vec![converted.clone(), rules.clone(), refused, drift.clone(), human.clone()],
+                &record,
+            ),
+            vec![rules, drift, human],
+        );
+        assert_eq!(without_foreign_conversion(vec![converted], &record), Vec::<String>::new());
+    }
 }
