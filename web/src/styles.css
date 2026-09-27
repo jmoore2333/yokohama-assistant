@@ -974,8 +974,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
    width cells are on the game screen and the set table, and since M6.5c2 on a
-   FRESH profile's door (`setup_screens.spec.ts`) — no games, no report, no
-   refusal — so these rows still land on the headed live review. */
+   fresh profile's door and the same door with one local game
+   (`setup_screens.spec.ts`) — no report, no refusal, no row that will not open
+   — so these rows still land on the headed live review. */
 .backup-controls { margin-top: 0.8rem; }
 .backup-controls .backup-note { margin: 0.3rem 0 0.6rem; }
 .backup-controls .backup-error { display: block; margin: 0.3rem 0; }
@@ -989,10 +990,10 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    sentences and one control has nothing to lay out.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, and since M6.5c2 on a
-   FRESH profile's door, which draws the storage line but no install offer — so
-   the offer lands on the headed live review (the same note the backup block
-   carries). */
+   width cells are on the game screen and the set table, and since M6.5c2 on
+   the door with no game and with one, which draws the storage line but never
+   the install offer — so the offer lands on the headed live review (the same
+   note the backup block carries). */
 .storage-line { margin: 0.8rem 0 0; }
 /* A real break above it, measured at 390px: the storage line and the two
    install sentences are all `.muted` at the same size, and at the backup
@@ -1028,9 +1029,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    the width it stops fitting rather than scrolling the page at 390px.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen, the set table and a FRESH profile's door,
-   which has no outbox row, so this lands on the headed live review, exactly as
-   the backup and storage blocks above say. */
+   width cells are on the game screen, the set table and the door with no game
+   and with one, which has no outbox row, so this lands on the headed live
+   review, exactly as the backup and storage blocks above say. */
 .outbox { margin-top: 0.8rem; }
 .outbox h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--fg-dim); }
@@ -2056,7 +2057,11 @@ a.primary-link {
   max-width: 86rem; margin: 0 auto; min-height: 330px; padding: 1.75rem 3.5rem 4.25rem;
   display: flex; align-items: center; justify-content: space-between; gap: 2rem;
 }
-.door-title { min-width: 0; }
+/* No `min-width: 0` on `.door-title`, deliberately (Task 3 fix round 1): in a
+   row, the title's box must never shrink below its one unbreakable word, so it
+   is the board that gives way; and the hero stacks at 860px, before the board
+   gets small. A `min-width: 0` here drew "Yokohama" over the pyramid from 820px
+   down to 601px. */
 .door-title h1 { font-size: 76px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
 .project-link {
   display: inline-flex; gap: 6px; margin-top: 1rem; font-size: 12.5px; color: var(--fg-dim);
@@ -2147,14 +2152,25 @@ a.primary-link {
 @media (max-width: 900px) {
   .door-cards, .door-cards.two-up { grid-template-columns: minmax(0, 1fr); max-width: 36rem; margin: 0 auto; }
 }
-/* The phone (mock 11): the board above the title, the cards stacked in the
-   desktop's order, each primary control full width and thumb-sized. */
-@media (max-width: 600px) {
+/* The hero stacks, the board above the title, before the two can meet
+   (Task 3 fix round 1). In a row the title is one 348px word and the board met
+   it at 820px (measured, the review's I-1); the cards go to one column at 900
+   and the hero at 860, where the board still has 335px of its 360. The 1rem
+   gap keeps the title's text box (Fraunces rises ~9px above its line box)
+   clear of the board's by ~7px; the phone's own gap is below. */
+@media (max-width: 860px) {
   .door-hero-in {
     flex-direction: column-reverse; align-items: center; text-align: center;
-    min-height: 0; padding: 0.75rem 1rem 4rem; gap: 0.6rem;
+    min-height: 0; gap: 1rem;
   }
-  .door-hero .board-mark { width: 236px; flex: none; margin-right: 0; }
+  .door-hero .board-mark { flex: none; margin-right: 0; }
+}
+/* The phone (mock 11): the board above the title (the stack above, which this
+   inherits), the cards stacked in the desktop's order, each primary control
+   full width and thumb-sized. */
+@media (max-width: 600px) {
+  .door-hero-in { padding: 0.75rem 1rem 4rem; gap: 0.6rem; }
+  .door-hero .board-mark { width: 236px; }
   .door-title h1 { font-size: 54px; }
   .door-main { padding: 0 1rem 1.5rem; }
   .door-card button.primary, .door-card a.primary-link {

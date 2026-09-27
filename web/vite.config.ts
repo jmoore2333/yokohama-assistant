@@ -23,11 +23,12 @@ import { checkProjectUrl } from "./scripts/project-url.mjs";
 //
 // **`define` carries ONE build value, the door's project link** (M6.5c2,
 // R-6.5c2.6; spec §2.3). Vite hands only `VITE_`-prefixed variables to
-// `import.meta.env`, so `YOKOHAMA_PROJECT_URL` — the name both hosts document —
-// reaches the bundle here, CHECKED: `checkProjectUrl` throws on a bad value, and
-// a throw in this file fails `vite build` naming the variable. Unset or empty
-// is `null`, and the door draws no link. `vitest.config.ts` merges this file,
-// so the component suite reads the same value — as a global there (measured).
+// `import.meta.env`, so `YOKOHAMA_PROJECT_URL` — the name both hosts will
+// document, and `deploy/Dockerfile`'s `ARG` today — reaches the bundle here,
+// CHECKED: `checkProjectUrl` throws on a bad value, and a throw in this file
+// fails `vite build` naming the variable. Unset or empty is `null`, and the
+// door draws no link. `vitest.config.ts` merges this file, so the component
+// suite reads the same value — as a global there (measured).
 const projectUrl = checkProjectUrl(process.env.YOKOHAMA_PROJECT_URL);
 
 export default defineConfig({

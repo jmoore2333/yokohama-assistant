@@ -139,6 +139,17 @@ describe("deviceWord", () => {
     const dealing = { status: "dealing" as const, to_move: null, over: null };
     expect(deviceWord(vsBot({ ...dealing, chosen: [true, false] }))).toBe(`vs ${v} · choose a card`);
     expect(deviceWord(vsBot({ ...dealing, chosen: [true, true] }))).toBe(`vs ${v} · dealing`);
+    // The three branches a local game rarely shows, each ONE field moved (the
+    // review's M-7). Over with no winner: `vsBot()` with `over` alone moved
+    // (its `winner` is the corpus's null).
+    expect(deviceWord(vsBot({ over: true }))).toBe(`vs ${v} · over`);
+    // Playing with no seat to move: `vsBot()` with `to_move` alone moved.
+    expect(deviceWord(vsBot({ to_move: null }))).toBe(`vs ${v} · playing`);
+    // Open: the corpus's own open table with `bot` alone moved, so the row
+    // reads the lobby's seat count after the version.
+    expect(deviceWord({ ...wire.tableOpen, bot: { label: v, runs_here: true } })).toBe(
+      `vs ${v} · open · 1 of 2 seated`,
+    );
   });
 
   // A game dealt before its table recorded which bot (spec §2.4: "no `bot` in

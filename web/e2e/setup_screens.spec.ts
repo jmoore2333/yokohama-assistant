@@ -94,6 +94,41 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
     await look(page, `door-${size.width}`);
   }
 
+  // **Between the phone and the desktop the title never runs into the board**
+  // (Task 3 fix round 1; the review's I-1 measured the word drawn over the
+  // pyramid from 820px down to 601px). One width either side of the hero's
+  // 860px stack: at 861 the row, the text left of the board; at 700 the stack,
+  // the board above it. The TEXT is measured with a `Range`, because the
+  // heading's own box could shrink below its word — which is how the defect
+  // passed every width read — and the two boxes must not intersect.
+  for (const width of [861, 700]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await expect(page.locator(".door-hero").getByRole("heading", { level: 1, name: "Yokohama" })).toBeVisible();
+    const { text, board } = await page.evaluate(async () => {
+      await document.fonts.ready;
+      const range = document.createRange();
+      range.selectNodeContents(document.querySelector(".door-hero h1")!);
+      const box = (r: DOMRect) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+      return {
+        text: box(range.getBoundingClientRect()),
+        board: box(document.querySelector(".door-hero .board-mark")!.getBoundingClientRect()),
+      };
+    });
+    const clear =
+      text.right <= board.left || text.left >= board.right || text.bottom <= board.top || text.top >= board.bottom;
+    expect(clear, `at ${width}px the title's text ${JSON.stringify(text)} meets the board ${JSON.stringify(board)}`).toBe(
+      true,
+    );
+    if (width === 861) {
+      expect(text.right, "at 861px the hero is a row: the text ends left of the board").toBeLessThanOrEqual(board.left);
+    } else {
+      expect(text.top, "at 700px the hero is stacked: the board sits above the text").toBeGreaterThanOrEqual(board.bottom);
+      await look(page, "door-700");
+    }
+    await noSidewaysScroll(page, `the door at ${width}px`);
+  }
+
   // The help opens in place, and brings none of its screenshots.
   await page.setViewportSize(DESKTOP);
   await page.getByRole("button", { name: "How to play" }).click();
@@ -104,6 +139,11 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
   // **R-6.5b2.7 in a real browser, for the rebuilt door**: the art manifest is
   // a static file and the words are the local host's; nothing is `/api/`.
   expect(asked.filter((p) => p.startsWith("/api/")), "the door asks the API for nothing").toEqual([]);
+  // The anti-vacuity half (the review's M-6): the listener DID see this page's
+  // requests — the art manifest is a static file, fetched beside the pictures
+  // it names — so the empty list above is a door that asked nothing, and not a
+  // listener that heard nothing.
+  expect(asked, "and the manifest is a file, not a route").toContain("/art/manifest.json");
 
   // **The device card with a game on it**, for the headed look: a fresh
   // profile draws no rows, and the rows are half of what mock 01's device card
