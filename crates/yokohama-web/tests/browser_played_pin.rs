@@ -124,6 +124,61 @@ fn the_committed_pair_is_one_human_one_bot_and_the_table_agrees_with_the_record(
     }
 }
 
+/// **The game screen never draws the CLI's version-drift line** (M6.5c2, spec
+/// §2.6, R-6.5c2.19; review H3, R2-m2), and the save keeps the version it was
+/// written at.
+///
+/// **An EMPTY array, never "no drift line".** The filter can only match the
+/// CLI's own wording, so a cell that looked for the filter's prefix would pass
+/// silently the day that wording moved; this one fails loudly. The premise
+/// (`load_warnings.len() == 1`) is what makes the empty array a claim about the
+/// filter: the CLI's session said exactly one thing about this record — its
+/// release — and the screen shows nothing.
+///
+/// **It stays green across cycle C's bump to 0.6.0, by construction.**
+/// - The rewritten version is DERIVED from the running one and differs from it
+///   in every build, so the drift line fires at 0.5.0 and at 0.6.0 alike.
+/// - The pair's other two provenance facts do not move with a release: its
+///   `rules_hash` is a hash of the rules data, not the version, and its bot is
+///   the production descriptor, which a bump does not re-point. So the premise
+///   holds at 0.6.0 too.
+/// - Its committed `engine_version` is never read here.
+#[test]
+fn a_record_from_another_release_opens_with_no_warning_and_keeps_its_version() {
+    use yokohama_web::store::Store;
+    let (games, id) = host_with_the_pair();
+    let other = format!("{}-another-release", env!("CARGO_PKG_VERSION"));
+    let store: Arc<dyn Store> = Arc::clone(games.store());
+    let (json, version) = store.read(Doc::Record, &id).expect("a readable store").expect("the pair's record");
+    let mut record: yokohama_core::GameRecord = serde_json::from_str(&json).expect("the committed record parses");
+    record.engine_version = other.clone();
+    let rewritten = serde_json::to_string_pretty(&record).expect("a record serializes");
+    store.write_if_version(Doc::Record, &id, &rewritten, Some(version)).expect("the rewrite lands");
+
+    let handle = games.handle(&id).expect("the finished game opens");
+    let load = handle.lock().expect("a game").session.load_warnings.clone();
+    assert_eq!(load.len(), 1, "premise: the session warns once, about the release: {load:?}");
+
+    let user = User::parse(LOCAL_USER).expect("the local address parses");
+    let get = |path: String| {
+        dispatch(
+            &games,
+            &HOST,
+            Ok(&user),
+            &ApiRequest { method: "GET", path: &path, query: "", content_type: None, body: b"" },
+        )
+    };
+    let res = get(format!("/api/games/{id}"));
+    assert_eq!(res.status, 200, "{}", res.body);
+    let state: serde_json::Value = serde_json::from_str(&res.body).expect("a ClientState");
+    assert_eq!(state["warnings"], serde_json::json!([]), "the game screen carries no warning at all");
+
+    let res = get(format!("/api/games/{id}/record"));
+    assert_eq!(res.status, 200, "{}", res.body);
+    let saved: yokohama_core::GameRecord = serde_json::from_str(&res.body).expect("the stored record");
+    assert_eq!(saved.engine_version, other, "the save names the release that wrote it");
+}
+
 /// **Every event of a browser-played game is ACCOUNTED FOR by the native
 /// `why`**: each one is either a bot move this build reconstructs, or the
 /// route's own typed refusal saying the mover was a human seat (or that the

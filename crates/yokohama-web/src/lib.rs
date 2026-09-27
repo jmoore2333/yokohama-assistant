@@ -69,6 +69,7 @@ pub mod grammar;
 pub mod identity;
 pub mod log;
 pub mod outcome;
+pub mod platform;
 pub mod signal;
 pub mod store;
 pub mod table;
@@ -218,14 +219,7 @@ impl From<games::GameError> for ApiError {
 #[cfg(feature = "server")]
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let mut body = serde_json::json!({ "error": self.message });
-        if let Some(status) = self.table_status {
-            body["status"] = status.into();
-        }
-        if let Some(pair) = &self.foreign_bot {
-            body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
-        }
-        (self.status, Json(body)).into_response()
+        (self.status, Json(api::error_value(&self))).into_response()
     }
 }
 
@@ -559,15 +553,6 @@ impl AppState {
 // idempotent. It is recorded here so the next reader does not trust a sentence
 // over the code.
 
-/// The longest a `?wait` may hold (spec §3.3).
-///
-/// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
-/// silently given 25 would read the early answer as "nothing changed for two
-/// minutes", which is the same failure `deny_unknown_fields` exists to prevent
-/// one field over.
-#[cfg(feature = "server")]
-const MAX_WAIT_SECONDS: u64 = 25;
-
 /// `GET /api/games/{id}/events` — the change signal, polled form.
 ///
 /// **NOT seated, since M6.3 — and the seat it resolves is resolved for one
@@ -603,12 +588,8 @@ async fn events(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<EventsQuery>,
 ) -> ApiResult<Events> {
+    api::check_wait(q.wait)?;
     if let Some(wait) = q.wait {
-        if wait > MAX_WAIT_SECONDS {
-            return Err(ApiError::bad_request(format!(
-                "a request can be held for at most {MAX_WAIT_SECONDS} seconds, not {wait}"
-            )));
-        }
         // **Admitted BEFORE it subscribes**, for the reason `stream` states:
         // `Signals::subscribe` makes a sender for any id at all, so holding a
         // request for a table the caller may not read — or that does not
@@ -738,7 +719,7 @@ async fn house_stream(
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event("house")
-                .data(format!("{{\"seq\":{},\"chat\":{}}}", h.seq, h.chat)),
+                .data(signal::house_frame(h.seq, h.chat)),
         )
     });
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
@@ -1097,6 +1078,24 @@ mod tests {
         };
         let ours = api::parse_json::<Input>(None, br#"{"line":"1"}"#).unwrap_err();
         assert_eq!(ours.message, axum_text);
+        // **And the one DEPARTURE, named** (M6.5c2, spec §2.6): a positional
+        // ARRAY that serde reads a struct from is ACCEPTED by axum and refused
+        // by the layer in its own words — the only body whose answer is not
+        // axum's, and only because axum's was a table opened from a list.
+        let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(array))
+            .unwrap();
+        assert!(
+            axum::Json::<tables::NewGame>::from_request(req, &()).await.is_ok(),
+            "premise: axum reads the array as a create",
+        );
+        let ours = api::parse_json::<tables::NewGame>(Some("application/json"), array.as_bytes())
+            .expect_err("the layer refuses it");
+        assert_eq!(ours.message, api::NOT_AN_OBJECT);
     }
 
     /// R-6.5a.3's 405 is axum's SHAPE: an empty body AND the `Allow` header
@@ -1212,7 +1211,7 @@ mod tests {
         // A watcher of the FINISHED game: signed in, no seat, no lock to knock on.
         let (status, body) = get_as(&state, "green@wire.test", &format!("/api/games/{name}/record")).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"], "the record is the players' — watch, download nothing");
+        assert_eq!(body["error"], "the record is the players' — a spectator downloads nothing");
         // A seat holder gets the store's exact bytes.
         let (status, raw_bytes) =
             raw(app(Arc::clone(&state)), "GET", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
@@ -7111,16 +7110,7 @@ mod tests {
     fn platform_calls_stay_behind_the_server_feature() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let gated_files = ["art.rs", "assets.rs", "main.rs"];
-        let patterns = [
-            "SystemTime",
-            "Instant::now",
-            "std::fs",
-            "std::env",
-            "std::thread",
-            "std::process",
-            "tokio::",
-            "axum::",
-        ];
+        let patterns = crate::platform::CALLS;
         let mut escaped: Vec<String> = Vec::new();
         let mut gated_hits = 0usize;
         for name in gated_files {

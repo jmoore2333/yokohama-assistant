@@ -2259,6 +2259,7 @@ async fn corpus() -> Corpus {
     all.push(("site_space_words".to_string(), site_space_words()));
     all.push(("production_bot".to_string(), production_bot()));
     all.push(("identity_cases".to_string(), identity_cases()));
+    all.push(("seed_cases".to_string(), seed_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
     for (_, value) in all.iter_mut() {
@@ -2406,6 +2407,110 @@ fn site_space_words() -> Value {
         })
         .collect();
     serde_json::json!({ "cards": cards })
+}
+
+/// **What the new-table form checks a seed against, as the server reads one**
+/// (M6.5c2, spec §2.2 "The seed"; Review Focus 5).
+///
+/// Not a payload any route serves — a CONTRACT, frozen as
+/// [`site_space_words`] is and for its reason: the client has to decide
+/// something itself. The form checks a typed seed AS IT IS TYPED
+/// (`web/src/seedRule.ts`, cycle B), which is a second statement of
+/// [`WireSeed`]'s rule — `str::trim`, then `u64::from_str`: an optional `+`,
+/// ASCII digits, at most 18446744073709551615. The client cannot call Rust, so
+/// the two are held together here: `seedRule.test.ts` asserts `checkSeed` gives
+/// every verdict in this file, and this file is refused when the rule moves.
+///
+/// **The inputs sit where a hand-written check would part ways with the
+/// server**: leading zeros and a `+` it takes; a full-width or an Arabic-Indic
+/// digit, an exponent, a sign, a separator and one past the top it refuses;
+/// and TWO that split JavaScript's own `String.prototype.trim` from Rust's —
+/// U+FEFF, which JavaScript strips and Rust does not, and U+0085, which Rust
+/// strips and JavaScript does not (measured on both sides when this was
+/// written). None is the walk's [`SETUP_SEED`], in either spelling: the
+/// leakage pin scans this file like every other.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+const SEED_INPUTS: &[&str] = &[
+    "+007 ",
+    " 7",
+    "007",
+    "\u{ff17}",
+    "1e3",
+    "-1",
+    "18446744073709551616",
+    "18446744073709551615",
+    "",
+    " ",
+    "0",
+    "+0",
+    "-0",
+    "+",
+    "12 34",
+    "\t42\n",
+    "\u{a0}12\u{a0}",
+    "\u{feff}12",
+    "\u{85}12",
+    "\u{3000}12\u{3000}",
+    "0x10",
+    "1_000",
+    "12.0",
+    "\u{663}",
+    "00000000000000000000018446744073709551615",
+    "99999999999999999999",
+];
+
+/// Each input with [`WireSeed`]'s own verdict — the create's `seed` field
+/// deserialized from the STRING a browser sends, exactly as `NewGame` reads it.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+fn seed_cases() -> Value {
+    Value::Array(
+        SEED_INPUTS
+            .iter()
+            .map(|raw| {
+                let ok = serde_json::from_value::<yokohama_web::tables::WireSeed>(Value::String(
+                    (*raw).to_string(),
+                ))
+                .is_ok();
+                serde_json::json!({ "raw": raw, "ok": ok })
+            })
+            .collect(),
+    )
+}
+
+/// **The verdicts Review Focus 5 names, as the spec states them** (M6.5c2).
+///
+/// `seed_cases.json` is whatever [`WireSeed`] says TODAY, and the client is held
+/// to that — so without this cell the two could agree with each other and both
+/// disagree with what the spec promised the player. The last two asserts are
+/// the anti-vacuity: the two inputs on which JavaScript's `String.prototype.trim`
+/// and Rust's `str::trim` part ways really do get different verdicts from the
+/// server, so a client rule written on the obvious trim fails cycle B's
+/// `seedRule.test.ts`.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+#[test]
+fn the_seed_table_holds_the_verdicts_the_spec_names() {
+    let cases = seed_cases();
+    let verdict = |raw: &str| -> bool {
+        cases
+            .as_array()
+            .expect("the table is an array")
+            .iter()
+            .find(|c| c["raw"] == raw)
+            .unwrap_or_else(|| panic!("{raw:?} is not in the committed table"))["ok"]
+            .as_bool()
+            .expect("a verdict")
+    };
+    for raw in ["+007 ", " 7", "007", "18446744073709551615"] {
+        assert!(verdict(raw), "the server takes {raw:?}, and the spec says it does");
+    }
+    for raw in ["\u{ff17}", "1e3", "-1", "18446744073709551616", "", " "] {
+        assert!(!verdict(raw), "the server refuses {raw:?}, and the spec says it does");
+    }
+    assert!(verdict("\u{85}12"), "Rust's trim strips U+0085; JavaScript's does not");
+    assert!(!verdict("\u{feff}12"), "JavaScript's trim strips U+FEFF; Rust's does not");
 }
 
 /// **The key grammar's verdicts, frozen for the client's name step** (M6.5c2,

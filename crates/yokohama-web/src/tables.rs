@@ -1156,7 +1156,7 @@ impl Games {
         }
         if doc.unlocked.len() >= UNLOCKED_CAP {
             return Err(GameError::Conflict(
-                "this table has as many watchers as it can remember".to_string(),
+                "this table has as many spectators as it can remember".to_string(),
             ));
         }
         doc.unlocked.push(user.as_str().to_string());
@@ -5114,7 +5114,7 @@ mod tests {
             .expect_err("the list is full");
         assert!(
             matches!(&refused, GameError::Conflict(m)
-                if m == "this table has as many watchers as it can remember"),
+                if m == "this table has as many spectators as it can remember"),
             "{refused:?}",
         );
 

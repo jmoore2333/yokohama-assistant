@@ -131,6 +131,69 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
 /// which is why the committed corpus has to normalise it away.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// A HOST's clock, frozen or live (M6.5c2, spec §2.6's restatements): what
+/// `crates/yokohama-wasm` and `crates/yokohama-worker` each carried as three
+/// statics and a `set_clock`, stated once.
+///
+/// **It makes no platform call.** The host hands its live reading to
+/// [`HostClock::now`]: `Date.now()` on the target, and [`HostClock::tick`]
+/// natively, where the crate's own cells and the lint gate compile and a
+/// `js_sys` call is a stub that panics. The ticking shape is
+/// [`Games::ticking_clock`]'s, for its reason: a constant would make every
+/// table's `created_at` a tie. `const`-constructed, so a host holds one in a
+/// `static`.
+pub struct HostClock {
+    pinned: std::sync::atomic::AtomicBool,
+    reading: std::sync::atomic::AtomicU64,
+    ticks: std::sync::atomic::AtomicU64,
+}
+
+impl HostClock {
+    pub const fn new() -> Self {
+        Self {
+            pinned: std::sync::atomic::AtomicBool::new(false),
+            reading: std::sync::atomic::AtomicU64::new(0),
+            ticks: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Pin the clock to `seconds`, or pass `None` for the live reading —
+    /// answering the setting it replaced (`None` = live).
+    pub fn set(&self, seconds: Option<u64>) -> Option<u64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let prior = self.pinned.load(Relaxed).then(|| self.reading.load(Relaxed));
+        match seconds {
+            Some(s) => {
+                self.reading.store(s, Relaxed);
+                self.pinned.store(true, Relaxed);
+            }
+            None => self.pinned.store(false, Relaxed),
+        }
+        prior
+    }
+
+    /// The pinned reading, else `live()` — which a pinned clock never calls.
+    pub fn now(&self, live: impl FnOnce() -> u64) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.pinned.load(Relaxed) {
+            self.reading.load(Relaxed)
+        } else {
+            live()
+        }
+    }
+
+    /// 1, 2, 3, … — the live reading of a build with no platform clock.
+    pub fn tick(&self) -> u64 {
+        self.ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    }
+}
+
+impl Default for HostClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// **Where a game was played** — the value every save's `run.run_id` names
 /// (M6.5c2, spec §2.4 "What every save names"), stamped by `finalize` into the
 /// record of every game this layer deals.
@@ -2134,6 +2197,22 @@ mod tests {
         assert!(doc.unlocked.iter().any(|u| u == "meddler@t.test"), "and the concurrent write was kept");
     }
 
+    /// **The second `NotFound`** (M6.5c Task 1's M6): a RESIDENT game whose
+    /// record is gone from the store. `handle` answers from `live` and never
+    /// reads the store, so the retry's own record read is what finds nothing —
+    /// and it must say so, never answer `Ok` over a game it cannot archive.
+    #[test]
+    fn archive_over_retry_is_not_found_for_a_resident_game_whose_record_is_gone() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let _handle = playing(&games, &two_people("vanished", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        games.store().delete("vanished").expect("the store's own delete, under a resident handle");
+        assert!(games.handle("vanished").is_ok(), "premise: still RESIDENT, so `handle` reads no store");
+        let err = games.archive_over_retry("vanished").expect_err("no record to archive");
+        assert!(matches!(&err, GameError::NotFound(m) if m == "no game named \"vanished\""), "{err:?}");
+        assert!(archive.puts.lock().unwrap().is_empty(), "nothing was put");
+    }
+
     // ---------------------------------------------------------------------
     // The refinish rule (M6.5c2, R-6.5c2.11, spec §2.5) and the log seam
     // (spec §2.6).
@@ -2342,6 +2421,24 @@ mod tests {
         games.archive_over_retry("refused").expect("the retry");
         assert_eq!(log.events(), [crate::log::OVER_UNSTAMPED]);
         assert_eq!(log.fields(0), serde_json::json!({ "id": "refused", "error": "the disk went away" }));
+    }
+
+    /// **A host's clock, stated once** (M6.5c2, spec §2.6's restatements): what
+    /// `crates/yokohama-wasm` and `crates/yokohama-worker` each carried as three
+    /// statics and a `set_clock`. Pinned, it answers the pin and asks the
+    /// platform nothing; `set` hands back what it replaced (`None` = live), so a
+    /// caller that pins one call can restore a frozen test clock after it; and
+    /// `tick` is the live reading of a build with no platform clock.
+    #[test]
+    fn a_host_clock_pins_answers_what_it_replaced_and_is_live_otherwise() {
+        let clock = HostClock::new();
+        assert_eq!(clock.now(|| 42), 42, "unpinned: the host's live reading");
+        assert_eq!(clock.set(Some(1_789_000_000)), None, "it replaced the live clock");
+        assert_eq!(clock.now(|| panic!("a pinned clock asks the platform nothing")), 1_789_000_000);
+        assert_eq!(clock.set(Some(1_789_000_500)), Some(1_789_000_000));
+        assert_eq!(clock.set(None), Some(1_789_000_500));
+        assert_eq!(clock.now(|| 7), 7);
+        assert_eq!((clock.tick(), clock.tick(), clock.tick()), (1, 2, 3));
     }
 }
 

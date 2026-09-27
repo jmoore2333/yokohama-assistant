@@ -1039,26 +1039,22 @@ mod tests {
         assert!(read_inner("table", "sim-00000000000000dd").unwrap().unwrap().contains("18446744073709551615"));
     }
 
-    /// A positional ARRAY body the layer itself would accept (plan review m3) is
-    /// refused here: this host names its object from an object's `id` only.
+    /// A positional ARRAY body is the LAYER's own 400 since M6.5c2 (spec §2.6):
+    /// `api::parse_json` reads an object only, so this module forwards the body
+    /// as it forwards every body the layer refuses, and the answer is the
+    /// layer's, byte for byte — one sentence on every host.
     #[test]
-    fn an_array_body_the_layer_would_accept_is_refused() {
+    fn an_array_body_is_the_layers_own_400() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-171): players,
-        // colors, start_seat, seed, seats, and every later field defaults — the
-        // shape the plan's review measured at 201. The premise below fails if
-        // that order ever changes, so the refusal is never read off a body the
-        // layer would have refused anyway.
+        // Positional, in `NewGame`'s FIELD ORDER — the body the M6.5c plan's
+        // review measured at 201, before the layer refused it.
         let body = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
         let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
-        assert_eq!(direct.status, 201, "premise: the LAYER accepts this array positionally — {}", direct.body);
         init_inner(&config("off")).unwrap();
         let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ff", Some("application/json"));
-        assert_eq!(r.status, 400, "{}", r.body);
-        assert_eq!(r.body, r#"{"error":"a game must be created from a JSON object"}"#);
-        // Nothing under ANY id: the array names no id, so a table the layer made
-        // from it would sit under one it drew.
+        assert_eq!((r.status, &r.body), (direct.status, &direct.body), "the layer's own answer, byte for byte");
+        assert_eq!((r.status, r.body.as_str()), (400, serde_json::json!({ "error": api::NOT_AN_OBJECT }).to_string().as_str()));
         assert!(stored(Doc::Table).is_empty() && stored(Doc::Record).is_empty(), "nothing stored");
         // Anti-vacuity: the same listing names a table the moment one IS stored.
         let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000ff", Some("application/json"));

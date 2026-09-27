@@ -43,8 +43,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  * own, and stated back here, so a fixture that stopped being routed appears by
  * name and a new one cannot join the corpus without landing in a column.
  *
- * - `site_space_words` and `identity_cases` are contracts, never a route's
- *   payload.
+ * - `site_space_words`, `identity_cases` and `seed_cases` are contracts,
+ *   never a route's payload.
  * - `watching`, `locked` and the four `why`/explanation files are built in
  *   process by the emitter's `constructed()`: a deterministic bot-free walk
  *   cannot reach them.
@@ -68,6 +68,7 @@ const THIRD_COLUMN = [
   "identity_cases",
   "locked",
   "production_bot",
+  "seed_cases",
   "site_space_words",
   "table_bot",
   "table_foreign",

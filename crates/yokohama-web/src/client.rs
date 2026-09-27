@@ -535,11 +535,25 @@ impl ClientState {
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
-            warnings: without_foreign_conversion(session.load_warnings.clone(), session.record()),
+            warnings: without_version_drift(without_foreign_conversion(session.load_warnings.clone(), session.record())),
             events: session.record().events.len(),
             bots: crate::bots::seat_bots(session.record()),
         }
     }
+}
+
+/// The CLI's engine-version drift line, and nothing else, dropped from what the
+/// game screen shows (M6.5c2, spec §2.6, R-6.5c2.19).
+///
+/// `engine_version` is provenance only (`GameRecord`'s own doc), and every save
+/// carries it; after a release bump the line would sit on EVERY existing game.
+/// The CLI's own frame is unchanged. **A prefix match on the CLI's `format!`**
+/// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>` and
+/// a typed alternative would be a CLI change: the pin that keeps it honest
+/// asserts an EMPTY array (`browser_played_pin.rs`), never "no drift line".
+pub fn without_version_drift(warnings: Vec<String>) -> Vec<String> {
+    const DRIFT: &str = "warning: GameRecord.engine_version=";
+    warnings.into_iter().filter(|w| !w.starts_with(DRIFT)).collect()
 }
 
 /// One historical position, projected from the record — the M4 replay payload.
@@ -1108,5 +1122,32 @@ mod tests {
             "the final standings are public",
         );
         assert!(hand_panels(&payload.frame).is_empty(), "and still no hand");
+    }
+
+    /// **Only the engine-version drift line is dropped** (M6.5c2, spec §2.6,
+    /// R-6.5c2.19). The match is a PREFIX on the CLI's own `format!`
+    /// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>`
+    /// and a typed alternative would be a CLI change. So this cell holds the
+    /// filter's PRECISION — every other warning stays, and a line that merely
+    /// quotes the field is kept — while
+    /// `browser_played_pin.rs`'s `a_record_from_another_release_opens_with_no_warning_and_keeps_its_version`
+    /// holds that it matches the CLI at all.
+    #[test]
+    fn only_the_engine_version_drift_line_is_dropped() {
+        let drift = "warning: GameRecord.engine_version=\"0.5.0\" does not match running engine version \
+                     \"0.6.0\" — replaying anyway (v1 does not refuse on a version mismatch)"
+            .to_string();
+        let rules = "warning: GameRecord.rules_hash=\"x\" does not match running rules content hash \"y\" — \
+                     replaying anyway (v1 does not refuse on a rules_hash mismatch)"
+            .to_string();
+        let seat = "warning: seat 1 was played by controller \"z\", which this build does not know how to run"
+            .to_string();
+        let quoted = format!("note: {drift}");
+        assert_eq!(
+            without_version_drift(vec![drift.clone(), rules.clone(), seat.clone(), quoted.clone()]),
+            vec![rules, seat, quoted],
+        );
+        assert_eq!(without_version_drift(vec![drift]), Vec::<String>::new());
+        assert_eq!(without_version_drift(Vec::new()), Vec::<String>::new());
     }
 }

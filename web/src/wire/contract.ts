@@ -110,6 +110,7 @@ import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
 import identityCases from "./identity_cases.json";
+import seedCases from "./seed_cases.json";
 import productionBot from "./production_bot.json";
 import tableBot from "./table_bot.json";
 import foreignBot409 from "./foreign_bot_409.json";
@@ -419,6 +420,7 @@ export interface IdentityCase {
   display: string | null;
 }
 const _identityCases: readonly IdentityCase[] = identityCases;
+const _seedCases: readonly { raw: string; ok: boolean }[] = seedCases;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
 const _whyRefused: Widen<WhyResponse> = whyRefused;
@@ -537,7 +539,7 @@ void [
   _events, _eventsDealing, _eventsOpen,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
-  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -907,6 +909,10 @@ export const wire = {
    *  normalization cannot drift from the server's. See that fixture's doc in
    *  `wire_fixtures.rs`. */
   identityCases: identityCases as readonly IdentityCase[],
+  /** Not a payload either: `WireSeed`'s verdicts over a committed list of
+   *  inputs, frozen so the form's as-you-type check cannot drift from the
+   *  server's rule. See that fixture's doc in `wire_fixtures.rs`. */
+  seedCases: seedCases as readonly { raw: string; ok: boolean }[],
   suggest: as<SuggestResponse>(suggest),
   why: as<WhyResponse>(why),
   whyRefused: as<WhyResponse>(whyRefused),

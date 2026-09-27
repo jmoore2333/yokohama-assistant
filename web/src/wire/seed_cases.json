@@ -1,0 +1,106 @@
+[
+  {
+    "ok": true,
+    "raw": "+007 "
+  },
+  {
+    "ok": true,
+    "raw": " 7"
+  },
+  {
+    "ok": true,
+    "raw": "007"
+  },
+  {
+    "ok": false,
+    "raw": "７"
+  },
+  {
+    "ok": false,
+    "raw": "1e3"
+  },
+  {
+    "ok": false,
+    "raw": "-1"
+  },
+  {
+    "ok": false,
+    "raw": "18446744073709551616"
+  },
+  {
+    "ok": true,
+    "raw": "18446744073709551615"
+  },
+  {
+    "ok": false,
+    "raw": ""
+  },
+  {
+    "ok": false,
+    "raw": " "
+  },
+  {
+    "ok": true,
+    "raw": "0"
+  },
+  {
+    "ok": true,
+    "raw": "+0"
+  },
+  {
+    "ok": false,
+    "raw": "-0"
+  },
+  {
+    "ok": false,
+    "raw": "+"
+  },
+  {
+    "ok": false,
+    "raw": "12 34"
+  },
+  {
+    "ok": true,
+    "raw": "\t42\n"
+  },
+  {
+    "ok": true,
+    "raw": " 12 "
+  },
+  {
+    "ok": false,
+    "raw": "﻿12"
+  },
+  {
+    "ok": true,
+    "raw": "12"
+  },
+  {
+    "ok": true,
+    "raw": "　12　"
+  },
+  {
+    "ok": false,
+    "raw": "0x10"
+  },
+  {
+    "ok": false,
+    "raw": "1_000"
+  },
+  {
+    "ok": false,
+    "raw": "12.0"
+  },
+  {
+    "ok": false,
+    "raw": "٣"
+  },
+  {
+    "ok": true,
+    "raw": "00000000000000000000018446744073709551615"
+  },
+  {
+    "ok": false,
+    "raw": "99999999999999999999"
+  }
+]

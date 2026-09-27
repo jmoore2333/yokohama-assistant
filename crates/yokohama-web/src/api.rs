@@ -75,11 +75,20 @@ pub(crate) fn ok_json<T: Serialize>(status: u16, v: &T) -> ApiResponse {
     ApiResponse { status, body: serde_json::to_string(v).expect("every payload serializes") }
 }
 
-/// The body `IntoResponse for ApiError` writes, byte for byte: `{"error": …}`
-/// with `"status"` beside it on a refusal a client branches on at a table's
-/// status, and `"foreign_bot"` beside it on a game played against a bot this
-/// build does not run (M6.5c2).
-pub(crate) fn error_response(e: ApiError) -> ApiResponse {
+/// The body of every refusal on this API, byte for byte — `{"error": …}`, with
+/// `"status"` beside it on a refusal a client branches on at a table's status,
+/// and `"foreign_bot"` beside it on a game played against a bot this build does
+/// not run (M6.5c2). `pub` since M6.5c2 (spec §2.6's restatements): a host that
+/// answers a refusal ITSELF — the Worker module's `error_body` — writes the
+/// layer's bytes rather than a copy of the rule.
+pub fn error_body(e: &ApiError) -> String {
+    error_value(e).to_string()
+}
+
+/// [`error_body`] as a value, for `IntoResponse for ApiError`, whose `Json`
+/// serializes it — the same bytes, one rule, THREE arms. (The first draft of
+/// this export carried two; the corpus's foreign-bot 409 is what caught it.)
+pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
     let mut body = serde_json::json!({ "error": e.message });
     if let Some(status) = e.table_status {
         body["status"] = status.into();
@@ -87,18 +96,34 @@ pub(crate) fn error_response(e: ApiError) -> ApiResponse {
     if let Some(pair) = &e.foreign_bot {
         body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
     }
-    ApiResponse { status: e.status.as_u16(), body: body.to_string() }
+    body
+}
+
+/// The body `IntoResponse for ApiError` writes, byte for byte.
+pub(crate) fn error_response(e: ApiError) -> ApiResponse {
+    ApiResponse { status: e.status.as_u16(), body: error_body(&e) }
 }
 
 fn unauthorized(msg: &str) -> ApiError {
     ApiError { status: http::StatusCode::UNAUTHORIZED, message: msg.to_string(), table_status: None, foreign_bot: None }
 }
 
+/// The one sentence a body that is not a JSON OBJECT is refused in (M6.5c2,
+/// spec §2.6). Every body this API reads is an object — each `T` is a struct
+/// under `deny_unknown_fields` — but serde's derived `Deserialize` ALSO reads a
+/// struct from a positional ARRAY, a form `deny_unknown_fields` does not
+/// govern: `[2,["Red","Blue"],0,null,[…]]` opened a table. `pub` so a host that
+/// forwards a create — the Worker module — refuses in these words, not its own.
+pub const NOT_AN_OBJECT: &str = "the request body must be a JSON object";
+
 /// axum 0.8.9's `Json<T>` extractor, call for call (`json.rs`): the content-type
 /// rule through `mime`, `serde_path_to_error` over `serde_json`'s deserializer,
 /// the error classified into the DATA sentence or the SYNTAX sentence, and
 /// `end()` so trailing input is the syntax sentence too. The three sentences
 /// are `JsonDataError`'s, `JsonSyntaxError`'s and `MissingJsonContentType`'s.
+/// And one rule of the layer's own, last: an object only (M6.5c2) — the one
+/// place its answer departs from axum's, and only where axum's is a table
+/// opened from a list.
 pub fn parse_json<T: DeserializeOwned>(content_type: Option<&str>, body: &[u8]) -> Result<T, ApiError> {
     let is_json = content_type
         .and_then(|ct| ct.parse::<mime::Mime>().ok())
@@ -121,6 +146,15 @@ pub fn parse_json<T: DeserializeOwned>(content_type: Option<&str>, body: &[u8]) 
         })
     })?;
     de.end().map_err(|e| ApiError::bad_request(format!("Failed to parse the request body as JSON: {e}")))?;
+    // **The object form only** (M6.5c2, spec §2.6), and checked LAST, after
+    // serde has read the body, so every body axum refuses keeps axum's sentence
+    // word for word (R-6.5a.4): this refuses only what axum ACCEPTS — a
+    // positional array serde read a struct from. A body that parsed whole, with
+    // nothing after it, is one JSON value, and its first byte past JSON's own
+    // whitespace says which kind.
+    if body.iter().find(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r')) != Some(&b'{') {
+        return Err(ApiError::bad_request(NOT_AN_OBJECT));
+    }
     Ok(value)
 }
 
@@ -1616,6 +1650,27 @@ pub struct EventsQuery {
     pub wait: Option<u64>,
 }
 
+/// The longest a `?wait` may hold (spec §3.3).
+///
+/// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
+/// silently given 25 would read the early answer as "nothing changed for two
+/// minutes", which is the same failure `deny_unknown_fields` exists to prevent
+/// one field over. `pub` since M6.5c2 (spec §2.6's restatements): the Worker
+/// module's `events` route is its own and refuses with the layer's cap and
+/// sentence through [`check_wait`] rather than a copy.
+pub const MAX_WAIT_SECONDS: u64 = 25;
+
+/// `?wait` above [`MAX_WAIT_SECONDS`] refused in the handler's own words; no
+/// `wait`, or one at or below the cap, answers `Ok`.
+pub fn check_wait(wait: Option<u64>) -> Result<(), ApiError> {
+    match wait {
+        Some(w) if w > MAX_WAIT_SECONDS => Err(ApiError::bad_request(format!(
+            "a request can be held for at most {MAX_WAIT_SECONDS} seconds, not {w}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The `Events` object for a live session, from the caller's seat.
 ///
 /// **One function, two transports.** `events` and `…/stream` must answer the
@@ -1866,7 +1921,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     if viewer == client::Viewer::Spectator {
         return Err(ApiError {
             status: StatusCode::FORBIDDEN,
-            message: "the record is the players' — watch, download nothing".to_string(),
+            message: "the record is the players' — a spectator downloads nothing".to_string(),
             table_status: None, foreign_bot: None,
         });
     }
@@ -2168,6 +2223,115 @@ mod tests {
     fn a_bad_query_is_axums_sentence() {
         let e = parse_query::<crate::ListQuery>("limit=abc").unwrap_err();
         assert!(e.message.starts_with("Failed to deserialize query string: "), "{}", e.message);
+    }
+
+    /// **A body that is not a JSON object is refused in the layer's own words**
+    /// (M6.5c2, spec §2.6) — and ONLY where serde would have read it.
+    /// - **The refused.** Every body type the route table reads, each as a
+    ///   positional array serde accepts today (asserted, so the refusal is
+    ///   never read off a body serde would refuse anyway), answers
+    ///   [`NOT_AN_OBJECT`].
+    /// - **Axum's words, kept (R-6.5a.4).** A malformed array and a short one
+    ///   keep axum's own sentences, because the object rule runs after serde
+    ///   has answered.
+    #[test]
+    fn a_positional_array_body_is_refused_and_every_other_body_keeps_axums_sentence() {
+        fn refused<T: DeserializeOwned>(body: &[u8]) -> ApiError {
+            let text = String::from_utf8_lossy(body).to_string();
+            assert!(serde_json::from_slice::<T>(body).is_ok(), "premise: serde reads {text} as the struct");
+            parse_json::<T>(Some("application/json"), body).err().unwrap_or_else(|| panic!("{text} was read"))
+        }
+        for e in [
+            refused::<crate::tables::NewGame>(br#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#),
+            refused::<Input>(br#"["1"]"#),
+            refused::<Join>(b"[1]"),
+            refused::<Keep>(b"[0, 1]"),
+            refused::<ChatPost>(br#"["hi"]"#),
+            refused::<Unlock>(br#"["sesame"]"#),
+            refused::<ArchivePost>(br#"["{}", "{}"]"#),
+            refused::<Input>(b"\n  [\"1\"]\n"),
+        ] {
+            assert_eq!((e.status, e.message.as_str()), (StatusCode::BAD_REQUEST, NOT_AN_OBJECT));
+        }
+        let ct = Some("application/json");
+        let e = parse_json::<Input>(ct, br#"["1""#).expect_err("a malformed array");
+        assert!(e.message.starts_with("Failed to parse the request body as JSON: "), "{}", e.message);
+        let e = parse_json::<Keep>(ct, b"[0]").expect_err("a short array");
+        assert!(e.message.starts_with("Failed to deserialize the JSON body into the target type: "), "{}", e.message);
+        let read = parse_json::<Input>(ct, b" {\"line\":\"1\"} \n").ok().map(|i| i.line);
+        assert_eq!(read.as_deref(), Some("1"), "an object, JSON whitespace around it, reads");
+    }
+
+    /// Through the front door: a positional create opens no table.
+    #[test]
+    fn a_positional_create_opens_no_table() {
+        let games = crate::games::test_support::games();
+        let red = User::parse("red@t.test").expect("an address");
+        let body = br#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        let res = dispatch(
+            &games,
+            &LOCAL_HOST,
+            Ok(&red),
+            &ApiRequest { method: "POST", path: "/api/games", query: "", content_type: Some("application/json"), body },
+        );
+        assert_eq!((res.status, res.body), (400, serde_json::json!({ "error": NOT_AN_OBJECT }).to_string()));
+        assert!(games.store().list(crate::store::Doc::Table).expect("a listing").is_empty(), "no table opened");
+    }
+
+    /// **`error_body` is the body `dispatch` writes for a refusal** (M6.5c2,
+    /// spec §2.6's restatements) — all THREE shapes: bare (an unknown
+    /// endpoint's 404), with `"status"` (a dealing table's 409), and with
+    /// `"foreign_bot"` (a game not over against a bot this build does not run).
+    /// The Worker module restates it today; once it imports this, a drift is
+    /// impossible — and the third shape is the one a restatement dropped when
+    /// this export was first written.
+    #[test]
+    fn error_body_is_the_body_dispatch_writes() {
+        use crate::games::test_support::{games, two_people, BOT_TO_MOVE_AT, CORPUS_SEED};
+        let games = games();
+        let red = User::parse("red@t.test").expect("an address");
+        let get = |games: &Games, path: &str| {
+            dispatch(games, &LOCAL_HOST, Ok(&red), &ApiRequest { method: "GET", path, query: "", content_type: None, body: b"" })
+        };
+        let res = get(&games, "/api/nope");
+        assert_eq!((res.status, res.body), (404, error_body(&ApiError::not_found("no such endpoint: /api/nope"))));
+        games.create(&two_people("dealing", CORPUS_SEED), &red).expect("a dealing table");
+        let res = get(&games, "/api/games/dealing");
+        assert_eq!((res.status, res.body.clone()), (409, error_body(&ApiError::dealing())));
+        assert!(res.body.contains(r#""status":"dealing""#), "anti-vacuity: the second shape: {}", res.body);
+        // The third shape, through the same door Task 4's cells use.
+        let foreign = holding_foreign("lookahead-v1", Some(BOT_TO_MOVE_AT));
+        let local = User::parse("local@browser").expect("an address");
+        let res = dispatch(
+            &foreign,
+            &LOCAL_HOST,
+            Ok(&local),
+            &ApiRequest { method: "GET", path: &format!("/api/games/{PLAYED_ID}"), query: "", content_type: None, body: b"" },
+        );
+        let e: ApiError = crate::games::GameError::ForeignBot {
+            played: "V2 lookahead".to_string(),
+            runs: crate::bots::label(&crate::bots::production()),
+        }
+        .into();
+        assert_eq!((res.status, res.body.clone()), (409, error_body(&e)));
+        assert!(res.body.contains(r#""foreign_bot":{"played":"V2 lookahead""#), "anti-vacuity: the third shape: {}", res.body);
+    }
+
+    /// **The wait cap is the layer's, exported** (M6.5c2): 25 holds, 26 is a
+    /// 400 in the handler's own words — a refusal, never a clamp — and no
+    /// `wait` holds nothing. The axum handler calls this;
+    /// `events_can_be_held_until_a_bump_and_the_wait_is_bounded` (`lib.rs`)
+    /// pins it there end to end.
+    #[test]
+    fn a_wait_above_the_cap_is_refused_never_clamped() {
+        assert_eq!(MAX_WAIT_SECONDS, 25);
+        assert!(check_wait(None).is_ok() && check_wait(Some(0)).is_ok() && check_wait(Some(25)).is_ok());
+        let e = check_wait(Some(26)).expect_err("26 is over the cap");
+        assert_eq!(
+            (e.status, e.message.as_str()),
+            (StatusCode::BAD_REQUEST, "a request can be held for at most 25 seconds, not 26"),
+        );
+        assert!(check_wait(Some(u64::MAX)).is_err());
     }
 
     // -----------------------------------------------------------------------

@@ -61,6 +61,15 @@ impl Signal for NoSignal {
     fn end(&self, _id: &str) {}
 }
 
+/// The house frame's DATA: the two counters as `{"seq":…,"chat":…}`, `seq`
+/// first (M6.4, R-6.4.7). `pub` and outside `server` since M6.5c2 (spec §2.6's
+/// restatements): `house_stream` writes it as each `house` event's data, and the
+/// Worker module's lobby socket writes the same bytes by calling this, not a
+/// copy pinned to this crate's source text.
+pub fn house_frame(seq: u64, chat: u64) -> String {
+    format!("{{\"seq\":{seq},\"chat\":{chat}}}")
+}
+
 #[cfg(feature = "server")]
 use std::collections::HashMap;
 #[cfg(feature = "server")]
@@ -279,5 +288,15 @@ mod tests {
         assert_eq!(rx.borrow().seq, 1, "a bump through the trait reaches the same channel");
         dynamic.end("t");
         assert!(rx.borrow().end);
+    }
+
+    /// **The house frame's data, exported** (M6.5c2, spec §2.6's restatements):
+    /// `{"seq":…,"chat":…}`, in that order, whole `u64`s — `house_stream`'s
+    /// frame, and the Worker module's lobby-socket frame once it imports this.
+    #[test]
+    fn the_house_frame_is_seq_then_chat() {
+        assert_eq!(house_frame(3, 7), r#"{"seq":3,"chat":7}"#);
+        assert_eq!(house_frame(0, 0), r#"{"seq":0,"chat":0}"#);
+        assert_eq!(house_frame(u64::MAX, 1), format!("{{\"seq\":{},\"chat\":1}}", u64::MAX));
     }
 }
