@@ -108,9 +108,10 @@ function ttlDays(raw: string | null): number | null {
  * The operators (spec §2.9): comma-separated addresses, each trimmed and
  * lowercased as the layer's `User::parse` reads a caller, so an entry compares
  * with a caller's address as that caller would be read. An empty entry is
- * refused, and so is an entry that breaks `User::parse`'s rule (`isAddress`):
- * `User::parse` never answers with such an address, so the entry could match
- * no one, and the operator would meet a 403 that names nothing wrong. The
+ * refused, and so is an entry that is no address by the layer's email shape
+ * (`isAddress`, the mode rule's `User::is_email`): under `worker` the layer
+ * admits no other caller, so the entry could match no one, and the operator
+ * would meet a 403 that names nothing wrong. The
  * first empty entry is named before the first that is no address.
  *
  * **A refusal names the entry by its POSITION and never echoes a value** (R3's

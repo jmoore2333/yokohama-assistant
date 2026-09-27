@@ -2,7 +2,7 @@
   "archive": "off",
   "chat_keep": 500,
   "chat_text": 500,
-  "identity": "claimed",
+  "identity": "open",
   "lobby_chat": true,
   "multiplayer": true,
   "rules_hash": "d85445c479cb1ead",

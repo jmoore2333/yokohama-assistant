@@ -217,16 +217,17 @@ jobs:
       # platform-call fence is `platform_calls_stay_behind_the_server_feature`,
       # which runs in the line above.
       - run: cargo check -p yokohama-web --no-default-features --target wasm32-unknown-unknown
-      # M6.5b2 (R-6.5b2.3): the REFUSING build shape, which nothing compiled
-      # before this line. `--no-default-features --features server` is what spec
-      # §3.1 calls "the one spelling" a public build uses — the server half kept,
-      # `dev-identity` dropped — and the whole of R-6.5b2.3 is that it compiles
-      # AND refuses `YOKOHAMA_WEB_IDENTITY=claimed` by name. The wasm check above
-      # cannot see it: that shape drops `server` too, so the identity module's
-      # own cells never run there. Seven cells, one of which
-      # (`claimed_parses_only_where_the_development_feature_is_compiled_in`)
-      # takes its refusing branch only here; the other six prove the module
-      # still works without the feature.
+      # M6.5b2 (R-6.5b2.3; the feature renamed `open-door` by M6.5c2's
+      # R-6.5c2.3): the REFUSING build shape, which nothing compiled before this
+      # line. `--no-default-features --features server` is the one spelling
+      # that keeps the server half and drops `open-door`, and the whole of the
+      # rule is that it compiles AND refuses `YOKOHAMA_WEB_IDENTITY=open` by
+      # name, stating the trust model. The wasm check above cannot see it: that
+      # shape drops `server` too, so the identity module's own cells never run
+      # there. Eight cells, one of which
+      # (`open_parses_only_where_the_open_door_feature_is_compiled_in`) takes
+      # its refusing branch only here; the other seven prove the key grammar and
+      # the mode rule still work without the feature.
       # QUOTED, and it has to be: a plain YAML scalar ending in `:` is read as
       # a mapping key, so the unquoted form made this WHOLE FILE fail to parse
       # (confirmed with two independent YAML parsers) and GitHub would have
@@ -243,7 +244,7 @@ jobs:
       # reading a person needs, the compiler's error or the cell's own failure,
       # never reaches the log and the step reports only its exit code. The
       # status is taken by hand and the output is printed on BOTH paths.
-      - name: the refusing build, and that its seven identity cells really ran
+      - name: the refusing build, and that its eight identity cells really ran
         run: |
           set -uo pipefail
           out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
@@ -253,8 +254,8 @@ jobs:
             echo "::error::the refusing build did not pass — R-6.5b2.3's only CI witness; its output is above"
             exit "$status"
           fi
-          echo "$out" | grep -q "test result: ok. 7 passed" || {
-            echo "::error::the identity:: filter did not run seven cells — R-6.5b2.3's only CI witness"
+          echo "$out" | grep -q "test result: ok. 8 passed" || {
+            echo "::error::the identity:: filter did not run eight cells — R-6.5b2.3's only CI witness"
             exit 1
           }
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.

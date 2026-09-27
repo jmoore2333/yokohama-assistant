@@ -224,8 +224,8 @@ describe("resolveIdentity (R-6.5c.3)", () => {
     expect(await resolve(await key.sign(personClaims("red@t.test", at)))).toEqual({ kind: "person", email: "red@t.test" });
   });
 
-  // R1's L-2: the dev door's claimed value is an ADDRESS by the layer's
-  // `User::parse` rule — exactly one `@` with something on both sides, no
+  // R1's L-2: the dev door's claimed value is an ADDRESS by the layer's email
+  // shape (`User::is_email`, the mode rule's test) — one `@` with something on both sides, no
   // whitespace or control character, at most 254 bytes — or it is no one, and
   // the layer's own 401 answers. A non-address was the dev identity, and at
   // `POST /api/archive` it named an Archive object whose `init` refused it: a
@@ -243,7 +243,7 @@ describe("resolveIdentity (R-6.5c.3)", () => {
     expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed })).toEqual({ kind: "none" });
   });
   // The boundary's other side, and the anti-vacuity partner: 254 bytes is an
-  // address, as it is to `User::parse`.
+  // address, as it is to the layer's email shape.
   it("(L-2) takes a claimed address of exactly 254 bytes", async () => {
     const token = await key.sign(credentialClaims(CLIENT, at));
     const claimed = `${"a".repeat(247)}@t.test`;

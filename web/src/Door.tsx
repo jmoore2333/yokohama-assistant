@@ -40,9 +40,9 @@ export function Door({
   //    half the players for one round trip. As content beside "On this
   //    device", the honest word is that the server has not answered yet.
   if (!door.me) return <p className="muted">connecting&hellip;</p>;
-  // 3. Nobody is signed in under `claimed` — the one door this browser can
+  // 3. Nobody is signed in under `open` — the one door this browser can
   //    knock on. The form.
-  if (door.me.mode === "claimed" && !door.me.user)
+  if (door.me.mode === "open" && !door.me.user)
     return <SignIn onSignedIn={onSignedIn} notice={door.notice ?? undefined} />;
   // 4. Nobody is signed in under Cloudflare Access or the edge Worker. There
   //    is no form to offer: the identity comes from in front of the server, so

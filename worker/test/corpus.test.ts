@@ -28,7 +28,7 @@ import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
  * header names the caller (`identity`, and `mode` on `/api/me`), how a change
  * reaches a browser (`signal`), and where its archive is kept (`archive`).
  * This host reads `cf-access`, `ws` and `r2`; the axum host the corpus was cut
- * from, `claimed`, `sse` and `off` — its primary `Api` keeps no archive.
+ * from, `open`, `sse` and `off` — its primary `Api` keeps no archive.
  * `multiplayer` is NOT here: both hosts offer it.
  */
 const HOST_FIELDS: Record<string, string[]> = {

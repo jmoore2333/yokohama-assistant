@@ -419,14 +419,14 @@ describe("the games waiting to reach the archive", () => {
     expect(within(await waiting()).getByText("not yet known")).toBeInTheDocument();
   });
 
-  // **"Not signed in" names BOTH doors under `claimed`** (spec §2.6): passing
+  // **"Not signed in" names BOTH doors under `open`** (spec §2.6): passing
   // the turnstile mints the Access cookie, and `POST /api/archive` then still
   // refuses in this API's own shape until the in-app sign-in has supplied the
   // claimed user. Two steps, and the row says so.
-  it("names both doors under claimed, and one under cf-access", async () => {
+  it("names both doors under open, and one under cf-access", async () => {
     stubWorker();
     await enqueue(LOCAL, "signed-out");
-    rememberServerFacts({ ...wire.health, identity: "claimed" });
+    rememberServerFacts({ ...wire.health, identity: "open" });
     render(<OnThisDevice />);
     let box = await waiting();
     expect(within(box).getByText("not signed in")).toBeInTheDocument();
@@ -460,7 +460,7 @@ describe("the games waiting to reach the archive", () => {
     expect(within(box).queryByText(/then sign in here/i)).toBeNull();
 
     act(() => {
-      rememberServerFacts({ ...wire.health, identity: "claimed" });
+      rememberServerFacts({ ...wire.health, identity: "open" });
     });
     // No re-render was asked for; the subscription is what redraws.
     expect(await within(await waiting()).findByText(/then sign in here/i)).toBeInTheDocument();

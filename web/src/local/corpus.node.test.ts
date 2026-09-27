@@ -88,7 +88,7 @@ if (!have) {
  * The fields a HOST is entitled to differ on (spec §5, second column).
  *
  * `identity` is which header names the caller and `signal` is how a change
- * reaches a browser — the axum host reads `claimed` and `sse`, the browser host
+ * reaches a browser — the axum host reads `open` and `sse`, the browser host
  * `local` and `none`. `mode` on `/api/me` is the same fact from the client's
  * side. `multiplayer` (M6.5b2) is the third: the axum host the corpus is cut
  * from offers it and the browser host cannot, there being nobody else at the

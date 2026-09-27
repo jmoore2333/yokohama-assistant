@@ -228,13 +228,13 @@ let seeded: Promise<StorageState> | undefined;
  * What a spec hands `newContextWithoutWorker` for `email`'s context.
  *
  * Locally it is NOTHING — exactly today's context. The local server's door is
- * `claimed`: the walk types the address into the sign-in form, and the client
+ * `open`: the walk types the address into the sign-in form, and the client
  * keeps it and attaches the claimed header to its own requests.
  *
  * Under `LIVE` it is the seeded cookie and, context-wide, the claimed header —
  * because neither half of the local arrangement holds there. The Worker's
  * door is `cf-access`, where the client draws no sign-in form (`Door.tsx`
- * draws one under `claimed` only), so it never holds an address and attaches
+ * draws one under `open` only), so it never holds an address and attaches
  * no claimed header of its own; and the header must reach the socket the page
  * opens, whose upgrade only a context header reaches (§0.4; I-75).
  */

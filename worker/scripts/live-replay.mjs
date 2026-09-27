@@ -78,7 +78,7 @@ const KEYS = ["CF-Access-Client-Id", "CF-Access-Client-Secret"];
 /**
  * The fields a HOST is entitled to differ on (spec §4's second class), as the
  * pool's replay names them: this host reads `cf-access`, `ws` and `r2`, and
- * the axum host the corpus was cut from `claimed`, `sse` and `off`.
+ * the axum host the corpus was cut from `open`, `sse` and `off`.
  */
 const HOST_FIELDS = { health: ["identity", "signal", "archive"], me: ["mode"], me_signed_out: ["mode"] };
 

@@ -288,7 +288,7 @@ impl Api {
     fn with_archive(dir: &std::path::Path) -> Self {
         let state = Arc::new(AppState::with_store_chat_and_archive(
             Arc::new(yokohama_web::store::MemStore::default()),
-            yokohama_web::identity::IdentityMode::Claimed,
+            yokohama_web::identity::IdentityMode::Open,
             yokohama_web::chat::ChatConfig::default(),
             Arc::new(yokohama_web::archive::DirArchive::new(dir)),
         )

@@ -138,7 +138,7 @@ test("a person holding only a link joins a locked open table and plays", async (
     ).toBeLessThanOrEqual(wide.who);
     if (LIVE) {
       // **The edge's door draws no sign-out**: the Worker's door is
-      // `cf-access`, and `App.tsx` draws the button under `claimed` ONLY. So
+      // `cf-access`, and `App.tsx` draws the button under `open` ONLY. So
       // live there is none to measure — and its absence is the reading: a
       // sign-out under Access would look like it logged you out while Access
       // kept letting you in.

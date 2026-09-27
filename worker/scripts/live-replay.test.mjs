@@ -481,7 +481,7 @@ describe("replay", () => {
   it("refuses an exemption the Worker did not need: a host field reading as the axum host's", async () => {
     const host = fakeHost({
       edit: (plan, rows) => {
-        plan[planIndex(rows, "walk.json", 28)] = () => json(200, { ...liveBody("health"), identity: "claimed" });
+        plan[planIndex(rows, "walk.json", 28)] = () => json(200, { ...liveBody("health"), identity: "open" });
       },
     });
     const { result } = await run(host);

@@ -44,7 +44,7 @@ use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
 use yokohama_web::games::Games;
-use yokohama_web::identity::{resolve, IdentityMode, User, WORKER_HEADER};
+use yokohama_web::identity::{admit, resolve, IdentityMode, User, WORKER_HEADER};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
 
@@ -302,22 +302,24 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
 /// Who the caller is, by the `worker` mode's ONE header (spec §2.3): the value
 /// the shell hands over goes into a header map as `X-Yokohama-User` and is read
 /// by the layer's own `identity::resolve` — so `anonymous`, like an absent or
-/// blank value, is no caller, and a refusal is the layer's own sentence.
+/// blank value, is no caller; so is a plain name (the layer's mode rule,
+/// M6.5c2); and a refusal is the layer's own sentence.
 ///
 /// A value no header can carry — one holding a control character other than a
-/// tab — never reaches `resolve`: `User::parse` answers it instead, trimming it
-/// as `resolve` would and refusing any control character that remains, in the
-/// sentence the layer's 401 carries for a malformed caller. It is a 401 either
-/// way, with one difference in wording: a value whose only such characters
-/// are at its ends, which the trim removes, and which trims to nothing or to
-/// `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence, where
-/// `resolve` would answer its absent-caller sentence had a header carried it.
-/// No header can.
+/// tab — never reaches `resolve`, so it takes `resolve`'s two steps here: the
+/// key grammar (`User::parse`, trimming as `resolve` would and refusing any
+/// control character that remains) and then the mode's rule (`identity::admit`),
+/// so `"ben\r"` is nobody exactly as a header naming `ben` is (review R2-m1).
+/// It is a 401 either way, with one difference in wording: a value whose only
+/// such characters are at its ends, which the trim removes, and which trims to
+/// nothing or to `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence,
+/// where `resolve` would answer its absent-caller sentence had a header carried
+/// it. No header can.
 pub fn identity_of(user: Option<&str>) -> Result<User, String> {
     let mut headers = http::HeaderMap::new();
     if let Some(raw) = user {
         let Ok(value) = http::HeaderValue::from_str(raw) else {
-            return User::parse(raw);
+            return User::parse(raw).and_then(|user| admit(IdentityMode::Worker, user));
         };
         headers.insert(WORKER_HEADER, value);
     }
@@ -607,6 +609,27 @@ mod tests {
         let r = identity_inner(Some("Red@Wire.Test"));
         assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#), "normalized once");
         assert!(r.bumps.is_empty() && r.archive.is_none() && r.picker.is_none(), "an identity read writes nothing");
+    }
+
+    /// **The fallback follows the mode rule** (M6.5c2, spec §2.1 rule 4; review
+    /// R2-m1). A value no header can carry never reaches `resolve` as a
+    /// header, and the key grammar alone trims `"ben\r"` to the plain name
+    /// `ben` — a key the `worker` door admits as nobody. So the fallback takes
+    /// `resolve`'s two steps itself, and `"ben\r"` answers exactly what a
+    /// header naming `ben` answers: the mode's absent sentence. An ADDRESS the
+    /// same trim recovers is still that caller — the anti-vacuity, since a
+    /// fallback that refused everything would pass the first half.
+    #[test]
+    fn a_value_no_header_can_carry_is_held_to_the_worker_modes_rule() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let absent = resolve(IdentityMode::Worker, &http::HeaderMap::new()).unwrap_err();
+        let r = identity_inner(Some("ben\r"));
+        assert_eq!((r.status, r.body.as_str()), (401, serde_json::json!({ "error": absent }).to_string().as_str()));
+        let as_header = identity_inner(Some("ben"));
+        assert_eq!((as_header.status, &as_header.body), (r.status, &r.body), "the carrier never decides who it is");
+        let r = identity_inner(Some("Red@Wire.Test\r"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#));
     }
 
     /// This host's four deployment facts on `/api/health` (spec §4's second class).

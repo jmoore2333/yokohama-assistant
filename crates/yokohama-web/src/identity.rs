@@ -6,12 +6,16 @@
 //! nothing. There is no default mode (R-1.3): `main.rs` refuses to start
 //! without one, the Worker's own fail-closed shape for its secrets.
 //!
-//! `claimed` is a development convenience and not a security boundary (R-1.4):
-//! anyone past the door can claim any email. It distinguishes two callers who
-//! send two different emails; what it cannot do is verify that either is who
-//! they say. Which mode a given deployment runs under belongs in that
-//! deployment's own record, beside the [`ENV_VAR`] its container sets.
-//! Reserved and unbuilt: `cf-access-jwt` and `neon`, each a new arm here.
+//! **`open` is the self-host door** (M6.5c2, R-6.5c2.3, superseding R-1.4's
+//! framing of `claimed` as a development convenience): players choose a name,
+//! and no identity provider is needed. Its trust model is stated rather than
+//! hidden — anyone who can reach the server may use any name — and nothing
+//! here verifies that a caller is who they say. It is also this project's dev
+//! door. `cf-access` and `worker` read an address an edge in front has
+//! verified, and the mode rule ([`admit`]) holds their callers to that shape.
+//! Which mode a deployment runs under belongs in that deployment's own record,
+//! beside the [`ENV_VAR`] its container sets. Reserved and unbuilt:
+//! `cf-access-jwt` and `neon`, each a new arm here.
 
 use std::fmt;
 use std::str::FromStr;
@@ -37,7 +41,7 @@ pub const ENV_VAR: &str = "YOKOHAMA_WEB_IDENTITY";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityMode {
-    Claimed,
+    Open,
     CfAccess,
     Worker,
 }
@@ -45,7 +49,7 @@ pub enum IdentityMode {
 impl IdentityMode {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Claimed => "claimed",
+            Self::Open => "open",
             Self::CfAccess => "cf-access",
             Self::Worker => "worker",
         }
@@ -53,7 +57,7 @@ impl IdentityMode {
 
     pub fn header(self) -> &'static str {
         match self {
-            Self::Claimed => CLAIMED_HEADER,
+            Self::Open => CLAIMED_HEADER,
             Self::CfAccess => CF_ACCESS_HEADER,
             Self::Worker => WORKER_HEADER,
         }
@@ -84,27 +88,28 @@ impl FromStr for IdentityMode {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
         match s.trim() {
-            // **`claimed` needs the build to have been asked for it**
-            // (M6.5b2, R-6.5b2.3). The mode itself stays — the variant, the
-            // header and every cell that drives one are unconditional, because
-            // a mode that vanished from the type would take the browser host's
-            // own tests with it. What the feature gates is the one place a
-            // DEPLOYMENT can choose it: this parse. A public build drops the
-            // feature and the refusal below names it, so the operator reads why
-            // rather than guessing at a typo.
-            #[cfg(feature = "dev-identity")]
-            "claimed" => Ok(Self::Claimed),
-            #[cfg(not(feature = "dev-identity"))]
-            "claimed" => Err(format!(
-                "{ENV_VAR}=claimed needs the `dev-identity` feature, which this build was \
-                 compiled without: `claimed` trusts whatever email a caller sends and is a \
-                 development door, not a security boundary. Use cf-access or worker, or build \
-                 with the feature."
+            // **`open` needs the build to have been asked for it** (M6.5b2's
+            // R-6.5b2.3; the mode and its feature renamed by M6.5c2's
+            // R-6.5c2.3). The mode itself stays — the variant, the header and
+            // every cell that drives one are unconditional, because a mode that
+            // vanished from the type would take the browser host's own tests
+            // with it. What the feature gates is the one place a DEPLOYMENT can
+            // choose it: this parse. A build without the feature refuses it
+            // here and says why, so the operator reads the trust model rather
+            // than guessing at a typo. There is no alias for the old name.
+            #[cfg(feature = "open-door")]
+            "open" => Ok(Self::Open),
+            #[cfg(not(feature = "open-door"))]
+            "open" => Err(format!(
+                "{ENV_VAR}=open needs the `open-door` feature, which this build was compiled \
+                 without. The open door trusts whatever name a caller sends: anyone who can \
+                 reach this server may play as anyone, and nothing checks who they are. Use \
+                 cf-access or worker behind an identity provider, or build with the feature."
             )),
             "cf-access" => Ok(Self::CfAccess),
             "worker" => Ok(Self::Worker),
             other => Err(format!(
-                "{ENV_VAR} must be one of claimed, cf-access, worker — got {other:?}. \
+                "{ENV_VAR} must be one of open, cf-access, worker — got {other:?}. \
                  There is no default: an identity source is a deployment decision."
             )),
         }
@@ -212,9 +217,10 @@ impl fmt::Display for User {
     }
 }
 
-/// The mode's ONE header, parsed; absent or invalid is `Err` with the sentence
-/// the 401 carries. The Worker's `anonymous` — what it sends with no Access
-/// policy in front of it — counts as absent.
+/// The mode's ONE header, parsed by the key grammar and then held to the
+/// mode's rule ([`admit`]); absent or invalid is `Err` with the sentence the
+/// 401 carries. The Worker's `anonymous` — what it sends with no Access policy
+/// in front of it — counts as absent.
 pub fn resolve(mode: IdentityMode, headers: &HeaderMap) -> Result<User, String> {
     let raw = headers
         .get(mode.header())
@@ -222,16 +228,41 @@ pub fn resolve(mode: IdentityMode, headers: &HeaderMap) -> Result<User, String> 
         .map(str::trim)
         .filter(|s| !s.is_empty() && !(mode == IdentityMode::Worker && *s == "anonymous"));
     match raw {
-        Some(s) => User::parse(s),
-        None => Err(match mode {
-            IdentityMode::Claimed => "no signed-in user: send X-Yokohama-Claimed-User".to_string(),
-            IdentityMode::CfAccess => "no identity reached the server: this deployment expects \
-                                       Cf-Access-Authenticated-User-Email from the Cloudflare tunnel"
-                .to_string(),
-            IdentityMode::Worker => "no identity reached the server: this deployment expects \
-                                     X-Yokohama-User from the edge Worker"
-                .to_string(),
-        }),
+        Some(s) => User::parse(s).and_then(|user| admit(mode, user)),
+        None => Err(absent(mode)),
+    }
+}
+
+/// **The mode rule** (M6.5c2, spec §2.1 rule 2), in ONE place: under `open`
+/// every key the grammar accepts is a caller; under `cf-access` and `worker` a
+/// caller must also have the email shape, and a plain name reads as ABSENT —
+/// the sentence no header at all gets, so `/api/me` answers `user: null` (the
+/// client's state B) rather than the client drawing a refusal of the name. An
+/// edge that asserts an identity asserts an address; anything else means the
+/// edge in front is not the one this deployment expects.
+///
+/// A value the GRAMMAR refuses is refused before this, in the grammar's own
+/// words, under every mode — as it was before this rule. `pub` for the Worker
+/// module, whose `identity_of` takes these same two steps for a value no
+/// header can carry (review R2-m1).
+pub fn admit(mode: IdentityMode, user: User) -> Result<User, String> {
+    match mode {
+        IdentityMode::Open => Ok(user),
+        IdentityMode::CfAccess | IdentityMode::Worker if user.is_email() => Ok(user),
+        IdentityMode::CfAccess | IdentityMode::Worker => Err(absent(mode)),
+    }
+}
+
+/// The 401's sentence when no caller reached the server, per mode.
+fn absent(mode: IdentityMode) -> String {
+    match mode {
+        IdentityMode::Open => "no signed-in user: send X-Yokohama-Claimed-User".to_string(),
+        IdentityMode::CfAccess => "no identity reached the server: this deployment expects \
+                                   Cf-Access-Authenticated-User-Email from the Cloudflare tunnel"
+            .to_string(),
+        IdentityMode::Worker => "no identity reached the server: this deployment expects \
+                                 X-Yokohama-User from the edge Worker"
+            .to_string(),
     }
 }
 
@@ -352,14 +383,14 @@ mod tests {
             (CF_ACCESS_HEADER, "access@t.test"),
             (WORKER_HEADER, "worker@t.test"),
         ]);
-        assert_eq!(resolve(IdentityMode::Claimed, &all).unwrap().as_str(), "claimed@t.test");
+        assert_eq!(resolve(IdentityMode::Open, &all).unwrap().as_str(), "claimed@t.test");
         assert_eq!(resolve(IdentityMode::CfAccess, &all).unwrap().as_str(), "access@t.test");
         assert_eq!(resolve(IdentityMode::Worker, &all).unwrap().as_str(), "worker@t.test");
     }
 
     #[test]
     fn a_missing_header_is_absent_and_the_workers_anonymous_counts_as_absent() {
-        assert!(resolve(IdentityMode::Claimed, &headers(&[])).is_err());
+        assert!(resolve(IdentityMode::Open, &headers(&[])).is_err());
         assert!(
             resolve(IdentityMode::CfAccess, &headers(&[(CLAIMED_HEADER, "x@y.z")])).is_err(),
             "a forged claimed header on the tunnel path changes nothing"
@@ -369,40 +400,65 @@ mod tests {
 
     #[test]
     fn the_mode_comes_from_the_environment_and_has_no_default() {
-        // `claimed` is the one arm that depends on a feature since M6.5b2
-        // (R-6.5b2.3); both of its shapes are asserted by the cell below.
-        #[cfg(feature = "dev-identity")]
-        assert!(matches!(IdentityMode::from_str("claimed"), Ok(IdentityMode::Claimed)));
+        // `open` is the one arm that depends on a feature (R-6.5b2.3, renamed
+        // by R-6.5c2.3); both of its shapes are asserted by the cell below.
+        #[cfg(feature = "open-door")]
+        assert!(matches!(IdentityMode::from_str("open"), Ok(IdentityMode::Open)));
         assert!(matches!(IdentityMode::from_str("cf-access"), Ok(IdentityMode::CfAccess)));
         assert!(matches!(IdentityMode::from_str("worker"), Ok(IdentityMode::Worker)));
         let err = IdentityMode::from_str("").unwrap_err();
-        assert!(
-            err.contains("claimed") && err.contains("cf-access") && err.contains("worker"),
-            "{err}"
-        );
+        assert!(err.contains("open") && err.contains("cf-access") && err.contains("worker"), "{err}");
         assert!(IdentityMode::from_str("neon").is_err(), "reserved, not built");
+        // **No alias** (spec §2.1, "The rename"): a configuration still naming
+        // the old mode is refused at start-up, and the refusal lists the three
+        // it may say instead — `open` among them.
+        let old = IdentityMode::from_str("claimed").unwrap_err();
+        assert!(old.contains("\"claimed\"") && old.contains("open"), "{old}");
         // **The fail-closed path itself.** `from_env` is the only code that
         // turns an UNSET variable into a refusal, and until this line nothing
         // ran it: `main.rs` has no test content and the browser walk always
-        // sets the variable, so `Err(_) => Ok(Self::Claimed)` would have
+        // sets the variable, so `Err(_) => Ok(Self::Open)` would have
         // deleted R-1.3 with every suite green.
         assert!(IdentityMode::from_env_value(None).is_err(), "unset is a refusal, not a default");
     }
 
-    /// R-6.5b2.3: `claimed` is a DEVELOPMENT door and a build can refuse it.
-    /// The feature is in `default`, so this cell runs in the accepting shape and
-    /// asserts the mode parses; the refusing shape is asserted by its negation
-    /// below, which compiles in both and is the one that would silently vanish if
-    /// the `cfg` were written the other way round.
+    /// R-6.5c2.3 (superseding R-1.4's framing, and renaming R-6.5b2.3's
+    /// feature): `open` is a supported self-host door, and a build can still
+    /// refuse it. The feature is in `default`, so this cell runs in the
+    /// accepting shape and asserts the mode parses; the refusing shape runs
+    /// only in the public build CI compiles, and there the refusal must NAME
+    /// the feature, the two modes to use instead, and the trust model.
     #[test]
-    fn claimed_parses_only_where_the_development_feature_is_compiled_in() {
-        let parsed = IdentityMode::from_env_value(Some("claimed"));
-        if cfg!(feature = "dev-identity") {
-            assert!(matches!(parsed, Ok(IdentityMode::Claimed)));
+    fn open_parses_only_where_the_open_door_feature_is_compiled_in() {
+        let parsed = IdentityMode::from_env_value(Some("open"));
+        if cfg!(feature = "open-door") {
+            assert!(matches!(parsed, Ok(IdentityMode::Open)));
         } else {
-            let err = parsed.expect_err("a build without dev-identity refuses claimed");
-            assert!(err.contains("dev-identity"), "the refusal NAMES the feature: {err}");
+            let err = parsed.expect_err("a build without open-door refuses open");
+            assert!(err.contains("open-door"), "the refusal NAMES the feature: {err}");
             assert!(err.contains("cf-access") && err.contains("worker"), "and what to use instead: {err}");
+            assert!(err.contains("anyone who can reach"), "and the trust model it declines: {err}");
         }
+    }
+
+    /// **The mode rule** (M6.5c2, spec §2.1 rule 2), at `resolve`: under `open`
+    /// every key the grammar accepts is a caller, a plain name included; under
+    /// `cf-access` and `worker` a caller must also have the email shape, and a
+    /// plain name reads as ABSENT — byte for byte the sentence no header gets,
+    /// which is what makes `/api/me` answer `user: null` (state B) rather than
+    /// the client drawing a refusal of the name. An address still resolves
+    /// under every mode, so the rule is the shape and not the header.
+    #[test]
+    fn the_mode_rule_admits_a_plain_name_only_under_open() {
+        let named = |mode: IdentityMode, value: &str| resolve(mode, &headers(&[(mode.header(), value)]));
+        assert_eq!(named(IdentityMode::Open, "  Ben   Castle ").unwrap().as_str(), "ben castle");
+        for mode in [IdentityMode::CfAccess, IdentityMode::Worker] {
+            let absent = resolve(mode, &headers(&[])).unwrap_err();
+            assert_eq!(named(mode, "ben").unwrap_err(), absent, "{}: a name is nobody here", mode.name());
+            assert_eq!(named(mode, "Red@Wire.TEST").unwrap().as_str(), "red@wire.test", "{}", mode.name());
+        }
+        // The grammar still speaks first: what is no key at all is refused in
+        // its own words under every mode, never mistaken for a name.
+        assert_eq!(named(IdentityMode::CfAccess, "..").unwrap_err(), User::parse("..").unwrap_err());
     }
 }

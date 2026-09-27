@@ -335,7 +335,7 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
   });
 
   // R1's L-2, end to end: the dev door's claimed value must be an ADDRESS by
-  // the layer's `User::parse` rule, or it is no one. Before, `not-an-email`
+  // the layer's email shape (`User::is_email`), or it is no one. Before, `not-an-email`
   // was the dev identity, named an Archive object whose `init` refused it
   // under `r2`, and answered that object's 500 — a sentence no spec lists.
   // Now it is the house's 401, as it is with no caller at all. Mutant: the

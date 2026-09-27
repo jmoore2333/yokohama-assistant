@@ -1913,12 +1913,12 @@ describe("the route", () => {
 // ---- the door (M6.1 §7.1) --------------------------------------------------
 //
 // Four screens, and `/api/me` picks between them: nothing while it is in
-// flight, the sign-in form under a `claimed` deployment with nobody signed in,
+// flight, the sign-in form under an `open` deployment with nobody signed in,
 // a sentence naming the missing header under the other two doors, and the app
 // itself once the server names a user.
 
 describe("the door", () => {
-  it("shows sign-in when the door is claimed and nobody is signed in, then the games list", async () => {
+  it("shows sign-in when the door is open and nobody is signed in, then the games list", async () => {
     const stub = stubApi((call) => {
       // Answered the way the SERVER answers it: from the header this browser
       // is sending. A stub that returned `wire.me` regardless would model a
@@ -2064,9 +2064,9 @@ describe("the door", () => {
     expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
   });
 
-  it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
+  it("names the door rather than offering a form when an edge-door deployment has no user", async () => {
     stubApi((call) =>
-      // The corpus carries only the `claimed` door — the fixture server runs in
+      // The corpus carries only the `open` door — the fixture server runs in
       // that mode — so the MODE is the one field moved off a real payload.
       call.path.endsWith("/api/me") ? { ...wire.meSignedOut, mode: "cf-access" } : undefined,
     );

@@ -1,6 +1,6 @@
-// The development door.
+// The open door's sign-in.
 //
-// It exists under ONE deployment mode. `claimed` is the mode where the server
+// It exists under ONE deployment mode. `open` is the mode where the server
 // believes the `X-Yokohama-Claimed-User` header (spec R-1.2), which is the
 // local and LAN-hosted shape; behind Cloudflare Access or the edge Worker the
 // identity arrives from in front of the server and this screen is never

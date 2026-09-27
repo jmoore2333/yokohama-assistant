@@ -1,7 +1,7 @@
 // The change stream, read through `fetch` (spec §5.1).
 //
 // **`EventSource` is not used, and the reason is one line long** (spec §0.1):
-// it cannot carry a header. The `claimed` door is `X-Yokohama-Claimed-User` and
+// it cannot carry a header. The `open` door is `X-Yokohama-Claimed-User` and
 // Cloudflare Access is a cookie the browser would send anyway, so an
 // `EventSource` would sign exactly one of the two deployments this server has.
 // A `fetch` carries `serverHeaders()` like every other call, and gets an

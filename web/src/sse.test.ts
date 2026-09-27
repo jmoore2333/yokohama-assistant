@@ -146,7 +146,7 @@ describe("the reader", () => {
 
   it("signs the request and asks for an event stream", async () => {
     // **The whole reason this is a `fetch` and not an `EventSource`**: the
-    // `claimed` door is a header, and `EventSource` cannot carry one.
+    // `open` door is a header, and `EventSource` cannot carry one.
     localStorage.setItem(CLAIMED_USER_KEY, "red@wire.test");
     const stream = fakeStream();
     const stub = stubApi((call) => stream.reply(call));

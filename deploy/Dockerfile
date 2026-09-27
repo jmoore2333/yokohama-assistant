@@ -200,7 +200,7 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route, with
 # 401 for no identity and 403 for a caller with no seat — but that is not the
 # same as being safe to expose: `cf-access` and `worker` trust a header only
-# their own edge can set, and `claimed` authenticates the door and not the seat.
+# their own edge can set, and `open` authenticates nobody: whoever reaches the door may take any name.
 # Binding wide is still a statement that something in FRONT of this container is
 # doing identity — a Cloudflare Tunnel with an Access policy — and it belongs in
 # the deployment artifact where that is true, not in the program.
@@ -208,7 +208,7 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here either**, for the same
 # reason: there is no default mode, and an image started without it exits 1
 # naming the three accepted values. The NAS sets it on the container
-# (`RUNBOOK.md` §3, `claimed`).
+# (`RUNBOOK.md` §3 records the value).
 # The three chat variables (`YOKOHAMA_WEB_LOBBY_CHAT`, `YOKOHAMA_WEB_CHAT_KEEP`,
 # `YOKOHAMA_WEB_CHAT_TEXT`) are the other way round: each has a default, so an
 # image started without them runs the lobby chat on with a keep of 500

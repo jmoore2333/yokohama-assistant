@@ -1289,10 +1289,10 @@ export function App() {
   // the strip is handed to them as a node rather than restated there: two copies
   // would be two places for the sign-out wiring to drift.
   //
-  // The button exists under `claimed` ONLY. Under the two edge doors there is
+  // The button exists under `open` ONLY. Under the two edge doors there is
   // nothing stored to clear, and a control that looked like it logged you out
   // while Access kept letting you in would be a lie on screen.
-  const signOutButton = signedIn && door.me?.mode === "claimed" && (
+  const signOutButton = signedIn && door.me?.mode === "open" && (
     <button type="button" className="ghost" onClick={signOut}>
       sign out
     </button>

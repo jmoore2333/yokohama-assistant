@@ -480,10 +480,10 @@ export interface Health {
  *
  *  `GET /api/me` NEVER refuses: `user` is `null` when nobody is named, which is
  *  the answer that tells the client which screen to show. `mode` says whether
- *  signing in here is even meaningful — only `claimed` has a screen to offer,
+ *  signing in here is even meaningful — only `open` has a screen to offer,
  *  since the other two are set by an edge the browser cannot reach. */
 export interface Me {
-  mode: "claimed" | "cf-access" | "worker";
+  mode: "open" | "cf-access" | "worker";
   user: string | null;
 }
 
