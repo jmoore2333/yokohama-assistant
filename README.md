@@ -284,11 +284,11 @@ There is a **Help** panel in the client itself covering all of this, with the sa
 ```bash
 # from the repo root
 cd web && npm ci && npm run build && cd ..
-YOKOHAMA_WEB_IDENTITY=claimed cargo run --release -p yokohama-web   # http://127.0.0.1:8080
+YOKOHAMA_WEB_IDENTITY=open cargo run --release -p yokohama-web   # http://127.0.0.1:8080
 ```
 
-`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `claimed` is the mode to
-run locally: you type a name and play under it.
+`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `open` is the self-host
+door: you type a name and play under it.
 
 ## Hosting
 
@@ -315,7 +315,8 @@ Cloudflare Access application.
   NAS since 2026-09-01, reached only through the existing cloudflared tunnel; it moved to this
   hostname on 2026-09-21, leaving `yokohama.moore.nyc` to the Worker. The current build,
   `yokohama-web:0.5.0-m6.5b2.1`, has been live since 2026-09-22 and runs with
-  `YOKOHAMA_WEB_IDENTITY=claimed`, server-sent events and a directory archive. The RUNBOOK is its
+  `YOKOHAMA_WEB_IDENTITY=claimed` (the open door's name before M6.5c2 renamed it), server-sent
+  events and a directory archive. The RUNBOOK is its
   record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery as a
   context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`), §3 the
   container (network `cf-internal`, the named volume `yokohama-web-data` holding the game store, no
@@ -344,14 +345,14 @@ What the code already does right:
 **What M6.1 added, and what it did not:**
 
 - **The API now reads an identity, and scopes every route to it.** `YOKOHAMA_WEB_IDENTITY`
-  selects one of three modes — `claimed`, `cf-access`, `worker` — and each reads **exactly one
+  selects one of three modes — `open`, `cf-access`, `worker` — and each reads **exactly one
   header and no other**. There is **no default**: an unset variable exits at start-up, because a
   server that guesses its own door is a server whose door nobody wrote down. `GET /api/games`
   lists only the tables where the caller sits; every other game route resolves the caller to a
   seat first and answers 403 to anyone who holds none.
-- **It does not authenticate anyone.** `claimed` is a *development door*: the name you type is
-  the name you play under, which is why it is only appropriate behind something that does
-  authenticate. `cf-access` and `worker` both trust an injected header.
+- **It does not authenticate anyone.** `open` is the *self-host door* (the `open-door` cargo
+  feature): the name you type is the name you play under, and anyone who can reach the server may
+  use any name. `cf-access` and `worker` both trust an injected header.
 - **Trusting an injected header is not enough on its own.** Cloudflare sends
   `Cf-Access-Authenticated-User-Email` alongside a signed `Cf-Access-Jwt-Assertion`, and
   Cloudflare's own guidance is that validating the convenience header alone does not prevent
