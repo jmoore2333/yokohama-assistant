@@ -413,9 +413,10 @@ mod tests {
     /// too, over this crate's own `src` with each file's top-level test module
     /// cut out.
     ///
-    /// Three anti-vacuity partners, and the second is the one worth reading: the
-    /// scan must have looked at a file, and the one allowed call must be in
-    /// CODE rather than in prose — a doc comment naming `js_sys::Date::now`
+    /// Three anti-vacuity partners, and the second and third are the ones worth
+    /// reading: the scan must have looked at a file, and each of the two
+    /// allowed calls — the clock and the console — must be in CODE rather than
+    /// in prose. A doc comment naming `js_sys::Date::now` or the console import
     /// would otherwise keep this cell green over a crate that had stopped
     /// making the call at all.
     #[test]
@@ -464,7 +465,7 @@ mod tests {
         }
         assert!(escaped.is_empty(), "platform calls in the host crate: {escaped:#?}");
         assert!(scanned > 0, "anti-vacuity: the scan read no file");
-        assert!(clock_in_code, "anti-vacuity: the one allowed platform call is CODE, not prose");
+        assert!(clock_in_code, "anti-vacuity: the clock, one of the two allowed platform calls, is CODE, not prose");
         assert!(console_in_code, "anti-vacuity: the console import is CODE, not prose");
     }
 

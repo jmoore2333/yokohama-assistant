@@ -16,8 +16,9 @@ export function errorBody(sentence: string): string {
   return JSON.stringify({ error: sentence });
 }
 
-/** One line of the shell's log (spec §2.8): what the layer cannot log on this
- *  host. */
+/** One line of the shell's log (spec §2.8): the shell's own lines, and since
+ *  M6.5c2 the layer's, which `readReply` (`module.ts`) hands here from
+ *  `Reply.logs`. */
 export function log(event: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ event, ...fields }));
 }
