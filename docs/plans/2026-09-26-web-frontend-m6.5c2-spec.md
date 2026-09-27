@@ -1,6 +1,6 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2.5, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: revision 2.6, 2026-09-27.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
@@ -14,6 +14,13 @@
 - **Revision 2.5** (this text) corrects, in place, the sentences that writing the plan found wrong or incomplete.
   Most were MEASURED by the plan's drafters in `git archive` exports; the rest were read at HEAD. §10.5 records
   each one with its evidence. It changes no ruling.
+- **Revision 2.6** (this text) records how the cycle is EXECUTED, ruled by the owner on 2026-09-27 after the single
+  28-task plan drafted for revision 2.5 was retired (§10.6): **three cycles** in dependency order — A the layer,
+  B the screens, C the hosts and the close — each on its own stacked branch with its own plan, its own
+  orchestrator session and its own PR (§4, §9; R-6.5c2.17 and R-6.5c2.18 amended), and **the pure refactors of
+  §2.7 and §2.8 dropped** (R-6.5c2.1 amended; each dropped item is marked where it stands). It changes no
+  mechanism. The plan review's one CRITICAL finding — RUNBOOK §2's recipe served the repository root, where
+  `.dev.vars` sits, to the LAN — is fixed in this revision's commit series, before any cycle's first task.
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -26,7 +33,8 @@ lobby, turning the development placeholders into designed screens. It turns the 
 into a real self-host door that needs no identity service. It makes every save say which bot, which release
 and which host produced it, so saves can be evaluated when later bots are trained. It closes every design
 debt the M6.5c reviews listed. It arranges the two hosts' code and documents, writes the testing strategy
-down, and closes with one full recorded test sequence, both hosts deployed and the nine-PR stack merged.
+down, and closes with one full recorded test sequence, both hosts deployed and the PR stack merged — eleven PRs
+since revision 2.6, the three cycle branches among them (§4).
 
 ---
 
@@ -61,6 +69,17 @@ issue, the whole-game gate's livelock, the module's structural invariants), and 
 findings and Task 8's minor items). Owner: "All three tiers". Each debt keeps the source the handover gives it
 (§4.6); §2.6–§2.8 list them. The review confirmed every §4.6 debt and §5 owner item is placed here or left
 with its reason (§7).
+
+**Amended 2026-09-27 (revision 2.6). Owner: "Drop the pure refactors."** The refactor tier is NARROWED to the items
+with measured or correctness value, because the lane goes quiet after this cycle and a refactor of code nobody will
+edit again buys nothing. **DROPPED**, and marked where each stands in §2.7 and §2.8: the `table.ts` split; the
+read-once threading of the documents (measured to save 0–2 rows where the `hasTables` memo saves 30); the replay
+script's split into five modules; and the four script dedups (the `.dev.vars` module, the one origin constant,
+`HOST_FIELDS`/`order()`/the credential's key names, the one precache parser). **KEPT**: the `hasTables` memo (F-4's
+measured fix), the picker invariant, the scrub fence, the receipt's pending list, the operator listing's one time
+unit, L-8 and L-4, the module's figures in one place, the restatements imported, every LOW finding (L-3, L-5, L-6,
+L-7, L-9) and Task 8's client items. The dropped items stay in the handover's §4.6 as debts the lane leaves, with this
+ruling as their reason.
 
 **R-6.5c2.2 — The NAS stays live, as the self-host path's reference host,** and is redeployed at this cycle's
 close with this cycle's build. Owner: *"it's worth keeping the NAS live since it's the self-host path, and it
@@ -201,12 +220,20 @@ in five files**, not five lines in one (review H4):
 
 **R-6.5c2.17 — The merge, after the close:** #31 → #39 in stack order, **with merge commits**, never squash or
 rebase. The TDD history stays intact and each cycle's PR stays its record. Owner: "In order, merge commits".
+**Amended 2026-09-27 (revision 2.6):** the three cycle branches (§4) are three stacked PRs — `web-room-m6.5c2a`
+against `web-room-m6.5c`, `web-room-m6.5c2b` against `-a`, `web-room-m6.5c2c` against `-b` — expected #39, #40 and
+#41 (GitHub numbers them at creation), so the stack merged at the close is #31 → #41. Owner: *"keeping up the
+stacked branch and PR per cycle will be ideal if we are going to run each cycle with its own orchestrator, it makes
+for the cleanest handoff and history tracking"*.
 
 **R-6.5c2.18 — Process: the lane's standing rules** (handover §8). Every task is subagent-driven, with Opus
 implementers and reviewers and a Fable whole-branch review. The orchestrator runs every step that touches the
 account (deploys, secrets, the bucket, the live runs) and edits no code. Every agent writes its report to a
 file. **Every task that changes what the client shows loads the `frontend-design` skill** (the owner named it
-for this work), and builds against the committed mockups.
+for this work), and builds against the committed mockups. **Amended 2026-09-27 (revision 2.6):** each of the three
+cycles (§4) runs under its own orchestrator session, from a plan written at that cycle's start against the tree the
+cycle before it leaves, on its own stacked branch; plans are written by the orchestrator or ONE agent, never by
+parallel drafters (§10.6).
 
 **R-6.5c2.19 — The release is versioned: `0.6.0`.** Proposed in revision 1 and **ruled by the owner** (2026-09-26,
 "Bump to 0.6.0"): one release number across the workspace and both npm packages, and the release commit
@@ -675,16 +702,17 @@ Each has an architectural reason (R-6.5c.4's refinement). Sources: handover §4.
 
 Every item is **behaviour-preserving**: the pool and the corpus through the objects must stay byte-identical,
 which is how that is shown rather than claimed.
-- **`worker/src/table.ts` (2,082 lines) splits along its four concerns:** the transport helpers beside
-  `frames.ts`; the slot half (~330 lines) as `delivery.ts`; the archive half (~380 lines) behind a narrow host
-  interface; and one guarded-call helper replacing the three copies.
+- **DROPPED (revision 2.6, R-6.5c2.1 as amended) — `worker/src/table.ts` (2,082 lines) splits along its four
+  concerns:** the transport helpers beside `frames.ts`; the slot half (~330 lines) as `delivery.ts`; the archive
+  half (~380 lines) behind a narrow host interface; and one guarded-call helper replacing the three copies.
 - **The rows read per request (F-4).** About 470 rows are read per move live. **Measured in the pool, ~94% of a
   warm request's rows are `hasTables`' scan of `sqlite_master`**, which runs inside every `getMeta` and every
-  `readDocs`: a warm request reads 32 rows, 30 of them that scan (§10.5). So this takes **both** fixes:
+  `readDocs`: a warm request reads 32 rows, 30 of them that scan (§10.5). Revision 2.5 took both fixes below;
+  **revision 2.6 keeps the first and drops the second** (R-6.5c2.1 as amended):
   - a per-object memo of `hasTables`, forgotten at `deleteAll()`, which takes a warm request from 32 rows to 2,
     with a cell that a warm request asks `sqlite_master` nothing;
-  - reading the documents once per request and threading the result (it saves 0–2 rows, and is structural), with
-    a cell that counts document reads per request.
+  - **DROPPED (revision 2.6):** reading the documents once per request and threading the result (it saves 0–2
+    rows, and is structural), with a cell that counts document reads per request.
 
   The close claims F-4 only by its measured live reading.
 - **The picker invariant becomes structural.** `events_inner`, `stamp_archive_inner` and `expire_inner`'s
@@ -703,7 +731,8 @@ which is how that is shown rather than claimed.
 ### 2.8 The scripts, the live tiers and the client's small items
 
 From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
-- **The scripts:**
+- **The scripts — DROPPED, every sub-item (revision 2.6, R-6.5c2.1 as amended); the list stays as the record of the
+  debt the lane leaves:**
   - `.dev.vars` is parsed in **one module**, `worker/scripts/dev-vars.mjs`, with its type declaration
     **`dev-vars.d.mts`** (TypeScript reads no `.d.ts` for an `.mjs` import; measured TS7016; §10.5).
     `worker/scripts/live-replay.mjs` imports it, and `web/e2e/live.ts` imports it by relative path. The two
@@ -953,29 +982,38 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 
 ---
 
-## 4. The order of work
+## 4. The order of work — three cycles (revision 2.6)
 
-This is proposed; the plan fixes the tasks.
-1. **The layer and identity:**
-   - the key grammar, the mode rule, containment and the rename;
-   - the bot labels, the contract file, the mirror field, the two wire fields, `run_id` and the foreign-bot
-     rule;
-   - the refinish rule (the layer half) and the logging seam;
-   - the drift-line filter, the positional `create` and the livelock;
-   - the corpus regenerated and its diff read.
-2. **The client:** the shared components and the board mark; the door and the project link; the identity states
-   and the name step; the lobby; the forms and the seed check; waiting and joining; the "spectate" words; the
-   local "Will not open here"; the phone layouts and their width cells; Task 8's items.
-3. **The Worker and the module:** the refinish rule's three shell changes; the `table.ts` split; one read per
-   request; the picker, the scrub fence, the receipt list, the restatements, the time units, L-8 and L-4; the
-   module's figures.
-4. **The scripts and the live tiers:** R3's list and the LOW findings.
-5. **The build and CI:** `wasm-opt` 133, the CI split, the Docker workflow, the gate back in CI, and the version
-   bump with its ripple (§5, §8.2).
-6. **The hosts:** the secret, the `test/` rule, the deploys (the close's sequence).
-7. **The documents:** last, so they describe the final state. The address scrub goes with them.
-8. **The close:** the review and its one fix wave, the battery, the full sequence, the deploys and live tiers, the
-   close document, then the merge (R-6.5c2.17), in §3's order.
+**Ruled by the owner, 2026-09-27** ("Three cycles"; "Drop the pure refactors"; the branches `web-room-m6.5c2a`,
+`-b`, `-c`), after the single 28-task plan drafted for revision 2.5 was retired (§10.6). Every host consumes the
+table layer, and the client and the Worker are independent of each other once the layer's wire is committed as
+corpus files — so the work is **three cycles in dependency order**, each on its own stacked branch with its own
+plan, its own orchestrator session and its own PR, and **each planned AT ITS START against the tree the cycle
+before it leaves**, by that cycle's orchestrator or one agent. A plan is written to be read whole by one agent; the
+sizes this project has executed (1,000–3,300 lines, 9–16 tasks) are the measure, and cycle A's may run larger only
+because its layer edits are file:line-precise Rust across three crates, where the code IS the contract.
+
+| cycle | branch (its base) | plan | content | ends with |
+|---|---|---|---|---|
+| **A — the layer** | `web-room-m6.5c2a` (on `web-room-m6.5c`) | `2026-09-27-web-frontend-m6.5c2a-plan.md` | §2.1's key grammar, containment, rename and mode rule (the client's four literal sites and the walk's configuration move with the rename); §2.4 whole — `bots.rs`, the contract file, the mirror, the two wire fields, the foreign-bot rule and its four masks, `run_id` and the byte-for-byte pin on the server's save paths; §2.5's layer half; §2.6 whole — the log seam, the drift filter, the object-only body, the restatements EXPORTED, the `NotFound` cell, the whole-game gate's livelock and the browser walk's cap; §2.2's three reworded server sentences; **the `seed_cases.json` contract** (§2.2 "The seed"), emitted here so cycle B renders nothing hand-authored; the corpus regenerated and its diff read; every cell the two host crates and the pool need to stay green at each task | the Fable whole-branch review, ONE fix wave and a scoped re-review; the per-edit suites at the reviewed head; the branch pushed and its PR opened on the owner's word; a short handover note into B. **No deploy and no live tier** (R-6.5c2.13). |
+| **B — the screens** | `web-room-m6.5c2b` (on `-a`) | written at B's start | §2.2 and §2.3 whole — the shared pieces, the door and the project link, the identity states A–E and the name step (§2.1 "The client", pinned to `identity_cases.json`), the lobby, the forms and the seed check (pinned to `seed_cases.json`), waiting and joining, "Spectate" in the client, the single-player links, "Will not open here", the game screen's foreign refusal; §2.8's client items (Task 8's list); every rebuilt screen's jsdom, browser and 390 px cells | as A: review, fix wave, re-review, push and PR, a handover note into C; **no deploy** |
+| **C — the hosts and the close** | `web-room-m6.5c2c` (on `-b`) | written at C's start | §2.1 "The Worker's two doors" whole (the client's `claimed=` upgrade parameter with it); §2.5's Worker half; §2.7 as amended — the `hasTables` memo, the picker invariant, the scrub fence, the pending list, the time unit, L-8, L-4, the module's figures, and the restatements IMPORTED (the module and the browser host switch to A's exports); §2.8 as amended — the LOW findings; §2.9 whole; R-6.5c2.19's bump and its ripple (§8.2); §2.10 and §2.11 whole; then §3's close | §3's close in full: the review, the battery, the ONE recorded sequence, the deploys, the live tiers, the screenshots, the close document, the merge (R-6.5c2.17) and the `v0.6.0` tag |
+
+**The interfaces between cycles are the layer's, and this spec fixes them.** A produces, for B: the corpus files
+`identity_cases.json`, `seed_cases.json`, `production_bot.json`, `table_bot.json`, `foreign_bot_409.json`,
+`table_foreign.json` and `why_foreign.json`; `TableView.bot` and `ClientState.bots`; `/api/me`'s `mode: "open"` and
+`health.json`'s `identity: "open"`; and the `types.ts` and `contract.ts` entries beside each. For C: `IdentityMode::Open`
+and `identity::admit`; `bots::*`; `RunHost` as `Games::with_parts`'s last parameter; `log::{Log, NoLog, …}` and
+`Games::with_log`; `PutError::Conflict { key, held }`; the exports `api::error_body`, `api::MAX_WAIT_SECONDS`,
+`api::check_wait`, `api::NOT_AN_OBJECT`, `signal::house_frame`, `games::HostClock` and `platform::{CALLS, calls_in}`;
+and the whole-game gate's measured cap with `YOKOHAMA_WEB_GATE_BOT_SEED`. Each plan names what it consumes verbatim in
+its "Names shared across tasks", and B's and C's plans READ them off A's tree rather than off this list.
+
+**Standing across all three cycles:** the NAS is NOT redeployed from any cycle branch before C's close (after A no
+build accepts `YOKOHAMA_WEB_IDENTITY=claimed`, and the live container sets it); the fences of §5 hold at every commit
+of every cycle; the per-edit suites of every crate and package a task touches run after every task, the Worker's
+`npm run build:module:debug` before its pool; and the retired plan review's findings land in the cycle that owns
+the code (§10.6's table).
 
 ---
 
@@ -1073,8 +1111,10 @@ This is proposed; the plan fixes the tasks.
 The handover §8 in full, and R-6.5c2.18. Model dispatch follows the owner's standing rule: Opus is the floor for
 implementers and reviewers, and Fable orchestrates and reviews the whole branch. Reports go to files; a reviewed
 SHA is never amended; while an implementer works, nothing runs in its tree. **The owner's answer on scale
-(2026-09-26, "Opus, merged tasks"):** the plan's 28 tasks run as 20 execution units of one or two tasks, each unit
-one Opus implementer and one Opus reviewer, with every task keeping its own green commit.
+(2026-09-27, revision 2.6, superseding 2026-09-26's "Opus, merged tasks" for one plan):** three cycles (§4), each
+planned and executed by its own orchestrator session on its own stacked branch. Within a cycle every task is one
+Opus implementer and one Opus reviewer, with its own green commit and its red run quoted; folding two small tasks
+into one execution unit is the cycle orchestrator's call, and a unit's reviewer reviews its commits together.
 
 ## 10. Review record
 
@@ -1235,3 +1275,52 @@ built as stated):
 - the open table's chat stays in the main column;
 - other people's seat cards read "seated";
 - test data never uses the owner's surname.
+
+### 10.6 The single plan retired, and the three cycles (revision 2.6, 2026-09-27)
+
+**What happened.** Revision 2.5 was planned as ONE implementation plan, `docs/plans/2026-09-26-web-frontend-m6.5c2-plan.md`
+at `7422083e`: 28 tasks in 20 execution units, drafted in parallel by eight Opus drafters against one base
+(`1e16fe27`) and assembled by the orchestrator — **27,315 lines**, against a largest executed plan in this project of
+3,288 lines (M5) and an M6.5c plan of 2,778. One Opus adversarial reviewer then applied Tasks 1–7 in one tree and ran
+the pool at each step — the first time the assembled tasks had met in one tree — and found **1 CRITICAL, 6 HIGH,
+2 MEDIUM, 2 MINOR and 1 OPEN**, 24 claims checked true, most findings at the seams between drafters, before the owner
+stopped the review. The owner judged the plan unmanageable and the approach flawed — one orchestrator session could
+not hold, review or execute it, and every task past the first was written against a tree the earlier tasks would
+change — and retired that session (2026-09-27).
+
+**The rulings (the owner, 2026-09-27):**
+1. **Three cycles**, A the layer, B the screens, C the hosts and the close, each with its own plan written at its
+   start (§4).
+2. **Drop the pure refactors** (R-6.5c2.1 as amended).
+3. **One stacked branch and PR per cycle**, `web-room-m6.5c2a`, `-b`, `-c` (R-6.5c2.17 as amended), *"the cleanest
+   handoff and history tracking"* when each cycle runs under its own orchestrator.
+
+**What is carried, and where.** The spec's mechanism is untouched — revision 2.6 changes §4 and §9, amends three
+rulings and marks the dropped items. The eight drafts, the assembly's skeleton (its shared names, couplings and
+assembly notes) and the review report stay on disk under the gitignored
+`.superpowers/sdd/2026-09-26-web-frontend-m6.5c2-plan/` as the raw material each cycle's plan is built from; the
+review's verification chain (per-task commits through Task 7, with its P-3 stand-in) and D1's trial are bundled into
+cycle A's ledger, `.superpowers/sdd/2026-09-27-web-frontend-m6.5c2a-plan/`. **The retired plan is removed from the
+tree in this revision's commit** — a plan that never executed is not a frozen record, and a 27k-line document under
+`docs/plans/` would be read as one — and stays in history at `7422083e`. The review's findings land in the cycle that
+owns the code:
+
+| finding | severity | lands in |
+|---|---|---|
+| P-1 — RUNBOOK §2's NAS recipe served the repository root, where `.dev.vars` sits, to the LAN | CRITICAL | **fixed in this revision's commit series**, before any task: the context is built in and served from a temporary directory alone, and a `curl` for `.dev.vars` must read 404 before the build |
+| P-2 — the assembly's surname substitution was case-sensitive and partial; the owner's surname in committed test data | HIGH | cycle A's plan: every test name is a neutral one throughout; the real hostnames stay |
+| P-3 — the exported `error_value` dropped the `foreign_bot` arm | HIGH | cycle A, the restatements' export task |
+| P-4 — `owed-game-over.table.json`'s mirror needs `bot`, or two pool cells go red | HIGH | cycle A, the label task (O-1 (a), measured green) |
+| P-5 — the pool's corpus cell compares a `web/server` save with a `web/worker` one | HIGH | cycle A, the `run_id` task |
+| P-6 — the pool's `Reply` fakes carry no `logs` | HIGH | cycle A, the log-seam task |
+| P-7 — `the_table.spec.ts` drives the old table form | HIGH | cycle B, the forms task |
+| P-8 — a `THIRD_COLUMN` literal pasted over an inserted name | MEDIUM | cycle A, inline in every task that adds a corpus file: INSERT, never paste |
+| P-9 — the secret's hand-off contradicted itself | MEDIUM | cycle C: ONE `wrangler deploy --secrets-file` at the close, nothing before |
+| P-10 — base-relative counts presented as expectations | MINOR | every cycle plan states counts as deltas over the implementer's own HEAD |
+| P-11 — a grep run before the workflow line it counts is rewritten | MINOR | cycle A, the rename task |
+| O-1 — P-4's shape | OPEN | (a) taken |
+
+**The lesson, for the next spec of this size** (also in the orchestrator's memory): a spec that covers several
+subsystems is split into cycles at SCOPING, before any drafting is paid for; a plan is written to be read whole by
+one agent; and plans are written by the orchestrator or one agent, never by parallel drafters — eight of them
+cross-messaged and reworked in circles until the owner stopped it.
