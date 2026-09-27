@@ -269,10 +269,11 @@ fn bot_stream_seed(api: Api, id: &str) -> (Api, u64) {
 
 /// **The vs-bot arm's input cap, MEASURED** (M6.5c2, spec §2.6): 50 runs over
 /// OS-entropy bot seeds at Task 8's tree (base `605c3ddd`), after the placement
-/// probe and the stuck-picker rule — inputs min 136, median 383, max 1,212, and
-/// every run's bot seed in the ledger's `task-8-gate-50.txt`. The cap is the
-/// next thousand above four times that maximum, so a regression fails in
-/// minutes where the old 20,000 cost half an hour (M6.3 close §6.3: 1,813 s).
+/// probe and the stuck-picker rule — inputs min 136, median 386 (383 and 389 at
+/// the 25th and 26th of 50), max 1,212, and every run's bot seed in the
+/// ledger's `task-8-gate-50.txt`. The cap is the next thousand above four
+/// times that maximum, so a regression fails in minutes where the old 20,000
+/// cost half an hour (M6.3 close §6.3: 1,813 s).
 const VS_BOT_CAP: usize = 5_000;
 
 #[tokio::test]
@@ -382,10 +383,11 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         "and the prompt says so rather than offering a move",
     );
 
-    // It survives a round trip through storage: the handle is dropped and the
-    // game is rebuilt from its GameRecord alone, which is the property the
-    // hosted plan depends on (a container that sleeps loses its memory).
-    let (status, reloaded) = api.call("GET", "/api/games/gate", None).await;
+    // It survives a round trip through storage: a fresh server over the same
+    // store holds no handle, so the game is rebuilt from its GameRecord alone,
+    // which is the property the hosted plan depends on (a container that
+    // sleeps loses its memory).
+    let (status, reloaded) = api.restarted().call("GET", "/api/games/gate", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reloaded["over"], true);
     assert_eq!(reloaded["scores"], state["scores"], "a reloaded game scores the same");
