@@ -4,6 +4,8 @@
 // banner's Game menu — and both are one line of markup around these two
 // functions. Written inline they would be two ternaries drifting apart, and the
 // same table would read differently depending on which screen you opened.
+// The front door's device card reads its rows through `deviceWord` (M6.5c2),
+// which words the same facts as a player's rather than a lobby's.
 
 import type { PlayerId, SeatDoc, TableView } from "./types";
 
@@ -77,4 +79,25 @@ export function tableWord(t: TableView): string {
   // seat number, or the name of seat `undefined`.
   if (t.to_move === null) return "playing";
   return t.my_seats.includes(t.to_move) ? "your turn" : `waiting on ${holder(t, t.to_move)}`;
+}
+
+/** What a game ON THIS DEVICE is waiting on, in the door's words (M6.5c2,
+ *  mocks 01 and 10): the bot it is played against, then its state.
+ *
+ *  A local game is you and the bot, so its words are a player's rather than a
+ *  lobby's: "your move", "you won", "the bot won". The version is the
+ *  LISTING's (`TableView.bot`), never a parse of the record; a game dealt
+ *  before its table recorded which bot names none (spec §2.4). */
+export function deviceWord(t: TableView): string {
+  const vs = t.bot ? `vs ${t.bot.label} · ` : "";
+  if (t.over) {
+    if (t.winner === null) return `${vs}over`;
+    return `${vs}${t.my_seats.includes(t.winner) ? "you won" : `${holder(t, t.winner)} won`}`;
+  }
+  if (t.status === "dealing") {
+    return `${vs}${t.my_seats.some((s) => !t.chosen[s]) ? "choose a card" : "dealing"}`;
+  }
+  if (t.status === "open") return `${vs}${tableWord(t)}`;
+  if (t.to_move === null) return `${vs}playing`;
+  return `${vs}${t.my_seats.includes(t.to_move) ? "your move" : `waiting on ${holder(t, t.to_move)}`}`;
 }

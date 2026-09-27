@@ -948,12 +948,11 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    is a real button, and a selector that stopped naming the element would start
    styling the `<summary>`s that deliberately do not carry it (see the banner's
    note above). */
-.lobby .saved li a.row-link, .front-door .saved li a.row-link {
+.lobby .saved li a.row-link {
   background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
 }
-.lobby .saved li a.row-link:hover,
-.front-door .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
+.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
    (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
@@ -963,12 +962,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    theirs where they stand alone and flat where they stand here; nothing in
    those components moves for it. */
 .lobby > .setup { max-width: none; margin: 0; padding: 0; }
-/* The games on this device are the door's FIRST section since M6.5b2 (they were
-   the lobby's first child before it), so they need the rhythm `.setup h3`'s top
-   margin gives every other section — a first child has none to inherit, and its
-   own margin collapses out of the box. Unscoped for that reason: the rule is
-   about being first, and the host is no longer fixed. */
-.on-this-device { margin-top: 0.6rem; }
 .on-this-device .local-fault { color: var(--fg-dim); }
 
 /* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
@@ -980,15 +973,12 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    `.field` next door gets `flex-wrap` at three call sites for the same reason.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, and the door is
-   outside all of them, so this lands on the headed live review. */
+   width cells are on the game screen and the set table, and since M6.5c2 on a
+   FRESH profile's door (`setup_screens.spec.ts`) — no games, no report, no
+   refusal — so these rows still land on the headed live review. */
 .backup-controls { margin-top: 0.8rem; }
 .backup-controls .backup-note { margin: 0.3rem 0 0.6rem; }
 .backup-controls .backup-error { display: block; margin: 0.3rem 0; }
-.restore .restore-field { flex-wrap: wrap; }
-/* A file input is as wide as its button plus its "no file chosen" text and
-   does not shrink on its own, which is what pushes a 390px page sideways. */
-.restore .restore-field input[type="file"] { max-width: 100%; font-size: 12px; }
 .restore-report { margin: 0.4rem 0 0; padding-left: 1.1rem; }
 .restore-report li { margin: 0.2rem 0; }
 .restore-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
@@ -999,9 +989,10 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    sentences and one control has nothing to lay out.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, and the door is
-   outside all of them, so this lands on the headed live review (the same note
-   the backup block carries). */
+   width cells are on the game screen and the set table, and since M6.5c2 on a
+   FRESH profile's door, which draws the storage line but no install offer — so
+   the offer lands on the headed live review (the same note the backup block
+   carries). */
 .storage-line { margin: 0.8rem 0 0; }
 /* A real break above it, measured at 390px: the storage line and the two
    install sentences are all `.muted` at the same size, and at the backup
@@ -1037,8 +1028,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    the width it stops fitting rather than scrolling the page at 390px.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, so this lands on the
-   headed live review, exactly as the backup and storage blocks above say. */
+   width cells are on the game screen, the set table and a FRESH profile's door,
+   which has no outbox row, so this lands on the headed live review, exactly as
+   the backup and storage blocks above say. */
 .outbox { margin-top: 0.8rem; }
 .outbox h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--fg-dim); }
@@ -1056,36 +1048,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    a control in this client uses. */
 .abandon-ask { overflow-wrap: anywhere; font-size: 12px; }
 
-/* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
-/* Two ways on, and the second is a LINK rather than a button: Access answers a
-   navigation with a redirect to another origin, which a `fetch` follows and
-   then fails opaquely (spec §0.3). So it wears `button.primary`'s box, restated
-   for the element the way `a.row-link` restates `button.ghost`'s — those rules
-   are styled ON the element name and so do not reach an `<a>`. */
-.front-door .with-others a.enter {
-  display: inline-block;
-  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
-  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; text-decoration: none;
-}
-.front-door .with-others { margin-top: 1.6rem; }
-
-/* **The product, named once, at the top of the door** (M6.5b2; Task 3 review,
-   Minor 5). The game screen's own `<h1>` is `.banner h1` — 1.05rem, letter-spaced
-   small caps inside a fixed strip — and this one is a landing heading on a
-   `.setup` page, so it is set from `--display` rather than restating the
-   banner's treatment on a screen that has no banner. */
-.front-door .door-banner { margin-bottom: 1.4rem; }
-.front-door .door-banner h1 {
-  font-family: var(--display); font-size: 2rem; font-weight: 600;
-  letter-spacing: 0.02em; margin: 0;
-}
-.front-door .door-banner p { margin: 0.15rem 0 0; }
-
-/* The readiness line and the update offer (spec §4): a report about the shell,
-   so it sits under both entries and is set at the quiet size the other muted
-   lines use. */
-.front-door .offline-state { margin-top: 1.6rem; }
-.front-door .offline-state p { margin: 0.2rem 0; font-size: 12px; }
 /* A control inside a sentence, for `.log-jump`'s reason: it must be reachable
    by keyboard and named by a role, and it must not look like a button sitting
    in the middle of a line. */
@@ -2078,4 +2040,125 @@ a.primary-link {
   }
   .identity-corner[data-open="true"] .identity-menu { display: flex; }
   .identity-who { white-space: normal; }
+}
+
+/* ---- M6.5c2: the front door (R-6.5c2.6; spec §2.2; mocks 01, 06, 11) ------- */
+/* The hero: the name and the board on the navy glow, full bleed, its content
+   held to the door's 86rem column — the approved mock's own 1376px frame, so
+   at 1440 the content is the mock's width (measured in the headed look). The
+   cards rise into its foot (`.door-main`'s negative margin) — the mock's own
+   overlap. */
+.door-hero {
+  background: radial-gradient(ellipse 60% 90% at 72% 40%, var(--ground-glow) 0%, var(--ground-deep) 45%, var(--bg) 100%);
+  border-bottom: 1px solid var(--line);
+}
+.door-hero-in {
+  max-width: 86rem; margin: 0 auto; min-height: 330px; padding: 1.75rem 3.5rem 4.25rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 2rem;
+}
+.door-title { min-width: 0; }
+.door-title h1 { font-size: 76px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+.project-link {
+  display: inline-flex; gap: 6px; margin-top: 1rem; font-size: 12.5px; color: var(--fg-dim);
+  text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 4px;
+  overflow-wrap: anywhere;
+}
+.project-link:hover { color: var(--fg); }
+/* The mock sets the board 34px inside the cards' right edge. */
+.door-hero .board-mark { flex: 0 1 360px; margin-right: 2.125rem; }
+.door-main { position: relative; max-width: 86rem; margin: -2.75rem auto 0; padding: 0 3.5rem 2rem; }
+.door-main > .door-notice {
+  margin: 0 0 0.9rem; padding: 0.5rem 0.8rem; background: var(--bg-raised);
+  border: 1px solid var(--line-bright); border-radius: 6px;
+}
+.door-cards { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 18px; }
+.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 61rem; }
+
+/* The device card: this browser's games as rows, the install offer, then a
+   foot of ONE line — the release's readiness, Back up, Restore — whose notes
+   and reports drop to full-width rows below it (a grid, so a control's own
+   error line never breaks the row it belongs to). */
+/* It pads itself: no band, so no `.card-in` — its rows stay the section's own
+   children, the shape the browser walk reads (`OnThisDevice.tsx`). */
+.raised-card.on-this-device { padding: 1rem 1.15rem 1.15rem; }
+.on-this-device .card-cap { margin-bottom: 0.35rem; }
+.device-games { list-style: none; margin: 0; padding: 0; }
+.device-row {
+  position: relative; display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--line); font-size: 12px;
+}
+.device-row a.device-name {
+  min-width: 0; color: var(--fg); font-weight: 700; text-decoration: none; overflow-wrap: anywhere;
+}
+/* The whole row opens the game, and the link's name stays the game's name. */
+.device-row a.device-name::after { content: ""; position: absolute; inset: 0; }
+.device-row:hover a.device-name { text-decoration: underline; text-decoration-color: var(--line-bright); }
+/* The state keeps its own width, up to a cap, and the NAME gives way: at 390px
+   a local game's id is the long half, and the mock reads the state on one line. */
+.device-state { flex: 0 0 auto; max-width: 62%; color: var(--fg-dim); text-align: right; }
+.on-this-device .storage-line { margin: 0.6rem 0 0; font-size: 11.5px; }
+.on-this-device .install-offer {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.75rem; margin: 0.75rem 0 0.6rem;
+}
+.on-this-device .install-offer p { margin: 0; font-size: 11.5px; line-height: 1.35; }
+.on-this-device .install-offer.ios { display: block; }
+.on-this-device .install-offer.ios p { margin: 0.2rem 0; }
+.device-foot {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+  column-gap: 0.45rem; row-gap: 0.35rem; margin-top: 0.7rem; padding-top: 0.55rem;
+  border-top: 1px solid var(--line); font-size: 11.5px;
+}
+.device-foot > .offline-state, .device-foot > .back-up-all, .device-foot .restore-field { grid-row: 1; }
+.device-foot > .offline-state { grid-column: 1; padding-right: 0.5rem; }
+.device-foot > .back-up-all { grid-column: 2; }
+.device-foot > .restore { display: contents; }
+.device-foot .restore-field { grid-column: 3; }
+.device-foot > .backup-note, .device-foot > .backup-error,
+.device-foot .restore-error, .device-foot .restore-report { grid-column: 1 / -1; margin: 0; }
+.device-foot .backup-note { font-size: 11px; }
+.device-foot .offline-state p { margin: 0; }
+.device-foot .offline-state .ready { color: var(--reachable); }
+.device-foot .offline-state .ready::before { content: "\25CF\00a0"; }
+/* Back up and Restore read as the mock's two quiet links with a dot between.
+   The dot is Restore's own `::before`, outside the underlined word. */
+.device-foot button.back-up-all, .device-foot .restore-field {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--fg-dim); cursor: pointer;
+}
+.device-foot button.back-up-all, .device-foot .restore-word {
+  text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.device-foot button.back-up-all:hover, .device-foot .restore-field:hover { color: var(--fg); }
+.device-foot .restore-field { position: relative; }
+.device-foot .restore-field::before { content: "\00b7"; color: var(--fg-faint); margin-right: 0.45rem; }
+/* The picker is out of sight (`.sr-only`), so its keyboard focus is drawn on
+   the word that opens it — and only for keyboard focus, as `:focus-visible`
+   draws it everywhere else on this screen. */
+.device-foot .restore-field:has(:focus-visible) .restore-word { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* "How to play": a quiet link under the cards, and the help in place below. */
+.door-foot { display: flex; justify-content: flex-end; padding: 1.1rem 0 0.6rem; }
+.door-foot .linkish {
+  color: var(--fg-faint); font-size: 11.5px; text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.door-help .help-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.door-help h3 { font-size: 1rem; margin: 1.3rem 0 0.4rem; }
+.door-help p { color: var(--fg-dim); max-width: 72ch; }
+
+@media (max-width: 900px) {
+  .door-cards, .door-cards.two-up { grid-template-columns: minmax(0, 1fr); max-width: 36rem; margin: 0 auto; }
+}
+/* The phone (mock 11): the board above the title, the cards stacked in the
+   desktop's order, each primary control full width and thumb-sized. */
+@media (max-width: 600px) {
+  .door-hero-in {
+    flex-direction: column-reverse; align-items: center; text-align: center;
+    min-height: 0; padding: 0.75rem 1rem 4rem; gap: 0.6rem;
+  }
+  .door-hero .board-mark { width: 236px; flex: none; margin-right: 0; }
+  .door-title h1 { font-size: 54px; }
+  .door-main { padding: 0 1rem 1.5rem; }
+  .door-card button.primary, .door-card a.primary-link {
+    display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
+  }
+  .door-foot { justify-content: center; }
 }

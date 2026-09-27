@@ -1416,7 +1416,7 @@ describe("the route", () => {
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
     // A LINK and never a fetch: Access answers a navigation with a redirect to
     // another origin, which a `fetch` follows and then fails opaquely.
-    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute(
       "href",
       "/enter",
     );
@@ -1973,7 +1973,7 @@ describe("the door", () => {
     window.location.hash = "#/";
     render(<App />);
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute("href", "/enter");
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
     expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
     // And the door was never asked who this is.
     expect(stub.matching("GET", "/api/me")).toHaveLength(0);
@@ -2018,7 +2018,7 @@ describe("the door", () => {
       window.location.hash = "#/";
     });
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New game" })).toBeEnabled();
     // **And an ordinary refusal offers no turnstile** (M6.5b2) — the
     // anti-vacuity partner of the cell below, which draws one. This sentence
     // is the server's own and `/enter` would do nothing about it.
@@ -3689,7 +3689,7 @@ describe("the first screen with no server", () => {
   const localSection = async () => {
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New game" })).toBeEnabled();
   };
 
   /** And its action WORKING, which is the half of R-6.5b.8 an enabled button
@@ -3697,7 +3697,7 @@ describe("the first screen with no server", () => {
    *  route effect used to be gated on a door that is shut in both of these
    *  cells. */
   const playsHere = async () => {
-    await userEvent.setup().click(screen.getByRole("button", { name: "Play the bot here" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "New game" }));
     expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
     // The form that needs no server: two seats, you and the bot.
     expect(screen.getByText("the bot")).toBeInTheDocument();

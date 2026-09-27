@@ -132,13 +132,18 @@ describe("the help panel and the lobby", () => {
   // **The first screen is the DOOR since M6.5b2** (R-6.5b2.1), and a page that
   // went on opening "Sign in first" would be describing the screen this cycle
   // replaced — the exact drift this file exists for. What a reader needs is the
-  // two ways on, and that the lobby is somewhere they can get back FROM.
-  it("names the door's two ways on, and the lobby at its own address", () => {
+  // door's cards by the names they carry (M6.5c2, mock 01), and that the lobby
+  // is somewhere they can get back FROM.
+  it("names the door's ways on, and the lobby at its own address", () => {
     render(<Help />);
     const text = section("Starting a game");
-    expect(text).toContain("Play on this device");
-    expect(text).toContain("Play with others");
+    expect(text).toContain("You against the bot");
+    expect(text).toContain("Play with friends");
+    expect(text).toContain("On this device");
     expect(text).toContain("link back to the door");
+    // The door's words before M6.5c2, gone with the controls they named.
+    expect(text).not.toContain("Play with others");
+    expect(text).not.toContain("Play on this device");
     expect(text).not.toContain("Sign in first");
   });
 
@@ -348,5 +353,17 @@ describe("the help panel and talking (M6.4)", () => {
     expect(saving.textContent).toMatch(/saved there before it is abandoned/);
     expect(saving.textContent).toMatch(/Abandon and save/);
     expect(saving.textContent).toMatch(/Save game file/);
+  });
+
+  // **The door draws the help WITHOUT its screenshots** (M6.5c2): they are
+  // photographs of the card art (`ASSETS.md`, the `web/public/help/` row), and
+  // no setup screen draws card art. The game's surface keeps them.
+  it("draws its screenshots unless its host asks for the words alone", () => {
+    const { container, unmount } = render(<Help />);
+    expect(container.querySelectorAll("figure.shot")).toHaveLength(5);
+    unmount();
+    const words = render(<Help shots={false} />);
+    expect(words.container.querySelectorAll("figure.shot, img")).toHaveLength(0);
+    expect(words.container.textContent).toContain("The three parts of the screen");
   });
 });

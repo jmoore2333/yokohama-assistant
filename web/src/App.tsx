@@ -17,6 +17,7 @@ import {
 import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
+import { projectLink } from "./projectLink";
 import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
@@ -1347,7 +1348,12 @@ export function App() {
    *  behind the sign-in gate below, and that is the whole product change: until
    *  this cycle the first screen belonged to the server. */
   const doorScreen = (notice?: string | null) => (
-    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} readiness={readiness} />
+    <FrontDoor
+      multiplayer={multiplayerOffered()}
+      notice={notice ?? null}
+      readiness={readiness}
+      link={projectLink()}
+    />
   );
 
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own

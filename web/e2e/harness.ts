@@ -396,7 +396,7 @@ async function createLocal(page: Page, signedOut: boolean): Promise<string> {
   // exists for, and the reason the signed-in arm comes back here too.
   await page.goto("/#/");
   await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
-  await page.getByRole("button", { name: "Play the bot here" }).click();
+  await page.getByRole("button", { name: "New game", exact: true }).click();
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
   await page.getByRole("button", { name: "Deal" }).click();
   await page.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });

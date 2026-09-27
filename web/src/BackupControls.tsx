@@ -73,7 +73,14 @@ const sentenceOf = (e: unknown): string => (e instanceof Error ? e.message : Str
  * IndexedDB from this page rather than through the Worker for exactly that
  * reason.
  */
-export function BackUpEverything(): React.ReactNode {
+export function BackUpEverything({
+  label = "Back up everything",
+}: {
+  /** The visible word. The door's card says "Back up" (mock 01); the control's
+   *  NAME stays "Back up everything" wherever it is drawn, so a screen reader —
+   *  and every walk that clicks it — hears what the file holds. */
+  label?: string;
+} = {}): React.ReactNode {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const save = async () => {
@@ -92,8 +99,13 @@ export function BackUpEverything(): React.ReactNode {
   };
   return (
     <>
-      <button type="button" className="ghost back-up-all" onClick={() => void save()}>
-        Back up everything
+      <button
+        type="button"
+        className="ghost back-up-all"
+        aria-label={label === "Back up everything" ? undefined : "Back up everything"}
+        onClick={() => void save()}
+      >
+        {label}
       </button>
       {/* **The two files, told apart in one line** (R-6.5b2.10). They are not
           the same file and a player has no way to know that from the button
@@ -184,11 +196,18 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
 
   return (
     <div className="restore">
-      <label className="field restore-field">
-        <span>Restore from a backup</span>
+      {/* **"Restore", with the file picker out of sight** (M6.5c2, mock 01):
+          the word is the control, and the picker opens from it. The input keeps
+          its full NAME, "Restore from a backup" — what a screen reader hears and
+          what every cell and walk reaches it by — and the stylesheet draws its
+          keyboard focus on the word (`:has(:focus-visible)`, `styles.css`). */}
+      <label className="restore-field">
+        <span className="restore-word">Restore</span>
         <input
           ref={input}
           type="file"
+          className="sr-only"
+          aria-label="Restore from a backup"
           accept="application/json,.json"
           onChange={(e) => {
             const file = e.target.files?.[0];

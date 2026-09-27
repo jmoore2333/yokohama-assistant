@@ -35,7 +35,10 @@ function Shot({ src, alt, caption }: { src: string; alt: string; caption: string
   );
 }
 
-export function Help() {
+/** `shots` false draws the words alone: the door's "How to play" does, because
+ *  the screenshots are photographs of the card art (`ASSETS.md`, the
+ *  `web/public/help/` row) and no setup screen draws card art (M6.5c2). */
+export function Help({ shots = true }: { shots?: boolean } = {}) {
   return (
     <>
       <p className="lede">
@@ -80,16 +83,20 @@ export function Help() {
         stack instead, the table above the column, with the answer bar pinned along the bottom
         edge rather than at the top of a column.
       </p>
-      <Shot
-        src="/help/screen.webp"
-        alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
-        caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
-      />
-      <Shot
-        src="/help/strips.webp"
-        alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
-        caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
-      />
+      {shots && (
+        <Shot
+          src="/help/screen.webp"
+          alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
+          caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
+        />
+      )}
+      {shots && (
+        <Shot
+          src="/help/strips.webp"
+          alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
+          caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
+        />
+      )}
 
       <h3>Taking a turn</h3>
       <p>
@@ -105,11 +112,13 @@ export function Help() {
         selected is printed before you commit to it. At every other moment no tile applies a
         move, and the pyramid is a picture you can read rather than press.
       </p>
-      <Shot
-        src="/help/placement.webp"
-        alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
-        caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
-      />
+      {shots && (
+        <Shot
+          src="/help/placement.webp"
+          alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
+          caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
+        />
+      )}
 
       <h3>Looking things up</h3>
       <p>
@@ -141,11 +150,13 @@ export function Help() {
         reconstruction the engine can vouch for rather than a note someone stored. If the
         reconstruction does not match what was played, it refuses and says so.
       </p>
-      <Shot
-        src="/help/explain.webp"
-        alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
-        caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
-      />
+      {shots && (
+        <Shot
+          src="/help/explain.webp"
+          alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
+          caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
+        />
+      )}
 
       <h3>Replaying the game</h3>
       <p>
@@ -165,17 +176,20 @@ export function Help() {
         returns you to it. Nothing you do here changes the game: it is a projection over the
         record, and the position you scrub to is not playable.
       </p>
-      <Shot
-        src="/help/replay.webp"
-        alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
-        caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
-      />
+      {shots && (
+        <Shot
+          src="/help/replay.webp"
+          alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
+          caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
+        />
+      )}
 
       <h3>Starting a game</h3>
       <p>
-        The first screen is the <strong>front door</strong>, and it offers two ways on.{" "}
-        <strong>Play on this device</strong> is the games in this browser &mdash; nobody signs in
-        for those, and the last section of this page is about them. <strong>Play with others</strong>{" "}
+        The first screen is the <strong>front door</strong>. <strong>You against the bot</strong>{" "}
+        plays in this browser &mdash; nobody signs in, the door lists those games under{" "}
+        <strong>On this device</strong>, and the last section of this page is about them.{" "}
+        <strong>Play with friends</strong>{" "}
         goes to the server, which has to know who you are before it will show you a table: under
         this deployment that is an email address you type once and it remembers. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the

@@ -6,9 +6,10 @@
 // looking at is a lobby nobody can trust.
 
 import { describe, expect, it } from "vitest";
-import { holder, seatName, seatNames, tableWord } from "./tables";
+import { deviceWord, holder, seatName, seatNames, tableWord } from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
 /** The corpus's playing table, with the seat to move handed to the CALLER.
  *
@@ -113,5 +114,36 @@ describe("seatNames", () => {
     expect(seatName(second)).toBe("red@wire.test");
     expect(seatNames(named)).toBe("Red, open seat");
     expect(seatNames(unnamed)).toBe("red@wire.test, open seat");
+  });
+});
+
+// The door's row (M6.5c2, mock 10): which bot the game is against, then what it
+// is waiting on — in the door's words, which are a player's and not a lobby's.
+describe("deviceWord", () => {
+  /** `wire.table` is read by seat 1's holder, so the bot takes seat 0 — derived
+   *  for `seatNames`' reason (the corpus game is bot-free by construction), with
+   *  the label the build ships. */
+  const vsBot = (over: Partial<TableView> = {}): TableView => {
+    const seats = [...wire.table.seats];
+    seats[0] = { kind: "bot" };
+    return { ...wire.table, seats, bot: { label: productionBot.label, runs_here: true }, ...over };
+  };
+  const v = productionBot.label;
+
+  it("names the bot the game is played against, then what the game is waiting on", () => {
+    expect(wire.table.my_seats).toEqual([1]);
+    expect(deviceWord(vsBot())).toBe(`vs ${v} · waiting on the bot`);
+    expect(deviceWord(vsBot({ to_move: 1 }))).toBe(`vs ${v} · your move`);
+    expect(deviceWord(vsBot({ over: true, winner: 1 }))).toBe(`vs ${v} · you won`);
+    expect(deviceWord(vsBot({ over: true, winner: 0 }))).toBe(`vs ${v} · the bot won`);
+    const dealing = { status: "dealing" as const, to_move: null, over: null };
+    expect(deviceWord(vsBot({ ...dealing, chosen: [true, false] }))).toBe(`vs ${v} · choose a card`);
+    expect(deviceWord(vsBot({ ...dealing, chosen: [true, true] }))).toBe(`vs ${v} · dealing`);
+  });
+
+  // A game dealt before its table recorded which bot (spec §2.4: "no `bot` in
+  // its mirror") names none, rather than a version it cannot know.
+  it("names no version where the listing carries none", () => {
+    expect(deviceWord(vsBot({ bot: null, to_move: 1 }))).toBe("your move");
   });
 });

@@ -1,30 +1,41 @@
-// The games in THIS BROWSER, and the button that starts one (R-6.5b.8).
+// The games in THIS BROWSER, as the front door's third card (R-6.5b.8,
+// R-6.5c2.6; mock 01).
 //
-// **The first section of the first screen, and it renders before the server
-// has said anything.** Its rows come from the local dispatch's own
-// `GET /api/games?scope=mine` — the module in this tab's Worker, over this
-// browser's IndexedDB — so the guarantee R-6.5b.2 makes is architectural
-// rather than a fallback: there is no reachable API in the path that draws
-// this, and the cells prove it with every `fetch` failing.
+// **It renders before the server has said anything.** Its rows come from the
+// local dispatch's own `GET /api/games?scope=mine` — the module in this tab's
+// Worker, over this browser's IndexedDB — so the guarantee R-6.5b.2 makes is
+// architectural rather than a fallback: there is no reachable API in the path
+// that draws this, and the cells prove it with every `fetch` failing.
 //
-// **The wording is the lobby's own**, drawn by `lobbyRow`, because a game is a
-// game: "your turn", "over · you won", the name or the id, the link to
-// `#/t/<id>`. What it does NOT draw is an abandon control (P-6) — a local game
-// is abandoned on its own screen, where this tab holds its lock.
+// **A row is the game's name and what it is waiting on, with the bot it is
+// against** (`deviceWord`, off the listing's own `TableView.bot`), and the
+// whole row opens it. A row draws no abandon control (P-6) — a local game is
+// abandoned on its own screen, where this tab holds its lock — and since
+// M6.5c2 no per-row "Back up" either: the approved card has none, and one
+// game's backup stays on that game's own screen and on every "Will not open
+// here" row. The card's foot is the release and the files: whether this
+// release is ready offline (moved here from the door), Back up and Restore.
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, useIdentityMode } from "./api";
 import { unplayableIds } from "./backup";
-import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
-import { lobbyRow } from "./Lobby";
+import { BackUpEverything, Restore, Unplayable } from "./BackupControls";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
 import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
-import { navigate } from "./route";
+import { hashOf } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
+import type { ReadinessStatus } from "./swRegister";
+import { deviceWord } from "./tables";
 import type { TableView } from "./types";
 
-export function OnThisDevice() {
+export function OnThisDevice({
+  readiness,
+}: {
+  /** What the release's service worker is doing — the door's `useReadiness()`,
+   *  handed down because the line is this card's since M6.5c2 (mock 01). */
+  readiness?: ReadinessStatus;
+} = {}) {
   const [games, setGames] = useState<TableView[] | null>(null);
   /** Why there are no rows, when the reason is the HOST and not the store.
    *
@@ -86,21 +97,19 @@ export function OnThisDevice() {
   const playable = (games ?? []).filter((t) => !hidden.has(t.id));
 
   return (
-    <section className="saved on-this-device">
-      <h3>On this device</h3>
-      <button
-        type="button"
-        className="primary"
-        onClick={() => navigate({ kind: "new", local: true })}
-      >
-        Play the bot here
-      </button>
+    /* **No `.card-in` wrapper, unlike the door's other two cards**: this one has
+       no band for a wrapper to sit under, and the browser walk reads the rows as
+       `.on-this-device > ul > li` (`offline.spec.ts`'s restore cell) — a DOM
+       contract the rebuild keeps rather than moves. The section pads itself
+       (`styles.css`). */
+    <section className="raised-card door-card on-this-device">
+      <h2 className="card-cap">On this device</h2>
       {fault !== null ? (
         <p className="muted local-fault">the games on this device could not be read &mdash; {fault}</p>
       ) : games === null ? (
         <p className="muted">loading&hellip;</p>
       ) : games.length === 0 ? (
-        <p className="muted">no game on this device yet &mdash; play the bot here.</p>
+        <p className="muted">no game on this device yet &mdash; start one with New game.</p>
       ) : playable.length === 0 ? (
         /* **Games, but none this build can open.** "No game on this device yet"
            would be false — they are here and they are listed, under "Will not
@@ -108,30 +117,112 @@ export function OnThisDevice() {
            section be the answer, rather than saying there is nothing. */
         null
       ) : (
-        <ul>{playable.map((t) => lobbyRow(t, <BackUpOne id={t.id} />))}</ul>
+        <ul className="device-games">
+          {playable.map((t) => (
+            <DeviceRow key={t.id} table={t} />
+          ))}
+        </ul>
       )}
       <Outbox />
       {/* **What the browser has promised, and how to get the games off it**
           (R-6.5b2.9, spec §2.4). Both are statements ABOUT the rows above, so
-          they stand under them: a promise about storage read on another screen
-          would be a promise about nothing a player can see. */}
+          they stand under them. */}
       <StorageLine hasGames={(games?.length ?? 0) > 0} />
       <InstallOffer />
-      {/* **Offered in EVERY state above, including the fault one** (spec §2.5):
-          a module that will not load is when you most need your games out, and
-          `backupEverything` reads IndexedDB from this page rather than through
-          the Worker for exactly that reason.
+      {/* **The foot, offered in EVERY state above, including the fault one**
+          (spec §2.5): a module that will not load is when you most need your
+          games out, and `backupEverything` reads IndexedDB from this page
+          rather than through the Worker for exactly that reason.
 
-          **And it is the control the install offer points at** (spec §2.4): an
+          **And it is the block the install offer points at** (spec §2.4): an
           installed iOS app has its own storage container, so the envelope is
-          the only bridge. `InstallOffer` sits immediately above for that
-          reason, and a cell asserts the adjacency rather than the presence. */}
-      <div className="backup-controls">
-        <BackUpEverything />
+          the only bridge. `InstallOffer` sits immediately above it for that
+          reason — `backup-controls` is this block's second class, which is
+          the adjacency the cell reads. */}
+      <div className="device-foot backup-controls">
+        <Readiness status={readiness} />
+        <BackUpEverything label="Back up" />
         <Restore onDone={() => setRestored((n) => n + 1)} />
       </div>
       <Unplayable reload={restored} />
     </section>
+  );
+}
+
+/** One game on this device: its name — the ONE link — and what it waits on,
+ *  with its bot. The link's box covers the row (`styles.css`), so the whole
+ *  row opens the game while the link's name stays the game's name, which is
+ *  what the cells and the browser walk find it by. */
+function DeviceRow({ table }: { table: TableView }): React.ReactNode {
+  return (
+    <li className="device-row">
+      <a className="device-name" href={hashOf({ kind: "table", id: table.id })}>
+        {table.name ?? table.id}
+      </a>
+      <span className="device-state">
+        {deviceWord(table)}
+        {/* A no-break space, so the chevron never wraps onto a line alone. */}
+        <span aria-hidden="true">&nbsp;&rsaquo;</span>
+      </span>
+    </li>
+  );
+}
+
+/** A reason without its own final period, because the line supplies one: the
+ *  browser's registration sentence ends in a period ("…when fetching the
+ *  script.") and a worker-reported reason does not, and the door read
+ *  "script.. Try again" until this. ONE period is taken, never more. */
+function oneStop(reason: string): string {
+  return reason.endsWith(".") ? reason.slice(0, -1) : reason;
+}
+
+/** The release's own line, and the update offer (spec §4, §2.3).
+ *
+ *  **Quiet, and in the device card's foot** (M6.5c2, mock 01): it is a report
+ *  about the shell rather than a way on, so it sits beside Back up and Restore
+ *  under the games; the update is ONE line offering a reload, and nothing
+ *  switches until it is pressed. **Pressing it switches every open tab the old
+ *  worker controls, not only this one**: `skipWaiting` is registration-wide,
+ *  so the new worker takes over each of them — a tab still playing on the old
+ *  bundle included — and of all the open tabs only the one that clicked
+ *  reloads, whether or not the old worker controlled it (`applyUpdate`'s two
+ *  events). What keeps the other tabs working is the worker, not the click:
+ *  `activate` retains the previous generation, and the fetch handler answers
+ *  the old bundle's requests for files the new release no longer lists out of
+ *  it (PR #37, R-F2 and R-F5). What the click decides is WHEN.
+ *
+ *  **Where a player sees the offer is the door**, deliberately: it is the
+ *  screen between games. A waiting worker that is never clicked activates by
+ *  itself once every page using the old one has closed, which is the platform's
+ *  ordinary behaviour and is safe precisely because nobody is playing on it.
+ *
+ *  **"Ready to play offline" carries no period** (M6.5c2, the mock's status
+ *  line); the green dot before it is the stylesheet's `::before`, so the text a
+ *  cell or a walk reads stays the sentence alone. */
+function Readiness({ status }: { status?: ReadinessStatus }) {
+  if (!status || (status.readiness === "none" && !status.updateWaiting)) return null;
+  return (
+    <div className="offline-state">
+      {status.readiness === "installing" && <p className="muted">Preparing to play offline&hellip;</p>}
+      {status.readiness === "ready" && <p className="muted ready">Ready to play offline</p>}
+      {status.readiness === "failed" && (
+        <p className="muted">
+          Could not prepare to play offline &mdash;{" "}
+          {oneStop(status.reason ?? "the install did not finish")}.{" "}
+          <button type="button" className="linkish" onClick={status.retry}>
+            Try again
+          </button>
+        </p>
+      )}
+      {status.updateWaiting && (
+        <p className="muted">
+          A new version is ready.{" "}
+          <button type="button" className="linkish" onClick={status.applyUpdate}>
+            Reload to use it
+          </button>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -228,12 +319,9 @@ function InstallOffer(): React.ReactNode {
     return (
       <div className="install-offer">
         <button type="button" className="ghost install" onClick={() => void promptInstall()}>
-          Install
+          Install app
         </button>
-        <p className="muted">
-          keep this app on your device, with the games it holds. They stay in this browser&rsquo;s
-          storage.
-        </p>
+        <p className="muted">Adds Yokohama to your dock or home screen.</p>
       </div>
     );
   }

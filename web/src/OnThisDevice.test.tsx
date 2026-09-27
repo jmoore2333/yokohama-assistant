@@ -27,6 +27,8 @@ import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { resetInstallForTests } from "./install";
 import { requestPersistence, resetPersistenceRequestForTests } from "./storage";
 import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
+import type { TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
  *  this device (see `fakeWorker.ts`'s note about the one field a fixture is
@@ -56,6 +58,38 @@ describe("On this device", () => {
       currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
     ).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  // **A row says which bot the game is against, and what it is waiting on**
+  // (R-6.5c2.10, mock 10), read off the listing's own `TableView.bot` — never a
+  // parse of the record, which `db.ts` forbids. The row is DERIVED, because the
+  // corpus game is bot-free by construction: `wire.table` is read by seat 1's
+  // holder, so seat 0 becomes the bot, the turn (`to_move`) moves to the
+  // caller's seat, and `bot` carries the contract file's own label. Those three
+  // fields moved, and the id is `fakeWorker.ts`'s one permitted edit.
+  it("names each game's bot and what it is waiting on, and draws no per-row backup", async () => {
+    const seats = [...wire.table.seats];
+    seats[0] = { kind: "bot" };
+    const game: TableView = {
+      ...wire.table,
+      id: LOCAL,
+      seats,
+      to_move: 1,
+      bot: { label: productionBot.label, runs_here: true },
+    };
+    stubWorker({
+      call: (req) =>
+        req.path === "/api/games" && req.method === "GET"
+          ? { status: 200, body: { games: [game], next: null } }
+          : undefined,
+    });
+    render(<OnThisDevice />);
+    const link = await screen.findByRole("link", { name: wire.table.name! });
+    expect(link).toHaveAttribute("href", `#/t/${LOCAL}`);
+    expect(link.closest("li")).toHaveTextContent(`vs ${productionBot.label} · your move`);
+    // The approved card draws no per-row "Back up"; the whole device's is in the foot.
+    expect(within(section()).queryByRole("button", { name: "Back up" })).toBeNull();
+    expect(within(section()).getByRole("button", { name: "Back up everything" })).toHaveTextContent("Back up");
   });
 
   // **P-6**: a local game is abandoned on its own screen, where the tab holds
@@ -116,14 +150,6 @@ describe("On this device", () => {
     // is drawing has just become somebody's turn.
     await api.remove(LOCAL);
     await waitFor(() => expect(listings()).toHaveLength(2));
-  });
-
-  it("takes you to the local form, which needs no door", async () => {
-    stubWorker();
-    render(<OnThisDevice />);
-    await screen.findByRole("link", { name: LOCAL });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Play the bot here" }));
-    expect(window.location.hash).toBe("#/new/local");
   });
 
   // **A fault is a LINE and never an empty list** (spec §2.3). The two
@@ -237,7 +263,7 @@ describe("keeping the games on this device", () => {
     act(() => {
       fireEvent(window, event);
     });
-    const button = await screen.findByRole("button", { name: "Install" });
+    const button = await screen.findByRole("button", { name: "Install app" });
     await userEvent.setup().click(button);
     expect(prompt).toHaveBeenCalledTimes(1);
     // And the iOS instruction is nowhere near it: the two are alternatives.
