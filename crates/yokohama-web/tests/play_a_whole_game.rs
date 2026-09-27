@@ -162,9 +162,10 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
 /// terminate: a pair the server accepted one area at a time can still be
 /// unaffordable together, and then Confirm is refused and the same picker comes
 /// back unchanged for ever — MEASURED: seats holding `A03, A04` with one yen owed
-/// to the President in A03 and no money, refused 40,000 times. So three
-/// identical prompts in a row means the answer is to back OUT of the picker
-/// rather than to keep pushing — `wire_fixtures.rs`'s walk's rule, for its
+/// to the President in A03 and no money, refused 40,000 times. So when a
+/// prompt comes back unchanged three more times after its first — the FOURTH
+/// identical prompt in a row — the answer is to back OUT of the picker rather
+/// than to keep pushing. That is `wire_fixtures.rs`'s walk's rule, for its
 /// reason.
 #[derive(Default)]
 struct Stuck {
@@ -173,8 +174,8 @@ struct Stuck {
 }
 
 impl Stuck {
-    /// Whether `prompt` is the same prompt a third time running — the caller
-    /// then backs out with `cancel`.
+    /// Whether `prompt` is the fourth identical prompt in a row — its first
+    /// sighting and three repeats — so the caller backs out with `cancel`.
     fn again(&mut self, prompt: &Value) -> bool {
         if *prompt == self.last {
             self.repeats += 1;
