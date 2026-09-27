@@ -7698,8 +7698,13 @@ drafts and the mocks, against this branch's real tree — so it is written for t
      (retired Tasks 9–12: the shared pieces, the door and the project link, the identity states and the name step,
      the lobby) and D5 (retired Tasks 13–16: the forms and the seed check, waiting and joining, "Spectate" and the
      single-player items, the client's small items) under `.superpowers/sdd/2026-09-26-web-frontend-m6.5c2-plan/drafts/`
-     — run in `web/`-only exports over stand-ins, their e2e cells type-checked but never run; the eleven mocks in
-     `docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/`; and the known corrections: the review's P-7
+     — run in `web/`-only exports over stand-ins, their e2e cells type-checked but never run; **the visual work**:
+     the eleven approved mocks in `docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/` (committed), their HTML sources
+     and fonts in `.superpowers/sdd/2026-09-26-web-frontend-m6.5c2-plan/mocks-html/` (a copy of
+     `.superpowers/brainstorm/20585-1790461301/content/`), the brainstorm's nineteen `check-*.png` review shots in
+     `.superpowers/brainstorm/`, and **D4's eighteen rendered screens in `…/d4-look/`** — the door, the lobby, the
+     name step and states A–D at 1440 and 390 as D4's code drew them beside the mocks — plus D4's component files
+     and D5's seed crate under `…/drafter-artifacts/`; and the known corrections: the review's P-7
      (`web/e2e/the_table.spec.ts:430-433` drives the old table form; the forms task rewrites it), D4's amendment 1
      (the identity rows `nameRule.test.ts` requires are all in `identity_cases.json` now), D4's amendments 2–4 and
      D5's names as the retired plan's "Additions reconciled at assembly" listed them, and the assembly's spec-gap

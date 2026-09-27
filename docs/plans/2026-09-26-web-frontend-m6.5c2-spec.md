@@ -1304,7 +1304,15 @@ rulings and marks the dropped items. The eight drafts, the assembly's skeleton (
 assembly notes) and the review report stay on disk under the gitignored
 `.superpowers/sdd/2026-09-26-web-frontend-m6.5c2-plan/` as the raw material each cycle's plan is built from; the
 review's verification chain (per-task commits through Task 7, with its P-3 stand-in) and D1's trial are bundled into
-cycle A's ledger, `.superpowers/sdd/2026-09-27-web-frontend-m6.5c2a-plan/`. **The retired plan is removed from the
+cycle A's ledger, `.superpowers/sdd/2026-09-27-web-frontend-m6.5c2a-plan/`. **The visual work is kept for cycle B**
+(the owner, 2026-09-27, asked): the eleven approved mockups are COMMITTED (`docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/`);
+their HTML sources and the two font files live in `.superpowers/brainstorm/20585-1790461301/content/` and are copied
+beside the drafts as `mocks-html/`; the brainstorm's nineteen review shots (`check-*.png`, the iterations the owner
+approved from) stay in `.superpowers/brainstorm/`; D4's eighteen RENDERED screens — the door, the lobby, the name step
+and states A–D at 1440 and 390, read beside mocks 01, 02, 03, 05 and 11 — were rescued from the retired session's
+`/tmp` scratchpad into `d4-look/`; and the drafters' measurement and working files (D7's rows-read logs behind the
+`hasTables` memo, D4's component files, D5's seed crate, D6's and D2's exports' notes) into `drafter-artifacts/`.
+Cycle A's close names these in the handover into B (its plan, Task 9 Step 5). **The retired plan is removed from the
 tree in this revision's commit** — a plan that never executed is not a frozen record, and a 27k-line document under
 `docs/plans/` would be read as one — and stays in history at `7422083e`. The review's findings land in the cycle that
 owns the code:
