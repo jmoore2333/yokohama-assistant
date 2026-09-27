@@ -745,17 +745,19 @@ struct Walk {
     /// The PRIMARY `Api`'s calls, in order — the script a second host replays.
     script: Vec<ScriptRow>,
     /// The calls the walk made on a SECOND `Api` — one built with the lobby
-    /// chat off, one with a real archive directory, and one holding a vs-bot
-    /// table (M6.5c2).
+    /// chat off, one with a real archive directory, one holding a vs-bot
+    /// table (M6.5c2), and one holding the committed pair re-seated against
+    /// another bot (M6.5c2).
     ///
     /// **Kept rather than dropped, so the classification can be derived.** A
     /// browser host has neither of the first two deployments, and no script
-    /// replays the third's vs-bot table, so the payloads these produced are
-    /// third-column files (spec §5) by construction. Holding them
-    /// is what lets [`corpus`] tell "answered by a host this script does not
-    /// describe" apart from "answered by nothing at all" — the second is a
-    /// payload that slipped into the walk from a construction, and it is a hard
-    /// failure rather than a quiet widening of the third column.
+    /// replays the third's vs-bot table or the fourth's re-seated pair, so the
+    /// payloads these produced are third-column files (spec §5) by
+    /// construction. Holding them is what lets [`corpus`] tell "answered by a
+    /// host this script does not describe" apart from "answered by nothing at
+    /// all" — the second is a payload that slipped into the walk from a
+    /// construction, and it is a hard failure rather than a quiet widening of
+    /// the third column.
     aside: Vec<ScriptRow>,
     /// The archive `Api`'s calls, in order, KEPT APART as well (M6.5c, spec
     /// §5.3) — the rows of `web/src/wire-script/archive-walk.json`, which a
@@ -1780,15 +1782,87 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     );
     out.push(("table_bot".to_string(), table_bot));
 
+    // **A game played against a bot this build does not run** (M6.5c2,
+    // R-6.5c2.10), from an `Api` of its own: the committed browser-played pair
+    // with its bot seat renamed to `v2-padded` — cut at 300 events (not over:
+    // every game route refuses it, and its lobby row says so) and whole
+    // (finished: it opens, and `why` names its bot). The three payloads are the
+    // client's only sources for the refusal it branches on, the lobby row that
+    // does not run here, and `why`'s thirteenth refusal shape.
+    let foreign = Api::new();
+    for (id, cut) in [("wire-foreign", Some(300)), ("wire-foreign-over", None)] {
+        let (record, table) = foreign_pair(id, "v2-padded", cut);
+        let games = &foreign.state.games;
+        games.load_document(yokohama_web::store::Doc::Record, id, &record).expect("a fresh store");
+        games.load_document(yokohama_web::store::Doc::Table, id, &table).expect("a fresh store");
+    }
+    let (status, foreign_bot_409) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{foreign_bot_409}");
+    assert_eq!(foreign_bot_409["foreign_bot"]["played"], "V2", "{foreign_bot_409}");
+    out.push(("foreign_bot_409".to_string(), foreign_bot_409));
+    let (status, table_foreign) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign/table", None).await;
+    assert_eq!(status, StatusCode::OK, "{table_foreign}");
+    assert_eq!(table_foreign["bot"]["runs_here"], false, "premise: the row says this build does not run it");
+    out.push(("table_foreign".to_string(), table_foreign));
+    let (status, why_foreign) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign-over/why", None).await;
+    assert_eq!(status, StatusCode::OK, "{why_foreign}");
+    assert_eq!(why_foreign["refusal"]["kind"], "foreign_bot", "{why_foreign}");
+    out.push(("why_foreign".to_string(), why_foreign));
+
     let (archived, archive_script) = archive_payloads(api).await;
     out.extend(archived);
 
     let mut aside = off.script.take();
     aside.extend(bots.script.take());
+    aside.extend(foreign.script.take());
     aside.extend(archive_script.iter().cloned());
     (out, aside, archive_script)
 }
 
+/// The committed browser-played pair, which carries a seed and therefore lives
+/// OUTSIDE the corpus (`tests/browser_played_pin.rs`'s note); nothing it holds
+/// but what a payload serves reaches `web/src/wire/`.
+const PAIR_RECORD: &str = include_str!("fixtures/browser-played-2p.json");
+const PAIR_TABLE: &str = include_str!("fixtures/browser-played-2p.table.json");
+/// The one address a local game is played by, and so the pair's seat 0.
+const PAIR_PLAYER: &str = "local@browser";
+
+/// The pair re-seated under `id` as a game played against ANOTHER bot:
+/// seat 1's recorded controller renamed, its version and knobs kept, the
+/// table's mirror naming the same bot; with `cut`, the first `cut` events only,
+/// re-stamped, and the mirror moved with them (not over). COPIED from the
+/// layer's `games::test_support::foreign_pair`, a test-only helper of another
+/// crate target, which cannot be imported (the receipt cells' ruling R-06).
+fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, String) {
+    use yokohama_core::{state_at, GameRecord};
+    let mut record: GameRecord = serde_json::from_str(PAIR_RECORD).expect("the pair's record");
+    let mut table: yokohama_web::table::TableDoc = serde_json::from_str(PAIR_TABLE).expect("the pair's table");
+    table.id = id.to_string();
+    let seat = &mut record.run.as_mut().expect("the pair's run provenance").seats[1];
+    seat.controller = controller.to_string();
+    let bot = yokohama_web::bots::BotDescriptor {
+        controller: seat.controller.clone(),
+        version: seat.version,
+        params: seat.params.clone(),
+    };
+    let mirror = table.turn.as_mut().expect("the pair's mirror");
+    mirror.bot = Some(bot);
+    if let Some(cut) = cut {
+        record.events.truncate(cut);
+        let state = state_at(&record, cut, &Rules::standard()).expect("the cut replays");
+        record.stamp_terminal_digest(&state);
+        *mirror = yokohama_web::table::TurnMirror {
+            to_move: state.current_player.0,
+            over: false,
+            winner: None,
+            bot: mirror.bot.take(),
+        };
+    }
+    (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+}
 /// The vs-bot table the `table_bot` fixture is read from: the walker at seat 0,
 /// the bot at seat 1, at the corpus seed.
 fn bot_table_body() -> Value {

@@ -281,7 +281,7 @@ impl FromRequestParts<Arc<AppState>> for Identity {
             .map_err(|message| ApiError {
                 status: StatusCode::UNAUTHORIZED,
                 message,
-                table_status: None,
+                table_status: None, foreign_bot: None,
             })
     }
 }

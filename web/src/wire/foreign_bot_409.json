@@ -1,0 +1,7 @@
+{
+  "error": "This game was played against V2. This server now runs V4 and can't continue it.",
+  "foreign_bot": {
+    "played": "V2",
+    "runs": "V4"
+  }
+}

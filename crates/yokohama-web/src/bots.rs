@@ -156,6 +156,29 @@ pub(crate) fn seat_bots(record: &GameRecord) -> Vec<SeatBot> {
     recorded(record).into_iter().map(|(seat, d)| SeatBot { seat, label: label(&d) }).collect()
 }
 
+/// The FOREIGN bot seats of `record` (M6.5c2, R-6.5c2.10): every seat whose
+/// recorded `(controller, version, params)` is not [`production`]'s. Empty for
+/// an all-human game and for every game this build dealt.
+pub fn foreign(record: &GameRecord) -> Vec<(u8, BotDescriptor)> {
+    let running = production();
+    recorded(record).into_iter().filter(|(_, d)| *d != running).collect()
+}
+
+/// The pair a foreign-bot refusal names beside its sentence
+/// (`"foreign_bot": {"played", "runs"}`): the label of the bot the game was
+/// played against, and of the one this build runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForeignBot {
+    pub played: String,
+    pub runs: String,
+}
+
+/// The sentence a not-over game against a foreign bot is refused with — the
+/// layer's own words (spec §2.4), not the CLI's.
+pub fn cannot_continue(played: &str, runs: &str) -> String {
+    format!("This game was played against {played}. This server now runs {runs} and can't continue it.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -49,7 +49,7 @@ pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
     let user = match identity_of(user) {
         Ok(user) => user,
         Err(sentence) => {
-            return host_refusal(ApiError { status: StatusCode::UNAUTHORIZED, message: sentence, table_status: None })
+            return host_refusal(ApiError { status: StatusCode::UNAUTHORIZED, message: sentence, table_status: None, foreign_bot: None })
         }
     };
     let q = match api::parse_query::<EventsQuery>(query) {

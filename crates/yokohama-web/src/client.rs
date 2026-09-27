@@ -276,21 +276,57 @@ pub fn stand_in(state: &GameState) -> PlayerId {
 /// flag — one operator's toggle at one terminal, which hides every hand at once
 /// so a person can hand the keyboard over. A per-seat payload has no use for
 /// it: each seat already sees only its own, always, and there is nobody to hand
-/// the screen to. `is_bot` is still the REPL's own reconciled answer
-/// ([`Repl::bots`]), never re-derived here.
+/// the screen to.
+///
+/// **`is_bot` is the RECORD's answer since M6.5c2** (R-6.5c2.10; spec §2.4's
+/// fourth mask), and this re-rules the sentence that stood here — "`is_bot` is
+/// still the REPL's own reconciled answer ([`Repl::bots`]), never re-derived
+/// here" — by name. The record's `run.seats` is the source `ClientState.bots`
+/// reads too, so the panel's badge and the payload's labels cannot disagree.
+/// They differ from the `Repl`'s answer in exactly one place: a FINISHED game
+/// played against a bot this build does not run, whose seat `Repl::new`
+/// (`BotSeats::from_provenance`) has turned into a human one inside the
+/// resident `Repl`, and whose Players panel must still say a bot played it.
+/// Everywhere else the two agree, because every bot the web deals is
+/// `PROVISIONAL_DEFAULT_BOT`, which `from_provenance` restores.
 pub fn facts_for(repl: &Repl, viewer: Viewer) -> Vec<SeatFacts> {
+    let bots: Vec<u8> =
+        crate::bots::recorded(repl.session.record()).into_iter().map(|(seat, _)| seat).collect();
     repl.session
         .state()
         .players
         .iter()
         .map(|p| SeatFacts {
-            is_bot: repl.bots().is_bot(p.id),
+            is_bot: bots.contains(&p.id.0),
             hand_hidden: match viewer {
                 Viewer::Seat(s) => p.id != s,
                 Viewer::Spectator => true,
             },
         })
         .collect()
+}
+
+/// `warnings` less the line `Repl::new` added for each seat it turned from a
+/// FOREIGN bot into a human (M6.5c2, R-6.5c2.10; spec §2.4's first mask) —
+/// `warning: seat N was played by controller "…", … it resumes as a HUMAN
+/// seat, so you are now playing it`, which on the web is false: nothing here
+/// converts a bot's seat, and nobody is now playing it.
+///
+/// **By the CLI's own prefix** (`bot.rs`, `BotSeats::from_provenance`'s two
+/// conversion arms), per foreign seat and naming its controller, so no other
+/// warning can match. `Session::load_warnings` is a `Vec<String>` and a typed
+/// alternative would need a CLI change, so the cell that pins this asserts the
+/// WHOLE array of a finished foreign game — empty — and fails loudly the day
+/// the CLI's wording moves, rather than passing by matching the prefix itself.
+pub(crate) fn without_foreign_conversion(
+    warnings: Vec<String>,
+    record: &yokohama_core::GameRecord,
+) -> Vec<String> {
+    let converted: Vec<String> = crate::bots::foreign(record)
+        .into_iter()
+        .map(|(seat, d)| format!("warning: seat {seat} was played by controller \"{}\"", d.controller))
+        .collect();
+    warnings.into_iter().filter(|w| !converted.iter().any(|p| w.starts_with(p.as_str()))).collect()
 }
 
 /// The `PlayerId` the CLI's builders are handed for this viewer.
@@ -499,7 +535,7 @@ impl ClientState {
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
-            warnings: session.load_warnings.clone(),
+            warnings: without_foreign_conversion(session.load_warnings.clone(), session.record()),
             events: session.record().events.len(),
             bots: crate::bots::seat_bots(session.record()),
         }

@@ -262,20 +262,24 @@ impl Reply {
 }
 
 /// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
-/// `{"error": …}`, with `"status"` beside it when `table_status` is set.
+/// `{"error": …}`, with `"status"` beside it when `table_status` is set, and
+/// `"foreign_bot"` beside it when `foreign_bot` is (M6.5c2).
 ///
 /// The layer's own builder is `error_response` in `crates/yokohama-web/src/api.rs`
 /// — the body `IntoResponse for ApiError` writes in `crates/yokohama-web/src/lib.rs`
 /// — and it is `pub(crate)`. Each host is its own host, so this one restates the
 /// shape rather than widen the layer for its convenience, as it restates the
-/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins both arms equal to
+/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins all three arms equal to
 /// `dispatch`'s body for the same refusal, so a drift is a red cell.
 pub(crate) fn error_body(e: &ApiError) -> String {
-    match e.table_status {
-        Some(status) => serde_json::json!({ "error": e.message, "status": status }),
-        None => serde_json::json!({ "error": e.message }),
+    let mut body = serde_json::json!({ "error": e.message });
+    if let Some(status) = e.table_status {
+        body["status"] = status.into();
     }
-    .to_string()
+    if let Some(pair) = &e.foreign_bot {
+        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+    }
+    body.to_string()
 }
 
 /// SHA-256 of `text`'s bytes, in lowercase hex: the one digest this host takes
@@ -1087,9 +1091,11 @@ mod tests {
         assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0}"#);
     }
 
-    /// The restated error body is `dispatch`'s own, for the same refusal — both
-    /// arms of it, the `status` arm through a constructed `ApiError` compared with
-    /// the layer's dealing 409.
+    /// The restated error body is `dispatch`'s own, for the same refusal — all
+    /// three arms of it: the `status` arm through a constructed `ApiError`
+    /// compared with the layer's dealing 409, and the `foreign_bot` arm (M6.5c2)
+    /// through the events route's own refusal of a game not over against a bot
+    /// this build does not run.
     #[test]
     fn a_refusal_body_is_the_one_dispatch_writes() {
         let _s = serial();
@@ -1102,8 +1108,46 @@ mod tests {
         let d = dispatch_inner(Some("red@t.test"), "GET", "/api/games/dealt", "", None, b"");
         assert_eq!(d.status, 409, "premise: a dealing table's session route is the 409 that carries `status`");
         let message = serde_json::from_str::<serde_json::Value>(&d.body).unwrap()["error"].as_str().unwrap().to_string();
-        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing") });
+        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing"), foreign_bot: None });
         assert_eq!(restated, d.body);
+
+        // M6.5c2: the foreign-bot 409, whose pair rides beside the sentence —
+        // the events route's body is the restatement's, dispatch's the layer's.
+        let (record, table) = foreign_unfinished("foreign");
+        load_inner("record", "foreign", &record).unwrap();
+        load_inner("table", "foreign", &table).unwrap();
+        let d = dispatch_inner(Some("local@browser"), "GET", "/api/games/foreign", "", None, b"");
+        assert_eq!(d.status, 409, "premise: a game not over against a foreign bot — {}", d.body);
+        assert!(d.body.contains(r#""foreign_bot":{"played":"V2","#), "premise: the pair rides the body — {}", d.body);
+        let e = events_inner("foreign", Some("local@browser"), "");
+        assert_eq!((e.status, e.body.as_str()), (d.status, d.body.as_str()), "the restated body, whole");
+    }
+
+    /// The committed browser-played pair as a game NOT over against a bot this
+    /// build does not run: seat 1 renamed `v2-padded`, cut at 300 events with
+    /// the bot to move, re-stamped, and the table's mirror moved with it. After
+    /// the layer's `games::test_support::foreign_pair`, less the mirror's `bot`
+    /// (ruling R-06: a test-only helper of another crate cannot be imported).
+    fn foreign_unfinished(id: &str) -> (String, String) {
+        use yokohama_core::{state_at, GameRecord};
+        let pair = |file: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yokohama-web/tests/fixtures").join(file);
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        };
+        let mut record: GameRecord = serde_json::from_str(&pair("browser-played-2p.json")).unwrap();
+        let mut table: yokohama_web::table::TableDoc = serde_json::from_str(&pair("browser-played-2p.table.json")).unwrap();
+        record.run.as_mut().unwrap().seats[1].controller = "v2-padded".to_string();
+        record.events.truncate(300);
+        let state = state_at(&record, 300, &yokohama_core::Rules::standard()).unwrap();
+        record.stamp_terminal_digest(&state);
+        table.id = id.to_string();
+        table.turn = Some(yokohama_web::table::TurnMirror {
+            to_move: state.current_player.0,
+            over: false,
+            winner: None,
+            bot: None,
+        });
+        (serde_json::to_string(&record).unwrap(), serde_json::to_string(&table).unwrap())
     }
 
     /// `events`' 401 is `dispatch`'s own for the same caller, byte for byte —

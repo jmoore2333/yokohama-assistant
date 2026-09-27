@@ -67,6 +67,8 @@ import type {
   DecisionModel,
   Breakdown,
   Explanation,
+  ForeignBot,
+  ForeignBotErrorBody,
   FrameModel,
   Health,
   HistoricalFrame,
@@ -110,6 +112,9 @@ import siteSpaceWords from "./site_space_words.json";
 import identityCases from "./identity_cases.json";
 import productionBot from "./production_bot.json";
 import tableBot from "./table_bot.json";
+import foreignBot409 from "./foreign_bot_409.json";
+import tableForeign from "./table_foreign.json";
+import whyForeign from "./why_foreign.json";
 import error from "./error.json";
 import events from "./events.json";
 import eventsDealing from "./events_dealing.json";
@@ -359,6 +364,18 @@ const _seatBots: Widen<SeatBot>[] = watching.bots;
 // The contract the door imports: not a route's payload, and typed here so the
 // screens that read it read a checked shape.
 const _productionBot: Widen<ProductionBot> = productionBot;
+// ---- M6.5c2: the foreign-bot rule ---------------------------------------------
+//
+// The 409 a game not over against another bot answers on every game route —
+// the one refusal besides the dealing and open ones that carries a second key —
+// the lobby row that says this build does not run its bot, and `why`'s
+// THIRTEENTH refusal shape, the layer's own (`explain::Why::foreign`), which
+// `why_refusals.json` does not carry because it is not the CLI's.
+const _foreignBot409: Widen<ForeignBotErrorBody> = foreignBot409;
+const _tableForeign: Widen<TableView> = tableForeign;
+const _tableForeignBot: Widen<TableBot> = tableForeign.bot;
+const _whyForeign: Widen<WhyResponse> = whyForeign;
+const _whyForeignRefusal: Widen<RefusalRow> = whyForeign.refusal;
 
 const _health: Widen<Health> = health;
 // Both sides of `/api/me`: signed in, and the payload a caller with no identity
@@ -531,6 +548,7 @@ void [
   _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
   _chat400Long, _chat400SeatedName, _chat403NotSeated, _chat403Locked, _houseChatOff404,
   _tableBot, _tableBotBot, _seatBots, _productionBot,
+  _foreignBot409, _tableForeign, _tableForeignBot, _whyForeign, _whyForeignRefusal,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -626,10 +644,13 @@ const TABLE = [
 const TABLE_BOT = ["label", "runs_here"] as const;
 const SEAT_BOT = ["seat", "label"] as const;
 const PRODUCTION_BOT = ["identity", "label"] as const;
+const FOREIGN_BOT_ERROR = ["error", "foreign_bot"] as const;
+const FOREIGN_BOT = ["played", "runs"] as const;
 const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
 const GAMES_LIST = ["games", "next"] as const;
-// The open and dealing 409s are the ONLY refusals that carry a second key, and
-// the only ones this client branches on rather than displays.
+// The open and dealing 409s carry a second key, `status`, and the foreign-bot
+// 409 (M6.5c2) carries `foreign_bot`: the only refusals that do, and the only
+// ones this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
@@ -726,12 +747,14 @@ const _aw: KeysOf<Extract<ChatAuthor, { kind: "watcher" }>, typeof CHAT_AUTHOR_W
 const _tb: KeysOf<TableBot, typeof TABLE_BOT> = TABLE_BOT;
 const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
+const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
+const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
-      _cg, _cm, _as, _aw, _tb, _sb, _pb];
+      _cg, _cm, _as, _aw, _tb, _sb, _pb, _fe, _fb];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -783,6 +806,8 @@ export const KEYS = {
   tableBot: TABLE_BOT,
   seatBot: SEAT_BOT,
   productionBot: PRODUCTION_BOT,
+  foreignBotError: FOREIGN_BOT_ERROR,
+  foreignBot: FOREIGN_BOT,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -908,6 +933,10 @@ export const wire = {
   // ---- M6.5c2: the bot's label -------------------------------------------
   tableBot: as<TableView>(tableBot),
   productionBot: as<ProductionBot>(productionBot),
+  // ---- M6.5c2: the foreign-bot rule -------------------------------------
+  foreignBot409: as<ForeignBotErrorBody>(foreignBot409),
+  tableForeign: as<TableView>(tableForeign),
+  whyForeign: as<WhyResponse>(whyForeign),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.

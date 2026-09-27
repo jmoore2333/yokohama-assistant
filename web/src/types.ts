@@ -644,6 +644,21 @@ export interface DealingErrorBody extends ApiErrorBody {
   status: TableStatus;
 }
 
+/** The two labels a foreign-bot refusal names (M6.5c2, R-6.5c2.10): the bot
+ *  the game was played against, and the one this server runs. */
+export interface ForeignBot {
+  played: string;
+  runs: string;
+}
+
+/** The 409 every game route answers for a game NOT over whose recorded bot
+ *  this build does not run — the sentence, and the pair beside it that the
+ *  game screen branches on rather than displaying a banner. A FINISHED game
+ *  against another bot opens as any finished game does. */
+export interface ForeignBotErrorBody extends ApiErrorBody {
+  foreign_bot: ForeignBot;
+}
+
 // ---- the read-only surfaces ---------------------------------------------
 
 export interface PortSlotModel {

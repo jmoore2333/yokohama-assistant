@@ -57,6 +57,12 @@ pub enum GameError {
     BadRequest(String),
     /// This process failed at something the caller asked for correctly.
     Server(String),
+    /// A game NOT OVER whose recorded bot this build does not run (M6.5c2,
+    /// R-6.5c2.10): the labels of the bot it was played against and of the one
+    /// this build deals. Typed rather than a `Conflict` for `Dealing`'s reason
+    /// — a client BRANCHES on it, drawing the reason rather than a banner — so
+    /// the pair rides beside the sentence as `"foreign_bot"`.
+    ForeignBot { played: String, runs: String },
 }
 
 impl std::fmt::Display for GameError {
@@ -70,6 +76,7 @@ impl std::fmt::Display for GameError {
             Self::Dealing => f.write_str(DEALING_SENTENCE),
             Self::Open => f.write_str(OPEN_SENTENCE),
             Self::Playing => f.write_str(PLAYING_SENTENCE),
+            Self::ForeignBot { played, runs } => f.write_str(&crate::bots::cannot_continue(played, runs)),
         }
     }
 }
@@ -428,8 +435,25 @@ impl Games {
         self.written.lock().expect("games lock").insert(id.to_string(), version);
         let record: GameRecord =
             serde_json::from_str(&json).map_err(|e| GameError::Server(e.to_string()))?;
+        // **The foreign-bot rule's one site** (M6.5c2, R-6.5c2.10), on every
+        // host, for every rebuild. The descriptors are compared off the parsed
+        // record; "not over" is a fact about the replayed state, so it is read
+        // off the session — and the refusal returns BEFORE `Repl::new`, whose
+        // `BotSeats::from_provenance` is what would turn the foreign seat into
+        // a human one, and before `bring_alive`, which would let a foreign bot
+        // this CLI can still run move again. No `Repl` is built, so a converted
+        // seat never exists and nothing is persisted.
+        let foreign = crate::bots::foreign(&record).into_iter().next();
         let session =
             Session::from_record(record, (*self.rules).clone()).map_err(GameError::Server)?;
+        if let Some((_, played)) = &foreign {
+            if !session.is_over() {
+                return Err(GameError::ForeignBot {
+                    played: crate::bots::label(played),
+                    runs: crate::bots::label(&crate::bots::production()),
+                });
+            }
+        }
         let mut repl = Repl::new(session);
         // A game that comes back with a bot to move is owed that move — the
         // same thing `main.rs` does through `opening()` when a save is resumed.
@@ -984,6 +1008,81 @@ mod tests {
         assert!(stored["turn"].get("bot").is_none(), "an all-human table's document spells no `bot`: {text}");
     }
 
+    /// **The foreign-bot rule, at its one site** (M6.5c2, R-6.5c2.10; review
+    /// M2): a game NOT over whose recorded bot is not the one this build deals
+    /// refuses with the two labels — and refuses BEFORE a `Repl` exists.
+    ///
+    /// The foreign bot is `lookahead-v1`, which this CLI CAN run, at a cut where
+    /// it is to move: a rebuild that got as far as `Repl::new` would pump it and
+    /// persist the move. So the untouched write count is the measurement — and
+    /// the same cut under THIS build's bot, which does pump and persist, is what
+    /// says the count could have moved.
+    #[test]
+    fn a_game_not_over_against_a_bot_this_build_does_not_run_refuses_before_any_rebuild() {
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (record, table) = foreign_pair("lookahead-v1", Some(BOT_TO_MOVE_AT));
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let loaded = store.writes();
+        match games.handle(PLAYED_ID) {
+            Err(GameError::ForeignBot { played, runs }) => {
+                assert_eq!(played, "V2 lookahead", "the recorded bot's label");
+                assert_eq!(runs, crate::bots::label(&crate::bots::production()), "this build's");
+            }
+            other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a handle")),
+        }
+        assert_eq!(store.writes(), loaded, "nothing persisted: no `Repl`, so no pump");
+        assert!(games.live.lock().unwrap().is_empty(), "and nothing is resident");
+
+        // The anti-vacuity: the SAME cut under this build's own bot rebuilds,
+        // pumps the bot's owed move and persists it.
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (own, table) = foreign_pair(&crate::bots::production().controller, Some(BOT_TO_MOVE_AT));
+        games.load_document(Doc::Record, PLAYED_ID, &own).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let loaded = store.writes();
+        let handle = games.handle(PLAYED_ID).expect("this build's own bot opens");
+        assert!(handle.lock().unwrap().session.record().events.len() > BOT_TO_MOVE_AT, "the bot moved");
+        assert!(store.writes() > loaded, "premise: a rebuild at this cut persists");
+    }
+
+    /// **A finished game against a foreign bot opens** (review M2): it has no
+    /// bot left to move, so the rule is about resuming and not about reading.
+    #[test]
+    fn a_finished_game_against_a_foreign_bot_opens() {
+        let games = games();
+        let (record, table) = foreign_pair("v2-padded", None);
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let handle = games.handle(PLAYED_ID).expect("a finished game opens");
+        assert!(handle.lock().unwrap().session.is_over());
+    }
+
+    /// **(Review Focus 4) R2-o1: an owed game-over upload that was undone and
+    /// then meets a new bot is bounded, not stranded.** The Worker's retry
+    /// reaches the layer as `archive_over_retry`, which answers the foreign-bot
+    /// refusal (the shell's backoff retries it: `settleUpload`'s `parseStamp`
+    /// throws on an error body), and the creator's Abandon — which reads the
+    /// record's event count and never rebuilds — archives the game and clears
+    /// it.
+    #[test]
+    fn an_unfinished_foreign_game_is_refused_by_the_retry_and_cleared_by_abandon() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let (record, table) = foreign_pair("v2-padded", Some(BOT_TO_MOVE_AT));
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        assert!(matches!(games.archive_over_retry(PLAYED_ID), Err(GameError::ForeignBot { .. })));
+        assert!(archive.puts.lock().unwrap().is_empty(), "the retry put nothing");
+        games.delete(PLAYED_ID, &who("local@browser")).expect("the creator's Abandon");
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1, "archived once");
+        assert_eq!(puts[0].why, crate::archive::Why::Abandoned, "the mirror says not over");
+        assert_eq!(puts[0].record, record, "the stored bytes");
+        assert!(games.read_table(PLAYED_ID).unwrap().is_none(), "and gone");
+    }
     /// A record this server writes carries the terminal digest, so the
     /// engine's own provenance refusal is ARMED on a web game exactly as it is
     /// on a CLI save.
@@ -2187,6 +2286,52 @@ pub(crate) mod test_support {
         }
     }
 
+    /// The committed browser-played pair (595 events, a person at seat 0 and
+    /// the V4 bot at seat 1), as `browser_played_pin.rs` holds it.
+    pub(crate) const PLAYED_RECORD: &str = include_str!("../tests/fixtures/browser-played-2p.json");
+    pub(crate) const PLAYED_TABLE: &str = include_str!("../tests/fixtures/browser-played-2p.table.json");
+    /// The pair's own id, under which every cell stores it.
+    pub(crate) const PLAYED_ID: &str = "local-242a5429453c593c";
+    /// The event count at which [`foreign_pair`]'s cut leaves the BOT (seat 1)
+    /// to move in a game not yet over — measured, and asserted as a premise by
+    /// the cell that reads it.
+    pub(crate) const BOT_TO_MOVE_AT: usize = 300;
+
+    /// The committed pair re-seated as a game played against ANOTHER bot
+    /// (M6.5c2, R-6.5c2.10): seat 1's recorded controller renamed to
+    /// `controller`, its version and knobs kept — `Contestant::from_parts`
+    /// reads `lookahead-v1`'s or a named identity's three knobs from them and
+    /// accepts the identity keys — with the table's mirror naming the same
+    /// bot, as a persist under the build that dealt it would have written.
+    /// With `cut`, only the first `cut` events, re-stamped for the state they
+    /// fold to, and the mirror moved with them: not over, and that state's
+    /// seat to move. Answers `(record, table)` as JSON.
+    pub(crate) fn foreign_pair(controller: &str, cut: Option<usize>) -> (String, String) {
+        use yokohama_core::{state_at, GameRecord};
+        let mut record: GameRecord = serde_json::from_str(PLAYED_RECORD).expect("the pair's record");
+        let mut table: crate::table::TableDoc = serde_json::from_str(PLAYED_TABLE).expect("the pair's table");
+        let seat = &mut record.run.as_mut().expect("the pair's run provenance").seats[1];
+        seat.controller = controller.to_string();
+        let bot = crate::bots::BotDescriptor {
+            controller: seat.controller.clone(),
+            version: seat.version,
+            params: seat.params.clone(),
+        };
+        let mirror = table.turn.as_mut().expect("the pair's mirror");
+        mirror.bot = Some(bot);
+        if let Some(cut) = cut {
+            record.events.truncate(cut);
+            let state = state_at(&record, cut, &Rules::standard()).expect("the cut replays");
+            record.stamp_terminal_digest(&state);
+            *mirror = crate::table::TurnMirror {
+                to_move: state.current_player.0,
+                over: false,
+                winner: None,
+                bot: mirror.bot.take(),
+            };
+        }
+        (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+    }
     /// The record `id` is stored as, as bytes.
     ///
     /// `expect` twice, and the two are different questions: the store failed,

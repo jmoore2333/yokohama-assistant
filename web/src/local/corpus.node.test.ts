@@ -139,8 +139,10 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   archive directory. The module is neither.
  * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
  *   route's payload.
- * - `table_bot` comes from one more `Api` of the emitter's (M6.5c2), holding a
- *   vs-bot table, which no script replays.
+ * - `table_bot`, `foreign_bot_409`, `table_foreign` and `why_foreign` come from
+ *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
+ *   holding the committed pair re-seated against another bot — which no script
+ *   replays.
  */
 const NOT_SERVED = [
   "art_manifest",
@@ -166,6 +168,9 @@ const NOT_SERVED = [
   "archive_400_table",
   "production_bot",
   "table_bot",
+  "foreign_bot_409",
+  "table_foreign",
+  "why_foreign",
 ];
 
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`, which the walk's own clock reads. */

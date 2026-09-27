@@ -119,23 +119,30 @@ use crate::store::{FsStore, MemStore, Store};
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
-    /// The ONE refusal a client branches on rather than displays (M6.1): a
-    /// table that is still dealing. It rides beside the sentence as `"status"`,
-    /// so a client that opened a game by id knows to draw the setup screen
-    /// instead of an error banner.
+    /// A refusal a client branches on rather than displays (M6.1): a table that
+    /// is still open, dealing, or already playing. It rides beside the sentence
+    /// as `"status"`, so a client that opened a game by id knows to draw the
+    /// setup screen instead of an error banner.
     ///
     /// **`&'static str`, and absent on every other refusal.** A field that a
     /// handler could fill with anything would be a second, untyped error
-    /// channel; the only value that reaches it is [`games::GameError::Dealing`]'s.
+    /// channel; the only values that reach it are [`games::GameError::Dealing`]'s,
+    /// `Open`'s and `Playing`'s.
     pub table_status: Option<&'static str>,
+    /// The other refusal a client branches on (M6.5c2, R-6.5c2.10): a game not
+    /// over whose recorded bot this build does not run, answered with the two
+    /// labels beside the sentence as `"foreign_bot": {"played", "runs"}`.
+    /// Typed for `table_status`'s reason, and absent on every other refusal:
+    /// the only value that reaches it is [`games::GameError::ForeignBot`]'s.
+    pub foreign_bot: Option<bots::ForeignBot>,
 }
 
 impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None }
+        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None, foreign_bot: None }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None }
+        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None, foreign_bot: None }
     }
     /// This process failed at something the caller asked for correctly.
     ///
@@ -147,7 +154,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }
     }
     /// A session route asked of a table that has not finished dealing.
@@ -155,7 +162,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::DEALING_SENTENCE.to_string(),
-            table_status: Some("dealing"),
+            table_status: Some("dealing"), foreign_bot: None,
         }
     }
     /// A session route asked of a table that is still filling its seats (M6.2).
@@ -163,7 +170,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::OPEN_SENTENCE.to_string(),
-            table_status: Some("open"),
+            table_status: Some("open"), foreign_bot: None,
         }
     }
     /// A table-phase route asked of a table whose game has started (M6.2).
@@ -171,7 +178,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::PLAYING_SENTENCE.to_string(),
-            table_status: Some("playing"),
+            table_status: Some("playing"), foreign_bot: None,
         }
     }
 }
@@ -192,11 +199,17 @@ impl From<games::GameError> for ApiError {
             E::Open => Self::open(),
             E::Playing => Self::playing(),
             E::Forbidden(m) => {
-                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None }
+                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None, foreign_bot: None }
             }
-            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None },
+            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
+            E::ForeignBot { played, runs } => Self {
+                status: StatusCode::CONFLICT,
+                message: bots::cannot_continue(&played, &runs),
+                table_status: None,
+                foreign_bot: Some(bots::ForeignBot { played, runs }),
+            },
         }
     }
 }
@@ -204,10 +217,13 @@ impl From<games::GameError> for ApiError {
 #[cfg(feature = "server")]
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = match self.table_status {
-            Some(status) => serde_json::json!({ "error": self.message, "status": status }),
-            None => serde_json::json!({ "error": self.message }),
-        };
+        let mut body = serde_json::json!({ "error": self.message });
+        if let Some(status) = self.table_status {
+            body["status"] = status.into();
+        }
+        if let Some(pair) = &self.foreign_bot {
+            body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+        }
         (self.status, Json(body)).into_response()
     }
 }

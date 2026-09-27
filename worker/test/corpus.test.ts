@@ -53,22 +53,27 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   are `archive-walk.json`'s, which this host replays.)
  * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
  *   route's payload.
- * - `table_bot` comes from one more `Api` of the emitter's (M6.5c2), holding a
- *   vs-bot table, which no script replays.
+ * - `table_bot`, `foreign_bot_409`, `table_foreign` and `why_foreign` come from
+ *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
+ *   holding the committed pair re-seated against another bot — which no script
+ *   replays.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
  */
 const THIRD_COLUMN = [
   "explanation_terminal",
+  "foreign_bot_409",
   "house_chat_off_404",
   "identity_cases",
   "locked",
   "production_bot",
   "site_space_words",
   "table_bot",
+  "table_foreign",
   "watching",
   "why",
+  "why_foreign",
   "why_refusals",
   "why_refused",
 ];

@@ -176,6 +176,14 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["table_bot.bot", wire.tableBot.bot, KEYS.tableBot],
     ["watching.bots", wire.watching.bots[0], KEYS.seatBot],
     ["production_bot", wire.productionBot, KEYS.productionBot],
+    // M6.5c2: the foreign-bot 409 and its pair, the row that does not run
+    // here, and `why`'s thirteenth refusal.
+    ["foreign_bot_409", wire.foreignBot409, KEYS.foreignBotError],
+    ["foreign_bot_409.foreign_bot", wire.foreignBot409.foreign_bot, KEYS.foreignBot],
+    ["table_foreign", wire.tableForeign, KEYS.table],
+    ["table_foreign.bot", wire.tableForeign.bot, KEYS.tableBot],
+    ["why_foreign", wire.whyForeign, KEYS.whyResponse],
+    ["why_foreign.refusal", wire.whyForeign.refusal, KEYS.refusalRow],
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
   });
@@ -200,6 +208,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     for (const m of [wire.chatPost, wire.chatPostWatcher]) {
       expect(keys(m)).toEqual(listed(KEYS.chatMessage));
     }
+  });
+
+  // **`why`'s thirteenth refusal is the LAYER's** (M6.5c2, review R2-m5): a
+  // kind of its own, outside the CLI's twelve that `why_refusals.json` carries
+  // whole — and the lobby row and the 409 name the same bot.
+  it("the foreign-bot refusal is a kind of its own, and the row and the 409 agree", () => {
+    expect(wire.whyForeign.refusal?.kind).toBe("foreign_bot");
+    expect(wire.whyRefusals.map((r) => r.kind)).not.toContain("foreign_bot");
+    expect(wire.tableForeign.bot).toEqual({ label: wire.foreignBot409.foreign_bot.played, runs_here: false });
+    expect(wire.foreignBot409.foreign_bot.runs).toBe(wire.productionBot.label);
   });
 
   // Anti-vacuity for the widened replay frame: the position the corpus
