@@ -9,7 +9,9 @@
 //! turned a duplicate-key 400 into a 201 and moved an unknown field's column.
 //! The only bytes this module writes into a body are the inserted `,"id":…`
 //! member. Any other body it forwards reaches the layer exactly as it arrived,
-//! so one the layer's parser refuses is answered in axum's words, byte for byte.
+//! so one the layer's parser refuses is answered in the layer's words, byte for
+//! byte: axum's for every shape but the positional array, which since M6.5c2 is
+//! `api::NOT_AN_OBJECT`.
 
 use yokohama_web::api;
 use yokohama_web::tables::NewGame;
