@@ -873,13 +873,19 @@ describe("capSentence — a walk that reached its cap says so (M6.5c2, spec §2.
   // recorded hits were 4,001-move games with their end triggers unmet — and
   // "nothing on the screen is answerable" named a stuck table instead, which
   // sent the reader after the wrong defect. Mutant: the sentence reverting to
-  // `deadEnd`'s.
+  // `deadEnd`'s. The strip is fed as the screen draws it — `.end-strip` renders
+  // `view.end_triggers`, which begins with its own label — so a sentence that
+  // labels it again says "end triggers: end triggers: …".
+  const labels = (text: string) => text.split("end triggers:").length - 1;
+
   it("names the cap, the game, its turn and its end triggers, and no dead end", () => {
-    const text = capSentence("sim-00000000000000aa", 4000, "church 5/8 · customs 2/4", "TURN 212 · SEAT 1");
+    const strip = "end triggers: deck 3 · church 3/4 · customs 0/4 · shophouses 1/8 · trade houses 0/4";
+    const text = capSentence("sim-00000000000000aa", 4000, strip, "TURN 212 · SEAT 1");
     expect(text).toContain("reached its cap at 4000 moves");
     expect(text).toContain("sim-00000000000000aa");
     expect(text).toContain("TURN 212 · SEAT 1");
-    expect(text).toContain("church 5/8 · customs 2/4");
+    expect(text).toContain(strip);
+    expect(labels(text)).toBe(1);
     expect(text).not.toContain("nothing on the screen is answerable");
   });
 
@@ -887,5 +893,6 @@ describe("capSentence — a walk that reached its cap says so (M6.5c2, spec §2.
     const text = capSentence("local-1", 4001, "", "");
     expect(text).toContain("no turn on screen");
     expect(text).toContain("no end-trigger strip drawn");
+    expect(labels(text)).toBe(1);
   });
 });

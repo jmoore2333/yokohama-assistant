@@ -703,13 +703,15 @@ export async function capReached(page: Page, game: Game, moves: number): Promise
 }
 
 /** `capReached`'s words — pure, so a node cell holds them apart from
- *  `deadEnd`'s. */
+ *  `deadEnd`'s. `strip` is printed as the screen draws it: `.end-strip`
+ *  renders `view.end_triggers`, which already begins `end triggers: `, so only
+ *  the fallback carries the label. */
 export function capSentence(id: string, moves: number, strip: string, chain: string): string {
   return (
     `the walk reached its cap at ${moves} moves and the game is still running — ` +
     `a game this walk has not ended, not a screen with nothing to click\n` +
     `  game ${id}, ${chain || "no turn on screen"}\n` +
-    `  end triggers: ${strip || "no end-trigger strip drawn"}`
+    `  ${strip || "end triggers: no end-trigger strip drawn"}`
   );
 }
 
