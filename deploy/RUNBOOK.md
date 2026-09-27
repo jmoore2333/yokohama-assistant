@@ -169,13 +169,22 @@ itself.** So the expensive work stays on the workstation and the NAS receives a
 few megabytes it assembles in seconds.
 
 ```bash
-# a context of exactly what the runtime image needs
-mkdir ctx && cp target/x86_64-unknown-linux-musl/release/yokohama-web ctx/
-cp -R web/dist ctx/dist && cp -R crates/yokohama-web/assets/art ctx/art
-cp deploy/Dockerfile.runtime ctx/Dockerfile
-COPYFILE_DISABLE=1 tar czf ctx.tar.gz -C ctx .   # ~11.3 MB since M6.5b2; no ._ sidecars (§3.15)
+# a context of exactly what the runtime image needs — built in, and SERVED from,
+# a temporary directory of its own. NEVER the repository root: `.dev.vars` sits
+# there, holding the Access service credential and the R2 key, and until
+# 2026-09-27 this recipe served the root on every interface for as long as the
+# build ran (the M6.5c2 plan review's P-1; nothing was exposed, because the last
+# build by it ran before `.dev.vars` existed).
+CTX="$(mktemp -d)"
+mkdir "$CTX/ctx" && cp target/x86_64-unknown-linux-musl/release/yokohama-web "$CTX/ctx/"
+cp -R web/dist "$CTX/ctx/dist" && cp -R crates/yokohama-web/assets/art "$CTX/ctx/art"
+cp deploy/Dockerfile.runtime "$CTX/ctx/Dockerfile"
+COPYFILE_DISABLE=1 tar czf "$CTX/ctx.tar.gz" -C "$CTX/ctx" . && rm -rf "$CTX/ctx"   # ~11.3 MB since M6.5b2; no ._ sidecars (§3.15)
+tar tzf "$CTX/ctx.tar.gz" | grep -c '/\._'                # must print 0
 
-python3 -m http.server 8899 --bind 0.0.0.0   # on the LAN, e.g. 192.168.1.16
+LAN=192.168.1.16                                           # the workstation's LAN address (ifconfig)
+python3 -m http.server 8899 --bind "$LAN" --directory "$CTX" &   # serves ctx.tar.gz and NOTHING else
+curl -s -o /dev/null -w '%{http_code}\n' "http://$LAN:8899/.dev.vars"   # must print 404 before the POST below
 ```
 
 Then, through Portainer's Docker proxy:
@@ -184,14 +193,14 @@ Then, through Portainer's Docker proxy:
 POST /build?remote=http://<workstation-lan-ip>:8899/ctx.tar.gz&t=yokohama-web:0.5.0&dockerfile=Dockerfile&rm=true
 ```
 
-Resulting image: **19 MB**. Stop the file server afterwards.
+Resulting image: **19 MB**. Stop the file server as soon as the build answers (`kill %1`), then `rm -rf "$CTX"`.
 
 **`COPYFILE_DISABLE=1` is on the `tar` line since §3.16.** Without it, macOS
 `tar` writes an AppleDouble `._name` entry beside every file that carries an
 extended attribute, and every image cut from this workstation from §3.5 through
 §3.15 carried them (§3.15 counted 169 in the running container). Nothing served
 them, but they were in the image. Check the context before you serve it:
-`tar tzf ctx.tar.gz | grep -c '/\._'` must print `0`.
+`tar tzf "$CTX/ctx.tar.gz" | grep -c '/\._'` must print `0`.
 
 `deploy/Dockerfile` is the OTHER path — a self-contained multi-stage build that
 compiles everything from a repo checkout. It is what Modal builds from (§4) and
