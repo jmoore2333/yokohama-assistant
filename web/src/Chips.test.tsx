@@ -7,14 +7,14 @@ import { Padlock, PasswordTag, SeatChip, VersionTag } from "./Chips";
 
 describe("the seat chip", () => {
   it("draws a dot in the seat's colour, named for it, beside the label", () => {
-    const { container } = render(<SeatChip color="Blue" label="Alice" />);
+    const { container } = render(<SeatChip color="Blue" label="Ada Bell" />);
     const chip = container.querySelector(".seat-chip")!;
-    expect(chip).toHaveTextContent("Alice");
+    expect(chip).toHaveTextContent("Ada Bell");
     const dot = chip.querySelector(".seat-dot")!;
     expect(dot).toHaveClass("seat-blue");
     // A colour a screen reader can read, and not text a row's words include.
     expect(screen.getByRole("img", { name: "Blue" })).toBe(dot);
-    expect(chip.textContent).toBe("Alice");
+    expect(chip.textContent).toBe("Ada Bell");
   });
 
   it("is dashed and dotless when the seat is open, and gold when it is to move", () => {

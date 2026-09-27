@@ -124,8 +124,8 @@
   --wide-card-aspect: 799 / 530;
   /* The navy the door's hero and the setup screens' band glow with (M6.5c2,
    * the approved mocks' own two stops). GROUNDS, not roles: nothing is
-   * coloured by them that means something, so they sit with the grounds above
-   * rather than with the seat and good hues. Measured, no `color-mix` of
+   * coloured by them that means something, so they belong with the grounds in
+   * kind rather than with the seat and good hues. Measured, no `color-mix` of
    * `--vp` into `--bg` lands on them — the per-channel fractions disagree. */
   --ground-glow: #16304f;
   --ground-deep: #0f1c2c;
@@ -1989,7 +1989,10 @@ a.primary-link {
 .band-brand .crumb, .band-brand .crumb-sep {
   font-family: var(--display); font-size: 18px; font-weight: 500; color: var(--fg-dim); margin: 0;
 }
-.band-corner { display: flex; align-items: center; gap: 0.6rem; flex: 0 0 auto; font-size: 12px; color: var(--fg-dim); }
+.band-corner {
+  display: flex; align-items: center; gap: 0.6rem; flex: 0 1 auto; min-width: 0;
+  font-size: 12px; color: var(--fg-dim);
+}
 .band-corner a {
   color: var(--fg-dim); text-decoration: underline; text-decoration-color: var(--line-bright);
   text-underline-offset: 3px;
@@ -1999,7 +2002,9 @@ a.primary-link {
 .identity-corner { position: relative; display: flex; align-items: center; }
 .identity-menu { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.6rem; }
 .identity-who { color: var(--fg-dim); white-space: nowrap; }
-.identity-who b { color: var(--fg); font-weight: 700; }
+/* A name may be 64 characters with no break in it: it wraps, and the corner
+   shrinks around it, rather than widen the page. */
+.identity-who b { color: var(--fg); font-weight: 700; white-space: normal; overflow-wrap: anywhere; }
 .identity-address { color: var(--fg-faint); overflow-wrap: anywhere; }
 .identity-menu button.ghost, .identity-edit button.ghost { padding: 0.15rem 0.5rem; font-size: 12px; }
 .identity-edit { display: flex; align-items: center; gap: 0.35rem; }

@@ -23,7 +23,8 @@ import type { PlayerColor } from "./types";
 export type Trade = "copper" | "silk" | "tea" | "seafood" | "yen" | "vp" | "imports" | "neutral" | "faint";
 
 /** One tile: its row from the top, its place in the row, what it trades, and
- *  how strongly it is tinted (the approved mock's own weights). */
+ *  how strongly it is tinted: the approved mock's weights, except customs and
+ *  the employment agency, re-weighted with the hues this drawing gives them. */
 export interface Tile {
   row: number;
   col: number;

@@ -10,7 +10,8 @@
 // browser stores can change it, so what is offered is the name OTHERS see:
 // "change name". Either way the identity shown is the SERVER's `me.user` —
 // never what this browser happens to store under `yokohama.claimed_user`, which
-// behind Access is a stale header the server ignores (Review Focus 3).
+// behind Access is a stale header the server ignores (the stale-name cell
+// Task 4 adds to `App.test.tsx`).
 
 import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { clearDisplayName, displayName, setDisplayName } from "./api";

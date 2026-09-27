@@ -45,13 +45,18 @@ describe("the identity corner", () => {
   it("offers switch player under the open door, and drops the name before telling the host", async () => {
     expect(wire.me.mode).toBe("open");
     localStorage.setItem(DISPLAY_NAME_KEY, "Red");
-    const onChange = vi.fn();
+    // What storage held at the moment the host was told: the ORDER, which two
+    // assertions after the click cannot see. No `expect` in the handler — it
+    // would throw inside React's event dispatch.
+    const seen: (string | null)[] = [];
+    const onChange = vi.fn(() => seen.push(localStorage.getItem(DISPLAY_NAME_KEY)));
     render(<IdentityCorner me={wire.me} onChange={onChange} />);
     expect(screen.getByText("Playing as", { exact: false })).toBeInTheDocument();
     // The name shown is the display name; the identity key rides as its title.
     expect(screen.getByTitle(wire.me.user!)).toHaveTextContent("Red");
     expect(screen.queryByRole("button", { name: "change name" })).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "switch player" }));
+    expect(seen).toEqual([null]);
     expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
     expect(onChange).toHaveBeenCalledTimes(1);
   });
