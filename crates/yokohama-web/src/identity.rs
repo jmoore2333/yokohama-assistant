@@ -132,10 +132,13 @@ const NAME_RULE: &str = "a name is 1 to 32 letters, digits, spaces, dots, dashes
                          underscores, and begins with a letter or a digit";
 
 impl User {
-    /// The key grammar, for EVERY caller — `resolve`, a create's
-    /// `SeatSpec.user`, `check_shape`'s watcher list,
-    /// `archive::caller_segment`, the Worker module's `identity_of` and
-    /// `init`, and `backup::check_pair` — none of which knows the mode.
+    /// The key grammar, for every caller — among them `resolve`, a create's
+    /// `SeatSpec.user`, `tables::check_shape`'s watcher list (and through it
+    /// `backup::check_pair`), `chat::check_shape`'s authors, the browser host's
+    /// `dispatch_inner`, and the Worker module's `identity_of`, `init`,
+    /// `ReceiptArchive::root` and picker row. It knows no mode: which keys a
+    /// mode admits is [`admit`]'s rule, which `resolve` and `identity_of` apply
+    /// after it.
     ///
     /// The value's [`Self::typed_form`] (trimmed, each run of internal spaces
     /// collapsed to one), lowercased by ASCII rules, is then one of two shapes:
