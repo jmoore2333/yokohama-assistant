@@ -1,11 +1,13 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2.1, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: DRAFT, revision 2.2, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
 - **Revision 2** applies every finding. §10 records each finding with its disposition.
-- **Revision 2.1** (this text) records the owner's answers to the two items revision 2 left open (§10.2).
+- **Revision 2.1** records the owner's answers to the two items revision 2 left open (§10.2).
+- **Revision 2.2** (this text) takes the owner's note on the dev door: the open door on the Worker as well, with
+  the repository's defaults staying Access (R-6.5c2.5; §10.2).
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -77,14 +79,31 @@ server couldn't tell who you are" (the operator detail in a fold), C "Can't reac
 the server…", E the door with multiplayer off. Owner: "yes, this holds well". §2.1 defines what decides
 each.
 
-**R-6.5c2.5 — The Worker's dev door stays a test instrument.** It has no screen, it's the one way the live tiers
-play as several people over Access, and it stays ON in production's vars until the public door.
-- `DEV_DOOR_CLIENT_ID` moves from `worker/wrangler.jsonc`'s `vars` to a Worker secret (M6.5c close §6.3
-  items 13–14).
-- Its value stays in git history and in RUNBOOK §6's records. That's accepted: it is the credential's
-  *public* half by the M6.5c design.
-- The close's suggestion that the guard print or require the dev door's state is **deferred with the public
-  door**.
+**R-6.5c2.5 — The manual door is first-class on both hosts, and the repository's defaults stay Access.** Owner,
+reading revision 1's version of this ruling: *"it's likely that once this is released public - peopel are
+unlikely to spin up an identity provider to play locally at home, so it's doing multiple things and we should
+treat it like that - while it is very much our dev door, it's a first class feature for others with a different
+intent"*; chosen: "Open door on the Worker too"; and *"but note our default settings in the repo and
+documentation woudl be for access, we're building in the options for potential uptake in a more public
+setting"*. So:
+- **The Worker gains the open door as a deployment choice** (§2.1, "The Worker's two doors").
+  `YOKOHAMA_WEB_IDENTITY` becomes a Worker variable with two values: `worker` (Access, verified by the shell,
+  which is this repository's configuration) or `open` (players choose a name, and no identity provider is
+  needed). It has no default.
+- **Every committed configuration, and every document's first path, is Access:**
+  - `worker/wrangler.jsonc` names `worker`;
+  - `deploy/README.md` and `worker/README.md` lead with Access and give the open door its own section, trust
+    model included;
+  - the NAS runs `cf-access` (§2.10).
+- **Our dev door stays our test instrument, under `worker` only.** It is the credentialed claim the live tiers
+  use to play as several people over Access, and it stays ON in production's vars until the public door.
+  - `DEV_DOOR_CLIENT_ID` moves from `worker/wrangler.jsonc`'s `vars` to a Worker secret (M6.5c close §6.3
+    items 13–14).
+  - Its value stays in git history and in RUNBOOK §6's records. That's accepted: it is the credential's
+    *public* half by the M6.5c design.
+  - Under `open` a credential means nothing, since a claim needs none, and the guard refuses the combination.
+- **The deploy guard prints the configured door**, which answers the M6.5c close §6.3 item 14 in part. Requiring
+  the dev door off remains a public-door precondition, if that door is Access.
 
 **R-6.5c2.6 — The front door is direction B, with just the title.** Owner, on the direction: "B"; on the copy:
 *"I think we can just remove the line above or below - just call it yokohama. If we wanted real bonus points,
@@ -281,13 +300,46 @@ The mode lives on `AppState` and in `resolve` alone. So:
 - **R-N3:** `signal.ts`'s `Link` (`"live" | "refreshing" | "reconnecting"`) gains **"connecting"**, so a first
   connection never reads "reconnecting…" (M6.5c close §6.3 item 11).
 
-**The Worker.** Its identity (`worker` mode, the verified Access assertion) is unchanged, apart from the mode
-rule's new absent-mapping in the shared `resolve`.
-- Its dev door is unchanged in behaviour. The live tier's claimed header (`web/e2e/live.ts`) is unaffected,
-  because the header name stays.
-- `DEV_DOOR_CLIENT_ID` becomes a secret (`wrangler secret put`, from stdin, as the operator list was).
-  `env.ts` and `identity.ts` already read it from `env`, so no code changes. The deploy guard's check 7 extends
-  to it, and exempts `wrangler.test.jsonc`, whose test value stays for the pool (review m9).
+**The Worker's two doors** (R-6.5c2.5).
+- **The variable.** `YOKOHAMA_WEB_IDENTITY` becomes a Worker variable, `worker` or `open`, with **no default**.
+  Unset, every request answers the host-written 500 naming the variable, as every other required variable does
+  (the M6.5c spec §10's "every variable's 500"). `worker/wrangler.jsonc` names `worker`; the pool's
+  `wrangler.test.jsonc` exercises both.
+- **Under `worker`, nothing changes.** The shell verifies the Access assertion. The dev door (the credential
+  plus `X-Yokohama-Claimed-User`) and a person's assertion both set `X-Yokohama-User`, which the objects' layer
+  reads in `worker` mode. The one change is the mode rule's new absent-mapping in the shared `resolve`.
+  - The live tier's claimed header (`web/e2e/live.ts`) is unaffected, because the header name stays.
+  - `DEV_DOOR_CLIENT_ID` becomes a secret (`wrangler secret put`, from stdin, as the operator list was).
+    `env.ts` and `identity.ts` already read it from `env`, so no code changes. The deploy guard's check 7 extends
+    to it, and exempts `wrangler.test.jsonc`, whose test value stays for the pool (review m9).
+- **Under `open`, the shell reads no Access assertion.** It strips every client `x-yokohama-*` header as today,
+  and forwards the caller's claimed name as `X-Yokohama-Claimed-User`. The module's `identity_of`, today fixed
+  to `IdentityMode::Worker`, takes the configured mode. So the objects' layer runs in `open` mode: the key
+  grammar and `/api/me`'s `mode: "open"` come from the layer, and the client shows the name step as it does on
+  the NAS. There is one grammar, the layer's, and the shell never judges a name.
+- **The claim's carriers.**
+  - A `fetch` carries the header the client already sends.
+  - **A browser cannot put a custom header on a WebSocket upgrade** (`new WebSocket(url.href)` in
+    `web/src/ws.ts`). So under `open`, the client adds the name to the upgrade's URL as a query parameter
+    (`claimed=<name>`), and the shell reads it there, on upgrades only.
+  - The axum host's stream is a `fetch` and needs neither change.
+- **What stays under `open`:**
+  - the Origin check on upgrades;
+  - the strip of client `x-yokohama-*` headers;
+- **What is refused under `open`: the operator surface.** A claimed name is never an operator's rights, as the dev
+  door's claim never was (the M6.5c spec). Under `open`, every `/api/admin` route answers as if no operator were
+  configured, and the guard refuses `YOKOHAMA_WEB_ADMINS` set beside `open`. An open deployment is operated
+  through wrangler and the dashboard, which `worker/README.md` says.
+- **The quota is the deployer's.** Anyone who can reach an open Worker on the Free plan can exhaust it. That's
+  documented, with Cloudflare's own rate limiting as the deployer's tool.
+- **The deploy guard, per door:**
+  - under `worker`, the Access variables are required and `workers_dev` and `preview_urls` must be false,
+    because a `workers.dev` URL would go around the hostname-wide Access application;
+  - under `open`, a `workers.dev` URL is allowed (there's no door to go around), and `YOKOHAMA_DEV_DOOR=on` and
+    `YOKOHAMA_WEB_ADMINS` are refused;
+  - either way, the guard prints the door.
+- **No open-door Worker is deployed this cycle.** The owner's Worker stays `worker`, and the open door is proven
+  in the test pool, where the shell runs in workerd with real sockets (§3).
 
 ### 2.2 The setup screens (R-6.5c2.6 – .9)
 
@@ -577,8 +629,9 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     `crates/yokohama-web/**`, `crates/yokohama-wasm/**`, **`crates/*/Cargo.toml`** (every member resolves),
     `web/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` and **`.github/workflows/docker.yml`**. It can
     also be dispatched by hand.
-  - It builds with `docker buildx` and the GitHub Actions **layer** cache, then smoke-runs the image
-    (`/api/health` 200, under `YOKOHAMA_WEB_IDENTITY=open`).
+  - It builds with `docker buildx` and the GitHub Actions **layer** cache, then smoke-runs the image under
+    **both** doors (`/api/health` 200 and its `identity` field under `cf-access`, then under `open`), so the
+    option is proven to ship in the image the repository's default runs.
   - **The layer cache covers the toolchain stages above the source `COPY`, not the Rust build.** The
     Dockerfile's `--mount=type=cache` mounts aren't carried by `cache-to: type=gha`, so a triggered run pays a
     cold `cargo build` and module build. The first runs are measured (§8). A cache-mount export step is the
@@ -597,11 +650,15 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 
 - **The NAS** gets this cycle's image:
   - built with `--build-arg YOKOHAMA_PROJECT_URL` if the owner sets one, and `open-door`;
-  - run with `YOKOHAMA_WEB_IDENTITY=open` behind the same Access application (Access stays the door that keeps
-    it private; identity is the typed name);
+  - run with **`YOKOHAMA_WEB_IDENTITY=cf-access`** behind the same Access application: Access is its door and its
+    identity, **the repository default** (R-6.5c2.5). Revision 2 said `open`; the owner's defaults note moved
+    it. The open door is exercised by the local browser suite (the axum binary in `open`) and by the Docker
+    workflow's smoke run;
   - the image is rebuilt (resolving R3's E-3) and its size and memory are re-measured and recorded.
-- Existing NAS tables were seated under typed emails. Those still parse under the key grammar, so their seats
-  still match. There is no TTL, marker or operator surface (R-6.5c2.2).
+- Existing NAS tables were seated under typed emails (`claimed`). Under `cf-access`, a seat matches only where
+  the typed address is its holder's Access address. The NAS holds the owner's own tables, typed with the owner's
+  address; any other seat is recorded at the deploy rather than migrated. There is no TTL, marker or operator
+  surface (R-6.5c2.2).
 - **The Worker** is deployed at the close with `DEV_DOOR_CLIENT_ID` as a secret. Its RUNBOOK records the
   deployment.
   - **The deploy drops every open picker on the Worker**, because this cycle changes the layer's sources and
@@ -619,7 +676,9 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 ### 2.11 The documents (R-6.5c2.15, .16)
 
 - **Each host directory gets a README (what and how) and a RUNBOOK (operations and records):**
-  - `deploy/README.md` (new) is **the self-host guide**. It covers:
+  - `deploy/README.md` (new) is **the self-host guide**. It **leads with Access** (`cf-access` behind a Cloudflare
+    Access application, the repository's default) and gives **the open door its own section**, for a home, LAN
+    or VPN deployment with no identity provider. It covers:
     - building the image and its build args;
     - running it, with its variables;
     - the identity modes and the open door's trust model;
@@ -632,7 +691,9 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     with a **relocation map** (`§6.x` → `worker/RUNBOOK.md §x`), so every frozen citation still resolves.
   - The review counted 75 lines citing RUNBOOK §6 outside it: 37 in frozen plans, the rest in code comments and
     documents.
-  - **`worker/README.md`'s 18 citations** are updated to the new file directly (escalation 3).
+  - **`worker/README.md`'s 18 citations** are updated to the new file directly (escalation 3), and it gains
+    **"The two doors"**: Access first, as this repository deploys it, then the open door for a deployment with
+    no identity provider (the variable, the trust model, the quota exposure, what the guard allows).
   - Current code comments are updated where they are edited anyway. Frozen plans resolve through the map.
 - **`docs/web-lane.md`** (new) takes the web lane's operating detail out of `CLAUDE.md` (105,857 bytes at
   `6ce33fd6`; the handover's "92 KB" predates the M6.5c close's additions — review m5). It covers:
@@ -678,6 +739,16 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
       `wire_fixtures`.
     - States A–E each render from committed wire payloads, with the discriminators of §2.1.
     - switch player.
+    - **The Worker's two doors, in the pool:**
+      - under `open`, a claim reaches the objects by the header on a `fetch` and by the query parameter on an
+        upgrade, with no assertion needed;
+      - `/api/me` says `open`;
+      - under `worker`, the claimed header and parameter are ignored without the credential;
+      - an unset `YOKOHAMA_WEB_IDENTITY` answers the 500;
+      - under `open`, `/api/admin` answers as unconfigured whatever name is claimed, including the configured
+      operator's;
+    - the guard's per-door rules (`workers.dev`, the dev door and the operator list under `open`) each fail a
+      mutant.
   - **The bot version:**
     - the labels are exhaustive by construction (the compiler);
     - `production_bot.json` is refused when stale;
@@ -773,6 +844,8 @@ This is proposed; the plan fixes the tasks.
   a seam it truly needs, it is a behaviour-preserving widening and is named. The nine `assert_capture` goldens
   and `guide_sync` are how that is known.
 - **The layer changes, each named with its reason:** §2.1, §2.4, §2.5, §2.6.
+- **The Worker module's identity mode becomes configured** (§2.1, the two doors): `identity_of` takes the
+  deployment's mode rather than `IdentityMode::Worker`.
 - **The wire contract changes, each read in the corpus diff:**
   - `/api/me`'s `mode` and `/api/health`'s `identity` (`open`);
   - `server_version` (`0.6.0`);
@@ -794,6 +867,8 @@ This is proposed; the plan fixes the tasks.
 - **No house password and no accounts** (R-6.5c2.3). The open door's trust model is "anyone who can reach the
   server".
 - **No TTL, marker or operator surface on the NAS** (R-6.5c2.2).
+- **No open-door Worker is deployed.** The owner's Worker stays Access, and the open door is proven in the pool
+  (R-6.5c2.5).
 - **The phones** stay the owner's: the iPhone exit and the Android handset, recorded, not gated.
 - **No change to requests per move** (~13) beyond the rows-read work. Requests remain the Free plan's first
   binding limit, and are a public-door precondition.
@@ -894,4 +969,5 @@ The owner read revision 1 in parallel with the review and answered the two items
 | R-6.5c2.16: the address in two frozen plans | "Record a personal-data exception": edit both lines, and log the exception in the decision log | R-6.5c2.16 |
 | R-6.5c2.19: the version | "Bump to 0.6.0": one number across the workspace and both npm packages, the release commit tagged, and a bump at every release that changes which bot plays | R-6.5c2.19 |
 
-*(Any further notes from the owner's read are recorded here with their dispositions.)*
+| R-6.5c2.5, noted after the read: the dev door is "a first class feature for others with a different intent" | "Open door on the Worker too", and "our default settings in the repo and documentation woudl be for access": R-6.5c2.5 rewritten; §2.1 "The Worker's two doors"; the NAS on `cf-access` (§2.10); the documents lead with Access (§2.11) | R-6.5c2.5, §2.1, §2.9, §2.10, §2.11, §3, §5, §6 |
+| The rest of the spec | "rest of the spec looks good" | — |
