@@ -995,7 +995,7 @@ because its layer edits are file:line-precise Rust across three crates, where th
 
 | cycle | branch (its base) | plan | content | ends with |
 |---|---|---|---|---|
-| **A — the layer** | `web-room-m6.5c2a` (on `web-room-m6.5c`) | `2026-09-27-web-frontend-m6.5c2a-plan.md` | §2.1's key grammar, containment, rename and mode rule (the client's four literal sites and the walk's configuration move with the rename); §2.4 whole — `bots.rs`, the contract file, the mirror, the two wire fields, the foreign-bot rule and its four masks, `run_id` and the byte-for-byte pin on the server's save paths; §2.5's layer half; §2.6 whole — the log seam, the drift filter, the object-only body, the restatements EXPORTED, the `NotFound` cell, the whole-game gate's livelock and the browser walk's cap; §2.2's three reworded server sentences; **the `seed_cases.json` contract** (§2.2 "The seed"), emitted here so cycle B renders nothing hand-authored; the corpus regenerated and its diff read; every cell the two host crates and the pool need to stay green at each task | the Fable whole-branch review, ONE fix wave and a scoped re-review; the per-edit suites at the reviewed head; the branch pushed and its PR opened on the owner's word; a short handover note into B. **No deploy and no live tier** (R-6.5c2.13). |
+| **A — the layer** | `web-room-m6.5c2a` (on `web-room-m6.5c`) | `2026-09-27-web-frontend-m6.5c2a-plan.md` | §2.1's key grammar, containment, rename and mode rule (the client's four literal sites and the walk's configuration move with the rename); §2.4 whole — `bots.rs`, the contract file, the mirror, the two wire fields, the foreign-bot rule and its four masks, `run_id` and the byte-for-byte pin on the server's save paths; §2.5's layer half; §2.6 whole — the log seam, the drift filter, the object-only body, the restatements EXPORTED, the `NotFound` cell, the whole-game gate's livelock and the browser walk's cap; §2.2's three reworded server sentences; **the `seed_cases.json` contract** (§2.2 "The seed"), emitted here so cycle B renders nothing hand-authored; the corpus regenerated and its diff read; every cell the two host crates and the pool need to stay green at each task | the Fable whole-branch review, ONE fix wave and a scoped re-review; the per-edit suites at the reviewed head; the branch pushed and its PR opened (pre-authorized); **the handover into B, which is cycle B's planning session's ENTRY** — written off the tree, naming the wire as it is, the drafts and their corrections, and what A does not claim. **No deploy and no live tier** (R-6.5c2.13). |
 | **B — the screens** | `web-room-m6.5c2b` (on `-a`) | written at B's start | §2.2 and §2.3 whole — the shared pieces, the door and the project link, the identity states A–E and the name step (§2.1 "The client", pinned to `identity_cases.json`), the lobby, the forms and the seed check (pinned to `seed_cases.json`), waiting and joining, "Spectate" in the client, the single-player links, "Will not open here", the game screen's foreign refusal; §2.8's client items (Task 8's list); every rebuilt screen's jsdom, browser and 390 px cells | as A: review, fix wave, re-review, push and PR, a handover note into C; **no deploy** |
 | **C — the hosts and the close** | `web-room-m6.5c2c` (on `-b`) | written at C's start | §2.1 "The Worker's two doors" whole (the client's `claimed=` upgrade parameter with it); §2.5's Worker half; §2.7 as amended — the `hasTables` memo, the picker invariant, the scrub fence, the pending list, the time unit, L-8, L-4, the module's figures, and the restatements IMPORTED (the module and the browser host switch to A's exports); §2.8 as amended — the LOW findings; §2.9 whole; R-6.5c2.19's bump and its ripple (§8.2); §2.10 and §2.11 whole; then §3's close | §3's close in full: the review, the battery, the ONE recorded sequence, the deploys, the live tiers, the screenshots, the close document, the merge (R-6.5c2.17) and the `v0.6.0` tag |
 
@@ -1009,9 +1009,11 @@ and `identity::admit`; `bots::*`; `RunHost` as `Games::with_parts`'s last parame
 and the whole-game gate's measured cap with `YOKOHAMA_WEB_GATE_BOT_SEED`. Each plan names what it consumes verbatim in
 its "Names shared across tasks", and B's and C's plans READ them off A's tree rather than off this list.
 
-**Standing across all three cycles:** the NAS is NOT redeployed from any cycle branch before C's close (after A no
-build accepts `YOKOHAMA_WEB_IDENTITY=claimed`, and the live container sets it); the fences of §5 hold at every commit
-of every cycle; the per-edit suites of every crate and package a task touches run after every task, the Worker's
+**Standing across all three cycles:** **the push and the PR at each cycle's close are pre-authorized** (the owner,
+2026-09-27: *"push and PR are pre-approved at the orchestrator's discretion"*), and each cycle's close writes the
+handover the NEXT cycle's planning session starts from; the NAS is NOT redeployed from any cycle branch before C's
+close (after A no build accepts `YOKOHAMA_WEB_IDENTITY=claimed`, and the live container sets it); the fences of §5 hold
+at every commit of every cycle; the per-edit suites of every crate and package a task touches run after every task, the Worker's
 `npm run build:module:debug` before its pool; and the retired plan review's findings land in the cycle that owns
 the code (§10.6's table).
 
@@ -1294,6 +1296,8 @@ change — and retired that session (2026-09-27).
 2. **Drop the pure refactors** (R-6.5c2.1 as amended).
 3. **One stacked branch and PR per cycle**, `web-room-m6.5c2a`, `-b`, `-c` (R-6.5c2.17 as amended), *"the cleanest
    handoff and history tracking"* when each cycle runs under its own orchestrator.
+4. **The push and PR at a cycle's close are pre-approved at the orchestrator's discretion**, and each close writes
+   the handover the next cycle's planning starts from (the owner, later the same day, on reading cycle A's plan).
 
 **What is carried, and where.** The spec's mechanism is untouched — revision 2.6 changes §4 and §9, amends three
 rulings and marks the dropped items. The eight drafts, the assembly's skeleton (its shared names, couplings and

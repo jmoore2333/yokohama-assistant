@@ -59,8 +59,9 @@ its step). **What was measured:**
   close head). Every commit after it on this branch before Task 1 touches documents only (`docs/plans/`,
   `deploy/RUNBOOK.md`, `docs/handover.md`), so a file:line in this plan is a line at HEAD.
   - Stage with explicit paths, never `git add -A`. `git status` is clean after every commit.
-  - **Nothing is pushed until the cycle's close (Task 9), on the owner's word.** The push, PR #39 against
-    `web-room-m6.5c`, is the orchestrator's.
+  - **Nothing is pushed until the cycle's close (Task 9).** The push and PR #39 against `web-room-m6.5c` are
+    **PRE-AUTHORIZED** by the owner (2026-09-27: *"push and PR are pre-approved at the orchestrator's discretion"*)
+    and are the orchestrator's to make at the close, without asking again.
 - **Fences** (spec §5). At every commit, this prints nothing:
   `git diff --stat 1e16fe27 -- crates/yokohama-core crates/yokohama-oracle crates/yokohama-difftest crates/yokohama-bridge crates/gen-data crates/yokohama-cli`
   - **The CLI needs no change** (spec §5). If a task finds a seam it truly needs, it STOPS and asks the ORCHESTRATOR,
@@ -118,7 +119,11 @@ its step). **What was measured:**
 - **Any edit to a workflow file** runs `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" <file>` in its
   gate (Tasks 1 and 2 edit `.github/workflows/test.yml`).
 - **No step in this cycle touches the owner's account**: no deploy, no secret, no bucket, no live tier. Task 9's push
-  and PR are the orchestrator's, on the owner's word.
+  and PR are the orchestrator's, pre-authorized.
+- **Entry for the executing session.** Read, in order: `CLAUDE.md`; `docs/handover.md`'s "Updated" line; the spec's
+  §4 and §10.6; this plan WHOLE; the ledger's `progress.md`. Confirm `git branch --show-current` prints
+  `web-room-m6.5c2a`, `git status --short` prints nothing, and `git log --oneline -1` is at or after `f43a15ae`. Then
+  Task 1 Step 0, which records the baseline every delta in this plan is read against.
 - **Test data never uses the owner's surname** (the retired review's P-2; R-6.5c2.16): every test person here is
   `Ben Castle` in some spelling (`"  Ben   Castle "`, `"ben castle"`, `"BEN CASTLE"`, `"ben\tcastle"`, `"b3n_c-a.stle"`),
   and the plan's expected diffs are written to that. The hostnames under `moore.nyc` are real and stay. **The owner's
@@ -169,8 +174,8 @@ person would expect; its test lives in the owning task and is marked **(Review F
   amended — a fix is a NEW commit, and the acceptance reply that asks for it says so; while an implementer works, run
   nothing in its tree and arm no timers; wake a stalled agent by message rather than spawning another; a reviewer's
   mutants run on an export.
-- **The orchestrator edits no code.** Its steps here are Task 9's (the review dispatches, the push, the PR, the
-  handover note, the board and the memory).
+- **The orchestrator edits no code.** Its steps here are Task 9's (the review dispatches, the push and the PR —
+  pre-authorized — the handover into cycle B, the board and the memory).
 
 ---
 
@@ -384,6 +389,18 @@ expected diff below agree with each other.
   `DirArchive::put`'s lexical check; `web/src/wire/identity_cases.json` (41 rows); `contract.ts`'s `IdentityCase` and
   `wire.identityCases`.
 - **The mode rule is Task 2's**: at THIS commit `resolve` admits every key under every mode.
+
+- [ ] **Step 0: The baseline** (spec §3: "The first task re-counts every suite at the branch's HEAD and records the
+  reading"). Before any edit, at HEAD, run every per-edit gate in Global Constraints and record each count in the
+  ledger's `progress.md` under "Readings", machine-tagged, with the commit: `cargo test -p yokohama-web` (per binary:
+  lib, `browser_played_pin`, `play_a_whole_game`, `wire_fixtures`), `-p yokohama-wasm`, `-p yokohama-worker`, the
+  public build's `identity::` (5 at the base), `web/`'s `npm test`, `npm run test:wasm` (after `npm run build:wasm`),
+  `worker/`'s `npm run test:scripts` and `npm test` (after `npm run build:module:debug`); clippy and the wasm32
+  builds green; the fence printing nothing. **Every count in this plan is a delta over these numbers.** A whole-game
+  gate that goes red here is re-run ALONE before it is believed (the livelock Task 8 fixes). CLAUDE.md's readings at
+  the M6.5c close (`754b80ae`) are the expected values: web 293 (278 + 2 + 2 + 11), wasm 5, worker 59, `npm test`
+  1056 in 56 files, `test:wasm` 92 in 6, `test:scripts` 352 in 18, the pool 195 in 9. A different figure is not a
+  finding by itself — it is the baseline — but a figure BELOW CLAUDE.md's is reported before Task 1 begins.
 
 - [ ] **Step 1: Write the failing cells for the key grammar**, and repoint the five existing cells the widening
   would break. The repairs go in NOW, so the red run below shows only what is new.
@@ -7642,7 +7659,11 @@ walk lines.
 
 ### Task 9: The cycle's close (ORCHESTRATOR)
 
-No code. The orchestrator's steps, in order, each on the owner's word where it says so.
+No code. The orchestrator's steps, in order. **The push and the PR are PRE-AUTHORIZED** (the owner, 2026-09-27:
+*"push and PR are pre-approved at the orchestrator's discretion"*); nothing here waits on the owner. **Step 5's
+handover is the ENTRY for cycle B's planning session** (the owner, 2026-09-27: the close "should provide the handover
+to handle the plan for the B phase"): a fresh orchestrator writes cycle B's plan from it, the spec's §4 row B, the
+drafts and the mocks, against this branch's real tree — so it is written for that reader and for nobody else.
 
 - [ ] **Step 1: The Fable whole-branch review.** One Fable reviewer over `git diff 1e16fe27..HEAD`, the spec, this plan
   and the ledger, working in an EXPORT: the vacuity lens first (every new cell reverted against its fix — the
@@ -7656,15 +7677,58 @@ No code. The orchestrator's steps, in order, each on the owner's word where it s
   yokohama-cli`; clippy in both shapes; the wasm32 check and both builds; the public build's `identity::` (8); `web/`'s
   four commands; `worker/`'s four; the fence printing nothing. **No release gates, no deploy, no live tier**
   (R-6.5c2.13: the full sequence is cycle C's).
-- [ ] **Step 4: The push and the PR, on the owner's word.** `git push -u origin web-room-m6.5c2a`; PR #39 against
-  `web-room-m6.5c`, its description the cycle in one screen with the readings and the interfaces cycle B consumes.
-- [ ] **Step 5: The handover note into cycle B**, `docs/plans/<date>-web-frontend-m6.5c2b-handover.md` (short —
-  under 150 lines): what landed by task with the readings; the corpus files and Rust exports as they ARE in the tree;
-  every ruling taken in the ledger; what this cycle does NOT claim (Task 8's measurement is one run of 50; the NAS
-  still runs `claimed`; the module and the browser host still restate); the drafts D4 and D5 as cycle B's raw material
-  with their known corrections (spec §10.6's P-7; the assembly's spec-gap answers in spec §10.5's tail); and the
-  standing rules. The board's Track 3 and `docs/handover.md`'s "Updated" line point at it; the orchestrator's memory
-  (`yokohama-web-lane-status`) records the cycle's end.
+- [ ] **Step 4: The push and the PR, at the orchestrator's discretion.** `git push -u origin web-room-m6.5c2a`, then
+  `gh pr create --base web-room-m6.5c --head web-room-m6.5c2a` with a description that is the cycle in one screen:
+  what landed by task, the readings at the reviewed head, the interfaces cycle B consumes, what the cycle does NOT
+  claim, ending with the attribution line. Record the PR's number in the ledger and on the board; the spec's §4
+  table says "expected #39", and the number GitHub gives is the record.
+- [ ] **Step 5: The handover into cycle B — its planning session's entry.** Write
+  `docs/plans/<date>-web-frontend-m6.5c2b-handover.md`, under 200 lines, every fact read off the TREE at the reviewed
+  head (`git grep`, the corpus files, the ledger), never off this plan. Its sections, in order:
+  1. **Where cycle A left the tree:** the branch, its HEAD, the PR; every suite's reading at the reviewed head,
+     machine-tagged; the fence check's (empty) output; the e2e runs' lines.
+  2. **The wire as it IS**, which cycle B renders from and nothing else: each corpus file by name with one line on
+     what it carries — `identity_cases.json`, `seed_cases.json`, `production_bot.json`, `table_bot.json`,
+     `foreign_bot_409.json`, `table_foreign.json`, `why_foreign.json`; `TableView.bot` and `ClientState.bots`;
+     `me.json` and `health.json` reading `open` — and the `types.ts` and `contract.ts` names beside each
+     (`IdentityCase`, `wire.identityCases`, `wire.seedCases`, `SeatBot`, `TableBot`, `ProductionBot`, `ForeignBot`,
+     `ForeignBotErrorBody`, `wire.tableBot`, `wire.productionBot`, `wire.foreignBot409`, `wire.tableForeign`,
+     `wire.whyForeign`, `KEYS.*`), copied from the files.
+  3. **What cycle B builds** (spec §4 row B, restated in one paragraph) **and its raw material:** the drafts D4
+     (retired Tasks 9–12: the shared pieces, the door and the project link, the identity states and the name step,
+     the lobby) and D5 (retired Tasks 13–16: the forms and the seed check, waiting and joining, "Spectate" and the
+     single-player items, the client's small items) under `.superpowers/sdd/2026-09-26-web-frontend-m6.5c2-plan/drafts/`
+     — run in `web/`-only exports over stand-ins, their e2e cells type-checked but never run; the eleven mocks in
+     `docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/`; and the known corrections: the review's P-7
+     (`web/e2e/the_table.spec.ts:430-433` drives the old table form; the forms task rewrites it), D4's amendment 1
+     (the identity rows `nameRule.test.ts` requires are all in `identity_cases.json` now), D4's amendments 2–4 and
+     D5's names as the retired plan's "Additions reconciled at assembly" listed them, and the assembly's spec-gap
+     answers (spec §10.5's tail: "How to play" opens the help without its card-art screenshots; the creator's lobby
+     rows keep Abandon beside their one action; row actions are buttons and the name is the one link; state C's
+     discriminator tests state A first; state D is the door's alone and the lobby shows "loading…" rows; the iPhone
+     keeps its install instruction; the joiner's password sits above the seats and the one join button below; the
+     open table's chat stays in the main column; other people's seat cards read "seated"; test data never uses the
+     owner's surname).
+  4. **The rules cycle B's plan carries:** every task that changes what the client shows loads `frontend-design`
+     and builds against the mocks in the app's own stylesheet and tokens, no new colour roles, no card art on the
+     setup screens, the door asking the server nothing; every payload a component renders comes from `web/src/wire/`,
+     nothing hand-authored (the M2.5 rule); `npm run e2e` owed by every task that changes what a browser does or
+     shows, sequenced; a 390 px cell per rebuilt screen; a headed look, because no jsdom cell sees a stylesheet; counts
+     as deltas; one Opus implementer and one Opus reviewer per task, Fable for the whole branch; **a plan sized to be
+     read whole** — the project's executed range is 1,000–3,300 lines, and cycle B's code is React whose contract is
+     the mock, so it needs far less inline code than cycle A did: intent, files, interfaces, the cells to write and the
+     traps, with code only where it defines a contract.
+  5. **What cycle A does NOT claim:** Task 8's cap rests on one run of 50; the NAS still runs `claimed` and is not
+     redeployed before cycle C's close; the module and the browser host still RESTATE the layer's items (cycle C
+     switches them); the live tiers were not run; and whatever the whole-branch review left open, named.
+  6. **Every ruling taken in this cycle's ledger**, one line each, dated.
+  7. **Cycle C's standing items this cycle created or found:** the live replay's reset recipe owed after Task 5's
+     regeneration (once, after the bump); the whole-game gate back into CI on Task 8's reading; the import switch;
+     anything else the ledger names for C.
+
+  Then: `docs/handover.md`'s "Updated" line and Track 3 point at the handover and say cycle B is next; the
+  orchestrator's memory (`yokohama-web-lane-status`) records the cycle's end and the PR number. Commit the handover
+  and the board together; push (pre-authorized).
 - [ ] **Step 6: Nothing else.** The documents, CLAUDE.md's counts and the decision-log rows are cycle C's.
 
 ---
