@@ -101,6 +101,10 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
         to_move: repl.session.state().current_player.0,
         over,
         winner: over.then(|| repl.session.final_result().winner.0),
+        // The record's first bot seat (M6.5c2, R-6.5c2.10). Every bot a web
+        // table deals is one contestant (`tables::contestants_of`), so the
+        // first names them all.
+        bot: crate::bots::recorded(repl.session.record()).into_iter().next().map(|(_, d)| d),
     }
 }
 
@@ -768,7 +772,7 @@ impl Games {
     fn mirror_turn(&self, id: &str, repl: &Repl) {
         let Ok(Some((mut doc, version))) = self.read_table(id) else { return };
         let turn = mirror_of(repl);
-        if doc.turn == Some(turn) {
+        if doc.turn.as_ref() == Some(&turn) {
             return;
         }
         doc.turn = Some(turn);
@@ -941,6 +945,43 @@ mod tests {
         let after = games.table("mirror", &red).unwrap().turn.unwrap();
         assert_ne!(before, after, "the mirror moved with the turn");
         assert_eq!(after.to_move, 1);
+    }
+
+    /// **The mirror carries the record's bot from the deal on, and a persist
+    /// refreshes it** (M6.5c2, R-6.5c2.10) — a lobby row's only source for a
+    /// dealt table's label. An all-human table's mirror has none, and its
+    /// stored document does not spell the key.
+    #[test]
+    fn the_mirror_carries_the_records_bot_from_the_deal_and_a_persist_restores_it() {
+        let games = games();
+        let red = who("red@t.test");
+        let handle = playing(&games, &req("vsbot"), &["red@t.test"]);
+        let mirror = games.table("vsbot", &red).unwrap().turn.expect("a dealt table's mirror");
+        assert_eq!(mirror.bot, Some(crate::bots::production()), "the deal wrote the record's bot");
+
+        // A mirror written before the field, as every table dealt before this
+        // deploy has one.
+        let (mut doc, version) = games.read_table("vsbot").unwrap().unwrap();
+        doc.turn.as_mut().expect("a mirror").bot = None;
+        games.write_table(&doc, Some(version)).unwrap();
+        assert_eq!(games.table("vsbot", &red).unwrap().view(&red).bot, None, "premise: no version to name");
+
+        // Red's next move is persisted, and the persist puts the bot back.
+        {
+            let mut repl = handle.lock().unwrap();
+            let before = repl.session.record().events.len();
+            repl.step("1");
+            assert!(repl.session.record().events.len() > before, "premise: the step applied a move");
+            games.persist("vsbot", &repl).unwrap();
+        }
+        let mirror = games.table("vsbot", &red).unwrap().turn.expect("a mirror");
+        assert_eq!(mirror.bot, Some(crate::bots::production()), "the persist refreshed it");
+
+        playing(&games, &two_people("humans", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        assert_eq!(games.table("humans", &red).unwrap().turn.expect("a mirror").bot, None);
+        let (text, _) = games.store().read(Doc::Table, "humans").unwrap().unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(stored["turn"].get("bot").is_none(), "an all-human table's document spells no `bot`: {text}");
     }
 
     /// A record this server writes carries the terminal digest, so the

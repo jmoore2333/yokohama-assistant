@@ -59,6 +59,8 @@ pub mod archive;
 /// The backup envelope and the validator the archive route shares with it
 /// (M6.5b2, R-6.5b2.10 – .12). NOT behind `server`: the browser host calls it.
 pub mod backup;
+/// The bot's label, and whether this build runs it (M6.5c2, R-6.5c2.10).
+pub mod bots;
 pub mod chat;
 pub mod client;
 pub mod explain;

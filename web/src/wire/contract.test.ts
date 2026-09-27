@@ -170,6 +170,12 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["index_orders.card", wire.indexOrders.groups[0]!.cards[0], KEYS.indexCard],
     ["result.placing", wire.result.standings[0], KEYS.placing],
     ["result.breakdown", wire.result.standings[0]!.breakdown, KEYS.breakdown],
+    // M6.5c2: the one table whose bot is not null, that bot, a bot SEAT, and
+    // the door's contract file.
+    ["table_bot", wire.tableBot, KEYS.table],
+    ["table_bot.bot", wire.tableBot.bot, KEYS.tableBot],
+    ["watching.bots", wire.watching.bots[0], KEYS.seatBot],
+    ["production_bot", wire.productionBot, KEYS.productionBot],
   ] as const)("%s", (_name, payload, list) => {
     expect(keys(payload)).toEqual(listed(list));
   });

@@ -51,6 +51,10 @@ const HOST_FIELDS: Record<string, string[]> = {
  * - `house_chat_off_404` comes from an `Api` of the emitter's with the lobby
  *   chat switched off, which no script replays. (The eight `archive_*` files
  *   are `archive-walk.json`'s, which this host replays.)
+ * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
+ *   route's payload.
+ * - `table_bot` comes from one more `Api` of the emitter's (M6.5c2), holding a
+ *   vs-bot table, which no script replays.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
@@ -60,7 +64,9 @@ const THIRD_COLUMN = [
   "house_chat_off_404",
   "identity_cases",
   "locked",
+  "production_bot",
   "site_space_words",
+  "table_bot",
   "watching",
   "why",
   "why_refusals",

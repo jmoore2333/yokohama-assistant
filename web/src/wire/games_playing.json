@@ -1,6 +1,7 @@
 {
   "games": [
     {
+      "bot": null,
       "can_watch": true,
       "chosen": [
         true,

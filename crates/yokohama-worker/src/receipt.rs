@@ -842,8 +842,14 @@ mod tests {
     /// bot's agent seed are both above 2^53, so no TypeScript may touch them). The
     /// cut IS deterministic, so this cell is a DRIFT check: it rebuilds the partial
     /// and compares it with the committed file, and writes it only under
-    /// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, unchanged,
-    /// under its OWN id `local-242a5429453c593c` (plan review m12).
+    /// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, under its OWN
+    /// id `local-242a5429453c593c` (plan review m12), WITH the record's bot in its
+    /// turn mirror — what a persist under the dealing build writes (M6.5c2, P-4),
+    /// read through the layer's `bots::recorded`, the source `mirror_of` reads.
+    /// The two files differ by exactly that field: the cell's premise holds the
+    /// pair's table to a byte-for-byte round trip through `TableDoc`. Without the
+    /// field the rebuild's persist would rewrite the table, and the pool's
+    /// owed-game cells would lose their premises.
     #[test]
     fn the_owed_game_over_fixture_is_the_committed_pair_cut_at_its_last_bot_run() {
         let _s = serial();
@@ -856,6 +862,15 @@ mod tests {
             "premise: the pair's own id, and the bot at seat 1",
         );
         let record: GameRecord = serde_json::from_str(&full).unwrap();
+        let mut owed: yokohama_web::table::TableDoc = serde_json::from_str(&table).unwrap();
+        assert_eq!(
+            serde_json::to_string_pretty(&owed).unwrap(),
+            table,
+            "premise: the pair's table round-trips through `TableDoc` byte for byte, so the owed table differs by its `bot` alone",
+        );
+        owed.turn.as_mut().expect("a finished game's mirror").bot =
+            yokohama_web::bots::recorded(&record).into_iter().next().map(|(_, d)| d);
+        let table = serde_json::to_string_pretty(&owed).unwrap();
         let rules = Rules::standard();
         // Each event's mover: the player to move at the state before it, the
         // attribution the layer's undo reads (`undo_allowed` in
@@ -884,7 +899,11 @@ mod tests {
             partial,
             "the committed partial is the cut this cell builds (regenerate with UPDATE_WORKER_FIXTURES=1)",
         );
-        assert_eq!(read(dir.join("owed-game-over.table.json")), table, "the committed table is the pair's, unchanged");
+        assert_eq!(
+            read(dir.join("owed-game-over.table.json")),
+            table,
+            "the committed table is the pair's with the record's bot in its mirror (regenerate with UPDATE_WORKER_FIXTURES=1)",
+        );
     }
 
     /// Game over defers too, and the stamp completes it (spec §2.6's game-over

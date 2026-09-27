@@ -745,11 +745,13 @@ struct Walk {
     /// The PRIMARY `Api`'s calls, in order — the script a second host replays.
     script: Vec<ScriptRow>,
     /// The calls the walk made on a SECOND `Api` — one built with the lobby
-    /// chat off, one with a real archive directory.
+    /// chat off, one with a real archive directory, and one holding a vs-bot
+    /// table (M6.5c2).
     ///
     /// **Kept rather than dropped, so the classification can be derived.** A
-    /// browser host has neither of those deployments, so the payloads these
-    /// produced are third-column files (spec §5) by construction. Holding them
+    /// browser host has neither of the first two deployments, and no script
+    /// replays the third's vs-bot table, so the payloads these produced are
+    /// third-column files (spec §5) by construction. Holding them
     /// is what lets [`corpus`] tell "answered by a host this script does not
     /// describe" apart from "answered by nothing at all" — the second is a
     /// payload that slipped into the walk from a construction, and it is a hard
@@ -767,7 +769,7 @@ struct Walk {
 
 /// The walk over a caller's [`Api`], so a cell can read what the walk counted.
 ///
-/// Answers the payloads, the rows of the two SECOND `Api`s it builds along the
+/// Answers the payloads, the rows of the three SECOND `Api`s it builds along the
 /// way — see [`Walk::aside`] — and the archive `Api`'s rows again on their own
 /// ([`Walk::archive`]).
 async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<ScriptRow>) {
@@ -1759,12 +1761,46 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     assert_eq!(status, StatusCode::NOT_FOUND, "{house_chat_off_404}");
     out.push(("house_chat_off_404".to_string(), house_chat_off_404));
 
+    // **A table with a BOT seat, as its creator reads it** (M6.5c2, spec §2.4),
+    // from an `Api` of its own so the primary walk stays bot-free — a bot's
+    // stream seed is OS entropy, drawn at the deal — and so no lobby page this
+    // walk commits gains a row. Undealt, so its bot is the one `finalize` will
+    // deal and the payload carries no seed of any kind. It is the corpus's one
+    // `TableView` whose `bot` is not null: without it `Widen<TableView>` is
+    // satisfied by `null` and checks nothing about `TableBot` (the terminal
+    // explanation's lesson, `contract.ts` §1).
+    let bots = Api::new();
+    let (status, table_bot) = bots.call("POST", "/api/games", Some(bot_table_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_bot}");
+    assert_eq!(table_bot["status"], "dealing", "premise: undealt, so its bot is the one this build deals");
+    let production = yokohama_web::bots::production();
+    assert_eq!(
+        table_bot["bot"],
+        json!({ "label": yokohama_web::bots::label(&production), "runs_here": true }),
+    );
+    out.push(("table_bot".to_string(), table_bot));
+
     let (archived, archive_script) = archive_payloads(api).await;
     out.extend(archived);
 
     let mut aside = off.script.take();
+    aside.extend(bots.script.take());
     aside.extend(archive_script.iter().cloned());
     (out, aside, archive_script)
+}
+
+/// The vs-bot table the `table_bot` fixture is read from: the walker at seat 0,
+/// the bot at seat 1, at the corpus seed.
+fn bot_table_body() -> Value {
+    json!({
+        "players": 2,
+        "colors": ["Red", "Blue"],
+        "start_seat": 0,
+        "seed": SETUP_SEED,
+        "seats": [{ "user": WALKER }, { "bot": true }],
+        "name": "wire-bot",
+        "id": "wire-bot",
+    })
 }
 
 /// **What the archive route answers a browser** (M6.5b, R-6.5b.6), captured
@@ -2147,6 +2183,7 @@ async fn corpus() -> Corpus {
         .expect("a serializable manifest"),
     ));
     all.push(("site_space_words".to_string(), site_space_words()));
+    all.push(("production_bot".to_string(), production_bot()));
     all.push(("identity_cases".to_string(), identity_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
@@ -2372,6 +2409,22 @@ fn the_identity_cases_carry_the_key_grammar_s_verdicts() {
             _ => panic!("accepted in one column and refused in the other: {r}"),
         }
     }
+}
+
+/// **The bot this build deals, for the screens that must name it without
+/// asking** (M6.5c2, spec §2.4; review M1, R2-m6).
+///
+/// Not a payload any route serves — a CONTRACT, emitted and refused exactly as
+/// [`site_space_words`] is. Unlike that file, which the client holds a function
+/// to, this one is IMPORTED: the door's bot card, the local form and the table
+/// form's bot option read the label from it at build time, because the door
+/// asks the server nothing (R-6.5b2.7) and a fifth literal in
+/// `web/src/local/facts.ts` would be a second truth. When the AI lane re-points
+/// `PROVISIONAL_DEFAULT_BOT`, the writer test below refuses until this file is
+/// regenerated — that is the "pull".
+fn production_bot() -> Value {
+    let bot = yokohama_web::bots::production();
+    json!({ "identity": bot.controller, "label": yokohama_web::bots::label(&bot) })
 }
 
 /// **No payload spells the setup seed. There is no longer an exception.**

@@ -120,8 +120,7 @@ const HOST_FIELDS: Record<string, string[]> = {
  * It is a DERIVED truth stated back, not a filing decision — the replay asserts
  * this set equals exactly the files `walk.json` does not name, so a fixture
  * that quietly stopped being routed appears here by name and a new one cannot
- * join the corpus without landing in a column. Four reasons, and they are four
- * different things:
+ * join the corpus without landing in a column. Several reasons, not one:
  *
  * - `art_manifest`, `site_space_words` and `identity_cases` were never route
  *   payloads: the first is the host's own art directory, the other two
@@ -138,6 +137,10 @@ const HOST_FIELDS: Record<string, string[]> = {
  * - `house_chat_off_404` and the eight `archive_*` files come from a second and
  *   a third `Api` — a deployment with the lobby chat off, and one with a real
  *   archive directory. The module is neither.
+ * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
+ *   route's payload.
+ * - `table_bot` comes from one more `Api` of the emitter's (M6.5c2), holding a
+ *   vs-bot table, which no script replays.
  */
 const NOT_SERVED = [
   "art_manifest",
@@ -161,6 +164,8 @@ const NOT_SERVED = [
   "archive_400_digest",
   "archive_400_replay",
   "archive_400_table",
+  "production_bot",
+  "table_bot",
 ];
 
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`, which the walk's own clock reads. */

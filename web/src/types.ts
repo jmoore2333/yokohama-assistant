@@ -345,6 +345,34 @@ export interface ClientState {
   warnings: string[];
   /** The record's length; see the server's doc. */
   events: number;
+  /** Every bot seat the RECORD names, labelled (M6.5c2, R-6.5c2.10) — empty
+   *  for an all-human game. The record's, not the resident session's. */
+  bots: SeatBot[];
+}
+
+/** One bot seat of a game: which seat, and the bot's short label (`V4`). */
+export interface SeatBot {
+  seat: PlayerId;
+  label: string;
+}
+
+/** A table's bot (M6.5c2, R-6.5c2.10): its short label, and whether THIS
+ *  build runs it. An undealt table's is the bot `finalize` will deal, so it
+ *  runs here; a dealt one's is its record's. `runs_here: false` is a game
+ *  played against another version — finished, it opens; not finished, every
+ *  game route refuses it. */
+export interface TableBot {
+  label: string;
+  runs_here: boolean;
+}
+
+/** `web/src/wire/production_bot.json` (M6.5c2, spec §2.4): the bot this build
+ *  deals, emitted by `wire_fixtures` and imported at build time by the screens
+ *  that name it — the door asks the server nothing. */
+export interface ProductionBot {
+  /** The controller name its records carry (`v4-step9-draft1`). */
+  identity: string;
+  label: string;
 }
 
 /** The change SIGNAL, from `GET /api/games/{id}/events` — what a poll asks for
@@ -566,6 +594,9 @@ export interface TableView {
    *  (M6.3, R-3.5). A fact about the reader, so two people reading one table
    *  get two different answers. */
   can_watch: boolean;
+  /** The table's bot, or `null`: no bot seat, or a table dealt before the
+   *  field existed (its row says "the bot" with no version). */
+  bot: TableBot | null;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.

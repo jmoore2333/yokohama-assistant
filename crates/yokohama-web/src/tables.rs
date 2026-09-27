@@ -426,7 +426,7 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     // table's mutex) and inside `Games::list_for`, which builds a row for every
     // table on the volume. One hand-edited `to_move` there drops the lobby poll
     // for every player, not one game.
-    if let Some(TurnMirror { to_move, winner, .. }) = doc.turn {
+    if let Some(&TurnMirror { to_move, winner, .. }) = doc.turn.as_ref() {
         if usize::from(to_move) >= usize::from(doc.players) {
             return Err(format!("to_move {to_move} at a {}-seat table", doc.players));
         }
@@ -2724,7 +2724,7 @@ mod tests {
         let winner_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2) });
+            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2), bot: None });
             d
         };
         // The other half of the mirror, and the one with the wider blast
@@ -2735,7 +2735,7 @@ mod tests {
         let to_move_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None });
+            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None, bot: None });
             d
         };
 
@@ -5105,7 +5105,7 @@ mod tests {
         playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         playing(&games, &two_people("overt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         let (mut doc, version) = games.read_table("overt").unwrap().unwrap();
-        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1) });
+        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1), bot: None });
         games.write_table(&doc, Some(version)).expect("a finished mirror");
 
         let (rows, next) = games

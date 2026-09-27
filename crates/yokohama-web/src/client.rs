@@ -187,6 +187,10 @@ pub struct ClientState {
     /// count and not an event list: the walk reads the positions from
     /// `/at/{k}` and the words from `/log`, both of which already exist.
     pub events: usize,
+    /// Every bot seat the RECORD names, labelled (M6.5c2, R-6.5c2.10) — empty
+    /// for an all-human game. From the record's `run.seats`, not from the
+    /// resident `Repl`'s bot table.
+    pub bots: Vec<crate::bots::SeatBot>,
 }
 
 impl PromptState {
@@ -497,6 +501,7 @@ impl ClientState {
             }),
             warnings: session.load_warnings.clone(),
             events: session.record().events.len(),
+            bots: crate::bots::seat_bots(session.record()),
         }
     }
 }
@@ -773,6 +778,30 @@ mod tests {
         let bots = BotSeats::new(vec![None, None], 0x4649_5854_5552_4553);
         session.set_run_seats(bots.seat_provenance());
         Repl::new(session)
+    }
+
+    /// **`ClientState.bots` is the record's bot seats, labelled** (M6.5c2,
+    /// R-6.5c2.10): empty for an all-human game, the bot's seat and label for a
+    /// vs-bot one.
+    #[test]
+    fn the_payload_names_the_records_bot_seats() {
+        use yokohama_cli::bot::PROVISIONAL_DEFAULT_BOT;
+        let humans = two_human_repl();
+        let payload = ClientState::of("t", &humans, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert!(payload.bots.is_empty(), "an all-human game names no bot");
+
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(config, 20_260_831, vec![StartingOrderChoice::Keep(0); 2], Rules::standard())
+            .expect("a game");
+        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 7).seat_provenance());
+        let vs_bot = Repl::new(session);
+        let payload = ClientState::of("t", &vs_bot, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(
+            serde_json::to_value(&payload.bots).expect("serializable"),
+            serde_json::json!([{ "seat": 1, "label": crate::bots::label(&crate::bots::production()) }]),
+        );
     }
 
     /// The three arms of [`viewer_seat`], including the hot seat, in one cell —
