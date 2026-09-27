@@ -1,6 +1,6 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2.3, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: DRAFT, revision 2.4, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
@@ -8,7 +8,9 @@
 - **Revision 2.1** records the owner's answers to the two items revision 2 left open (§10.2).
 - **Revision 2.2** takes the owner's note on the dev door: the open door on the Worker as well, with the
   repository's defaults staying Access (R-6.5c2.5; §10.2).
-- **Revision 2.3** (this text) applies the Fable re-read of revision 2 (§10.3).
+- **Revision 2.3** applies the Fable re-read of revision 2 (§10.3).
+- **Revision 2.4** (this text) applies the Fable re-read of revision 2.2, the Worker's two doors (§10.4). It is
+  the one revision the owner asked for once the review was complete, with no further round.
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -102,9 +104,12 @@ setting"*. So:
     items 13–14).
   - Its value stays in git history and in RUNBOOK §6's records. That's accepted: it is the credential's
     *public* half by the M6.5c design.
-  - Under `open` a credential means nothing, since a claim needs none, and the guard refuses the combination.
-- **The deploy guard prints the configured door**, which answers the M6.5c close §6.3 item 14 in part. Requiring
-  the dev door off remains a public-door precondition, if that door is Access.
+  - Under `open` a credential means nothing, since a claim needs none. `DEV_DOOR_CLIENT_ID` is ignored there, and
+    `YOKOHAMA_DEV_DOOR=on` beside `open` is refused: by the guard from `vars`, and by the shell at run time
+    (§2.1).
+- **The deploy guard refuses a configuration that names no door, and prints the one it names.** That answers the
+  M6.5c close §6.3 item 14 in part. Requiring the dev door off remains a public-door precondition, if that door is
+  Access.
 
 **R-6.5c2.6 — The front door is direction B, with just the title.** Owner, on the direction: "B"; on the copy:
 *"I think we can just remove the line above or below - just call it yokohama. If we wanted real bonus points,
@@ -318,8 +323,23 @@ The mode lives on `AppState` and in `resolve` alone. So:
 **The Worker's two doors** (R-6.5c2.5).
 - **The variable.** `YOKOHAMA_WEB_IDENTITY` becomes a Worker variable, `worker` or `open`, with **no default**.
   Unset, every request answers the host-written 500 naming the variable, as every other required variable does
-  (the M6.5c spec §10's "every variable's 500"). `worker/wrangler.jsonc` names `worker`; the pool's
-  `wrangler.test.jsonc` exercises both.
+  (the M6.5c spec §10's "every variable's 500"). `Env`'s `ROWS` record forces the new variable's row.
+  `worker/wrangler.jsonc` names `worker`.
+- **Every object reads the door from its own configuration, like every other variable**, because each object
+  builds `shellConfig` and `moduleConfig` from its constructor's env. So the pool proves the two doors with
+  **two pool projects** (review R2.2-M2): today's over `wrangler.test.jsonc` (`worker`), and a second over a new
+  `wrangler.open.test.jsonc` (`open`), as two `cloudflareTest` projects in one vitest workspace. The alternative,
+  a per-request door header from the shell, would add a production mechanism for the tests' sake, and is not
+  taken. The unset-door cell needs neither: the stateless Worker's `handle` refuses before any object is
+  reached, so a cell's env override at `handle` shows the 500.
+- **Two names move with the door** (review R2.2-m2), both fixed at the module's `init`:
+  - `identity_of`'s mode is `IdentityMode::Worker` under `worker` and `IdentityMode::Open` under `open`.
+  - The wire's door name, `Host.identity_name`, keeps reading `cf-access` under `worker`, as today and as
+    `web/src/types.ts` and the client's `useIdentityMode` already know. It reads `open` under `open`.
+- **The module's dependency on the layer enables the `open-door` feature** (review R2.2-m1). It depends on
+  `yokohama-web` with `default-features = false`, so the feature would otherwise be off and `open` would refuse by
+  name. With it on, no Worker build refuses `open` at compile time, which is the intent: the compile-time refusal
+  belongs to the axum host built without the feature.
 - **Under `worker`, nothing changes.** The shell verifies the Access assertion. The dev door (the credential
   plus `X-Yokohama-Claimed-User`) and a person's assertion both set `X-Yokohama-User`, which the objects' layer
   reads in `worker` mode. The one change is the mode rule's new absent-mapping in the shared `resolve`.
@@ -328,10 +348,17 @@ The mode lives on `AppState` and in `resolve` alone. So:
     `env.ts` and `identity.ts` already read it from `env`, so no code changes. The deploy guard's check 7 extends
     to it, and exempts `wrangler.test.jsonc`, whose test value stays for the pool (review m9).
 - **Under `open`, the shell reads no Access assertion.** It strips every client `x-yokohama-*` header as today,
-  and forwards the caller's claimed name as `X-Yokohama-Claimed-User`. The module's `identity_of`, today fixed
-  to `IdentityMode::Worker`, takes the configured mode. So the objects' layer runs in `open` mode: the key
-  grammar and `/api/me`'s `mode: "open"` come from the layer, and the client shows the name step as it does on
-  the NAS. There is one grammar, the layer's, and the shell never judges a name.
+  and forwards the caller's claimed name as `X-Yokohama-Claimed-User`. So the objects' layer runs in `open` mode:
+  the key grammar and `/api/me`'s `mode: "open"` come from the layer, and the client shows the name step as it
+  does on the NAS.
+  - There is one grammar, the layer's. The shell **never judges a name beyond what a header can carry**: the
+    claimed value, from the header or the percent-decoded query and so possibly any Unicode, is held to
+    `forwardable` (visible ASCII, tab and space) through the shell's existing `address()`, judged raw and then
+    trimmed and ASCII-lowercased (the Kelvin lesson). That happens before `headers.set`, which would otherwise
+    throw into the platform's plain 500 (review R2.2-m3).
+  - An open-door claim is **its own `Identity` kind, `claimed`**, beside `person`, `dev` and `none` in
+    `worker/src/identity.ts` (review R2.2-m6). `operatorGate`'s person-only rule and `objectFor("archive")`'s
+    naming then read it without a special case, and `dev` stays the live tier's kind under `worker`.
 - **The claim's carriers.**
   - A `fetch` carries the header the client already sends.
   - **A browser cannot put a custom header on a WebSocket upgrade** (`new WebSocket(url.href)` in
@@ -342,17 +369,31 @@ The mode lives on `AppState` and in `resolve` alone. So:
   - the Origin check on upgrades;
   - the strip of client `x-yokohama-*` headers;
 - **What is refused under `open`: the operator surface.** A claimed name is never an operator's rights, as the dev
-  door's claim never was (the M6.5c spec). Under `open`, every `/api/admin` route answers as if no operator were
-  configured, and the guard refuses `YOKOHAMA_WEB_ADMINS` set beside `open`. An open deployment is operated
-  through wrangler and the dashboard, which `worker/README.md` says.
+  door's claim never was (the M6.5c spec). An open deployment is operated through wrangler and the dashboard,
+  which `worker/README.md` says. Two instruments carry the rule (review R2.2-M1):
+  - **`operatorGate` is door-aware:** under `open` it answers the `off` kind, the layer's 404 "as if no operator
+    were configured", for every claimed name. Today it answers `refused` (the 403) for every non-person once the
+    list is set.
+  - **`shellConfig` refuses a contradictory configuration at run time.** It refuses `YOKOHAMA_WEB_ADMINS` set
+    beside `open`, and `YOKOHAMA_DEV_DOOR=on` beside `open`. Every `/api/*` request then answers the 500 naming
+    both variables, which is the Worker's form of refusing to start. The deploy guard cannot do this for the
+    operator list: it is a **secret**, and the guard reads only the committed configurations (its check 7 exists
+    to keep that list *out* of `vars`).
 - **The quota is the deployer's.** Anyone who can reach an open Worker on the Free plan can exhaust it. That's
   documented, with Cloudflare's own rate limiting as the deployer's tool.
-- **The deploy guard, per door:**
-  - under `worker`, the Access variables are required and `workers_dev` and `preview_urls` must be false,
-    because a `workers.dev` URL would go around the hostname-wide Access application;
-  - under `open`, a `workers.dev` URL is allowed (there's no door to go around), and `YOKOHAMA_DEV_DOOR=on` and
-    `YOKOHAMA_WEB_ADMINS` are refused;
-  - either way, the guard prints the door.
+- **The archive's `test/` root requires an email** (review R2.2-m4). `ReceiptArchive::root` files a save under
+  `test/` when the creator's address ends with `.test`. A plain name such as `a.test` is legal under the key
+  grammar, and would then have its saves expired by R-6.5c2.12's 30-day rule. The test root now requires an
+  address with an `@`, so a plain name never takes it.
+- **The deploy guard, per door** (reading the committed `vars` only):
+  - it **refuses a configuration with no `YOKOHAMA_WEB_IDENTITY`**, since it can't print a door that isn't there,
+    and it prints the one named (review R2.2-m5);
+  - under `worker`, the Access variables are required and `workers_dev` must be false, because a `workers.dev`
+    URL would go around the hostname-wide Access application;
+  - under `open`, a `workers.dev` URL is allowed (there's no door to go around), and `YOKOHAMA_DEV_DOOR=on` in
+    `vars` is refused;
+  - **`preview_urls` stays false under both doors**: a preview version is not the deployed code, whatever the
+    door.
 - **No open-door Worker is deployed this cycle.** The owner's Worker stays `worker`, and the open door is proven
   in the test pool, where the shell runs in workerd with real sockets (§3).
 
@@ -693,7 +734,12 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     identity, **the repository default** (R-6.5c2.5). Revision 2 said `open`; the owner's defaults note moved
     it. The open door is exercised by the local browser suite (the axum binary in `open`) and by the Docker
     workflow's smoke run;
-  - the image is rebuilt (resolving R3's E-3) and its size and memory are re-measured and recorded.
+  - the image is rebuilt (resolving R3's E-3) and its size and memory are re-measured and recorded;
+  - **the deployment is not done until `/api/me` is read over WARP, as the owner** (review R2.2-M3), recording
+    `{"mode":"cf-access","user":…}` and the owner's own table listed under `scope=mine`. That is **the first
+    live reading of the layer's `CfAccess` arm on any host**. Every NAS deployment so far ran `claimed`, and the
+    Worker's live "cf-access" readings are the module's `Host` name, not that arm. A visit with the service
+    credential (no `email` claim) reads as state B, by design.
 - Existing NAS tables were seated under typed emails (`claimed`). Under `cf-access`, a seat matches only where
   the typed address is its holder's Access address. The NAS holds the owner's own tables, typed with the owner's
   address; any other seat is recorded at the deploy rather than migrated. There is no TTL, marker or operator
@@ -779,16 +825,20 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
       `wire_fixtures`.
     - States A–E each render from committed wire payloads, with the discriminators of §2.1.
     - switch player.
-    - **The Worker's two doors, in the pool:**
+    - **The Worker's two doors, in the pool's two projects** (§2.1):
       - under `open`, a claim reaches the objects by the header on a `fetch` and by the query parameter on an
         upgrade, with no assertion needed;
       - `/api/me` says `open`;
-      - under `worker`, the claimed header and parameter are ignored without the credential;
-      - an unset `YOKOHAMA_WEB_IDENTITY` answers the 500;
-      - under `open`, `/api/admin` answers as unconfigured whatever name is claimed, including the configured
-      operator's;
-    - the guard's per-door rules (`workers.dev`, the dev door and the operator list under `open`) each fail a
-      mutant.
+      - a claim a header cannot carry (a non-ASCII query value) is no caller, never a platform 500;
+      - under `worker`, the claimed header and parameter are ignored without the credential, and `/api/me`
+        still says `cf-access`;
+      - an unset `YOKOHAMA_WEB_IDENTITY` answers the 500 (an env override at `handle`);
+      - under `open` with no operator list, `/api/admin` answers the layer's 404 whatever name is claimed;
+      - under `open` with `YOKOHAMA_WEB_ADMINS` set, or `YOKOHAMA_DEV_DOOR=on`, every `/api/*` answers the 500
+        naming both variables;
+      - a plain name ending in `.test` files its saves outside `test/`;
+    - the guard's per-door rules (the absent door, `workers_dev` by door, `preview_urls` under both, the dev
+      door under `open`) each fail a mutant.
   - **The bot version:**
     - the labels are exhaustive by construction (the compiler);
     - `production_bot.json` is refused when stale;
@@ -831,7 +881,8 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   1. the per-edit suites of every crate and package;
   2. the fifteen release gates (core is compiled at a new version, and the merge follows);
   3. `npm run e2e`;
-  4. the deploys, the Worker then the NAS, with `npm run build` in `web/` first and the `debug_trap` grep;
+  4. the deploys, the Worker then the NAS, with `npm run build` in `web/` first and the `debug_trap` grep; the
+     NAS's `/api/me` read over WARP as the owner, as §2.10 requires;
   5. **the live replay's reset recipe first** (trap 19: the version bump changes the walk's records, so the
      first sends would meet a 409 and stop; review M4), then the live replay twice;
   6. the quota guard, then the live Playwright tier and the headed exit game;
@@ -891,7 +942,8 @@ This is proposed; the plan fixes the tasks.
   and `guide_sync` are how that is known.
 - **The layer changes, each named with its reason:** §2.1, §2.4, §2.5, §2.6.
 - **The Worker module's identity mode becomes configured** (§2.1, the two doors): `identity_of` takes the
-  deployment's mode rather than `IdentityMode::Worker`.
+  deployment's mode rather than `IdentityMode::Worker`, and the module's dependency on the layer enables
+  `open-door`.
 - **The wire contract changes, each read in the corpus diff:**
   - `/api/me`'s `mode` and `/api/health`'s `identity` (`open`);
   - `server_version` (`0.6.0`);
@@ -1044,3 +1096,36 @@ Every finding is **taken** in revision 2.3.
 | R2-o1 an undone owed upload meeting a new bot | TAKEN: §2.4 states it bounded (the alarm retries until Abandon or expiry) |
 
 Revision 2.2's Worker doors were not in this re-read's scope; their own re-read follows (§10.4).
+
+### 10.4 The Fable re-read of revision 2.2 (2026-09-26, `fd10339c`, standing at `a23540f0`)
+
+The re-read is appended to the same report.
+- **Verdict:** PLANABLE WITH THREE CORRECTIONS.
+- **Counts:** 0 CRITICAL · 0 HIGH · 3 MEDIUM · 6 MINOR · 0 OPEN.
+- **Confirmed:** 14 mechanisms. Among them: a browser puts no header on an upgrade; the Table's stream admission
+  hands the module an empty query, so the `claimed=` carrier trips nothing; the Origin check and `route()`
+  ignore the query; and the operator surface has no other channel.
+- **Against revision 2.3:** it touches none of 2.2's sections, its one contact harmonizes, and its dispositions
+  of the revision-2 findings were read against the evidence already gathered, with no new false sentence found.
+
+The owner asked that this be folded as **one revision once the review was complete**, not in rounds. Every finding
+is **taken** in revision 2.4.
+
+| finding | disposition in revision 2.4 |
+|---|---|
+| **R2.2-M1** — the deploy guard cannot see a secret; `operatorGate` would answer 403 under `open` | TAKEN: §2.1 splits the instruments (`operatorGate` answers `off` under `open`; `shellConfig` refuses the operator list or the dev door beside `open` at run time; the guard keeps the `vars` checks); R-6.5c2.5 and §3's cells |
+| **R2.2-M2** — one pool project cannot exercise both doors | TAKEN: two pool projects (`wrangler.open.test.jsonc`); a per-request door header considered and not taken; the unset-door cell at `handle` |
+| **R2.2-M3** — the NAS's `cf-access` has never been read live | TAKEN: §2.10 and §3's close read `/api/me` over WARP as the owner before the NAS deployment is done |
+| R2.2-m1 the module builds the layer without `open-door` | TAKEN: the module enables the feature (§2.1, §5) |
+| R2.2-m2 two names move at `init` | TAKEN: §2.1 (the mode, and `Host.identity_name`, which stays `cf-access` under `worker`) |
+| R2.2-m3 the shell must hold a claim to what a header can carry | TAKEN: §2.1, through `address()` |
+| R2.2-m4 a plain name ending `.test` would take the `test/` root | TAKEN: the test root requires an `@` (§2.1) and a cell |
+| R2.2-m5 the guard's precision (`preview_urls`; an absent door) | TAKEN: §2.1's guard rules |
+| R2.2-m6 the open claim's own `Identity` kind | TAKEN: `claimed` in `worker/src/identity.ts` (§2.1) |
+
+**The spec review is complete:**
+- **Revision 1:** 0 CRITICAL · 4 HIGH · 6 MEDIUM · 12 MINOR · 6 OPEN.
+- **Revision 2:** 2 MEDIUM · 8 MINOR · 1 OPEN.
+- **Revision 2.2:** 3 MEDIUM · 6 MINOR.
+
+Every finding is taken, and 90 claims and mechanisms were checked true across the three reads.
