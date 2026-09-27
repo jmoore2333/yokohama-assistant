@@ -122,6 +122,13 @@
   /* The achievements and the building sites are LANDSCAPE cards, stored
    * sideways on their sheets and turned upright by the generator (W0, W0b). */
   --wide-card-aspect: 799 / 530;
+  /* The navy the door's hero and the setup screens' band glow with (M6.5c2,
+   * the approved mocks' own two stops). GROUNDS, not roles: nothing is
+   * coloured by them that means something, so they sit with the grounds above
+   * rather than with the seat and good hues. Measured, no `color-mix` of
+   * `--vp` into `--bg` lands on them — the per-channel fractions disagree. */
+  --ground-glow: #16304f;
+  --ground-deep: #0f1c2c;
 }
 
 @media (prefers-color-scheme: light) {
@@ -1906,4 +1913,164 @@ ol.account .mover { font-weight: 700; }
   /* Scoped, so the base `.deck` rule still stands below the breakpoint, where
    * the page scrolls and the deck is sticky rather than a grid row. */
   .app.setup-table > .deck { max-height: 62vh; }
+}
+
+/* ---- M6.5c2: the setup screens' shared parts (R-6.5c2.6 – .9; spec §2.2) ----
+ *
+ * The approved mocks (`docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/`),
+ * built in this stylesheet's own tokens. No new colour role: the seats' dots
+ * are the seats', gold is "yours" and "to move", orange is the password, the
+ * yen gold is the bot and this device, the VP blue the server. Every rule is
+ * scoped to a class this block introduces, so nothing the game screen draws is
+ * restyled. */
+
+/* Focus, visibly, on every control the setup screens draw. */
+.front-door :focus-visible, .lobby :focus-visible { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* A raised card with a coloured top band: the door's three, the state cards,
+   the name step, the forms. */
+.raised-card {
+  background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+  overflow: hidden; box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.raised-card > .card-band { height: 8px; background: var(--line-bright); }
+.raised-card > .card-band.yen { background: var(--yen); }
+.raised-card > .card-band.vp { background: var(--vp); }
+.raised-card > .card-band.warn { background: var(--warn); }
+.raised-card > .card-in { padding: 1rem 1.15rem 1.15rem; }
+.raised-card h2 { font-size: 21px; font-weight: 600; margin: 0.25rem 0 0.4rem; }
+.raised-card .lede { color: var(--fg-dim); margin: 0 0 0.9rem; }
+/* Two selectors, because a cap can BE a card's heading (the device card's "On
+   this device" is its `h2`), and `.raised-card h2` would otherwise out-rank it. */
+.card-cap, .raised-card .card-cap {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--fg-faint); margin: 0;
+}
+
+/* The two filled controls: the yen gold one is the bot's and this device's,
+   and a LINK in `button.primary`'s box for a navigation (`/enter`). */
+button.primary.yen { background: var(--yen); color: var(--bg); }
+a.primary-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
+  background: var(--vp); color: var(--bg); border: 0; border-radius: var(--radius);
+  padding: 0.5rem 1.05rem; font: inherit; font-weight: 700; text-decoration: none;
+}
+
+/* The board mark: the door's drawing (`BoardMark.tsx`). One class per trade. */
+.board-mark { display: block; max-width: 100%; height: auto; }
+.board-mark .bm-tiles { filter: drop-shadow(0 6px 6px rgb(0 0 0 / 0.5)); }
+.board-mark .bm-tile { stroke: var(--fg); stroke-opacity: 0.16; stroke-width: 1; }
+.bm-tile.copper { fill: var(--copper); }
+.bm-tile.silk { fill: var(--silk); }
+.bm-tile.tea { fill: var(--tea); }
+.bm-tile.seafood { fill: var(--seafood); }
+.bm-tile.yen { fill: var(--yen); }
+.bm-tile.vp { fill: var(--vp); }
+.bm-tile.imports { fill: var(--imports); }
+.bm-tile.neutral { fill: var(--fg-dim); }
+.bm-tile.faint { fill: var(--fg-faint); }
+.bm-president .bm-disc { fill: currentColor; stroke: var(--bg); stroke-width: 3; }
+.bm-president .bm-hole { fill: var(--bg); fill-opacity: 0.35; }
+.bm-cube { fill: currentColor; stroke: var(--bg); stroke-width: 2; }
+
+/* The band. Its side padding lines its content up with the lobby body's
+   68rem column (Task 4: `.lobby-body` is 72rem less 2rem a side). */
+.lobby-band {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  min-height: 64px; padding: 0.6rem max(2rem, calc(50% - 34rem));
+  background: radial-gradient(ellipse 50% 160% at 80% 0%, var(--ground-glow) 0%, var(--ground-deep) 50%, var(--bg) 100%);
+  border-bottom: 1px solid var(--line);
+}
+.band-brand { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.2rem 0.55rem; min-width: 0; }
+.band-brand .band-mark { align-self: center; flex: 0 0 auto; }
+.band-mark rect { fill: var(--vp); }
+.band-mark rect.lit { fill: var(--yen); }
+.band-brand h1 { font-size: 22px; font-weight: 600; letter-spacing: 0; }
+.band-brand .crumb, .band-brand .crumb-sep {
+  font-family: var(--display); font-size: 18px; font-weight: 500; color: var(--fg-dim); margin: 0;
+}
+.band-corner { display: flex; align-items: center; gap: 0.6rem; flex: 0 0 auto; font-size: 12px; color: var(--fg-dim); }
+.band-corner a {
+  color: var(--fg-dim); text-decoration: underline; text-decoration-color: var(--line-bright);
+  text-underline-offset: 3px;
+}
+
+/* The identity corner: inline at desktop width, a pill on a phone. */
+.identity-corner { position: relative; display: flex; align-items: center; }
+.identity-menu { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.6rem; }
+.identity-who { color: var(--fg-dim); white-space: nowrap; }
+.identity-who b { color: var(--fg); font-weight: 700; }
+.identity-address { color: var(--fg-faint); overflow-wrap: anywhere; }
+.identity-menu button.ghost, .identity-edit button.ghost { padding: 0.15rem 0.5rem; font-size: 12px; }
+.identity-edit { display: flex; align-items: center; gap: 0.35rem; }
+.identity-edit input {
+  font: inherit; font-size: 12px; width: 11rem; background: var(--bg-sunken); color: var(--fg);
+  border: 1px solid var(--line-bright); border-radius: var(--radius); padding: 0.2rem 0.4rem;
+}
+.identity-pill {
+  display: none; align-items: center; gap: 0.4rem; max-width: 11rem; font: inherit; font-size: 12px;
+  color: var(--fg); background: transparent; border: 1px solid var(--line-bright); border-radius: 99px;
+  padding: 0.2rem 0.65rem; cursor: pointer;
+}
+.identity-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--vp); flex: 0 0 auto; }
+.identity-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The seat chip, the password tag and the version tag. */
+.seat-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  border: 1px solid var(--line-bright); border-radius: 99px; padding: 2px 9px 2px 6px;
+  font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere;
+}
+.seat-chip.open { border-style: dashed; color: var(--fg-faint); padding-left: 9px; }
+.seat-chip.to-move { border-color: var(--yen); color: var(--yen); }
+.seat-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.password-tag {
+  display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10.5px;
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; line-height: 1.4;
+  color: var(--warn); border: 1px solid color-mix(in oklab, var(--warn) 55%, transparent);
+  background: color-mix(in oklab, var(--warn) 8%, transparent); border-radius: 3px; padding: 1px 6px;
+}
+.padlock rect, .padlock path { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.version-tag {
+  display: inline-block; margin-left: 0.2rem; vertical-align: 0.2em; font-family: var(--mono);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.5; color: var(--yen);
+  border: 1px solid color-mix(in oklab, var(--yen) 45%, transparent); border-radius: 3px; padding: 0 5px;
+}
+
+/* The seat card: the card's own colour is its seat's (`seatClass`), so the band
+   and the caption read it from `currentColor`. */
+.seat-card {
+  min-width: 0; background: var(--bg-raised); border: 1px solid var(--line-bright);
+  border-radius: 8px; overflow: hidden;
+}
+.seat-card-band { height: 6px; background: currentColor; }
+.seat-card-in { padding: 0.65rem 0.8rem 0.75rem; }
+.seat-card-caption {
+  margin: 0; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: currentColor;
+}
+.seat-card-who {
+  margin: 0.2rem 0 0.1rem; font-family: var(--display); font-size: 16px; font-weight: 600;
+  color: var(--fg); overflow-wrap: anywhere;
+}
+.seat-card-note { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+.seat-card.open { border-style: dashed; background: transparent; }
+.seat-card.open .seat-card-band { opacity: 0.45; }
+.seat-card.open .seat-card-who { color: var(--fg-dim); }
+
+/* The phone (mock 11): the corner becomes a pill whose menu drops below it. */
+@media (max-width: 600px) {
+  .lobby-band { padding: 0.55rem 1rem; }
+  .band-brand .band-mark { display: none; }
+  .band-brand h1 { font-size: 19px; }
+  .band-brand .crumb, .band-brand .crumb-sep { font-size: 16px; }
+  .identity-pill { display: inline-flex; min-height: 36px; }
+  .identity-menu {
+    display: none; position: absolute; right: 0; top: calc(100% + 0.5rem); z-index: 20;
+    flex-direction: column; align-items: flex-end; gap: 0.45rem;
+    min-width: 12rem; max-width: calc(100vw - 2rem); padding: 0.65rem 0.75rem;
+    background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  }
+  .identity-corner[data-open="true"] .identity-menu { display: flex; }
+  .identity-who { white-space: normal; }
 }
