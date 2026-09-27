@@ -1,6 +1,6 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2.4, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: DRAFT, revision 2.5, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
@@ -9,8 +9,11 @@
 - **Revision 2.2** takes the owner's note on the dev door: the open door on the Worker as well, with the
   repository's defaults staying Access (R-6.5c2.5; §10.2).
 - **Revision 2.3** applies the Fable re-read of revision 2 (§10.3).
-- **Revision 2.4** (this text) applies the Fable re-read of revision 2.2, the Worker's two doors (§10.4). It is
-  the one revision the owner asked for once the review was complete, with no further round.
+- **Revision 2.4** applies the Fable re-read of revision 2.2, the Worker's two doors (§10.4). It is the one
+  revision the owner asked for once the review was complete, with no further round.
+- **Revision 2.5** (this text) corrects, in place, the sentences that writing the plan found wrong or incomplete.
+  Most were MEASURED by the plan's drafters in `git archive` exports; the rest were read at HEAD. §10.5 records
+  each one with its evidence. It changes no ruling.
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -268,8 +271,10 @@ The mode lives on `AppState` and in `resolve` alone. So:
   every accepted name begins with `[a-z0-9]`.
 - **Defence in depth** (review R2-m3): `archive::paths` returns a `Result`, refusing any path component that is
   `.` or `..`, and its callers (the archive route, `DirArchive::put`, `ReceiptArchive::put`) handle the refusal.
-  `DirArchive::put`'s "stays under its root" check is **lexical**: no `Component::ParentDir` in the joined path,
-  because `canonicalize` needs the file to exist. The review's export probe (`traversal_probe.rs`) is the
+  `DirArchive::put`'s "stays under its root" check is **lexical**, because `canonicalize` needs the file to
+  exist: **every component of the relative path `paths` built is `Component::Normal`**, checked before the join
+  (§10.5: a check over the joined path lets an absolute path through, and refuses every put on a host whose
+  configured directory is itself relative with `..`). The review's export probe (`traversal_probe.rs`) is the
   regression cell's template.
 
 **The rename.** The mode `claimed` becomes **`open`** (`YOKOHAMA_WEB_IDENTITY=open`), and the cargo feature
@@ -277,7 +282,9 @@ The mode lives on `AppState` and in `resolve` alone. So:
 - A build without it (`--no-default-features --features server`) still refuses the mode at start-up, by name.
   Its refusal sentence states the trust model instead of calling the mode a development convenience.
 - The header stays `X-Yokohama-Claimed-User`: the *name* is claimed, and only the mode is renamed. There's no
-  alias: the NAS is the only deployment on `claimed`, and it is redeployed with `open` at the close.
+  alias: the NAS is the only deployment on `claimed`, and it is redeployed on **`cf-access`** at the close
+  (§2.10). So **the NAS is not redeployed from this branch before then**: once the rename lands, no build accepts
+  the `claimed` its container sets, and it would exit 1 at start-up (§10.5).
 - `/api/me`'s `mode` and `/api/health`'s `identity` report `open`.
 - `check_shape`'s watcher-list refusal sentence ("… not an address this server writes") is reworded, because a
   watcher may now be a name (escalation 5).
@@ -328,7 +335,9 @@ The mode lives on `AppState` and in `resolve` alone. So:
 - **Every object reads the door from its own configuration, like every other variable**, because each object
   builds `shellConfig` and `moduleConfig` from its constructor's env. So the pool proves the two doors with
   **two pool projects** (review R2.2-M2): today's over `wrangler.test.jsonc` (`worker`), and a second over a new
-  `wrangler.open.test.jsonc` (`open`), as two `cloudflareTest` projects in one vitest workspace. The alternative,
+  `wrangler.open.test.jsonc` (`open`), as two `cloudflareTest` projects under **`test.projects` in
+  `worker/vitest.config.ts`** (Vitest 4 removed the workspace file; §10.5). The open project's cells live under
+  `worker/test/open/`, which the `worker` project excludes, so the corpus walk runs under `worker` alone. The alternative,
   a per-request door header from the shell, would add a production mechanism for the tests' sake, and is not
   taken. The unset-door cell needs neither: the stateless Worker's `handle` refuses before any object is
   reached, so a cell's env override at `handle` shows the 500.
@@ -344,8 +353,11 @@ The mode lives on `AppState` and in `resolve` alone. So:
   plus `X-Yokohama-Claimed-User`) and a person's assertion both set `X-Yokohama-User`, which the objects' layer
   reads in `worker` mode. The one change is the mode rule's new absent-mapping in the shared `resolve`.
   - The live tier's claimed header (`web/e2e/live.ts`) is unaffected, because the header name stays.
-  - `DEV_DOOR_CLIENT_ID` becomes a secret (`wrangler secret put`, from stdin, as the operator list was).
-    `env.ts` and `identity.ts` already read it from `env`, so no code changes. The deploy guard's check 7 extends
+  - `DEV_DOOR_CLIENT_ID` becomes a secret by **ONE `wrangler deploy --secrets-file`** at the close: the same
+    version drops the var and adds the secret, so the dev door is never shut in between. `wrangler secret put`
+    is refused while the deployed version holds the name as a var (cloudflare/workers-sdk#5756; §10.5). The file
+    is written from `.dev.vars` with mode 600 and deleted after, never printed or committed. `env.ts` and
+    `identity.ts` already read the value from `env`, so no code changes. The deploy guard's check 7 extends
     to it, and exempts `wrangler.test.jsonc`, whose test value stays for the pool (review m9).
 - **Under `open`, the shell reads no Access assertion.** It strips every client `x-yokohama-*` header as today,
   and forwards the caller's claimed name as `X-Yokohama-Claimed-User`. So the objects' layer runs in `open` mode:
@@ -473,6 +485,8 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
   refuses assets that aren't the current `web/dist`, and the RUNBOOK recipe names the value used.
 - **The Docker image** takes it as `--build-arg YOKOHAMA_PROJECT_URL=…`. A self-hoster builds the image from the
   repository, so that is their install step.
+- **The owner's NAS** is not built from `deploy/Dockerfile` (§2.10), so it takes the link from the environment of
+  the one `cd web && npm run build` that both of the owner's hosts ship.
 - A run-time value is **not offered**. The release is precached under a digest of its own bytes, so a server
   rewriting `index.html` at start-up would fail the service worker's install check. `deploy/README.md` says so.
 
@@ -508,7 +522,8 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
     after every applied move. The mirror gains `bot: Option<BotDescriptor>`: the record's `(controller,
     version, params)`, so `runs_here` compares the same triple the refusal does (review m12), and the label is
     derived from it.
-  - `TurnMirror` loses `Copy`, so its four by-value reads take a reference (review m1).
+  - `TurnMirror` loses `Copy`, so its by-value reads take a reference (review m1): **six sites**, not four
+    (`table.rs` three times, `tables.rs`, `games.rs`'s mirror refresh, and one test; §10.5).
   - `TableDoc` carries no `deny_unknown_fields`, and `check_shape` bounds values only. A nested
     `#[serde(default)]` keeps **`TABLE_SCHEMA` at 3**. An older binary reads the new key and ignores it, and an
     older module's house copy drops it, which is harmless (review m1).
@@ -517,10 +532,12 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
   - **A table dealt before this deploy** has no `bot` in its mirror until its next applied move, and a
     **finished** one never gains it, because no `persist` follows game over. Its row shows "the bot" without a
     version. That's accepted, and honest (review m7).
-- **The foreign-bot rule** (review M2; R-6.5c2.10). **The check has one site:** `Games::live_handle`, after the
-  record's parse and **before** `Session::from_record`, through which every rebuild on all three hosts passes. So
-  a converted human seat never exists, even for one request. A bot seat's recorded `(controller, version,
-  params)` that differs from `PROVISIONAL_DEFAULT_BOT`'s descriptor is **foreign**.
+- **The foreign-bot rule** (review M2; R-6.5c2.10). **The check has one site:** `Games::live_handle`, through
+  which every rebuild on all three hosts passes. The descriptors are compared after the record's parse; the
+  refusal returns **between `Session::from_record` and `Repl::new`**, because "not over" is a fact about the
+  replayed state (§10.5). A converted human seat still never exists, even for one request: `Session::from_record`
+  never reads `run` and builds no `Repl`, and the conversion is `Repl::new`'s. A bot seat's recorded
+  `(controller, version, params)` that differs from `PROVISIONAL_DEFAULT_BOT`'s descriptor is **foreign**.
   - **A game that is not over, with a foreign bot, refuses to open.** Every game route answers a typed refusal
     naming both labels: "This game was played against V4. This server now runs V5 and can't continue it." The
     lobby row shows `runs_here: false` and says so. `delete` reads the record's event count and never rebuilds,
@@ -596,15 +613,23 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
        `parse_outcome` gain the field;
     3. **`settleUpload`'s `conflict` arm routes through `stamp_archive`**, so the layer's put meets
        `Err(Conflict)` carrying the text, and `stamped: true` is read back.
+
+    The answer is read by a new `settledArm`, not today's `stampArm`: a different game's conflict answers
+    `{"stamped": false, "over": true}`, which `stampArm` reads as `retry`, so it would retry hourly for ever
+    (§10.5). `settledArm` keeps every conflict **final** except the one the layer stamped, which is
+    R-6.5c2.11's Worker rule.
 - **The archive's pair** (review o1). For the undo-then-refinish race, the pair already stays one game's:
   `executePlan` reads the record key **before** it puts the table, so a conflict writes nothing. A cell pins
   that. Two *overlapping* uploads of different records can still leave one completion's record beside another's
   table, and R2 offers no cross-key atomicity. That case is recorded as best-effort; no cell claims it.
-- **A pool cell reproduces the race:** an undo during a held R2 put (a patched `R2Bucket.prototype.put`,
-  restored in `finally`, per the pool facts), then a different finish. The table ends stamped, abandonable and
-  expiring normally. `deliverArchive` runs outside `blockConcurrencyWhile`, so the undo can interleave. The plan
-  confirms the shell's `uploads` map (one in-flight upload per plan key) does not serialize the two completions
-  (review o2).
+- **Two pool cells reproduce the race**, each an undo during a held R2 put, then a different finish: one where
+  the first upload settles before the second starts, and one where **both are in flight at once**. The table ends
+  stamped, abandonable and expiring normally. The hold is the pool's measured `swapBucket` (`worker/test/gates.ts`,
+  which every R2 race cell already uses), with a two-gate variant for the overlap; it is restored in `finally` and
+  discarded by an eviction, per the pool facts (§10.5). `deliverArchive` runs outside `blockConcurrencyWhile`, so
+  the undo can interleave. The shell's `uploads` map keys one in-flight upload per plan key, and two completions
+  are two records, so two keys: the map does not serialize them, and the overlapping cell asserts both uploads in
+  flight (review o2, measured `uploads.size === 2`).
 
 ### 2.6 The layer's other changes
 
@@ -621,10 +646,12 @@ Each has an architectural reason (R-6.5c.4's refinement). Sources: handover §4.
     save carries it. Other warnings still show, and the CLI's own frame is unchanged.
   - The filter can only match the CLI's own wording, a prefix match on `warning: GameRecord.engine_version=`:
     `Session::load_warnings` is a `pub Vec<String>`, and a typed alternative would need a CLI change. So **the pin
-    must not be vacuous** (review R2-m2). Its cell asserts that the 0.5.0 fixture pair (`browser-played-2p`: the
-    production bot, the current `rules_hash`), rebuilt at 0.6.0, carries **`warnings == []`, no warnings at
-    all**, while its record keeps `engine_version: "0.5.0"`. A cell looking for the filter's own prefix would pass
-    silently the day the CLI's wording moved; an empty-array assertion fails loudly.
+    must not be vacuous** (review R2-m2). Its cell rewrites the fixture pair's (`browser-played-2p`: the
+    production bot, the current `rules_hash`) `engine_version` to a value **derived to differ from the running
+    version**, so the drift line fires before the bump as well as after it (§10.5). With the session's premise
+    of exactly one warning, it asserts **`warnings == []`, no warnings at all**, while the record keeps the
+    version it was given. A cell looking for the filter's own prefix would pass silently the day the CLI's wording
+    moved; an empty-array assertion fails loudly.
 - **The positional-array `create` is refused.** serde accepts a JSON array for a struct. The layer's body
   extraction refuses any non-object body, in its own 400 shape, as the module's `init` already does.
 - **The whole-game gate's vs-bot livelock** (M6.3 close §6.3; M6.4 and M6.5c §6.1). The arm places nothing and
@@ -639,7 +666,9 @@ Each has an architectural reason (R-6.5c.4's refinement). Sources: handover §4.
 - **The e2e's `CAP = 4000`** (in four specs: `plays_a_whole_game`, `offline`, `two_browsers`, `plays_locally`):
   the browser walk's driving policy gets the same probe, and the cap's hits are recorded in a sequence.
 - **The restatements** (R1: `error_body`, `MAX_WAIT_SECONDS`, the house frame, the clock, the platform scan)
-  become items the layer **exports** and the module imports, so the source-text pin retires with its reason.
+  become items the layer **exports** and the module imports, so the source-text pin retires with its reason. The
+  browser host (`crates/yokohama-wasm`) restates the clock and the scan too, and switches to the same exports, so
+  each is stated once (§10.5). The exported `error_body` carries the foreign-bot refusal's arm (§2.4).
 - **A cell for `archive_over_retry`'s second `NotFound` arm** (Task 1's M6), now that the layer isn't fenced.
 
 ### 2.7 The Worker's shell and the module (handover §4.6)
@@ -649,8 +678,15 @@ which is how that is shown rather than claimed.
 - **`worker/src/table.ts` (2,082 lines) splits along its four concerns:** the transport helpers beside
   `frames.ts`; the slot half (~330 lines) as `delivery.ts`; the archive half (~380 lines) behind a narrow host
   interface; and one guarded-call helper replacing the three copies.
-- **Read once per request (F-4).** `readDocs` runs up to three times per request today, about 470 rows read per
-  move live; this reads once and threads the result. A cell counts document reads per request.
+- **The rows read per request (F-4).** About 470 rows are read per move live. **Measured in the pool, ~94% of a
+  warm request's rows are `hasTables`' scan of `sqlite_master`**, which runs inside every `getMeta` and every
+  `readDocs`: a warm request reads 32 rows, 30 of them that scan (§10.5). So this takes **both** fixes:
+  - a per-object memo of `hasTables`, forgotten at `deleteAll()`, which takes a warm request from 32 rows to 2,
+    with a cell that a warm request asks `sqlite_master` nothing;
+  - reading the documents once per request and threading the result (it saves 0–2 rows, and is structural), with
+    a cell that counts document reads per request.
+
+  The close claims F-4 only by its measured live reading.
 - **The picker invariant becomes structural.** `events_inner`, `stamp_archive_inner` and `expire_inner`'s
   no-creator arm reach `Games::handle` outside `picker::around`. Route them through it, or clear the list
   whenever the record changes.
@@ -668,7 +704,8 @@ which is how that is shown rather than claimed.
 
 From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 - **The scripts:**
-  - `.dev.vars` is parsed in **one module**, `worker/scripts/dev-vars.mjs`, with a type declaration.
+  - `.dev.vars` is parsed in **one module**, `worker/scripts/dev-vars.mjs`, with its type declaration
+    **`dev-vars.d.mts`** (TypeScript reads no `.d.ts` for an `.mjs` import; measured TS7016; §10.5).
     `worker/scripts/live-replay.mjs` imports it, and `web/e2e/live.ts` imports it by relative path. The two
     live in two npm packages; the plan confirms both TypeScript projects accept the import (review m10).
     RUNBOOK §6.4's recipe cites it.
@@ -701,17 +738,26 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   - the Worker's steps move out of `web-server` into a job of their own, `worker`;
   - the refusing-build step's `5 passed` count moves with §2.1's new identity cells (review m4);
   - the whole-game gate rejoins `web-server` once §2.6's fix is shown bounded;
+  - **every test binary of the layer is named**, because `browser_played_pin` (M6.5b) arrived after the
+    `--lib --test wire_fixtures` filter and has run in no workflow; a step fails when `crates/yokohama-web/tests/`
+    gains a binary no step names (§10.5);
+  - the refusing-build step printed nothing on failure: GitHub runs a `run` step as `bash -e`, so a red `cargo`
+    inside `out=$(…)` ends the step before its output is printed (measured). It gains `set +e`, as does the
+    gate's step (§10.5);
   - the header comment is updated.
 - **A new workflow, `.github/workflows/docker.yml`,** builds the self-host image:
   - It runs **on push and pull request when the image's inputs change** (review M5), which `deploy/Dockerfile`
     fixes: it copies `rust-toolchain.toml`, `Cargo.toml`, `Cargo.lock`, **all of `crates/`**, `web/package*.json`
-    and `web/`. The filter is `deploy/**`, `crates/yokohama-core/**`, `crates/yokohama-cli/**`,
+    and `web/`. The filter is `deploy/Dockerfile*`, `deploy/smoke-image.sh`, `crates/yokohama-core/**`,
+    `crates/yokohama-cli/**`, **`crates/yokohama-bridge/**`** (the CLI depends on it, so the image compiles it),
     `crates/yokohama-web/**`, `crates/yokohama-wasm/**`, **`crates/*/Cargo.toml`** (every member resolves),
-    `web/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` and **`.github/workflows/docker.yml`**. It can
-    also be dispatched by hand.
+    `web/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` and **`.github/workflows/docker.yml`**. A
+    document edit under `deploy/` pays no cold build (§10.5). It can also be dispatched by hand.
   - It builds with `docker buildx` and the GitHub Actions **layer** cache, then smoke-runs the image under
     **both** doors (`/api/health` 200 and its `identity` field under `cf-access`, then under `open`), so the
-    option is proven to ship in the image the repository's default runs.
+    option is proven to ship in the image the repository's default runs. The smoke is a script,
+    `deploy/smoke-image.sh <image> [port]`, so it runs first on a locally built image rather than for the first
+    time in CI, and a self-hoster can run it too.
   - **The layer cache covers the toolchain stages above the source `COPY`, not the Rust build.** The
     Dockerfile's `--mount=type=cache` mounts aren't carried by `cache-to: type=gha`, so a triggered run pays a
     cold `cargo build` and module build. The first runs are measured (§8). A cache-mount export step is the
@@ -728,13 +774,17 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 
 ### 2.10 The hosts (R-6.5c2.2, .5, .12)
 
-- **The NAS** gets this cycle's image:
-  - built with `--build-arg YOKOHAMA_PROJECT_URL` if the owner sets one, and `open-door`;
+- **The NAS** gets this cycle's release:
+  - built as it is today, from **`deploy/Dockerfile.runtime`**: a static musl binary and the `web/dist` of the
+    one `npm run build` both hosts ship, built on the workstation and delivered as a context the NAS fetches,
+    because the NAS runs kernel 3.10 (RUNBOOK §1–§3; §10.5). It takes `YOKOHAMA_PROJECT_URL` from that build's
+    environment if the owner sets one, and the binary keeps the default `open-door` feature;
   - run with **`YOKOHAMA_WEB_IDENTITY=cf-access`** behind the same Access application: Access is its door and its
     identity, **the repository default** (R-6.5c2.5). Revision 2 said `open`; the owner's defaults note moved
     it. The open door is exercised by the local browser suite (the axum binary in `open`) and by the Docker
     workflow's smoke run;
-  - the image is rebuilt (resolving R3's E-3) and its size and memory are re-measured and recorded;
+  - its size and memory are re-measured and recorded. The full-build image of `deploy/Dockerfile` (R3's E-3)
+    is proven by a local build and by the Docker workflow (§2.9), not by the NAS;
   - **the deployment is not done until `/api/me` is read over WARP, as the owner** (review R2.2-M3), recording
     `{"mode":"cf-access","user":…}` and the owner's own table listed under `scope=mine`. That is **the first
     live reading of the layer's `CfAccess` arm on any host**. Every NAS deployment so far ran `claimed`, and the
@@ -744,8 +794,8 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   the typed address is its holder's Access address. The NAS holds the owner's own tables, typed with the owner's
   address; any other seat is recorded at the deploy rather than migrated. There is no TTL, marker or operator
   surface (R-6.5c2.2).
-- **The Worker** is deployed at the close with `DEV_DOOR_CLIENT_ID` as a secret. Its RUNBOOK records the
-  deployment.
+- **The Worker** is deployed at the close with `DEV_DOOR_CLIENT_ID` as a secret, in the same version (§2.1's
+  one `--secrets-file` deploy). Its RUNBOOK records the deployment.
   - **The deploy drops every open picker on the Worker**, because this cycle changes the layer's sources and
     `build.rs` digests them (I-85, I-91). That's safe, and logged `picker-dropped` (review m11).
 - **The bucket** gets the `test/` lifecycle rule (R-6.5c2.12's command), read back.
@@ -771,7 +821,10 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     - the archive directory;
     - putting it behind a proxy or Cloudflare Access;
     - what's precached and why the project link is build-time.
-  - `deploy/RUNBOOK.md` keeps §0–§5 with their numbers, the NAS's operations and records.
+  - `deploy/RUNBOOK.md` keeps §0–§5 with their numbers, the NAS's operations and records. Its current-state
+    text that describes `claimed` (§0, §2's Modal sentence, §3's recipe, §3.2's verification) and
+    `deploy/cloudflared-config.yml`'s comment are rewritten for `cf-access`, because the close follows that
+    recipe (§10.5).
   - Its §6 moves **verbatim** to `worker/RUNBOOK.md`, beside `worker/README.md`. The old §6 becomes a pointer
     with a **relocation map** (`§6.x` → `worker/RUNBOOK.md §x`), so every frozen citation still resolves.
   - The review counted 75 lines citing RUNBOOK §6 outside it: 37 in frozen plans, the rest in code comments and
@@ -792,15 +845,17 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   - the public door's preconditions.
 
   `CLAUDE.md` keeps a short summary and a pointer, so AI-lane sessions stop paying for the web's detail.
-- **`guidingpath.md`** gets an M6.5c2 row, and its current state is refreshed. **The board**
-  (`docs/handover.md`) has its "previous update" history rewritten into pointers.
+- **`guidingpath.md`** gets two decision-log rows: R-6.5c2.16's personal-data exception, when the documents
+  are written, and the M6.5c2 cycle row at the close, with its readings (§10.5). Its current state is refreshed.
+  **The board** (`docs/handover.md`) has its "previous update" history rewritten into pointers.
 - **One "how the documents are built" note** in the lane document:
   - generated and checked: `guide_sync`, the wire corpus;
   - frozen at their close: the dated `docs/plans/` records;
   - current-state pointers: `CLAUDE.md`, the board, the READMEs.
 - **The root `README.md`** gets the two-README balance, pointing at the self-host guide and at
-  `worker/README.md`. `worker/README.md`'s screenshots of the door, the lobby, the join and the open table are
-  recaptured after the redesign.
+  `worker/README.md`. **Seven** of `worker/README.md`'s screenshots are recaptured after the redesign: the door,
+  the lobby, the join and the open table, plus the watcher's game screen (it shows the old "You are watching"),
+  `marker-404.png` (the old lobby) and `door-phone.png` (the old door) (§10.5).
 - **The address scrub** (R-6.5c2.16), including the two frozen plans under the recorded exception.
 
 ---
@@ -846,7 +901,7 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
       deploy (none);
     - `ClientState.bots` from the record;
     - **a not-over game with a foreign bot refuses on every game route with the typed refusal**, checked in
-      `live_handle` before any rebuild;
+      `live_handle` before any `Repl` is built (§2.4);
     - **a finished foreign game opens, scores and downloads**, its `warnings` carry no conversion line, and
       `why` on its bot's move answers the foreign-bot refusal (a corpus sample, and `contract.ts`'s entry),
       never "a human's move";
@@ -861,7 +916,8 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     - a same-game conflict stamps, on both hosts;
     - a different-game conflict keeps each host's rule;
     - the pair stays one game's in the undo-then-refinish case;
-    - the pool reproduces the race.
+    - a different game's conflict on the Worker stays final (`settledArm`);
+    - the pool reproduces the race, with the uploads overlapping and not.
   - **The seed:** the client's check is pinned to `WireSeed`'s verdicts on one shared table of inputs.
   - **The project link:** the build refuses each class of bad value, naming the variable; the door draws the
     link only when it's set.
@@ -871,24 +927,25 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
     - browser cells at desktop width and 390 px for the door, the lobby, the name step, the forms, waiting and
       joining, with no sideways scroll;
     - a headed look, because no jsdom cell sees a stylesheet.
-  - **The refactors:** the pool and the corpus through the objects stay byte-identical, and a cell counts
-    document reads per request.
+  - **The refactors:** the pool and the corpus through the objects stay byte-identical; a cell counts
+    document reads per request, and one shows a warm request asks `sqlite_master` nothing.
   - **The livelock:** a recorded run of the whole-game gate over many seeds, with the bot stream seeds recorded,
     shows its input count bounded before it rejoins CI.
 - **The mutation battery**, at the reviewed head: every new catcher above gets a row, and each is reverted and
   must fail. The containment and foreign-bot rows go first.
-- **The close, one recorded, machine-tagged sequence** (R-6.5c2.13):
-  1. the per-edit suites of every crate and package;
-  2. the fifteen release gates (core is compiled at a new version, and the merge follows);
-  3. `npm run e2e`;
+- **The close runs in the M6.5c close's order**, so a fix found in review never forces a second deploy or a
+  second live sequence (§10.5):
+  1. the Fable whole-branch review, one fix wave, and the scoped re-review;
+  2. the battery, at the reviewed head;
+  3. **one recorded, machine-tagged sequence** (R-6.5c2.13): the per-edit suites of every crate and package; the
+     fifteen release gates (core is compiled at a new version, and the merge follows); `npm run e2e`;
   4. the deploys, the Worker then the NAS, with `npm run build` in `web/` first and the `debug_trap` grep; the
      NAS's `/api/me` read over WARP as the owner, as §2.10 requires;
   5. **the live replay's reset recipe first** (trap 19: the version bump changes the walk's records, so the
      first sends would meet a 409 and stop; review M4), then the live replay twice;
   6. the quota guard, then the live Playwright tier and the headed exit game;
-  7. the battery;
-  8. the Fable whole-branch review;
-  9. after the close, the merge (R-6.5c2.17), then **the `v0.6.0` tag on master and its `release.yml` run**,
+  7. the screenshots (§2.11), the close document and the cycle's decision-log row;
+  8. after the close, the merge (R-6.5c2.17), then **the `v0.6.0` tag on master and its `release.yml` run**,
      read to green (R-6.5c2.19).
 
   A live step follows the handover §4.4 rules: WARP's device login checked first, the quota guard, and one
@@ -917,7 +974,8 @@ This is proposed; the plan fixes the tasks.
    bump with its ripple (§5, §8.2).
 6. **The hosts:** the secret, the `test/` rule, the deploys (the close's sequence).
 7. **The documents:** last, so they describe the final state. The address scrub goes with them.
-8. **The close:** the full sequence, the battery, the review, the close document, then the merge (R-6.5c2.17).
+8. **The close:** the review and its one fix wave, the battery, the full sequence, the deploys and live tiers, the
+   close document, then the merge (R-6.5c2.17), in §3's order.
 
 ---
 
@@ -997,11 +1055,15 @@ This is proposed; the plan fixes the tasks.
    (kept) or an output (regenerated):
    - **outputs:** `Cargo.lock`; `web/package.json` and `worker/package.json` and their lock files (the npm
      packages follow the release, one number); the corpus's `health.json`; `web/src/wire-script/
-     archive-walk.json`'s embedded records (so the live replay's reset recipe runs, §3); `deploy/
-     Dockerfile.runtime`'s comment; `web/e2e/plays_locally.spec.ts`'s stale `yokohama-web 0.5.0-m6.5b`
+     archive-walk.json`'s embedded records (so the live replay's reset recipe runs, §3);
+     **`web/src/wire-script/backup-envelope.json`'s `app_version`**, which a LIB cell writes
+     (`UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --lib backup`, not the `wire_fixtures` command; §10.5);
+     `deploy/Dockerfile.runtime`'s comment; `web/e2e/plays_locally.spec.ts`'s stale `yokohama-web 0.5.0-m6.5b`
      literal;
-   - **records, kept as written:** `worker/test/fixtures/owed-game-over.json`, the web fixture pair
-     `browser-played-2p.{json,table.json}`, `worker/scripts/smoke-release.test.mjs`'s fake body;
+   - **records, kept as written:** `worker/test/fixtures/owed-game-over.json` and `owed-pump.json`, the web
+     fixture pair `browser-played-2p.{json,table.json}`, `worker/scripts/smoke-release.test.mjs`'s fake body;
+   - **never touched:** `worker/package-lock.json`'s third-party `@cloudflare/kv-asset-handler@0.5.0`, which a
+     blind replace would corrupt (`npm version` leaves it; measured);
    - **the four bucket keys** under `test/browser/red_at_wire.test/rev7/over/` that the reset recipe removes.
 3. **The Docker workflow's minutes:** the first runs are measured cold.
 4. **The livelock's bound:** measured over recorded seeds before the gate rejoins CI (§2.6).
@@ -1010,7 +1072,9 @@ This is proposed; the plan fixes the tasks.
 
 The handover §8 in full, and R-6.5c2.18. Model dispatch follows the owner's standing rule: Opus is the floor for
 implementers and reviewers, and Fable orchestrates and reviews the whole branch. Reports go to files; a reviewed
-SHA is never amended; while an implementer works, nothing runs in its tree.
+SHA is never amended; while an implementer works, nothing runs in its tree. **The owner's answer on scale
+(2026-09-26, "Opus, merged tasks"):** the plan's 28 tasks run as 20 execution units of one or two tasks, each unit
+one Opus implementer and one Opus reviewer, with every task keeping its own green commit.
 
 ## 10. Review record
 
@@ -1129,3 +1193,45 @@ is **taken** in revision 2.4.
 - **Revision 2.2:** 3 MEDIUM · 6 MINOR.
 
 Every finding is taken, and 90 claims and mechanisms were checked true across the three reads.
+
+### 10.5 Corrections found while planning (revision 2.5, 2026-09-26)
+
+The plan (`docs/plans/2026-09-26-web-frontend-m6.5c2-plan.md`) was drafted against revision 2.4. Its drafters
+executed most tasks in `git archive` exports and read every `file:line` at HEAD, and found the sentences below
+wrong or incomplete. Each is corrected in place; the plan's Appendix A carries each drafter's note verbatim, and
+its "Assembly notes" carry the reconciliation. **No ruling changes.**
+
+| § | revision 2.4 said | what was found | the evidence (plan Appendix A) |
+|---|---|---|---|
+| 2.1 | the containment check is "no `Component::ParentDir` in the joined path" | an absolute path has no `ParentDir` and `join` with one replaces the base; a configured directory that is relative with `..` would refuse every put. The check is every component of the RELATIVE path `Component::Normal`, before the join | D1 amendment 3; mutant M2 (the old wording) fails the cell |
+| 2.1 | the NAS "is redeployed with `open` at the close" | it contradicted §2.10's `cf-access` (revision 2.2); §2.10 stands, and the NAS is not redeployed from the branch before the close | D1's notes |
+| 2.1 | two `cloudflareTest` projects "in one vitest workspace" | Vitest 4 removed `test.workspace`; the two projects are `test.projects` in `worker/vitest.config.ts`, the open project's cells under `worker/test/open/` | D6 amendment 1; measured, two workerds, `--project open` |
+| 2.1, 2.10 | the dev door's id becomes a secret by `wrangler secret put` | refused while the deployed version holds the name as a var (workers-sdk#5756); one `wrangler deploy --secrets-file` drops the var and adds the secret in one version | D8 A-1; the pinned wrangler 4.136.3's own option text |
+| 2.4 | `TurnMirror`'s `Copy` ripple is four by-value reads | six: `games.rs`'s mirror refresh and one test also move the value (E0382) | D2 A3; measured |
+| 2.4 | the foreign-bot check runs "before `Session::from_record`" | "not over" needs the replayed state; the refusal returns between `Session::from_record` and `Repl::new`, which keeps the property (no `Repl`, so no conversion) without a second replay | D2 A4; its first cell measures the property |
+| 2.5 | the Worker's `conflict` arm routes through `stamp_archive` | read by today's `stampArm`, another game's conflict is `retry`, hourly for ever; `settledArm` keeps it final | D6; a mutant turns both conflict rows red |
+| 2.5 | the race cell holds "a patched `R2Bucket.prototype.put`" | the pool's measured hold is `swapBucket` (`worker/test/gates.ts`); the race is two cells, overlapping and not, and the map holds both uploads (`uploads.size === 2`) | D6 amendment 3; measured at the M6.5c code |
+| 2.6 | the drift cell rebuilds the 0.5.0 pair "at 0.6.0" | vacuous until the bump; the cell derives a differing version, so it bites before and after | D3's Task 7; D8 A-7 |
+| 2.6 | the restatements move for "the module" | the browser host restates the clock and the scan too; it switches as well, or the layer's "stated once" is false | D7 A-6; ruled at assembly |
+| 2.7 | F-4's cost is `readDocs` running three times | `hasTables`' `sqlite_master` scan is ~94% of a warm request's rows; the memo takes a warm request 32 → 2 rows; read-once saves 0–2 | D7 A-3; measured in the pool; both fixes ruled at assembly |
+| 2.8 | `dev-vars.mjs` "with a type declaration" | TypeScript reads no `.d.ts` for an `.mjs` import; it is `dev-vars.d.mts` | D7 A-1; measured TS7016 |
+| 2.9 | the Docker filter | misses `crates/yokohama-bridge/**` (the CLI depends on it); `deploy/**` made every document edit pay a cold build, narrowed to `deploy/Dockerfile*` and `deploy/smoke-image.sh` | D8 A-2, A-3 |
+| 2.9 | CI's layer steps | `browser_played_pin` has run in no workflow; the refusing-build step prints nothing on failure under `bash -e` | D8 A-4 (measured), A-5 |
+| 2.10 | the NAS gets "this cycle's image", with a `--build-arg` | the NAS is deployed from `deploy/Dockerfile.runtime` with a workstation-built binary and `web/dist` (kernel 3.10); the link comes from the one `npm run build`; E-3 is proven by the Docker workflow | D8 A-11 |
+| 2.11 | four screenshots | seven | D8 A-12 |
+| 2.11 | only RUNBOOK §6 moves | §0, §2, §3 and §3.2 and `cloudflared-config.yml` describe `claimed`, and the close follows that recipe | D8 A-13 |
+| 2.11 | "an M6.5c2 row" | two rows: the personal-data exception when the documents are written, the cycle row at the close with its readings | D8 A-9 |
+| 3, 4 | the close's order put the review and the battery after the live tiers | a fix found then forces a second deploy and live sequence; the close runs in M6.5c's order | D8 A-10; ruled at assembly |
+| 8.2 | the bump's ripple | adds `backup-envelope.json` (a LIB cell writes it), `owed-pump.json` (kept), and the third-party `0.5.0` in `worker/package-lock.json` (never touched) | D8 A-6 |
+
+**The spec's silences, answered at assembly** (D4's and D5's lists; the orchestrator confirmed each, and each is
+built as stated):
+- the door's "How to play" opens the help without its screenshots, which show card art;
+- the creator's lobby rows keep Abandon beside their one action (R-13); row actions are buttons, and the table's
+  name is the one link;
+- state C's discriminator tests state A first; state D is the door's alone, and the lobby shows "loading…" rows;
+- the iPhone keeps its install instruction, because WebKit has no programmatic install;
+- the joiner's password sits above the seats and the one join button below them;
+- the open table's chat stays in the main column;
+- other people's seat cards read "seated";
+- test data never uses the owner's surname.
