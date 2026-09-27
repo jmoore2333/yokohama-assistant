@@ -481,6 +481,7 @@ impl AppState {
                 signals.clone(),
                 Arc::new(table::now_unix),
                 archive,
+                games::RunHost::Server,
             ),
             identity,
             heartbeat: HEARTBEAT,
@@ -1220,6 +1221,70 @@ mod tests {
         // And it is a 405 under POST, like every other GET-only route.
         let (status, _) = raw(app(Arc::clone(&state)), "POST", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// **What every save on this host names, carried byte for byte** (M6.5c2,
+    /// spec §2.4, "A pin, on every save path"): the record `finalize` writes
+    /// through `AppState`'s constructor says `run_id: "web/server"`, and the
+    /// three places a server-side save goes — the store, the game-over archive
+    /// and the record route — hold the SAME bytes, `run` exactly as dealt.
+    #[tokio::test]
+    async fn every_save_this_host_writes_names_web_server_byte_for_byte() {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let dir = tempdir("run-id");
+        let store = Arc::new(MemStore::default());
+        let state = || {
+            Arc::new(AppState::with_store_chat_and_archive(
+                store.clone(),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(archive::DirArchive::new(&dir)),
+            ))
+        };
+        let dealer = state();
+        start_as(&dealer, "named", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (dealt, _) = store.read(Doc::Record, "named").unwrap().unwrap();
+        let run = serde_json::from_str::<yokohama_core::GameRecord>(&dealt)
+            .unwrap()
+            .run
+            .expect("finalize stamps the run");
+        assert_eq!(run.run_id.as_deref(), Some("web/server"), "this host names itself");
+
+        // Played to its end — the both-bot finish `a_finished_two_person_game`
+        // uses — with the dealt `run` stamped back, and persisted through the
+        // dealing state, so the game-over site archives the bytes it writes.
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session =
+            Session::new_sim(config, ENDED_SEED, vec![StartingOrderChoice::Keep(0); 2], Rules::standard())
+                .expect("a game");
+        session.set_run_seats(BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT); 2], ENDED_SEED).seat_provenance());
+        let mut finished = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if finished.session.is_over() {
+                break;
+            }
+            finished.pump_bots();
+        }
+        assert!(finished.session.is_over(), "the both-bot pump must reach a finished game");
+        finished.session.set_run_seats(run.seats.clone());
+        finished.session.set_run_id(run.run_id.as_deref().expect("a run id"));
+        dealer.games.persist("named", &finished).expect("the finished record");
+
+        let (stored, _) = store.read(Doc::Record, "named").unwrap().unwrap();
+        let archived = std::fs::read_to_string(dir.join(format!("rev{}/over/named.json", yokohama_core::SEMANTICS_REV)))
+            .expect("the game-over archive landed");
+        assert_eq!(archived, stored, "the archive holds the stored bytes");
+        // A fresh state over the same store, so the route reads the store.
+        let (status, served) = raw(app(state()), "GET", "/api/games/named/record", Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(served, stored.as_bytes(), "the route serves the stored bytes");
+        let stored_run = serde_json::from_str::<serde_json::Value>(&stored).unwrap()["run"].clone();
+        assert_eq!(stored_run, serde_json::to_value(&run).unwrap(), "`run` is what finalize wrote");
     }
 
     // -----------------------------------------------------------------------

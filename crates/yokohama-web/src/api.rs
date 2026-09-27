@@ -2223,6 +2223,7 @@ mod tests {
             std::sync::Arc::new(crate::signal::NoSignal),
             std::sync::Arc::new(|| 1_789_000_000u64),
             archive,
+            crate::games::RunHost::Server,
         )
     }
 

@@ -130,6 +130,35 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
 /// which is why the committed corpus has to normalise it away.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// **Where a game was played** — the value every save's `run.run_id` names
+/// (M6.5c2, spec §2.4 "What every save names"), stamped by `finalize` into the
+/// record of every game this layer deals.
+///
+/// A value each HOST passes to [`Games::with_parts`], the one constructor on
+/// all three: the layer cannot tell a NAS from a Durable Object from a browser
+/// tab, and a save being evaluated later has to. It follows the BGA importer's
+/// `bga-import/<table>` precedent for the same field (`Session::set_run_id`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunHost {
+    /// The axum host: the NAS, and a self-hoster's Docker image.
+    Server,
+    /// The Cloudflare Worker's Durable Objects.
+    Worker,
+    /// The browser's own module — single player, in a Web Worker.
+    Browser,
+}
+
+impl RunHost {
+    /// The `run.run_id` a record dealt on this host carries.
+    pub fn run_id(&self) -> &'static str {
+        match self {
+            Self::Server => "web/server",
+            Self::Worker => "web/worker",
+            Self::Browser => "web/browser",
+        }
+    }
+}
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -233,6 +262,9 @@ pub struct Games {
     /// directory on the NAS, M6.5c's bucket. Asked at the two sites of
     /// R-6.5a.11 and nowhere else.
     pub(crate) archive: Arc<dyn Archive>,
+    /// Which host this layer runs on — the `run.run_id` `finalize` stamps
+    /// (M6.5c2).
+    pub(crate) run_host: RunHost,
 }
 
 /// How many `Repl`s stay resident.
@@ -271,6 +303,9 @@ impl Games {
             Arc::new(NoSignal),
             Self::ticking_clock(),
             Arc::new(NoArchive),
+            // The axum host's shape, with every part defaulted — and nothing
+            // but a cell builds one this way.
+            RunHost::Server,
         )
     }
 
@@ -294,7 +329,8 @@ impl Games {
     /// object, so the host builds its own and passes a clone, keeping the
     /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
     /// The two constructors above are this one with the chat facts, the signal
-    /// or the clock chosen for them.
+    /// or the clock chosen for them. The [`RunHost`] is the host's too (M6.5c2):
+    /// it is what every record dealt here names as where it was played.
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
@@ -302,6 +338,7 @@ impl Games {
         signal: Arc<dyn Signal>,
         clock: Clock,
         archive: Arc<dyn Archive>,
+        run_host: RunHost,
     ) -> Self {
         Self {
             rules,
@@ -317,6 +354,7 @@ impl Games {
             chat,
             clock,
             archive,
+            run_host,
         }
     }
 
@@ -1083,6 +1121,42 @@ mod tests {
         assert_eq!(puts[0].record, record, "the stored bytes");
         assert!(games.read_table(PLAYED_ID).unwrap().is_none(), "and gone");
     }
+
+    /// **Every game this layer deals names the host it was played on** (M6.5c2,
+    /// spec §2.4) — `finalize` stamps `run.run_id` from the `RunHost` the host
+    /// passed to [`Games::with_parts`] — and every later write keeps it: a move
+    /// and an undo each persist a record whose `run` is the one dealt.
+    #[test]
+    fn every_game_dealt_here_names_its_host_and_every_later_write_keeps_it() {
+        for host in [RunHost::Server, RunHost::Worker, RunHost::Browser] {
+            let games = Games::with_parts(
+                Arc::new(Rules::standard()),
+                Arc::new(MemStore::default()),
+                ChatConfig::default(),
+                Arc::new(NoSignal),
+                Games::ticking_clock(),
+                Arc::new(NoArchive),
+                host,
+            );
+            let run_id = |games: &Games| -> Option<String> {
+                let (text, _) = games.store().read(Doc::Record, "named").unwrap().unwrap();
+                serde_json::from_str::<GameRecord>(&text).unwrap().run.expect("the seats were stamped").run_id
+            };
+            let handle = playing(&games, &two_people("named", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+            assert_eq!(run_id(&games).as_deref(), Some(host.run_id()), "{host:?}: finalize stamps it");
+            let mut repl = handle.lock().unwrap();
+            let dealt = repl.session.record().events.len();
+            repl.step("1");
+            assert!(repl.session.record().events.len() > dealt, "premise: the step applied a move");
+            games.persist("named", &repl).unwrap();
+            assert_eq!(run_id(&games).as_deref(), Some(host.run_id()), "{host:?}: a move keeps it");
+            repl.step("undo");
+            assert_eq!(repl.session.record().events.len(), dealt, "premise: the undo popped it");
+            games.persist("named", &repl).unwrap();
+            assert_eq!(run_id(&games).as_deref(), Some(host.run_id()), "{host:?}: an undo keeps it");
+        }
+    }
+
     /// A record this server writes carries the terminal digest, so the
     /// engine's own provenance refusal is ARMED on a web game exactly as it is
     /// on a CLI save.
@@ -2046,6 +2120,7 @@ pub(crate) mod test_support {
             signals.clone(),
             Games::ticking_clock(),
             Arc::new(crate::archive::NoArchive),
+            super::RunHost::Server,
         );
         (games, signals)
     }

@@ -668,6 +668,24 @@ mod tests {
         assert_eq!((stored("table", "abandon"), stored("record", "abandon")), (None, None), "deleted");
     }
 
+    /// **A game dealt on this host names it, and the plan carries it**
+    /// (M6.5c2, spec §2.4): the record `finalize` wrote here says
+    /// `run_id: "web/worker"`, and the plan an abandon defers holds those
+    /// stored bytes — `run` and all — for R2.
+    #[test]
+    fn a_game_dealt_here_names_web_worker_and_its_plan_carries_the_stored_bytes() {
+        let _s = serial();
+        init_inner(&r2(None)).unwrap();
+        playing_with_a_move("named", RED, BLUE);
+        let record = stored("record", "named").expect("the game's record");
+        let v: Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(v["run"]["run_id"], "web/worker", "finalize stamps where it was played");
+        let _p = pin(1_789_000_950);
+        let first = call(RED, "DELETE", "/api/games/named", None);
+        assert_eq!(first.status, 500, "premise: the abandon defers its put — {}", first.body);
+        assert_eq!(plan_of(&first)["record"], record, "the plan's record is the stored bytes, `run` and all");
+    }
+
     /// A receipt whose digests differ is ABSENT (a re-dispatch at a different
     /// reading stamps a different `archived_at`, so its plan's key differs).
     #[test]

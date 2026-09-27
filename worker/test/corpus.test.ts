@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { WIRE } from "./corpus.gen";
-import { settle, tableStub } from "./helpers";
+import { replaceOnce, settle, tableStub } from "./helpers";
 import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
 
 // **The objects serve the corpus** (spec §5.3's pool half, R-6.5c.8; the
@@ -133,6 +133,12 @@ describe("the objects serve the corpus (spec §5.3)", () => {
     // `archived_at`.
     await settle(tableStub("wire"));
     const saved = await env.ARCHIVE!.get("test/rev7/over/wire.json");
-    expect(await saved?.text(), "the walk's game over saved its record").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
+    const committed = (ARCHIVE_WALK[0]!.body as { record: string }).record;
+    expect(committed, "premise: the emitter is the axum host").toContain('"run_id": "web/server"');
+    // The record is one game's on every host, and differs by exactly the host
+    // that dealt it (M6.5c2, spec §2.4): the emitter is the axum host, this
+    // pool is the Worker, and `run.run_id` says so.
+    expect(await saved?.text(), "the walk's game over saved its record, as this host names itself")
+      .toBe(replaceOnce(committed, '"run_id": "web/server"', '"run_id": "web/worker"'));
   });
 });

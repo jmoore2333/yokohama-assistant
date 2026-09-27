@@ -64,6 +64,7 @@ fn host_with_the_pair() -> (Games, String) {
         Arc::new(NoSignal),
         Arc::new(|| 1_789_000_000),
         Arc::new(NoArchive),
+        yokohama_web::games::RunHost::Browser,
     );
     let doc: yokohama_web::table::TableDoc =
         serde_json::from_str(TABLE).expect("the committed table document parses");

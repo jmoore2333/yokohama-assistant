@@ -1218,6 +1218,9 @@ impl Games {
         let mut session = Session::new_sim(config, doc.seed, choices, (*self.rules).clone())
             .map_err(GameError::Server)?;
         session.set_run_seats(bots.seat_provenance());
+        // Where it was played (M6.5c2, spec §2.4): AFTER the seats, whose
+        // provenance the id lands in — `Session::set_run_id`'s own contract.
+        session.set_run_id(self.run_host.run_id());
         let mut repl = Repl::new(session);
         bring_alive(&mut repl);
         // `Session::to_record_json`, never `to_string_pretty(record())`: the

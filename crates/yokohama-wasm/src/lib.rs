@@ -90,6 +90,7 @@ pub fn init() {
         Arc::new(yokohama_web::signal::NoSignal),
         Arc::new(now),
         Arc::new(yokohama_web::archive::NoArchive),
+        yokohama_web::games::RunHost::Browser,
     );
     *GAMES.lock().expect("the host's games") = Some(games);
 }
@@ -330,6 +331,25 @@ mod tests {
             let (status, body) = dispatch_inner(Some("red@t.test"), "GET", "/api/games/named/table", "", None, b"");
             assert_eq!(status, want, "{watcher:?}: {body}");
         }
+    }
+
+    /// **A game dealt in the browser names it** (M6.5c2, spec §2.4): the
+    /// record `finalize` writes on this host says `run_id: "web/browser"`.
+    #[test]
+    fn a_game_dealt_here_names_web_browser() {
+        let _s = serial();
+        init();
+        let user = Some("local@browser");
+        let create = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":"20260831","seats":[{"user":"local@browser"},{"bot":true}],"id":"local-named"}"#;
+        let (status, body) = dispatch_inner(user, "POST", "/api/games", "", Some("application/json"), create);
+        assert_eq!(status, 201, "{body}");
+        let keep = br#"{"seat":0,"card":1}"#;
+        let (status, body) =
+            dispatch_inner(user, "POST", "/api/games/local-named/keep", "", Some("application/json"), keep);
+        assert_eq!(status, 200, "{body}");
+        let record = read_inner("record", "local-named").unwrap().expect("the keep dealt the game");
+        let v: serde_json::Value = serde_json::from_str(&record).expect("a record");
+        assert_eq!(v["run"]["run_id"], "web/browser");
     }
 
     #[test]

@@ -171,6 +171,7 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         signal.clone(),
         Arc::new(now),
         layer_archive,
+        yokohama_web::games::RunHost::Worker,
     );
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
