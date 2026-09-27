@@ -1,11 +1,11 @@
 # M6.5c2 — the cleanup: spec
 
-**Status: DRAFT, revision 2, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
+**Status: DRAFT, revision 2.1, 2026-09-26.** Written at the close of the M6.5c2 brainstorm with the owner, from
 [the M6.5c2 handover](2026-09-26-web-frontend-m6.5c2-handover.md).
 - **Revision 1** (`6ce33fd6`) went to the owner and, in parallel, to a Fable adversarial review. The review found
   0 CRITICAL, 4 HIGH, 6 MEDIUM, 12 MINOR and 6 OPEN, and checked 50 claims true.
-- **Revision 2** (this text) applies every finding. §10 records each finding with its disposition. Two items
-  still wait on the owner, and they are marked **OWNER** where they stand.
+- **Revision 2** applies every finding. §10 records each finding with its disposition.
+- **Revision 2.1** (this text) records the owner's answers to the two items revision 2 left open (§10.2).
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -165,11 +165,11 @@ in five files**, not five lines in one (review H4):
   owner's address" with a dated note in place;
 - the layer's own test literal (`archive.rs`'s `caller_segment` cell), replaced with an example address;
 - the board (`docs/handover.md`), whose `…_at_…` transliteration is trivially reversible;
-- **OWNER — two lines in FROZEN plans:** `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` (a `curl`) and
+- **Two lines in FROZEN plans:** `docs/plans/2026-09-14-web-frontend-m6.1-plan.md` (a `curl`) and
   `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` (the test literal). Dated artifacts are "never edited
-  after their phase closes". The recommendation is a **recorded exception for personal data**: the two lines
-  are edited, and a dated decision-log row names the exception and the lines. The alternative is to leave both
-  records untouched and exclude them from any public repository.
+  after their phase closes". **The owner ruled a recorded exception for personal data** (2026-09-26,
+  "Record a personal-data exception"): the two lines are edited to "the owner's address", and a dated
+  decision-log row names the exception and both lines. The frozen-record rule stands for everything else.
 
 **R-6.5c2.17 — The merge, after the close:** #31 → #39 in stack order, **with merge commits**, never squash or
 rebase. The TDD history stays intact and each cycle's PR stays its record. Owner: "In order, merge commits".
@@ -180,15 +180,16 @@ account (deploys, secrets, the bucket, the live runs) and edits no code. Every a
 file. **Every task that changes what the client shows loads the `frontend-design` skill** (the owner named it
 for this work), and builds against the committed mockups.
 
-**R-6.5c2.19 — The release is versioned: `0.6.0`.** **OWNER: proposed in this spec, flagged for the owner's
-review; the number is a release decision.**
+**R-6.5c2.19 — The release is versioned: `0.6.0`.** Proposed in revision 1 and **ruled by the owner** (2026-09-26,
+"Bump to 0.6.0"): one release number across the workspace and both npm packages, and the release commit
+tagged.
 - Every crate takes the workspace version, `[workspace.package] version` in the root `Cargo.toml`, still
   `0.5.0`. So every save any build has written since the V4 release says `engine_version: "0.5.0"`.
   `GameRecord`'s own doc names that field as how "a human sees which build wrote the file".
 - This release bumps it. The lane document records the rule going forward: **bump at every release that can
   change what a save means or which bot plays**, the AI lane's V5 ship included, and tag the release commit.
 - **The bump is not free** (review H3): §5 lists everything it reaches, the most visible is handled in §2.6,
-  and the live replay's reset follows it (§3).
+  and the live replay's reset follows it (§3). The owner took it knowing its cost.
 
 ---
 
@@ -654,7 +655,7 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
 - **The root `README.md`** gets the two-README balance, pointing at the self-host guide and at
   `worker/README.md`. `worker/README.md`'s screenshots of the door, the lobby, the join and the open table are
   recaptured after the redesign.
-- **The address scrub** (R-6.5c2.16), including the OWNER item on the two frozen plans.
+- **The address scrub** (R-6.5c2.16), including the two frozen plans under the recorded exception.
 
 ---
 
@@ -746,7 +747,7 @@ This is proposed; the plan fixes the tasks.
    module's figures.
 4. **The scripts and the live tiers:** R3's list and the LOW findings.
 5. **The build and CI:** `wasm-opt` 133, the CI split, the Docker workflow, the gate back in CI, and the version
-   bump with its ripple (§5), if R-6.5c2.19 stands.
+   bump with its ripple (§5, §8.2).
 6. **The hosts:** the secret, the `test/` rule, the deploys (the close's sequence).
 7. **The documents:** last, so they describe the final state. The address scrub goes with them.
 8. **The close:** the full sequence, the battery, the review, the close document, then the merge (R-6.5c2.17).
@@ -774,7 +775,7 @@ This is proposed; the plan fixes the tasks.
 - **The layer changes, each named with its reason:** §2.1, §2.4, §2.5, §2.6.
 - **The wire contract changes, each read in the corpus diff:**
   - `/api/me`'s `mode` and `/api/health`'s `identity` (`open`);
-  - `server_version` (if R-6.5c2.19 stands);
+  - `server_version` (`0.6.0`);
   - `TableView.bot` and `ClientState.bots`;
   - the new contract file `production_bot.json`;
   - the three reworded server sentences;
@@ -855,8 +856,8 @@ Every finding is **taken**; the disposition says where.
 |---|---|
 | **H1** — a plain name `..` became a path segment; a browser's save landed in the server's own `rev7/over/` (measured) | TAKEN: §2.1's name must begin with a letter or digit; containment restated; the cell rewritten; `archive::paths` and `DirArchive::put` refuse `.`/`..` as defence in depth; §3's cells |
 | **H2** — "under `open` only" cannot live in `User::parse`, the mode-less key grammar at six sites | TAKEN: §2.1 is now two rules (the key grammar for every caller; the mode rule in `resolve`), the six sites listed, the new absent-mapping named as new, body-borne names under `cf-access`/`worker` accepted as unheld keys, the `unlocked` cell |
-| **H3** — the version bump reaches more than `engine_version`: a drift warning on every existing game's screen, and the bridge's served version | TAKEN: §5 lists what it reaches; §2.6 filters the drift line in the layer, pinned; R-6.5c2.19 states the cost and stays OWNER |
-| **H4** — the address is in nine lines across five files, two of them frozen plans | TAKEN: R-6.5c2.16 lists all nine; the two frozen plans are an OWNER item with a recommendation |
+| **H3** — the version bump reaches more than `engine_version`: a drift warning on every existing game's screen, and the bridge's served version | TAKEN: §5 lists what it reaches; §2.6 filters the drift line in the layer, pinned; R-6.5c2.19 states the cost, and the owner ruled the bump (§10.2) |
+| **H4** — the address is in nine lines across five files, two of them frozen plans | TAKEN: R-6.5c2.16 lists all nine; the owner ruled the exception for the two frozen plans (§10.2) |
 | **M1** — the door's "current production" label had no source under R-6.5b2.7 and R-6.5b.12 | TAKEN: the `production_bot.json` contract file, emitted by `wire_fixtures`, refused when stale (§2.4). `TableView.bot` carries the per-table label for every row, undealt included, so no `Health` field is needed |
 | **M2** — "every game route refuses" would block a finished game's download and score; the check has one site | TAKEN: R-6.5c2.10 narrowed to not-over games, read as the owner's words about resuming; the site is `live_handle` before `from_record`; a finished foreign game opens, the conversion warning is not shown, and `why` answers the foreign-bot refusal |
 | **M3** — on the Worker the conflict never reaches the module; a different-game conflict is stranded, not owed | TAKEN: §2.5's three shell changes, `settleUpload`'s arm named; R-6.5c2.11's per-host wording |
@@ -885,5 +886,12 @@ Every finding is **taken**; the disposition says where.
 
 ### 10.2 The owner's review
 
-*(To be filled with the owner's notes and their dispositions, and the two OWNER items: R-6.5c2.16's frozen plans
-and R-6.5c2.19's version.)*
+The owner read revision 1 in parallel with the review and answered the two items revision 2 left open
+(2026-09-26):
+
+| item | the owner's answer | where |
+|---|---|---|
+| R-6.5c2.16: the address in two frozen plans | "Record a personal-data exception": edit both lines, and log the exception in the decision log | R-6.5c2.16 |
+| R-6.5c2.19: the version | "Bump to 0.6.0": one number across the workspace and both npm packages, the release commit tagged, and a bump at every release that changes which bot plays | R-6.5c2.19 |
+
+*(Any further notes from the owner's read are recorded here with their dispositions.)*
