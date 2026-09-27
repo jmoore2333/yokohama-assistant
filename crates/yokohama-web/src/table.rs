@@ -808,7 +808,8 @@ mod tests {
     /// **The view names the table's bot** (M6.5c2, R-6.5c2.10): an undealt
     /// table's is the one this build deals, a dealt one's is its mirror's — the
     /// record's — and `null` where there is no bot seat, or where a dealt
-    /// table's mirror predates the field (review m7).
+    /// table's mirror predates the field (review m7). `runs_here` compares the
+    /// TRIPLE, not the name (review m12).
     #[test]
     fn the_view_names_the_bot_undealt_dealt_foreign_and_before_the_field() {
         use serde_json::{json, Value};
@@ -829,6 +830,16 @@ mod tests {
         let mut foreign = dealt.clone();
         foreign.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").controller = "v2-padded".into();
         assert_eq!(bot_of(&foreign), json!({ "label": "V2", "runs_here": false }), "another bot: named, not run here");
+
+        // Production's NAME at another version, or with other weights, still
+        // labels "V4" (`from_parts` reads neither), and does not run here: a
+        // name-only compare would answer `true` for both.
+        let mut other_version = dealt.clone();
+        other_version.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").version += 1;
+        assert_eq!(bot_of(&other_version), json!({ "label": "V4", "runs_here": false }), "same name, another version");
+        let mut other_weights = dealt.clone();
+        *other_weights.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").params.get_mut("weights").expect("weights") += 1;
+        assert_eq!(bot_of(&other_weights), json!({ "label": "V4", "runs_here": false }), "same name, other weights");
 
         let mut older = dealt.clone();
         older.turn.as_mut().expect("a mirror").bot = None;
