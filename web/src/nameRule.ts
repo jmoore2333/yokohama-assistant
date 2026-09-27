@@ -26,8 +26,13 @@
 // **The name as TYPED is kept too**, as the display name: "  Ben   Castle " is
 // the key `ben castle`, shown `Ben Castle` (Review Focus 1).
 
-/** `char::is_whitespace` — the Unicode White_Space property — as a class body. */
-const WHITE = "\t\n\u000b\f\r \u0085   -     　";
+/** `char::is_whitespace` — the Unicode White_Space property — as a class body.
+ *  Exported for its pin: `nameRule.test.ts` holds it to JavaScript's own
+ *  `\p{White_Space}` over every BMP code point, both ways, so the set can
+ *  neither gain nor lose a member in silence. Every member is written as an
+ *  escape: most of them are invisible, and an editor may strip U+2028 and
+ *  U+2029 as "unusual line terminators". */
+export const WHITE = "\t\n\u000b\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000";
 const IS_WHITE = new RegExp(`[${WHITE}]`);
 const EDGES = new RegExp(`^[${WHITE}]+|[${WHITE}]+$`, "g");
 /** `char::is_control`: the Unicode Cc category. */
@@ -77,12 +82,12 @@ function plainName(typed: string): NameVerdict {
   const display = typed.replace(/ {2,}/g, " ");
   const key = asciiLower(display);
   if (!/^[a-z0-9 ._-]*$/.test(key)) {
-    return { ok: false, reason: "A name uses letters, numbers, spaces, dots, dashes and underscores — nothing else." };
+    return { ok: false, reason: "A name uses letters, numbers, spaces, dots, dashes and underscores \u2014 nothing else." };
   }
   if (!/^[a-z0-9]/.test(key)) return { ok: false, reason: "A name begins with a letter or a digit." };
   if (key.length > NAME_MAX) return { ok: false, reason: `A name is at most ${NAME_MAX} characters.` };
   if (key === "anonymous") {
-    return { ok: false, reason: "“anonymous” means nobody on this server — choose another name." };
+    return { ok: false, reason: "\u201canonymous\u201d means nobody on this server \u2014 choose another name." };
   }
   return { ok: true, key, display };
 }

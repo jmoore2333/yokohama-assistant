@@ -249,9 +249,10 @@ export const WALKER = "walker@e2e.test";
  *
  * Idempotent, because several specs navigate more than once in a test and the
  * name survives inside a page's storage: if the door is already open this just
- * waits for the corner, or the strip, that says so. The wait is on EITHER, because `App` draws
- * nothing at all until `/api/me` answers — a bare `count()` would read zero for
- * a player who is signed in perfectly well.
+ * waits for the corner, or the strip, that says so. The wait is on EITHER, because until
+ * `/api/me` answers the lobby draws only "Connecting to the server…" — neither
+ * the name step nor the corner — so a bare `count()` would read zero for a
+ * player who is signed in perfectly well.
  *
  * **The default lands on `#/lobby` since M6.5b2** (R-6.5b2.1). `/` is the front
  * door, which is drawn from this browser alone and has no sign-in on it at all:

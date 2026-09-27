@@ -15,7 +15,15 @@ import { SignIn } from "./SignIn";
 describe("the name step", () => {
   // **Review Focus 1, on the screen**: one key, shown as typed.
   it("stores the key the server will use, keeps the name as typed, and hands the key up (Review Focus 1)", async () => {
-    const onSignedIn = vi.fn();
+    // **What storage held WHEN the callback ran** (review M2), recorded rather
+    // than asserted inside it: an `expect` that threw there would throw inside
+    // React's event dispatch. The order is load-bearing — the callback re-reads
+    // `/api/me`, and `api.ts` sends the header from storage — so a key stored
+    // after it would ask the server as nobody.
+    const seen: (string | null)[] = [];
+    const onSignedIn = vi.fn(() => {
+      seen.push(localStorage.getItem(CLAIMED_USER_KEY));
+    });
     render(<SignIn onSignedIn={onSignedIn} />);
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Name"), "  Ben   Castle ");
@@ -23,6 +31,7 @@ describe("the name step", () => {
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe("ben castle");
     expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Ben Castle");
     expect(onSignedIn).toHaveBeenCalledWith("ben castle");
+    expect(seen, "the key was stored before the callback ran").toEqual(["ben castle"]);
   });
 
   it("takes an address too, keyed exactly as the server keys it", async () => {
@@ -41,9 +50,16 @@ describe("the name step", () => {
     const onSignedIn = vi.fn();
     render(<SignIn onSignedIn={onSignedIn} />);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Name"), "..");
+    const field = screen.getByLabelText("Name");
+    expect(field).not.toHaveAttribute("aria-invalid", "true");
+    await user.type(field, "..");
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByText("A name begins with a letter or a digit.")).toBeInTheDocument();
+    // **Announced, and tied to the field** (review M7): a screen-reader user who
+    // presses Continue hears the reason, and the field says it is the one
+    // refused and carries the reason as its description beside the rule.
+    expect(screen.getByRole("alert")).toHaveTextContent("A name begins with a letter or a digit.");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveAccessibleDescription(/Up to 32 characters\. A name begins with a letter or a digit\./);
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
     expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
     expect(onSignedIn).not.toHaveBeenCalled();

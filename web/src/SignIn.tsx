@@ -32,6 +32,7 @@ export function SignIn({
 }) {
   const field = useId();
   const rule = useId();
+  const refused = useId();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
@@ -79,7 +80,8 @@ export function SignIn({
             id={field}
             type="text"
             autoComplete="nickname"
-            aria-describedby={rule}
+            aria-describedby={error ? `${rule} ${refused}` : rule}
+            aria-invalid={error ? true : undefined}
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
@@ -90,7 +92,15 @@ export function SignIn({
             Continue
           </button>
         </form>
-        {error && <Refusal sentence={error} />}
+        {/* **Announced, and tied to the field** (review M7): `role="alert"` so a
+            screen reader says why the name was refused the moment it is, and
+            the field is marked invalid and described by the reason as well as
+            by the rule. */}
+        {error && (
+          <div id={refused} role="alert">
+            <Refusal sentence={error} />
+          </div>
+        )}
         <p className="fine">
           This server doesn&rsquo;t check who anyone is, so anyone who can reach it can use any name.
           Play here with people you know. Your tables stay with the name you sat down as, so

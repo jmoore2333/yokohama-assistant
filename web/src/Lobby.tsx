@@ -339,7 +339,9 @@ export function Lobby({
         {door ? (
           <div className="lobby-door">{door}</div>
         ) : serverUp === false ? (
-          <Unreachable onRetry={onRetry ?? (() => {})} />
+          <div className="lobby-door">
+            <Unreachable onRetry={onRetry ?? (() => {})} />
+          </div>
         ) : (
           <>
             <div className="lobby-actions">

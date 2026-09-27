@@ -460,7 +460,10 @@ describe("the server area", () => {
     });
     const retry = vi.fn();
     render(<Lobby me={ME} serverUp={false} onRetry={retry} />);
-    expect(await screen.findByRole("heading", { level: 3, name: "Can't reach the server" })).toBeInTheDocument();
+    const card = await screen.findByRole("heading", { level: 3, name: "Can't reach the server" });
+    // In the same centring box the door's own C stands in (review M1): drawn
+    // bare, the card sat flush left under the band.
+    expect(card.closest(".lobby-door"), "the card is centred as the door's C is").not.toBeNull();
     expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Open tables" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Games in progress" })).toBeNull();

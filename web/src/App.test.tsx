@@ -1322,9 +1322,10 @@ describe("the boards a player switches during setup", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
-    // the LOBBY is one round trip away rather than there on first paint — and
-    // the form is one click beyond it since M6.2 (spec §5.1).
+    // `find`, not `get`: until `/api/me` answers the lobby draws only
+    // "Connecting to the server…", so its New table is one round trip away
+    // rather than there on first paint — and the form is one click beyond it
+    // since M6.2 (spec §5.1).
     await user.click(await screen.findByRole("button", { name: "New table" }));
     await user.click(await screen.findByRole("button", { name: "Deal" }));
     // The dealing screen's own heading: a create opens a TABLE, and the deal is
@@ -1913,10 +1914,12 @@ describe("the route", () => {
 
 // ---- the door (M6.1 §7.1) --------------------------------------------------
 //
-// Four screens, and `/api/me` picks between them: nothing while it is in
-// flight, the sign-in form under an `open` deployment with nobody signed in,
-// a sentence naming the missing header under the other two doors, and the app
-// itself once the server names a user.
+// The door's states, and `/api/me` picks between them (M6.5c2, spec §2.1):
+// "Connecting to the server…" while it is in flight; the name step under an
+// `open` deployment with nobody named; under the other two doors a card saying
+// the server couldn't tell who you are, the missing header in its operator
+// fold; the expired-session and can't-reach cards when the read fails; and the
+// app itself once the server names a user.
 
 describe("the door", () => {
   it("shows the name step when the door is open and nobody has a name, then the lobby", async () => {
@@ -2039,19 +2042,26 @@ describe("the door", () => {
   //
   // It goes the whole way: the header `serverHeaders()` sends is what makes the
   // 401 same-origin and readable, `settle` tells it from this API's own 401 by
-  // the `WWW-Authenticate` header, and `Door` draws it through `Refusal`.
+  // the `WWW-Authenticate` header, and `Door` draws it as state A: its own
+  // card, with the turnstile's link.
+  //
+  // **Both reads meet the challenge, which is the real shape** (Review Focus
+  // 3): the Access application covers the whole hostname, `/api/health`
+  // included, so an expired session fails the health read too — and the card
+  // must still be A, not "can't reach the server", once that read has settled.
   it("draws the turnstile's link for an EXPIRED Access session, and keeps the stored name", async () => {
     stubWorker();
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-    stubApi((call) => {
-      if (call.path.endsWith("/api/me"))
-        return new Response("<html>", {
-          status: 401,
-          headers: {
-            "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"',
-          },
-        });
-      if (call.path.endsWith("/api/health")) return wire.health;
+    const challenge = () =>
+      new Response("<html>", {
+        status: 401,
+        headers: {
+          "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"',
+        },
+      });
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return challenge();
+      if (call.path.endsWith("/api/health")) return challenge();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       throw new Error(`unexpected ${call.method} ${call.path}`);
@@ -2067,6 +2077,13 @@ describe("the door", () => {
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
     // And the sign-in form is not what they are shown.
     expect(screen.queryByRole("heading", { name: "Choose a name" })).toBeNull();
+    // Once the challenged health read has SETTLED, the card is still A.
+    expect(stub.matching("GET", "/api/health").length).toBeGreaterThan(0);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.getByRole("heading", { name: "Your sign-in has run out" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
   });
 
   it("names the door rather than offering a form when an edge-door deployment has no user", async () => {
@@ -2254,11 +2271,14 @@ describe("the door", () => {
   });
 
   // **Review Focus 3.** A browser that typed an address under the OPEN door
-  // still holds it when it visits a door set in front of the server — the NAS
-  // after its redeploy onto `cf-access`. The stale header rides every request,
-  // the server ignores it, and the corner says who ACCESS says this is. Nothing
-  // asks the player to "switch player": the name is not theirs to switch there.
-  it("names the Access identity, never a stale stored name, and offers no switch player (Review Focus 3)", async () => {
+  // still holds its KEY when it visits a door set in front of the server — the
+  // NAS after its redeploy onto `cf-access`. The stale header rides every
+  // request, the server ignores it, and the corner says who ACCESS says this
+  // is. Nothing asks the player to "switch player": the identity is not theirs
+  // to switch there. The KEY only: a stored DISPLAY name shown behind Access is
+  // as the spec mandates (ruling R-B14 — the two hosts are different origins,
+  // so no browser carries one across).
+  it("names the Access identity, never a stale stored key, and offers no switch player (Review Focus 3)", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, "stale@old.test");
     const stub = stubApi((call) => {
       // The corpus's user behind Access: one field moved off a real payload,
