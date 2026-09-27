@@ -30,9 +30,10 @@ use crate::identity::User;
 
 /// Who plays one seat.
 ///
-/// A human seat carries the NORMALIZED email `identity::User::parse` produced —
-/// the one key every binding is written under, so a seat bound from a header
-/// reading `  Red@Wire.TEST ` is the same seat the next request finds.
+/// A human seat carries the NORMALIZED key `identity::User::parse` produced — an
+/// email, or (M6.5c2) a plain name — the one key every binding is written
+/// under, so a seat bound from a header reading `  Red@Wire.TEST ` is the same
+/// seat the next request finds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SeatDoc {
@@ -197,7 +198,7 @@ pub struct TableDoc {
     #[serde(default)]
     pub lock: Option<Lock>,
     /// Everyone who has presented this table's password to `POST …/{id}/unlock`
-    /// and may therefore WATCH it (M6.3, R-3.5). Normalized emails, as every
+    /// and may therefore WATCH it (M6.3, R-3.5). Normalized keys, as every
     /// other binding here is.
     ///
     /// **Never on the wire**, like `seed`, `keeps` and `lock` — it is the list

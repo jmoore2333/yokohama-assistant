@@ -57,7 +57,8 @@ pub(crate) enum Switch {
 /// defaults, never a copy.
 ///
 /// **Under `r2` the caller is NORMALIZED by the layer's own `User::parse`**,
-/// the parse that normalizes every sender, and refused if it is no address.
+/// the parse that normalizes every sender, and refused if it is no key — an
+/// email, or (M6.5c2) a plain name.
 /// The receipt archive reads it whole for spec §2.6's `test/` root, which must
 /// read `Red@T.TEST` as the `red@t.test` a sender of that name normalizes to.
 /// Under `off` nothing reads it, and it is not checked.
@@ -92,5 +93,5 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
 fn normalized(raw: &str) -> Result<String, String> {
     User::parse(raw)
         .map(|user| user.as_str().to_string())
-        .map_err(|e| format!("the archive's caller must be an address: {e}"))
+        .map_err(|e| format!("the archive's caller must be an email or a name: {e}"))
 }

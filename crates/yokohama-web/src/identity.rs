@@ -1,4 +1,4 @@
-//! Who a request is from — one configured source, one header, one normalized email.
+//! Who a request is from — one configured source, one header, one normalized key.
 //!
 //! The room's first seam (`docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §1).
 //! Every mode reads EXACTLY ONE header and ignores every other identity header
@@ -111,19 +111,64 @@ impl FromStr for IdentityMode {
     }
 }
 
-/// A normalized email: trimmed, lowercased, exactly one `@` with both sides
-/// non-empty, no whitespace or control characters, at most 254 bytes (R-1.1).
-/// A shape check, not RFC validation. Normalized HERE and nowhere else — this
-/// is the key every seat binding is written under.
+/// A KEY (M6.5c2, spec §2.1 rule 1): what every seat binding, watcher entry
+/// and archive directory is written under — an email, or a plain name.
+/// Normalized HERE and nowhere else: [`User::parse`] is the one grammar, and
+/// it knows no deployment mode; which keys a MODE admits as a caller is
+/// [`resolve`]'s rule, not this one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct User(String);
 
+/// The longest plain name, in characters (every one of them ASCII).
+const NAME_MAX: usize = 32;
+
+/// A plain name's rule, as the refusal words it.
+const NAME_RULE: &str = "a name is 1 to 32 letters, digits, spaces, dots, dashes or \
+                         underscores, and begins with a letter or a digit";
+
 impl User {
+    /// The key grammar, for EVERY caller — `resolve`, a create's
+    /// `SeatSpec.user`, `check_shape`'s watcher list,
+    /// `archive::caller_segment`, the Worker module's `identity_of` and
+    /// `init`, and `backup::check_pair` — none of which knows the mode.
+    ///
+    /// The value's [`Self::typed_form`] (trimmed, each run of internal spaces
+    /// collapsed to one), lowercased by ASCII rules, is then one of two shapes:
+    /// - **an email**, exactly today's shape: one `@` with something on both
+    ///   sides, no whitespace or control character, at most 254 bytes. A shape
+    ///   check, not RFC validation.
+    /// - **a plain name**: 1 to 32 ASCII letters, digits, spaces, `.`, `-` and
+    ///   `_`, **beginning with a letter or a digit**, and never the literal
+    ///   `anonymous`. The leading character is what keeps a name's archive
+    ///   segment from being `.` or `..` (review H1, measured); `anonymous` is
+    ///   refused so it never becomes a key (the Worker's HEADER `anonymous`
+    ///   reads as absent — a separate rule, in [`resolve`]).
+    ///
+    /// The `@` decides which shape is being checked, because a name's alphabet
+    /// has none: an email is never a name, and a name never an email.
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let s = raw.trim().to_ascii_lowercase();
+        let s = Self::typed_form(raw).to_ascii_lowercase();
         if s.is_empty() {
-            return Err("no email given".to_string());
+            return Err("no name or email given".to_string());
         }
+        if s.contains('@') {
+            return Self::email(raw, s);
+        }
+        let alphabet = s
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b' ' | b'.' | b'-' | b'_'));
+        if s.len() > NAME_MAX || !alphabet || !s.as_bytes()[0].is_ascii_alphanumeric() {
+            return Err(format!("{raw:?} is neither an email nor a name: {NAME_RULE}"));
+        }
+        if s == "anonymous" {
+            return Err(format!("{raw:?} is reserved: `anonymous` is how an edge says nobody"));
+        }
+        Ok(Self(s))
+    }
+
+    /// Today's email rule, over the already-normalized `s`; `raw` is quoted in
+    /// the refusal as the caller sent it.
+    fn email(raw: &str, s: String) -> Result<Self, String> {
         if s.len() > 254 {
             return Err("an email is at most 254 bytes".to_string());
         }
@@ -131,13 +176,29 @@ impl User {
             return Err(format!("{raw:?} contains whitespace or a control character"));
         }
         let mut parts = s.split('@');
-        let (local, domain, rest) = (parts.next(), parts.next(), parts.next());
-        match (local, domain, rest) {
+        match (parts.next(), parts.next(), parts.next()) {
             (Some(l), Some(d), None) if !l.is_empty() && !d.is_empty() => Ok(Self(s)),
-            _ => {
-                Err(format!("{raw:?} is not an email: exactly one @ with something on both sides"))
-            }
+            _ => Err(format!("{raw:?} is not an email: exactly one @ with something on both sides")),
         }
+    }
+
+    /// What a person typed, tidied: `raw` trimmed (Rust's `str::trim`, Unicode
+    /// white space), each run of internal SPACES collapsed to one, case KEPT.
+    /// Everything [`Self::parse`] does to a value before it lowercases and
+    /// checks it, so an accepted key is exactly this, ASCII-lowercased — which
+    /// is why the client may show it as the player's name (`"  Ben   Castle "`
+    /// shows as `Ben Castle`, keyed `ben castle`). Emitted beside each key in
+    /// `web/src/wire/identity_cases.json`, which the client's name step is
+    /// pinned to.
+    pub fn typed_form(raw: &str) -> String {
+        raw.trim().split(' ').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Whether this key has the email shape — the only shape a key with an `@`
+    /// can have. The mode rule's test: under `cf-access` and `worker` a caller
+    /// must be one.
+    pub fn is_email(&self) -> bool {
+        self.0.contains('@')
     }
 
     pub fn as_str(&self) -> &str {
@@ -212,14 +273,73 @@ mod tests {
         h
     }
 
+    /// **The key grammar** (M6.5c2, spec §2.1 rule 1): a key is an email OR a
+    /// plain name, and one rule normalizes both — trim, collapse each run of
+    /// internal spaces to one, lowercase by ASCII rules. Both families' bounds
+    /// are asserted from both sides, so a grammar that refused everything, or
+    /// took everything, fails here rather than in a lobby.
     #[test]
-    fn an_email_is_normalized_once_and_the_shapes_that_are_not_one_are_refused() {
-        assert_eq!(User::parse("  A@Example.COM ").expect("an email").as_str(), "a@example.com");
-        for bad in ["", "nobody", "two@@signs", "a@b c", "@example.com", "a@", "a\u{7}@b.c"] {
+    fn a_key_is_an_email_or_a_plain_name_normalized_by_one_rule() {
+        for (raw, key) in [
+            ("  A@Example.COM ", "a@example.com"),
+            ("a+b@x.test", "a+b@x.test"),
+            ("  Ben   Castle ", "ben castle"),
+            ("BEN", "ben"),
+            ("x", "x"),
+            ("7 wonders", "7 wonders"),
+            ("r2-d2_x.y", "r2-d2_x.y"),
+            ("a.test", "a.test"),
+            ("ben\t", "ben"),
+        ] {
+            assert_eq!(User::parse(raw).map(|u| u.as_str().to_string()), Ok(key.to_string()), "{raw:?}");
+        }
+        for bad in [
+            "", "   ", "two@@signs", "a@b c", "@example.com", "a@", "a\u{7}@b.c",
+            "Bén", "ben\tcastle", "a/b", "ben!",
+        ] {
             assert!(User::parse(bad).is_err(), "{bad:?} must be refused");
         }
-        let long = format!("{}@x.y", "a".repeat(252));
-        assert!(User::parse(&long).is_err(), "255 bytes is one too many");
+        // The two length bounds, each from both sides.
+        let email = |n: usize| format!("{}@x.y", "a".repeat(n - 4));
+        assert!(User::parse(&email(254)).is_ok(), "254 bytes is an email");
+        assert!(User::parse(&email(255)).is_err(), "255 bytes is one too many");
+        assert!(User::parse(&"n".repeat(32)).is_ok(), "32 characters is a name");
+        assert!(User::parse(&"n".repeat(33)).is_err(), "33 is one too many");
+    }
+
+    /// **The names that would name a path step, or nobody, are never keys**
+    /// (M6.5c2, spec §2.1; review H1, MEASURED: an unconstrained `..` became
+    /// the archive segment `..` and landed a browser's save in the server's
+    /// own `rev7/over/`). A plain name must BEGIN with a letter or a digit, and
+    /// the literal `anonymous` — how an unprotected edge says "nobody" — is
+    /// refused in any case. The accepted half is the anti-vacuity: a dot, a
+    /// dash or the word itself later in a name is fine.
+    #[test]
+    fn a_name_that_could_be_a_path_step_or_nobody_is_never_a_key() {
+        for bad in [".", "..", ". .", "-", ".x", "_x", "-x", " .. ", "anonymous", "Anonymous", " ANONYMOUS "] {
+            assert!(User::parse(bad).is_err(), "{bad:?} must never be a key");
+        }
+        for good in ["x.", "a..b", "z-", "anonymous1", "anon ymous", "anonymous@x.test"] {
+            assert!(User::parse(good).is_ok(), "{good:?} is a key");
+        }
+    }
+
+    /// **(Review Focus 1)** A name typed with capitals and extra spaces is ONE
+    /// key, and the same person typing it plainly later is the same key — so
+    /// they reach the same seats. The typed form keeps the case, for the screen
+    /// to show; the key is that form lowercased and nothing else.
+    /// [`User::is_email`] says which of the two shapes a key has.
+    #[test]
+    fn a_name_typed_with_capitals_and_extra_spaces_is_one_key_shown_as_typed() {
+        let typed = User::parse("  Ben   Castle ").unwrap();
+        assert_eq!(typed.as_str(), "ben castle");
+        assert_eq!(User::parse("ben castle").unwrap(), typed, "the same person, typed plainly");
+        assert_eq!(User::parse("BEN CASTLE").unwrap(), typed);
+        assert_eq!(User::typed_form("  Ben   Castle "), "Ben Castle", "shown as typed, tidied");
+        assert_eq!(User::typed_form("  Red@Wire.TEST "), "Red@Wire.TEST");
+        assert!(!typed.is_email());
+        assert!(User::parse("Red@Wire.TEST").unwrap().is_email());
+        assert!(!User::parse("a.test").unwrap().is_email(), "a dot is not an address");
     }
 
     /// R-1.2: a request carrying all three headers with three different values

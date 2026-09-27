@@ -197,7 +197,7 @@ impl Archive for ReceiptArchive {
         table_json: &str,
     ) -> Result<PutOutcome, PutError> {
         let root = self.root(prefix, table_json)?;
-        let (record_key, table_key) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id);
+        let (record_key, table_key) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id).map_err(PutError::Failed)?;
         let (record_key, table_key) = (format!("{root}{record_key}"), format!("{root}{table_key}"));
         let key = plan_key(&record_key, &table_key, record_json, table_json);
         if let Some(receipt) = self.receipts.lock().expect("the receipts").remove(&key) {
@@ -1177,10 +1177,30 @@ mod tests {
         assert_eq!(archived_at(OWED), None, "nothing stamped");
     }
 
+    /// **The layout's refusal reaches this archive as a FAILURE, and no plan is
+    /// recorded** (M6.5c2, spec §2.1's defence in depth; review R2-m3). No
+    /// caller can hand the layer a `.` or `..` component — the key grammar and
+    /// `is_safe_id` close both — so the put is called directly, as the layer
+    /// would call it with an id that slipped through: a `Failed`, never a
+    /// conflict the shell would read as "a different record is there", and
+    /// never a plan it would upload.
+    #[test]
+    fn a_path_the_layout_refuses_is_a_failure_and_records_no_plan() {
+        let archive = ReceiptArchive::new(None);
+        let table = json!({ "created_by": RED }).to_string();
+        let put = archive.put("", Why::Over, "..", "{}", &table);
+        assert!(matches!(&put, Err(PutError::Failed(why)) if why.contains("..")), "{put:?}");
+        assert!(archive.pending.lock().unwrap().is_none(), "nothing deferred, so nothing uploads");
+        // Anti-vacuity: the same put under a safe id IS deferred, so the arm
+        // above read the layout's refusal and not an archive that plans nothing.
+        let _ = archive.put("", Why::Over, "sim-1", "{}", &table);
+        assert!(archive.pending.lock().unwrap().is_some(), "a safe id is planned");
+    }
+
     /// `receipt` takes exactly the outcome the shell writes (§"Names shared
     /// across tasks") — an OBJECT with one of the four words and a detail — and
     /// only where a put can have been deferred; and `init` takes an archive
-    /// caller only as an address.
+    /// caller only as a key — an email or (M6.5c2) a plain name.
     #[test]
     fn a_receipt_is_the_outcome_object_and_needs_the_archive_on() {
         let _s = serial();
@@ -1202,7 +1222,10 @@ mod tests {
             receipt_inner("a-key", &outcome(kind, "x")).unwrap_or_else(|e| panic!("{kind}: {e}"));
         }
 
-        let err = init_inner(&r2(Some("nobody"))).unwrap_err();
+        let err = init_inner(&r2(Some(".."))).unwrap_err();
         assert!(err.contains("caller"), "{err}");
+        // Anti-vacuity, and the open door's premise (M6.5c2): a plain name is a
+        // caller the key grammar accepts.
+        init_inner(&r2(Some("  Ben   Castle "))).expect("a plain name is a caller");
     }
 }

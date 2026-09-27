@@ -1925,7 +1925,7 @@ pub(crate) mod test_support {
 
     /// A normalized identity, the way the extractor produces one.
     pub(crate) fn who(s: &str) -> User {
-        User::parse(s).expect("an email")
+        User::parse(s).expect("a key")
     }
 
     /// The cycle's standing request: red at seat 0, the bot at seat 1.

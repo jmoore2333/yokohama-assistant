@@ -223,9 +223,9 @@ jobs:
       # `dev-identity` dropped — and the whole of R-6.5b2.3 is that it compiles
       # AND refuses `YOKOHAMA_WEB_IDENTITY=claimed` by name. The wasm check above
       # cannot see it: that shape drops `server` too, so the identity module's
-      # own cells never run there. Five cells, one of which
+      # own cells never run there. Seven cells, one of which
       # (`claimed_parses_only_where_the_development_feature_is_compiled_in`)
-      # takes its refusing branch only here; the other four prove the module
+      # takes its refusing branch only here; the other six prove the module
       # still works without the feature.
       # QUOTED, and it has to be: a plain YAML scalar ending in `:` is read as
       # a mapping key, so the unquoted form made this WHOLE FILE fail to parse
@@ -243,7 +243,7 @@ jobs:
       # reading a person needs, the compiler's error or the cell's own failure,
       # never reaches the log and the step reports only its exit code. The
       # status is taken by hand and the output is printed on BOTH paths.
-      - name: the refusing build, and that its five identity cells really ran
+      - name: the refusing build, and that its seven identity cells really ran
         run: |
           set -uo pipefail
           out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
@@ -253,8 +253,8 @@ jobs:
             echo "::error::the refusing build did not pass — R-6.5b2.3's only CI witness; its output is above"
             exit "$status"
           fi
-          echo "$out" | grep -q "test result: ok. 5 passed" || {
-            echo "::error::the identity:: filter did not run five cells — R-6.5b2.3's only CI witness"
+          echo "$out" | grep -q "test result: ok. 7 passed" || {
+            echo "::error::the identity:: filter did not run seven cells — R-6.5b2.3's only CI witness"
             exit 1
           }
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.

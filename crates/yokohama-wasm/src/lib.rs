@@ -282,12 +282,13 @@ mod tests {
                 && body.contains(r#""archive":"off""#),
             "this host's three deployment facts: {body}",
         );
-        // A malformed address is `User::parse`'s own sentence, which is what the
+        // A malformed caller is `User::parse`'s own sentence, which is what the
         // axum host's `identity::resolve` carries into ITS 401 — so the two
-        // hosts refuse the same input in the same words.
-        let (status, body) = dispatch_inner(Some("not-an-email"), "GET", "/api/games", "", None, b"");
+        // hosts refuse the same input in the same words. `..` is the name the
+        // key grammar refuses by its leading-character rule (M6.5c2, review H1).
+        let (status, body) = dispatch_inner(Some(".."), "GET", "/api/games", "", None, b"");
         assert_eq!(status, 401);
-        assert!(body.contains("is not an email"), "{body}");
+        assert_eq!(body, serde_json::json!({ "error": User::parse("..").unwrap_err() }).to_string());
     }
 
     #[test]
@@ -303,6 +304,32 @@ mod tests {
         assert!(load_inner("chat", "local-1", "{}").is_err(), "only record | table");
         init();
         assert_eq!(read_inner("table", "local-1").unwrap(), None, "init() replaced the store");
+    }
+
+    /// **A plain name on a table's watcher list reads on the browser host**
+    /// (M6.5c2, spec §3's identity cells): a restored or loaded table runs the
+    /// layer's `check_shape` here as everywhere, over the one key grammar.
+    #[test]
+    fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
+        let _s = serial();
+        init();
+        let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"named"}"#;
+        let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 201, "{created}");
+        for (who, keep) in [("red@t.test", br#"{"seat":0,"card":1}"#), ("blue@t.test", br#"{"seat":1,"card":1}"#)] {
+            let (status, _) = dispatch_inner(Some(who), "POST", "/api/games/named/keep", "", Some("application/json"), keep);
+            assert_eq!(status, 200, "{who}");
+        }
+        let mut doc: serde_json::Value = serde_json::from_str(&read_inner("table", "named").unwrap().unwrap()).unwrap();
+        let record = read_inner("record", "named").unwrap().expect("the last keep dealt the game");
+        for (watcher, want) in [("ben castle", 200), ("..", 500)] {
+            doc["unlocked"] = serde_json::json!([watcher]);
+            init();
+            load_inner("table", "named", &doc.to_string()).unwrap();
+            load_inner("record", "named", &record).unwrap();
+            let (status, body) = dispatch_inner(Some("red@t.test"), "GET", "/api/games/named/table", "", None, b"");
+            assert_eq!(status, want, "{watcher:?}: {body}");
+        }
     }
 
     #[test]

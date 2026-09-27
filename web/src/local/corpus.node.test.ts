@@ -123,9 +123,10 @@ const HOST_FIELDS: Record<string, string[]> = {
  * join the corpus without landing in a column. Four reasons, and they are four
  * different things:
  *
- * - `art_manifest` and `site_space_words` were never route payloads: the first
- *   is the host's own art directory, the second a CONTRACT the client has to
- *   word itself.
+ * - `art_manifest`, `site_space_words` and `identity_cases` were never route
+ *   payloads: the first is the host's own art directory, the other two
+ *   CONTRACTS the client holds itself to (the terminal's words, the key
+ *   grammar's verdicts).
  * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal` and
  *   `why_refusals` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
@@ -141,6 +142,7 @@ const HOST_FIELDS: Record<string, string[]> = {
 const NOT_SERVED = [
   "art_manifest",
   "site_space_words",
+  "identity_cases",
   "watching",
   "locked",
   "why",

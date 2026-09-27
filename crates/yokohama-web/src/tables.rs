@@ -110,7 +110,8 @@ impl<'de> Deserialize<'de> for WireSeed {
     }
 }
 
-/// One seat of a requested table: a person's email, the bot, or nobody yet.
+/// One seat of a requested table: a person's key (an email, or a plain name),
+/// the bot, or nobody yet.
 ///
 /// **Exactly one of the THREE**, refused by name otherwise. Three optional
 /// fields rather than a tagged enum because that is what the browser's form
@@ -248,9 +249,10 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     for (i, spec) in req.seats.iter().enumerate() {
         match (&spec.user, spec.bot, spec.open) {
             // Normalized HERE and nowhere else, through the one function that
-            // knows what an email of this API's is — so a seat bound from a
+            // knows what a key of this API's is — so a seat bound from a
             // header reading `  Red@Wire.TEST ` is the seat the next request
-            // finds.
+            // finds. A plain name is a key here under every mode (M6.5c2); only
+            // a CALLER is held to the mode's rule.
             (Some(raw), false, false) => {
                 let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
                 seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None });
@@ -395,15 +397,15 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     // is about SIZE rather than about a panic: `Games::unlock` refuses the
     // 257th entry, and a hand-written file carrying ten thousand is a document
     // this server would go on reading, writing and re-serializing on every
-    // join at that table. Each entry must parse as a `User` for the plainer
-    // reason that `can_watch` compares it against one — an entry that never
-    // normalizes is an entry no caller can ever match, written as though it
-    // admitted somebody.
+    // join at that table. Each entry must parse as a `User` — an email or a
+    // plain name (M6.5c2) — for the plainer reason that `can_watch` compares
+    // it against one: an entry that never normalizes is an entry no caller can
+    // ever match, written as though it admitted somebody.
     if doc.unlocked.len() > UNLOCKED_CAP {
         return Err(format!("{} watchers — a table remembers {UNLOCKED_CAP}", doc.unlocked.len()));
     }
     if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
-        return Err(format!("{bad:?} on the watcher list is not an address this server writes"));
+        return Err(format!("{bad:?} on the watcher list is neither an email nor a name"));
     }
     // M6.5a's stamp, bounded like a message's `created_at` (R-6.5a.10).
     if let Some(at) = doc.archived_at {
@@ -2745,7 +2747,7 @@ mod tests {
         };
         let unparsable_watcher = || {
             let mut d = valid();
-            d.unlocked = vec!["Not An Address".to_string()];
+            d.unlocked = vec!["..".to_string()];
             d
         };
 
@@ -4940,6 +4942,23 @@ mod tests {
         // password this server hashed one way and compares another.
         let green = who("green@t.test");
         assert!(playing.unlock("locked", &green, "  sesame ").expect("trimmed").can_watch);
+    }
+
+    /// **A plain name on the watcher list reads, and is one key however it is
+    /// typed** (M6.5c2, spec §2.1 and §3; review H2). The key grammar is
+    /// `check_shape`'s too, and it runs on every read — so a grammar the check
+    /// did not share would take the whole table off the lobby (the arm
+    /// `every_shape_arm_refuses_with_the_sentence_it_promises` pins). The name
+    /// is written by the layer's own `unlock`, read back and listed.
+    #[test]
+    fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
+        let playing = a_locked_game("named");
+        assert!(playing.unlock("named", &who("  Ben   Castle "), "sesame").expect("the password").can_watch);
+        let (doc, _) = playing.read_table("named").expect("it reads").expect("it is there");
+        assert_eq!(doc.unlocked, vec!["ben castle".to_string()], "the KEY, normalized once");
+        assert!(doc.can_watch(&who("BEN CASTLE")), "the same key, typed otherwise");
+        let lobby = playing.list_for(&who("red@t.test")).expect("the lobby");
+        assert!(lobby.iter().any(|row| row.id == "named"), "listed");
     }
 
     /// A seat holder never needs the password, and an unlocked table never

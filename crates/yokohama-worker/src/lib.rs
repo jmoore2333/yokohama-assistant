@@ -696,6 +696,37 @@ mod tests {
         assert_eq!(page["messages"][0]["text"], "first", "{page}");
     }
 
+    /// **A plain name on a table's watcher list reads on this host too**
+    /// (M6.5c2, spec §3's identity cells; review H2): `check_shape` runs on the
+    /// module's every table read, over the key grammar an `open` host writes
+    /// watchers under. The table is this host's own — created and dealt by its
+    /// routes — and its roster is given a plain name by hand, because this
+    /// module's `worker` door admits no plain-name CALLER to unlock with (the
+    /// mode rule), which is not the property here.
+    #[test]
+    fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"password":"sesame"}"#;
+        assert_eq!(create_inner(Some("red@t.test"), body.as_bytes(), "named", Some("application/json")).status, 201);
+        for (who, seat) in [("red@t.test", 0), ("blue@t.test", 1)] {
+            let keep = format!(r#"{{"seat":{seat},"card":1}}"#);
+            assert_eq!(call(who, "POST", "/api/games/named/keep", Some(&keep)).status, 200, "{who}");
+        }
+        let mut doc: serde_json::Value = serde_json::from_str(&read_inner("table", "named").unwrap().unwrap()).unwrap();
+        let record = read_inner("record", "named").unwrap().expect("the last keep dealt the game");
+        for (watcher, status) in [("ben castle", 200), ("..", 500)] {
+            doc["unlocked"] = serde_json::json!([watcher]);
+            init_inner(&config("off")).unwrap();
+            load_inner("table", "named", &doc.to_string()).unwrap();
+            load_inner("record", "named", &record).unwrap();
+            let r = call("red@t.test", "GET", "/api/games/named/table", None);
+            // `..` is the anti-vacuity: the grammar still refuses it, so 200
+            // above is a shape check that passed, not one that never ran.
+            assert_eq!(r.status, status, "{watcher:?}: {}", r.body);
+        }
+    }
+
     /// `set_clock` hands back what it replaced, so a caller that pins a reading
     /// can restore a test configuration's frozen clock (spec §2.6).
     #[test]

@@ -2147,6 +2147,7 @@ async fn corpus() -> Corpus {
         .expect("a serializable manifest"),
     ));
     all.push(("site_space_words".to_string(), site_space_words()));
+    all.push(("identity_cases".to_string(), identity_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
     for (_, value) in all.iter_mut() {
@@ -2294,6 +2295,83 @@ fn site_space_words() -> Value {
         })
         .collect();
     serde_json::json!({ "cards": cards })
+}
+
+/// **The key grammar's verdicts, frozen for the client's name step** (M6.5c2,
+/// spec §2.1 and §3).
+///
+/// Not a payload any route serves — a CONTRACT, emitted and refused exactly as
+/// [`site_space_words`] is. Under the open door the client normalizes a typed
+/// name ITSELF, before any request (`web/src/nameRule.ts`, cycle B), and is
+/// pinned to these rows, so the two cannot disagree about who a name is.
+///
+/// Each row is one committed input and the layer's two answers: `key`,
+/// `User::parse`'s normalized key, and `display`, `User::typed_form` — the same
+/// value with its case kept, which is what a player is shown. Both are `null`
+/// where the layer refuses the input. The inputs split every rule the grammar
+/// has, and they include every row the name step's own coverage cell requires
+/// — among them the characters on which Rust and JavaScript disagree: U+0085
+/// (Rust's `str::trim` removes it, JavaScript's `trim` does not), U+FEFF (the
+/// reverse) and U+212A KELVIN SIGN (JavaScript's `toLowerCase` folds it to
+/// `k`). serde_json writes non-ASCII unescaped: read this file's diff with
+/// `cat -v`.
+fn identity_cases() -> Value {
+    use yokohama_web::identity::User;
+    let (a32, a33) = ("a".repeat(32), "a".repeat(33));
+    let inputs = [
+        // The two shapes, trimmed and lowercased by one rule.
+        "red@wire.test", "Red@Wire.TEST", " Red@Wire.TEST ", "a+b@x.test",
+        "ben castle", "  Ben   Castle ", "Ben", "BEN", "b3n_c-a.stle", "a.test", "7 wonders",
+        // The length bounds.
+        "x", a32.as_str(), a33.as_str(),
+        // The leading character (review H1), and the reserved word.
+        ".", "..", ". .", "-", ".x", "_x", "x.", "anonymous", "ANONYMOUS", "anonymous1",
+        // Nothing at all.
+        "", "   ",
+        // Outside both alphabets: a non-ASCII letter, full-width letters, the
+        // Kelvin sign (which JavaScript's `toLowerCase` folds to `k`), and the
+        // email shape's four refusals.
+        "Bén", "ben!", "a/b", "\u{ff42}\u{ff45}\u{ff4e}", "\u{212a}elvin", "a@b@c", "@x.test", "a@", "a b@x.test",
+        // Tabs and returns, and the white space the two trims disagree on.
+        "ben\t", "ben\tcastle", "ben\r", "\u{a0}Ben", "\u{85}ben", "\u{feff}ben",
+    ];
+    Value::Array(
+        inputs
+            .iter()
+            .map(|raw| match User::parse(raw) {
+                Ok(key) => json!({ "raw": raw, "key": key.as_str(), "display": User::typed_form(raw) }),
+                Err(_) => json!({ "raw": raw, "key": null, "display": null }),
+            })
+            .collect(),
+    )
+}
+
+/// **What the rows say, where a person would check first** (M6.5c2) — and the
+/// one relation the client's name step relies on between the two columns: on
+/// every accepted row the key IS the display, ASCII-lowercased, and a row is
+/// never accepted in one column and refused in the other. (Review Focus 1: one
+/// key for the name typed two ways.)
+#[test]
+fn the_identity_cases_carry_the_key_grammar_s_verdicts() {
+    let rows = identity_cases();
+    let rows = rows.as_array().expect("a list");
+    let row = |raw: &str| {
+        rows.iter().find(|r| r["raw"] == raw).unwrap_or_else(|| panic!("no row for {raw:?}")).clone()
+    };
+    // (Review Focus 1) one key, shown as typed.
+    assert_eq!(row("  Ben   Castle "), json!({ "raw": "  Ben   Castle ", "key": "ben castle", "display": "Ben Castle" }));
+    assert_eq!(row("ben castle")["key"], "ben castle", "the same person, typed plainly, is the same key");
+    // Review H1's names, and the reserved word, are never keys.
+    for raw in [".", "..", ". .", "-", ".x", "anonymous"] {
+        assert_eq!(row(raw), json!({ "raw": raw, "key": null, "display": null }), "{raw:?}");
+    }
+    for r in rows {
+        match (r["key"].as_str(), r["display"].as_str()) {
+            (Some(key), Some(display)) => assert_eq!(key, display.to_ascii_lowercase(), "{r}"),
+            (None, None) => {}
+            _ => panic!("accepted in one column and refused in the other: {r}"),
+        }
+    }
 }
 
 /// **No payload spells the setup seed. There is no longer an exception.**

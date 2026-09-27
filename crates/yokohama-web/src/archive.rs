@@ -116,21 +116,41 @@ pub trait Archive: Send + Sync {
 /// `<prefix>rev<N>/<over|abandoned>/<id>.table.json` — the file store's own two
 /// names under a semantics-rev prefix, so a synced archive is a directory the
 /// CLI and this server both already read.
-pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> (String, String) {
+///
+/// **It refuses a path with a `.` or `..` component** (M6.5c2, spec §2.1's
+/// defence in depth; review R2-m3). Every caller builds its arguments from a
+/// segment [`caller_segment`] rendered and an id `is_safe_id` admitted, and
+/// neither can spell one — so this is the second fence and not the first, and
+/// an `Err` is a caller's bug named rather than a path written. The refusal
+/// does not echo the path: it can reach a client's 500.
+pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> Result<(String, String), String> {
     let base = format!("{prefix}rev{rev}/{}/{id}", why.dir());
-    (format!("{base}.json"), format!("{base}.table.json"))
+    if let Some(step) = base.split('/').find(|part| matches!(*part, "." | "..")) {
+        return Err(format!("an archive path cannot hold a {step:?} component"));
+    }
+    Ok((format!("{base}.json"), format!("{base}.table.json")))
 }
 
-/// R-6.5b.15: a path-safe, READABLE rendering of a caller's address — `@`
-/// becomes `_at_`, anything outside `[a-z0-9._-]` becomes `_`, capped at 64
-/// characters.
+/// R-6.5b.15: a path-safe, READABLE rendering of a caller's key — `@` becomes
+/// `_at_`, anything outside `[a-z0-9._-]` becomes `_` (a name's space too),
+/// capped at 64 characters.
 ///
-/// **Why the cap cannot break containment.** [`crate::identity::User::parse`]
-/// guarantees a non-empty local part and a non-empty domain either side of one
-/// `@`, and the separator renders as four characters, so the segment is at
-/// least six characters of that alphabet with no `/` and the cap can only
-/// shorten it — it is therefore never empty, `.` or `..`, and no address can
-/// name a path outside the archive root.
+/// **Why the segment is never empty, `.` or `..`** — restated for M6.5c2's key
+/// grammar (spec §2.1; review H1, which MEASURED the hole an unconstrained name
+/// opened: `..` rendered as the segment `..`, and a browser's save landed in
+/// this server's own `rev7/over/`). [`crate::identity::User::parse`] admits two
+/// shapes, and each closes it by its own arithmetic:
+/// - an EMAIL has a non-empty local part and domain either side of one `@`,
+///   which renders as four characters, so its segment is at least six
+///   characters of this alphabet;
+/// - a PLAIN NAME begins with a letter or a digit — the grammar's rule, which
+///   exists for exactly this — and that character is kept, so its segment
+///   begins with `[a-z0-9]`.
+///
+/// Neither holds a `/`, and the cap only shortens a segment that is already
+/// non-empty. [`paths`] and `DirArchive::put` refuse a `.` or `..` component
+/// besides, so this argument is no longer the only fence between a key and a
+/// path outside its prefix.
 ///
 /// **It COLLIDES, on purpose, and spec §8 records it**: `a/b@c` and `a_b@c`
 /// render alike, and two addresses longer than the cap can share a prefix — and
@@ -194,7 +214,7 @@ pub use dir::DirArchive;
 
 #[cfg(feature = "server")]
 mod dir {
-    use std::path::{Path, PathBuf};
+    use std::path::{Component, Path, PathBuf};
 
     use super::{paths, Archive, PutError, PutOutcome, Why};
 
@@ -251,7 +271,20 @@ mod dir {
             record_json: &str,
             table_json: &str,
         ) -> Result<PutOutcome, PutError> {
-            let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id);
+            let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id).map_err(PutError::Failed)?;
+            // **Contained, LEXICALLY** (M6.5c2, spec §2.1; review R2-m3): every
+            // component of both RELATIVE paths is a plain name, so joining them
+            // under `self.dir` lands under `self.dir` — no `..`, and no root,
+            // which `Path::join` would let REPLACE `self.dir` outright. Lexical
+            // because it runs before the write and `canonicalize` needs the file
+            // to exist; over the relative paths, not the joined one, because the
+            // configured directory is the operator's and may itself be relative
+            // (`YOKOHAMA_WEB_ARCHIVE_DIR=../saves`).
+            for rel in [&record, &table] {
+                if !Path::new(rel).components().all(|c| matches!(c, Component::Normal(_))) {
+                    return Err(PutError::Failed("an archive path must stay under its root".to_string()));
+                }
+            }
             let record_path = self.dir.join(&record);
             // **The record is the marker, and it has THREE answers, not two**:
             // the same bytes are a retry, different bytes a conflict, and
@@ -321,25 +354,40 @@ mod tests {
         }
     }
 
-    /// R-6.5b.15: a caller's address rendered into ONE path segment that is
-    /// path-safe and still readable — the owner reviews saves by who sent them,
-    /// and a hash would hide that.
+    /// R-6.5b.15, restated for M6.5c2's key grammar (spec §2.1; review H1): a
+    /// caller's key rendered into ONE path segment that is path-safe and still
+    /// readable — the owner reviews saves by who sent them, and a hash would
+    /// hide that.
     ///
-    /// The containment property is arithmetic rather than a filter list: a
-    /// local part and a domain are each non-empty and `@` becomes four
-    /// characters, so the segment is at least six characters of `[a-z0-9._-]`
-    /// with no `/`, and the cap can only shorten it. It therefore can be
-    /// neither empty, `.` nor `..`, whatever the address was.
+    /// **The containment property is arithmetic, with one arm per shape of
+    /// key.** An email's local part and domain are each non-empty and `@`
+    /// becomes four characters, so its segment is at least six characters of
+    /// `[a-z0-9._-]`. A plain name begins with a letter or a digit, which the
+    /// segment keeps, so its segment begins with `[a-z0-9]`. Neither holds a
+    /// `/`, and the cap can only shorten a segment that is already non-empty —
+    /// so no segment is empty, `.` or `..`. The names that WOULD break the
+    /// second arm (`.`, `..`, `. .`, `-`, `.x`) are fed to the grammar and
+    /// must be refused there.
     #[test]
     fn a_caller_segment_is_path_safe_and_readable() {
-        let seg = |s: &str| caller_segment(&crate::identity::User::parse(s).unwrap());
-        assert_eq!(seg("jamoore@gmail.com"), "jamoore_at_gmail.com");
+        use crate::identity::User;
+        let seg = |s: &str| caller_segment(&User::parse(s).unwrap());
+        assert_eq!(seg("red@example.test"), "red_at_example.test");
         assert_eq!(seg("A/B@c"), "a_b_at_c", "a slash is replaced, the address lowercased");
         assert_eq!(seg("../../x@y"), ".._.._x_at_y");
         assert_eq!(seg("..@.."), ".._at_..");
+        assert_eq!(seg("  Ben   Castle "), "ben_castle", "a name's one space becomes `_`");
         let long = format!("{}@{}", "a".repeat(200), "b".repeat(50));
         assert_eq!(seg(&long).len(), 64, "capped");
-        for s in ["../../x@y", "..@..", &long, "a/b@c"] {
+        for name in [".", "..", ". .", "-", ".x"] {
+            assert!(User::parse(name).is_err(), "{name:?} must never be a key");
+        }
+        let n32 = "n".repeat(32);
+        for name in ["ben castle", "7", "x", "a.test", "z..", "r2-d2_x.y", n32.as_str()] {
+            let v = seg(name);
+            assert!(v.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()), "{name:?} → {v:?}");
+        }
+        for s in ["../../x@y", "..@..", long.as_str(), "a/b@c", "ben castle", "z..", "7"] {
             let v = seg(s);
             assert!(!v.is_empty() && v != "." && v != ".." && !v.contains('/'), "{v:?}");
             assert!(
@@ -347,6 +395,74 @@ mod tests {
                 "{v:?}"
             );
         }
+    }
+
+    /// **The layout refuses a `.` or `..` component** (M6.5c2, spec §2.1's
+    /// defence in depth; review R2-m3) — anywhere, the prefix and the id alike
+    /// — and nothing else: a dot INSIDE a component is a name's business.
+    #[test]
+    fn the_layout_refuses_a_dot_or_dot_dot_component() {
+        for (prefix, id) in [("browser/../", "sim-1"), ("browser/./", "sim-1"), ("", ".."), ("", "."), ("../", "x")] {
+            let refused = paths(7, prefix, Why::Over, id);
+            assert!(refused.is_err(), "{prefix:?} + {id:?}: {refused:?}");
+        }
+        assert_eq!(
+            paths(7, "browser/z../", Why::Over, "a..b"),
+            Ok(("browser/z../rev7/over/a..b.json".into(), "browser/z../rev7/over/a..b.table.json".into())),
+            "dots inside a component are not a step",
+        );
+    }
+
+    /// **The review's measured probe, as a regression cell** (M6.5c2, review
+    /// H1). In an export of `6ce33fd6` a widened grammar with no leading-
+    /// character rule let the name `..` become the segment `..`, and a put
+    /// under `browser/../` LANDED at the server's own `rev7/over/<id>.json` —
+    /// after which the server's own game-over put answered `Conflict`. Three
+    /// fences now stand between a name and that path, each asserted where it
+    /// stands: the grammar refuses the name, [`paths`] refuses the component,
+    /// and the directory archive refuses the put and writes nothing.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_dot_dot_segment_never_lands_a_save_in_the_servers_own_tree() {
+        assert!(crate::identity::User::parse("..").is_err(), "fence 1: `..` is never a key");
+        let hostile = "browser/../";
+        assert!(paths(yokohama_core::SEMANTICS_REV, hostile, Why::Over, "sim-victim").is_err(), "fence 2");
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_probe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = DirArchive::new(&dir);
+        let put = a.put(hostile, Why::Over, "sim-victim", "{\"planted\":1}", "{\"t\":1}");
+        assert!(matches!(&put, Err(PutError::Failed(_))), "fence 3 — a FAILURE, never a landing: {put:?}");
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "nothing was written at all");
+        // The server's own game-over put at that id lands, as it did not in the
+        // probe: the archive keeps the GAME'S bytes and not the planted ones.
+        assert!(matches!(a.put("", Why::Over, "sim-victim", "{\"game\":1}", "{\"t\":1}"), Ok(PutOutcome::Landed)));
+        let (own, _) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-victim").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(&own)).unwrap(), "{\"game\":1}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The directory archive's own check is LEXICAL, over the relative path**
+    /// (M6.5c2, spec §2.1; review R2-m3), and this is the input that reaches it
+    /// past [`paths`]: an ABSOLUTE prefix has no `.` or `..` component, and
+    /// `Path::join` would let it REPLACE the archive root outright. No caller
+    /// builds one; this is what holds when one does. (A check for
+    /// `Component::ParentDir` alone would pass this path: it has none.)
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_directory_archive_refuses_a_path_that_would_leave_its_root() {
+        let base = std::env::temp_dir().join(format!("yokohama_archive_lexical_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let absolute = format!("{}/", elsewhere.display());
+        assert!(paths(7, &absolute, Why::Over, "sim-1").is_ok(), "premise: the layout alone lets it through");
+        let put = DirArchive::new(&root).put(&absolute, Why::Over, "sim-1", "{\"r\":1}", "{\"t\":1}");
+        assert!(matches!(&put, Err(PutError::Failed(_))), "{put:?}");
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written outside the root");
+        assert!(std::fs::read_dir(&root).unwrap().next().is_none(), "nor inside it");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// The layout under a PREFIX (M6.5b, R-6.5b.15) — and the umbrella's O-9
@@ -363,14 +479,14 @@ mod tests {
     fn the_layout_takes_a_prefix_and_both_implementations_agree_under_one() {
         assert_eq!(
             paths(7, "", Why::Over, "sim-1"),
-            ("rev7/over/sim-1.json".into(), "rev7/over/sim-1.table.json".into())
+            Ok(("rev7/over/sim-1.json".into(), "rev7/over/sim-1.table.json".into()))
         );
         assert_eq!(
             paths(7, "browser/a_at_b/", Why::Abandoned, "local-1"),
-            (
+            Ok((
                 "browser/a_at_b/rev7/abandoned/local-1.json".into(),
                 "browser/a_at_b/rev7/abandoned/local-1.table.json".into()
-            )
+            ))
         );
         #[cfg(feature = "server")]
         {
@@ -381,10 +497,10 @@ mod tests {
             let prefix = "browser/a_at_b/";
             a.put(prefix, Why::Abandoned, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
             let (record, table) =
-                paths(yokohama_core::SEMANTICS_REV, prefix, Why::Abandoned, "local-1");
+                paths(yokohama_core::SEMANTICS_REV, prefix, Why::Abandoned, "local-1").unwrap();
             assert_eq!(std::fs::read_to_string(dir.join(&record)).unwrap(), "{\"r\":1}");
             assert_eq!(std::fs::read_to_string(dir.join(&table)).unwrap(), "{\"t\":1}");
-            let (unprefixed, _) = paths(yokohama_core::SEMANTICS_REV, "", Why::Abandoned, "local-1");
+            let (unprefixed, _) = paths(yokohama_core::SEMANTICS_REV, "", Why::Abandoned, "local-1").unwrap();
             assert!(!dir.join(&unprefixed).exists(), "the prefix was ignored");
             std::fs::remove_dir_all(&dir).ok();
         }
@@ -410,7 +526,7 @@ mod tests {
             let seg = caller_segment(&crate::identity::User::parse(who).unwrap());
             let prefix = format!("browser/{seg}/");
             a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
-            let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1");
+            let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1").unwrap();
             let written = std::fs::canonicalize(dir.join(&record)).unwrap();
             assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
         }
@@ -428,7 +544,7 @@ mod tests {
         // A half pair — the table landed, the record did not — is REPAIRED by
         // the retry, which is what the two-file put is not atomic about.
         let (record, table) =
-            paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Abandoned, "local-2");
+            paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Abandoned, "local-2").unwrap();
         std::fs::create_dir_all(dir.join(&table).parent().unwrap()).unwrap();
         std::fs::write(dir.join(&table), "{\"t\":9}").unwrap();
         assert!(matches!(
@@ -443,11 +559,11 @@ mod tests {
     fn the_layout_is_one_function_for_both_reasons() {
         assert_eq!(
             paths(7, "", Why::Over, "sim-1"),
-            ("rev7/over/sim-1.json".into(), "rev7/over/sim-1.table.json".into())
+            Ok(("rev7/over/sim-1.json".into(), "rev7/over/sim-1.table.json".into()))
         );
         assert_eq!(
             paths(7, "", Why::Abandoned, "sim-1"),
-            ("rev7/abandoned/sim-1.json".into(), "rev7/abandoned/sim-1.table.json".into())
+            Ok(("rev7/abandoned/sim-1.json".into(), "rev7/abandoned/sim-1.table.json".into()))
         );
     }
 
@@ -509,7 +625,7 @@ mod tests {
             std::env::temp_dir().join(format!("yokohama_archive_unreadable_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let a = DirArchive::new(&dir);
-        let (record, table) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-4");
+        let (record, table) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-4").unwrap();
         std::fs::create_dir_all(dir.join(&record)).unwrap();
         let out = a.put("", Why::Over, "sim-4", "{\"record\":1}", "{\"table\":1}");
         assert!(

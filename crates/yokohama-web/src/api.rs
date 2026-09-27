@@ -1933,7 +1933,10 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
         .map_err(|e| ApiError::bad_request(format!("the table document does not parse: {e}")))?;
     let why = if facts.over { Why::Over } else { Why::Abandoned };
     let prefix = format!("browser/{}/", caller_segment(user));
-    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id);
+    // Unreachable as a refusal — the key grammar and `is_safe_id` admit no `.`
+    // or `..` — and answered in the put's own failure words if it ever is.
+    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id)
+        .map_err(|e| ApiError::server_error(format!("the archive could not be written: {e}")))?;
     match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
         Ok(outcome) => Ok(ArchiveReply {
             leaf: why.dir(),

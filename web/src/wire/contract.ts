@@ -104,6 +104,7 @@ import choiceWarehouseTake from "./choice_WarehouseTake.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
+import identityCases from "./identity_cases.json";
 import error from "./error.json";
 import events from "./events.json";
 import eventsDealing from "./events_dealing.json";
@@ -372,6 +373,17 @@ const _archive400Digest: Widen<ApiErrorBody> = archive400Digest;
 const _archive400Replay: Widen<ApiErrorBody> = archive400Replay;
 const _archive400Table: Widen<ApiErrorBody> = archive400Table;
 const _artManifest: Widen<ArtManifest> = artManifest;
+/** One input of the key grammar and the layer's two answers (M6.5c2, spec §2.1
+ *  and §3): `key` is `User::parse`'s normalized key, `display` its
+ *  `User::typed_form` — the same value, case kept — and both are `null` where
+ *  the layer refuses the input. Not a route's payload: a CONTRACT, emitted by
+ *  `wire_fixtures`, which the client's name step is pinned to. */
+export interface IdentityCase {
+  raw: string;
+  key: string | null;
+  display: string | null;
+}
+const _identityCases: readonly IdentityCase[] = identityCases;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
 const _whyRefused: Widen<WhyResponse> = whyRefused;
@@ -490,7 +502,7 @@ void [
   _events, _eventsDealing, _eventsOpen,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
-  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -836,6 +848,11 @@ export const wire = {
    *  `wire_fixtures.rs` — the client has to word these itself, and had 55 of the
    *  96 wrong. */
   siteSpaceWords: siteSpaceWords as { cards: { index: number; spaces: string[] }[] },
+  /** Not a payload either: the key grammar's verdicts over a committed list of
+   *  inputs (`User::parse` and `User::typed_form`), frozen so the name step's
+   *  normalization cannot drift from the server's. See that fixture's doc in
+   *  `wire_fixtures.rs`. */
+  identityCases: identityCases as readonly IdentityCase[],
   suggest: as<SuggestResponse>(suggest),
   why: as<WhyResponse>(why),
   whyRefused: as<WhyResponse>(whyRefused),

@@ -1607,7 +1607,7 @@ mod tests {
         let (_, body) = get_with(
             Arc::new(AppState::in_memory()),
             "/api/me",
-            &[(CLAIMED_HEADER, "not-an-email")],
+            &[(CLAIMED_HEADER, "..")],
         )
         .await;
         assert_eq!(
@@ -1615,6 +1615,14 @@ mod tests {
             serde_json::Value::Null,
             "an invalid header resolves to null here, never 401"
         );
+        // M6.5c2: a plain name is a key, normalized once in the extractor.
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory()),
+            "/api/me",
+            &[(CLAIMED_HEADER, "  Ben   Castle ")],
+        )
+        .await;
+        assert_eq!(body["user"], "ben castle", "a name is a key, normalized once");
         let (_, body) = get_with(
             Arc::new(AppState::in_memory_with(M::CfAccess)),
             "/api/me",
