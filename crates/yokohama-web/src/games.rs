@@ -34,11 +34,13 @@ use crate::table::{TableDoc, TableStatus, TurnMirror};
 /// Why a table operation was refused, in the shapes an HTTP layer answers with.
 ///
 /// **`Dealing` carries no sentence and is not a `Conflict`**, deliberately: it
-/// is the one refusal a client BRANCHES on rather than displays — a game opened
-/// by id that is still dealing needs the setup screen, not an error banner — so
-/// it reaches the wire as a 409 carrying `"status": "dealing"` beside the
-/// sentence, and a variant of its own is what keeps that from being a string
-/// comparison in the handler.
+/// is one of the four refusals a client BRANCHES on rather than displays — a
+/// game opened by id that is still dealing needs the setup screen, not an error
+/// banner — so it reaches the wire as a 409 carrying `"status": "dealing"`
+/// beside the sentence, and a variant of its own is what keeps that from being
+/// a string comparison in the handler. `Open` and `Playing` are its siblings
+/// (`"status"` reads `"open"` or `"playing"`), and `ForeignBot` is the fourth,
+/// carrying `"foreign_bot"` instead.
 #[derive(Debug)]
 pub enum GameError {
     NotFound(String),

@@ -650,9 +650,9 @@ const FOREIGN_BOT_ERROR = ["error", "foreign_bot"] as const;
 const FOREIGN_BOT = ["played", "runs"] as const;
 const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
 const GAMES_LIST = ["games", "next"] as const;
-// The open and dealing 409s carry a second key, `status`, and the foreign-bot
-// 409 (M6.5c2) carries `foreign_bot`: the only refusals that do, and the only
-// ones this client branches on rather than displays.
+// The open, dealing and playing 409s carry a second key, `status`, and the
+// foreign-bot 409 (M6.5c2) carries `foreign_bot`: the only four refusals that
+// do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
