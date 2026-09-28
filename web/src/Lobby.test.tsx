@@ -62,9 +62,12 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
   return { stub, user: userEvent.setup() };
 }
 
-/** One section, by its heading. The two sections draw the same row markup, so
- *  every read below is scoped to one of them — an unscoped `getByRole` would
- *  find the corpus's `wire` row in both. */
+/** One section, by its heading. The three sections draw the same row markup,
+ *  and the corpus's open and playing listings were read by ANOTHER caller
+ *  (`my_seats: []`), so `notMine` keeps their `wire` row while the caller's own
+ *  listing carries a `wire` too. Every read below is therefore scoped to one
+ *  section: an unscoped `getByRole` would find two. (On a server, a table the
+ *  caller sits at is listed under Your tables only.) */
 const section = (heading: string): HTMLElement =>
   screen.getByRole("heading", { name: heading }).closest("section")!;
 
@@ -75,7 +78,7 @@ const section = (heading: string): HTMLElement =>
 // that section is read.
 
 describe("the lobby", () => {
-  it("draws both sections from the two scopes, with the same row in each", async () => {
+  it("draws Your tables and Open tables from their own two scopes", async () => {
     const { stub } = show();
     await screen.findByRole("heading", { name: "Your tables" });
     // **Both scopes were really asked for.** Without this the cell passes on a
@@ -86,7 +89,8 @@ describe("the lobby", () => {
     const mine = section("Your tables");
     const open = section("Open tables");
     // `wire.games` is the caller's two tables; `wire.gamesOpen` is every open
-    // table on the server, which here is the same two read from outside.
+    // table on the server, here the same two read from OUTSIDE (`my_seats:
+    // []`), which is why `notMine` keeps them in Open tables.
     expect(within(mine).getAllByRole("listitem")).toHaveLength(wire.games.games.length);
     expect(within(open).getAllByRole("listitem")).toHaveLength(wire.gamesOpen.games.length);
     expect(within(mine).getByRole("link", { name: "wire" })).toBeInTheDocument();
@@ -152,8 +156,9 @@ describe("the lobby", () => {
   // **The two rows a player comes back to the lobby for**, neither of which the
   // corpus can carry: the fixture walk is bot-free and drives one side, so no
   // committed payload has the turn inside `my_seats` or a finished game with a
-  // winner on it. One field moved on a real payload, which is the pattern
-  // `tables.test.ts` already uses.
+  // winner on it. `yours` moves one field, `my_seats`; `done` moves two,
+  // `over` and `winner`. Both also move `id` and `name`, only so the two rows
+  // are two tables named apart.
   it("marks whose turn it is in gold, and says who won", async () => {
     const yours = { ...wire.table, id: "yours", name: null, my_seats: [wire.table.to_move!] };
     const done = { ...wire.table, id: "done", name: null, over: true, winner: 1 };
@@ -412,18 +417,25 @@ describe("the lobby", () => {
       );
     });
 
-    // **Your tables only** (R-13, and the reason the row takes a flag). A table
-    // that is both yours and open is listed in BOTH sections, and a control
-    // drawn in each puts two buttons with the same accessible name on one
-    // screen — which is also an ambiguity every query here would have to work
-    // around.
+    // **Your tables only** (R-13, and the reason the row takes its section).
+    // The creator must hold a seat (R-1.6), so on a server a table you opened
+    // is one you sit at, listed under Your tables alone (`notMine`). The
+    // control still follows the SECTION and not `created_by`, so no other list
+    // can ever draw it. The corpus's open listing was read by another caller,
+    // which puts the same table this browser opened in both sections here: the
+    // one case that tells a section rule from a `created_by` rule. And the
+    // control sits in its own cell under the action (`.row-abandon`), never in
+    // the action's.
     it("draws the control in Your tables and not in Open tables", async () => {
       show();
       const mine = section("Your tables");
       const open = section("Open tables");
-      // Anti-vacuity: the SAME table is in both sections and was opened by this
-      // browser, so the two reads below differ only in which section they are.
-      expect(await within(mine).findByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      // Anti-vacuity: the corpus puts the SAME table, opened by this browser,
+      // in both sections (its open listing read from outside), so the two
+      // reads below differ only in which section they are.
+      const control = await within(mine).findByRole("button", { name: "abandon wire" });
+      expect(control.closest(".row-abandon")).not.toBeNull();
+      expect(control.closest(".row-action")).toBeNull();
       expect(within(open).getByRole("link", { name: "wire" })).toBeInTheDocument();
       expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
     });

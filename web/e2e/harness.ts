@@ -285,8 +285,9 @@ export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby
  * how the second person at a two-browser table gets to it (M6.2 §5.2). A row's
  * button is labelled with the table's name, and a table opened without one is
  * named by its id — so `exact: true` is load-bearing: `getByRole` matches by
- * substring by default, and the lobby lists a table in both sections when it is
- * both yours and open.
+ * substring by default, and another row's name can contain this one. The read
+ * is scoped to Your tables, where a table you sit at is listed (and, since
+ * M6.5c2, listed only there).
  *
  * **The row is a LINK** (§5.2, R-14), so the click only sets the HASH; what the
  * table then draws is `App`'s route effect asking the server, and the caller

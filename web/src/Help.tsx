@@ -195,8 +195,8 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         Cloudflare Access it is your Access sign-in. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
         door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
-        tables you already sit at; <em>Open tables</em>, every table on the server still waiting
-        for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
+        tables you already sit at; <em>Open tables</em>, every other table on the server still
+        waiting for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
         &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
         you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
         choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}

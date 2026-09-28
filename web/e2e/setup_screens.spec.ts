@@ -286,14 +286,40 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         expect(rail.x, "the chat sits in a rail beside the lists").toBeGreaterThanOrEqual(lists.x + lists.width - 1);
         await expect(pill).toBeHidden();
         await expect(page.locator(".identity-corner").getByText("Playing as")).toBeVisible();
-        // Name, seats and action on ONE line: the three share the row's middle.
-        const middles = await rowOf("Width check").evaluate((li) =>
-          [".row-title", ".row-seats", ".row-action"].map((s) => {
-            const r = li.querySelector(s)!.getBoundingClientRect();
-            return Math.round(r.top + r.height / 2);
+        // **Name, seats and action on ONE line, on EVERY row**, measured as the
+        // elements a player reads: the title block, each chip, and the action
+        // itself (the button, or the "can't continue here" words). Never the
+        // grid cells, which `align-items: center` centres by construction
+        // whatever they hold: measured that way this read level while the
+        // action button of every creator row sat 16px above the line (Task 5
+        // review, I-1). The creator's small Abandon hangs under the action and
+        // is not on the line.
+        const lines = await page.locator(".lobby li.lobby-row").evaluateAll((rows) =>
+          rows.map((li) => {
+            const mid = (e: Element) => {
+              const r = e.getBoundingClientRect();
+              return Math.round(r.top + r.height / 2);
+            };
+            const middles = [
+              mid(li.querySelector(".row-title")!),
+              ...[...li.querySelectorAll(".row-seats .seat-chip")].map(mid),
+              mid(li.querySelector(".row-action > :first-child")!),
+            ];
+            return {
+              name: li.querySelector("a.row-link")!.textContent,
+              abandon: li.querySelector('button[aria-label^="abandon "]') !== null,
+              middles,
+              spread: Math.max(...middles) - Math.min(...middles),
+            };
           }),
         );
-        expect(Math.max(...middles) - Math.min(...middles), `one line per row: ${middles}`).toBeLessThanOrEqual(12);
+        // eslint-disable-next-line no-console
+        console.log(`lobby rows at 1440 (title, chips..., action middles): ${JSON.stringify(lines)}`);
+        // Anti-vacuity: rows WITH the creator's Abandon and rows without it.
+        expect(lines.filter((l) => l.abandon).length, JSON.stringify(lines)).toBeGreaterThan(0);
+        expect(lines.filter((l) => !l.abandon).length, JSON.stringify(lines)).toBeGreaterThan(0);
+        const off = lines.filter((l) => l.spread > 12);
+        expect(off, `rows whose action, chips and title are not on one line: ${JSON.stringify(off)}`).toEqual([]);
       } else {
         expect(rail.y, "the chat sits below the lists on a phone").toBeGreaterThanOrEqual(lists.y + lists.height - 1);
         await expect(pill).toBeVisible();
@@ -306,6 +332,28 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         expect(await height(page, "button", "New table"), "New table, thumb-sized").toBeGreaterThanOrEqual(44);
       }
       await look(page, `lobby-${size.width}`);
+      if (size === PHONE) {
+        // **The creator's Abandon at its confirm step, on a phone** (Task 5
+        // review: unverified at 390). Its two controls stay inside the row
+        // and the window, and cancelling leaves the table where it was.
+        const row = rowOf("Width check");
+        await row.getByRole("button", { name: "abandon Width check" }).click();
+        const confirm = row.getByRole("button", { name: "confirm abandon Width check" });
+        const cancel = row.getByRole("button", { name: "cancel abandoning Width check" });
+        await expect(confirm).toBeVisible();
+        const li = (await row.boundingBox())!;
+        for (const control of [confirm, cancel]) {
+          const box = (await control.boundingBox())!;
+          expect(
+            box.x >= li.x && box.x + box.width <= li.x + li.width && box.y + box.height <= li.y + li.height,
+            `the confirm step's controls stay inside their row: ${JSON.stringify({ box, li })}`,
+          ).toBe(true);
+        }
+        await noSidewaysScroll(page, "the lobby at 390px with an abandon asked");
+        await look(page, "lobby-390-abandon-confirm");
+        await cancel.click();
+        await expect(row.getByRole("button", { name: "abandon Width check" })).toBeVisible();
+      }
     }
   } finally {
     // The run's server is scratch, but a later spec's lobby should not list

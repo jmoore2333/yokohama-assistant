@@ -35,8 +35,9 @@
 // (R-6.5c2.7; the words are `tables.ts`'s). The name is the row's one LINK
 // (R-14) and the action is a button to the same address, so a table is never
 // two links (`exit_game.spec.ts` counts one). The creator's own rows keep
-// `Abandon` beside the action: the lobby is the only place a dealing or playing
-// server table can be abandoned (R-13).
+// `Abandon` under the action, in a cell of its own (`.row-abandon`), so the
+// action stays on the row's line: the lobby is the only place a dealing or
+// playing server table can be abandoned (R-13).
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
@@ -283,11 +284,12 @@ export function Lobby({
   /** One row: the name (the row's one LINK) with the password tag, the line
    *  under it, a chip per seat, and the one action.
    *
-   *  **Abandoning is the CREATOR's, on the Your-tables rows** (R-13), beside the
-   *  action and quieter than it. A table you sit at is listed under Your tables
-   *  alone (`notMine`), so the control is never drawn twice. The action and
-   *  Abandon both NAME the table in their accessible names, so a control can
-   *  never be about another row. */
+   *  **Abandoning is the CREATOR's, on the Your-tables rows** (R-13), in a
+   *  cell of its own under the action (`.row-abandon`) and quieter than it: in
+   *  the action's cell it moved the action off the row's line. A table you sit
+   *  at is listed under Your tables alone (`notMine`), so the control is never
+   *  drawn twice. The action and Abandon both NAME the table in their
+   *  accessible names, so a control can never be about another row. */
   const row = (t: TableView, section: Section) => {
     const action = rowAction(t, section);
     const name = t.name ?? t.id;
@@ -338,8 +340,12 @@ export function Lobby({
               can&rsquo;t continue here
             </span>
           )}
-          {yours && <Abandon table={t} onDone={reread} onError={setError} />}
         </div>
+        {yours && (
+          <div className="row-abandon">
+            <Abandon table={t} onDone={reread} onError={setError} />
+          </div>
+        )}
       </li>
     );
   };

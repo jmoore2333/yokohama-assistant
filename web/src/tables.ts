@@ -1,11 +1,14 @@
-// The words a lobby row says about a table.
+// The words a screen says about a table: what one seat is called, what the
+// table is doing, and a lobby row's line, chips and one action.
 //
-// Two screens list the same tables — the setup screen's saved games and the
-// banner's Game menu — and both are one line of markup around these two
-// functions. Written inline they would be two ternaries drifting apart, and the
-// same table would read differently depending on which screen you opened.
-// The front door's device card reads its rows through `deviceWord` (M6.5c2),
-// which words the same facts as a player's rather than a lobby's.
+// Several screens read the same tables, and each reads them through here:
+// `TableFacts` (the banner's Game menu and the unlock face) through `tableWord`
+// and `seatNames`; the dealing and open-table screens through `seatName` and
+// `holder`; the front door's device card through `deviceWord`, which words the
+// same facts as a player's rather than a lobby's (M6.5c2); and the lobby's rows
+// through `rowMeta`, `seatChips` and `rowAction` (M6.5c2, R-6.5c2.7). Written
+// inline they would be ternaries drifting apart, and the same table would read
+// differently depending on which screen you opened.
 
 import type { PlayerColor, PlayerId, SeatDoc, TableView } from "./types";
 
@@ -182,7 +185,7 @@ export type RowAction =
  *
  *  **A game this server cannot continue** (its bot is one this build does not
  *  run, and it is not over) offers nothing to open: every game route refuses
- *  it (spec section 2.4), and its creator still has Abandon beside the row. A
+ *  it (spec section 2.4), and its creator can still abandon it from the row. A
  *  finished one opens as ever. Yours: a card owed or your move is the gold
  *  Play; a table still filling is its link, to send. The padlock says a
  *  password is still wanted: at an open table whenever it is locked, at a game

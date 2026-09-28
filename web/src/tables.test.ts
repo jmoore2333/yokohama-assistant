@@ -185,6 +185,8 @@ describe("the lobby row", () => {
     expect(rowMeta(wire.tableDealing, "mine", NOW)).toBe("2 players \u00b7 dealing");
     expect(rowMeta(wire.tableOpen, "mine", NOW)).toBe("2 players \u00b7 waiting for 1 more");
     expect(rowMeta(wire.tableOpen, "open", NOW)).toBe("2 players \u00b7 opened 2 days ago");
+    // Two fields moved, `over` and `winner`: the corpus's walk finishes no
+    // game, so no payload is over with a winner on it.
     expect(rowMeta({ ...wire.table, over: true, winner: 1 }, "mine", NOW)).toBe(
       "2 players \u00b7 over \u00b7 Blue won",
     );
