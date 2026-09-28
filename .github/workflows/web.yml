@@ -20,8 +20,8 @@ on:
 # jobs are separate claims so that a red one names its lane: the table layer and
 # the browser host, the whole-game gate among them (`web-server`); the
 # Cloudflare Worker's shell, pool and module (`worker`); and the client
-# (`web-client`). GitHub side: nobody dispatches this in cycle D, and the
-# workflows stay disabled there through E's merge.
+# (`web-client`). GitHub side: nobody dispatches this in cycle D, and
+# `test` and `docker` stay disabled there through E's merge.
 #
 # Deliberately NOT here, each for its reason:
 # - the browser walk (`npm run e2e` in `web/`): it wants a release build and a

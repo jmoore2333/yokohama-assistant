@@ -1,6 +1,6 @@
 name: docker
 
-# **The self-host image, built when one of its WEB-LANE inputs changes**
+# **The self-host image, built by hand, on dispatch**
 # (M6.5c2, R-6.5c2.14; spec §2.9 as revision 2.7 amends it).
 # `deploy/Dockerfile` builds the server and the browser client from a
 # checkout: the image a self-hoster runs. The NAS is deployed from
@@ -27,18 +27,18 @@ name: docker
 # step's layer cannot come back from the cache. That happens when one of the
 # server stage's inputs differs from the cached run's: `rust-toolchain.toml`,
 # `Cargo.toml`, `Cargo.lock` or anything under `crates/` (a change under
-# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, a core change an
-# earlier, untriggered push carried in, or a dockerignore edit that changes
+# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, a core change
+# since the cached run, or a dockerignore edit that changes
 # what reaches them). It happens when one of the server stage's instructions
 # in `deploy/Dockerfile` is edited, and when the floating base tag
 # `rust:1-slim-trixie` has been republished since the cached run. And it
 # happens when the run can restore no cache at all: the first run, one after
 # GitHub evicts the cache, or one whose ref cannot read the cache an earlier
-# run wrote (a run restores its own ref's caches and the default branch's,
-# and a pull request its base branch's too, so a new pull request finds no
-# other pull request's). Every other run is WARM, typically one triggered only
-# by `web/**`, the smoke script, this file, an edit to the Dockerfile's client
-# or runtime stage, or a dispatch: it restores the server stage and pays the
+# run wrote (a run restores its own ref's caches and the default branch's, so
+# a branch dispatched for the first time finds no other branch's). Every other
+# run is WARM, typically one whose changes since the cached run touch only
+# `web/**`, the smoke script, this file or the Dockerfile's client or runtime
+# stage: it restores the server stage and pays the
 # client stage alone.
 # A cold run caused by a changed input still restores the layers above that
 # input's step (the toolchain, binaryen and `wasm-bindgen-cli` sit above the
@@ -46,8 +46,8 @@ name: docker
 # restores none of them.
 #
 # **Reading a cold wall.** A run whose log shows the server build layer,
-# `[server 10/10]`, executing rather than `CACHED` is cold; its wall is the
-# figure to record.
+# `[server 10/10]`, executing rather than `CACHED` is cold, and a cold wall is
+# the one worth reading.
 on:
   workflow_dispatch:
 

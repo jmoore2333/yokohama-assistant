@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Pinned to the version the job then prints (the toolchain file's), not
-      # whatever `stable` is that day.
+      # whatever `stable` is that day. Keep this in step with rust-toolchain.toml.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
