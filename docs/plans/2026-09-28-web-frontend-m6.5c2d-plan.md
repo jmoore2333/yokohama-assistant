@@ -262,9 +262,9 @@ setup_screens,offline,the_table}.spec.ts`, `web/src/local/corpus.node.test.ts`, 
 
 ## Couplings between tasks (binding; the later task's implementer does what its item says)
 
-- **Task 1 → Task 15:** the merge-time disabling (R-6.5c2.31) is E's, not this cycle's; the core job's paths are the
-  engine's inputs, so this cycle's pull request runs NO job by design; Task 15.H records that and dispatches `web.yml`
-  once as the web lane's clean-checkout proof.
+- **Task 1 → Task 15:** the workflows are disabled on GitHub from 2026-09-28 through E's merge (R-6.5c2.31 as amended:
+  the owner's minutes); this cycle's pull request runs NO job and nothing is dispatched; Task 15.H records that. The
+  clean-checkout proof of the web lane is E's, after the re-enable in October.
 - **Task 3 → Task 6:** the four `CLAUDE.md` sentences fixed in place; Task 6 changes no `CLAUDE.md` line (the web
   passages move to `docs/web-lane.md` in E).
 - **Task 4 → Task 6:** `holder_of` (dossier row 6's neighbour) feeds the "it is seat N's turn" sentence; Task 4 leaves
@@ -298,7 +298,7 @@ setup_screens,offline,the_table}.spec.ts`, `web/src/local/corpus.node.test.ts`, 
   comments, `test.yml:52-431`; `docker.yml`'s `image` job).
 - Produces: the shape in §"Names" — `test.yml` on `pull_request` (the engine's input paths) + `workflow_dispatch`; `web.yml` on
   `workflow_dispatch` only; `docker.yml` on `workflow_dispatch` only; `concurrency` with `cancel-in-progress: true` on
-  all three.
+  all three. The files are the shape CI takes when E re-enables it; nothing runs before then.
 
 - [ ] **Step 0 (ORCHESTRATOR): the baseline.** `progress.md`'s first lines: the SDD identity line, the base `014433df`,
   and the C close §2's readings at `ea4f174d` as the baseline (the tree is byte-identical: `git diff --stat ea4f174d
@@ -341,7 +341,12 @@ setup_screens,offline,the_table}.spec.ts`, `web/src/local/corpus.node.test.ts`, 
 
 - [ ] **Step 5: Green.** `python3 $L/task-1-ci-shape.py` passes. `git diff --stat` lists exactly the three files.
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 6: Note the GitHub side.** `test` and `docker` were DISABLED on GitHub on 2026-09-28 (`gh workflow
+  disable`, the owner's minutes at 90% for the month) and stay so through E's merge (R-6.5c2.31 as amended); `web.yml`
+  arrives dispatch-only and nobody dispatches it in D. The three headers say this in one sentence each. **No task
+  and no close step of this cycle runs anything on GitHub.**
+
+- [ ] **Step 7: Commit.**
 
 ```bash
 git add .github/workflows/test.yml .github/workflows/web.yml .github/workflows/docker.yml
@@ -1130,10 +1135,9 @@ only.
 **H. The push, PR #42, and the handover into cycle E** (the push and the PR pre-authorized)
 
 - [ ] **H.1** `git push -u origin web-room-m6.5c2d`; `gh pr create --base web-room-m6.5c2c --head web-room-m6.5c2d`
-  with the cycle in one screen and the attribution line. **CI:** with Task 1's shape, this pull request runs NO job
-  unless a core input moved (it did not): record that as the expected reading; `gh workflow run web.yml --ref
-  web-room-m6.5c2d` ONCE as the clean-checkout proof of the web lane at the reviewed head, and read it to green (the
-  one run the owner's minutes buy this cycle).
+  with the cycle in one screen and the attribution line. **CI: nothing runs and nothing is dispatched** — `test` and
+  `docker` are disabled on GitHub through E's merge and `web.yml` is dispatch-only (R-6.5c2.31 as amended); the PR
+  page shows no checks, by design, and the close says so. `gh workflow list --all` in the ledger as the reading.
 - [ ] **H.2** Nothing is merged and nothing is tagged: E's.
 - [ ] **H.3** The handover `docs/plans/<the day>-web-frontend-m6.5c2e-handover.md`, under 200 lines, every fact off the
   TREE at the reviewed head: where D left the tree (the PR, every reading, both fences, what is LIVE); what E builds
