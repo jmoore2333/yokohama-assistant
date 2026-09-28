@@ -311,10 +311,10 @@ the health payload cannot tell a working identity gate from a broken one.
 The negative half needs a caller that Access admits WITHOUT an address: the `yokohama-worker` Service
 Auth credential, presented through a mode-600 header file `$H`. Make it with
 [`worker/RUNBOOK.md`](../worker/RUNBOOK.md) §4's "header-file recipe", run up to, not including, its
-`curl` and `rm` lines, since this block reads the file and removes it last. Its assertion names no
-`email`, so no identity header reaches this server: the client's state B, "This server couldn't tell
-who you are", by design. Service Auth outranks WARP, so this request is the credential even from the
-owner's workstation:
+`curl` and `rm` lines, since this block reads the file and removes it last. The Access assertion that
+the `yokohama-worker` credential earns names no `email`, so no identity header reaches this server: the
+client's state B, "This server couldn't tell who you are", by design. Service Auth outranks WARP, so
+this request is the credential even from the owner's workstation:
 
 ```bash
 curl -sS -A "$UA" -H @"$H" "$B/api/me"                                       # {"mode":"cf-access","user":null}
