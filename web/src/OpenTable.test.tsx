@@ -143,6 +143,18 @@ describe("the open table, to a stranger with one seat to take", () => {
     expect(screen.queryByLabelText("Your name")).toBeNull();
   });
 
+  // **The first player is the table's `start_seat`, not the first card** (the
+  // whole-branch review's Minor 3): every committed table starts at seat 0, so
+  // a caption hard-wired to the first card passed every cell. One field moved,
+  // `start_seat`, from 0 to 1.
+  it("marks the first player at the table's start seat when that is not the first card", async () => {
+    show(tableIs({ ...wire.tableOpen, start_seat: 1 }));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const seats = screen.getByRole("list", { name: "Seats" });
+    expect(cards()[1]!).toHaveTextContent("Blue \u00b7 first player");
+    expect(seats).not.toHaveTextContent("Red \u00b7 first player");
+  });
+
   it("asks for no password at an unlocked table", async () => {
     show(tableIs({ ...wire.tableOpen, locked: false }));
     await screen.findByRole("button", { name: "Join as Blue" });
