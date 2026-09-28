@@ -39,9 +39,9 @@ WORKDIR /src
 # workspace's one build script, `crates/yokohama-worker/build.rs`, belongs to
 # a package this stage does not build and neither package it builds depends
 # on (until M6.5c2 this line said "no build.rs anywhere, checked", which
-# stopped being true at M6.5c). pkg-config and a linker are cheap insurance
-# and this stage is not in the final image. `curl` is here for the step below
-# and for nothing else.
+# stopped being true at M6.5c). pkg-config is cheap insurance (the base image
+# carries the linker, its own gcc) and this stage is not in the final image.
+# `curl` is here for the step below and for nothing else.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config curl \
  && rm -rf /var/lib/apt/lists/*
@@ -75,9 +75,11 @@ RUN apt-get update \
 # downloads on the workstation and a third elsewhere, all three agreeing).
 #
 # **The two paragraphs below are a 132-era record, kept as measured.** This
-# stage's first 133 module was built and measured by M6.5c2 cycle C's Task 8
-# (its ledger report), and the browser module's figures keep their one place,
-# the root `Cargo.toml`'s `release-wasm` comment.
+# stage's first 133 module read 1,200,515 B (M6.5c2 cycle C's Task 8,
+# 2026-09-28: this Dockerfile's `linux/amd64` build, emulated on an arm64
+# workstation under Docker Desktop 29.8.0). That is a reading of THIS stage;
+# the workstation's module keeps its figures in their one place, the root
+# `Cargo.toml`'s `release-wasm` comment.
 #
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
 # With the SAME `wasm-opt 132` on both hosts, this stage's module and the

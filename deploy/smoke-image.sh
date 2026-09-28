@@ -18,6 +18,11 @@
 # `/api/health` alone cannot tell a working door from a broken one — it answers
 # the same either way — so every door is also read through `/api/me` and
 # `/api/games`, and the static release and one art file are fetched under each.
+# Every request is bounded (`--max-time 10`), a server's start at about 60 s
+# and step 1 at 30 s, so a server that never answers fails by name rather
+# than holding a runner. It needs `docker`, `curl` and `python3`, and a
+# missing one fails naming it before any container starts.
+#
 # It prints the image's size as Docker reports it and each serving container's
 # memory. Every container it starts is removed on exit WITH its volume — the
 # image declares `VOLUME ["/data"]`, and `docker rm -f` without `-v` leaves an
@@ -26,6 +31,10 @@
 set -euo pipefail
 
 image="${1:?usage: deploy/smoke-image.sh <image> [port]}"
+for tool in docker curl python3; do
+  command -v "$tool" >/dev/null 2>&1 \
+    || { echo "smoke: FAIL — \`$tool\` is not on PATH; this script needs docker, curl and python3" >&2; exit 1; }
+done
 port="${2:-18080}"
 base="http://127.0.0.1:${port}"
 name="yokohama-smoke-$$"
@@ -43,19 +52,29 @@ fail() {
 }
 
 # field <json> <key>: the value, JSON-encoded, so null reads `null` and a string
-# `"x"`. A body that is not a JSON object reads `<not JSON>` and fails the next
-# `expect` by name.
+# `"x"`. A body that is not JSON reads `<not JSON>`, and a JSON body without the
+# key reads `<no key KEY>`; either fails the next `expect` by name. Nothing is
+# silenced: were `python3` itself to fail, its error would print.
 field() {
-  python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])[sys.argv[2]]))' "$1" "$2" 2>/dev/null \
-    || echo "<not JSON>"
+  python3 -c '
+import json, sys
+try:
+    doc = json.loads(sys.argv[1])
+except ValueError:
+    print("<not JSON>")
+    sys.exit()
+key = sys.argv[2]
+print(json.dumps(doc[key]) if isinstance(doc, dict) and key in doc else "<no key " + key + ">")
+' "$1" "$2"
 }
 
-# get <path> [curl args…]: sets $status and $body. A refused connection reads as
-# status 000 and fails the next `expect` by name, rather than exiting under -e.
+# get <path> [curl args…]: sets $status and $body. A refused connection, or no
+# answer within ten seconds, reads as status 000 and fails the next `expect` by
+# name, rather than exiting under -e.
 get() {
   local path="$1"; shift
   local tmp; tmp="$(mktemp)"
-  status="$(curl -sS -o "$tmp" -w '%{http_code}' "$@" "${base}${path}" || true)"
+  status="$(curl -sS --max-time 10 -o "$tmp" -w '%{http_code}' "$@" "${base}${path}" || true)"
   body="$(cat "$tmp")"; rm -f "$tmp"
 }
 
@@ -70,12 +89,13 @@ start() {
   docker rm -f -v "$name" >/dev/null 2>&1 || true
   current="$name"
   docker run -d --name "$name" -p "127.0.0.1:${port}:8080" -e "YOKOHAMA_WEB_IDENTITY=$1" "$image" >/dev/null
-  for _ in $(seq 1 60); do
-    curl -fsS -o /dev/null "${base}/api/health" 2>/dev/null && return 0
+  # A deadline rather than a count: each probe may take its whole ten seconds.
+  local deadline=$((SECONDS + 60))
+  until curl -fsS --max-time 10 -o /dev/null "${base}/api/health" 2>/dev/null; do
     running "$name" || fail "the container exited under YOKOHAMA_WEB_IDENTITY=$1"
+    [ "$SECONDS" -lt "$deadline" ] || fail "no /api/health 200 within 60 s under $1"
     sleep 1
   done
-  fail "no /api/health 200 within 60 s under $1"
 }
 
 # door <door> <its header> <a caller as sent> <that caller's key> <the other door's header line>
@@ -106,7 +126,8 @@ door() {
   expect "GET /sw.js status" "$status" 200
   get /art/areas/Church.webp
   expect "GET /art/areas/Church.webp status" "$status" 200
-  docker stats --no-stream --format 'smoke:   memory {{.MemUsage}}' "$name"
+  docker stats --no-stream --format 'smoke:   memory {{.MemUsage}}' "$name" \
+    || fail "docker stats could not read the memory of the container under $1"
 }
 
 # 1. No door: the process refuses to start, exits 1 and names the variable.

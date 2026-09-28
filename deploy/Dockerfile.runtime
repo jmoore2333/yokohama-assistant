@@ -49,8 +49,9 @@ COPY art/  /srv/assets/art/
 # whatever name a caller types (R-6.5c2.3). So binding wide is still a statement
 # that something in FRONT decides who may reach this port. On this deployment
 # that something is the Cloudflare tunnel plus its Access application, whose
-# door is `cf-access` (R-6.5c2.5; `RUNBOOK.md` §3 records the value each
-# deployment runs), and the container is never published to the LAN.
+# door is ruled `cf-access` (R-6.5c2.5; the NAS moves to it at the M6.5c2
+# close, and `RUNBOOK.md` §3 records the value each deployment runs), and the
+# container is never published to the LAN.
 #
 # **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here.** There is no default
 # mode, and an image started without the variable **exits 1** naming the three

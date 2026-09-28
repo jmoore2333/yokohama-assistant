@@ -7,16 +7,18 @@ on:
 # docs/plans/2026-09-26-web-frontend-m6.5c2-spec.md, as revision 2.7 amends
 # it). CI runs what a clean checkout can build and what the per-edit process
 # does not already run heavily; nothing is added here beyond that (the
-# owner's ruling R-6.5c2.24, "CI stays lean"), and M6.5c2 added only the
-# whole-game gate's return and the step that names the layer's test
-# binaries. It runs four jobs, each a separate claim so that a red one names
-# its lane: the engine crate (`test`); the table layer and the browser host,
-# the whole-game gate among them (`web-server`); the Cloudflare Worker's
-# shell, pool and module (`worker`); and the client (`web-client`). There is
-# no paths filter here, so every push and pull request runs every job, and a
-# change under `worker/` is always checked. The self-host IMAGE is the other
-# workflow's, `docker.yml`, which runs on a pull request or a push to master
-# that changes one of the image's web-lane inputs, and by hand.
+# owner's ruling R-6.5c2.24, "CI stays lean"), and M6.5c2 added only three
+# things: the whole-game gate's return, the step that names the layer's test
+# binaries, and `--test browser_played_pin` on the layer's test line (two
+# cells no workflow had run). It runs four jobs, each a separate claim so
+# that a red one names its lane: the engine crate (`test`); the table layer
+# and the browser host, the whole-game gate among them (`web-server`); the
+# Cloudflare Worker's shell, pool and module (`worker`); and the client
+# (`web-client`). There is no paths filter here, so every push and pull
+# request runs every job, and a change under `worker/` is always checked. The
+# self-host IMAGE is the other workflow's, `docker.yml`, which runs on a pull
+# request or a push to master that changes one of the image's web-lane
+# inputs, and by hand.
 #
 # Deliberately NOT here, each for its reason:
 # - the browser walk (`npm run e2e` in `web/`): it wants a release build and a
@@ -298,8 +300,12 @@ jobs:
   # **The Cloudflare Worker, a job of its own since M6.5c2** (R-6.5c2.14; spec
   # §2.9). Its steps rode inside `web-server` through M6.5c, so a Worker-only
   # change paid for the browser host's build to be checked, and a red Worker
-  # step read as the layer's. A re-arrangement and not an addition
-  # (R-6.5c2.24): the same commands, with their comments, moved here.
+  # step read as the layer's. A re-arrangement and not an addition of commands
+  # (R-6.5c2.24): the same commands, with their comments, moved here. Not of
+  # minutes, though: as a job of its own it pays its own runner and, with no
+  # Rust cache in either job, recompiles the crates it shares with
+  # `web-server` (the engine, the CLI and the layer, native and for wasm32) on
+  # the private repository's counted minutes.
   #
   # What it needs:
   # - the pinned toolchain, because the module is a `wasm32-unknown-unknown`

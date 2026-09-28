@@ -29,15 +29,28 @@ name: docker
 # and not a job of `test.yml`. The repository is private, so its minutes are
 # counted.
 #
-# **The cache holds the toolchain, not the Rust build.** `cache-to: type=gha`
-# stores image layers. The Dockerfile's `--mount=type=cache` mounts
-# (`/usr/local/cargo/registry`, `/src/target`) are NOT carried, so every run
-# pays a cold `cargo build` of the server and the module. What does come back:
-# the layers above the source `COPY` (the toolchain, binaryen,
-# `wasm-bindgen-cli`) and the client's `npm ci`. The first runs' walls are
-# recorded in the M6.5c2 close; if a cold build reads over fifteen minutes the
-# trigger drops to master pushes and dispatch (R-C9), and a cache-mount export
-# step is the option only if the walls warrant it.
+# **Which runs are COLD, and which are WARM.** `cache-to: type=gha,…,mode=max`
+# exports every layer of every stage, the server stage's build step among
+# them: its `--mount=type=cache` mounts (`/usr/local/cargo/registry`,
+# `/src/target`) stay out of the layer, and the layer is still exported. So a
+# run pays a cold `cargo build` of the server and the module only when one of
+# that stage's inputs differs from the cached run's — `rust-toolchain.toml`,
+# `Cargo.toml`, `Cargo.lock` or anything under `crates/` (a change under
+# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, or a core change an
+# earlier, untriggered push carried in) — and on any run that finds no cache
+# yet, the first or one after GitHub evicts it. Every other run is WARM: one
+# triggered only by `web/**`, the smoke script, this file or a dispatch
+# restores the server stage and pays the client stage alone. The layers above
+# the source `COPY` (the toolchain, binaryen, `wasm-bindgen-cli`) and the
+# client's `npm ci` come back on both kinds.
+#
+# **R-C9's fifteen minutes are a COLD wall** (ruling R-C21). It is read from
+# the first run at the M6.5c2 close's push — cold by construction, with no
+# cache yet and `crates/yokohama-web/**` changed — and afterwards only from a
+# run whose log shows `[server 10/10]` executing rather than `CACHED`. The
+# first runs' walls are recorded in the M6.5c2 close; if a cold build reads
+# over fifteen minutes the trigger drops to master pushes and dispatch (R-C9),
+# and a cache-mount export step is the option only if the walls warrant it.
 on:
   push:
     branches: [master]
@@ -113,13 +126,24 @@ jobs:
           build-args: |
             YOKOHAMA_PROJECT_URL=https://example.test/yokohama-ci
           cache-from: type=gha,scope=yokohama-web
+      # The negative arm wants grep's exit 1 EXACTLY (it ran, and found no
+      # match): 0 is a link where none was asked for, and anything else — grep's
+      # 2 for a missing path, 125 or 127 from docker — is a check that did not
+      # run, which must not read as a pass.
       - name: The link reached the bundle, and only the build that asked for it
         run: |
           set -euo pipefail
           docker run --rm --entrypoint sh yokohama-web:ci-link -c \
             'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'
-          if docker run --rm --entrypoint sh yokohama-web:ci -c \
-              'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'; then
+          set +e
+          docker run --rm --entrypoint sh yokohama-web:ci -c \
+            'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
             echo "::error::the image built without a link carries one"
+            exit 1
+          elif [ "$code" -ne 1 ]; then
+            echo "::error::the no-link check did not run: exit $code, where grep's 1 (no match) was wanted"
             exit 1
           fi
