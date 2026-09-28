@@ -447,7 +447,7 @@ export function usePolled<T>(
           // catch below ends the source with the `/enter` remedy); an answer is
           // a free resync, delivered.
           //
-          // **Bounded, as every other read here is** (M6.5c2; M6.5c Task
+          // **Bounded, unlike the two other `once()` reads above** (M6.5c2; M6.5c Task
           // 8's escalation 5): a probe that never answers is a failure, and
           // the ladder below is what a failure climbs. **And dropped when its
           // attempt was aborted while it was out** (M6.5c Task 8's Minor 1):
