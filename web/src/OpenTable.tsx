@@ -77,6 +77,13 @@ export function OpenTable({
   const [table, setTable] = useState<TableView | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** **Abandon's refusal, in a strip of its own** (M6.5c2 cycle C; the task
+   *  review's I-1, ruled R-C24): one state per strip, because each strip sits
+   *  beside its own control. `error` is the join block's — the join's, the
+   *  password's and a refused copy's; this is the one the controls' Abandon
+   *  raises, drawn directly under the controls. One shared state would put an
+   *  Abandon refusal a screen-height above its button on a seated face. */
+  const [abandonError, setAbandonError] = useState<string | null>(null);
   /** "Something about this table may have changed" (spec §6.2), counted.
    *
    *  This screen's hook is a `"wake"` consumer — a frame is not its value, so
@@ -327,12 +334,13 @@ export function OpenTable({
           </button>
         )}
 
-        {/* **The screen's refusals sit by the join** (M6.5c2 cycle C, polish
-            4): directly under the password, the seats and "Join as", which is
-            what a join's and a wrong password's refusals are about — not at
-            the page's foot, under the chat and the controls. A refused copy
-            and Abandon's refusal land here too, above the invite and the
-            controls they came from rather than a screen-height below them. */}
+        {/* **The join block's refusals sit by the join** (M6.5c2 cycle C,
+            polish 4): directly under the password, the seats and "Join as",
+            which is what a join's and a wrong password's refusals are about —
+            not at the page's foot, under the controls (and, for a seated
+            caller, the chat). A refused copy lands here too, directly above the
+            Invite panel whose button raised it. Abandon's refusal does NOT: it
+            has its own strip under the controls (`abandonError`, below). */}
         {error && <Refusal sentence={error} />}
 
         {seated && (
@@ -355,12 +363,14 @@ export function OpenTable({
               gone, and there is nothing here to go back to. Outlined in the
               warning colour, the quieter danger (mock 08). */}
           {seated && table.created_by === me && (
-            <Abandon table={table} onDone={() => leave.current()} onError={setError} />
+            <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
           )}
           <button type="button" className="quiet-link" onClick={() => leave.current()}>
             <span aria-hidden="true">&larr; </span>Lobby
           </button>
         </div>
+        {/* Abandon's refusal, directly under the button that raised it (R-C24). */}
+        {abandonError && <Refusal sentence={abandonError} className="error abandon-refusal" />}
       </div>
     </div>
   );

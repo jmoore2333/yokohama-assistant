@@ -2433,9 +2433,11 @@ details.fold #seed { max-width: 23rem; }
 .open-table .open-table-controls {
   display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem;
 }
-/* The screen's refusal, under the join block it is about (cycle C, polish 4):
- * spaced as the blocks around it are, a rem above what follows. */
+/* The join block's refusal, under the block it is about (cycle C, polish 4):
+ * spaced as the blocks around it are, a rem above what follows. Abandon's has
+ * its own strip under the controls (R-C24), set off from them above. */
 .open-table > .error { margin: 0 0 1rem; overflow-wrap: anywhere; }
+.open-table > .error.abandon-refusal { margin: 0.6rem 0 0; }
 /* Abandon, the quieter danger (mock 08): outlined in the warning colour — on
  * the open table and in a notice card (a game that will not open). */
 .open-table .open-table-controls button.ghost.danger, .notice-actions button.ghost.danger {
@@ -2477,11 +2479,13 @@ details.fold #seed { max-width: 23rem; }
  * 17-36px in the lobby and on the door (the way back to this device, a row's
  * name and its Abandon, the corner's pill and its action, "How to play") and
  * ~30px on the open table (Copy link, Abandon, "<- Lobby"; cycle B's Task 7).
- * These, the forms' Cancel and the device card's own controls are 44px tall
+ * These, the forms' Cancel, the device card's own controls, and (the task
+ * review's M-2) the help's Close, the listings' "more", the door's project link
+ * and the chat's show and send on the lobby and the open table are 44px tall
  * here, their words centred in the box.
  * A text link stays a text link — taller, no wider, no border; a bordered
- * button takes a padding to suit its new height, but for the pill and the
- * row's Abandon, which keep their sides. 600px is where the band's corner turns
+ * button takes a padding to suit its new height, but for the pill, the project
+ * link and the row's Abandon, which keep their sides. 600px is where the band's corner turns
  * into its pill and the lobby's rows restack, so the phone layout turns at one
  * width. After every rule it overrides, at their specificity or above. */
 @media (max-width: 600px) {
@@ -2500,9 +2504,18 @@ details.fold #seed { max-width: 23rem; }
    * measured at 390px. */
   .offline-state .linkish { margin-block: min(0px, calc((1lh - 44px) / 2)); }
   .identity-pill { min-height: 44px; }
+  /* The door's project link: a flex row already (its arrow is its own item). */
+  .project-link { min-height: 44px; align-items: center; }
+  /* The bordered buttons. The last line is the chat's show/hide and send (the
+   * task review's M-2), on the two setup screens that host a chat — the
+   * lobby's rail and the open table's column — by their containers, never a
+   * bare `.chat`: the game screen's and the deal's chat keep their size. The
+   * message box stretches to send's height on its own (the form is a flex
+   * row). */
   .identity-menu button.ghost, .identity-edit button.ghost,
   .invite .row button.ghost, .open-table-controls button.ghost, .notice-actions button.ghost,
-  .on-this-device button.ghost:not(.back-up-all) {
+  .on-this-device button.ghost:not(.back-up-all), .door-help button.ghost, .lobby-section > button.more,
+  .lobby-chat .chat button.ghost, .open-table > .chat button.ghost {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 0.9rem;
   }
   /* The row's Abandon keeps its narrow sides: it is the quiet control under

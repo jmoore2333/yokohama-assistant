@@ -99,8 +99,9 @@ export function FrontDoor({
                     is a text node of its own: Chromium names the link the same
                     either way (measured), but the name the cells compute trims
                     each element's text, and a space inside the span was lost
-                    there ("…assistant(opens…"). At the line's end it draws
-                    nothing. */}
+                    there ("…assistant(opens…"). It draws nothing: `.project-link`
+                    is a flex container, and a whitespace-only text node among
+                    its items is not rendered. */}
                 {" "}
                 <span className="sr-only">(opens in a new tab)</span>
               </a>

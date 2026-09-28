@@ -88,6 +88,12 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
       expect(await height(page, "link", "Go to the lobby"), "Go to the lobby, thumb-sized").toBeGreaterThanOrEqual(44);
       // The door's quiet control too (M6.5c2 cycle C, polish 2): it drew 17px.
       expect(await height(page, "button", "How to play"), "How to play, thumb-sized").toBeGreaterThanOrEqual(44);
+      // And the help's Close (the task review's M-2), read open; Close hands
+      // focus back to How to play, in Chromium as in jsdom (the a11y pass).
+      await page.getByRole("button", { name: "How to play" }).click();
+      expect(await height(page, "button", "Close"), "the help's Close, thumb-sized").toBeGreaterThanOrEqual(44);
+      await page.getByRole("button", { name: "Close" }).click();
+      await expect(page.getByRole("button", { name: "How to play" })).toBeFocused();
     }
     await look(page, `door-${size.width}`);
   }
@@ -322,11 +328,17 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         // **Every control a thumb presses here is 44px tall** (M6.5c2 cycle C,
         // polish 2): the quiet ones — the way back to this device, a row's
         // name and its Abandon, the pill and its action — drew 18-36px beside
-        // primaries at 44. Read with the corner OPEN, so its action is drawn;
-        // a control with no box (a shut fold's rows) is one nobody can press,
-        // and is left out rather than read as zero.
+        // primaries at 44, and the lobby chat's show and send (the task
+        // review's M-2) ~18px. Read with the corner OPEN and the chat SHOWN, so
+        // the corner's action and the chat's send are drawn; a control with no
+        // box (a shut fold's rows) is one nobody can press, and is left out
+        // rather than read as zero. The listings' "more" is drawn only past a
+        // page of tables, which this cell does not make: its rule is styled,
+        // not read here.
+        await page.locator(".lobby-chat").getByRole("button", { name: "show" }).click();
+        await expect(page.locator(".lobby-chat").getByRole("button", { name: "send" })).toBeVisible();
         const controls = await page
-          .locator(".lobby-actions, .lobby-rows, .identity-corner")
+          .locator(".lobby-actions, .lobby-rows, .identity-corner, .lobby-chat")
           .evaluateAll((scopes) =>
             scopes.flatMap((scope) =>
               [...scope.querySelectorAll("button, a")]
@@ -341,13 +353,15 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         console.log(`lobby controls at 390 (name, height): ${JSON.stringify(controls)}`);
         // Anti-vacuity: the sweep saw each kind it is about.
         const names = controls.map((c) => c.name);
-        for (const want of ["New table", "switch player", "abandon Width check", "Copy link: Width check"]) {
+        for (const want of ["New table", "switch player", "abandon Width check", "Copy link: Width check", "hide", "send"]) {
           expect(names, `the sweep read ${want}`).toContain(want);
         }
         expect(names.some((n) => n.endsWith("Games on this device")), "the sweep read the way back").toBe(true);
         expect(names.some((n) => n === "Width check"), "the sweep read a row's name").toBe(true);
         const short = controls.filter((c) => c.height < 44);
         expect(short, `controls under 44px at 390: ${JSON.stringify(short)}`).toEqual([]);
+        // Fold the chat back: its fold is remembered per browser (`chatFold.ts`).
+        await page.locator(".lobby-chat").getByRole("button", { name: "hide" }).click();
         await pill.click();
         expect(await height(page, "button", "Copy link: Width check"), "a row's action, thumb-sized").toBeGreaterThanOrEqual(44);
         expect(await height(page, "button", "New table"), "New table, thumb-sized").toBeGreaterThanOrEqual(44);

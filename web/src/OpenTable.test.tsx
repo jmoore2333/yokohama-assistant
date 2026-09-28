@@ -500,11 +500,15 @@ describe("the open table, to somebody sitting at it", () => {
     await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
   });
 
-  // **Abandon's refusal reaches the same strip** (M6.5c2 cycle C, polish 4):
-  // after the seats and above the controls, one screen-height nearer the
-  // button that raised it than the page's foot was. A DELETE that got no
-  // answer is the refusal the control words itself (`NO_ANSWER`).
-  it("puts Abandon's refusal in the same strip, after the seats and above the controls", async () => {
+  // **Abandon's refusal has a strip of its own, directly under the controls**
+  // (M6.5c2 cycle C, polish 4; the task review's I-1, ruled R-C24). The join
+  // block's strip is a screen-height ABOVE Abandon on a seated face — the
+  // Invite panel and the chat sit between them, ~350px at 390 with the chat
+  // folded — so each refusal sits beside its own control: the join's, the
+  // password's and the copy's up there, Abandon's down here, and never in the
+  // other's. A DELETE that got no answer is the refusal the control words
+  // itself (`NO_ANSWER`).
+  it("puts Abandon's refusal in its own strip directly after the controls, and not in the join block's", async () => {
     const { user } = showSeated((call) => {
       if (call.path.endsWith("/table")) return seated();
       if (call.method === "DELETE") throw new TypeError("Failed to fetch");
@@ -513,8 +517,30 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(await screen.findByRole("button", { name: "abandon wire2" }));
     await user.click(screen.getByRole("button", { name: "confirm abandon wire2" }));
     const strip = (await screen.findByText(NO_ANSWER)).closest(".error")!;
+    const controls = document.querySelector(".open-table-controls")!;
+    expect(controls.nextElementSibling, "the element right after the controls").toBe(strip);
+    // And not in the upper strip: nothing between the seats and the controls
+    // carries it.
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const upper = [...document.querySelectorAll(".open-table > .error")].filter(
+      (e) => after(document.querySelector("ol.seat-cards")!, e) && after(e, controls),
+    );
+    expect(upper.map((e) => e.textContent), "the join block's strip does not carry it").toEqual([]);
+  });
+
+  // **And the join block's strip keeps the copy's refusal, above the Invite
+  // panel whose button raised it** (R-C24): the split moves Abandon's alone.
+  it("keeps a refused copy's sentence in the join block's strip, above the controls", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(
+      new DOMException("Write permission denied.", "NotAllowedError"),
+    );
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const url = `${window.location.origin}/#/t/wire2`;
+    const strip = (await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).closest(".error")!;
     const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
+    expect(after(strip, document.querySelector("section.invite")!), "above the Invite panel").toBe(true);
     expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
   });
 
