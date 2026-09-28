@@ -1375,10 +1375,10 @@ export function App() {
   );
 
   /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
-   *  mocks 02, 07): who is playing, and the one change the door allows — the
-   *  identity corner the lobby draws, so the new-table form says it in the
-   *  lobby's own words. The "You are …" strip (`who`) stays the game banner's
-   *  and the deal's. */
+   *  mocks 02, 07, 08, 09): who is playing, and the one change the door allows
+   *  — the identity corner the lobby draws, so the new-table form, the open
+   *  table and the unlock face say it in the lobby's own words. The "You are …"
+   *  strip (`who`) stays the game banner's, the deal's and the broken save's. */
   const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
 
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
@@ -1416,12 +1416,7 @@ export function App() {
     // screen writes too and the lock is taken at OPEN time for all of it.
     if (lockId !== null && (lockState === "elsewhere" || lockState === "lost"))
       return (
-        <LockScreen
-          state={lockState}
-          onTakeover={retake}
-          onLeave={() => toLobby()}
-          who={who}
-        />
+        <LockScreen state={lockState} onTakeover={retake} onLeave={() => toLobby()} />
       );
     // **A save in this browser that no longer rebuilds** (spec §4): the
     // engine's own sentence, the bytes still saveable and the game still
@@ -1563,7 +1558,7 @@ export function App() {
           // `#/t/<id>` lands there: a bare screen that answers nothing is the
           // one place a player cannot act from.
           onLeave={toLobby}
-          who={who}
+          who={serverCorner}
         />
       );
     if (unlock)
@@ -1585,7 +1580,7 @@ export function App() {
             )
           }
           onLeave={() => toLobby()}
-          who={who}
+          who={serverCorner}
         />
       );
     return lobbyScreen(error);

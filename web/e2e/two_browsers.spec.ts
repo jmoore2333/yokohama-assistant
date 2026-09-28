@@ -191,8 +191,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // Exact, for the reason `harness.ts` gives: the lobby's own heading, not
   // the chat panel's, which carries the word too.
   await expect(c.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
-  const watchButton = c.getByRole("button", { name: "Watch" });
-  await expect(watchButton).toBeVisible();
+  const spectateButton = c.getByRole("button", { name: "Spectate" });
+  await expect(spectateButton).toBeVisible();
 
   // **The request log, installed BEFORE the stream is opened**, so the one
   // connection the watcher makes for this table is inside the count. The house
@@ -220,8 +220,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
     if (socketTo(ws, streamPath)) streams += 1;
   });
 
-  await c.getByLabel("Password").fill(WATCH_PASSWORD);
-  await watchButton.click();
+  await c.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
+  await spectateButton.click();
   await expect(c.getByText("You are watching")).toBeVisible();
   await expect(c.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
   // The watcher's own side column is empty of cards from the first frame, and

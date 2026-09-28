@@ -1,4 +1,4 @@
-// The unlock face (spec §5.3): the screen a would-be WATCHER lands on when the
+// The unlock face (spec §5.3): the screen a would-be SPECTATOR lands on when the
 // table they followed asks for a password.
 //
 // Every payload here is the corpus's — `table_watchable.json` is a locked
@@ -37,20 +37,26 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
 }
 
 describe("the unlock face", () => {
-  // What a person deciding whether to watch needs: which table this is, who is
+  // What a person deciding whether to spectate needs: which table this is, who is
   // at it, and that it wants a password. The facts are `TableFacts`' — the same
   // line the lobby and the Game menu draw — so a table cannot read one way here
   // and another there.
   it("names the table, its seats and the password it wants", () => {
     show();
-    expect(screen.getByRole("heading", { name: TABLE.name ?? TABLE.id })).toBeInTheDocument();
+    // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
+    // table's name too, so the page's own title is the heading a level under.
+    expect(screen.getByRole("heading", { name: TABLE.name ?? TABLE.id, level: 3 })).toBeInTheDocument();
     for (const seat of TABLE.seats) {
       expect(screen.getByText(new RegExp(seatName(seat)))).toBeInTheDocument();
     }
     expect(screen.getByText(new RegExp(`${TABLE.players}P`))).toBeInTheDocument();
-    expect(screen.getByLabelText("Password")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Table password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spectate" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    // **"Spectate", in every word a person reads** (R-6.5c2.7). The wire keeps
+    // `can_watch`; the screen says nothing of watching.
+    expect(screen.getByText(/password required to spectate/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bwatch/i);
   });
 
   // **Nothing is sent for an empty box.** The server answers a blank password
@@ -58,15 +64,15 @@ describe("the unlock face", () => {
   // spends a request to be told what the screen already knows.
   it("will not send an empty password", () => {
     show();
-    expect(screen.getByRole("button", { name: "Watch" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Spectate" })).toBeDisabled();
   });
 
   it("posts the password and hands over when the server takes it", async () => {
     const { stub, onUnlocked, user } = show((call) =>
       call.path.endsWith("/unlock") ? { ...TABLE, can_watch: true } : undefined,
     );
-    await user.type(screen.getByLabelText("Password"), "  hunter2  ");
-    await user.click(screen.getByRole("button", { name: "Watch" }));
+    await user.type(screen.getByLabelText("Table password"), "  hunter2  ");
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1));
     const posts = stub.matching("POST", "/unlock");
     expect(posts).toHaveLength(1);
@@ -77,20 +83,20 @@ describe("the unlock face", () => {
     expect(posts[0]!.body).toEqual({ password: "hunter2" });
   });
 
-  // The server's own sentence, and the screen stays on this face: a watcher who
+  // The server's own sentence, and the screen stays on this face: a spectator who
   // typed the wrong password has another go, and a hand-over here would have
   // opened a table they cannot see.
   it("shows the server's refusal for a wrong password and does not hand over", async () => {
     const { onUnlocked, onLeave, user } = show((call) =>
       call.path.endsWith("/unlock") ? { status: 403, body: wire.unlock403 } : undefined,
     );
-    await user.type(screen.getByLabelText("Password"), "nope");
-    await user.click(screen.getByRole("button", { name: "Watch" }));
+    await user.type(screen.getByLabelText("Table password"), "nope");
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
     expect(await screen.findByText(wire.unlock403.error)).toBeInTheDocument();
     expect(onUnlocked).not.toHaveBeenCalled();
     expect(onLeave).not.toHaveBeenCalled();
     // And the face is still here to try again on.
-    expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spectate" })).toBeInTheDocument();
   });
 
   it("goes back to the lobby", async () => {
@@ -111,11 +117,11 @@ describe("the unlock face", () => {
     const { stub, user } = show((call) =>
       call.path.endsWith("/unlock") ? { ...TABLE, can_watch: true } : undefined,
     );
-    await user.type(screen.getByLabelText("Password"), "hunter2");
-    const watch = screen.getByRole("button", { name: "Watch" });
+    await user.type(screen.getByLabelText("Table password"), "hunter2");
+    const spectate = screen.getByRole("button", { name: "Spectate" });
     act(() => {
-      fireEvent.click(watch);
-      fireEvent.click(watch);
+      fireEvent.click(spectate);
+      fireEvent.click(spectate);
     });
     await waitFor(() => expect(stub.matching("POST", "/unlock")).toHaveLength(1));
     expect(stub.matching("POST", "/unlock")).toHaveLength(1);

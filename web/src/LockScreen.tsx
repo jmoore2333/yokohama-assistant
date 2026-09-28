@@ -15,7 +15,7 @@
 // and the caller says which by where it puts it.
 
 import { useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { LobbyBand } from "./Band";
 import type { LockState } from "./local/useLocalHold";
 import { Refusal } from "./Refusal";
 
@@ -47,7 +47,6 @@ export function LockScreen({
   onTakeover,
   onLeave,
   inline = false,
-  who,
 }: {
   state: LockFace;
   /** Steal the lock. Rejecting is reported here rather than thrown: the local
@@ -58,9 +57,6 @@ export function LockScreen({
   onLeave?: () => void;
   /** Draw the strip for the answer deck rather than a screen of its own. */
   inline?: boolean;
-  /** The "On this device" strip, built by `App` and merely placed here, as the
-   *  other pre-game screens do it. */
-  who?: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
   // A ref and not a state, for the reason every other guard in this client is
@@ -101,19 +97,26 @@ export function LockScreen({
     );
   }
   return (
-    <div className="setup locked-out">
-      {who && <div className="who-strip">{who}</div>}
-      <h2>{words.says}</h2>
-      <p className="lede">{words.why}</p>
-      <div className="field unlock-controls">
-        {button}
-        {onLeave && (
-          <button type="button" className="ghost" onClick={onLeave}>
-            Lobby
-          </button>
-        )}
+    <div className="band-screen">
+      {/* A LOCAL game's screen: the band names the device, and draws no
+          identity corner — nothing here is the server's (mock 07's local form,
+          for the same reason). */}
+      <LobbyBand crumbs={["On this device"]} corner={undefined} />
+      <div className="setup locked-out">
+        <div className="notice-card">
+          <h3 className="page-title">{words.says}</h3>
+          <p className="lede">{words.why}</p>
+          <div className="notice-actions">
+            {button}
+            {onLeave && (
+              <button type="button" className="quiet-link" onClick={onLeave}>
+                <span aria-hidden="true">&larr; </span>Lobby
+              </button>
+            )}
+          </div>
+          {error && <Refusal sentence={error} />}
+        </div>
       </div>
-      {error && <Refusal sentence={error} />}
     </div>
   );
 }

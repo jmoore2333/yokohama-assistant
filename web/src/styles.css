@@ -919,14 +919,6 @@ button.primary {
 }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 
-/* One seat of the new-game form: who holds it, its colour, and — when the row
-   names somebody else — where to type their address. It WRAPS, because at
-   390px the label, the select and an email field do not sit on one line and a
-   form that pushed the input off the edge would be a page that scrolls
-   sideways (the width gate's own rule, applied before the gate sees it). */
-.field.seat-row { flex-wrap: wrap; }
-.field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
-
 .on-this-device .local-fault { color: var(--fg-dim); }
 
 /* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
@@ -1022,42 +1014,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   color: var(--vp); font: inherit; cursor: pointer; text-decoration: underline;
 }
 .linkish:hover { color: var(--fg); }
-
-/* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
-   is the setup screens' own `.setup` box and the rows are their `.field
-   .seat-row`, so the only rule it needs of its own is the list's markers —
-   these are seats, not bullets. */
-.open-table .seats { list-style: none; margin: 0; padding: 0; }
-.open-table .open-table-controls { justify-content: flex-start; }
-/* The link row: a read-only field holding a whole address, beside a Copy
-   button. It is the one `.field` on any setup screen whose value is WIDER than
-   the screen it is read on, and it pushed the page sideways at 390px — 422
-   against a 390 viewport, with the Copy button's right edge off the window
-   (live review I-1).
-
-   TWO rules, because the default answers neither half. A flex item's automatic
-   minimum size is its CONTENT, so an input holding a 400px URL refuses to be
-   narrower than that URL however little room the row has: `min-width: 0` is
-   what lets it be squeezed at all. And `flex: 1 1 auto` is what makes the
-   squeezing land here rather than on the label or the button — it also grows,
-   so on a wide screen the address is as readable as the room allows. The wrap
-   is the seat row's own (`.field.seat-row`), for the same reason: below the
-   width where even a shrunk input is narrower than its own padding, the button
-   drops to its own line instead of off the edge. */
-.field.link-field { flex-wrap: wrap; }
-.field.link-field input { flex: 1 1 auto; min-width: 0; }
-
-/* The unlock face (M6.3 §5.3): one password box and two buttons. It is the
-   setup screens' own `.setup` box and its row is their `.field`, so the only
-   rule it needs of its own is the controls row — `.field` lays its children out
-   in a line and centres them, and two buttons on their own read as a pair
-   floating in the middle of an empty row. The same rule the open table's own
-   controls take, and for the same reason.
-
-   The lede holds `TableFacts`' `<span>` INLINE, so it wraps like prose at 390px
-   rather than being a flex item with a minimum size of its own content — which
-   is the defect the link row above records. */
-.unlock .unlock-controls { justify-content: flex-start; }
 
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {
@@ -1724,16 +1680,16 @@ ol.account .mover { font-weight: 700; }
  * is a column, and a sentence sitting over a full-width button is not the
  * shape either of them wants.
  *
- * The two standalone screens take the unlock face's controls row, for the
- * reason that rule gives — `.field` centres its children, and two buttons on
- * their own read as a pair floating in the middle of an empty row. */
+ * The broken save's standalone screen lays its controls out from the left —
+ * `.field` centres its children, and buttons on their own read as a group
+ * floating in the middle of an empty row. (The lock's standalone screen is a
+ * `.notice-card` since M6.5c2, with a row of its own.) */
 .decision.locked-out {
   display: flex; flex-direction: row; flex-wrap: wrap;
   align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
   font-family: var(--display); font-size: 1.05rem;
 }
 .decision.locked-out .primary { margin-left: auto; }
-.locked-out .unlock-controls,
 .broken-save .unlock-controls { justify-content: flex-start; gap: 0.5rem; flex-wrap: wrap; }
 
 /* ---- M5.5: the set table ------------------------------------------------
@@ -2390,4 +2346,105 @@ details.fold #seed { max-width: 23rem; }
    * rather than wrap Random under them. */
   .seg { display: flex; }
   .seg label { flex: 1 1 auto; justify-content: center; padding: 0 0.5rem; }
+}
+
+/* ---- M6.5c2: waiting and joining (R-6.5c2.9; spec §2.2; mocks 08, 09, 11) ----
+ *
+ * The open table's two faces, the unlock face and the lock screen, under the
+ * band. Every rule is scoped to a class these screens introduce: the chat panel
+ * the open table also draws keeps its own look. */
+/* The table pages hang under the band's brand, as mocks 08 and 09 draw them
+ * and as the lobby's body does, rather than centred: the column starts where
+ * the band's content does. The band's side padding is `max(2rem, 50% - 34rem)`
+ * and this column's own is `.setup`'s 1.25rem, so its margin is the one less
+ * the other. Below 600px the band's padding is 1rem and the column is the
+ * window's width, so the margin goes back to `.setup`'s. */
+.band-screen > .setup.open-table, .band-screen > .setup.unlock {
+  margin-left: max(0.75rem, calc(50% - 35.25rem));
+}
+@media (max-width: 600px) {
+  .band-screen > .setup.open-table, .band-screen > .setup.unlock { margin-left: auto; }
+}
+/* A table's name is the band's last crumb, and it may be an id with nowhere to
+ * break (an id is a table's name when it has no other): measured, a 22-letter
+ * id ran 36px into the identity pill at 360px and 6px at 390px. It wraps
+ * anywhere rather than run under the corner. */
+.band-screen .band-brand h2.crumb { overflow-wrap: anywhere; }
+/* The page's own title under the band: an `h3`, a level under the band's `h2`
+ * crumb, drawn at a title's size rather than `.setup h3`'s. A table named by a
+ * long id breaks anywhere rather than widen the page. */
+.setup h3.page-title { overflow-wrap: anywhere; }
+.setup h3.page-title { font-size: 1.9rem; font-weight: 600; margin: 0.2rem 0 0.3rem; }
+/* A notice's title is a sentence, not a name: smaller, at every width (the
+ * phone rule below is outranked). */
+.setup .notice-card h3.page-title { font-size: 1.35rem; margin-top: 0; }
+.open-table .table-status {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem 0.6rem;
+  color: var(--fg-dim); margin: 0.3rem 0 1rem;
+}
+/* The three inputs these screens own, by name — never `.open-table input`,
+ * which would also restyle the chat panel's own box on the same screen. */
+.join-password input, .invite .row input, .spectate-box input {
+  width: 100%; min-height: 2.15rem;
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line-bright);
+  border-radius: var(--radius); padding: 0.45rem 0.65rem; font: inherit;
+}
+.join-password { max-width: 22rem; margin: 0 0 1rem; }
+/* The seats: as many across as fit, one column on a phone. Each card fills its
+ * cell, so the cards of one row are one height whatever each one says. */
+.seat-cards {
+  list-style: none; margin: 0 0 1rem; padding: 0;
+  display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+}
+.seat-cards > li { display: flex; min-width: 0; }
+.seat-cards > li > .seat-card { flex: 1 1 auto; }
+.seat-cards button.sit { margin-top: 0.5rem; padding: 0.3rem 0.8rem; }
+.open-table button.primary.join { display: block; margin: 0 0 1rem; }
+/* "Invite people" (mock 08): a raised panel with its caption, the link and
+ * Copy link on one row, and the password line under them. */
+.invite {
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.85rem 1rem; margin: 0 0 1rem;
+}
+/* The panel's caption, which `.setup h3` would otherwise draw as a heading. */
+.invite h3.caption {
+  font-family: var(--mono); font-weight: 400; font-size: 10.5px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-faint); margin: 0;
+}
+/* A whole URL in a row: the input may shrink below its content (`min-width: 0`)
+ * and the button drops under it rather than off the edge (live review I-1). */
+.invite .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.invite .row input { flex: 1 1 14rem; min-width: 0; }
+.invite .row button.ghost { color: var(--fg); border-color: var(--line-bright); }
+.invite .note { color: var(--fg-faint); font-size: 11.5px; margin: 0.55rem 0 0; }
+.open-table .open-table-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem;
+}
+/* Abandon, the quieter danger (mock 08): outlined in the warning colour. */
+.open-table .open-table-controls button.ghost.danger {
+  color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent);
+}
+/* The unlock face: the title with its tag, and one box with one action. */
+.unlock .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.spectate-box {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.85rem 1rem; margin: 0 0 1rem;
+}
+.spectate-box .form-field { flex: 1 1 14rem; margin: 0; }
+.spectate-box button.primary { min-height: 2.15rem; }
+/* The lock screen: one card, its sentence, its action and the way out. */
+.notice-card {
+  max-width: 35rem; margin: 0 auto;
+  background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+  padding: 1.1rem 1.4rem;
+}
+.notice-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.9rem; }
+@media (max-width: 480px) {
+  .setup h3.page-title { font-size: 1.5rem; }
+  .seat-cards { grid-template-columns: 1fr; }
+  .join-password { max-width: none; }
+  .open-table button.primary.join, .spectate-box button.primary { width: 100%; }
+  .open-table button.primary.join, .seat-cards button.sit, .spectate-box button.primary,
+  .join-password input, .invite .row input, .spectate-box input { min-height: 2.75rem; }
 }

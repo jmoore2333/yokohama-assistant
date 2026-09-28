@@ -22,7 +22,7 @@ import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, open
 import { resetPersistenceRequestForTests } from "./storage";
 import { stubStorage } from "./test/platform";
 import { wire } from "./wire/contract";
-import type { ClientState, Events } from "./types";
+import type { ClientState, Events, TableView } from "./types";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
@@ -1469,6 +1469,31 @@ describe("the route", () => {
     expect(band.textContent).not.toMatch(/You are /);
   });
 
+  // **And on a table's two pre-game faces** (mocks 08, 09): the open table a
+  // stranger arrives at, and the unlock face in front of a locked game.
+  //
+  // **Both corpus tables are `wire`**, so the table the handler answers is
+  // switched by hand between the two visits — and the second face is pinned by
+  // its Spectate button, since the open table has a "Table password" box too.
+  it("draws the identity corner in the open table's band and the unlock face's", async () => {
+    expect(wire.tableWatchable.id).toBe(wire.tableOpen.id);
+    let table: TableView = wire.tableOpen;
+    window.location.hash = `#/t/${wire.tableOpen.id}`;
+    const { user } = app((call) => (call.path.endsWith("/table") ? table : undefined));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const band = () => document.querySelector<HTMLElement>(".lobby-band")!;
+    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    table = wire.tableWatchable;
+    act(() => {
+      window.location.hash = `#/t/${wire.tableWatchable.id}`;
+    });
+    await screen.findByRole("button", { name: "Spectate" });
+    expect(screen.getByLabelText("Table password")).toBeInTheDocument();
+    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
+  });
+
   // **The two forms are two components, keyed by host** (whole-branch review,
   // Minor #1). They sit at the same position in `App`'s tree, so React used to
   // reconcile one into the other and the STATE went with it: Players set to 4
@@ -1655,7 +1680,7 @@ describe("the route", () => {
   it("draws the seat picker for a table that is still filling its seats", async () => {
     window.location.hash = "#/t/wire";
     app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
-    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
     // And NOT the lobby, which is what this branch drew until Task 8.
     expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
   });
@@ -1670,8 +1695,8 @@ describe("the route", () => {
     const { stub } = app((call) =>
       call.path.endsWith("/table") ? wire.tableWatchable : undefined,
     );
-    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Table password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spectate" })).toBeInTheDocument();
     // **And the GAME was never asked for.** A caller who cannot read this table
     // would be refused, and a 403 in the error strip is not the screen the spec
     // asks for — the face is.
@@ -1701,8 +1726,8 @@ describe("the route", () => {
     expect(wire.tableOpen.my_seats).toHaveLength(0);
     window.location.hash = "#/t/wire";
     app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
-    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Spectate" })).toBeNull();
   });
 
   // **A SEATED caller never meets a password box, whatever `can_watch` says.**
@@ -1729,8 +1754,8 @@ describe("the route", () => {
       return undefined;
     });
     await screen.findByText(/end triggers:/);
-    expect(screen.queryByLabelText("Password")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Spectate" })).toBeNull();
   });
 
   // The password is taken, the table is re-read, and what comes back is the
@@ -1753,11 +1778,11 @@ describe("the route", () => {
       if (call.path.endsWith("/areas")) return wire.areas;
       return undefined;
     });
-    await user.type(await screen.findByLabelText("Password"), "hunter2");
-    await user.click(screen.getByRole("button", { name: "Watch" }));
+    await user.type(await screen.findByLabelText("Table password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
     await screen.findByText(/end triggers:/);
     expect(screen.getByText("You are watching")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
   });
 
   it("leaves the unlock face for the lobby", async () => {
@@ -1765,13 +1790,13 @@ describe("the route", () => {
     const { user } = app((call) =>
       call.path.endsWith("/table") ? wire.tableWatchable : undefined,
     );
-    await screen.findByLabelText("Password");
+    await screen.findByLabelText("Table password");
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
     await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     // The face went with the screen — a leftover would draw over the next table
     // opened.
-    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
   });
 
   it("lands on the DEAL when the table flips to dealing under the screen", async () => {
@@ -1809,7 +1834,7 @@ describe("the route", () => {
       // than on a number of turns: a frame written to a body nobody has opened
       // reaches nobody, and nothing re-delivers it.
       await until(() => stream.opens() > 0, "the table's own stream was opened");
-      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
 
       status = "dealing";
       stream.push("signal", wire.eventsDealing);
@@ -1906,7 +1931,7 @@ describe("the route", () => {
           : { status: 403, body: { error: "you are not seated at this table" } };
       });
       await until(() => stream.opens() > 0, "the table's own stream was opened");
-      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
 
       flipped = true;
       stream.push("signal", wire.eventsDealing);
@@ -1916,7 +1941,7 @@ describe("the route", () => {
       );
       expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
       expect(screen.getByText("you are not seated at this table")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Join as Blue" })).toBeNull();
     } finally {
       vi.useRealTimers();
       process.off("unhandledRejection", note);

@@ -5,10 +5,17 @@
 // no seat here is a stranger — the one route on this API widened to somebody
 // who is not seated (R-2.7), because a join link is an address and the person
 // following one has to see what they are joining — and what they are offered is
-// a seat, a name to take it under and, at a locked table, its password. A
-// caller who already holds a seat is WAITING, and what they are offered is the
-// link to send to whoever is still missing, plus — if they opened the table —
-// the way to abandon it.
+// a seat: ONE "Join as <colour>" when one seat is free, a "Sit here" in each
+// open seat's card when more are (R-6.5c2.9), and at a locked table the
+// password box above the seats. The name the seat takes is the one this browser
+// keeps (R-6.5c2.8), read at the click; the screen asks for none. A caller who
+// already holds a seat is WAITING, and what they are offered is the link to
+// send to whoever is still missing, plus — if they opened the table — the way
+// to abandon it.
+//
+// **Arriving seats nobody.** One click, never zero: a link preview or a curious
+// click must not take a seat, and a locked table needs its password typed
+// anyway. Nothing on this screen posts a join but a button.
 //
 // **The table is fetched here as well as watched**, which is the lobby's own
 // shape and for the lobby's own reason: this screen holds an id and nothing
@@ -28,13 +35,14 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
+import { LobbyBand } from "./Band";
 import { Chat } from "./Chat";
-import { api, ApiError, displayName, setDisplayName } from "./api";
-import { seatClass } from "./Cards";
+import { PasswordTag } from "./Chips";
+import { api, ApiError, displayName } from "./api";
 import { hashOf } from "./route";
+import { SeatCard } from "./SeatCard";
 import { usePolled, type End } from "./signal";
-import { seatName } from "./tables";
-import type { PlayerColor, TableView } from "./types";
+import type { PlayerColor, SeatDoc, TableView } from "./types";
 import { Refusal } from "./Refusal";
 
 export function OpenTable({
@@ -62,14 +70,13 @@ export function OpenTable({
    *  own (final review I-2), and the server's own message when a refusal is
    *  what ended the signal. */
   onLeave: (sentence?: string) => void;
-  /** The "You are …" strip, built by `App` and merely placed here. */
+  /** The band's corner, built by `App` (the identity corner, `serverCorner`)
+   *  and merely placed here beside the signal's own word. */
   who?: ReactNode;
 }) {
   const [table, setTable] = useState<TableView | null>(null);
-  const [name, setName] = useState(() => displayName() ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   /** "Something about this table may have changed" (spec §6.2), counted.
    *
    *  This screen's hook is a `"wake"` consumer — a frame is not its value, so
@@ -142,15 +149,17 @@ export function OpenTable({
     inFlight.current = true;
     setError(null);
     try {
-      const trimmed = name.trim();
-      if (trimmed) setDisplayName(trimmed);
-      // **The keys are omitted rather than sent undefined.** Every request body
-      // on this API is `deny_unknown_fields`, and a name this browser does not
-      // have is not a name to claim a seat under.
+      // **The name this browser keeps, read at the click** (M6.5c2, R-6.5c2.8):
+      // the form asks for none — the lobby's corner owns it — so a name set
+      // there a moment ago is the one this seat takes. **The keys are omitted
+      // rather than sent undefined.** Every request body on this API is
+      // `deny_unknown_fields`, and a name this browser does not have is not a
+      // name to claim a seat under.
+      const shown = displayName()?.trim();
       take(
         await api.join(game, {
           seat,
-          ...(trimmed ? { name: trimmed } : {}),
+          ...(shown ? { name: shown } : {}),
           ...(table.locked && password.trim() ? { password: password.trim() } : {}),
         }),
       );
@@ -181,126 +190,212 @@ export function OpenTable({
     }
   };
 
-  const strip = (who || link !== "live") && (
-    <div className="who-strip">
+  /** The band's corner: what the signal can say for itself, and whatever `App`
+   *  put there (the identity corner). `live` says nothing, as on every screen. */
+  const corner = (
+    <>
       {link !== "live" && (
         <span className="meta link" role="status">
           {link}&hellip;
         </span>
       )}
       {who}
-    </div>
+    </>
   );
 
   if (!table) {
     return (
-      <div className="setup open-table">
-        {strip}
-        <h2>Table</h2>
-        {error ? <Refusal sentence={error} /> : <p className="muted">loading&hellip;</p>}
+      <div className="band-screen">
+        {/* "Table" as the page until the table has a name to give it — never
+            "Lobby" as the LAST crumb, which is the lobby's own heading (the
+            band draws the last crumb as the page's `<h2>`), so a cell waiting
+            for the lobby would find it on this screen. */}
+        <LobbyBand crumbs={["Lobby", "Table"]} corner={corner} />
+        <div className="setup open-table">
+          {error ? <Refusal sentence={error} /> : <p className="muted">loading&hellip;</p>}
+        </div>
       </div>
     );
   }
 
+  const title = table.name ?? table.id;
   const seated = table.my_seats.length > 0;
   const colors = table.colors as PlayerColor[];
   const url = `${window.location.origin}/${hashOf({ kind: "table", id: game })}`;
-  const waitingOn = table.seats.filter((s) => s.kind === "open").length;
+  const free = table.seats.flatMap((s, i) => (s.kind === "open" ? [i] : []));
+  /** **One free seat, one button** (R-6.5c2.9): nothing to choose, so the page
+   *  offers the seat that is there. Two or more, and each open card has its
+   *  own. Nobody is seated by arriving — one click, never zero. */
+  const onlySeat = !seated && free.length === 1 ? free[0]! : null;
+  /** Whose table this is, in the words its creator's seat shows (§5.6). */
+  const opener = table.seats.find((s) => s.kind === "human" && s.user === table.created_by);
+  const owner = opener?.kind === "human" ? (opener.name ?? opener.user) : table.created_by;
+
+  /** One seat, as its card says it (mocks 08, 09). A taken seat is its holder's
+   *  NAME with "seated" — not mock 08's "seated by you when you opened the
+   *  table", which nothing here can know: a seat bound at create and one joined
+   *  later are the same `SeatDoc`. */
+  const face = (s: SeatDoc, i: number) => {
+    const color = colors[i]!;
+    const caption = i === table.start_seat ? `${color} \u00b7 first player` : color;
+    switch (s.kind) {
+      case "open":
+        if (seated) {
+          return {
+            color,
+            caption,
+            open: true,
+            who: "Open seat",
+            note: table.locked ? "anyone in the lobby, with the password" : "anyone in the lobby",
+          };
+        }
+        if (onlySeat !== null) return { color, caption, open: true, who: "Open seat", note: "yours if you join" };
+        return {
+          color,
+          caption,
+          open: true,
+          who: "Open",
+          action: (
+            <button
+              type="button"
+              className="primary sit"
+              aria-label={`Sit here as ${color}`}
+              onClick={() => void join(i)}
+            >
+              Sit here
+            </button>
+          ),
+        };
+      // Unreachable at an OPEN table — a two-seat table with the bot has no
+      // seat left open, so it is dealing from its create — and drawn anyway, so
+      // a fourth kind of seat is a compile error here and not a blank card.
+      case "bot":
+        return { color, caption, who: "The bot" };
+      case "human":
+        return table.my_seats.includes(i)
+          ? { color, caption, who: "You", note: s.name ?? s.user }
+          : { color, caption, who: s.name ?? s.user, note: "seated" };
+    }
+  };
+
+  const left =
+    free.length === 1 ? "one seat left" : free.length === 2 ? "two seats left" : `${free.length} seats left`;
+  const waiting = `Waiting for ${free.length} more ${free.length === 1 ? "player" : "players"}`;
 
   return (
-    <div className="setup open-table">
-      {strip}
-      <h2>{table.name ?? table.id}</h2>
-      <p className="lede">
-        {seated
-          ? `waiting for ${waitingOn} more ${waitingOn === 1 ? "player" : "players"}`
-          : "take a seat"}
-        {table.locked && " · password required"}
-      </p>
-      {!seated && (
-        <>
-          <div className="field">
-            <label htmlFor="your-name">Your name</label>
-            <input id="your-name" value={name} onChange={(e) => setName(e.target.value)} />
+    <div className="band-screen">
+      <LobbyBand crumbs={["Lobby", title]} corner={corner} />
+      <div className="setup open-table">
+        {/* The page's own title, a level under the band's crumb — the band's
+            rule for a card under it; mocks 08 and 09 draw both. */}
+        <h3 className="page-title">{title}</h3>
+        <p className="table-status">
+          <span>
+            {seated ? `${waiting} \u00b7 ${table.players} players` : `${owner}'s table \u00b7 ${table.players} players \u00b7 ${left}`}
+          </span>
+          {table.locked && <PasswordTag />}
+        </p>
+
+        {/* **Above the seats** (spec §2.2): typed once, then the choice — the
+            one button under the seats, or a seat's own "Sit here". Only at a
+            LOCKED table: a password box over a table that needs none is a
+            question with no right answer. */}
+        {!seated && table.locked && free.length > 0 && (
+          <div className="form-field join-password">
+            <label htmlFor="join-password">Table password</label>
+            <input
+              id="join-password"
+              type="password"
+              autoComplete="off"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
           </div>
-          {/* Only at a LOCKED table: a password box over a table that needs
-              none is a question with no right answer. */}
-          {table.locked && (
-            <div className="field">
-              <label htmlFor="join-password">Password</label>
-              <input
-                id="join-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
+        )}
+
+        <ol className="seat-cards" aria-label="Seats">
+          {table.seats.map((s, i) => (
+            <li key={i}>
+              <SeatCard {...face(s, i)} />
+            </li>
+          ))}
+        </ol>
+
+        {onlySeat !== null && (
+          <button type="button" className="primary join" onClick={() => void join(onlySeat)}>
+            Join as {colors[onlySeat]}
+          </button>
+        )}
+
+        {seated && <Invite url={url} locked={table.locked} mine={table.created_by === me} />}
+
+        {/* ONLY for a seated caller (spec §6.2). The table read is the one route
+            widened to somebody who is not seated (R-2.7); the chat is NOT — a
+            stranger here is 403 at it — so showing them a panel would be
+            showing them a box that refuses everything typed into it. Under the
+            invite, in the MAIN column (the spec-gap answer, not mock 08's
+            rail). */}
+        {seated && (
+          <Chat scope={{ kind: "table", id: game }} tick={tick} colors={colors} sendName={false} />
+        )}
+
+        <div className="open-table-controls">
+          {/* The shared control (R-13), so this screen and the lobby's rows
+              cannot drift apart again. `onDone` is the leave: the table is
+              gone, and there is nothing here to go back to. Outlined in the
+              warning colour, the quieter danger (mock 08). */}
+          {seated && table.created_by === me && (
+            <Abandon table={table} onDone={() => leave.current()} onError={setError} />
           )}
-        </>
-      )}
-      <ul className="seats">
-        {table.seats.map((s, i) => (
-          <li key={i} className={`field seat-row ${seatClass(colors[i])}`}>
-            <span className="meta">
-              Seat {i} &middot; {colors[i]}
-            </span>
-            {s.kind === "open" && !seated ? (
-              <button type="button" className="primary" onClick={() => void join(i)}>
-                sit here
-              </button>
-            ) : (
-              <span>{seatName(s)}</span>
-            )}
-          </li>
-        ))}
-      </ul>
-      {seated && (
-        <div className="field link-field">
-          <label htmlFor="join-link">Link</label>
-          {/* Read-only rather than a sentence, so it can be selected and copied
-              by hand where the clipboard is refused — which it is in every
-              browser that has not been granted it, and in a page served over
-              plain HTTP. */}
-          <input id="join-link" readOnly value={url} />
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              // **The rejection is swallowed, and that is deliberate.** The
-              // clipboard is refused in any browser that has not granted it and
-              // in any page not served over TLS, and an unhandled rejection is
-              // a `pageerror` the browser gate counts as breakage. The input
-              // beside this holds the link either way, which is why the failure
-              // is not worth a sentence.
-              navigator.clipboard?.writeText(url).catch(() => {});
-              setCopied(true);
-            }}
-          >
-            {copied ? "copied" : "copy"}
+          <button type="button" className="quiet-link" onClick={() => leave.current()}>
+            <span aria-hidden="true">&larr; </span>Lobby
           </button>
         </div>
-      )}
-      {/* ONLY for a seated caller (spec §6.2). The table read is the one route
-          widened to somebody who is not seated (R-2.7); the chat is NOT — a
-          stranger on the seat picker is 403 here — so showing them a panel
-          would be showing them a box that refuses everything typed into it. */}
-      {seated && (
-        <Chat scope={{ kind: "table", id: game }} tick={tick} colors={colors} sendName={false} />
-      )}
-      <div className="field open-table-controls">
-        {/* The shared control (R-13), so this screen and the lobby's rows cannot
-            drift apart again — they already had, over the in-flight guard this
-            copy did not carry. `onDone` is the leave: the table is gone, and
-            there is nothing here to go back to. */}
-        {seated && table.created_by === me && (
-          <Abandon table={table} onDone={() => leave.current()} onError={setError} />
-        )}
-        <button type="button" className="ghost" onClick={() => leave.current()}>
-          Lobby
+        {error && <Refusal sentence={error} />}
+      </div>
+    </div>
+  );
+}
+
+/** "Invite people" (mock 08): the link, Copy link, and — at a locked table —
+ *  the reminder that the password travels separately. Worded for the person
+ *  who SET it and for anyone else seated, who did not. */
+function Invite({ url, locked, mine }: { url: string; locked: boolean; mine: boolean }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <section className="invite" aria-labelledby="invite-caption">
+      <h3 id="invite-caption" className="caption">
+        Invite people
+      </h3>
+      <div className="row">
+        {/* Read-only rather than a sentence, so it can be selected and copied
+            by hand where the clipboard is refused — which it is in every
+            browser that has not been granted it, and in a page served over
+            plain HTTP. */}
+        <input aria-label="Invite link" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => {
+            // **The rejection is swallowed, and that is deliberate.** The
+            // clipboard is refused in any browser that has not granted it and
+            // in any page not served over TLS, and an unhandled rejection is a
+            // `pageerror` the browser gate counts as breakage. The field beside
+            // this holds the link either way, which is why the failure is not
+            // worth a sentence.
+            navigator.clipboard?.writeText(url).catch(() => {});
+            setCopied(true);
+          }}
+        >
+          {copied ? "Copied" : "Copy link"}
         </button>
       </div>
-      {error && <Refusal sentence={error} />}
-    </div>
+      {locked && (
+        <p className="note">
+          {mine ? "They'll need the password you set. Send it separately." : "They'll need the table's password."}
+        </p>
+      )}
+    </section>
   );
 }
 

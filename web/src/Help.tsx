@@ -215,12 +215,13 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         yet, and the game does not exist until every seat has chosen its first card.
       </p>
       <p>
-        A table with a seat still open has a <strong>link</strong> &mdash; its own address, shown
-        on the table&rsquo;s screen with a copy button beside it. Send it to whoever is playing:
-        they sign in, type the password if the table asks for one, and press <em>sit here</em>.
-        They can equally find the table for themselves under Open tables, without a link at all.
-        The deal begins by itself the moment the last seat is taken, on everybody&rsquo;s screen at
-        once.
+        A table with a seat still open has a <strong>link</strong> &mdash; its own address, under{" "}
+        <em>Invite people</em> on the table&rsquo;s screen with a button that copies it. Send it to
+        whoever is playing: they sign in, type the password if the table asks for one, and take
+        the seat &mdash; <em>Join as</em> its colour when one seat is left, or <em>Sit here</em> on
+        the one they want when there are more. They can equally find the table for themselves under
+        Open tables, without a link at all. The deal begins by itself the moment the last seat is
+        taken, on everybody&rsquo;s screen at once.
       </p>
       <p>
         That choice happens over the <strong>set table</strong>: the areas with their site cards
