@@ -1874,6 +1874,23 @@ describe("the route", () => {
       await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     });
 
+    // **And the FIELD, never the sentence** (the whole-branch review's Minor
+    // 9): a refusal that carries `foreign_bot` in other words is the same
+    // screen, drawn with the words the body carries. One field moved from the
+    // corpus's refusal, `error`.
+    it("reads the foreign_bot field and not the sentence: other words, the same screen", async () => {
+      window.location.hash = "#/t/wire";
+      const reworded = { ...refusal, error: "another sentence" };
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/table")) return dealt;
+        if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: reworded };
+        return undefined;
+      });
+      expect(await screen.findByText(reworded.error)).toBeInTheDocument();
+      expect(window.location.hash).toBe("#/t/wire");
+      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+    });
+
     // **Review Focus 5's third half: the refused game opens no stream.** The
     // GET's 409 body decides the screen; the transports say nothing useful
     // about a foreign game (the SSE arm writes a comment and stays open, the
