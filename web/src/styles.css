@@ -2531,7 +2531,8 @@ details.fold #seed { max-width: 23rem; }
  *
  * The finished games the caller does not sit at, under the lobby's live lists,
  * in the app's one fold idiom (`details.fold`, R-B16): its hairline, its drawn
- * marker and its pointer are the idiom's own. What this block adds is the
+ * marker and its pointer are the idiom's own, the marker a step brighter
+ * (below). What this block adds is the
  * summary as a SECTION HEAD, so the group reads as a fourth list that is shut
  * rather than as a widget: the `h3` takes `.lobby-section h3`'s size and the
  * count `.section-hint`'s muted colour, both unrestated. Every rule is scoped
@@ -2556,8 +2557,16 @@ details.fold #seed { max-width: 23rem; }
    * touching it (2px from the text without this). */
   margin-inline: -0.5rem; padding-inline: 0.5rem;
 }
-.finished-tables > details.fold > summary::before { order: 1; }
+/* The marker is the group's one cue that it opens, and the group is shut by
+ * default, so it takes `--fg-dim`, one step above the idiom's `--fg-faint`:
+ * in the faint colour a shut group read as a heading with a stray glyph
+ * (Task 10's M1; the whole-branch review's m-3). The glyphs, their swap and
+ * the size stay the idiom's. */
+.finished-tables > details.fold > summary::before { order: 1; color: var(--fg-dim); }
 /* Pointed at, the count and its marker brighten together, as the rows' quiet
- * Abandon does: a colour, no motion. */
-.finished-tables > details.fold > summary:hover > .section-hint,
-.finished-tables > details.fold > summary:hover::before { color: var(--fg); }
+ * Abandon does: a colour, no motion. Only where a pointer can rest (Task 10's
+ * M5): after a tap a phone keeps `:hover` until the next touch elsewhere. */
+@media (hover: hover) {
+  .finished-tables > details.fold > summary:hover > .section-hint,
+  .finished-tables > details.fold > summary:hover::before { color: var(--fg); }
+}
