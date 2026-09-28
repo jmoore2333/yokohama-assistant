@@ -131,7 +131,7 @@ export function FrontDoor({
                   Open a table and send the link, or take a free seat at someone else&rsquo;s. You
                   can spectate games in progress, too.
                 </p>
-                <a className="primary-link enter" href="/enter">
+                <a className="primary-link" href="/enter">
                   Go to the lobby
                 </a>
               </div>

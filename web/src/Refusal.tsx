@@ -44,9 +44,9 @@ export function Refusal({
       {sentence === ACCESS_CHALLENGE && (
         <>
           {" "}
-          {/* No class: `.enter` is the front door's own big link and is scoped
-              to that screen. Here the sentence is a line in an error strip and
-              the link reads as one. */}
+          {/* No class: `a.primary-link` is the big link the door screens
+              draw to `/enter`. Here the sentence is a line in an error strip
+              and the link reads as one. */}
           <a href="/enter">Sign in again</a>
         </>
       )}
