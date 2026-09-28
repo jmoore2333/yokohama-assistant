@@ -91,10 +91,11 @@ export function adminRoute(method: string, pathname: string, query: string): Adm
 /**
  * One row of the operator's listing (spec §2.9) — an operator-only payload,
  * outside the corpus: the table's id, name, status, players, `created_at` and
- * `archived_at` (the layer's unix SECONDS), `over` and `winner`, read off the
- * house's scrubbed copy, and its `last_active` (the shell's MILLISECONDS) and
- * `bytes` (the table object's SQLite size) as of the table's last delivery
- * (spec §2.5).
+ * `archived_at` (the layer's), `over` and `winner`, read off the house's
+ * scrubbed copy, and its `last_active` (the slot's, which the shell keeps in
+ * milliseconds, cut to whole seconds) and `bytes` (the table object's SQLite
+ * size) as of the table's last delivery (spec §2.5). Every time here is unix
+ * SECONDS (M6.5c2, spec §2.7).
  */
 export interface OperatorRow {
   id: string;

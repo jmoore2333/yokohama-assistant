@@ -257,10 +257,14 @@ describe("the listing (spec §2.9)", () => {
   // one is stamped at game over (the committed owed-game-over pair, named in
   // its text: winner seat 1, created 1_789_956_559, stamped at the pool's
   // frozen reading), so every field is read at a value other than its
-  // default. Mutants: a status filtered out; a field missing or renamed; the
-  // name, `over`, the winner or the stamp read as its default whatever the
-  // copy says (the review's M-2); the size or last activity from anywhere but
-  // the slot; no line.
+  // default. Every time a row carries is unix SECONDS (M6.5c2, spec §2.7):
+  // the layer's `created_at` and `archived_at`, and the slot's `last_active`
+  // cut to whole seconds from the shell's milliseconds, which the slot and
+  // the house's row keep. Mutants: a status filtered out; a field missing or
+  // renamed; the name, `over`, the winner or the stamp read as its default
+  // whatever the copy says (the review's M-2); the size or last activity from
+  // anywhere but the slot; `last_active` left in milliseconds (~1.79e12); no
+  // line.
   it("lists every table the house holds, a dealing one among them, with its size and last activity", async () => {
     const [open, dealing, playing, won] = ["op-list-open", "op-list-deal", "op-list-play", "op-list-won"];
     const named = CREATE_BODY.replace(/}$/, ',"name":"Café ☕ 東京"}');
@@ -292,7 +296,7 @@ describe("the listing (spec §2.9)", () => {
         status,
         players: 2,
         created_at: 1_789_000_000,
-        last_active: stored!.last_active,
+        last_active: Math.floor(stored!.last_active / 1000),
         bytes: stored!.bytes,
         over: false,
         winner: null,
@@ -306,6 +310,14 @@ describe("the listing (spec §2.9)", () => {
       await want(playing, "playing"),
       await want(won, "playing", { name: "Finished ☕", created_at: 1_789_956_559, over: true, winner: 1, archived_at: 1_789_000_000 }),
     ]);
+    for (const row of rows) {
+      for (const field of ["created_at", "last_active", "archived_at"] as const) {
+        const at = row[field];
+        if (at === null) continue;
+        expect(at, `${String(row.id)}.${field} is unix SECONDS`).toBeGreaterThan(1_700_000_000);
+        expect(at, `${String(row.id)}.${field} is unix SECONDS, not milliseconds`).toBeLessThan(10_000_000_000);
+      }
+    }
   });
 });
 
@@ -627,5 +639,73 @@ describe("the operator's force (spec §2.9)", () => {
     expect(ends(lines)).toEqual([{ event: "forced", id }]);
     expect(await tablesIn(stub)).toBe(0);
     expect((await recreate(id)).status).toBe(201);
+  });
+});
+
+describe("the ending names what ended the object (Task 14's L-4)", () => {
+  // `forced` is an operator's force and nothing else. A REMOVAL with no
+  // marker and no flag ends the object as `removal-ended` once the house
+  // acknowledges it: the code before the marker wrote such removals (the
+  // fifteenth and sixteenth deployments), and so did a force made before the
+  // flag. No code since leaves one, so it is built by hand in the object's
+  // own SQL. Mutant: `end` logging `forced` for every markerless REMOVAL (the
+  // line before M6.5c2).
+  it("a REMOVAL with no marker and no flag ends the object as removal-ended, never as forced", async () => {
+    const id = "op-removal-unflagged";
+    const stub = tableStub(id);
+    expect((await call(stub, RED, "POST", "/api/games", CREATE_BODY, id)).status).toBe(201);
+    await settle(stub);
+    await runInDurableObject(stub, (_t, state) => {
+      const sql = state.storage.sql;
+      const meta = (k: string) => sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = ?", k).one().v;
+      const revision = Number(meta("revision")) + 1;
+      const generation: unknown = JSON.parse(meta("generation"));
+      const slot = { id, generation, revision, copy: null, last_active: Date.now(), bytes: 0, attempt: 0 };
+      const set = "INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v";
+      state.storage.transactionSync(() => {
+        sql.exec(set, "revision", String(revision));
+        sql.exec(set, "slot", JSON.stringify(slot));
+      });
+    });
+    expect(await sqlOf(stub, "SELECT k FROM meta WHERE k IN ('marker', 'forced')"), "premise: no marker stands, and no force flagged it").toEqual([]);
+    const { lines } = await logsDuring(() => runInDurableObject(stub, (table: Table) => table.deliverSlot()));
+    expect(lines, "premise: the REMOVAL was pushed").toContainEqual(expect.objectContaining({ event: "slot-pushed", id, removal: true }));
+    expect(ends(lines)).toEqual([{ event: "removal-ended", id }]);
+    expect(await tablesIn(stub), "the house acknowledged the REMOVAL, and the object ended").toBe(0);
+  });
+
+  // A force flags its REMOVAL in its batch (`meta.forced`, the time in the
+  // shell's MILLISECONDS), because the object may end in a later event: here
+  // the force's push fails, and the alarm's delivery ends it. Its `forced`
+  // line comes from the flag, and the force's `operator` line came before it.
+  // Mutants: the flag not written (the alarm's end logs `removal-ended`); the
+  // flag in seconds.
+  it("a force's REMOVAL the alarm delivers ends the object as forced, flagged in the force's batch", async () => {
+    const id = "op-removal-forced";
+    const stub = await seedPlaying(id);
+    const failing = await failPushes(stub, 1);
+    const before = Date.now();
+    let forcing: { result: { status: number; text: string }; lines: unknown[] };
+    try {
+      forcing = await logsDuring(() => expire(id, true));
+    } finally {
+      await failing.restore();
+    }
+    const after = Date.now();
+    expect(forcing.result.status, "premise: the push failed, so the alarm finishes the force").toBe(503);
+    expect(ends(forcing.lines)).toEqual([
+      { event: "operator", id, action: "force", address: BOSS },
+      expect.objectContaining({ event: "slot-failed", id }),
+    ]);
+    const [flag] = await sqlOf(stub, "SELECT v FROM meta WHERE k = 'forced'");
+    expect(flag, "the force's batch flagged its REMOVAL").toBeDefined();
+    expect(Number(flag!.v), "the flag's time is Date.now(), in milliseconds").toBeGreaterThanOrEqual(before);
+    expect(Number(flag!.v)).toBeLessThanOrEqual(after);
+    const ended = await logsDuring(async () => {
+      expect(await runDurableObjectAlarm(stub), "premise: the retry's alarm stood, and ran").toBe(true);
+      await settle(stub);
+    });
+    expect(ends(ended.lines)).toEqual([{ event: "forced", id }]);
+    expect(await tablesIn(stub), "the house acknowledged the REMOVAL, and the object ended").toBe(0);
   });
 });

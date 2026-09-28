@@ -28,7 +28,9 @@ import {
   deleteDoc,
   deleteMeta,
   ensureTables,
+  forgetTables,
   getMeta,
+  hasDoc,
   hasTables,
   readDocs,
   setMeta,
@@ -280,23 +282,39 @@ export class Table extends DurableObject<Env> {
 
   /**
    * The object ends (spec §2.4 step 6; spec §2.9's force): its module dropped,
-   * and `deleteAll()`, which at this compatibility date deletes its alarm too.
-   * Logged `marker-ended` when it ends a marker, and `forced` when there is
-   * none — which only a force leaves, since every delete through the layer
-   * writes its marker in the batch that writes its REMOVAL. An owed save it
-   * drops is logged `archive-owed-dropped` first, once `deleteAll()` has
-   * dropped it — only a force's immediate path meets one here, since a
-   * delete's batch and a force's clear it — so a force logs the two in ONE
-   * order on both its paths.
+   * `deleteAll()`, which at this compatibility date deletes its alarm too, and
+   * the tables forgotten (`forgetTables`), so the next read scans for them and
+   * finds none. Logged:
+   *
+   * - `marker-ended` when it ends a marker;
+   * - `forced` when an operator's force ended it: at once, on its immediate
+   *   path, which writes no batch and passes `forced`; or through the REMOVAL
+   *   its batch flagged (`meta.forced`), once acknowledged;
+   * - `removal-ended` for a REMOVAL with no marker and no flag (Task 14's L-4):
+   *   one the code before the marker wrote (the fifteenth and sixteenth
+   *   deployments), or one a force made before the flag (from the seventeenth
+   *   deployment until the one that carries it), acknowledged since. Every
+   *   delete through the layer writes its marker in the batch that writes its
+   *   REMOVAL, and a force flags its own, so no code since leaves such a
+   *   removal, and every `forced` line follows its force's `operator` line.
+   *
+   * An owed save it drops is logged `archive-owed-dropped` first, once
+   * `deleteAll()` has dropped it — only a force's immediate path meets one
+   * here, since a delete's batch and a force's clear it — so a force logs the
+   * two in ONE order on both its paths.
    */
-  private async end(marker: Marker | undefined): Promise<void> {
+  private async end(marker: Marker | undefined, forced = false): Promise<void> {
     const id = this.ctx.id.name;
-    const owed = archiveOwedOf(this.ctx.storage.sql);
+    const sql = this.ctx.storage.sql;
+    const owed = archiveOwedOf(sql);
+    const flagged = forced || getMeta(sql, "forced") !== undefined;
     this.instance?.drop();
     await this.ctx.storage.deleteAll();
+    forgetTables(sql);
     if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
-    if (marker === undefined) log("forced", { id });
-    else log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
+    if (marker !== undefined) log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
+    else if (flagged) log("forced", { id });
+    else log("removal-ended", { id });
   }
 
   /**
@@ -904,9 +922,12 @@ export class Table extends DurableObject<Env> {
    * refuses to read (both run `check_shape` over the same stored text), or a
    * copy its scrub broke, which the module's own cells show no stored
    * document reaches.
+   *
+   * Whether a record is stored, the fallback `gameOf` reads, is asked of ONE
+   * row where `kept` is computed (`hasDoc`; Task 14's L-8): the loop reads no
+   * document of its own.
    */
   private async deleting(id: string, instance: Instance, config: ShellConfig, how: Deleting): Promise<Deleted | Response> {
-    const stored = readDocs(this.ctx.storage.sql);
     // Both sites read the house copy: its stamp, and an expiry's viewer.
     let stage = "house_copy";
     const done = instance.guarded((mod) => {
@@ -944,7 +965,7 @@ export class Table extends DurableObject<Env> {
     const kept = keptOf({
       stamped: copy?.stamped ?? false,
       saved: outcome?.outcome === "landed" || outcome?.outcome === "identical",
-      game: gameOf(reading, stored.has("record")),
+      game: gameOf(reading, hasDoc(this.ctx.storage.sql, "record")),
       archive: config.archive,
     });
     return {
@@ -1155,16 +1176,19 @@ export class Table extends DurableObject<Env> {
    * - With nothing stored: 204 at once, writing nothing.
    * - Where the object holds no generation — no copy of the table was ever
    *   drawn — or the house has acknowledged the table's removal, the object
-   *   ends at once (`end`), and 204. A table whose first copy trapped holds a
-   *   generation all the same and takes the push below, which the house
-   *   acknowledges although it never held the row.
+   *   ends at once (`end`, told it is a force's), and 204. A table whose
+   *   first copy trapped holds a generation all the same and takes the push
+   *   below, which the house acknowledges although it never held the row.
    * - Otherwise ONE batch deletes every document, and every `meta` key but
    *   the slot's own four — the marker, an owed save and `held` among them —
-   *   and writes the REMOVAL, unless one already waits, with its retry's
-   *   alarm. The module is dropped and every socket ended as a delete ends
-   *   them, and the removal is pushed IN the request (`deliverSlot`): its
-   *   acknowledgement, with no marker standing, ends the object
-   *   (`acknowledged`). The answer is 204 once the storage is gone, or 503
+   *   writes the REMOVAL, unless one already waits, with its retry's alarm,
+   *   and flags the object as forced (`meta.forced`, its time in
+   *   milliseconds), so the end that REMOVAL's acknowledgement brings, in
+   *   this request or a later alarm, is logged `forced` (Task 14's L-4). The
+   *   module is dropped and every socket ended as a delete ends them, and the
+   *   removal is pushed IN the request (`deliverSlot`): its acknowledgement,
+   *   with no marker standing, ends the object (`acknowledged`). The answer
+   *   is 204 once the storage is gone, or 503
    *   `the lobby has not confirmed the removal — the alarm will finish it`
    *   when the push failed — and the alarm, re-armed by that failure, does.
    *   Until then a create at the id is the 409 of a removal the house has not
@@ -1183,7 +1207,7 @@ export class Table extends DurableObject<Env> {
     const state = slotState(sql);
     if (state.generation === undefined || (state.slot === undefined && !differs(state, null))) {
       this.endSockets(id);
-      await this.end(undefined);
+      await this.end(undefined, true);
       return respond(204, "");
     }
     const owed = archiveOwedOf(sql);
@@ -1192,6 +1216,8 @@ export class Table extends DurableObject<Env> {
       (sql) => {
         clearDocs(sql);
         clearMetaBut(sql, ["generation", "revision", "slot", "acked"]);
+        // The REMOVAL is a force's: `end` logs it `forced` (Task 14's L-4).
+        setMeta(sql, "forced", String(Date.now()));
         for (const write of this.owedWrites(id, { draw: undefined, slot: removal, traps: 0 })) write();
       },
       removal === undefined ? undefined : Date.now() + nextRetry(0),
@@ -2098,13 +2124,15 @@ interface CopyFacts {
 
 /**
  * What the table `mod` holds under `id` says of itself on its HOUSE COPY — the
- * table document with its seed zeroed (spec §2.5's scrub), so it may be
- * parsed, where the table document itself never is (the plan's strings rule;
- * the orchestrator's rulings I-64 and I-71): its creator, whom an expiry reads
- * the table as, and whether its save was made. `undefined` when no table is
- * stored, or the module refuses the copy, as it refuses a stored document that
- * does not parse or that `check_shape` rejects. A trap is the caller's: it runs
- * under their `guarded`.
+ * table document through spec §2.5's scrub — which is parsed here, where the
+ * table document itself never is (the plan's strings rule; the orchestrator's
+ * rulings I-64 and I-71): its creator, whom an expiry reads the table as, and
+ * whether its save was made. A copy carries no seed, and since M6.5c2 may
+ * carry a bot descriptor whose `weights` is above 2^53, which this parse
+ * rounds; it may be parsed because nothing here reads `params` and no parsed
+ * copy is written back. `undefined` when no table is stored, or the module refuses the copy,
+ * as it refuses a stored document that does not parse or that `check_shape`
+ * rejects. A trap is the caller's: it runs under their `guarded`.
  */
 function copyFacts(mod: Exports, id: string): CopyFacts | undefined {
   let copy: string | undefined;

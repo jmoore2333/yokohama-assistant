@@ -28,9 +28,12 @@ export type DocKind = "record" | "table" | "chat" | "picker" | "house";
 
 /** Every key `meta` holds: spec §2.4's; `poison`, the kind whose load
  *  trapped (the plan's Task 9); `copy_owed`, the `house_copy` traps in a row
- *  while a copy is owed (the orchestrator's ruling on Task 12's review); and
+ *  while a copy is owed (the orchestrator's ruling on Task 12's review);
  *  `expiry_failed`, an idle table's expiries in a row that did not end it,
- *  which set its retry (Task 14). */
+ *  which set its retry (Task 14); and `forced`, set by an operator's force in
+ *  its batch to the time it ran (`Date.now()`, in milliseconds), so that when
+ *  the REMOVAL it leaves is acknowledged, the object's end names the force
+ *  (Task 14's L-4). */
 export type MetaKey =
   | "generation"
   | "revision"
@@ -43,17 +46,42 @@ export type MetaKey =
   | "expiry_failed"
   | "load_traps"
   | "poison"
-  | "wakes";
+  | "wakes"
+  | "forced";
+
+/**
+ * The storages whose two tables `hasTables` has FOUND (F-4's rows read; spec
+ * §2.7): it answers from here after that. Its scan reads the whole of
+ * `sqlite_master`, and it runs inside every `getMeta` and every `readDocs`:
+ * MEASURED in the pool before this memo, six scans and 30 of a warm
+ * request's 32 rows read. Only `deleteAll()` drops the tables once they exist, and its one
+ * caller forgets them (`forgetTables`, from `Table.end`). Keyed by the
+ * object's `SqlStorage`, which is one object for the life of an instance and
+ * a new one after an eviction (measured in the pool), so a new instance
+ * scans once again.
+ */
+const known = new WeakSet<SqlStorage>();
 
 /** Whether the first write batch has run. Both tables are created by one
  *  `ensureTables`, inside one transaction, so it asks for both. It names them:
  *  `sqlite_master` also lists the platform's own `_cf_METADATA` once an alarm
- *  has been set. */
+ *  has been set. Answered from `known` once both are found, and never
+ *  remembered while they are absent: an object that holds nothing scans at
+ *  every read, and the tables a later batch creates are found by the next. */
 export function hasTables(sql: SqlStorage): boolean {
+  if (known.has(sql)) return true;
   const { n } = sql
     .exec<{ n: number }>("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('docs', 'meta')")
     .one();
+  if (n === 2) known.add(sql);
   return n === 2;
+}
+
+/** The two tables forgotten (`known`), once `deleteAll()` has dropped them
+ *  (`Table.end`): the next `hasTables` scans, so a straggling acknowledgement,
+ *  a force's answer and a later create read them absent. */
+export function forgetTables(sql: SqlStorage): void {
+  known.delete(sql);
 }
 
 export function ensureTables(sql: SqlStorage): void {
@@ -66,6 +94,14 @@ export function readDocs(sql: SqlStorage): Map<DocKind, string> {
   if (!hasTables(sql)) return new Map();
   const rows = sql.exec<{ kind: DocKind; json: string }>("SELECT kind, json FROM docs").toArray();
   return new Map(rows.map((row) => [row.kind, row.json]));
+}
+
+/** Whether a `docs` row of `kind` is stored — `false` before the first write
+ *  batch — asked of ONE row, and reading none of its text (Task 14's L-8):
+ *  where a caller needs only that, `readDocs` would read every document, a
+ *  record's whole game among them. */
+export function hasDoc(sql: SqlStorage, kind: DocKind): boolean {
+  return hasTables(sql) && sql.exec("SELECT 1 FROM docs WHERE kind = ? LIMIT 1", kind).toArray().length === 1;
 }
 
 export function upsertDoc(sql: SqlStorage, kind: DocKind, json: string, writtenAt: number): void {
