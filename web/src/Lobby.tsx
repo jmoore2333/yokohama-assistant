@@ -188,6 +188,17 @@ export function Lobby({
   /** The row whose link was just copied, for the two seconds its button says
    *  so. */
   const [copied, setCopied] = useState<string | null>(null);
+  /** The two-second timer that puts the word back, held so a lobby that goes
+   *  away first leaves nothing to fire (the whole-branch review's Minor 11),
+   *  and so a second copy restarts the two seconds rather than racing the
+   *  first copy's timer. */
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
   /** The host's "a read landed" callback, held so that `take` does not depend
    *  on it.
    *
@@ -275,7 +286,11 @@ export function Lobby({
     try {
       await navigator.clipboard.writeText(url);
       setCopied(t.id);
-      setTimeout(() => setCopied((c) => (c === t.id ? null : c)), 2000);
+      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => {
+        copiedTimer.current = null;
+        setCopied((c) => (c === t.id ? null : c));
+      }, 2000);
     } catch {
       setError(`the link could not be copied \u2014 it is ${url}`);
     }
@@ -327,6 +342,8 @@ export function Lobby({
               type="button"
               className="ghost row-go"
               aria-label={`${copied === t.id ? "Copied" : "Copy link"}: ${name}`}
+              // A polite live region, so "Copied" is heard as well as seen.
+              aria-live="polite"
               onClick={() => void copyLink(t)}
             >
               {copied === t.id ? "Copied" : "Copy link"}

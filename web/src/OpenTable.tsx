@@ -327,7 +327,9 @@ export function OpenTable({
           </button>
         )}
 
-        {seated && <Invite url={url} locked={table.locked} mine={table.created_by === me} />}
+        {seated && (
+          <Invite url={url} locked={table.locked} mine={table.created_by === me} onRefused={setError} />
+        )}
 
         {/* ONLY for a seated caller (spec §6.2). The table read is the one route
             widened to somebody who is not seated (R-2.7); the chat is NOT — a
@@ -360,8 +362,35 @@ export function OpenTable({
 /** "Invite people" (mock 08): the link, Copy link, and — at a locked table —
  *  the reminder that the password travels separately. Worded for the person
  *  who SET it and for anyone else seated, who did not. */
-function Invite({ url, locked, mine }: { url: string; locked: boolean; mine: boolean }) {
+function Invite({
+  url,
+  locked,
+  mine,
+  onRefused,
+}: {
+  url: string;
+  locked: boolean;
+  mine: boolean;
+  /** Where a refused copy is said: the screen's own refusal strip. */
+  onRefused: (sentence: string) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  /** **"Copied" only once the clipboard has taken the link** (the whole-branch
+   *  review's Minor 8). The clipboard is refused in any browser that has not
+   *  granted it and in any page not served over TLS, where `navigator.clipboard`
+   *  is absent and the call throws; either way the refusal is said in the
+   *  lobby's own sentence, which carries the link, and the button keeps
+   *  offering the copy. Nothing rejects out of here: an unhandled rejection is
+   *  a `pageerror` the browser gate counts as breakage. */
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+      onRefused(`the link could not be copied \u2014 it is ${url}`);
+    }
+  };
   return (
     <section className="invite" aria-labelledby="invite-caption">
       <h3 id="invite-caption" className="caption">
@@ -373,20 +402,8 @@ function Invite({ url, locked, mine }: { url: string; locked: boolean; mine: boo
             browser that has not been granted it, and in a page served over
             plain HTTP. */}
         <input aria-label="Invite link" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => {
-            // **The rejection is swallowed, and that is deliberate.** The
-            // clipboard is refused in any browser that has not granted it and
-            // in any page not served over TLS, and an unhandled rejection is a
-            // `pageerror` the browser gate counts as breakage. The field beside
-            // this holds the link either way, which is why the failure is not
-            // worth a sentence.
-            navigator.clipboard?.writeText(url).catch(() => {});
-            setCopied(true);
-          }}
-        >
+        {/* A polite live region, so "Copied" is heard as well as seen. */}
+        <button type="button" className="ghost" aria-live="polite" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy link"}
         </button>
       </div>

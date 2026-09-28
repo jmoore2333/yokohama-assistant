@@ -354,6 +354,29 @@ describe("the lobby", () => {
     // `userEvent.setup()` installs the clipboard this reads back.
     expect(await navigator.clipboard.readText()).toBe(new URL("#/t/wire2", window.location.href).href);
     expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
+    // Heard as well as seen: the button is a polite live region, so the word's
+    // change is announced (the whole-branch review's triage, Task 5 M7).
+    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toHaveAttribute("aria-live", "polite");
+  });
+
+  // **A lobby that goes away leaves no "Copied" timer to fire** (the
+  // whole-branch review's Minor 11). The two-second timer is found by its
+  // delay among every timer the page set, and the unmount must clear it.
+  it("clears the two-second Copied timer when the lobby goes away", async () => {
+    const set = vi.spyOn(globalThis, "setTimeout");
+    const cleared = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const { user } = show();
+      await user.click(await within(section("Your tables")).findByRole("button", { name: "Copy link: wire2" }));
+      await within(section("Your tables")).findByRole("button", { name: "Copied: wire2" });
+      const twoSeconds = set.mock.calls.flatMap((c, i) => (c[1] === 2000 ? [set.mock.results[i]!.value] : []));
+      expect(twoSeconds, "the premise: one two-second timer was set").toHaveLength(1);
+      cleanup();
+      expect(cleared).toHaveBeenCalledWith(twoSeconds[0]);
+    } finally {
+      set.mockRestore();
+      cleared.mockRestore();
+    }
   });
 
   // **A table you sit at is YOURS**, listed under Your tables and not again

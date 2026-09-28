@@ -391,6 +391,33 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(await screen.findByRole("button", { name: "Copy link" }));
     expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/#/t/wire2`);
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // Heard as well as seen: the button is a polite live region, so the word's
+    // change is announced (the whole-branch review's triage, Task 5 M7).
+    expect(screen.getByRole("button", { name: "Copied" })).toHaveAttribute("aria-live", "polite");
+  });
+
+  // **A refused clipboard is said, and the button claims no copy** (the
+  // whole-branch review's Minor 8): the clipboard is refused in a browser that
+  // has not granted it and on a page served over plain HTTP, and the button
+  // said "Copied" over nothing. Refused here as a browser refuses it, through
+  // the clipboard `userEvent.setup()` installs, and HELD first: nothing is
+  // claimed while the clipboard has not answered either. The sentence is the
+  // lobby's.
+  it("says the link could not be copied when the clipboard refuses, and keeps Copy link", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    const copy = await screen.findByRole("button", { name: "Copy link" });
+    let refuse!: (e: unknown) => void;
+    const refused = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockReturnValue(new Promise<void>((_, reject) => (refuse = reject)));
+    await user.click(copy);
+    const url = `${window.location.origin}/#/t/wire2`;
+    expect(refused).toHaveBeenCalledWith(url);
+    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed before an answer").toBeNull();
+    await act(async () => refuse(new DOMException("Write permission denied.", "NotAllowedError")));
+    expect(await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed after a refusal").toBeNull();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
   it("escapes an id that is not a bare word", async () => {
