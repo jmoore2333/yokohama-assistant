@@ -15,7 +15,20 @@ import fs from "node:fs";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
-import { act, capReached, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import {
+  act,
+  capReached,
+  deadEnd,
+  DESKTOP,
+  look,
+  noSidewaysScroll,
+  PHONE,
+  readScreen,
+  rng,
+  signIn,
+  startGame,
+  watchForBreakage,
+} from "./harness";
 import type { Affordance } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
@@ -107,7 +120,59 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   expect(saved, "the saved file is the served record, byte for byte").toBe(served);
   expect(served).toContain('"terminal_digest"');
 
-  expect(watch.failures, "the page reported no errors while a whole game was played").toEqual([]);
+  // **The lobby's Finished group, read by somebody who did not play** (M6.5c2
+  // cycle C, R-C7; R-6.5c2.22). The `playing` scope still lists this game,
+  // because "over" is not a table status; a second person finds it FOLDED
+  // under Finished, closed by default, and no longer under Being played. The
+  // open door's "switch player" is how one browser becomes another person,
+  // and `signIn` then types the new address into the name step.
+  await page.setViewportSize(DESKTOP);
+  await page.goto("/#/lobby");
+  await page.locator(".identity-corner").getByRole("button", { name: "switch player" }).click();
+  await signIn(page, "ada@e2e.test");
+  const fold = page.locator(".lobby section.lobby-section.finished-tables > details.fold");
+  await expect(fold).toHaveCount(1);
+  expect(await fold.evaluate((d) => (d as HTMLDetailsElement).open), "Finished is folded by default").toBe(false);
+  const summary = fold.locator(":scope > summary");
+  await expect(summary.locator(":scope > h3")).toHaveText("Finished");
+  await expect(summary.locator(":scope > .section-hint")).toHaveText(/^(1 game|([2-9]|[1-9]\d+) games)$/);
+  await expect(
+    page.locator(".lobby section.playing-tables").getByRole("link", { name: game.id, exact: true }),
+    "a finished game is not listed as being played",
+  ).toHaveCount(0);
+  await summary.click();
+  const view = fold.getByRole("button", { name: `View: ${game.id}`, exact: true });
+  await expect(view).toBeVisible();
+  // The pictures without a pointer resting on anything.
+  await page.mouse.move(0, 0);
+  await look(page, "lobby-finished-1440");
+  // **The summary is a control, so it draws the lobby's focus ring from the
+  // keyboard**: one Shift+Tab back from the fold's first link lands on it.
+  await fold.locator("a.row-link").first().focus();
+  await page.keyboard.press("Shift+Tab");
+  const ring = await page.evaluate(() => {
+    const el = document.activeElement!;
+    const style = getComputedStyle(el);
+    return { tag: el.tagName, focusVisible: el.matches(":focus-visible"), outline: `${style.outlineStyle} ${style.outlineWidth}` };
+  });
+  expect(ring, "the summary takes keyboard focus and shows it").toEqual({
+    tag: "SUMMARY",
+    focusVisible: true,
+    outline: "solid 2px",
+  });
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  await page.setViewportSize(PHONE);
+  await noSidewaysScroll(page, "the lobby with a Finished group");
+  expect((await summary.boundingBox())!.height, "the fold's summary, thumb-sized at 390").toBeGreaterThanOrEqual(44);
+  await look(page, "lobby-finished-390");
+  // View opens the finished game as a spectator sees it: the banner says so,
+  // and the standing marks the winner.
+  await view.click();
+  await expect(page.getByText("You are spectating")).toBeVisible();
+  await expect(page.locator("table.outcome tr.won")).toHaveCount(1);
+
+  expect(watch.failures, "the page reported no errors while a whole game was played and then viewed").toEqual([]);
 });
 
 test("a game survives a reload, because nothing lives only in memory", async ({ page }) => {

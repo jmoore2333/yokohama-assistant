@@ -22,13 +22,10 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { blame, readOverflow, signIn, WALKER, watchForBreakage } from "./harness";
+import { DESKTOP, look, noSidewaysScroll, PHONE, signIn, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
-
-const DESKTOP = { width: 1440, height: 900 };
-const PHONE = { width: 390, height: 844 };
 
 /** The label the build ships for its bot (`production_bot.json`), read the way
  *  this directory reads a committed file (`offline.spec.ts`): the package is
@@ -41,22 +38,6 @@ const PRODUCTION_LABEL = (
     ),
   ) as { label: string }
 ).label;
-
-/** Nothing on the page is wider than its window — read once the layout is DONE
- *  (the width gate's own note, `harness.ts`). */
-async function noSidewaysScroll(page: Page, what: string): Promise<void> {
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
-  const read = await readOverflow(page);
-  expect(
-    read.docScrollWidth - read.docClientWidth,
-    `${what} scrolls sideways: ${blame(read)}`,
-  ).toBeLessThanOrEqual(0);
-}
-
-/** A picture for the headed look, under this run's own output directory. */
-async function look(page: Page, name: string): Promise<void> {
-  await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });
-}
 
 /** How many `<img>` the page draws. */
 const images = (page: Page): Promise<number> => page.evaluate(() => document.images.length);

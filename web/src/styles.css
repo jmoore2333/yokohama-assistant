@@ -2447,3 +2447,39 @@ details.fold #seed { max-width: 23rem; }
   .open-table button.primary.join, .seat-cards button.sit, .spectate-box button.primary,
   .join-password input, .invite .row input, .spectate-box input { min-height: 2.75rem; }
 }
+
+/* ---- M6.5c2 cycle C: the Finished group (R-6.5c2.22; spec section 2.2 as
+ * amended; R-C6) ------------------------------------------------------------
+ *
+ * The finished games the caller does not sit at, under the lobby's live lists,
+ * in the app's one fold idiom (`details.fold`, R-B16): its hairline, its drawn
+ * marker and its pointer are the idiom's own. What this block adds is the
+ * summary as a SECTION HEAD, so the group reads as a fourth list that is shut
+ * rather than as a widget: the `h3` takes `.lobby-section h3`'s size and the
+ * count `.section-hint`'s muted colour, both unrestated. Every rule is scoped
+ * to `.finished-tables`, so the form's Advanced fold and the game screen's
+ * folds (buttons, not `details`) are untouched. Its rows are `.lobby-rows`'.
+ *
+ * No motion: the fold opens at once, as every fold in the app does, so there
+ * is nothing for `prefers-reduced-motion` to stop. The focus ring is
+ * `.lobby :focus-visible`'s; the summary's radius only gives it a corner. */
+.finished-tables > details.fold { margin-top: 0; padding-top: 0; }
+/* One line, centred in a thumb-sized box at every width, the whole width of
+ * the list pressable. The title leads, so "Finished" stands on the same left
+ * edge as the three section heads above it; the idiom's marker FOLLOWS the
+ * count (`order`), at nearly the count's own size, so the count and its marker
+ * read together as the thing that opens. Led by the marker, the title sat a
+ * marker's width in from every other head. */
+.finished-tables > details.fold > summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; align-content: center;
+  gap: 0.2rem 0.6rem; min-height: 44px; border-radius: var(--radius);
+  /* Half a rem into the gutter on each side and back again: the title keeps
+   * the column's edge, and the focus ring clears the title rather than
+   * touching it (2px from the text without this). */
+  margin-inline: -0.5rem; padding-inline: 0.5rem;
+}
+.finished-tables > details.fold > summary::before { order: 1; }
+/* Pointed at, the count and its marker brighten together, as the rows' quiet
+ * Abandon does: a colour, no motion. */
+.finished-tables > details.fold > summary:hover > .section-hint,
+.finished-tables > details.fold > summary:hover::before { color: var(--fg); }

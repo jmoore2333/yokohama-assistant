@@ -1,6 +1,6 @@
 // What every browser walk needs: a game, a console watch, and a click policy.
 
-import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
+import { expect, test, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
 import { LIVE } from "./live";
 
@@ -858,4 +858,31 @@ export function blame(read: OverflowRead): string {
         `content ${s.scrollWidth} in ${s.clientWidth}, overflow-x: ${s.overflowX})`,
     )
     .join("; ");
+}
+
+// ---- the setup screens' two widths and their two reads (M6.5c2) -----------
+//
+// Lifted out of `setup_screens.spec.ts` when a second spec needed them (cycle
+// C, R-C7: the lobby's Finished group, read at the end of a whole game). The
+// bodies are the ones that spec defined; a second copy would drift.
+
+/** The desktop the setup screens are read at. */
+export const DESKTOP = { width: 1440, height: 900 };
+/** The phone the setup screens are read at (mock 11). */
+export const PHONE = { width: 390, height: 844 };
+
+/** Nothing on the page is wider than its window — read once the layout is DONE
+ *  (the width gate's own note, above). */
+export async function noSidewaysScroll(page: Page, what: string): Promise<void> {
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+  const read = await readOverflow(page);
+  expect(
+    read.docScrollWidth - read.docClientWidth,
+    `${what} scrolls sideways: ${blame(read)}`,
+  ).toBeLessThanOrEqual(0);
+}
+
+/** A picture for the headed look, under this run's own output directory. */
+export async function look(page: Page, name: string): Promise<void> {
+  await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });
 }

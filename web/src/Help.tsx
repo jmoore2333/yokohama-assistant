@@ -196,8 +196,9 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
         door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
         tables you already sit at; <em>Open tables</em>, every other table on the server still
-        waiting for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
-        &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
+        waiting for players, whoever opened it; and <em>Being played</em>, the ones you can spectate;
+        other people&rsquo;s finished games sit folded under <em>Finished</em>, with{" "}
+        <em>View</em> &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
         you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
         choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
         <em>change name</em> sets the name the seats you take and the messages you send are labelled
@@ -249,8 +250,9 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
       <h3>Spectating a game</h3>
       <p>
         You can spectate a game you are not playing in. The lobby&rsquo;s third list,{" "}
-        <em>Being played</em>, is every game on the server still being played or already
-        finished, and <strong>Spectate</strong> beside one opens it &mdash; as does a{" "}
+        <em>Being played</em>, is every game on the server still under way, and{" "}
+        <strong>Spectate</strong> beside one opens it; <em>Finished</em>, folded below it, is every
+        game already over, and <strong>View</strong> opens one &mdash; as does a{" "}
         <strong>link</strong> to the table, from whoever is at it. If the table was opened with a
         password &mdash; its row carries the <em>Password</em> tag &mdash; you are asked for it
         once, on a screen that names the table and who is sitting at it; after that the game opens

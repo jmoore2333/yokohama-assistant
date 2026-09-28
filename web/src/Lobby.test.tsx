@@ -16,6 +16,7 @@ import { OPEN_KEY } from "./chatFold";
 import { fakeStream, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
+import type { TableView } from "./types";
 
 /** All three scopes, from the corpus's own listings.
  *
@@ -493,6 +494,130 @@ describe("the lobby", () => {
     // setup screen's own list used to fail in: a swallowed refusal told a
     // signed-out player they had nothing.
     expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+});
+
+// ---- M6.5c2 cycle C: the Finished group (R-6.5c2.22; spec section 2.2 as amended)
+//
+// The `playing` scope lists finished games too ("over" is not a status), so the
+// lobby splits its third list: Being played is the games still under way, and
+// the finished ones sit in ONE fold below it, closed, with a count and View on
+// every row (R-C6). **Every table here is a corpus table with `over` moved**,
+// because the corpus's walk finishes no game; a cell that moves more names why.
+describe("the Finished group", () => {
+  /** The group's one fold, or null where the lobby draws none. */
+  const fold = (): HTMLDetailsElement | null =>
+    document.querySelector<HTMLDetailsElement>("section.lobby-section.finished-tables > details.fold");
+  /** `wire.gamesPlaying`'s one table: under way, read by a caller with no seat
+   *  at it who has given its password (`can_watch`). */
+  const playing = wire.gamesPlaying.games[0]!;
+  /** The same table, finished. One field moved, `over`. */
+  const done: TableView = { ...playing, over: true };
+  /** The playing scope answering these tables, in this order. */
+  const listing =
+    (...games: TableView[]) =>
+    (call: ApiCall): Reply | undefined =>
+      isGamesList(call, "playing") ? { ...wire.gamesPlaying, games } : undefined;
+  /** The summary's heading, once the lists have landed. */
+  const finishedHeading = () => screen.findByRole("heading", { level: 3, name: "Finished" });
+
+  it("folds a finished game you do not sit at under Finished, closed, and not under Being played", async () => {
+    expect(playing.my_seats).toEqual([]);
+    show(listing(done));
+    const heading = await finishedHeading();
+    const f = fold()!;
+    expect(heading.closest("summary")?.parentElement, "the heading is the fold's summary").toBe(f);
+    expect(f.open, "folded by default").toBe(false);
+    expect(f).not.toHaveAttribute("open");
+    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^1 game$/);
+    expect([...f.querySelectorAll("a.row-link")].map((a) => a.getAttribute("href"))).toEqual(["#/t/wire"]);
+    // Not under Being played: that list is the games still under way, and it
+    // has none, so it says so.
+    const beingPlayed = section("Being played");
+    expect(within(beingPlayed).queryByRole("link", { name: "wire" })).toBeNull();
+    expect(within(beingPlayed).getByText("nothing is being played right now.")).toBeInTheDocument();
+  });
+
+  it("opens to the finished game's row: its size, who won, and View", async () => {
+    // Two fields moved, `over` and `winner`: no committed payload is over with
+    // a winner on it, and "who won" is the one thing this row is read for.
+    const won: TableView = { ...playing, over: true, winner: 1 };
+    const { user } = show(listing(won));
+    await user.click(await finishedHeading());
+    const f = fold()!;
+    expect(f.open).toBe(true);
+    const row = within(f).getByRole("link", { name: "wire" }).closest("li")!;
+    expect(row.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 over \u00b7 Blue won");
+    const view = within(row).getByRole("button", { name: "View: wire" });
+    expect(within(row).queryByRole("button", { name: /^Spectate/ })).toBeNull();
+    // The password was given (`can_watch`), so no padlock; the tag stays on
+    // the name, as on every locked row.
+    expect(view.querySelector("svg.padlock")).toBeNull();
+    expect(within(row).getByLabelText("password required")).toBeInTheDocument();
+    // The other lists' row: one link, not gold-edged, and no Abandon, which is
+    // the creator's under Your tables — this browser opened the table.
+    expect(won.created_by).toBe(ME);
+    expect(row).toHaveClass("lobby-row");
+    expect(row).not.toHaveClass("mine");
+    expect(row.querySelectorAll("a")).toHaveLength(1);
+    expect(within(row).queryByRole("button", { name: /abandon/i })).toBeNull();
+  });
+
+  it("counts two finished games, in the listing's newest-first order", async () => {
+    // The second is a second TABLE: `id` and `name` moved so the two rows are
+    // named apart, and `created_at` a day earlier so the pair is in the order
+    // the server lists (`created_at` descending, then `id`).
+    const older: TableView = { ...done, id: "older", name: null, created_at: done.created_at - 86_400 };
+    show(listing(done, older));
+    await finishedHeading();
+    const f = fold()!;
+    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^2 games$/);
+    expect([...f.querySelectorAll("a.row-link")].map((a) => a.textContent)).toEqual(["wire", "older"]);
+  });
+
+  // **R-C6: an empty fold is clutter.** The group is absent, not empty, while
+  // no finished game the caller does not sit at is listed — including when
+  // the only finished game is the caller's own, which the playing scope lists
+  // too and Your tables keeps, with View.
+  it("draws no Finished group while no finished game is listed but yours", async () => {
+    show(listing(playing));
+    await within(section("Being played")).findByRole("button", { name: "Spectate: wire" });
+    expect(document.querySelector("section.finished-tables")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Finished" })).toBeNull();
+    cleanup();
+
+    const yours: TableView = { ...wire.table, over: true }; // one field moved, `over`
+    expect(yours.my_seats).toEqual([1]);
+    show((call) =>
+      isGamesList(call, "mine")
+        ? { ...wire.games, games: [yours] }
+        : isGamesList(call, "playing")
+          ? { ...wire.gamesPlaying, games: [yours] }
+          : undefined,
+    );
+    const row = (await within(section("Your tables")).findByRole("link", { name: "wire" })).closest("li")!;
+    expect(within(row).getByRole("button", { name: "View: wire" })).toBeInTheDocument();
+    expect(document.querySelector("section.finished-tables")).toBeNull();
+    expect(within(section("Being played")).queryByRole("link", { name: "wire" })).toBeNull();
+  });
+
+  // **Review Focus 5**: a locked finished game this caller has not unlocked.
+  // Its View carries the padlock Spectate carried, and goes to the same
+  // address — where the unlock face answers, because the face is the server's
+  // `can_watch` and not the route's.
+  it("puts the padlock on a locked finished game's View, and View opens the table's address", async () => {
+    const locked: TableView = { ...wire.tableWatchable, over: true }; // one field moved, `over`
+    expect(locked.can_watch).toBe(false);
+    window.location.hash = "#/lobby";
+    const { stub, user } = show(listing(locked));
+    await user.click(await finishedHeading());
+    const row = within(fold()!).getByRole("link", { name: "wire" }).closest("li")!;
+    const view = within(row).getByRole("button", { name: "View: wire" });
+    expect(view.querySelector("svg.padlock")).not.toBeNull();
+    expect(window.location.hash).toBe("#/lobby");
+    await user.click(view);
+    expect(window.location.hash).toBe("#/t/wire");
+    expect(stub.calls.filter((c) => c.path.includes("/api/games/"))).toHaveLength(0);
   });
 });
 // ---- M6.4: the lobby chat -------------------------------------------------

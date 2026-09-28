@@ -170,7 +170,9 @@ describe("the help panel and the lobby", () => {
   // paragraph said two while the Talking section three paragraphs down said
   // three, on the same page. The needle is the count AND the section that was
   // missing, so a page that fixed the number without naming the list fails.
-  it("names all three of the lobby's lists", () => {
+  // **And the finished games folded under them** (M6.5c2 cycle C,
+  // R-6.5c2.22): somebody else's, under Finished, with View.
+  it("names all three of the lobby's lists, and the finished games folded under them", () => {
     render(<Help />);
     const text = section("Starting a game");
     expect(text).toContain("three lists");
@@ -178,6 +180,7 @@ describe("the help panel and the lobby", () => {
     expect(text).toContain("Open tables");
     expect(text).toContain("Being played");
     expect(text).not.toContain("two lists");
+    expect(text).toContain("other people\u2019s finished games sit folded under Finished, with View");
   });
 });
 
@@ -185,12 +188,17 @@ describe("the help panel and spectating (R-8.1; M6.5c2 R-6.5c2.7)", () => {
   /** The whole "Spectating a game" SECTION — the shared reader. */
   const spectatingSection = () => section("Spectating a game");
 
-  // **The two ways in**: the lobby's third list, quoted as the lobby itself
-  // names it (mock 02), and a link somebody sent.
-  it("names the lobby's third list and the link as the two ways in", () => {
+  // **The ways in**: the lobby's third list, quoted as the lobby itself names
+  // it (mock 02); the Finished fold under it since M6.5c2 cycle C
+  // (R-6.5c2.22), whose rows say View; and a link somebody sent. Being played
+  // no longer holds a finished game, so the page no longer says it does.
+  it("names the lobby's third list, the Finished fold under it, and the link as the ways in", () => {
     render(<Help />);
     const text = spectatingSection();
     expect(text).toContain("Being played");
+    expect(text).toContain("still under way");
+    expect(text).toContain("Finished, folded below it, is every game already over, and View opens one");
+    expect(text).not.toContain("already finished");
     expect(text).toMatch(/link/i);
   });
 
