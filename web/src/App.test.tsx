@@ -4069,6 +4069,38 @@ describe("a local game", () => {
       await leavesForTheDoor(user);
     });
 
+    // **The Game menu's "Saved games" asks the SERVER nothing** (the
+    // whole-branch review's Important 1): this build serves no game routes, so
+    // a listing sent to the server is a request for a lobby that does not
+    // exist, answered on the real host by a 404 drawn under "Saved games". The
+    // list is this browser's own games, read from the local host. The local
+    // listing is `gamesNamed` over the two local ids; `local-2` is the row
+    // that proves where the list came from, since the server stub lists
+    // nothing.
+    it("lists this browser's games in the Game menu and sends nothing to the server", async () => {
+      const { user, stub } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            call: (req) =>
+              req.path === "/api/games" && req.method === "GET"
+                ? { status: 200, body: gamesNamed(LOCAL, "local-2") }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByText(/end triggers:/);
+      const before = stub.calls.length;
+      await user.click(gameMenu());
+      const menu = document.querySelector<HTMLElement>(".game-menu")!;
+      await waitFor(() => expect(within(menu).queryByText("loading\u2026")).toBeNull());
+      expect(
+        stub.calls.slice(before).map((c) => `${c.method} ${c.path}`),
+        "nothing the menu did reached fetch",
+      ).toEqual([]);
+      expect(within(menu).getByRole("button", { name: "local-2" })).toBeInTheDocument();
+    });
+
     it("sends the other tab's lock screen to the door", async () => {
       const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
       await screen.findByText("This game is open in another tab");

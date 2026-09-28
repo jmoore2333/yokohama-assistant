@@ -1870,6 +1870,10 @@ export function App() {
             navigate({ kind: isLocal(state.id) ? localExit.to : "lobby" });
           }}
           leaveLabel={isLocal(state.id) ? localExit.label : "Lobby"}
+          // **A build that serves no lobby lists this browser's games**: its
+          // server has no game routes to list from (the whole-branch review's
+          // Important 1), and every game this screen can show is a local one.
+          savedFrom={multiplayerOffered() ? undefined : "local"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
             The banner is one row at 1440 and 1280 by a gate that measures it
