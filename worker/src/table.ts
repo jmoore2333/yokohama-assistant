@@ -527,21 +527,24 @@ export class Table extends DurableObject<Env> {
    *   conflict, only where the layer found the key holding an earlier
    *   completion of THIS game (the same seed, configuration and choices), which
    *   it compares in Rust, never here; `no-longer-over` clears it too; `final`
-   *   — a conflict the stamp did not land on, whatever the stamp answered:
-   *   another game's record at the key, which only a caller-chosen id can
-   *   reach — clears it and retries nothing, the M6.5c spec §2.6 arm kept for
-   *   a different game; `retry` — after a `landed` or `identical` upload, the
-   *   stamp refused (a reply that is no 200, logged `stamp-refused`) or not
-   *   landed with the game over — keeps it owed, counted, its plan the one the
-   *   stamp re-made at that reading when the module deferred one. A refused
-   *   stamp is retried on the backoff and never thrown: the layer's
-   *   foreign-bot rule refuses a game not over against a bot this build does
-   *   not run, a 409, until the creator's Abandon or the table's expiry —
-   *   neither of which rebuilds — clears it (spec §2.4). The stamped table
-   *   row, `archive_owed` and the slot the
-   *   changed copy owes go in ONE batch (`commit`). A trap is the side
-   *   channel's (spec §2.4): logged, the module discarded, and the save
-   *   retried.
+   *   — every conflict the layer did not stamp, whatever the stamp answered —
+   *   clears it and retries nothing, the M6.5c spec §2.6 arm kept for all of
+   *   them (spec §2.5, §10.5). Among them: another game's record at the key,
+   *   which only a caller-chosen id can reach, or a text that is no record,
+   *   which no retry could clear; and, rarely, a record of this game whose
+   *   stamp did not land or was refused, which a retry might have, and the
+   *   rule leaves final all the same (`settledArm` names every case);
+   *   `retry` — after a `landed` or `identical` upload, the stamp refused (a
+   *   reply that is no 200, logged `stamp-refused`) or not landed with the
+   *   game over — keeps it owed, counted, its plan the one the stamp re-made
+   *   at that reading when the module deferred one. A refused stamp is never
+   *   thrown, and after a `landed` or `identical` upload it is retried on the
+   *   backoff: the layer's foreign-bot rule refuses a game not over against a
+   *   bot this build does not run, a 409, until the creator's Abandon or the
+   *   table's expiry — neither of which rebuilds — clears the save (spec
+   *   §2.4). The stamped table row, `archive_owed` and the slot the changed
+   *   copy owes go in ONE batch (`commit`). A trap is the side channel's (spec
+   *   §2.4): logged, the module discarded, and the save retried.
    * - **A plan the wake deferred** — a new module's `restore_picker` pumping a
    *   bot run to game over — is owed rather than a clear, as every reply's
    *   plan is (the plan's ruling P-2). It is unreachable today: a save is

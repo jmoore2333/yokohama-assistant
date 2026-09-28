@@ -178,14 +178,24 @@ export function stampArm(stamp: Stamp): "stamped" | "no-longer-over" | "retry" {
  * What an owed save's upload and its stamp leave TOGETHER (M6.5c2,
  * R-6.5c2.11; spec §2.5):
  *
- * - a `conflict` the stamp LANDED on is `stamped`: the key held an earlier
- *   completion of this same game, which the layer compared in Rust, and the
- *   save is complete;
- * - a `conflict` it did not land on is `final`, whatever the stamp answered —
- *   `{stamped: false, over: true}`, `{stamped: false, over: false}`, or no 200
- *   at all — as the M6.5c spec §2.6 ruled every conflict: nothing owed, and
- *   nothing retried, since another game's record at the key (which only a
- *   caller-chosen id can reach) no retry can clear;
+ * - a `conflict` the stamp LANDED on is `stamped`, whether or not the game is
+ *   still over: the key held an earlier completion of this same game, which
+ *   the layer compared in Rust, and the save is complete;
+ * - a `conflict` it did not land on is `final`, whatever the stamp answered:
+ *   nothing owed, and nothing retried, as the M6.5c spec §2.6 ruled every
+ *   conflict and spec §2.5 and §10.5 keep for every conflict the layer did not
+ *   stamp. By the stamp's answer:
+ *   - `{stamped: false, over: true}`: the key holds another game's record
+ *     (which only a caller-chosen id can reach) or a text that is no record,
+ *     which no retry could clear, since nothing this shell runs deletes an
+ *     archived key; or the conflict carried no `held`, which `executePlan`
+ *     never builds and the layer reads as not the same game; or, rarely, the
+ *     key holds a record of this game and the stamp did not land — its write
+ *     failed, or its put met no receipt — which a retry might have landed;
+ *   - `{stamped: false, over: false}`: the game is no longer over, and owes
+ *     nothing, as `no-longer-over` reads it;
+ *   - no 200: the stamp was refused — a foreign bot's 409 among them — which a
+ *     retry might have landed;
  * - every other outcome is `stampArm`'s, and a stamp that answered no 200 is
  *   `retry`.
  */

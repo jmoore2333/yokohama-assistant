@@ -727,15 +727,16 @@ describe("game over (spec §2.6)", () => {
     expect(archivedAt(await bucketText(tableKey)), "identical writes nothing: the first completion's table stands").toBe(first!.reading);
   });
 
-  // "A Conflict is final at every site" (spec §2.6) — kept for ANOTHER game by
-  // R-6.5c2.11 (M6.5c2, spec §2.5; Review Focus 3). A record of a different
-  // game at this id's key, which only a caller-chosen id can reach, goes to
-  // the stamp as every conflict now does, carrying what the key holds; the
-  // layer finds no earlier completion of this game there, logs its refusal,
-  // and stamps nothing, so the conflict is FINAL: `archive_owed` cleared,
-  // nothing retried, the bucket untouched, the alarm re-armed to the table's
-  // expiry. Two such records: a real game's (the walk's, another seed), and a
-  // text that is no record. Mutants: a conflict retried (still owed, an alarm
+  // "A Conflict is final at every site" (spec §2.6) — kept by R-6.5c2.11
+  // (M6.5c2, spec §2.5; Review Focus 3) for every conflict the layer does not
+  // stamp. What the key holds goes to the stamp as every conflict now does;
+  // where it is no earlier completion of this game the layer logs its
+  // refusal and stamps nothing, so the conflict is FINAL: `archive_owed`
+  // cleared, nothing retried, the bucket untouched, the alarm re-armed to the
+  // table's expiry. Two such held texts, neither of which a retry could ever
+  // clear: another game's record (the walk's, another seed), which only a
+  // caller-chosen id can reach, and a text that is no record. Mutants: a
+  // conflict retried (still owed, an alarm
   // at a rung); `held` read as the same game (a stamp); a conflict's stamp
   // answer read through `stampArm` (a retry).
   it.each([

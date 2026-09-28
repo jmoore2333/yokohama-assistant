@@ -206,17 +206,20 @@ describe("the stamp's reply and its arm (the orchestrator's ruling I3)", () => {
 // R-6.5c2.11 (M6.5c2, spec §2.5): a conflict goes to the stamp, and what the
 // upload and the stamp leave TOGETHER is `settledArm`'s. A conflict the stamp
 // landed on — the layer found an earlier completion of this same game at the
-// key — completes the save; one it did not land on, WHATEVER the stamp
-// answered, is final as every conflict was (the M6.5c spec §2.6 arm, kept for
-// another game): never retried. Every other outcome is `stampArm`'s, and a
-// stamp that answered no 200 is retried. Mutants: a conflict read through
-// `stampArm` (another game's `{stamped: false, over: true}` retried hourly for
-// ever); a conflict completed without its stamp; a landed upload's refused
-// stamp not retried.
+// key — completes the save, whether or not the game is still over; one it did
+// not land on, WHATEVER the stamp answered, is final as every conflict was
+// (the M6.5c spec §2.6 arm, kept for every conflict the layer did not stamp):
+// never retried. Every other outcome is `stampArm`'s, and a stamp that
+// answered no 200 is retried. Mutants: a conflict read through `stampArm`
+// (another game's `{stamped: false, over: true}` retried hourly for ever); a
+// conflict completed without its stamp; a landed conflict read through `over`
+// too (`stamped && over`); a landed upload's refused stamp not retried.
 describe("what an upload and its stamp leave together (R-6.5c2.11)", () => {
   const conflict: Outcome = { outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED };
   it("completes a conflict the stamp landed on, and leaves every other conflict final", () => {
-    expect(settledArm(conflict, { stamped: true, over: true })).toBe("stamped");
+    for (const stamp of [{ stamped: true, over: true }, { stamped: true, over: false }]) {
+      expect(settledArm(conflict, stamp), JSON.stringify(stamp)).toBe("stamped");
+    }
     for (const stamp of [{ stamped: false, over: true }, { stamped: false, over: false }, undefined]) {
       expect(settledArm(conflict, stamp), JSON.stringify(stamp)).toBe("final");
     }
@@ -225,6 +228,7 @@ describe("what an upload and its stamp leave together (R-6.5c2.11)", () => {
     for (const outcome of [
       { outcome: "landed", detail: PLAN.record_key },
       { outcome: "identical", detail: PLAN.record_key },
+      { outcome: "failed", detail: "put: internal error (10001)" },
     ] as const) {
       for (const stamp of [
         { stamped: true, over: true },
