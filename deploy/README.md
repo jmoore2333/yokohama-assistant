@@ -149,10 +149,13 @@ docker run -d --name yokohama-web \
   game's record, and a game is rebuilt from it. Use a named volume: the server runs as uid 10001, and a
   named volume takes the image's ownership on first use, where a host bind mount arrives owned by root.
 - **`127.0.0.1:8080`** keeps the port on this machine, for a tunnel or a proxy on the same host. On a
-  machine others share, loopback is a path too: under `cf-access` any process there can send the
-  header and be anyone, so there prefer a Docker network the tunnel shares and publish nothing (§6).
-  For the open door on a LAN, bind the LAN address you mean — never `0.0.0.0` on a machine with a
-  public interface.
+  machine others share, loopback is a path too: under `cf-access` any process there can send the header
+  and be anyone. A Docker network the tunnel shares, with nothing published, keeps the port off the
+  host's published ports and off loopback (§6), but on a Linux host any process that can route to the
+  container's address, and any other container on that network, can still send the header. So on a
+  shared machine the port is only as trusted as the host's users: no door this server has closes that
+  path, since `worker` too trusts a header it does not verify. For the open door on a LAN, bind the
+  LAN address you mean — never `0.0.0.0` on a machine with a public interface.
 
 | Variable | Values | Unset means |
 |---|---|---|
