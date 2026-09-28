@@ -368,7 +368,7 @@ git commit -m "ci: the core job alone on pull requests that touch a Rust input; 
 
 - [ ] **Step 2: The columns.** A Python script in the ledger rewrites each of the eight tables: after `rec` insert
   `owner's disposition` (the words `fix` / `public door` / `by design` / `not observable` / `the AI lane's` / `the
-  owner's`) and `phase` (`D`, `E`, `F`, or blank). The tally line becomes the new counts. A section "**The premises
+  owner's`) and `phase` (`D`, `E`, or blank — the public door's and the documents' rows are E's). The tally line becomes the new counts. A section "**The premises
   the dossier corrected**" lists, from `docs/plans/2026-09-28-web-frontend-m6.5c2d-dossier.md`'s Summary, the rows
   false at HEAD (11, 24, 35) and the partly-false list, one line each with the dossier's reason. A section "**Notes
   from the triage**" lists every non-empty note, by row. The preamble's last sentence says the transcription is done
