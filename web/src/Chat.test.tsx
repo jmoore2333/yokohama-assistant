@@ -96,9 +96,11 @@ describe("the chat panel", () => {
     expect(rows[2]!.querySelector(".chat-who.watching")).not.toBeNull();
     expect(rows[2]!).toHaveTextContent(green.author.name!);
     // **The SEPARATOR is in the needle** — the corpus text this row carries is
-    // "watching from the rail", so a bare `"watching"` is satisfied by the
-    // message itself and says nothing about the marker.
-    expect(rows[2]!).toHaveTextContent("· watching");
+    // "watching from the rail", which satisfied a bare `"watching"` by the
+    // message itself while the marker said that word; the marker says
+    // "spectating" since M6.5c2 (R-6.5c2.7), and the separator keeps the
+    // needle about the marker and never about what somebody typed.
+    expect(rows[2]!).toHaveTextContent("\u00b7 spectating");
     // The text, and a time on every row.
     expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
     for (const r of rows) expect(r.querySelector("time")).not.toBeNull();
@@ -352,11 +354,11 @@ describe("the chat panel", () => {
     await user.type(await screen.findByRole("textbox", { name: "Say something" }), "hi all{Enter}");
     await waitFor(() => expect(stub.matching("POST", "/api/chat")).toHaveLength(1));
     expect(stub.matching("POST", "/api/chat")[0]!.body).toEqual({ text: "hi all", name: "Green" });
-    // **And nobody is "watching" in the house**, where everyone is (R-6.4.2).
+    // **And nobody is "spectating" in the house**, where everyone is (R-6.4.2).
     // The label cell above exercises the marker's PRESENCE at a table; this is
     // the other half, and without it a component that marked every watcher
     // everywhere would pass both.
-    expect(screen.queryByText("· watching")).toBeNull();
+    expect(screen.queryByText("\u00b7 spectating")).toBeNull();
   });
 
   it("renders the server's refusal in its own line and keeps the draft", async () => {

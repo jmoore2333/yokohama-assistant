@@ -137,6 +137,82 @@ describe("On this device", () => {
     expect(within(section()).queryByText(/no game on this device yet/)).toBeNull();
   });
 
+  // ---- M6.5c2: a game against a bot this build does not run (spec §2.4) ---
+  //
+  // A NOT-OVER local game whose bot this build does not run is refused by the
+  // module, so it is listed under "Will not open here" — built from the
+  // LISTING's own `bot.runs_here`, never from parsing the record (`db.ts`
+  // forbids that) — with Back up and a two-click Remove, the cross-rev row's
+  // pattern (R-6.5b2.12). A FINISHED one opens as it always did (R-6.5c2.10).
+  describe("a game against a bot this build does not run", () => {
+    const played = wire.foreignBot409.foreign_bot.played;
+    /** The corpus's own foreign row (`wire.tableForeign`, `runs_here: false`),
+     *  re-addressed to this device — `fakeWorker.ts`'s one permitted edit —
+     *  with its name `null`, as the corpus row already has it and as the
+     *  listing's rule wants it (a row is found by its id); and `over` the ONE
+     *  value a cell moves, because no committed listing carries a FINISHED
+     *  foreign game. */
+    const row = (id: string, over: boolean): TableView => ({
+      ...wire.tableForeign,
+      id,
+      name: null,
+      over,
+    });
+
+    it("lists a game that is not over under Will not open here, not as a link, with Back up and Remove", async () => {
+      stubWorker({
+        call: (req) =>
+          req.method === "GET" && req.path === "/api/games"
+            ? { status: 200, body: { games: [row("local-9", false)], next: null } }
+            : undefined,
+      });
+      render(<OnThisDevice />);
+      const block = (await screen.findByRole("heading", { name: "Will not open here" })).closest(".unplayable")!;
+      expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
+      expect(within(block as HTMLElement).getByText(new RegExp(`played against ${played}`))).toBeInTheDocument();
+      expect(within(block as HTMLElement).getByRole("button", { name: "Back up" })).toBeInTheDocument();
+      expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "local-9" })).toBeNull();
+    });
+
+    it("keeps a FINISHED game against a foreign bot as an ordinary row: it opens as it always did", async () => {
+      stubWorker({
+        call: (req) =>
+          req.method === "GET" && req.path === "/api/games"
+            ? { status: 200, body: { games: [row("local-9", true)], next: null } }
+            : undefined,
+      });
+      render(<OnThisDevice />);
+      expect(await screen.findByRole("link", { name: "local-9" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Will not open here" })).toBeNull();
+    });
+
+    it("removes it on the second click through the module's delete, and the row goes", async () => {
+      let games = [row("local-9", false)];
+      stubWorker({
+        call: (req) => {
+          if (req.method === "GET" && req.path === "/api/games")
+            return { status: 200, body: { games, next: null } };
+          if (req.method === "DELETE" && req.path === "/api/games/local-9") {
+            games = [];
+            return { status: 204, body: undefined };
+          }
+          return undefined;
+        },
+      });
+      render(<OnThisDevice />);
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: "remove local-9" }));
+      await user.click(screen.getByRole("button", { name: "confirm removing local-9" }));
+      await waitFor(() => expect(screen.queryByRole("heading", { name: "Will not open here" })).toBeNull());
+      expect(
+        currentWorker()
+          .posted.map((p) => (p.kind === "call" ? `${p.method} ${p.path}` : p.kind))
+          .filter((s) => s === "hold" || s === "release" || s.startsWith("DELETE")),
+      ).toEqual(["hold", "DELETE /api/games/local-9", "release"]);
+    });
+  });
+
   it("re-reads when something local is written", async () => {
     stubWorker();
     render(<OnThisDevice />);
@@ -447,8 +523,9 @@ describe("the games waiting to reach the archive", () => {
 
   // **"Not signed in" names BOTH doors under `open`** (spec §2.6): passing
   // the turnstile mints the Access cookie, and `POST /api/archive` then still
-  // refuses in this API's own shape until the in-app sign-in has supplied the
-  // claimed user. Two steps, and the row says so.
+  // refuses in this API's own shape until the lobby's name step has supplied
+  // the claimed user. Two steps, and the row says so — the second in the name
+  // step's own words since M6.5c2, where the open door takes a name.
   it("names both doors under open, and one under cf-access", async () => {
     stubWorker();
     await enqueue(LOCAL, "signed-out");
@@ -460,7 +537,7 @@ describe("the games waiting to reach the archive", () => {
       "href",
       "/enter",
     );
-    expect(within(box).getByText(/then sign in here/i)).toBeInTheDocument();
+    expect(within(box).getByText(/then choose a name in the lobby/i)).toBeInTheDocument();
 
     cleanup();
     rememberServerFacts({ ...wire.health, identity: "cf-access" });
@@ -469,7 +546,7 @@ describe("the games waiting to reach the archive", () => {
     // The turnstile is the whole of it. A second step named here would send a
     // player looking for a form this deployment does not have.
     expect(within(box).getByRole("link", { name: /sign in at the door/i })).toBeInTheDocument();
-    expect(within(box).queryByText(/then sign in here/i)).toBeNull();
+    expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
   });
 
   // **The remedy follows the door the server NAMES, even when it is named after
@@ -483,13 +560,13 @@ describe("the games waiting to reach the archive", () => {
     render(<OnThisDevice />);
     const box = await waiting();
     // Nothing has said which door this is, so the turnstile is the whole of it.
-    expect(within(box).queryByText(/then sign in here/i)).toBeNull();
+    expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
 
     act(() => {
       rememberServerFacts({ ...wire.health, identity: "open" });
     });
     // No re-render was asked for; the subscription is what redraws.
-    expect(await within(await waiting()).findByText(/then sign in here/i)).toBeInTheDocument();
+    expect(await within(await waiting()).findByText(/then choose a name in the lobby/i)).toBeInTheDocument();
   });
 
   // **A permanent refusal carries the server's own sentence and offers no

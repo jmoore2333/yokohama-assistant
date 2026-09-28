@@ -10,11 +10,13 @@ import type {
   PlayerColor,
   PlayerModel,
   PlayerId,
+  SeatBot,
   TracksPanel,
 } from "./types";
 import { DUMMY_SEAT, locked } from "./types";
 import { mercenaryArt } from "./art";
 import { AchievementCardView, OrderCardView, seatClass } from "./Cards";
+import { VersionTag } from "./Chips";
 
 /** The key of ONE member of a union, distributed.
  *
@@ -52,6 +54,7 @@ export function Dashboard({
   changedSeats,
   changedTechs,
   changedHand,
+  bots,
 }: {
   panels: Panel[];
   art: ArtManifest | null;
@@ -73,6 +76,11 @@ export function Dashboard({
   /** The order ids the walk is lighting in the VIEWER's hand (R-GC-2) — a
    *  masked hand carries no identities, so a bot's take marks nothing here. */
   changedHand?: Set<number>;
+  /** The RECORD's bot seats, each with its bot's short label (M6.5c2, spec
+   *  §2.2 and §2.4; mock 10) — `ClientState.bots`, shown and never chosen, so
+   *  a finished game against V2 says V2 while this build runs V4. A bot seat
+   *  it does not name keeps the bare word. */
+  bots?: readonly SeatBot[];
 }) {
   // **A panel this file cannot draw is never filtered out.**
   //
@@ -96,6 +104,7 @@ export function Dashboard({
               labels={labels}
               changedSeats={changedSeats}
               changedTechs={changedTechs}
+              bots={bots}
             />
           );
         if ("Tracks" in panel)
@@ -165,17 +174,22 @@ function Players({
   labels,
   changedSeats,
   changedTechs,
+  bots,
 }: {
   players: PlayerModel[];
   labels: Labels | null;
   changedSeats?: Set<number>;
   changedTechs?: Set<string>;
+  bots?: readonly SeatBot[];
 }) {
   return (
     <section className="panel">
       <h2>Players</h2>
       {players.map((p) => {
         const lock = locked(p.assistants);
+        /** This seat's bot, as the record names it — `undefined` for a person,
+         *  and for a bot seat the state carries no label for. */
+        const bot = p.is_bot ? bots?.find((b) => b.seat === p.seat) : undefined;
         return (
           <div
             className={`seat ${p.is_current ? "current" : ""}${changedSeats?.has(p.seat) ? " changed" : ""}`}
@@ -183,7 +197,13 @@ function Players({
           >
             <div className="seat-head">
               <span className={`seat-name seat-${p.color.toLowerCase()}`}>{p.color}</span>
-              {p.is_bot && <span className="tag">bot</span>}
+              {bot ? (
+                <span className="tag">
+                  the bot <VersionTag label={bot.label} />
+                </span>
+              ) : (
+                p.is_bot && <span className="tag">bot</span>
+              )}
               <span className="tag">seat {p.seat}</span>
               <span className="chip yen">&#165;{p.money}</span>
               <span className="chip vp">{p.victory_points} VP</span>

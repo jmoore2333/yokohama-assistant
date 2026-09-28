@@ -181,55 +181,53 @@ describe("the help panel and the lobby", () => {
   });
 });
 
-describe("the help panel and watching (R-8.1)", () => {
-  /** The whole "Watching a game" SECTION — the shared reader, named here so
-   *  every cell below says which section it is about. */
-  const watchingSection = () => section("Watching a game");
+describe("the help panel and spectating (R-8.1; M6.5c2 R-6.5c2.7)", () => {
+  /** The whole "Spectating a game" SECTION — the shared reader. */
+  const spectatingSection = () => section("Spectating a game");
 
-  // **The two ways in.** A player who wonders how to watch somebody else's
-  // game should find both here: the lobby's third list, and a link somebody
-  // sent them. The list's heading is quoted exactly, so a rename of the section
-  // fails here rather than leaving the page pointing at a heading that is gone.
+  // **The two ways in**: the lobby's third list, quoted as the lobby itself
+  // names it (mock 02), and a link somebody sent.
   it("names the lobby's third list and the link as the two ways in", () => {
     render(<Help />);
-    const text = watchingSection();
+    const text = spectatingSection();
     expect(text).toContain("Being played");
     expect(text).toMatch(/link/i);
   });
 
-  // The password, asked ONCE — which is what a watcher needs to know before
-  // they decide the lock marker means the table is shut to them.
   it("says a locked table asks for its password once", () => {
     render(<Help />);
-    const text = watchingSection();
+    const text = spectatingSection();
     expect(text).toMatch(/password/i);
     expect(text).toContain("once");
   });
 
-  // **What the screen is, and what it is not.** The three facts a watcher would
-  // otherwise have to discover by trying: the strip, the hidden hands, and that
-  // there is nothing to press.
-  // **And a watcher can TALK (M6.4, R-6.4.1).** The one write a spectator is
-  // allowed, so a page that listed everything they cannot do and stopped there
-  // would be describing the screen they had before this cycle.
-  it("says a watcher can talk, and that what they say is marked", () => {
+  // **And a spectator can TALK (M6.4, R-6.4.1)** — the one write they are allowed.
+  it("says a spectator can talk, and that what they say is marked", () => {
     render(<Help />);
-    const text = watchingSection();
+    const text = spectatingSection();
     expect(text).toContain("You can talk");
-    expect(text).toContain("watcher");
+    expect(text).toContain("spectator");
   });
 
-  it("says what watching looks like and what it does not offer", () => {
+  it("says what spectating looks like and what it does not offer", () => {
     render(<Help />);
-    const text = watchingSection();
-    expect(text).toContain("You are watching");
-    // Every hand is a COUNT — the one thing a spectator must not be able to
-    // read, stated so nobody wonders whether the screen is merely folded.
+    const text = spectatingSection();
+    expect(text).toContain("You are spectating");
     expect(text).toMatch(/count/i);
     expect(text).toContain("as they happen");
     expect(text).toMatch(/cannot play/i);
     expect(text).toMatch(/undo/i);
     expect(text).toMatch(/suggest/i);
+  });
+
+  // **Every word a person reads is the spectate family** (R-6.5c2.7): the WHOLE
+  // panel, because a section-scoped cell would pass with "watch" left in the
+  // lobby's paragraph or the Talking one. The wire's `watching` and `can_watch`
+  // are protocol keys and appear nowhere on this page.
+  it("says spectate and never watch, anywhere on the page", () => {
+    const { container } = render(<Help />);
+    expect(container.textContent).not.toMatch(/\bwatch/i);
+    expect(container.textContent).toMatch(/\bspectat/i);
   });
 });
 
@@ -281,15 +279,15 @@ describe("the help panel and talking (M6.4)", () => {
   });
 
   // **Who is labelled how (R-6.4.2), which is the one thing a reader cannot
-  // work out from the screen**: a seat is named by its seat and a watcher is
+  // work out from the screen**: a seat is named by its seat and a spectator is
   // marked, so a name typed into the lobby is not what a seated player's line
   // carries.
-  it("says how a seat and a watcher are labelled", () => {
+  it("says how a seat and a spectator are labelled", () => {
     render(<Help />);
     const text = section("Talking");
     expect(text).toContain("seat");
     expect(text).toContain("colour");
-    expect(text).toContain("watching");
+    expect(text).toContain("spectating");
   });
 
   // **What a message is NOT (R-6.4.9, R-6.4.13).** Not undone, not in the

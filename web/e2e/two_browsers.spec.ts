@@ -222,7 +222,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
 
   await c.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
   await spectateButton.click();
-  await expect(c.getByText("You are watching")).toBeVisible();
+  await expect(c.getByText("You are spectating")).toBeVisible();
   await expect(c.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
   // The watcher's own side column is empty of cards from the first frame, and
   // it is the same selector that finds A's and B's hands on their screens —
@@ -243,15 +243,15 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await reads(c, "hello from a");
   await reads(c, "and b");
   await say(c, "watching you both");
-  // The watcher is MARKED as one, which is the label rule R-6.4.2 asks of a
-  // table. **The separator is in the needle, and that is the whole assertion:**
-  // the row is selected by a text that already contains the word, so a check
-  // for "watching" alone is implied by its own filter and could never fail —
-  // only the marker's own " · watching" distinguishes a labelled watcher from
-  // one who happened to say the word.
+  // The spectator is MARKED as one, which is the label rule R-6.4.2 asks of a
+  // table. **The separator is in the needle**: the row is selected by the
+  // message's own text, so only the marker's " · spectating" tells a labelled
+  // spectator from a line that merely mentions the word. (C's message stays
+  // "watching you both": it is what a person typed, not a word the client
+  // draws.)
   await expect(
     chatOf(c).getByRole("listitem").filter({ hasText: "watching you both" }),
-  ).toContainText("· watching");
+  ).toContainText("\u00b7 spectating");
   // **The mover reads it during their OWN turn** — the cell that must fail
   // under the old `active` (R-6.4.4): whichever page shows a move, that page's
   // panel receives the watcher's line while its prompt is on screen. The

@@ -16,6 +16,7 @@ export function GameMenu({
   busy,
   onSwitch,
   onLobby,
+  leaveLabel = "Lobby",
   signOut,
 }: {
   state: ClientState;
@@ -34,6 +35,10 @@ export function GameMenu({
    *  one click further on — so a control that jumped past it would be the only
    *  route in the client that skipped the first screen. */
   onLobby: () => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
   /** The door's sign-out control, built by `App` and merely PLACED here.
    *
    *  **It lives in this menu on the game screen, and beside the strip on the
@@ -103,7 +108,7 @@ export function GameMenu({
       </summary>
       <div>
         <button type="button" className="ghost" onClick={onLobby}>
-          Lobby
+          {leaveLabel}
         </button>
         <div className="label">Saved games</div>
         {saved === null && !error && <div className="muted">loading…</div>}

@@ -124,6 +124,11 @@ async function saveGameFile(game: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Does this refusal carry the foreign-bot fact (M6.5c2, spec §2.4)? By the
+ *  FIELD, never the sentence — `OpenTable`'s `hasStatus` rule. */
+const isForeignBot = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && "foreign_bot" in body;
+
 export function App() {
   // **Which screen this is, as the URL** (spec §5.1). Read here and acted on in
   // one effect below `open`, so there is ONE place that turns a route into a
@@ -237,9 +242,11 @@ export function App() {
    *  `unlock` holds one: the abandon control states what it is about, and this
    *  screen cannot re-read a game that will not open.
    *
-   *  A SERVER game that refuses this way is a different matter — it is the
-   *  server's record, on a server whose other games are fine — and keeps the
-   *  bounce it has always had. */
+   *  **And a game of EITHER host that this build's bot cannot continue**
+   *  (M6.5c2, spec §2.4): the same screen, because the same things are left —
+   *  the sentence, and the Abandon that archives it. A server game that refuses
+   *  for any OTHER reason is the server's record on a server whose other games
+   *  are fine, and keeps the bounce it has always had. */
   const [broken, setBroken] = useState<{ id: string; table: TableView; sentence: string } | null>(
     null,
   );
@@ -532,6 +539,17 @@ export function App() {
    *  for a local game that ends, is abandoned, or is asked for and no longer
    *  there. */
   const toDoor = useCallback((sentence?: string | null) => leave("door", sentence), [leave]);
+  /** Where a LOCAL screen's way out goes, and what it says (M6.5c2, spec §2.2;
+   *  M6.5b2 close §6.3 item 5).
+   *
+   *  A build that serves a lobby keeps the four controls as they were. Under
+   *  `VITE_MULTIPLAYER=false` there is no lobby to go to — its game routes do
+   *  not exist — so each leads to the door, where this browser's games are
+   *  listed, and says so in the local screens' own crumb. Read on every render,
+   *  for `multiplayerOffered`'s reason: a cell stubs the build value. */
+  const localExit: { to: "lobby" | "door"; label: string } = multiplayerOffered()
+    ? { to: "lobby", label: "Lobby" }
+    : { to: "door", label: "On this device" };
 
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
@@ -617,6 +635,16 @@ export function App() {
           next = await api.get(id);
         } catch (e) {
           if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
+            show(null);
+            setBroken({ id, table: doc, sentence: e.message });
+            tableOnScreen.current = id;
+            return;
+          }
+          // **A game this build's bot cannot continue** (M6.5c2, spec §2.4;
+          // R-6.5c2.10): not over, dealt a bot this build does not run. Every
+          // game route answers it with a 409 carrying `foreign_bot`, on both
+          // hosts. A SCREEN and not a bounce, for the broken save's reason.
+          if (e instanceof ApiError && e.status === 409 && isForeignBot(e.body)) {
             show(null);
             setBroken({ id, table: doc, sentence: e.message });
             tableOnScreen.current = id;
@@ -1324,7 +1352,7 @@ export function App() {
    *  the prompt — a player waiting on somebody else reads `watching` too, and
    *  gets a turn back. */
   const spectating = !!state && state.seat === null;
-  // **"You are watching", and the address goes with it (spec §5.2).** A watcher
+  // **"You are spectating" (spec §5.2; M6.5c2 R-6.5c2.7).** A spectator
   // is not a seat at this table, and the strip is the one line on the banner
   // that says which of the two you are here — sign-out still lives in the Game
   // menu, where every screen with a menu keeps it.
@@ -1339,12 +1367,12 @@ export function App() {
     (state !== null && isLocal(state.id)) ||
     (dealing !== null && isLocal(dealing)) ||
     (route.kind === "new" && route.local) ||
-    broken !== null ||
+    (broken !== null && isLocal(broken.id)) ||
     lockId !== null;
   const whoStrip = (
     <span className="meta who">
       {spectating
-        ? "You are watching"
+        ? "You are spectating"
         : onThisDevice || !signedIn
           ? "On this device"
           : `You are ${signedIn}`}
@@ -1416,48 +1444,76 @@ export function App() {
     // screen writes too and the lock is taken at OPEN time for all of it.
     if (lockId !== null && (lockState === "elsewhere" || lockState === "lost"))
       return (
-        <LockScreen state={lockState} onTakeover={retake} onLeave={() => toLobby()} />
+        <LockScreen
+          state={lockState}
+          onTakeover={retake}
+          onLeave={() => leave(localExit.to)}
+          leaveLabel={localExit.label}
+        />
       );
     // **A save in this browser that no longer rebuilds** (spec §4): the
     // engine's own sentence, the bytes still saveable and the game still
     // abandonable — neither of which asks the module to replay anything.
-    if (broken)
+    // **And a game of either host this build's bot cannot continue** (M6.5c2,
+    // spec §2.4): the same screen, host-aware — see `broken`'s own doc.
+    if (broken) {
+      const local = isLocal(broken.id);
+      /** The layer's delete is the CREATOR's, seated (`tables.rs:1670-1677`); a
+       *  local game's is always this browser's own. */
+      const mayAbandon =
+        local || (broken.table.created_by === signedIn && broken.table.my_seats.length > 0);
       return (
         <div className="setup broken-save">
           <div className="who-strip">{who}</div>
           <h2>{broken.table.name ?? broken.id}</h2>
           <Refusal sentence={broken.sentence} />
           <div className="field unlock-controls">
+            {/* The bytes are the player's own on a LOCAL game at any point; a
+                server game's record is served only once the game is over. */}
+            {local && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() =>
+                  void saveGameFile(broken.id).catch((e) =>
+                    setError(e instanceof Error ? e.message : String(e)),
+                  )
+                }
+              >
+                Save game file
+              </button>
+            )}
+            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
+                `local` means "send this game to the archive first", and the
+                archive would refuse a save that no longer rebuilds — it is the
+                rebuild that has stopped working — so sending first would leave
+                a game that can never be abandoned; the bytes beside this button
+                are the copy that still works. A server table's own delete
+                archives it (R-6.5a.11). A local game lands on the door, where
+                the rest of this browser's games are listed; a server game on
+                the lobby. */}
+            {mayAbandon && (
+              <Abandon
+                table={broken.table}
+                onDone={() => (local ? toDoor() : toLobby())}
+                onError={setError}
+              />
+            )}
+            {/* The way back: the lobby for a server game, and for a local one
+                the lobby where the build serves one and the door where it does
+                not (`localExit`). */}
             <button
               type="button"
               className="ghost"
-              onClick={() =>
-                void saveGameFile(broken.id).catch((e) =>
-                  setError(e instanceof Error ? e.message : String(e)),
-                )
-              }
+              onClick={() => (local ? leave(localExit.to) : toLobby())}
             >
-              Save game file
-            </button>
-            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
-                `local` means "send this game to the archive first", and the
-                archive would refuse exactly this record — it is the rebuild
-                that has stopped working. Sending first would leave a game that
-                can never be abandoned; the bytes beside this button are the
-                copy that still works. The label follows, and reads "Abandon".
-              */}
-            {/* A broken save is a LOCAL one by construction (see `broken`'s own
-                doc), so abandoning it lands on the door, where the rest of this
-                browser's games are listed. The button beside it says "Lobby"
-                and goes there. */}
-            <Abandon table={broken.table} onDone={() => toDoor()} onError={setError} />
-            <button type="button" className="ghost" onClick={() => toLobby()}>
-              Lobby
+              {local ? localExit.label : "Lobby"}
             </button>
           </div>
           {error && <Refusal sentence={error} />}
         </div>
       );
+    }
     // **The two screens a game in this browser reaches with the door shut**
     // (spec §2.5): the local create, and the deal it opens. Both are seated by
     // `LOCAL_USER`, because the module answers as that one address whatever
@@ -1489,7 +1545,8 @@ export function App() {
           sections={enabled}
           onToggleSection={toggleSection}
           onPlaying={() => open(dealing, true)}
-          onLeave={toLobby}
+          onLeave={(sentence) => leave(localExit.to, sentence)}
+          leaveLabel={localExit.label}
           who={who}
         />
       );
@@ -1789,8 +1846,12 @@ export function App() {
             setSurface(null);
             setScrubK(null);
             setError(null);
-            navigate({ kind: "lobby" });
+            // **A local game's way out is its own channel's first screen where
+            // this build serves no lobby** (`localExit`); a server game's is the
+            // lobby, always.
+            navigate({ kind: isLocal(state.id) ? localExit.to : "lobby" });
           }}
+          leaveLabel={isLocal(state.id) ? localExit.label : "Lobby"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
             The banner is one row at 1440 and 1280 by a gate that measures it
@@ -2079,6 +2140,10 @@ export function App() {
           changedSeats={highlights?.seats}
           changedTechs={highlights?.techs}
           changedHand={highlights?.hand}
+          // **`state`, the live game, and never `view`**: the record's bot
+          // seats do not change with the position walked or scrubbed, and a
+          // replayed frame is not where they live (M6.5c2, spec §2.4).
+          bots={state.bots}
         />
         {/* LAST, and folded (R-6.4.10): a bonus under the account and the
             players, not the main attraction. `key` remounts it per game so a

@@ -46,15 +46,21 @@ export function LockScreen({
   state,
   onTakeover,
   onLeave,
+  leaveLabel = "Lobby",
   inline = false,
 }: {
   state: LockFace;
   /** Steal the lock. Rejecting is reported here rather than thrown: the local
    *  host is the only thing that can refuse, and it refuses in a sentence. */
   onTakeover: () => Promise<void> | void;
-  /** Back to the lobby — the standalone shape only, where there is nothing
-   *  else on screen to leave by. */
+  /** The way out — the standalone shape only, where there is nothing else on
+   *  screen to leave by. `App` sends it to the lobby, or to the door in a build
+   *  that serves no lobby (`leaveLabel`). */
   onLeave?: () => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
   /** Draw the strip for the answer deck rather than a screen of its own. */
   inline?: boolean;
 }) {
@@ -110,7 +116,7 @@ export function LockScreen({
             {button}
             {onLeave && (
               <button type="button" className="quiet-link" onClick={onLeave}>
-                <span aria-hidden="true">&larr; </span>Lobby
+                <span aria-hidden="true">&larr; </span>{leaveLabel}
               </button>
             )}
           </div>

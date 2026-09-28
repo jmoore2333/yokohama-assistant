@@ -92,9 +92,18 @@ export function OnThisDevice({
    *  the write handlers this section already listens to. */
   const [restored, setRestored] = useState(0);
 
-  /** The rows a player can actually open. A game with a compatibility row is
-   *  drawn by `Unplayable` below instead, with the reason it will not. */
-  const playable = (games ?? []).filter((t) => !hidden.has(t.id));
+  /** Games the module will REFUSE to open (M6.5c2, spec §2.4): not over, and
+   *  dealt a bot this build does not run — read off the listing's own
+   *  `bot.runs_here`, never off the record (`db.ts` forbids parsing it). A
+   *  FINISHED one opens as it always did (R-6.5c2.10), so it stays a row. A
+   *  game with a compatibility row is `Unplayable`'s already. */
+  const foreign = (games ?? []).filter(
+    (t) => t.bot?.runs_here === false && t.over !== true && !hidden.has(t.id),
+  );
+  /** The rows a player can actually open. A game with a compatibility row, or
+   *  one of `foreign`, is drawn by `Unplayable` below instead, with the reason
+   *  it will not. */
+  const playable = (games ?? []).filter((t) => !hidden.has(t.id) && !foreign.includes(t));
 
   return (
     /* **No `.card-in` wrapper, unlike the door's other two cards**: this one has
@@ -144,7 +153,7 @@ export function OnThisDevice({
         <BackUpEverything label="Back up" />
         <Restore onDone={() => setRestored((n) => n + 1)} />
       </div>
-      <Unplayable reload={restored} />
+      <Unplayable reload={restored} foreign={foreign} onRemoved={() => void read()} />
     </section>
   );
 }
@@ -406,9 +415,11 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  * What to DO about "not signed in" — and under `open` it is two steps, not
  * one (spec §2.6).
  *
- * **Read off the door's own name.** Passing `/enter` gets the Access cookie;
- * `POST /api/archive` then still refuses in this API's own JSON shape until the
- * in-app sign-in has supplied `X-Yokohama-Claimed-User`. Under `cf-access` and
+ * **Read off the door's own name.** Passing `/enter` gets the Access cookie
+ * and lands on the lobby; `POST /api/archive` then still refuses in this API's
+ * own JSON shape until the lobby's name step ("Choose a name", `SignIn.tsx`,
+ * since M6.5c2 — the open door takes a NAME, not an email) has supplied
+ * `X-Yokohama-Claimed-User`. Under `cf-access` and
  * `worker` the turnstile is the whole of it, and a second step named there
  * would send a player looking for a form that does not exist.
  *
@@ -421,7 +432,7 @@ function Remedy(): React.ReactNode {
   return (
     <span className="muted remedy">
       <a href="/enter">Sign in at the door</a>
-      {open ? ", then sign in here with your email." : "."}
+      {open ? ", then choose a name in the lobby." : "."}
     </span>
   );
 }

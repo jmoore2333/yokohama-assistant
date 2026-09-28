@@ -246,27 +246,27 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         itself the moment the last of them does.
       </p>
 
-      <h3>Watching a game</h3>
+      <h3>Spectating a game</h3>
       <p>
-        You can watch a game you are not playing in. The lobby&rsquo;s third list,{" "}
-        <em>Being played</em>, is every game on the server still being played or
-        already finished, and pressing one opens it &mdash; as does a{" "}
-        <strong>link</strong> to the table, from whoever is at it. If the table was
-        opened with a password, you are asked for it once, on a screen that names the
-        table and who is sitting at it; after that the game opens and stays open to you.
+        You can spectate a game you are not playing in. The lobby&rsquo;s third list,{" "}
+        <em>Being played</em>, is every game on the server still being played or already
+        finished, and <strong>Spectate</strong> beside one opens it &mdash; as does a{" "}
+        <strong>link</strong> to the table, from whoever is at it. If the table was opened with a
+        password &mdash; its row carries the <em>Password</em> tag &mdash; you are asked for it
+        once, on a screen that names the table and who is sitting at it; after that the game opens
+        and stays open to you.
       </p>
       <p>
-        The screen is the same table the players are looking at, with one difference:
-        the strip in the banner reads <strong>You are watching</strong>, and there is no
-        answer bar. Every hand on it is a <em>count</em> rather than cards &mdash; a
-        watcher is never shown anybody&rsquo;s hand, exactly as the players are never
-        shown each other&rsquo;s &mdash; and moves arrive and walk across the table{" "}
-        <em>as they happen</em>, one step at a time, at whatever cadence you set. You
-        cannot play, you cannot undo, and Suggest is not offered, because it runs on a
-        seat and you have none. Everything you can read still reads: the log and its
-        replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
-        played, and the final score once there is one. You can talk, too: the chat panel is at
-        the foot of the column, and what you say is marked as coming from a watcher.
+        The screen is the same table the players are looking at, with one difference: the strip
+        in the banner reads <strong>You are spectating</strong>, and there is no answer bar. Every
+        hand on it is a <em>count</em> rather than cards &mdash; a spectator is never shown
+        anybody&rsquo;s hand, exactly as the players are never shown each other&rsquo;s &mdash;
+        and moves arrive and walk across the table <em>as they happen</em>, one step at a time, at
+        whatever cadence you set. You cannot play, you cannot undo, and Suggest is not offered,
+        because it runs on a seat and you have none. Everything you can read still reads: the log
+        and its replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
+        played, and the final score once there is one. You can talk, too: the chat panel is at the
+        foot of the column, and what you say is marked as coming from a spectator.
       </p>
 
       <h3>Talking</h3>
@@ -274,8 +274,8 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         At the foot of the side column &mdash; under the account of the last turn and the players
         &mdash; is a <strong>Chat</strong> panel, folded until you open it, with a count of what has
         arrived while it was closed. Everyone at the table can talk: each seat&rsquo;s line carries
-        the seat&rsquo;s colour and the name it joined under, or its address, and a watcher&rsquo;s
-        line says <em>watching</em>. A message is never undone and never part of the game&rsquo;s
+        the seat&rsquo;s colour and the name it joined under, or its address, and a spectator&rsquo;s
+        line says <em>spectating</em>. A message is never undone and never part of the game&rsquo;s
         record; the server keeps a limited number per table &mdash; whoever runs it sets how many
         &mdash; and drops the oldest, and the table&rsquo;s chat goes with the table when it is
         abandoned.

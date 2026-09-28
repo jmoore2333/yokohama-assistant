@@ -73,6 +73,7 @@ export function Dealing({
   onToggleSection,
   onPlaying,
   onLeave,
+  leaveLabel = "Lobby",
   who,
 }: {
   /** The table being dealt. */
@@ -105,6 +106,10 @@ export function Dealing({
    *  words are `signal.ts`'s `endSentence` (final review I-2); a refusal that
    *  ends the signal carries the server's own message instead. */
   onLeave: (sentence?: string) => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
   /** The "You are …" strip, built by `App` and merely placed here. */
   who?: ReactNode;
 }) {
@@ -308,7 +313,7 @@ export function Dealing({
               this destination (live review M-3). It read "Games" while the
               other three screens named the same place differently. */}
           <button type="button" className="ghost" onClick={() => onLeave()}>
-            Lobby
+            {leaveLabel}
           </button>
         </nav>
       </header>

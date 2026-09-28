@@ -391,7 +391,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
   expect((await ownHand(y)).length, "y's own hand is on y's screen").toBeGreaterThan(0);
 
   // w arrives by the table's address, is stopped by the password, and
-  // watches.
+  // spectates.
   await signIn(w, W);
   await w.goto(`/#/t/${id}`);
   await expect(w.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
@@ -399,7 +399,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
   await expect(spectateButton).toBeVisible();
   await w.getByLabel("Table password", { exact: true }).fill(PASSWORD);
   await spectateButton.click();
-  await expect(w.getByText("You are watching")).toBeVisible();
+  await expect(w.getByText("You are spectating")).toBeVisible();
   await expect(w.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
   expect(await ownHand(w), "a watcher is dealt no hand").toEqual([]);
   await unfold(w);

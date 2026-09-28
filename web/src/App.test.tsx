@@ -1781,7 +1781,7 @@ describe("the route", () => {
     await user.type(await screen.findByLabelText("Table password"), "hunter2");
     await user.click(screen.getByRole("button", { name: "Spectate" }));
     await screen.findByText(/end triggers:/);
-    expect(screen.getByText("You are watching")).toBeInTheDocument();
+    expect(screen.getByText("You are spectating")).toBeInTheDocument();
     expect(screen.queryByLabelText("Table password")).toBeNull();
   });
 
@@ -1797,6 +1797,93 @@ describe("the route", () => {
     // The face went with the screen — a leftover would draw over the next table
     // opened.
     expect(screen.queryByLabelText("Table password")).toBeNull();
+  });
+
+  // ---- M6.5c2: a game this build's bot cannot continue (spec §2.4) -------
+  //
+  // **A not-over game dealt a bot this build does not run refuses to open**
+  // (R-6.5c2.10), and every game route answers the 409 carrying `foreign_bot`.
+  // It is a SCREEN and not a bounce, for the broken save's reason: what is
+  // left is still the player's — the server's own sentence, and the Abandon
+  // that archives the game — and a bounce to the lobby offered neither.
+  describe("a game this build's bot cannot continue", () => {
+    const refusal = wire.foreignBot409;
+    /** The corpus's playing table — `wire.me` created it and sits at it — with
+     *  ONE field moved, the one fact these cells are about: the bot, taken from
+     *  the corpus's own foreign row (`wire.tableForeign`), run nowhere here and
+     *  named as the refusal names it. */
+    const dealt: TableView = { ...wire.table, bot: wire.tableForeign.bot };
+    const answers = (table: TableView) => (call: ApiCall): Reply | undefined => {
+      if (call.path.endsWith("/api/games/wire/table")) return table;
+      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: refusal };
+      return undefined;
+    };
+
+    it("stays on the table's screen with the server's sentence, Abandon for its creator, and the way back", async () => {
+      window.location.hash = "#/t/wire";
+      const { user } = app(answers(dealt));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      // NOT the bounce every other refusal of the game takes.
+      expect(window.location.hash).toBe("#/t/wire");
+      // `wire.me` is the table's creator, and the layer's delete is the
+      // creator's (`tables.rs:1670-1677`).
+      expect(dealt.created_by).toBe(wire.me.user);
+      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      // A server game's record is served only once it is over, so its bytes are
+      // not offered here — "Save game file" is the LOCAL screen's alone.
+      expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Lobby" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    it("offers no Abandon to a player who did not open the table", async () => {
+      window.location.hash = "#/t/wire";
+      app(answers({ ...dealt, created_by: "ada.bell@wire.test" }));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    });
+
+    // The anti-vacuity: a 409 WITHOUT the field is the bounce it always was —
+    // the arm reads the field, never the status alone.
+    it("keeps the bounce for a refusal of the game that carries no foreign_bot", async () => {
+      window.location.hash = "#/t/wire";
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/table")) return wire.table;
+        if (call.method === "GET" && call.path.endsWith("/api/games/wire"))
+          return { status: 409, body: wire.dealing409 };
+        return undefined;
+      });
+      expect(await screen.findByText(wire.dealing409.error)).toBeInTheDocument();
+      await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    // **Review Focus 5's third half: the refused game opens no stream.** The
+    // GET's 409 body decides the screen; the transports say nothing useful
+    // about a foreign game (the SSE arm writes a comment and stays open, the
+    // socket sends nothing), so no stream or events read is made for it.
+    //
+    // **The refused game's OWN screen is asserted first**, because the bounce
+    // this replaces opens no game stream either: without the address the cell
+    // passes before the screen exists. The fake clock is this file's idiom for
+    // `flush` (installed BEFORE the render, since the signal opens from a
+    // zero-delay timer of its own), and `try`/`finally` puts the real one back.
+    it("opens no stream and asks no events for a game it will not open", async () => {
+      window.location.hash = "#/t/wire";
+      vi.useFakeTimers();
+      try {
+        const { stub } = app(answers(dealt));
+        await until(() => screen.queryByText(refusal.error) !== null, "the server's sentence was drawn");
+        await flush();
+        expect(window.location.hash).toBe("#/t/wire");
+        const streams = stub.calls.filter(
+          (c) => c.path.startsWith("/api/games/wire/") && /\/(stream|events)(\?|$)/.test(c.path),
+        );
+        expect(streams, "no stream and no events for the refused game").toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("lands on the DEAL when the table flips to dealing under the screen", async () => {
@@ -2401,11 +2488,11 @@ describe("the door", () => {
 // screen: no answer bar, no Undo, no Suggest, and a strip that says what you
 // are rather than who.
 describe("the spectator screen", () => {
-  it("says you are watching, offers no answer and no Suggest", async () => {
+  it("says you are spectating, offers no answer and no Suggest", async () => {
     await renderApp(wire.spectator);
     expect(wire.spectator.seat).toBeNull();
     // The strip, which is the one line that says which of the two you are here.
-    expect(screen.getByText("You are watching")).toBeInTheDocument();
+    expect(screen.getByText("You are spectating")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(`You are ${wire.me.user}`))).toBeNull();
     // The deck: the `watching` arm's own words, and nothing to press.
     expect(screen.getByText(/Seat \d+ is deciding\./)).toBeInTheDocument();
@@ -2423,13 +2510,13 @@ describe("the spectator screen", () => {
   // The anti-vacuity, and it is the whole reason the cell above means anything:
   // the SAME shell over a SEATED payload draws both controls and the address.
   // Without this, a banner that had lost its Suggest button entirely, or a
-  // strip that said "You are watching" to everyone, would pass.
+  // strip that said "You are spectating" to everyone, would pass.
   it("offers Suggest and names the player at a table this caller sits at", async () => {
     await renderApp(wire.options);
     expect(wire.options.seat).not.toBeNull();
     expect(screen.getByRole("button", { name: "Suggest" })).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`You are ${wire.me.user}`))).toBeInTheDocument();
-    expect(screen.queryByText("You are watching")).toBeNull();
+    expect(screen.queryByText("You are spectating")).toBeNull();
   });
 });
 
@@ -3799,6 +3886,111 @@ describe("a local game", () => {
     } finally {
       caught.restore();
     }
+  });
+
+  // ---- M6.5c2: under a single-player build, no local control leads to a lobby
+  //
+  // **M6.5b2 close §6.3 item 5, closed** (spec §2.2): under
+  // `VITE_MULTIPLAYER=false` four "Lobby" controls on LOCAL screens led to a
+  // lobby whose game routes do not exist. Each now leads to the DOOR, where this
+  // browser's games are listed, and says so. The anti-vacuity partners are the
+  // cells that press "Lobby" on these screens in a build that serves one — the
+  // broken save's above, and the Game menu's directly below.
+  it("keeps a local game's Game-menu way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    await user.click(gameMenu());
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  // **A local game this build's bot cannot continue** (M6.5c2, spec §2.4). A
+  // game dealt before this deploy has no bot in its mirror, so the door lists
+  // it as playable; opening it is the first moment the module refuses.
+  it("shows a local game this build's bot cannot continue as a screen: the sentence, Save game file, Abandon", async () => {
+    const refusal = wire.foreignBot409;
+    await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          pair: () => ({ record: RECORD, table: TABLE }),
+          call: (req) =>
+            req.path === `/api/games/${LOCAL}` && req.method === "GET"
+              ? { status: 409, body: refusal }
+              : undefined,
+        },
+      },
+    );
+    expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#/t/${LOCAL}`);
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+    // Named by the TABLE's name, as the control names it (`Abandon.tsx`),
+    // which the corpus table carries — hence the prefix, as the broken-save
+    // cell above reads it.
+    expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+  });
+
+  describe("in a single-player build", () => {
+    beforeEach(() => {
+      vi.stubEnv("VITE_MULTIPLAYER", "false");
+    });
+
+    /** The one way out a local screen offers, pressed, and where it lands. */
+    const leavesForTheDoor = async (user: ReturnType<typeof userEvent.setup>) => {
+      expect(screen.queryByRole("button", { name: "Lobby" }), "no control says Lobby").toBeNull();
+      await user.click(screen.getByRole("button", { name: "On this device" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/"));
+    };
+
+    it("sends the Game menu's way out to the door", async () => {
+      const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+      await screen.findByText(/end triggers:/);
+      await user.click(gameMenu());
+      await leavesForTheDoor(user);
+    });
+
+    it("sends the other tab's lock screen to the door", async () => {
+      const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+      await screen.findByText("This game is open in another tab");
+      await leavesForTheDoor(user);
+    });
+
+    it("sends the screen for a save that no longer rebuilds to the door", async () => {
+      const sentence =
+        "this save was recorded under game-semantics revision 6, but this build plays revision 7 \u2014 the save cannot be resumed";
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            pair: () => ({ record: RECORD, table: TABLE }),
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}` && req.method === "GET"
+                ? { status: 500, body: { error: sentence } }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByText(sentence);
+      await leavesForTheDoor(user);
+    });
+
+    it("sends the local deal to the door", async () => {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            // The corpus's dealing table, re-addressed to this device — the
+            // one edit `fakeWorker.ts` allows a fixture.
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}/table`
+                ? { status: 200, body: { ...wire.tableDealing, id: LOCAL } }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByRole("heading", { name: "Choose your card" });
+      await leavesForTheDoor(user);
+    });
   });
 });
 
