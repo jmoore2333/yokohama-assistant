@@ -5,6 +5,7 @@
  * API. The Worker runs the gate and routes (`index.ts`); the house answers
  * the listing (`house.ts`), and a table object an expire (`table.ts`).
  */
+import type { Door } from "./config";
 import type { Identity } from "./identity";
 import { routableName } from "./route";
 
@@ -30,20 +31,24 @@ export const FORCE_TAKES_NO_VALUE = "?force takes no value — send ?force alone
 /**
  * The gate's verdict on a request to `/api/admin` or below (spec §2.9):
  *
- * - `off`: `YOKOHAMA_WEB_ADMINS` is absent, and the routes are unrouted
- *   `/api/*` — the house's `dispatch`, which answers the layer's own 404;
+ * - `off`: under the OPEN door, for every caller and whatever the list
+ *   (M6.5c2, spec §2.1; review R2.2-M1) — a claimed name is never an
+ *   operator's rights; `shellConfig` refuses a list beside `open`, and the
+ *   gate reads the door first rather than lean on that refusal — and under
+ *   `worker` with `YOKOHAMA_WEB_ADMINS` absent. The routes are then unrouted
+ *   `/api/*`: the house's `dispatch`, which answers the layer's own 404;
  * - `operator`: a PERSON — an Access assertion that names an address — whose
  *   address the list holds. Both are trimmed and ASCII-lowercased as the
  *   layer's `User::parse` reads an address (`resolveIdentity`, `shellConfig`),
  *   so they compare as the layer would;
- * - `refused`: anyone else — a person not listed, no one, and an identity
- *   reached through the dev door, which NEVER counts, even when the address
- *   it claims is on the list.
+ * - `refused`: anyone else — a person not listed, no one, an identity reached
+ *   through the dev door, which NEVER counts, even when the address it claims
+ *   is on the list, and a claimed name.
  */
 export type Gate = { kind: "off" } | { kind: "refused" } | { kind: "operator"; email: string };
 
-export function operatorGate(admins: string[] | null, identity: Identity): Gate {
-  if (admins === null) return { kind: "off" };
+export function operatorGate(door: Door, admins: string[] | null, identity: Identity): Gate {
+  if (door === "open" || admins === null) return { kind: "off" };
   if (identity.kind === "person" && admins.includes(identity.email)) return { kind: "operator", email: identity.email };
   return { kind: "refused" };
 }

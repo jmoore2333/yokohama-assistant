@@ -80,15 +80,16 @@ const NO_ONE: Identity = { kind: "none" };
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
  *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
  * 6a. `/api/admin` and below — the operator surface (spec §2.9) — pass the
- *    gate (`operatorGate`): with `YOKOHAMA_WEB_ADMINS` absent they are
- *    unrouted `/api/*`, the house's; a caller who is not a PERSON on the list
- *    is 403 `this address is not an operator here`, a dev-door identity
- *    among them whatever address it claims; a listed person passes with
- *    `X-Yokohama-Operator` set to their address, and the route names the
- *    object (`adminRoute`): the listing is the house's, an expire the table's,
- *    `?force` given a value the 400 `adminRoute` names (the orchestrator's
- *    ruling I-72), and any other path or query the house's — the layer's own
- *    404.
+ *    gate (`operatorGate`): under the open door, or with
+ *    `YOKOHAMA_WEB_ADMINS` absent, they are unrouted `/api/*`, the house's
+ *    (M6.5c2: a claimed name is never an operator's rights); a caller who is
+ *    not a PERSON on the list is 403 `this address is not an operator here`,
+ *    a dev-door identity among them whatever address it claims; a listed
+ *    person passes with `X-Yokohama-Operator` set to their address, and the
+ *    route names the object (`adminRoute`): the listing is the house's, an
+ *    expire the table's, `?force` given a value the 400 `adminRoute` names
+ *    (the orchestrator's ruling I-72), and any other path or query the
+ *    house's — the layer's own 404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
  *    object's 101 is returned as it came. An object whose `fetch` REJECTS —
@@ -140,7 +141,7 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
 
   let forwarded: Forwarded;
   if (target.kind === "admin") {
-    const gate = operatorGate(config.admins, identity);
+    const gate = operatorGate(config.door, config.admins, identity);
     if (gate.kind === "refused") return respond(403, errorBody(NOT_AN_OPERATOR));
     forwarded = { kind: "house" };
     if (gate.kind === "operator") {

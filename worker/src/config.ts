@@ -16,7 +16,8 @@ export interface ShellConfig {
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
-  /** `null`: the operator routes are the layer's 404 (spec §2.9). */
+  /** `null`: the operator routes are the layer's 404 (spec §2.9). Always
+   *  `null` under `open`, where a list is refused (`openDoorRefusals`). */
   admins: string[] | null;
   countWakes: boolean;
   devDoor: boolean;
@@ -184,11 +185,45 @@ function clock(raw: string | null): Clock {
 }
 
 /**
+ * What the OPEN door refuses beside it (M6.5c2, spec §2.1; review R2.2-M1),
+ * each refusal naming BOTH variables — the Worker's form of refusing to start
+ * — and the operator list named before the dev door:
+ *
+ * - an operator list: a claimed name is never an operator's rights. The list
+ *   is a SECRET, which the deploy guard cannot see (it reads the committed
+ *   configurations), so it is refused here, at run time, and the refusal
+ *   echoes nothing of its value (R3's M-6);
+ * - the dev door on: it is the `worker` door's test instrument, and under
+ *   `open` a claim needs no credential. The deploy guard refuses this pair in
+ *   the committed `vars` too.
+ *
+ * `DEV_DOOR_CLIENT_ID` is ignored under `open`, never refused: a credential
+ * means nothing where a claim needs none. Under `worker` nothing here is
+ * refused.
+ */
+function openDoorRefusals(c: ShellConfig): void {
+  if (c.door !== "open") return;
+  if (c.admins !== null) {
+    refuse(
+      "YOKOHAMA_WEB_ADMINS is set beside YOKOHAMA_WEB_IDENTITY=open — a claimed name is never an operator: " +
+        "delete the operator list (wrangler secret delete YOKOHAMA_WEB_ADMINS), or deploy the worker door",
+    );
+  }
+  if (c.devDoor) {
+    refuse(
+      "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
+        "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
+    );
+  }
+}
+
+/**
  * The Worker's configuration, or the sentence that refuses it — naming the
  * variable, the Worker's form of the NAS refusing to start. A variable that is
  * not a string is refused before any value is read; after that, the first
  * field refused, in the order `ShellConfig` lists them — the door first
- * (M6.5c2) — is the one named.
+ * (M6.5c2) — is the one named; then, once every field reads, the pairs the
+ * open door refuses (`openDoorRefusals`).
  *
  * The three chat variables are held to strings here and parsed by the module
  * (`init`), with the layer's own function; nothing else here reads them.
@@ -196,7 +231,7 @@ function clock(raw: string | null): Clock {
 export function shellConfig(env: Env): ShellConfig | { error: string } {
   try {
     strings(env);
-    return {
+    const config: ShellConfig = {
       door: door(text(env, "YOKOHAMA_WEB_IDENTITY")),
       archive: archive(env),
       ttlDays: ttlDays(text(env, "YOKOHAMA_WEB_TABLE_TTL_DAYS")),
@@ -205,6 +240,8 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
       clock: clock(text(env, "YOKOHAMA_WEB_TEST_CLOCK")),
     };
+    openDoorRefusals(config);
+    return config;
   } catch (e) {
     if (e instanceof Refusal) return { error: e.sentence };
     throw e;

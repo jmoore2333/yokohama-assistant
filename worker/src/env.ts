@@ -46,7 +46,10 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string;
   /** The Access application's audience (spec §2.3). */
   ACCESS_AUD?: string;
-  /** The Service Auth credential's client id — the dev door's (spec §2.3). */
+  /** The Service Auth credential's client id — the dev door's (spec §2.3). A
+   *  SECRET in production, never a committed value (M6.5c2, R-6.5c2.5; the
+   *  deploy guard's check 7); a `vars` entry in the pool's
+   *  `wrangler.test.jsonc`. With none, the dev door is shut. */
   DEV_DOOR_CLIENT_ID?: string;
   /** `on` | `off`, absent = off: whether an assertion naming only that
    *  credential may claim a user through `X-Yokohama-Claimed-User`

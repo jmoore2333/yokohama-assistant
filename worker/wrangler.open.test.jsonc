@@ -6,7 +6,10 @@
 // URL and no preview URLs, for `wrangler.test.jsonc`'s reason.
 //
 // It is `wrangler.test.jsonc` with the door changed: the same assets block,
-// object classes, migrations and bucket, and the same variables but four.
+// object classes, migrations and bucket, and the same variables but four. The
+// deploy guard holds it as it holds `wrangler.test.jsonc` (checks 5 and 6):
+// its assets block to spec §2.3's, and its object, migration and bucket
+// blocks equal to production's.
 // Under `open` the shell reads no Access assertion, so the team's domain, the
 // audience and the dev door's client id are absent (the open door needs none
 // of them), and `YOKOHAMA_DEV_DOOR` is absent too.

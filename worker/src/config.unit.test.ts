@@ -170,6 +170,51 @@ describe("YOKOHAMA_WEB_IDENTITY (M6.5c2, spec §2.1)", () => {
   });
 });
 
+// M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it,
+// at run time, naming BOTH variables — the Worker's form of refusing to start.
+// An operator list is a SECRET, which the deploy guard cannot see, so this is
+// where it is refused; the dev door on is refused here and by the guard. The
+// dev door's client id is IGNORED under open, never refused: a credential
+// means nothing where a claim needs none. Mutants: either refusal missing;
+// either made whatever the door; the operator list's value echoed.
+describe("what the open door refuses beside it (M6.5c2, spec §2.1)", () => {
+  const ADMINS_BESIDE_OPEN =
+    "YOKOHAMA_WEB_ADMINS is set beside YOKOHAMA_WEB_IDENTITY=open — a claimed name is never an operator: " +
+    "delete the operator list (wrangler secret delete YOKOHAMA_WEB_ADMINS), or deploy the worker door";
+  const DEV_DOOR_BESIDE_OPEN =
+    "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
+    "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door";
+  it("refuses an operator list, naming both variables and echoing nothing", () => {
+    const sentence = refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_WEB_ADMINS: "boss@t.test" }));
+    expect(sentence).toBe(ADMINS_BESIDE_OPEN);
+    expect(sentence).not.toContain("boss@t.test");
+  });
+  it("refuses the dev door on, read as every switch is read", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_DEV_DOOR: " ON " }))).toBe(DEV_DOOR_BESIDE_OPEN);
+  });
+  it("keeps both under the worker door, and ignores the dev door off and its client id under open", () => {
+    expect(accepted(env({ YOKOHAMA_WEB_ADMINS: "boss@t.test", YOKOHAMA_DEV_DOOR: "on" }))).toMatchObject({
+      door: "worker",
+      admins: ["boss@t.test"],
+      devDoor: true,
+    });
+    expect(
+      accepted(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_DEV_DOOR: "off", DEV_DOOR_CLIENT_ID: "some-client.access" })),
+    ).toMatchObject({
+      door: "open",
+      admins: null,
+      devDoor: false,
+    });
+  });
+  // Two defects at once (the lane's M6.2 lesson): the list is named first,
+  // and its value is echoed by neither sentence.
+  it("names the operator list before the dev door", () => {
+    const sentence = refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_WEB_ADMINS: "boss@t.test", YOKOHAMA_DEV_DOOR: "on" }));
+    expect(sentence).toBe(ADMINS_BESIDE_OPEN);
+    expect(sentence).not.toContain("boss@t.test");
+  });
+});
+
 // The orchestrator's ruling E3: every variable is a string or absent. A
 // wrangler `vars` entry written without quotes arrives as a number or a
 // boolean — which the module's own parse would refuse naming no variable, and

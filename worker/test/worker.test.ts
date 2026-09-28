@@ -253,6 +253,43 @@ describe("the Worker's own answers (spec §2.3)", () => {
     expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
   });
 
+  // M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it —
+  // an operator list, and the dev door on — answers every `/api/*` the 500
+  // naming both variables, as the unset door does, before any object is
+  // reached. This configuration is the worker door's, whose dev door is ON, so
+  // an override of the door alone meets the dev door's refusal, and one that
+  // also sets a list meets the list's first. The override reaches the Worker's
+  // own `shellConfig` alone (review R2.2-M2), which is where both are read.
+  // The partner: the same override with the dev door off and no list is no
+  // refusal. Mutants: either refusal missing; the list's value echoed.
+  it("an operator list, or the dev door on, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
+    const opened = { ...env, YOKOHAMA_WEB_IDENTITY: "open" };
+    const refusals: Array<[Env, string]> = [
+      [
+        { ...opened, YOKOHAMA_WEB_ADMINS: "boss@t.test" },
+        "YOKOHAMA_WEB_ADMINS is set beside YOKOHAMA_WEB_IDENTITY=open — a claimed name is never an operator: " +
+          "delete the operator list (wrangler secret delete YOKOHAMA_WEB_ADMINS), or deploy the worker door",
+      ],
+      [
+        opened,
+        "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
+          "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
+      ],
+    ];
+    expect(env.YOKOHAMA_DEV_DOOR, "premise: this configuration's dev door is on").toBe("on");
+    for (const [overridden, sentence] of refusals) {
+      for (const path of ["/api/health", "/api/me", "/api/admin/tables", "/api/games/wire/table"]) {
+        const res = await reaching(() => worker(path, { env: overridden }));
+        expect([res.result.status, res.result.text], path).toEqual([500, JSON.stringify({ error: sentence })]);
+        expect(res.result.text, `${path}: the list's value is echoed nowhere`).not.toContain("boss@t.test");
+        expect([res.table.length, res.house.length, res.archive.length], `${path}: no object reached`).toEqual([0, 0, 0]);
+      }
+      expect((await worker("/enter", { env: overridden })).status).toBe(302);
+    }
+    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off" } });
+    expect(accepted.status, accepted.text).toBe(200);
+  });
+
   // The NAS's answer is its typed `ArtManifest`: the file's nine maps, in the
   // struct's declaration order, and NOT the file's two generator keys — the
   // committed `art_manifest.json` (the orchestrator's ruling on Task 12's

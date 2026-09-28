@@ -12,7 +12,8 @@ import { handle } from "../../src/index";
 import { readReply } from "../../src/module";
 import { HOUSE_NAME } from "../../src/slot";
 import { Table } from "../../src/table";
-import { settle, tableStub } from "../helpers";
+import { bucketText, settle, tableStub } from "../helpers";
+import { ARCHIVE_WALK } from "../walk";
 
 // **The open door, end to end** (M6.5c2, spec §2.1; R-6.5c2.3, R-6.5c2.5) —
 // the pool's `open` project, over `wrangler.open.test.jsonc`. The Worker and
@@ -248,5 +249,77 @@ describe("the open door (M6.5c2, spec §2.1)", () => {
     expect((await through("/api/me?claimed=ben")).text, "a fetch's parameter is no claim").toBe('{"mode":"open","user":null}');
     const refused = await through("/api/stream", { claim: "ben", headers: UPGRADE });
     expect([refused.status, refused.webSocket], "an upgrade's header is no claim").toEqual([401, null]);
+  });
+});
+
+describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
+  // Under `open` no one is an operator: the gate answers `off`, and the
+  // operator routes are unrouted `/api/*` — the house's, which answers the
+  // layer's own 404 — whatever name is claimed, with no operator header
+  // forwarded. (This configuration sets no list, which `shellConfig` refuses
+  // beside `open`, so the gate's own reading of the door with a list set is
+  // `admin.unit.test.ts`'s cell.) Mutants: the gate answering `refused` under
+  // `open` (every claim meets the 403); a claim read as an operator.
+  it("the operator routes are the layer's 404 whatever name is claimed, ?force among them", async () => {
+    for (const claim of ["boss@t.test", "ben", undefined]) {
+      const res = await reaching(() => through("/api/admin/tables", { claim }));
+      expect([res.result.status, res.result.text], String(claim)).toEqual([404, '{"error":"no such endpoint: /api/admin/tables"}']);
+      expect([res.house.length, res.table.length, res.archive.length], `${String(claim)}: the house alone`).toEqual([1, 0, 0]);
+      expect(res.house.map(yokohamaHeaders), `${String(claim)}: the claim, and no operator`).toEqual([
+        claim === undefined ? {} : { "x-yokohama-claimed-user": claim },
+      ]);
+    }
+    const force = await reaching(() => through("/api/admin/tables/some-table/expire?force", { method: "POST", claim: "boss@t.test" }));
+    expect([force.result.status, force.result.text]).toEqual([404, '{"error":"no such endpoint: /api/admin/tables/some-table/expire"}']);
+    expect([force.house.length, force.table.length], "the house alone, never the table the path names").toEqual([1, 0]);
+  });
+
+  // Review R2.2-m4: a plain name ending in `.test` is legal under the key
+  // grammar, and the `test/` prefix EXPIRES after 30 days (R-6.5c2.12): an
+  // open-door player named `a.test` keeps their saves at the bucket's top, at
+  // both of the archive's roots — a server game's creator's, and a browser
+  // save's caller's. An address in `.test` still takes `test/`, which shows
+  // the root is read at all. Mutant: the test root read off `.test` alone.
+  it("a plain name ending in .test files its saves outside test/; an address in .test inside it", async () => {
+    const other = (root: string) => (root === "" ? "test/" : "");
+    // A server game's abandon: its creator's root.
+    for (const [creator, id, root] of [
+      ["a.test", "plain-abandon", ""],
+      ["red@t.test", "address-abandon", "test/"],
+    ] as const) {
+      const create = { id, players: 2, colors: ["Red", "Blue"], start_seat: 0, seed: 20260831, seats: [{ user: creator }, { user: "joiner" }] };
+      try {
+        const created = await through("/api/games", { method: "POST", claim: creator, headers: JSON_TYPE, body: JSON.stringify(create) });
+        expect(created.status, created.text).toBe(201);
+        for (const [who, seat] of [
+          [creator, 0],
+          ["joiner", 1],
+        ] as const) {
+          const kept = await through(`/api/games/${id}/keep`, { method: "POST", claim: who, headers: JSON_TYPE, body: JSON.stringify({ seat, card: 1 }) });
+          expect(kept.status, `${who} keeps: ${kept.text}`).toBe(200);
+        }
+        const moved = await through(`/api/games/${id}/input`, { method: "POST", claim: creator, headers: JSON_TYPE, body: '{"line":"1"}' });
+        expect([moved.status, (JSON.parse(moved.text) as { events: number }).events], "premise: one event, so the abandon archives").toEqual([200, 1]);
+        const abandoned = await through(`/api/games/${id}`, { method: "DELETE", claim: creator });
+        expect(abandoned.status, abandoned.text).toBe(204);
+      } finally {
+        await settle(tableStub(id));
+      }
+      const key = `rev7/abandoned/${id}.json`;
+      expect(await bucketText(`${root}${key}`), `${creator}: the abandon at ${root}${key}`).not.toBeNull();
+      expect(await bucketText(`${other(root)}${key}`), `${creator}: nothing at ${other(root)}${key}`).toBeNull();
+    }
+    // A browser's save: its Archive object's caller's root.
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    for (const [claim, segment, root] of [
+      ["a.test", "a.test", ""],
+      ["red@t.test", "red_at_t.test", "test/"],
+    ] as const) {
+      const path = `browser/${segment}/rev7/over/wire.json`;
+      const res = await through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save });
+      expect([res.status, (JSON.parse(res.text) as { path: string }).path], claim).toEqual([201, path]);
+      expect(await bucketText(`${root}${path}`), `${claim}: the save at ${root}${path}`).not.toBeNull();
+      expect(await bucketText(`${other(root)}${path}`), `${claim}: nothing at ${other(root)}${path}`).toBeNull();
+    }
   });
 });

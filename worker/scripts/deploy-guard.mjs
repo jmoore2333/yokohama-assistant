@@ -14,31 +14,49 @@
 //    service worker installs, however the tree was made. A debug `web/dist`
 //    carries a precache list that matches it, so the digests alone would pass
 //    one (task 7 review, Important 1).
-// 3. `wrangler.jsonc` sets `"workers_dev": false` and `"preview_urls": false`.
+// 3. `wrangler.jsonc` names its door (M6.5c2, spec §2.1; R-6.5c2.5):
+//    `YOKOHAMA_WEB_IDENTITY` in its top-level `vars` — the deploy's — is
+//    `worker` or `open`, read as the shell reads it (trimmed, then matched
+//    exactly), and there is no default, so a configuration naming none is
+//    refused rather than deployed to answer every request the 500. Per door:
+//    `"preview_urls": false` under both, since a preview version is not the
+//    deployed code, whatever the door; under `worker`, `"workers_dev": false`
+//    — a `workers.dev` URL would go around the hostname's Access application
+//    — and `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` set, without which no
+//    assertion is verified and every caller is no one; under `open`, a
+//    `workers.dev` URL is allowed, there being no door to go around, and
+//    `YOKOHAMA_DEV_DOOR` is not `on`, the dev door being the worker door's
+//    test instrument (the Worker refuses the pair at run time too). Under a
+//    door it does not know, `"workers_dev": false` is asked as under `worker`.
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
-//    Version URLs as they were — public, if they were ever on.
+//    Version URLs as they were — public, if they were ever on. The guard
+//    prints the door it reads before its verdict (`doorLine`).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in `wrangler.jsonc` — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 5. The `assets` block is EXACTLY spec §2.3's, in `wrangler.jsonc` AND in
-//    `wrangler.test.jsonc`: `html_handling` and `not_found_handling` `none`,
-//    `run_worker_first` `["/api/*", "/enter"]`, the binding `ASSETS`, and no key
-//    beyond those and `directory`. Battery rows 13 and 14 (plan review M5): an
-//    asset-layer fallback answers a missing file WITHOUT invoking the Worker,
-//    and the pool reads only `wrangler.test.jsonc`, so no pool cell can see
-//    production's block drift.
+//    both pool configurations, `wrangler.test.jsonc` and
+//    `wrangler.open.test.jsonc` (M6.5c2): `html_handling` and
+//    `not_found_handling` `none`, `run_worker_first` `["/api/*", "/enter"]`,
+//    the binding `ASSETS`, and no key beyond those and `directory`. Battery
+//    rows 13 and 14 (plan review M5): an asset-layer fallback answers a
+//    missing file WITHOUT invoking the Worker, and the pool reads only its
+//    own two files, so no pool cell can see production's block drift.
 // 6. The `durable_objects`, `migrations` and `r2_buckets` blocks are present
-//    in both files and EQUAL, read as values (the orchestrator's ruling at
-//    Task 9's review, and Task 13's bucket): the pool reads only
-//    `wrangler.test.jsonc`, so a class, a binding, a migration or a bucket
-//    there that production lacks would be tested green and never shipped —
-//    and production's `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the
-//    500 naming that variable (spec §2.6).
+//    in production's file and in each pool file, and each pool's EQUALS
+//    production's, read as values (the orchestrator's ruling at Task 9's
+//    review, and Task 13's bucket): the pool reads only its own two files, so
+//    a class, a binding, a migration or a bucket there that production lacks
+//    would be tested green and never shipped — and production's
+//    `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the 500 naming that
+//    variable (spec §2.6).
 // 7. No `vars` block in `wrangler.jsonc` — the top level's, or any
-//    environment's — names `YOKOHAMA_WEB_ADMINS` (the plan's ruling P-1, as
-//    the orchestrator ruled at Task 14's review): the operator list is a
-//    SECRET, set with `wrangler secret put`, and a value there is an address
-//    committed to the repository. Read as a KEY, so a comment may name it.
+//    environment's — names a SECRET: `YOKOHAMA_WEB_ADMINS` (the plan's ruling
+//    P-1, as the orchestrator ruled at Task 14's review), whose value is an
+//    address committed to the repository, or `DEV_DOOR_CLIENT_ID` (M6.5c2,
+//    R-6.5c2.5). Both are set as secrets, which a deploy leaves alone. Read as
+//    a KEY, so a comment may name either, and read in production's file
+//    alone, so the pool keeps its test client id (review m9).
 // 8. `gen/` is the build of the tree as it is now (R3's M-3): `gen/source.json`
 //    — the stamp `npm run build` writes, the digest of what the module is
 //    compiled from, taken before cargo ran (`build-module.mjs`'s
@@ -59,7 +77,7 @@
 // committed files — the per-commit catcher; the live reading at each deploy
 // is the second.
 //
-// Both files are read with `jsonc-parser`, which knows a string from a
+// Every file is read with `jsonc-parser`, which knows a string from a
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
 // holds one (every URL), and would choke on a trailing comma.
 
@@ -156,43 +174,118 @@ const OBJECT_BLOCKS = {
   r2_buckets: "binds the bucket yokohama-archive as ARCHIVE",
 };
 
-/** Check 6, over the two parsed configurations. */
-function objectBlocks(production, test, failures) {
+/** The pool's configurations, one per door (M6.5c2, spec §2.1): each is held
+ *  to spec §2.3's assets block (check 5) and to production's object blocks
+ *  (check 6). */
+const POOLS = ["wrangler.test.jsonc", "wrangler.open.test.jsonc"];
+
+/** Check 6, over production and each pool file that parsed (`pools`, as
+ *  `[name, config]` pairs). A block a file lacks is named for that file; a
+ *  pool's block that differs from production's is named for that pool. */
+function objectBlocks(production, pools, failures) {
   for (const [key, what] of Object.entries(OBJECT_BLOCKS)) {
-    const missing = [];
-    for (const [name, config] of [["wrangler.jsonc", production], ["wrangler.test.jsonc", test]]) {
-      if (config.value[key] === undefined) {
-        failures.push(`${name} has no ${key} block — spec §3.1 ${what}`);
-        missing.push(name);
-      }
-    }
+    const missing = [["wrangler.jsonc", production], ...pools].filter(([, config]) => config.value[key] === undefined);
+    for (const [name] of missing) failures.push(`${name} has no ${key} block — spec §3.1 ${what}`);
     if (missing.length > 0) continue;
-    const [p, t] = [canonical(production.value[key]), canonical(test.value[key])];
-    if (p !== t) {
-      failures.push(
-        `wrangler.test.jsonc's ${key} differs from wrangler.jsonc's — the pool would test what production ` +
-          `does not ship: ${t} against ${p}`,
-      );
+    const p = canonical(production.value[key]);
+    for (const [name, pool] of pools) {
+      const t = canonical(pool.value[key]);
+      if (p !== t) {
+        failures.push(`${name}'s ${key} differs from wrangler.jsonc's — the pool would test what production does not ship: ${t} against ${p}`);
+      }
     }
   }
 }
 
+/** What check 7 refuses among production's `vars`: the SECRETS, and why. */
+const SECRETS = {
+  YOKOHAMA_WEB_ADMINS: "the operator list is a secret (wrangler secret put), never a committed value",
+  DEV_DOOR_CLIENT_ID: "the dev door's client id is a secret (wrangler secret put), never a committed value",
+};
+
+/** `value` when it is an object that is not an array — a `vars` block or an
+ *  environment — else `undefined`. */
+function objectOf(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
 /** Check 7, over `wrangler.jsonc`: every `vars` block, the top level's and
- *  each environment's, read for the operator list's KEY. */
-function operatorList(value, failures) {
+ *  each environment's, read for the secrets' KEYS. */
+function secretsInVars(value, failures) {
   const blocks = [["vars", value.vars]];
-  if (value.env !== null && typeof value.env === "object" && !Array.isArray(value.env)) {
-    for (const [name, env] of Object.entries(value.env)) {
-      if (env !== null && typeof env === "object") blocks.push([`env.${name}.vars`, env.vars]);
-    }
+  for (const [name, env] of Object.entries(objectOf(value.env) ?? {})) {
+    if (objectOf(env)) blocks.push([`env.${name}.vars`, env.vars]);
   }
   for (const [where, vars] of blocks) {
-    if (vars !== null && typeof vars === "object" && Object.hasOwn(vars, "YOKOHAMA_WEB_ADMINS")) {
-      failures.push(
-        `wrangler.jsonc's ${where} name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value`,
-      );
+    if (!objectOf(vars)) continue;
+    for (const [key, why] of Object.entries(SECRETS)) {
+      if (Object.hasOwn(vars, key)) failures.push(`wrangler.jsonc's ${where} name ${key} — ${why}`);
     }
   }
+}
+
+/** The two doors (M6.5c2, spec §2.1), and what the guard says each one is. */
+const DOORS = {
+  worker: "Cloudflare Access, verified by the shell",
+  open: "no identity service: anyone who reaches the Worker plays under any name",
+};
+
+/** The door a configuration's top-level `vars` names — the deploy's, so an
+ *  environment's names none here — read as the shell reads the variable
+ *  (`config.ts`'s `door`): a string trimmed, and nothing else changed. Any
+ *  other value is handed back as it is, and `undefined` means none. */
+function doorOf(value) {
+  const raw = objectOf(value.vars)?.YOKOHAMA_WEB_IDENTITY;
+  return typeof raw === "string" ? raw.trim() : raw;
+}
+
+/** Whether `door` is one of the two, compared exactly. */
+function known(door) {
+  return typeof door === "string" && Object.hasOwn(DOORS, door);
+}
+
+/** Check 3, over `wrangler.jsonc`: the door, and its rules. */
+function doorRules(value, failures) {
+  const door = doorOf(value);
+  if (door === undefined) {
+    failures.push("wrangler.jsonc names no door — its vars must set YOKOHAMA_WEB_IDENTITY to worker or open, and there is no default");
+  } else if (!known(door)) {
+    failures.push(`wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(door)}`);
+  }
+  for (const [key, why] of Object.entries(ABSENT)) {
+    // An open door has no Access application for a workers.dev URL to go around.
+    if (key === "workers_dev" && door === "open") continue;
+    if (value[key] !== false) {
+      failures.push(`wrangler.jsonc must set "${key}": false — got ${JSON.stringify(value[key]) ?? "nothing"}; ${why}`);
+    }
+  }
+  const vars = objectOf(value.vars) ?? {};
+  if (door === "worker") {
+    for (const name of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
+      if (typeof vars[name] !== "string" || vars[name].trim() === "") {
+        failures.push(
+          `wrangler.jsonc's vars must set ${name} under the worker door — without it no assertion is verified, and every caller is no one`,
+        );
+      }
+    }
+  }
+  // Read as the shell reads a switch (`config.ts`'s `folded`): trimmed, in any case.
+  const devDoor = vars.YOKOHAMA_DEV_DOOR;
+  if (door === "open" && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
+    failures.push(
+      "wrangler.jsonc's vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair",
+    );
+  }
+}
+
+/** The line the guard prints about the door `wrangler.jsonc` under `root`
+ *  names (R-6.5c2.5), whatever else the guard refuses — or `undefined` when
+ *  the file is absent or does not parse, or names neither door, which check 3
+ *  refuses. */
+export function doorLine(root) {
+  const production = readConfig(root, "wrangler.jsonc", []);
+  const door = production === undefined ? undefined : doorOf(production.value);
+  return known(door) ? `wrangler.jsonc deploys the ${door} door — ${DOORS[door]}` : undefined;
 }
 
 /** Check 8: `gen/source.json` against the digest of the sources now. Asked
@@ -254,22 +347,22 @@ export function configFailures(root) {
   const failures = [];
   const production = readConfig(root, "wrangler.jsonc", failures);
   if (production) {
-    for (const [key, why] of Object.entries(ABSENT)) {
-      if (production.value[key] !== false) {
-        failures.push(
-          `wrangler.jsonc must set "${key}": false — got ${JSON.stringify(production.value[key]) ?? "nothing"}; ${why}`,
-        );
-      }
-    }
+    doorRules(production.value, failures);
     if (production.text.includes("YOKOHAMA_WEB_TEST_CLOCK")) {
-      failures.push("wrangler.jsonc names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in wrangler.test.jsonc and nowhere else");
+      failures.push("wrangler.jsonc names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in the pool's configurations and nowhere else");
     }
     assetsBlock("wrangler.jsonc", production.value, failures);
-    operatorList(production.value, failures);
+    secretsInVars(production.value, failures);
   }
-  const test = readConfig(root, "wrangler.test.jsonc", failures);
-  if (test) assetsBlock("wrangler.test.jsonc", test.value, failures);
-  if (production && test) objectBlocks(production, test, failures);
+  const pools = [];
+  for (const name of POOLS) {
+    const pool = readConfig(root, name, failures);
+    if (pool) {
+      assetsBlock(name, pool.value, failures);
+      pools.push([name, pool]);
+    }
+  }
+  if (production) objectBlocks(production, pools, failures);
   return failures;
 }
 
@@ -326,7 +419,10 @@ export function deployGuard(root, repo = join(root, "..")) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const failures = deployGuard(fileURLToPath(new URL("..", import.meta.url)));
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const door = doorLine(root);
+  if (door !== undefined) console.log(door);
+  const failures = deployGuard(root);
   if (failures.length > 0) {
     console.error(`deploy-guard: refused —\n${failures.map((f) => `  ${f}`).join("\n")}`);
     process.exit(1);
@@ -334,7 +430,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
-      "no workers.dev or preview URL; no test clock; spec §2.3's assets block in both configurations; " +
-      "the same object bindings, migrations and bucket binding in both; no operator list in its vars",
+      "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
+      "at the open door no dev door; no test clock; spec §2.3's assets block in all three configurations; " +
+      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars",
   );
 }

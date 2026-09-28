@@ -24,13 +24,15 @@
 //! the table it was sent, which the layer does not stamp, so its plan does not
 //! move with the reading.
 //!
-//! **The `test/` root** (spec §2.6, §5): a plan whose address ends in `.test` —
-//! the reserved domain every test identity uses — is keyed under `test/`
-//! instead of the bucket's top, so the live test tiers never write into the
-//! owner's training data. The address is read WHOLE: a server game's table's
-//! `created_by`, or the address a browser's save's Archive object was
-//! initialized with — never the path's `caller_segment`, which the
-//! 64-character cap can strip of its `.test`.
+//! **The `test/` root** (spec §2.6, §5): a plan whose address is an EMAIL in
+//! `.test` — the reserved domain every test identity uses, and never a plain
+//! name (M6.5c2, review R2.2-m4: under the open door `a.test` is a legal name)
+//! — is keyed under `test/` instead of the bucket's top, so the live test
+//! tiers never write into the owner's training data ([`is_test_identity`]).
+//! The address is read WHOLE: a server game's table's `created_by`, or the
+//! address a browser's save's Archive object was initialized with — never the
+//! path's `caller_segment`, which the 64-character cap can strip of its
+//! `.test`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -52,6 +54,17 @@ const TEST_ROOT: &str = "test/";
 
 /// The reserved domain every test identity's address ends in.
 const TEST_DOMAIN: &str = ".test";
+
+/// Whether `address` is a TEST identity's (spec §2.6; M6.5c2, review R2.2-m4):
+/// an EMAIL in the reserved `.test` domain. Every address this reads is a key
+/// the layer's `User::parse` wrote — a table's `created_by`, or the caller
+/// `init` normalized — and under the key grammar a plain name never holds an
+/// `@`, so a plain name is never one, whatever it ends in: under the open door
+/// `a.test` is a legal name, and the `test/` prefix EXPIRES after 30 days
+/// (R-6.5c2.12).
+fn is_test_identity(address: &str) -> bool {
+    address.contains('@') && address.ends_with(TEST_DOMAIN)
+}
 
 /// What a put that met no receipt answers: a `Failed`, whose words each of the
 /// layer's three sites puts inside its own sentence — the abandon's and the
@@ -140,7 +153,8 @@ impl ReceiptArchive {
         Self { receipts: Mutex::new(HashMap::new()), pending: Mutex::new(None), caller }
     }
 
-    /// `"test/"` for a test identity's plan, else `""` — by the FULL address.
+    /// `"test/"` for a test identity's plan ([`is_test_identity`]), else `""`
+    /// — by the FULL address.
     /// `prefix` is one of the two the layer passes (`Archive::put`'s doc): `""`
     /// for a server's own game, whose address is its table's `created_by`
     /// (`strip_for_archive` keeps it), and `browser/<segment>/` for a browser's
@@ -159,9 +173,10 @@ impl ReceiptArchive {
     /// segment, not that the sender spelled its address as the object does.
     fn root(&self, prefix: &str, table_json: &str) -> Result<&'static str, PutError> {
         let test = match prefix {
-            "" => creator_of(table_json)
-                .ok_or_else(|| PutError::Failed("the table document names no creator".to_string()))?
-                .ends_with(TEST_DOMAIN),
+            "" => is_test_identity(
+                &creator_of(table_json)
+                    .ok_or_else(|| PutError::Failed("the table document names no creator".to_string()))?,
+            ),
             browser if browser.starts_with("browser/") => {
                 let caller = self.caller.as_deref().ok_or_else(|| PutError::Failed(NO_CALLER.to_string()))?;
                 // `init` normalized the caller through this same parse, so it
@@ -170,7 +185,7 @@ impl ReceiptArchive {
                 if own.as_deref() != Ok(browser) {
                     return Err(PutError::Failed(ANOTHER_CALLER.to_string()));
                 }
-                caller.ends_with(TEST_DOMAIN)
+                is_test_identity(caller)
             }
             other => return Err(PutError::Failed(format!("the archive keeps no root for the prefix {other:?}"))),
         };
@@ -451,9 +466,14 @@ mod tests {
 
     /// `init`'s configuration with the archive ON, as the shell builds it
     /// (§"Names shared across tasks"): `caller` is the Archive object's
-    /// address, and `null` on every other object.
+    /// address, and `null` on every other object. The worker door.
     fn r2(caller: Option<&str>) -> String {
-        json!({"identity": "worker", "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
+        r2_at(caller, "worker")
+    }
+
+    /// [`r2`] at `door` (M6.5c2, spec §2.1): `worker` or `open`.
+    fn r2_at(caller: Option<&str>, door: &str) -> String {
+        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
             .to_string()
     }
 
@@ -784,6 +804,44 @@ mod tests {
                 None
             ),
         );
+    }
+
+    /// **A plain name never takes the `test/` root** (M6.5c2, review
+    /// R2.2-m4). Under the open door `a.test` is a legal name (the key
+    /// grammar), and the `test/` prefix EXPIRES after 30 days (R-6.5c2.12): a
+    /// player so named must not have their saves filed where the test tiers'
+    /// are pruned. The test root takes an EMAIL in `.test`, whose `@` a plain
+    /// name never has — at both roots: a server game's creator, and a browser
+    /// save's caller. The partner at each root is an address in `.test`,
+    /// which still takes it. Mutant: the old `ends_with(".test")` alone.
+    #[test]
+    fn a_plain_name_never_takes_the_test_root() {
+        let _s = serial();
+        let _p = pin(1_789_001_200);
+        // A server game's root: its creator's. The joiner is a plain name at
+        // both rows, and the creator's root is the one read.
+        for (creator, root) in [("a.test", ""), (RED, "test/")] {
+            init_inner(&r2_at(None, "open")).unwrap();
+            playing_with_a_move("plain", creator, "joiner");
+            let r = call(creator, "DELETE", "/api/games/plain", None);
+            assert_eq!(r.status, 500, "{creator}: premise: the abandon deferred — {}", r.body);
+            let base = format!("{root}rev7/abandoned/plain");
+            assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
+        }
+        // A browser save's root: its Archive object's caller's.
+        let save = the_committed_save();
+        for (caller, root) in [("joiner.test", ""), (RED, "test/")] {
+            init_inner(&r2_at(Some(caller), "open")).unwrap();
+            let r = call(caller, "POST", "/api/archive", Some(&save));
+            assert_eq!(
+                (r.status, r.body.as_str()),
+                (500, r#"{"error":"the archive could not be written: deferred to the host"}"#),
+                "{caller}: premise: the save deferred",
+            );
+            let segment = caller_segment(&User::parse(caller).unwrap());
+            let base = format!("{root}browser/{segment}/rev7/over/{OWED}");
+            assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
+        }
     }
 
     /// **The root and the path name ONE caller** (R1's L-1, fail-closed). The
