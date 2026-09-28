@@ -21,6 +21,16 @@
   §2.7 and §2.8 dropped** (R-6.5c2.1 amended; each dropped item is marked where it stands). It changes no
   mechanism. The plan review's one CRITICAL finding — RUNBOOK §2's recipe served the repository root, where
   `.dev.vars` sits, to the LAN — is fixed in this revision's commit series, before any cycle's first task.
+- **Revision 2.7** (this text, 2026-09-28) records the rulings of cycle C's planning session with the owner, taken
+  against the tree cycle B left (`web-room-m6.5c2b` at `3ed27f07`, PR #40): cycle C is ONE cycle and carries the
+  hosts' code, the host documents, the deploys and the live tiers through its close document; a **fourth, lighter
+  cycle D** — the final wrap-up and polish — takes the lane document and the top-level document refresh, the
+  visual polish the owner's eye decides, the investigation of what remains, and then the merge, the `v0.6.0` tag
+  and the refocus (R-6.5c2.17 and R-6.5c2.19 amended; §4's table gains row D). The owner's 2026-09-28 ask — the
+  bot's version in the saves and in the R2 key — is answered WITHOUT a key change: every save already names the
+  bot, the release and the host, and an ingestion script sorts (§2.4 as amended). The lobby gains a folded
+  "Finished" group (§2.2 as amended). CI stays lean (§2.9 as amended). §10.7 records each ruling with the owner's
+  words. It changes no mechanism of §2.1, §2.5–§2.8 or §2.10.
 
 **This document is the authority for M6.5c2.** The handover is its entry and is not a spec. Where this spec and a
 frozen artifact disagree, the frozen artifact wins unless a ruling here names it and supersedes it:
@@ -225,6 +235,11 @@ against `web-room-m6.5c`, `web-room-m6.5c2b` against `-a`, `web-room-m6.5c2c` ag
 #41 (GitHub numbers them at creation), so the stack merged at the close is #31 → #41. Owner: *"keeping up the
 stacked branch and PR per cycle will be ideal if we are going to run each cycle with its own orchestrator, it makes
 for the cleanest handoff and history tracking"*.
+**Amended 2026-09-28 (revision 2.7):** the merge is cycle D's closing act, not cycle C's — the owner (2026-09-28):
+*"it's much better to have a lighter phase d and then we can engage in a real in-depth final straw poll/investigation
+on what's remaining and then wrap it up."* Cycle C ends as A and B did, with its PR (#41 against `-b`); cycle D's
+branch `web-room-m6.5c2d` stacks on `-c` with its own PR (#42), and the stack merged at D's close is #31 → #42, in
+order, with merge commits.
 
 **R-6.5c2.18 — Process: the lane's standing rules** (handover §8). Every task is subagent-driven, with Opus
 implementers and reviewers and a Fable whole-branch review. The orchestrator runs every step that touches the
@@ -249,6 +264,9 @@ tagged.
   change what a save means or which bot plays**, the AI lane's V5 ship included, and tag the release commit.
 - **The bump is not free** (review H3): §5 lists everything it reaches, the most visible is handled in §2.6,
   and the live replay's reset follows it (§3). The owner took it knowing its cost.
+- **Amended 2026-09-28 (revision 2.7):** the bump itself is cycle C's (§8.2's ripple lands there, and C's release
+  gates, deploys and live tiers run at 0.6.0); the **tag** follows the merge, so it is cycle D's closing act
+  (R-6.5c2.17 as amended).
 
 ---
 
@@ -498,6 +516,31 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
 - **The single-player build's "Lobby" controls** (M6.5b2 close §6.3; handover §5 item 12): under
   `VITE_MULTIPLAYER=false`, no control on a local screen leads to a lobby.
 
+- **Amended 2026-09-28 (revision 2.7) — the lobby's "Finished" group (cycle C).** The `playing` scope lists
+  finished games by the status rule (`tables.rs`: "over is not a `TableStatus`"), and a finished game's row under
+  "Being played" reads "Spectate" (`web/src/tables.ts`), so on the NAS — which has no TTL (R-6.5c2.2) — that list
+  would accumulate finished games without end. The owner (2026-09-28): *"we would need the view to prune or
+  collapse or otherwise no longer show finished games after some time so it doesn't add up, but I can see value if
+  you have the password or entitlement to go back into a finished game."* Ruled: **client-only.** "Being played"
+  lists only unfinished games; finished ones sit in a **"Finished" group below it, folded by default** with a count
+  on its summary, newest first, "View" on every row, the padlock and the unlock face unchanged for a locked table.
+  No wire change and no data change: a table's lifetime stays each host's rule, and the entitlement is already
+  the rule (a seat holder finds it under "Your tables"; a stranger with the password passes the unlock face into
+  the finished game's screen). Built in mock 02's row language and the one fold idiom the app has
+  (`details.fold`, R-B16). A time rule ("after some time") would need a finished-at time the mirror does not
+  carry; it is a cycle D item if the count ever bothers the owner. This closes B's polish item 1 ("Spectate" on a
+  finished game's row) by construction.
+- **Amended 2026-09-28 (revision 2.7) — polish, and where it lands.** The owner: *"polish is key, these are the
+  last revisions here, and we're dedicating substantial resources so we want to get it well enough to last for
+  some time while we dive deeper into the computer player."* The standard for every screen change in C: 1440 px
+  and 390 px pictures beside its mock in the task's ledger, and a headed look in the whole-branch review. Of B's
+  nine "owner's eye" items (the C handover §7), **1–4 are cycle C's**, folded into its a11y task — the finished
+  row's word (above), the secondary controls' 44 px touch target at 390, the device card's h2 → h4 skip, the open
+  table's refusal placed by its field — and **5–9 are cycle D's**, the polish phase, judged from C's pictures:
+  `a.primary-link`'s box against `button.primary`'s, state E's two-up at 976 px, the band's crumbs wrapping at 390
+  under a long address, the Players panel's tag order, and the device card's storage line and backup note with
+  the board's bottom three hues (R-B12). Every carried client fix of B's whole-branch review and the a11y pass
+  stay C's, as B's close routed them.
 ### 2.3 The project link (R-6.5c2.6)
 
 - **One build variable, `YOKOHAMA_PROJECT_URL`.**
@@ -620,6 +663,29 @@ for the words in R-6.5c2.7 and the version tag in §2.4.
   IndexedDB, the export and the backup envelope carry `run` through **byte-for-byte**. The lane document gets a
   "What a save file says" section for the evaluation pipeline, and the AI-lane handover points to it.
 
+- **Amended 2026-09-28 (revision 2.7) — the bot's version in the key: NOT taken.** The owner asked (2026-09-28,
+  the C handover §7) for the bot's version in the saves, digestibly, and in the file name or R2 key, so saves can
+  be organized by bot version for evaluation. Read against the table above: every save already names the exact
+  bot (`run.seats[i]`), the release (`engine_version`), the rules and, since cycle A, the host (`run.run_id`); the
+  one fact in no file is the label "V4", a lookup from the controller name. A key segment would touch both
+  archives, the Worker's receipt plans, the pool's key expectations, the live replay's reset keys and three
+  documents, plus a one-time bucket move. The owner: *"a simple python script could ingest the saves and sort
+  them … if this adds a substantial amount of work, it's likely then not worth the savings in just evaluating it
+  when we bring in the save data, since we're not looking at large numbers anyway … if we do it in ingestion
+  instead of just labeling that can work also."* Ruled: **no key change and no record change**; the ingestion
+  script sorts by the fields the save carries, and two cheap items land instead:
+  - **"What a save file says"** is the contract that script is written against: the fields above, the label
+    table, and the byte-for-byte rule — in the lane document, which is cycle D's (§2.11 as amended);
+  - **the versioned refusal sentence** (cycle C, `bots.rs`): where two labels tie, the foreign-bot refusal names
+    the controller version — "played against V4.2. This server now runs V4.3" — instead of "V4 … V4". The screens
+    keep "V4", `label` is unchanged, and this closes the same-name re-point edge cycle A carried (its handover
+    §7).
+
+  On the map's fence: the Phase-3 map §1 item 6 reads "Human-game benchmarking is a late, optional,
+  comparison-only activity, never a training input" (`docs/plans/2026-07-25-phase3-map.md` line 18). The owner
+  (2026-09-28): the fence exists *"because our corpus was so small in the initial development cycle — but, there
+  will be a point where more human games will be valuable"*. Nothing here changes it; when it changes, it is a
+  decision-log row amending map §1, and the lane document's contract is what the pipeline reads either way.
 ### 2.5 The refinish rule (R-6.5c2.11)
 
 - **Where the rule lives.** It is a layer rule at the game-over archive site (`games.rs`: `archive_if_over` and
@@ -801,6 +867,20 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   - the per-edit Rust suites CI doesn't name (the CLI, the oracle, difftest, the bridge, the example targets,
     clippy).
 
+- **Amended 2026-09-28 (revision 2.7) — CI stays lean.** The owner: *"our dev process is heavy on build tests and
+  e2e tests where relevant, computer player changes are not going to impact the web replays given how the rules
+  engine is structured, so we should not overload CI with tests that we're already running heavily, it should be
+  useful for CI specifically and not overburdened."* So this section's additions are read as a CEILING: CI runs
+  what a clean checkout can build and what the per-edit process does not already run heavily, and cycle C adds
+  no suite to `test.yml` beyond the whole-game gate's return (about 25 s at cycle B's close) and the step that
+  names the layer's test binaries. The **Docker workflow's trigger is narrowed** to pull requests, pushes to
+  master and manual dispatch over the image's WEB-LANE inputs — `deploy/Dockerfile*`, `deploy/smoke-image.sh`,
+  `crates/yokohama-web/**`, `crates/yokohama-wasm/**`, `web/**`, `Cargo.toml`, `Cargo.lock`,
+  `rust-toolchain.toml` and the workflow file — and **never on a change under `crates/yokohama-core`,
+  `crates/yokohama-cli` or `crates/yokohama-bridge` alone**, so an AI-lane push pays no cold image build; a core
+  change that breaks the image is caught at the next web-lane pull request or by dispatch, which the lane
+  document records. The first runs are measured (§8.3), and if a cold build reads over fifteen minutes the
+  trigger drops to master pushes and dispatch.
 ### 2.10 The hosts (R-6.5c2.2, .5, .12)
 
 - **The NAS** gets this cycle's release:
@@ -886,6 +966,16 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   the lobby, the join and the open table, plus the watcher's game screen (it shows the old "You are watching"),
   `marker-404.png` (the old lobby) and `door-phone.png` (the old door) (§10.5).
 - **The address scrub** (R-6.5c2.16), including the two frozen plans under the recorded exception.
+- **Amended 2026-09-28 (revision 2.7) — what moves to cycle D.** The owner: *"you could probably move the lane
+  document to D as well since we're likely to be editing those same docs in D which will be immediately after C,
+  as we won't have full deploys so no use prior to then anyway."* So **cycle C keeps the host documents** — the
+  two READMEs' and RUNBOOKs' rewrite above (the NAS recipe must read `cf-access` before the deploy that follows
+  it), `worker/README.md`'s two doors and citations, the address scrub with its decision-log row, the stale lines
+  the C handover names — plus a **truth pass on `CLAUDE.md` at C's close** (the sentences C makes false: the NAS's
+  mode and build, `dev-identity`, the version, the counts) and the board's pointer, as every close does. **Cycle D
+  takes** `docs/web-lane.md` and `CLAUDE.md`'s reduction to a pointer (one move, one commit), `guidingpath.md`'s
+  current state, the board's history rewritten into pointers, the root README's two-README balance, and the
+  seven screenshots — recaptured from the DEPLOYED site through an opt-in generator, after C's deploys.
 
 ---
 
@@ -977,6 +1067,10 @@ From handover §4.6 (R3's §7, Task 15's deferrals, Task 8's minor items):
   8. after the close, the merge (R-6.5c2.17), then **the `v0.6.0` tag on master and its `release.yml` run**,
      read to green (R-6.5c2.19).
 
+  **Amended 2026-09-28 (revision 2.7):** steps 1–6 and the close document of step 7 are cycle C's; **the
+  screenshots of step 7 and the whole of step 8 are cycle D's** (§2.11 and R-6.5c2.17 as amended). C's close
+  document and its decision-log row are written at C's reviewed head, as A's and B's were.
+
   A live step follows the handover §4.4 rules: WARP's device login checked first, the quota guard, and one
   Playwright run at a time.
 
@@ -998,6 +1092,15 @@ because its layer edits are file:line-precise Rust across three crates, where th
 | **A — the layer** | `web-room-m6.5c2a` (on `web-room-m6.5c`) | `2026-09-27-web-frontend-m6.5c2a-plan.md` | §2.1's key grammar, containment, rename and mode rule (the client's four literal sites and the walk's configuration move with the rename); §2.4 whole — `bots.rs`, the contract file, the mirror, the two wire fields, the foreign-bot rule and its four masks, `run_id` and the byte-for-byte pin on the server's save paths; §2.5's layer half; §2.6 whole — the log seam, the drift filter, the object-only body, the restatements EXPORTED, the `NotFound` cell, the whole-game gate's livelock and the browser walk's cap; §2.2's three reworded server sentences; **the `seed_cases.json` contract** (§2.2 "The seed"), emitted here so cycle B renders nothing hand-authored; the corpus regenerated and its diff read; every cell the two host crates and the pool need to stay green at each task | the Fable whole-branch review, ONE fix wave and a scoped re-review; the per-edit suites at the reviewed head; the branch pushed and its PR opened (pre-authorized); **the handover into B, which is cycle B's planning session's ENTRY** — written off the tree, naming the wire as it is, the drafts and their corrections, and what A does not claim. **No deploy and no live tier** (R-6.5c2.13). |
 | **B — the screens** | `web-room-m6.5c2b` (on `-a`) | written at B's start | §2.2 and §2.3 whole — the shared pieces, the door and the project link, the identity states A–E and the name step (§2.1 "The client", pinned to `identity_cases.json`), the lobby, the forms and the seed check (pinned to `seed_cases.json`), waiting and joining, "Spectate" in the client, the single-player links, "Will not open here", the game screen's foreign refusal; §2.8's client items (Task 8's list); every rebuilt screen's jsdom, browser and 390 px cells | as A: review, fix wave, re-review, push and PR, a handover note into C; **no deploy** |
 | **C — the hosts and the close** | `web-room-m6.5c2c` (on `-b`) | written at C's start | §2.1 "The Worker's two doors" whole (the client's `claimed=` upgrade parameter with it); §2.5's Worker half; §2.7 as amended — the `hasTables` memo, the picker invariant, the scrub fence, the pending list, the time unit, L-8, L-4, the module's figures, and the restatements IMPORTED (the module and the browser host switch to A's exports); §2.8 as amended — the LOW findings; §2.9 whole; R-6.5c2.19's bump and its ripple (§8.2); §2.10 and §2.11 whole; then §3's close | §3's close in full: the review, the battery, the ONE recorded sequence, the deploys, the live tiers, the screenshots, the close document, the merge (R-6.5c2.17) and the `v0.6.0` tag |
+| **D — the wrap-up and polish** (revision 2.7) | `web-room-m6.5c2d` (on `-c`) | written at D's start, from C's handover | the lane document and the top-level refresh (§2.11 as amended); the seven screenshots from the deployed site; polish items 5–9 and whatever C's pictures show (§2.2 as amended); the phones, after C's deploy, with the Device Hub iOS simulator as an option (§6 as amended); **the investigation of what remains** — the LEAVE lists, the M6.5c close's "does NOT claim", the public door's preconditions, the AI lane's re-entry pointer — the owner's "straw poll" on what the lane leaves; whatever overflows C | the merge #31 → #42 with merge commits, the `v0.6.0` tag on master and its `release.yml` run read to green, the refocus on the computer player |
+
+**Amended 2026-09-28 (revision 2.7):** cycle C is ONE cycle (the owner: *"one cycle, this is a substantial
+catch-all type phase wrap"*), and **row D absorbs what grows past C's plan while it is drawn** (the owner: *"the
+phase D content can be dependent if as we're drawing the scope for C that this grows too far it can get moved into
+D"*). Row C's content, restated for revision 2.7: everything its row names LESS the screenshots, the merge and
+the tag, PLUS the "Finished" group and polish 1–4 (§2.2 as amended) and the versioned refusal sentence (§2.4 as
+amended); its documents are §2.11 as amended. The dropped refactors of R-6.5c2.1 stay dropped in D as well (the
+owner: *"the refactors dropped don't have to come in even in D that's fine"*).
 
 **The interfaces between cycles are the layer's, and this spec fixes them.** A produces, for B: the corpus files
 `identity_cases.json`, `seed_cases.json`, `production_bot.json`, `table_bot.json`, `foreign_bot_409.json`,
@@ -1065,7 +1168,10 @@ the code (§10.6's table).
 - **No TTL, marker or operator surface on the NAS** (R-6.5c2.2).
 - **No open-door Worker is deployed.** The owner's Worker stays Access, and the open door is proven in the pool
   (R-6.5c2.5).
-- **The phones** stay the owner's: the iPhone exit and the Android handset, recorded, not gated.
+- **The phones** stay the owner's: the iPhone exit and the Android handset, recorded, not gated. **Amended
+  2026-09-28 (revision 2.7):** they wait for C's deploy (the owner: *"The phones are delayed for an actual deploy
+  or there is nothing to test"*), and cycle D may layer them in through the Device Hub iOS simulator — D's plan
+  decides.
 - **No change to requests per move** (~13) beyond the rows-read work. Requests remain the Free plan's first
   binding limit, and are a public-door precondition.
 - **Overlapping uploads' pair consistency** is best-effort (§2.5), not claimed.
@@ -1336,3 +1442,28 @@ owns the code:
 subsystems is split into cycles at SCOPING, before any drafting is paid for; a plan is written to be read whole by
 one agent; and plans are written by the orchestrator or one agent, never by parallel drafters — eight of them
 cross-messaged and reworked in circles until the owner stopped it.
+
+
+### 10.7 Cycle C's planning session with the owner (revision 2.7, 2026-09-28)
+
+Taken against the tree cycle B left (`web-room-m6.5c2b` at `3ed27f07`; the C handover
+`docs/plans/2026-09-28-web-frontend-m6.5c2c-handover.md` is the entry). Each ruling carries the owner's words
+where the owner gave them, so it can be found by search. None changes a mechanism of §2.1, §2.5–§2.8 or §2.10.
+
+| ruling | the owner's words | where it lands |
+|---|---|---|
+| **R-6.5c2.20 — one cycle C, then a lighter cycle D.** C carries the hosts' code, the host documents, the deploys and the live tiers through its close document; D is the final wrap-up and polish, then the merge, the tag and the refocus. D absorbs what grows past C's plan. | *"one cycle, this is a substantial catch-all type phase wrap, it's much better to have a lighter phase d and then we can engage in a real in-depth final straw poll/investigation on what's remaining and then wrap it up"*; *"the phase D content can be dependent if as we're drawing the scope for C that this grows too far it can get moved into D"* | §4 row D; R-6.5c2.17, R-6.5c2.19 and §3 as amended |
+| **R-6.5c2.21 — the bot's version: ingestion, not the key.** No key change, no record change; the lane document's "What a save file says" is the ingestion script's contract; the versioned refusal sentence lands in C. | *"a simple python script could ingest the saves and sort them … if this adds a substantial amount of work, it's likely then not worth the savings … if we do it in ingestion instead of just labeling that can work also"* | §2.4 as amended |
+| **R-6.5c2.22 — the lobby's "Finished" group**, client-only, folded, "View" on its rows; a time rule is D's if ever. | *"we would need the view to prune or collapse or otherwise no longer show finished games after some time so it doesn't add up, but I can see value if you have the password or entitlement to go back into a finished game"*; *"I agree with the finished/being played breakout — although the visual effect of this is important"* | §2.2 as amended |
+| **R-6.5c2.23 — polish: the standard, and the split.** Pictures at 1440 and 390 beside the mock for every screen change in C and a headed look in its review; B's items 1–4 in C, 5–9 in D. | *"polish is key, these are the last revisions here, and we're dedicating substantial resources so we want to get it well enough to last for some time"*; *"the polish items may matter … they can move to D as a final wrap up/polish phase"* | §2.2 as amended |
+| **R-6.5c2.24 — CI stays lean.** §2.9 read as a ceiling; the Docker workflow triggers on web-lane inputs only, never a core-only change; the first runs measured. | *"we should not overload CI with tests that we're already running heavily, it should be useful for CI specifically and not overburdened"* | §2.9 as amended |
+| **R-6.5c2.25 — the lane document and the top-level refresh are D's**; C keeps the host documents, the address scrub and a truth pass on `CLAUDE.md` at its close. | *"you could probably move the lane document to D as well since we're likely to be editing those same docs in D which will be immediately after C, as we won't have full deploys so no use prior to then anyway"* | §2.11 as amended |
+| **R-6.5c2.26 — the dropped refactors stay dropped**, in D as in C. | *"the refactors dropped don't have to come in even in D that's fine"* | R-6.5c2.1 as amended stands |
+| **R-6.5c2.27 — the phones wait for the deploy**; D may use the Device Hub iOS simulator. | *"The phones are delayed for an actual deploy or there is nothing to test. We could even layer into D testing with the Device Hub iOS simulator but that's for the plan phase of D"* | §6 as amended |
+
+**Cycle C's tasks, as approved for the plan** (the plan is `docs/plans/2026-09-28-web-frontend-m6.5c2c-plan.md`,
+written by the orchestrator against the tree at `3ed27f07`): (1) the Worker's two doors; (2) the open door's
+refusals; (3) the refinish rule on the Worker; (4) the module's invariants and the imports; (5) the small debts,
+shell and layer; (6) the scripts' LOWs; (7) build and CI; (8) the 0.6.0 bump; (9) the lobby's Finished group;
+(10) the client's carried fixes, polish 1–4 and the a11y pass; (11) the host documents; (12) the close through
+the close document and the handover into D. What D holds is §4's row D.
