@@ -1130,7 +1130,8 @@ backoff proven in the pool, no live outage; the refactor budget's remainder; the
 naming this close (the web section's move is E's), `guidingpath.md`'s ONE appended row (`M6.5c2 CYCLE D "THE CODE"
 EXECUTED, CLOSED AND LIVE`, naming the close, the reviewed head, the deployments, R-6.5c2.28–.36 and R-D1–R-D11 by
 number, the fences), the board, the spec's `§10.10 Corrections recorded in execution — cycle D`. Commit, documents
-only.
+only. **Then the triage page** (the owner's phase-close view, never the record): one `ArtifactData` batch over its
+`progress` collection — every D row `done` with its commit, the moot rows, the rows D pushed into E — read back once.
 
 **H. The push, PR #42, and the handover into cycle E** (the push and the PR pre-authorized)
 
