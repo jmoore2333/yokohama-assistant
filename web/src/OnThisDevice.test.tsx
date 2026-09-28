@@ -27,6 +27,7 @@ import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { resetInstallForTests } from "./install";
 import { requestPersistence, resetPersistenceRequestForTests } from "./storage";
 import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
+import type { ReadinessStatus } from "./swRegister";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
 
@@ -167,7 +168,11 @@ describe("On this device", () => {
             : undefined,
       });
       render(<OnThisDevice />);
-      const block = (await screen.findByRole("heading", { name: "Will not open here" })).closest(".unplayable")!;
+      // An `h3` under the card's `h2`, as the outbox's is (M6.5c2 cycle C,
+      // polish 3): the card's two sub-lists sit at one level.
+      const block = (await screen.findByRole("heading", { level: 3, name: "Will not open here" })).closest(
+        ".unplayable",
+      )!;
       expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
       expect(within(block as HTMLElement).getByText(new RegExp(`played against ${played}`))).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "Back up" })).toBeInTheDocument();
@@ -471,6 +476,49 @@ describe("keeping the games on this device", () => {
   });
 });
 
+// ---- the device foot under a failure sentence (M6.5c2 cycle C; the
+// whole-branch review's Minor 7) -----------------------------------------------
+//
+// **The foot's first row is the state beside Back up and Restore**, which fits
+// the one-line "Ready to play offline" and squeezed a failure sentence into a
+// 194px column at 390px, eleven lines deep. A state that is not the one line
+// takes the row to itself, and the stylesheet keys that on a CLASS so this
+// file can see it (jsdom draws no layout); the width itself is read in the
+// browser (`offline.spec.ts`'s refused-registration cell, at 390px).
+describe("the device foot's readiness line", () => {
+  beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+    resetLocalHostForTests();
+    stubWorker();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+  });
+
+  const status = (over: Partial<ReadinessStatus> = {}): ReadinessStatus => ({
+    readiness: "none",
+    reason: null,
+    updateWaiting: false,
+    applyUpdate: vi.fn(),
+    retry: vi.fn(),
+    ...over,
+  });
+  const state = (): Element => document.querySelector(".device-foot > .offline-state")!;
+
+  it("marks a refused install as failed, and leaves the one-line ready state unmarked", () => {
+    const { unmount } = render(
+      <OnThisDevice readiness={status({ readiness: "failed", reason: "the install did not finish" })} />,
+    );
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(state()).toHaveClass("offline-state", "failed");
+    unmount();
+    render(<OnThisDevice readiness={status({ readiness: "ready" })} />);
+    expect(screen.getByText("Ready to play offline")).toBeInTheDocument();
+    expect(state()).toHaveClass("offline-state");
+    expect(state()).not.toHaveClass("failed");
+  });
+});
+
 // ---- the outbox on the door (M6.5b2, R-6.5b2.13; spec §2.6) ----------------
 //
 // **This is the only screen the queue is visible on**, and that is the point:
@@ -490,9 +538,13 @@ describe("the games waiting to reach the archive", () => {
     resetFactsForTest();
   });
 
-  /** The section, once its rows have been read out of the store. */
+  /** The section, once its rows have been read out of the store.
+   *
+   *  **An `h3`, the level under the card's own `h2`** (M6.5c2 cycle C, polish
+   *  3): an `h4` here skipped a level, which a screen reader's heading list
+   *  reads as a section missing from the card. */
   const waiting = async (): Promise<HTMLElement> =>
-    (await screen.findByRole("heading", { name: "Waiting to reach the archive" })).closest(
+    (await screen.findByRole("heading", { level: 3, name: "Waiting to reach the archive" })).closest(
       "div",
     ) as HTMLElement;
 

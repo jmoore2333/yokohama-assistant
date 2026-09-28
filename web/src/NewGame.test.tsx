@@ -384,6 +384,22 @@ describe("the seed", () => {
     expect(fold().open, "once fixed it closes as any fold does").toBe(false);
   });
 
+  // **A summary that will not close says why** (M6.5c2 cycle C, the a11y pass;
+  // R-B17): while the seed is refused the summary's click is cancelled, and a
+  // keyboard player pressing Enter on it heard nothing happen. It points at the
+  // refusal while the fold is held, and at nothing once the seed is fixed.
+  it("describes the held summary by the seed's refusal, and only while it is held", async () => {
+    const { user } = show();
+    const summary = screen.getByText("Advanced", { selector: "summary" });
+    expect(summary).not.toHaveAttribute("aria-describedby");
+    await user.click(summary);
+    await user.type(screen.getByLabelText("Seed"), "1e3");
+    expect(summary).toHaveAttribute("aria-describedby", "seed-error");
+    expect(document.getElementById("seed-error")).toHaveTextContent(/^Not a whole number:/);
+    await user.clear(screen.getByLabelText("Seed"));
+    expect(summary).not.toHaveAttribute("aria-describedby");
+  });
+
   // **(Review Focus 2) The fold agrees with the server on every committed
   // input**: set as the exact value (a typed tab would move the focus), the
   // field is quiet and the button live exactly where `WireSeed` takes the text

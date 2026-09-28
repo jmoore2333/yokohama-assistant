@@ -106,22 +106,59 @@ export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void 
   const [shown, setShown] = useState<string | null>(() => displayName());
   const [draft, setDraft] = useState("");
   const field = useRef<HTMLInputElement | null>(null);
+  /** The two controls a step backs out TO (M6.5c2 cycle C, the a11y pass):
+   *  the pill, which opened the menu, and "change name", which opened the
+   *  edit. Leaving a step unmounts whatever held focus inside it, and focus
+   *  on a removed element falls to the document's body. */
+  const pill = useRef<HTMLButtonElement | null>(null);
+  const rename = useRef<HTMLButtonElement | null>(null);
+  /** Set when the edit closes, and spent by the effect below once "change
+   *  name" is back in the DOM — a ref, so the first render (not editing)
+   *  moves no focus anywhere. */
+  const backToRename = useRef(false);
   useEffect(() => {
     if (editing) field.current?.focus();
+    else if (backToRename.current) {
+      backToRename.current = false;
+      rename.current?.focus();
+    }
   }, [editing]);
   if (me.user === null) return null;
   const name = shown ?? me.user;
   const edge = me.mode !== "open";
+  const stopEditing = () => {
+    backToRename.current = true;
+    setEditing(false);
+  };
   const save = () => {
     const trimmed = draft.trim();
     if (trimmed) setDisplayName(trimmed);
     else clearDisplayName();
     setShown(trimmed || null);
-    setEditing(false);
+    stopEditing();
   };
   return (
-    <div className="identity-corner" data-open={open ? "true" : "false"}>
+    <div
+      className="identity-corner"
+      data-open={open ? "true" : "false"}
+      // **Escape backs out ONE step** (cycle C, the a11y pass): the edit to the
+      // menu, keeping nothing half-typed; then the open menu to the pill. At
+      // desktop width the menu is always drawn and `open` changes nothing a
+      // player sees, so the second step is the phone's.
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        if (editing) {
+          e.preventDefault();
+          stopEditing();
+        } else if (open) {
+          e.preventDefault();
+          setOpen(false);
+          pill.current?.focus();
+        }
+      }}
+    >
       <button
+        ref={pill}
         type="button"
         className="identity-pill"
         aria-expanded={open}
@@ -129,6 +166,14 @@ export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void 
         onClick={() => setOpen((o) => !o)}
       >
         <i aria-hidden="true" />
+        {/* **Named for what it is** (cycle C, the a11y pass): its face is a
+            bare name and a caret, which read aloud as "Ben, button" — whose
+            name, and why press it. The corner's own words, heard and not
+            drawn. The space is a text node of its own, as the door's project
+            link has it: Chromium names the pill the same either way
+            (measured), but the name the cells compute trims each element's
+            text ("Playing asBen"). Between flex items it draws nothing. */}
+        <span className="sr-only">Playing as</span>{" "}
         <span className="identity-pill-name">{name}</span>
         <span aria-hidden="true"> ▾</span>
       </button>
@@ -154,7 +199,7 @@ export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void 
             <button type="submit" className="ghost">
               save
             </button>
-            <button type="button" className="ghost" onClick={() => setEditing(false)}>
+            <button type="button" className="ghost" onClick={stopEditing}>
               cancel
             </button>
           </form>
@@ -166,6 +211,7 @@ export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void 
             {edge && shown !== null && <span className="identity-address">{me.user}</span>}
             {edge ? (
               <button
+                ref={rename}
                 type="button"
                 className="ghost"
                 onClick={() => {

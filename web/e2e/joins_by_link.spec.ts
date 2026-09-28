@@ -103,7 +103,9 @@ test("a person holding only a link joins a locked open table and plays", async (
     const corner = a.locator(".identity-corner");
     const action = corner.getByRole("button", { name: LIVE ? "change name" : "switch player" });
     const pill = corner.locator(".identity-pill");
-    await expect(corner.getByText("Playing as")).toBeVisible();
+    // The MENU's words: the pill says them too, unseen (M6.5c2 cycle C, the
+    // a11y pass), so a corner-wide text read would find two.
+    await expect(corner.locator(".identity-menu").getByText("Playing as")).toBeVisible();
     await expect(action).toBeVisible();
     await expect(pill).toBeHidden();
 

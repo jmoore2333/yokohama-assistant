@@ -118,6 +118,24 @@ describe("the Game menu", () => {
     }
   });
 
+  // **A game this build cannot continue is not a game to switch to** (M6.5c2
+  // cycle C; the fix wave review's concern (a)), on the server's listing as on
+  // this browser's: the lobby's row offers it nothing to open ("can't continue
+  // here"), and the menu reads the same predicate (`isStranded`), so it cannot
+  // offer what the lobby withholds. The corpus's foreign row, unmoved; the
+  // single-player build's local half is `App.test.tsx`'s.
+  it("offers no table this build's bot cannot continue", async () => {
+    expect([wire.tableForeign.bot?.runs_here, wire.tableForeign.over], "the premise").toEqual([false, false]);
+    await renderApp(wire.options, (call) =>
+      isGamesList(call, "mine")
+        ? { games: [...gamesNamed(wire.options.id, "sim-other").games, wire.tableForeign] }
+        : undefined,
+    );
+    await userEvent.setup().click(gameMenu());
+    expect(await screen.findByRole("button", { name: "sim-other" }), "the anti-vacuity row").toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: wire.tableForeign.id })).toBeNull();
+  });
+
   // **The way out lives here on the game screen, and the reason is measured.**
   // The banner is gated at ONE ROW at 1440 and 1280 (`the_screen_itself.spec.ts`),
   // and M6.1's door put a strip and a button in it: 1325px of children and gaps

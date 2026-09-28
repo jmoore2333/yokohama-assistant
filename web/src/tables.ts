@@ -178,6 +178,16 @@ export function seatChips(t: TableView): ChipModel[] {
   });
 }
 
+/** Is this a game THIS BUILD cannot continue? Dealt a bot this build does not
+ *  run, and not over — every game route refuses it (spec section 2.4), while a
+ *  finished one opens as it always did (R-6.5c2.10).
+ *
+ *  **One sentence, read everywhere a game is offered** (M6.5c2 cycle C; the
+ *  fix wave review's concern (a)): the lobby's row (`rowAction`), the door's
+ *  "Will not open here" (`OnThisDevice`) and the Game menu's saved games, so a
+ *  game one of them sets aside is never offered by another. */
+export const isStranded = (t: TableView): boolean => Boolean(t.bot && !t.bot.runs_here && !t.over);
+
 /** A row's one control (R-6.5c2.7), or why it has none. */
 export type RowAction =
   | { kind: "go"; label: "Play" | "View" | "Take a seat" | "Spectate"; primary: boolean; padlock: boolean }
@@ -196,7 +206,7 @@ export type RowAction =
  *  whenever it is locked, at a game (finished or not) only until this caller
  *  has given it (`can_watch`). */
 export function rowAction(t: TableView, section: Section): RowAction {
-  if (t.bot && !t.bot.runs_here && !t.over) return { kind: "stranded" };
+  if (isStranded(t)) return { kind: "stranded" };
   if (section === "mine") {
     if (t.status === "open") return { kind: "copy" };
     if (t.over) return { kind: "go", label: "View", primary: false, padlock: false };

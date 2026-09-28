@@ -327,6 +327,14 @@ export function OpenTable({
           </button>
         )}
 
+        {/* **The screen's refusals sit by the join** (M6.5c2 cycle C, polish
+            4): directly under the password, the seats and "Join as", which is
+            what a join's and a wrong password's refusals are about — not at
+            the page's foot, under the chat and the controls. A refused copy
+            and Abandon's refusal land here too, above the invite and the
+            controls they came from rather than a screen-height below them. */}
+        {error && <Refusal sentence={error} />}
+
         {seated && (
           <Invite url={url} locked={table.locked} mine={table.created_by === me} onRefused={setError} />
         )}
@@ -353,7 +361,6 @@ export function OpenTable({
             <span aria-hidden="true">&larr; </span>Lobby
           </button>
         </div>
-        {error && <Refusal sentence={error} />}
       </div>
     </div>
   );
@@ -371,8 +378,9 @@ function Invite({
   url: string;
   locked: boolean;
   mine: boolean;
-  /** Where a refused copy is said: the screen's own refusal strip. */
-  onRefused: (sentence: string) => void;
+  /** Where a refused copy is said: the screen's own refusal strip — and
+   *  `null` once a later copy lands, which takes the refusal away. */
+  onRefused: (sentence: string | null) => void;
 }) {
   const [copied, setCopied] = useState(false);
   /** **"Copied" only once the clipboard has taken the link** (the whole-branch
@@ -381,11 +389,16 @@ function Invite({
    *  is absent and the call throws; either way the refusal is said in the
    *  lobby's own sentence, which carries the link, and the button keeps
    *  offering the copy. Nothing rejects out of here: an unhandled rejection is
-   *  a `pageerror` the browser gate counts as breakage. */
+   *  a `pageerror` the browser gate counts as breakage.
+   *
+   *  **A copy that lands clears the strip** (M6.5c2 cycle C; the Opus
+   *  re-review's one Minor): a clipboard refused and then granted left the
+   *  refusal standing under a button that says "Copied". */
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
+      onRefused(null);
     } catch {
       setCopied(false);
       onRefused(`the link could not be copied \u2014 it is ${url}`);

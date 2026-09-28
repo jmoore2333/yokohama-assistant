@@ -51,7 +51,8 @@ describe("the identity corner", () => {
     const seen: (string | null)[] = [];
     const onChange = vi.fn(() => seen.push(localStorage.getItem(DISPLAY_NAME_KEY)));
     render(<IdentityCorner me={wire.me} onChange={onChange} />);
-    expect(screen.getByText("Playing as", { exact: false })).toBeInTheDocument();
+    // The menu's own words (the pill says them too, unseen, since cycle C).
+    expect(screen.getByText("Playing as", { exact: false, selector: ".identity-who" })).toBeInTheDocument();
     // The name shown is the display name; the identity key rides as its title.
     expect(screen.getByTitle(wire.me.user!)).toHaveTextContent("Red");
     expect(screen.queryByRole("button", { name: "change name" })).toBeNull();
@@ -78,6 +79,9 @@ describe("the identity corner", () => {
     await user.click(screen.getByRole("button", { name: "save" }));
     expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Captain Red");
     expect(screen.getByTitle(behindAccess.user!)).toHaveTextContent("Captain Red");
+    // Focus goes back to what opened the edit, not to the page's body (cycle
+    // C, the a11y pass; B's Task 2 M-8): save is unmounted by its own click.
+    expect(screen.getByRole("button", { name: "change name" })).toHaveFocus();
     // The address, beside the name, once they differ.
     expect(screen.getByText(behindAccess.user!)).toHaveClass("identity-address");
     // The identity did not change, so the host is not told (amendment 2).
@@ -92,6 +96,8 @@ describe("the identity corner", () => {
     await user.clear(screen.getByLabelText("Your name"));
     await user.click(screen.getByRole("button", { name: "cancel" }));
     expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Red");
+    // And focus goes back to what opened the edit (cycle C; B's Task 2 M-8).
+    expect(screen.getByRole("button", { name: "change name" })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "change name" }));
     await user.clear(screen.getByLabelText("Your name"));
     await user.click(screen.getByRole("button", { name: "save" }));
@@ -112,6 +118,51 @@ describe("the identity corner", () => {
     expect(container.querySelector(".identity-corner")).toHaveAttribute("data-open", "true");
     expect(document.getElementById(pill.getAttribute("aria-controls")!)).toHaveClass("identity-menu");
     expect(screen.getAllByRole("button", { name: "switch player" })).toHaveLength(1);
+  });
+
+  // **The pill says whose it is** (M6.5c2 cycle C, the a11y pass): its visible
+  // face is a bare name and a caret, which a screen reader read as "Red,
+  // button" — whose name, and why press it. Its accessible name carries the
+  // corner's own words, and the menu's action keeps its own name.
+  it("names the pill Playing as <name>, and the menu's action keeps its name", async () => {
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben Castle");
+    render(<IdentityCorner me={wire.me} onChange={vi.fn()} />);
+    const pill = screen.getByRole("button", { name: "Playing as Ben Castle" });
+    expect(pill).toHaveClass("identity-pill");
+    expect(pill).toHaveAttribute("aria-expanded", "false");
+    await userEvent.setup().click(pill);
+    expect(screen.getByRole("button", { name: "Playing as Ben Castle" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getAllByRole("button", { name: "switch player" })).toHaveLength(1);
+  });
+
+  // **Escape backs out one step at a time** (M6.5c2 cycle C, the a11y pass):
+  // from the name being edited to the menu, and from the open menu to the
+  // closed pill — never both at once, and never writing the half-typed name.
+  // Focus lands on the control that opened the step being left, since the one
+  // that held it has gone.
+  it("cancels the edit on Escape, then closes the menu on a second Escape", async () => {
+    localStorage.setItem(DISPLAY_NAME_KEY, "Red");
+    const { container } = render(<IdentityCorner me={behindAccess} onChange={vi.fn()} />);
+    const corner = container.querySelector(".identity-corner")!;
+    const user = userEvent.setup();
+    // By its disclosure state rather than its name, so this cell is about
+    // Escape alone (the cell above is the name's).
+    const pill = screen.getByRole("button", { expanded: false });
+    await user.click(pill);
+    await user.click(screen.getByRole("button", { name: "change name" }));
+    await user.type(screen.getByLabelText("Your name"), "Half typed");
+    expect(corner).toHaveAttribute("data-open", "true");
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByLabelText("Your name"), "the edit is cancelled").toBeNull();
+    expect(localStorage.getItem(DISPLAY_NAME_KEY), "and wrote nothing").toBe("Red");
+    expect(corner, "the menu is still open").toHaveAttribute("data-open", "true");
+    expect(screen.getByRole("button", { name: "change name" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(corner).toHaveAttribute("data-open", "false");
+    expect(pill).toHaveAttribute("aria-expanded", "false");
+    expect(pill).toHaveFocus();
   });
 
   it("draws nothing for a caller the server does not name", () => {

@@ -86,6 +86,8 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
       expect(board.y + board.height, "the board sits above the title").toBeLessThanOrEqual(heading.y + 1);
       expect(await height(page, "button", "New game"), "New game, thumb-sized").toBeGreaterThanOrEqual(44);
       expect(await height(page, "link", "Go to the lobby"), "Go to the lobby, thumb-sized").toBeGreaterThanOrEqual(44);
+      // The door's quiet control too (M6.5c2 cycle C, polish 2): it drew 17px.
+      expect(await height(page, "button", "How to play"), "How to play, thumb-sized").toBeGreaterThanOrEqual(44);
     }
     await look(page, `door-${size.width}`);
   }
@@ -270,7 +272,9 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
       if (size === DESKTOP) {
         expect(rail.x, "the chat sits in a rail beside the lists").toBeGreaterThanOrEqual(lists.x + lists.width - 1);
         await expect(pill).toBeHidden();
-        await expect(page.locator(".identity-corner").getByText("Playing as")).toBeVisible();
+        // The MENU's words: the pill says them too, unseen (cycle C), and a
+        // bare corner-wide read would find two.
+        await expect(page.locator(".identity-corner .identity-menu").getByText("Playing as")).toBeVisible();
         // **Name, seats and action on ONE line, on EVERY row**, measured as the
         // elements a player reads: the title block, each chip, and the action
         // itself (the button, or the "can't continue here" words). Never the
@@ -308,10 +312,42 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
       } else {
         expect(rail.y, "the chat sits below the lists on a phone").toBeGreaterThanOrEqual(lists.y + lists.height - 1);
         await expect(pill).toBeVisible();
+        // Named for what it is, in Chromium's own reading (cycle C, the a11y
+        // pass): its face is only the name and a caret.
+        await expect(pill).toHaveAccessibleName(`Playing as ${WALKER}`);
         await expect(page.getByRole("button", { name: "switch player" })).toBeHidden();
         await pill.click();
         await expect(page.getByRole("button", { name: "switch player" })).toBeVisible();
         await noSidewaysScroll(page, "the lobby at 390px with the corner open");
+        // **Every control a thumb presses here is 44px tall** (M6.5c2 cycle C,
+        // polish 2): the quiet ones — the way back to this device, a row's
+        // name and its Abandon, the pill and its action — drew 18-36px beside
+        // primaries at 44. Read with the corner OPEN, so its action is drawn;
+        // a control with no box (a shut fold's rows) is one nobody can press,
+        // and is left out rather than read as zero.
+        const controls = await page
+          .locator(".lobby-actions, .lobby-rows, .identity-corner")
+          .evaluateAll((scopes) =>
+            scopes.flatMap((scope) =>
+              [...scope.querySelectorAll("button, a")]
+                .filter((e) => e.getClientRects().length > 0)
+                .map((e) => ({
+                  name: e.getAttribute("aria-label") ?? (e.textContent ?? "").trim(),
+                  height: e.getBoundingClientRect().height,
+                })),
+            ),
+          );
+        // eslint-disable-next-line no-console
+        console.log(`lobby controls at 390 (name, height): ${JSON.stringify(controls)}`);
+        // Anti-vacuity: the sweep saw each kind it is about.
+        const names = controls.map((c) => c.name);
+        for (const want of ["New table", "switch player", "abandon Width check", "Copy link: Width check"]) {
+          expect(names, `the sweep read ${want}`).toContain(want);
+        }
+        expect(names.some((n) => n.endsWith("Games on this device")), "the sweep read the way back").toBe(true);
+        expect(names.some((n) => n === "Width check"), "the sweep read a row's name").toBe(true);
+        const short = controls.filter((c) => c.height < 44);
+        expect(short, `controls under 44px at 390: ${JSON.stringify(short)}`).toEqual([]);
         await pill.click();
         expect(await height(page, "button", "Copy link: Width check"), "a row's action, thumb-sized").toBeGreaterThanOrEqual(44);
         expect(await height(page, "button", "New table"), "New table, thumb-sized").toBeGreaterThanOrEqual(44);

@@ -360,6 +360,26 @@ describe("the lobby", () => {
     expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toHaveAttribute("aria-live", "polite");
   });
 
+  // **A copy that lands takes the refusal away** (M6.5c2 cycle C; the Opus
+  // re-review's one Minor, on both hosts of a Copy link): a clipboard refused
+  // and then granted within one visit left the refusal standing in the strip
+  // beside a row that says "Copied".
+  it("clears the refusal when a later copy lands, and says Copied", async () => {
+    const { user } = show();
+    const mine = section("Your tables");
+    const url = new URL("#/t/wire2", window.location.href).href;
+    const refused = `the link could not be copied \u2014 it is ${url}`;
+    const write = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValueOnce(new DOMException("Write permission denied.", "NotAllowedError"));
+    await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
+    expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
+    await user.click(within(mine).getByRole("button", { name: "Copy link: wire2" }));
+    expect(await within(mine).findByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
+  });
+
   // **A lobby that goes away leaves no "Copied" timer to fire** (the
   // whole-branch review's Minor 11). The two-second timer is found by its
   // delay among every timer the page set, and the unmount must clear it.

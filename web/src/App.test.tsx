@@ -15,7 +15,9 @@ import {
   setLobbyChat,
 } from "./api";
 import { archiveAnswer, resetFactsForTest } from "./local/facts";
+import { IDBFactory, IDBKeyRange as FakeKeyRange } from "fake-indexeddb";
 import { resetLocalHostForTests } from "./local/client";
+import { openDb, restoreOne } from "./local/db";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
 import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, playOneLocalMove, positionsWalked, renderApp, runRange, signedOutReply, stubApi, stubLocalGame, type ApiCall, type ApiStub, type Reply } from "./test/harness";
@@ -35,6 +37,37 @@ const tile = (area: number) =>
  *  would tie them to a fixture's wording for no gain. */
 const firstOptionButton = () =>
   document.querySelector<HTMLButtonElement>("button.option:not([disabled])")!;
+
+/** A game's refusal screen, read as the lock screen's kin (M6.5c2 cycle C; the
+ *  whole-branch review's Minor 6): the setup screens' band across the top and
+ *  ONE notice card holding the refusal — never the old who-strip over a bare
+ *  column. `path` is the band's crumb before the page's heading (the band draws
+ *  only its LAST crumb as the `h2`, so a server game's is "Lobby / <table>");
+ *  `corner` is the identity the corner names, or `null` on a local game's
+ *  screen, which draws none (nothing on it is the server's). Returns the card. */
+function noticeScreen({
+  path,
+  heading,
+  corner,
+  sentence,
+}: {
+  path: string | null;
+  heading: string;
+  corner: string | null;
+  sentence: string;
+}): HTMLElement {
+  const band = document.querySelector<HTMLElement>("header.lobby-band");
+  expect(band, "the band across the top").not.toBeNull();
+  expect(within(band!).getByRole("heading", { level: 2, name: heading })).toBeInTheDocument();
+  if (path !== null) expect(within(band!).getByText(path)).toHaveClass("crumb");
+  if (corner === null) expect(band!.querySelector(".identity-corner"), "no identity corner").toBeNull();
+  else expect(within(band!).getByTitle(corner).closest(".identity-corner")).not.toBeNull();
+  const cards = document.querySelectorAll<HTMLElement>(".notice-card");
+  expect(cards, "one notice card").toHaveLength(1);
+  expect(within(cards[0]!).getByText(sentence)).toBeInTheDocument();
+  expect(document.querySelector(".who-strip"), "not the old who-strip").toBeNull();
+  return cards[0]!;
+}
 
 describe("the in-flight guard", () => {
   // **The defect, exactly.** The board tile was the one mutation control with
@@ -1465,7 +1498,8 @@ describe("the route", () => {
     app();
     await screen.findByRole("heading", { name: "New table", level: 3 });
     const band = document.querySelector<HTMLElement>(".lobby-band")!;
-    expect(within(band).getByText(/Playing as/)).toBeInTheDocument();
+    // The menu's words: the pill says them too, unseen, since cycle C.
+    expect(within(band).getByText(/Playing as/, { selector: ".identity-who" })).toBeInTheDocument();
     expect(band.textContent).not.toMatch(/You are /);
   });
 
@@ -1482,7 +1516,7 @@ describe("the route", () => {
     const { user } = app((call) => (call.path.endsWith("/table") ? table : undefined));
     await screen.findByRole("button", { name: "Join as Blue" });
     const band = () => document.querySelector<HTMLElement>(".lobby-band")!;
-    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
+    expect(within(band()).getByText(/Playing as/, { selector: ".identity-who" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     table = wire.tableWatchable;
@@ -1491,7 +1525,7 @@ describe("the route", () => {
     });
     await screen.findByRole("button", { name: "Spectate" });
     expect(screen.getByLabelText("Table password")).toBeInTheDocument();
-    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
+    expect(within(band()).getByText(/Playing as/, { selector: ".identity-who" })).toBeInTheDocument();
   });
 
   // **The two forms are two components, keyed by host** (whole-branch review,
@@ -1825,17 +1859,24 @@ describe("the route", () => {
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
       // NOT the bounce every other refusal of the game takes.
       expect(window.location.hash).toBe("#/t/wire");
-      // A SERVER game's screen names who is playing: "On this device" is the
-      // local screens' word, and this game is the server's.
-      expect(screen.getByText(`You are ${wire.me.user}`)).toBeInTheDocument();
+      // **The lock screen's shape**: the band — "Lobby / wire", the table's
+      // name the page's heading — with the identity corner, which names who
+      // is playing (a SERVER game's screen: "On this device" is the local
+      // screens' word), and the server's sentence in one notice card.
+      const card = noticeScreen({
+        path: "Lobby",
+        heading: dealt.name!,
+        corner: wire.me.user!,
+        sentence: refusal.error,
+      });
       // `wire.me` is the table's creator, and the layer's delete is the
       // creator's (`tables.rs:1670-1677`).
       expect(dealt.created_by).toBe(wire.me.user);
-      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
       // A server game's record is served only once it is over, so its bytes are
       // not offered here — "Save game file" is the LOCAL screen's alone.
       expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
-      await user.click(screen.getByRole("button", { name: "Lobby" }));
+      await user.click(within(card).getByRole("button", { name: "Lobby" }));
       await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     });
 
@@ -1848,16 +1889,18 @@ describe("the route", () => {
       expect(dealt.created_by).toBe(wire.me.user);
       app(answers({ ...dealt, my_seats: [] }));
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      const card = noticeScreen({ path: "Lobby", heading: dealt.name!, corner: wire.me.user!, sentence: refusal.error });
       expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
-      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
     });
 
     it("offers no Abandon to a player who did not open the table", async () => {
       window.location.hash = "#/t/wire";
       app(answers({ ...dealt, created_by: "ada.bell@wire.test" }));
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      const card = noticeScreen({ path: "Lobby", heading: dealt.name!, corner: wire.me.user!, sentence: refusal.error });
       expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
-      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
     });
 
     // The anti-vacuity: a 409 WITHOUT the field is the bounce it always was —
@@ -3956,6 +3999,11 @@ describe("a local game", () => {
       // **The sentence in place, on the game's own screen** — not a bounce to
       // the lobby, which is what a refusal that is not a trap deserves.
       await screen.findByText(sentence);
+      // In the lock screen's shape, under "On this device" (M6.5c2 cycle C,
+      // Minor 6), with its controls in the card.
+      const card = noticeScreen({ path: null, heading: "On this device", corner: null, sentence });
+      expect(within(card).getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
       expect(screen.queryByText(/reloaded from the last saved move/)).toBeNull();
       // Not a trap: one Worker for the whole cell.
       expect(FakeWorker.instances).toHaveLength(1);
@@ -4062,11 +4110,41 @@ describe("a local game", () => {
     );
     expect(await screen.findByText(refusal.error)).toBeInTheDocument();
     expect(window.location.hash).toBe(`#/t/${LOCAL}`);
-    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+    // **The lock screen's shape, under "On this device"** (M6.5c2 cycle C,
+    // Minor 6): a LOCAL game's screen, so no identity corner.
+    const card = noticeScreen({ path: null, heading: "On this device", corner: null, sentence: refusal.error });
+    expect(within(card).getByRole("button", { name: "Save game file" })).toBeInTheDocument();
     // Named by the TABLE's name, as the control names it (`Abandon.tsx`),
     // which the corpus table carries — hence the prefix, as the broken-save
     // cell above reads it.
-    expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+  });
+
+  // **No server corner on a LOCAL game's refusal, even with the server's
+  // identity known** (M6.5c2 cycle C, Minor 6): the band is the lock screen's,
+  // "On this device", and nothing on the screen is the server's. The cell
+  // above opens from the door, which asks the server nothing, so no identity
+  // is known there and its "no corner" read cannot fail; this one visits the
+  // lobby first, where the corner is drawn (the premise), then the game.
+  it("draws no identity corner on a local game's refusal screen, even once the server has named the caller", async () => {
+    const refusal = wire.foreignBot409;
+    stubWorker({
+      pair: () => ({ record: RECORD, table: TABLE }),
+      call: (req) =>
+        req.path === `/api/games/${LOCAL}` && req.method === "GET" ? { status: 409, body: refusal } : undefined,
+    });
+    bootStub();
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    window.location.hash = "#/lobby";
+    render(<App />);
+    await waitFor(() =>
+      expect(document.querySelector("header.lobby-band .identity-corner"), "the premise: the corner is known").not.toBeNull(),
+    );
+    act(() => {
+      window.location.hash = `#/t/${LOCAL}`;
+    });
+    expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+    noticeScreen({ path: null, heading: "On this device", corner: null, sentence: refusal.error });
   });
 
   // **And its Abandon SENDS FIRST, as every other local Abandon does**
@@ -4162,6 +4240,72 @@ describe("a local game", () => {
         "nothing the menu did reached fetch",
       ).toEqual([]);
       expect(within(menu).getByRole("button", { name: "local-2" })).toBeInTheDocument();
+    });
+
+    // **The Game menu carries the door's filter** (M6.5c2 cycle C; the fix
+    // wave review's concern (a)). The door sets two kinds of local game aside
+    // under "Will not open here" — one dealt a bot this build does not run
+    // (`isStranded`, read off the listing) and one this device keeps a
+    // compatibility row for (a restore from another revision, read by
+    // `unplayableIds` from this browser's own database) — and the menu listed
+    // both as games to switch to, each opening onto its refusal. The listing
+    // is `gamesNamed` over three local ids plus the corpus's foreign row
+    // re-addressed to this device (`fakeWorker.ts`'s one permitted edit);
+    // `local-3` is the one the compatibility row names. The database is this
+    // cell's alone — jsdom has none, and `fake-indexeddb/auto` would install
+    // one for every cell in this file — so its two globals are put in here
+    // and taken away again after.
+    it("lists neither a game this build cannot continue nor one from another revision in the Game menu", async () => {
+      const foreign: TableView = { ...wire.tableForeign, id: "local-9" };
+      expect([foreign.bot?.runs_here, foreign.over], "the premise: a bot this build does not run, not over").toEqual([
+        false,
+        false,
+      ]);
+      const idb = globalThis as { indexedDB?: IDBFactory; IDBKeyRange?: typeof FakeKeyRange };
+      idb.indexedDB = new IDBFactory();
+      idb.IDBKeyRange = FakeKeyRange;
+      try {
+        const db = await openDb();
+        await restoreOne(db, "local-3", {
+          table: "{}",
+          compat: JSON.stringify({
+            semantics_rev: 6,
+            rules_hash: null,
+            reason: "saved at semantics rev 6; this app plays rev 7",
+            restored_at: 0,
+          }),
+        });
+        db.close();
+        const { user, stub } = await openLocal(
+          { ...wire.optionsMany, id: LOCAL },
+          {
+            hooks: {
+              call: (req) =>
+                req.path === "/api/games" && req.method === "GET"
+                  ? {
+                      status: 200,
+                      body: { games: [...gamesNamed(LOCAL, "local-2", "local-3").games, foreign], next: null },
+                    }
+                  : undefined,
+            },
+          },
+        );
+        await screen.findByText(/end triggers:/);
+        const before = stub.calls.length;
+        await user.click(gameMenu());
+        const menu = document.querySelector<HTMLElement>(".game-menu")!;
+        await waitFor(() => expect(within(menu).queryByText("loading\u2026")).toBeNull());
+        expect(within(menu).getByRole("button", { name: "local-2" }), "the playable game is listed").toBeInTheDocument();
+        expect(within(menu).queryByRole("button", { name: "local-9" }), "not the stranded one").toBeNull();
+        expect(within(menu).queryByRole("button", { name: "local-3" }), "not the other revision's").toBeNull();
+        expect(
+          stub.calls.slice(before).map((c) => `${c.method} ${c.path}`),
+          "nothing the menu did reached fetch",
+        ).toEqual([]);
+      } finally {
+        delete idb.indexedDB;
+        delete idb.IDBKeyRange;
+      }
     });
 
     it("sends the other tab's lock screen to the door", async () => {

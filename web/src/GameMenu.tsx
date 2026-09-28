@@ -7,6 +7,8 @@
 
 import { useRef, useState, type ReactNode } from "react";
 import { api, ApiError, type Host } from "./api";
+import { unplayableIds } from "./backup";
+import { isStranded } from "./tables";
 import { TableFacts } from "./TableFacts";
 import type { ClientState, TableView } from "./types";
 import { Refusal } from "./Refusal";
@@ -81,13 +83,30 @@ export function GameMenu({
   const load = () => {
     setError(null);
     const seq = (listing.current += 1);
-    api
+    Promise.all([
       // The list is a list of TABLES since M6.1, scoped to the caller by the
       // server, and the rows say so: a table has a name, a size and something
       // it is waiting on. The id alone was all this menu could show when a
       // saved game was a file.
-      .list("mine", undefined, savedFrom)
-      .then((l) => seq === listing.current && setSaved(l.games))
+      api.list("mine", undefined, savedFrom),
+      // **This browser's games from another revision**, which the door lists
+      // under "Will not open here" by this browser's own compatibility rows
+      // (`OnThisDevice`'s `hidden`) — a read of this browser's database, so
+      // only when the rows ARE this browser's. It falls back to hiding
+      // nothing, as the door's does: a failed read is not a failed listing.
+      savedFrom === "local"
+        ? unplayableIds().catch(() => new Set<string>())
+        : Promise.resolve(new Set<string>()),
+    ])
+      // **A game offered here is a game that opens** (M6.5c2 cycle C; the fix
+      // wave review's concern (a)): the door and the lobby set aside a game
+      // this build cannot continue (`isStranded`), and the door one from
+      // another revision; the menu offered both, each opening onto its
+      // refusal. Neither is a game to switch to, so neither is listed.
+      .then(
+        ([l, cannot]) =>
+          seq === listing.current && setSaved(l.games.filter((t) => !isStranded(t) && !cannot.has(t.id))),
+      )
       .catch((e) => seq === listing.current && setError(said(e)));
   };
   const switchTo = async (id: string) => {

@@ -6,7 +6,18 @@
 // looking at is a lobby nobody can trust.
 
 import { describe, expect, it } from "vitest";
-import { ago, deviceWord, holder, rowAction, rowMeta, seatChips, seatName, seatNames, tableWord } from "./tables";
+import {
+  ago,
+  deviceWord,
+  holder,
+  isStranded,
+  rowAction,
+  rowMeta,
+  seatChips,
+  seatName,
+  seatNames,
+  tableWord,
+} from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
@@ -242,6 +253,25 @@ describe("the lobby row", () => {
     expect(wire.tableForeign.bot!.runs_here).toBe(false);
     expect(rowAction(wire.tableForeign, "mine")).toEqual({ kind: "stranded" });
     expect(rowAction({ ...wire.tableForeign, over: true }, "mine")).toMatchObject({ kind: "go", label: "View" });
+  });
+});
+
+// **One sentence for "this build cannot continue it"** (M6.5c2 cycle C; the
+// fix wave review's concern (a)): the lobby's row, the door's "Will not open
+// here" and the single-player Game menu all read this, so a game stranded in
+// one of them cannot be offered in another. Each value below is a corpus row
+// with at most ONE field moved, named.
+describe("isStranded", () => {
+  it("is a game dealt a bot this build does not run, only while it is not over", () => {
+    expect(wire.tableForeign.bot?.runs_here, "the premise: the corpus's foreign row").toBe(false);
+    expect(isStranded(wire.tableForeign)).toBe(true);
+    // `over` moved: a finished game opens as it always did (R-6.5c2.10).
+    expect(isStranded({ ...wire.tableForeign, over: true })).toBe(false);
+    // A bot this build DOES run (`table_bot.json`), and a table with no bot.
+    expect(wire.tableBot.bot?.runs_here).toBe(true);
+    expect(isStranded(wire.tableBot)).toBe(false);
+    expect(wire.table.bot).toBeNull();
+    expect(isStranded(wire.table)).toBe(false);
   });
 });
 

@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { rememberArchiveOff } from "./local/facts";
 import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
-import { IdentityCorner } from "./Band";
+import { IdentityCorner, LobbyBand } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { projectLink } from "./projectLink";
@@ -1415,8 +1415,9 @@ export function App() {
   /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
    *  mocks 02, 07, 08, 09): who is playing, and the one change the door allows
    *  — the identity corner the lobby draws, so the new-table form, the open
-   *  table and the unlock face say it in the lobby's own words. The "You are …"
-   *  strip (`who`) stays the game banner's, the deal's and the broken save's. */
+   *  table, the unlock face and a game that will not open (cycle C) say it in
+   *  the lobby's own words. The "You are …" strip (`who`) stays the game
+   *  banner's and the deal's. */
   const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
 
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
@@ -1472,60 +1473,78 @@ export function App() {
        *  local game's is always this browser's own. */
       const mayAbandon =
         local || (broken.table.created_by === signedIn && broken.table.my_seats.length > 0);
+      const name = broken.table.name ?? broken.id;
+      // **The lock screen's shape** (M6.5c2 cycle C; the whole-branch review's
+      // Minor 6): the band and ONE notice card, so a player who follows a row
+      // to a game that will not open lands on a screen of this app and not
+      // on the old who-strip over a bare column. A SERVER game's band is the
+      // open table's — "Lobby / <table>", with the identity corner — and a
+      // LOCAL game's is the lock screen's, "On this device" with no corner:
+      // nothing on it is the server's. The card is titled by the table, as the
+      // open table titles its page under the same band.
       return (
-        <div className="setup broken-save">
-          <div className="who-strip">{who}</div>
-          <h2>{broken.table.name ?? broken.id}</h2>
-          <Refusal sentence={broken.sentence} />
-          <div className="field unlock-controls">
-            {/* The bytes are the player's own on a LOCAL game at any point; a
-                server game's record is served only once the game is over. */}
-            {local && (
-              <button
-                type="button"
-                className="ghost"
-                onClick={() =>
-                  void saveGameFile(broken.id).catch((e) =>
-                    setError(e instanceof Error ? e.message : String(e)),
-                  )
-                }
-              >
-                Save game file
-              </button>
-            )}
-            {/* **`local` for a FOREIGN local game only** (M6.5c2 R-B19).
-                `local` means "send this game to the archive first" (R-6.5b.6),
-                and the archive takes a foreign game's record — its check is a
-                strict replay and asks nothing of the bot — so that game is sent
-                before it is deleted, like every other local Abandon. **NOT for
-                a save that no longer rebuilds** (spec §4: "Abandon still
-                works"): the archive would refuse exactly that record — it is the
-                rebuild that has stopped working — so sending first would leave
-                a game that can never be abandoned; the bytes beside this button
-                are the copy that still works. A server table's own delete
-                archives it (R-6.5a.11). A local game lands on the door, where
-                the rest of this browser's games are listed; a server game on
-                the lobby. */}
-            {mayAbandon && (
-              <Abandon
-                table={broken.table}
-                local={local && broken.foreign}
-                onDone={() => (local ? toDoor() : toLobby())}
-                onError={setError}
-              />
-            )}
-            {/* The way back: the lobby for a server game, and for a local one
-                the lobby where the build serves one and the door where it does
-                not (`localExit`). */}
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => (local ? leave(localExit.to) : toLobby())}
-            >
-              {local ? localExit.label : "Lobby"}
-            </button>
+        <div className="band-screen">
+          <LobbyBand
+            crumbs={local ? ["On this device"] : ["Lobby", name]}
+            corner={local ? undefined : serverCorner}
+          />
+          <div className="setup broken-save">
+            <div className="notice-card">
+              <h3 className="page-title">{name}</h3>
+              <Refusal sentence={broken.sentence} className="error notice-reason" />
+              <div className="notice-actions">
+                {/* The bytes are the player's own on a LOCAL game at any point; a
+                    server game's record is served only once the game is over. */}
+                {local && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() =>
+                      void saveGameFile(broken.id).catch((e) =>
+                        setError(e instanceof Error ? e.message : String(e)),
+                      )
+                    }
+                  >
+                    Save game file
+                  </button>
+                )}
+                {/* **`local` for a FOREIGN local game only** (M6.5c2 R-B19).
+                    `local` means "send this game to the archive first" (R-6.5b.6),
+                    and the archive takes a foreign game's record — its check is a
+                    strict replay and asks nothing of the bot — so that game is sent
+                    before it is deleted, like every other local Abandon. **NOT for
+                    a save that no longer rebuilds** (spec §4: "Abandon still
+                    works"): the archive would refuse exactly that record — it is the
+                    rebuild that has stopped working — so sending first would leave
+                    a game that can never be abandoned; the bytes beside this button
+                    are the copy that still works. A server table's own delete
+                    archives it (R-6.5a.11). A local game lands on the door, where
+                    the rest of this browser's games are listed; a server game on
+                    the lobby. */}
+                {mayAbandon && (
+                  <Abandon
+                    table={broken.table}
+                    local={local && broken.foreign}
+                    onDone={() => (local ? toDoor() : toLobby())}
+                    onError={setError}
+                  />
+                )}
+                {/* The way back, in the lock screen's quiet words: the lobby for
+                    a server game, and for a local one the lobby where the build
+                    serves one and the door where it does not (`localExit`). The
+                    arrow is decoration, so the NAME is the destination. */}
+                <button
+                  type="button"
+                  className="quiet-link"
+                  onClick={() => (local ? leave(localExit.to) : toLobby())}
+                >
+                  <span aria-hidden="true">&larr; </span>
+                  {local ? localExit.label : "Lobby"}
+                </button>
+              </div>
+              {error && <Refusal sentence={error} />}
+            </div>
           </div>
-          {error && <Refusal sentence={error} />}
         </div>
       );
     }

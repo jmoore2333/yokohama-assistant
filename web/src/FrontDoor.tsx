@@ -71,6 +71,10 @@ export function FrontDoor({
 }) {
   const [help, setHelp] = useState(false);
   const helpTitle = useRef<HTMLHeadingElement | null>(null);
+  /** What opened the help, and where Close puts focus back (M6.5c2 cycle C,
+   *  the a11y pass): Close is unmounted by its own click, and focus left on a
+   *  removed element falls to the document's body — the top of the page. */
+  const helpToggle = useRef<HTMLButtonElement | null>(null);
   const ids = useId();
   // The heading a player lands on when the help opens — focus, and never
   // `scrollIntoView` (ruling R-F11: it scrolls every scrollable ancestor).
@@ -90,6 +94,15 @@ export function FrontDoor({
               <a className="project-link" href={link.href} target="_blank" rel="noopener noreferrer">
                 {link.text}
                 <span aria-hidden="true"> &#8599;</span>
+                {/* The arrow says "elsewhere" to the eye and nothing to a
+                    screen reader; this says it in words (cycle C). The space
+                    is a text node of its own: Chromium names the link the same
+                    either way (measured), but the name the cells compute trims
+                    each element's text, and a space inside the span was lost
+                    there ("…assistant(opens…"). At the line's end it draws
+                    nothing. */}
+                {" "}
+                <span className="sr-only">(opens in a new tab)</span>
               </a>
             )}
           </div>
@@ -141,6 +154,7 @@ export function FrontDoor({
         </div>
         <div className="door-foot">
           <button
+            ref={helpToggle}
             type="button"
             className="linkish"
             aria-expanded={help}
@@ -157,7 +171,14 @@ export function FrontDoor({
                 <h2 id={`${ids}-help-title`} ref={helpTitle} tabIndex={-1}>
                   How to play
                 </h2>
-                <button type="button" className="ghost" onClick={() => setHelp(false)}>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setHelp(false);
+                    helpToggle.current?.focus();
+                  }}
+                >
                   Close
                 </button>
               </div>

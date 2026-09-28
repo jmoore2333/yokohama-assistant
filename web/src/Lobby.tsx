@@ -281,12 +281,15 @@ export function Lobby({
 
   /** Put a table's address on the clipboard (mock 02's Copy link). A browser
    *  that refuses (an insecure origin has no clipboard) gets the address in
-   *  the error strip instead, which a player can still copy by hand. */
+   *  the error strip instead, which a player can still copy by hand — and a
+   *  copy that then lands clears the strip (M6.5c2 cycle C; the Opus
+   *  re-review's one Minor), so no refusal stands beside "Copied". */
   const copyLink = async (t: TableView) => {
     const url = new URL(hashOf({ kind: "table", id: t.id }), window.location.href).href;
     try {
       await navigator.clipboard.writeText(url);
       setCopied(t.id);
+      setError(null);
       if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
       copiedTimer.current = setTimeout(() => {
         copiedTimer.current = null;
