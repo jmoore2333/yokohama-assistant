@@ -466,6 +466,11 @@ top-level refresh (R-6.5c2.25); the seven screenshots; the merge and the tag (R-
    re-run, is a finding to chase in D (the next live run reads a fresh tail first) or a recorded limit.
 6. **The `wrangler tail` instrument**: it drops under a burst and samples; whether D's live runs should read the Workers
    Observability query API instead (the runbook's §7 names it).
+7. **CI refocusing — your direction at this close (2026-09-28), taken into D** (the D handover §6 item 11): the web
+   jobs are "heavy handed CI for a segment … nearly ready to freeze"; path-filter `test.yml`'s three web jobs to the web
+   lane's inputs as `docker.yml` is, keep `workflow_dispatch`, and let a core-only push pay the core `test` job alone. The
+   one coupling, stated so it is not feared: the committed corpus pins the engine's wire-visible words, so a core change
+   that moved them fails `cargo test -p yokohama-web` — run locally after every task by the per-edit rule already.
 
 ---
 
@@ -516,3 +521,27 @@ document's draft in D8's retired Task 27, the screenshots' recipe against the DE
 C's pictures, the phones, the investigation of what remains, the merge and tag recipe), the rules D carries, what C does
 not claim, every ruling of this ledger, and D's standing items (§6.2, §6.3). After D the lane goes quiet and the AI lane
 re-enters from `docs/plans/2026-09-11-ai-lane-reentry-handover.md`.
+
+### 8.1 CI's first readings of this branch (H.1; the addendum §7 promised)
+
+The push of `web-room-m6.5c2c` at 17:42 UTC (the close's documents commit `e39ceee2` over `ea4f174d`) fired `test.yml`
+alone, and PR #41 fired `test.yml` AND `docker.yml` — as R-C21 (amended) says, since `docker.yml`'s `push` trigger is
+master-only. **Every job green.**
+
+- **`docker.yml`, run 36460020302 — the COLD wall R-C9 is judged on: the `image` job 7 min 26 s** (17:42:29 → 17:49:55
+  UTC). The log shows the build COLD: `importing cache manifest from gha`, then every server-stage step EXECUTED —
+  `[server 1/10] FROM rust:1-slim-trixie` through `[server 10/10] RUN --mount=type=cache … cargo build` (17:45:49 →
+  ~17:49:30, the `cargo build` itself about 3 min 40 s), NO `CACHED` server line; `wasm-opt version 133 (version_133)`
+  installed in the stage; `smoke: PASS — yokohama-web:ci` under no door, `cf-access` and `open`; the second build WITH
+  the project link reused every server layer from the cache. **Under fifteen minutes: R-C9's fallback (to master and
+  dispatch only) is NOT invoked.** `docker/build-push-action@v7`'s build-record upload under `permissions: contents:
+  read` raised no error (O-1's second half).
+- **`test.yml`, run 36460020190 (the pull request): 15 min 13 s** — `web-client` 3 min 00 s; `worker` 4 min 23 s (its
+  first run on a runner: `npm ci`, the debug module, the typecheck, `test:scripts`, the pool's two projects, `cargo test
+  -p yokohama-worker`, the `release-wasm` build — O-1's first half, green); the core `test` job 12 min 36 s;
+  **`web-server` 15 min 07 s** (`wasm-bindgen-cli` from source, binaryen 133, the module, the typecheck, the layer's
+  three test binaries with `browser_played_pin`, the test-binary guard, the refusing build's eight cells, `test:wasm`,
+  and the whole-game gate LAST and bounded). The push's run (36460015068) ran the same four jobs a minute behind.
+- **The owner's direction, read at these figures** (§6.3 item 7): this weight is not wanted for a segment about to be
+  frozen; D path-filters the three web jobs to the web lane's inputs, so a core-only push pays the core `test` job alone.
+  These are the last full-run figures before that filter.
