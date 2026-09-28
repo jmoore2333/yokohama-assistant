@@ -18,6 +18,7 @@ import { useRef, useState } from "react";
 import { api, ApiError, ensureArchiveFact, isLocal, useArchiveFact } from "./api";
 import { backupOne, download } from "./backup";
 import { localPair } from "./local/client";
+import { rememberArchiveOff } from "./local/facts";
 import { archiveDisposition } from "./outbox";
 import type { TableView } from "./types";
 
@@ -26,6 +27,14 @@ import type { TableView } from "./types";
  *  and a sentence of this client's own, because a fetch that did not land has
  *  no sentence to carry. */
 export const UNREACHABLE = "the archive could not be reached — the game was kept";
+
+/** What a player reads when a request this control made got NO answer at all
+ *  (M6.5c2) — a server table's DELETE, or the host's re-read after it, which
+ *  the attempt awaits. `fetch` failing rejects with the platform's own
+ *  `TypeError` ("Failed to fetch" in Chromium), a message to a programmer: the
+ *  Lobby's `UNREACHED` rule and `whoami.ts`'s `failureOf`. True whichever of
+ *  the two failed, so it claims nothing about whether the table went. */
+export const NO_ANSWER = "the server could not be reached";
 
 /** What a player reads when this browser cannot find out whether there is
  *  anywhere to save the game (M6.5b2, R-6.5b2.13; spec §2.6, §4).
@@ -120,6 +129,10 @@ export function Abandon({
       await api.archive(pair.record, pair.table);
       return true;
     } catch (e) {
+      // **A 404 is the deployment's answer** (M6.5c2; the outbox's own rule,
+      // `rememberArchiveOff`): the archive is OFF, and the label and the next
+      // click read that — the game is still kept, as on every refusal.
+      if (e instanceof ApiError && e.status === 404) rememberArchiveOff();
       // The server's own sentence where it gave one; this client's where the
       // request never got an answer at all.
       onError(e instanceof ApiError ? e.message : UNREACHABLE);
@@ -169,7 +182,9 @@ export function Abandon({
       }
       await remove();
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e));
+      // `TypeError` only: the local host's failures are plain `Error`s that
+      // already carry a sentence, and they pass through as they stand.
+      onError(e instanceof TypeError ? NO_ANSWER : e instanceof Error ? e.message : String(e));
     } finally {
       // **Released on failure as well**, so a refusal leaves a control that can
       // be tried again rather than one that has quietly stopped working.

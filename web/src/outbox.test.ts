@@ -639,4 +639,38 @@ describe("a deployment whose archive route answers 404", () => {
     expect(archiveAnswer()).toBe("off");
     expect(serverFactsTakenAt()).toBe(at);
   });
+
+  // **L-6: the FIRST 404 is the answer for every row after it** (M6.5c2 spec
+  // §2.8; the M6.5c Task 8 review's Minor 3). `kind` is read once per pass, so
+  // after row 1's 404 wrote "off" the rows behind it were each posted in full
+  // and each told the same thing — a player who finished several games offline
+  // on a deployment since switched off paid one whole record upload per game.
+  it("stops posting after the first 404 in a drain, and forgets every waiting row", async () => {
+    hosts({ archive: null });
+    await noteGameOver(GAME);
+    await noteGameOver("local-8");
+    expect(await pending()).toHaveLength(2);
+
+    rememberedDir();
+    const off = hosts({ archive: "dir", onArchive: () => KEEPS_NONE });
+    await drain();
+    expect(off.posts, "ONE upload: the first 404 answers for the rest").toHaveLength(1);
+    expect(await pending()).toEqual([]);
+    expect(archiveAnswer()).toBe("off");
+  });
+
+  it("stops posting after the first 404 in the sweep too", async () => {
+    rememberedDir();
+    const off = hosts({
+      archive: "dir",
+      onArchive: () => KEEPS_NONE,
+      games: [
+        { id: GAME, over: true },
+        { id: "local-8", over: true },
+      ],
+    });
+    await reconsiderAll();
+    expect(off.posts, "ONE upload in the sweep as well").toHaveLength(1);
+    expect(archiveAnswer()).toBe("off");
+  });
 });

@@ -37,7 +37,9 @@ export default defineConfig({
   build: { outDir: "dist", emptyOutDir: true },
   server: {
     proxy: {
-      "/api": { target: "http://127.0.0.1:8080", changeOrigin: false },
+      // **`ws: true`** (M6.5c2): the Worker's transport is a WebSocket on the
+      // same `/api` paths, and a proxy without it never forwards the upgrade.
+      "/api": { target: "http://127.0.0.1:8080", changeOrigin: false, ws: true },
       "/art": { target: "http://127.0.0.1:8080", changeOrigin: false },
       "/enter": { target: "http://127.0.0.1:8080", changeOrigin: false },
     },

@@ -14,6 +14,7 @@ import {
   RUN_CAP,
   useArchiveFact,
 } from "./api";
+import { rememberArchiveOff } from "./local/facts";
 import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { IdentityCorner } from "./Band";
 import { Door } from "./Door";
@@ -1779,6 +1780,9 @@ export function App() {
       // is cleared, and the game-over hook does not offer the same bytes again.
       await recordLanded(state.id, pair.record);
     } catch (e) {
+      // **A 404 is the deployment's answer** (M6.5c2; the outbox's rule): the
+      // archive is OFF, written down, and this control goes with it.
+      if (e instanceof ApiError && e.status === 404) rememberArchiveOff();
       // The server's own sentence where it gave one; spec §4's words where the
       // request never reached it. Nothing was sent, so nothing is claimed.
       setError(e instanceof ApiError ? e.message : "the archive could not be reached");

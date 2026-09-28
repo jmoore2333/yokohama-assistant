@@ -13,10 +13,10 @@ import { IDBFactory } from "fake-indexeddb";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Abandon, CANNOT_ASK } from "./Abandon";
+import { Abandon, CANNOT_ASK, NO_ANSWER } from "./Abandon";
 import { rememberServerFacts } from "./api";
 import { resetLocalHostForTests } from "./local/client";
-import { resetFactsForTest } from "./local/facts";
+import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -142,6 +142,26 @@ describe("the abandon control", () => {
     await waitFor(() =>
       expect(onError).toHaveBeenCalledWith(expect.stringContaining("the lists could not be read")),
     );
+  });
+
+  // **A request that got NO answer is said in a player's words** (M6.5c2; the
+  // Task 5 review's note). `fetch` failing rejects with the platform's own
+  // `TypeError: Failed to fetch`, a message to a programmer, and a server
+  // table's DELETE — or the lobby's re-read after it, awaited in the same
+  // attempt — handed that text to the host's strip as it stood. The Lobby's
+  // own listings already say it in words (`Lobby.tsx`'s `UNREACHED`).
+  it("words a delete that got no answer as the server out of reach, never the platform's error", async () => {
+    const { onDone, onError, user } = show((call) => {
+      if (call.method === "DELETE") throw new TypeError("Failed to fetch");
+      return null;
+    });
+    await user.click(screen.getByRole("button", { name: "abandon wire" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError).toHaveBeenCalledWith(NO_ANSWER);
+    expect(onDone).not.toHaveBeenCalled();
+    // Still asking: the retry is one click beside the sentence.
+    expect(screen.getByRole("button", { name: "confirm abandon wire" })).toBeInTheDocument();
   });
 
   it("names a table that was opened without a name by its id", async () => {
@@ -335,6 +355,27 @@ describe("the abandon control on a local game", () => {
     );
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  // **A 404 is the deployment's answer, not the moment's** (M6.5c2 spec §2.8;
+  // the M6.5c Task 8 review's escalation 3). The route says this server keeps
+  // no archive, and the outbox writes that down (`rememberArchiveOff`); this
+  // control showed the sentence and left the fact at "dir" for up to an hour,
+  // so its label went on promising a save the server cannot make. The game is
+  // KEPT, as on every refusal: the next confirm asks the server again.
+  it("remembers the archive OFF when the send meets the route's 404, and keeps the game", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => ({
+      status: 404,
+      body: { error: "this server keeps no archive" },
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("this server keeps no archive"));
+    expect(steps).toEqual(["health", "archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(archiveAnswer()).toBe("off");
+    // The label redraws from the fact: no "and save" over nowhere to save to.
+    await user.click(screen.getByRole("button", { name: `cancel abandoning ${LOCAL}` }));
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
   });
 
   // No archive on this server: nothing to send, and the delete is local only.

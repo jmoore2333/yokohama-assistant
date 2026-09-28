@@ -14,7 +14,7 @@ import {
   setChatText,
   setLobbyChat,
 } from "./api";
-import { resetFactsForTest } from "./local/facts";
+import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
@@ -3435,6 +3435,30 @@ describe("a local game", () => {
     } finally {
       caught.restore();
     }
+  });
+
+  // **The same 404, on the game's own Send to the archive** (M6.5c2 spec §2.8):
+  // the sentence, the fact written down, and the control gone with it. One POST:
+  // the game-over hook never reaches the archive here, because this file runs
+  // with no IndexedDB and the outbox has no store (its rule 7).
+  it("remembers the archive OFF when Send to the archive meets the route's 404, and stops offering it", async () => {
+    const { user, stub } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 404, body: { error: "this server keeps no archive" } }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText("this server keeps no archive")).toBeInTheDocument();
+    expect(archiveAnswer()).toBe("off");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull());
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
   });
 
   // **Two clicks in one tick are ONE send** (whole-branch review, Minor #4).

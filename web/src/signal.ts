@@ -44,7 +44,7 @@
 // "live" would be a claim it cannot make yet.
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, isLocal, isSessionExpired, signalKind, transportWait } from "./api";
+import { api, ApiError, BOUND_MS, bounded, isLocal, isSessionExpired, signalKind, transportWait } from "./api";
 import { readStream, type Frame } from "./sse";
 import { readSocket } from "./ws";
 import type { Events } from "./types";
@@ -446,8 +446,16 @@ export function usePolled<T>(
           // session is classified exactly as the stream arm classifies it (the
           // catch below ends the source with the `/enter` remedy); an answer is
           // a free resync, delivered.
-          const v = await src.current.once();
-          if (stopped) return;
+          //
+          // **Bounded, as every other read here is** (M6.5c2; M6.5c Task
+          // 8's escalation 5): a probe that never answers is a failure, and
+          // the ladder below is what a failure climbs. **And dropped when its
+          // attempt was aborted while it was out** (M6.5c Task 8's Minor 1):
+          // a tab that hid meanwhile is handed nothing (R-P8) — `call` takes
+          // no signal, so the answer still arrives, and this is where it
+          // stops.
+          const v = await bounded(src.current.once(), BOUND_MS);
+          if (stopped || mine.signal.aborted) return;
           latest.current(v);
           throw new Error("the socket closed"); // then the existing ladder
         }

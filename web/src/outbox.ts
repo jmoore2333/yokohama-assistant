@@ -47,7 +47,9 @@
 //    no cap. What is bounded is the HEALTH read (`ensureArchiveFact`), not the
 //    loop: a device with several old finished games posts them all on the first
 //    discovery, one after another, never in parallel. Said out loud because
-//    "bounded" is easy to read as a claim about the loop.
+//    "bounded" is easy to read as a claim about the loop. One thing does stop
+//    a pass early: the first 404 (L-6), after which every remaining row is
+//    dropped unposted.
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, ensureArchiveFact } from "./api";
@@ -389,7 +391,12 @@ async function attempt(
       return;
     }
     if (await alreadySent(db, id, pair.record)) return;
-    if (kind === "off") {
+    // **L-6: a 404 earlier in THIS pass answers for every row after it**
+    // (M6.5c2). `kind` is read once per operation, and it is the REMEMBERED
+    // fact that moves when the route says "this server keeps no archive"
+    // (`offer`'s 404 arm) — so a row behind that one is dropped the way a
+    // known "off" drops one, and never posted to be told the same thing.
+    if (kind === "off" || archiveAnswer() === "off") {
       await forget(db, id);
       return;
     }
