@@ -5,14 +5,17 @@
 //! `wasm-bindgen` exports built for the objects' shell (spec §2.2).
 //!
 //! **`crates/yokohama-wasm`'s shape, for that crate's reason**: it is a HOST and
-//! so is this one. What the two share is the layer; each carries its own clock
-//! and its own platform scan, and each copy here names its source.
+//! so is this one. What the two share is the layer — since M6.5c2 the items
+//! each host carried a copy of among it (spec §2.6): both hosts' clock
+//! (`games::HostClock`) and platform scan (`platform::calls_in`), and this
+//! host's error body, wait check and house frame. The live clock reading and
+//! each scan's allowed calls stay each host's own.
 //!
 //! This is HOST code. Its platform calls are the clock and the bindgen glue and
 //! nothing else — `this_host_makes_no_platform_call_but_the_clock` holds that
-//! over every `src/*.rs` of this crate, with the SAME EIGHT PATTERNS the layer's
-//! `platform_calls_stay_behind_the_server_feature` names, reading each file
-//! down to its first top-level `#[cfg(test)]`.
+//! over every `src/*.rs` of this crate, through the layer's own
+//! `platform::calls_in`, over its eight patterns (`platform::CALLS`), reading
+//! each file down to its first top-level `#[cfg(test)]`.
 //!
 //! **Every export but two is a thin wrapper over a pure-Rust `_inner`
 //! function** (spec §2.2). The cells call the inner ones, because
@@ -37,14 +40,13 @@ mod receipt;
 pub mod signal;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
-use yokohama_web::games::Games;
+use yokohama_web::games::{Games, HostClock};
 use yokohama_web::identity::{admit, resolve, User};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
@@ -91,59 +93,43 @@ fn door() -> config::Door {
 /// during a call is drained into that call's reply (M6.5c2).
 pub(crate) static LOG: Mutex<Option<Arc<ShellLog>>> = Mutex::new(None);
 
-/// The clock, copied from `yokohama-wasm` (`crates/yokohama-wasm/src/lib.rs`)
-/// and never shared, because each host is its own host — with one difference:
-/// [`set_clock`] hands back the setting it replaced. Frozen to `FROZEN` while
-/// `FROZEN_ON`, else live.
+/// The clock: the layer's `HostClock` (M6.5c2, spec §2.6; R1's cleanup debt
+/// 4) — frozen while pinned, else live — where this host carried its own copy
+/// of the browser host's three statics.
 ///
-/// Live is `Date.now()` on the target and a ticking counter everywhere else —
-/// the crate's own cells and the workspace lint gate compile for the host, and
-/// `js_sys::Date::now` there is a stub that panics. The ticking shape is
-/// `Games::ticking_clock`'s and for its reason: a constant would make every
-/// table's `created_at` a tie and turn each "newest first" claim into a claim
-/// about the id tie-break.
+/// Live is `Date.now()` on the target and the clock's own tick everywhere else
+/// — the crate's own cells and the workspace lint gate compile for the host,
+/// and `js_sys::Date::now` there is a stub that panics. The tick counts 1, 2,
+/// 3, … for `Games::ticking_clock`'s reason: a constant would make every
+/// table's `created_at` a tie.
 ///
 /// **[`set_clock`] is its only writer.** [`init`] rebuilds everything else
 /// this crate holds and leaves the clock as it was: the plan's ruling P-2 has
 /// the shell pin a reading before every call that can reach the layer's
 /// clock.
-static FROZEN_ON: AtomicBool = AtomicBool::new(false);
-static FROZEN: AtomicU64 = AtomicU64::new(0);
-/// Gated to the hosts that read it: on `wasm32` the live arm is `Date.now()`
-/// and this counter would be dead code — a warning the target build prints
-/// and no gate fails on, which is a warning nobody removes.
-#[cfg(not(target_arch = "wasm32"))]
-static TICKS: AtomicU64 = AtomicU64::new(0);
+static CLOCK: HostClock = HostClock::new();
 
 fn now() -> u64 {
-    if FROZEN_ON.load(Ordering::Relaxed) {
-        return FROZEN.load(Ordering::Relaxed);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Date::now() / 1000.0) as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        TICKS.fetch_add(1, Ordering::Relaxed) + 1
-    }
+    CLOCK.now(|| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            (js_sys::Date::now() / 1000.0) as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            CLOCK.tick()
+        }
+    })
 }
 
 /// Pin the clock to `seconds`, or pass `undefined` for the live clock — and get
 /// back what it replaced (`undefined` = live), so a caller that pins a reading
 /// for one call can restore a test configuration's frozen clock after it (spec
-/// §2.6). Whole seconds: a fraction is dropped, as the live arm drops it.
+/// §2.6). Whole seconds: a fraction is dropped, as the live arm drops it — the
+/// `f64` is this export's, and the layer's clock keeps whole seconds.
 #[wasm_bindgen]
 pub fn set_clock(seconds: Option<f64>) -> Option<f64> {
-    let prior = FROZEN_ON.load(Ordering::Relaxed).then(|| FROZEN.load(Ordering::Relaxed) as f64);
-    match seconds {
-        Some(s) => {
-            FROZEN.store(s as u64, Ordering::Relaxed);
-            FROZEN_ON.store(true, Ordering::Relaxed);
-        }
-        None => FROZEN_ON.store(false, Ordering::Relaxed),
-    }
-    prior
+    CLOCK.set(seconds.map(|s| s as u64)).map(|s| s as f64)
 }
 
 /// The deployment facts this host reports (spec §2.2; §4's second class), for
@@ -297,26 +283,12 @@ impl Reply {
     }
 }
 
-/// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
-/// `{"error": …}`, with `"status"` beside it when `table_status` is set, and
-/// `"foreign_bot"` beside it when `foreign_bot` is (M6.5c2).
-///
-/// The layer's own builder is `error_response` in `crates/yokohama-web/src/api.rs`
-/// — the body `IntoResponse for ApiError` writes in `crates/yokohama-web/src/lib.rs`
-/// — and it is `pub(crate)`. Each host is its own host, so this one restates the
-/// shape rather than widen the layer for its convenience, as it restates the
-/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins all three arms equal to
-/// `dispatch`'s body for the same refusal, so a drift is a red cell.
-pub(crate) fn error_body(e: &ApiError) -> String {
-    let mut body = serde_json::json!({ "error": e.message });
-    if let Some(status) = e.table_status {
-        body["status"] = status.into();
-    }
-    if let Some(pair) = &e.foreign_bot {
-        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
-    }
-    body.to_string()
-}
+/// The layer's error body — `{"error": …}`, with `"status"` and
+/// `"foreign_bot"` beside it when set: the layer's OWN `api::error_body` since
+/// M6.5c2 (spec §2.6; R1's cleanup debt 4), the bytes `dispatch` writes for
+/// every refusal, re-exported so this crate's host-written refusals name one
+/// path.
+pub(crate) use yokohama_web::api::error_body;
 
 /// SHA-256 of `text`'s bytes, in lowercase hex: the one digest this host takes
 /// — the picker row's `record` (spec §2.4), and the receipt archive's two body
@@ -402,10 +374,10 @@ pub fn identity(user: Option<String>) -> Reply {
 /// a caller refuses in the door's mode's own words. The host's facts are
 /// `host()`'s, for the same door.
 ///
-/// It answers through `from_the_layer`, so the signal is drained while the
-/// `Games` is still held — and with spec §2.4's picker step around the layer's
-/// call (`picker::around`), which reads the record before and after it and
-/// answers `Reply.picker`.
+/// It answers through `from_the_layer` under `Scope::Dispatch`, so the
+/// signal is drained while the `Games` is still held — and with spec §2.4's
+/// picker step around the layer's call (`picker::around`), which reads the
+/// record before and after it and answers `Reply.picker`.
 pub fn dispatch_inner(
     user: Option<&str>,
     method: &str,
@@ -423,7 +395,7 @@ pub fn dispatch_inner(
         Err(sentence) => Err(sentence.as_str()),
     };
     let req = ApiRequest { method, path, query, content_type, body };
-    from_the_layer(|games| {
+    from_the_layer(Scope::Dispatch, |games| {
         let (res, picker) =
             picker::around(games, &req, caller.as_ref().ok(), || api::dispatch(games, &host, identity, &req));
         (res.status, res.body, picker)
@@ -510,12 +482,37 @@ pub fn house_frame(seq: u32, chat: u32) -> String {
     house_frame_inner(u64::from(seq), u64::from(chat))
 }
 
+/// Which of spec §2.4's picker rules a call into the layer answers to (R1's
+/// cleanup debt 1; spec §2.7). [`from_the_layer`] takes one with every call,
+/// so no call reaches `Games` without its rule named.
+pub(crate) enum Scope<'a> {
+    /// A dispatch: `picker::around`, INSIDE the call, applies the rule — the
+    /// input rule after a 200 `…/input`, and a changed record's clear after
+    /// any other dispatch at or below `/api/games/{id}`.
+    Dispatch,
+    /// Any other call on the game `id` names — `events`, `stamp_archive`,
+    /// `expire`'s arm with no creator, `restore_picker`: `id`'s record is read
+    /// before and after the call, and a change clears `id`'s picker
+    /// (`picker::watching`). Over a game in play, such a call changes the
+    /// record by REBUILDING a cold handle, whose owed bot pump persists a move,
+    /// and a rebuilt `Repl` starts with its picker closed — so the whole entry
+    /// goes, a `Dropped` one included. (`restore_picker` can also move by a
+    /// re-fed line, and then clears the list and closes the picker itself.)
+    Table(&'a str),
+}
+
 /// One call into the layer under the held `GAMES`, answered with what the layer
 /// signalled DURING it, and the plan of any put it deferred.
 ///
 /// `call` answers the status, the body and `Reply.picker` — which only the two
 /// calls that can change a picker compute (`picker.rs`); every other call
 /// answers `None`.
+///
+/// **Spec §2.4's picker rule rides every call** (R1's cleanup debt 1):
+/// `scope` names it — [`Scope::Dispatch`] where `around` applies it inside the
+/// call, [`Scope::Table`] for any other call on a game, whose record is watched
+/// here. A call's own `Reply.picker` wins over the watch's: `restore_picker`
+/// answers its own.
 ///
 /// **The signal and the pending plan are drained while the `Games` is still
 /// held**, so each is this call's alone — including a cold handle's bot pump
@@ -525,10 +522,19 @@ pub fn house_frame(seq: u32, chat: u32) -> String {
 /// [`restore_picker_inner`], [`stamp_archive_inner`] and [`expire_inner`] all
 /// answer through here (plan re-review m-c; plan review M4), so no two can
 /// drain differently.
-pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<String>)) -> ReplyData {
+pub(crate) fn from_the_layer(
+    scope: Scope<'_>,
+    call: impl FnOnce(&Games) -> (u16, String, Option<String>),
+) -> ReplyData {
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
-    let (status, body, picker) = call(games);
+    let (status, body, picker) = match scope {
+        Scope::Dispatch => call(games),
+        Scope::Table(id) => {
+            let ((status, body, picker), cleared) = picker::watching(games, id, || call(games));
+            (status, body, picker.or(cleared))
+        }
+    };
     ReplyData {
         status,
         body,
@@ -1233,16 +1239,32 @@ mod tests {
         let e = events_inner("nope", Some("red@t.test"), "wait=26");
         assert_eq!(e.status, 400, "wait=26 AND an unknown id: the cap before the read — {}", e.body);
         assert_eq!(e.body, r#"{"error":"a request can be held for at most 25 seconds, not 26"}"#);
+        // R-C8: wait=26 AND a caller with no seat at a table being dealt, which
+        // nobody watches — the cap before the admission, whose 403 the same
+        // caller meets without the `wait`.
+        let dealt = CREATE.replace(r#"{"open":true}"#, r#"{"bot":true}"#);
+        assert_eq!(create_inner(Some("red@t.test"), dealt.as_bytes(), "dealt", Some("application/json")).status, 201);
+        let e = events_inner("dealt", Some("blue@t.test"), "");
+        assert_eq!(e.status, 403, "premise: a caller with no seat is refused at a deal — {}", e.body);
+        let e = events_inner("dealt", Some("blue@t.test"), "wait=26");
+        assert_eq!(
+            (e.status, e.body.as_str()),
+            (400, r#"{"error":"a request can be held for at most 25 seconds, not 26"}"#),
+            "wait=26 AND no seat: the cap before the admission",
+        );
         let e = events_inner("t", Some("red@t.test"), "wait=25");
         assert_eq!(e.status, 200, "25 is allowed, and answered at once: {}", e.body);
         assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0}"#);
     }
 
-    /// The restated error body is `dispatch`'s own, for the same refusal — all
-    /// three arms of it: the `status` arm through a constructed `ApiError`
-    /// compared with the layer's dealing 409, and the `foreign_bot` arm (M6.5c2)
-    /// through the events route's own refusal of a game not over against a bot
-    /// this build does not run.
+    /// The error body this host writes itself (`host_refusal`, `events`) is
+    /// `dispatch`'s own for the same refusal — every arm of it: the plain one,
+    /// through the events route's unknown-id 404; `status`, through a
+    /// constructed `ApiError` compared with the layer's dealing 409; and
+    /// `foreign_bot` (M6.5c2), through the events route's own refusal of a
+    /// game not over against a bot this build does not run. Since M6.5c2 both
+    /// are the layer's `api::error_body`, so this holds the host's ROUTES to
+    /// it: the same refusal, reached the same way.
     #[test]
     fn a_refusal_body_is_the_one_dispatch_writes() {
         let _s = serial();
@@ -1255,11 +1277,12 @@ mod tests {
         let d = dispatch_inner(Some("red@t.test"), "GET", "/api/games/dealt", "", None, b"");
         assert_eq!(d.status, 409, "premise: a dealing table's session route is the 409 that carries `status`");
         let message = serde_json::from_str::<serde_json::Value>(&d.body).unwrap()["error"].as_str().unwrap().to_string();
-        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing"), foreign_bot: None });
-        assert_eq!(restated, d.body);
+        let built = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing"), foreign_bot: None });
+        assert_eq!(built, d.body);
 
         // M6.5c2: the foreign-bot 409, whose pair rides beside the sentence —
-        // the events route's body is the restatement's, dispatch's the layer's.
+        // the events route's body is this host's `Err` arm, dispatch's the
+        // layer's.
         let (record, table) = foreign_unfinished("foreign");
         load_inner("record", "foreign", &record).unwrap();
         load_inner("table", "foreign", &table).unwrap();
@@ -1267,7 +1290,7 @@ mod tests {
         assert_eq!(d.status, 409, "premise: a game not over against a foreign bot — {}", d.body);
         assert!(d.body.contains(r#""foreign_bot":{"played":"V2","#), "premise: the pair rides the body — {}", d.body);
         let e = events_inner("foreign", Some("local@browser"), "");
-        assert_eq!((e.status, e.body.as_str()), (d.status, d.body.as_str()), "the restated body, whole");
+        assert_eq!((e.status, e.body.as_str()), (d.status, d.body.as_str()), "this host's body, whole");
     }
 
     /// The committed browser-played pair as a game NOT over against a bot this
@@ -1337,33 +1360,24 @@ mod tests {
         assert_eq!((next.status, tagged(&next).as_str()), (200, "[]"), "nothing left behind for the next call");
     }
 
-    /// **The crate's own scan** (spec §5.1), copied from `yokohama-wasm`'s
-    /// scan (`crates/yokohama-wasm/src/lib.rs` — named for the clock and the
-    /// console there since M6.5c2, when that host gained the console) — each
-    /// host is its own host, and what the two share is the layer, never a test
-    /// module. This is host code and its ONLY platform call is the clock. The
-    /// eight patterns the layer's `platform_calls_stay_behind_the_server_feature`
-    /// names are refused here too, over EVERY `src/*.rs` of this crate with
-    /// each file's top-level test module cut out.
+    /// **The crate's own scan** (spec §5.1): this is host code, and its ONLY
+    /// platform call is the clock. Every `src/*.rs` of this crate is read by
+    /// the layer's own `platform::calls_in` — the hosts' scan over the eight
+    /// patterns (`platform::CALLS`), which stops at a file's first column-0
+    /// `#[cfg(test)]` (M6.5c2, spec §2.6; R1's cleanup debt 4).
     ///
-    /// Two anti-vacuity partners, and the second is the one worth reading: the
-    /// scan must have looked at a file, and the one allowed call must be in
-    /// CODE rather than in prose — a doc comment naming `js_sys::Date::now`
-    /// would otherwise keep this cell green over a crate that had stopped
-    /// making the call at all.
+    /// Three anti-vacuity partners, and they are this host's own: the layer's
+    /// scan must find a call where there is one; this one must have looked at
+    /// a file; and the one allowed call must be in CODE rather than in prose —
+    /// a doc comment naming `js_sys::Date::now` would otherwise keep this cell
+    /// green over a crate that had stopped making the call at all.
     #[test]
     fn this_host_makes_no_platform_call_but_the_clock() {
+        assert!(
+            !yokohama_web::platform::calls_in("probe.rs", "use std::fs;\n").is_empty(),
+            "anti-vacuity: the layer's scan finds a call where there is one",
+        );
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let patterns = [
-            "SystemTime",
-            "Instant::now",
-            "std::fs",
-            "std::env",
-            "std::thread",
-            "std::process",
-            "tokio::",
-            "axum::",
-        ];
         let mut escaped: Vec<String> = Vec::new();
         let mut scanned = 0usize;
         let mut clock_in_code = false;
@@ -1374,22 +1388,15 @@ mod tests {
             }
             let name = path.file_name().unwrap().to_str().unwrap().to_string();
             let text = std::fs::read_to_string(&path).expect("readable");
-            // Top-level means column 0, so an inner `#[cfg(test)]` on a
-            // test-only item does not end the scan early — the layer's own rule.
+            scanned += 1;
+            escaped.extend(yokohama_web::platform::calls_in(&name, &text));
+            // The partner reads the lines `calls_in` reads: those above the
+            // file's first column-0 `#[cfg(test)]`, less the comments.
             let lines: Vec<&str> = text.lines().collect();
             let end = lines.iter().position(|l| *l == "#[cfg(test)]").unwrap_or(lines.len());
-            scanned += 1;
-            for (n, line) in lines[..end].iter().enumerate() {
-                let is_comment = line.trim_start().starts_with("//");
-                for pat in patterns {
-                    if line.contains(pat) {
-                        escaped.push(format!("{name}:{}: {pat}: {}", n + 1, line.trim()));
-                    }
-                }
-                if !is_comment && line.contains("js_sys::Date::now") {
-                    clock_in_code = true;
-                }
-            }
+            clock_in_code |= lines[..end]
+                .iter()
+                .any(|line| !line.trim_start().starts_with("//") && line.contains("js_sys::Date::now"));
         }
         assert!(escaped.is_empty(), "platform calls in the host crate: {escaped:#?}");
         assert!(scanned > 0, "anti-vacuity: the scan read no file");

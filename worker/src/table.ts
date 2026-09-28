@@ -1699,11 +1699,10 @@ export class Table extends DurableObject<Env> {
    *   slot is the REMOVAL) and an alarm run that finds a table document
    *   (`recopy`). A move that leaves the table document alone makes none.
    * - **What it holds**: the compiled module is the isolate's, shared, so
-   *   the instance adds its own linear memory, which starts at 18 pages —
-   *   1.125 MiB, 121,001 bytes of them the module's data, copied in from its
-   *   168 data segments (the release build, read off its memory and data
-   *   sections; the data SECTION is 122,381 bytes encoded, its segment
-   *   headers included) — and the one table document it is handed. Building
+   *   the instance adds its own linear memory — its starting size is the
+   *   release module's reading in the root `Cargo.toml`'s `release-wasm`
+   *   comment, the ONE place the module's figures are measured (R1's
+   *   cleanup debt 6) — and the one table document it is handed. Building
    *   it, `init`, the load and the copy measured about 0.15 ms a call in the
    *   pool.
    * - **When it is dropped**: when this returns. Nothing keeps it — `scratch`

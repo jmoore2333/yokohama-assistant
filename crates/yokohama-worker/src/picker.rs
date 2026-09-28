@@ -13,7 +13,8 @@
 //! them through the layer's own `api::input` when a new instance wakes.
 //!
 //! **The rule**, applied by [`around`] after every dispatch at or below
-//! `/api/games/{id}`:
+//! `/api/games/{id}`, and by [`watching`] across every other call on a game
+//! (`crate::Scope`):
 //!
 //! - **A changed record clears the list**: a move, an undo, a finalize, a cold
 //!   bot pump on a GET, a delete. A chat post, an unlock, a keep that does not
@@ -54,7 +55,7 @@ use yokohama_web::identity::User;
 use yokohama_web::store::Doc;
 use yokohama_web::ApiError;
 
-use crate::{error_body, from_the_layer, sha256_hex, ReplyData};
+use crate::{error_body, from_the_layer, sha256_hex, ReplyData, Scope};
 
 /// The most lines a list holds: the line after them CLEARS it (spec §2.4).
 const MAX_LINES: usize = 64;
@@ -140,12 +141,43 @@ pub(crate) fn around(
     let changed = before != after;
     let picker = if req.method == "POST" && below == "/input" && res.status == 200 {
         after_input(games, id, changed, after.as_deref(), line_of(req, caller))
-    } else if changed {
-        with_pickers(|pickers| pickers.remove(id)).and_then(cleared)
     } else {
-        None
+        clear_if(changed, id)
     };
     (res, picker)
+}
+
+/// Spec §2.4's rule for a changed record, stated once for [`around`] and
+/// [`watching`]: `id`'s entry removed, and `"[]"` when it held a list, whose
+/// row the shell then deletes.
+fn clear_if(changed: bool, id: &str) -> Option<String> {
+    if !changed {
+        return None;
+    }
+    with_pickers(|pickers| pickers.remove(id)).and_then(cleared)
+}
+
+/// The rule for a call that is no dispatch ([`crate::Scope::Table`]; R1's
+/// cleanup debt 1): `id`'s record read before and after `call`, and on a
+/// change the entry cleared ([`clear_if`]). `events`, `stamp_archive` and
+/// `expire`'s arm with no creator reach `Games::handle` outside [`around`],
+/// and a cold handle one of them rebuilds pumps an owed bot move and persists
+/// it — a record change after which the picker is closed, since a rebuilt
+/// `Repl` starts with it closed. [`restore_picker_inner`] answers under this
+/// rule too, and its own `Reply.picker` wins over this one's
+/// (`crate::from_the_layer`).
+///
+/// **The residual, named:** a rebuild at the SAME record — no bot owed, so no
+/// pump — leaves a stale entry this rule cannot see; only an entry tied to the
+/// handle it was built on would close it. It is unreachable here: a table
+/// object holds one game, which `Games` evicts only past 64 resident handles,
+/// on a conflicting write — a `MemStore` with one writer has none — or at its
+/// delete, which removes the record too, a change this rule sees.
+pub(crate) fn watching<T>(games: &Games, id: &str, call: impl FnOnce() -> T) -> (T, Option<String>) {
+    let before = record_of(games, id);
+    let out = call();
+    let changed = record_of(games, id) != before;
+    (out, clear_if(changed, id))
 }
 
 /// The rule after a 200 `POST …/input`. `line` is `None` only when this host
@@ -243,7 +275,7 @@ fn cleared(prior: Picker) -> Option<String> {
 /// is the layer's own, in the API's error shape, and leaves the row alone.
 pub fn restore_picker_inner(id: &str, row: &str) -> ReplyData {
     let mut dropped = None;
-    let mut reply = from_the_layer(|games| match games.handle(id) {
+    let mut reply = from_the_layer(Scope::Table(id), |games| match games.handle(id) {
         Ok(_) => {
             let (picker, gone) = restore(games, id, row);
             dropped = gone;
@@ -380,7 +412,10 @@ mod tests {
 
     use super::CODE;
     use crate::tests::{call, config, serial, tagged, CREATE};
-    use crate::{create_inner, init_inner, load_inner, read_inner, restore_picker_inner, ReplyData, GAMES};
+    use crate::{
+        create_inner, events_inner, expire_inner, init_inner, load_inner, read_inner, restore_picker_inner,
+        stamp_archive_inner, ReplyData, GAMES,
+    };
 
     const RED: &str = "red@t.test";
     const BLUE: &str = "blue@t.test";
@@ -930,5 +965,105 @@ mod tests {
         assert_ne!(record("owed"), owed, "the pump was persisted");
         let next = call(RED, "GET", "/api/games/owed/table", None);
         assert_eq!((next.status, tagged(&next).as_str()), (200, "[]"), "nothing left behind for the next call");
+    }
+
+    /// The committed owed-pump pair (`the_owed_pump_fixture_owes_the_bot_a_move`
+    /// in `lib.rs`): the stored table, and a record whose last events leave the
+    /// bot to move.
+    fn owed_pump() -> (String, String) {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../worker/test/fixtures");
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).expect("the committed fixture");
+        (read("owed-pump.table.json"), read("owed-pump.json"))
+    }
+
+    /// **The picker's rule on every call** (R1's cleanup debt 1; spec §2.7),
+    /// the arrangement the three cells below share. Over a game in play, a
+    /// call that is no dispatch changes the record by REBUILDING a cold
+    /// handle, whose owed bot pump persists a move; a rebuilt `Repl` starts
+    /// with its picker closed, so the entry goes whole, a `Dropped` one too. This host never reaches that
+    /// state (an entry implies a resident handle), which is why it is made by
+    /// hand: the owed-pump pair loaded into a NEW instance, so the handle is
+    /// cold, and an entry put into `PICKERS`. A list's row is deleted
+    /// (`"[]"`); a `Dropped` picker has no row, so none is deleted.
+    fn a_rebuild_that_pumps_clears_the_entry(what: &str, stored_table: &str, status: u16, call: impl Fn() -> ReplyData) {
+        let (_, owed) = owed_pump();
+        let stale = || {
+            super::Picker::Lines(super::PickerList {
+                code: Some(CODE.to_string()),
+                record: "0".repeat(64),
+                lines: vec![super::PickerLine { user: RED.to_string(), line: "1".to_string(), expect: None }],
+            })
+        };
+        for (kind, entry, want) in [("a list", stale(), Some("[]")), ("a dropped picker", super::Picker::Dropped, None)] {
+            fresh("owed", stored_table, &owed);
+            super::with_pickers(|pickers| pickers.insert("owed".to_string(), entry));
+            let r = call();
+            assert_eq!(
+                (r.status, tagged(&r).as_str()),
+                (status, r#"[{"bump":"owed"}]"#),
+                "{what}, {kind}: premise — the rebuild pumped the owed move: {}",
+                r.body,
+            );
+            assert_ne!(record("owed"), owed, "{what}, {kind}: premise — and the pump changed the record");
+            assert_eq!(r.picker.as_deref(), want, "{what}, {kind}: a list's row is deleted, and no row that never was");
+            assert!(super::with_pickers(|pickers| !pickers.contains_key("owed")), "{what}, {kind}: the entry is gone");
+        }
+    }
+
+    /// `events` reaches `Games::handle` outside `around`, and a cold handle it
+    /// builds pumps the owed move: the entry is cleared. Mutant:
+    /// `Scope::Dispatch` passed by `events_inner`.
+    #[test]
+    fn an_events_read_whose_rebuild_pumps_clears_the_picker() {
+        let _s = serial();
+        let (stored_table, _) = owed_pump();
+        a_rebuild_that_pumps_clears_the_entry("events", &stored_table, 200, || events_inner("owed", Some(RED), ""));
+    }
+
+    /// `stamp_archive` — the game-over retry, which builds the handle to read
+    /// `over` — the same. Mutant: `Scope::Dispatch` passed by
+    /// `stamp_archive_inner`.
+    #[test]
+    fn a_stamp_whose_rebuild_pumps_clears_the_picker() {
+        let _s = serial();
+        let (stored_table, _) = owed_pump();
+        a_rebuild_that_pumps_clears_the_entry("stamp_archive", &stored_table, 200, || stamp_archive_inner("owed"));
+    }
+
+    /// `expire`'s arm with NO creator. It reaches a rebuild through one
+    /// document alone: one the layer reads and this module's JSON read of the
+    /// creator cannot — an unknown key holding a number out of `f64`'s range,
+    /// which serde's struct parse skips unread and a `serde_json::Value`
+    /// refuses. The arm then answers its host-written 500, over a game the
+    /// rebuild has just moved. Every other no-creator table is gone or
+    /// unreadable, and changes no record. Mutant: `Scope::Dispatch` passed by
+    /// that arm.
+    #[test]
+    fn an_expire_with_no_creator_whose_rebuild_pumps_clears_the_picker() {
+        let _s = serial();
+        let (stored_table, _) = owed_pump();
+        let unread = stored_table.replacen('{', r#"{"unread":1e400,"#, 1);
+        assert!(serde_json::from_str::<Value>(&unread).is_err(), "premise: this module's read finds no creator");
+        let doc = serde_json::from_str::<yokohama_web::table::TableDoc>(&unread);
+        assert!(doc.is_ok_and(|doc| doc.created_by == RED), "premise: the layer reads the table, and its creator");
+        a_rebuild_that_pumps_clears_the_entry("expire", &unread, 500, || expire_inner("owed"));
+    }
+
+    /// The partner: a call that changes no record leaves a live list as it was —
+    /// an `events` read of a RESIDENT game with the PlaceA picker open, whose
+    /// handle is not rebuilt.
+    #[test]
+    fn a_call_that_changes_no_record_leaves_the_list() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        at_place_a("kept");
+        let before = record("kept");
+        let e = events_inner("kept", Some(RED), "");
+        assert_eq!((e.status, e.picker.as_deref()), (200, None), "{}", e.body);
+        assert_eq!(record("kept"), before, "premise: the read changed no record");
+        assert!(
+            super::with_pickers(|pickers| matches!(pickers.get("kept"), Some(super::Picker::Lines(_)))),
+            "the list stands",
+        );
     }
 }

@@ -27,10 +27,10 @@ authors = ["Jeremy Moore"]
 # release is precached, so bytes there are paid by every visitor on every
 # version.
 #
-# **The figures below are the BROWSER module's**, RE-MEASURED at M6.5b2's
-# fix-wave head (2026-09-22), on this machine, `wasm-bindgen`'s output:
-# 2,843,070 B under plain `release`, 1,783,361 B under
-# this profile, and 1,175,223 B / 456,048 B gzipped (`gzip -9`) once
+# **The figures in this paragraph are the BROWSER module's**, RE-MEASURED at
+# M6.5b2's fix-wave head (2026-09-22), on this machine, `wasm-bindgen`'s
+# output: 2,843,070 B under plain `release`, 1,783,361 B under this profile,
+# and 1,175,223 B / 456,048 B gzipped (`gzip -9`) once
 # `npm run build:wasm` runs `wasm-opt -Oz` over it. The cost is a whole bot turn
 # going 28.6 -> 35.2 ms. **This is the ONE place the figures are measured and
 # every other document cites it** — `web/scripts/wasm-opt.mjs`,
@@ -40,6 +40,22 @@ authors = ["Jeremy Moore"]
 # carries all nine of Task 5's builds, at a head three tasks older; the
 # differences are that growth plus ordinary build variance, which that
 # document also records.
+#
+# **The WORKER module's figures** (`yokohama-worker`, M6.5c2, spec §2.7),
+# measured 2026-09-28 on this workstation (Darwin arm64, macOS 27.0) over the
+# tree of the commit that added this paragraph (its parent `d431dbc1`), off
+# `worker/gen/yokohama_worker_bg.wasm` after `cd worker && npm run
+# build:module` (this profile, then `wasm-opt -Oz`), by `node
+# worker/scripts/module-figures.mjs worker/gen/yokohama_worker_bg.wasm`:
+# 1,256,770 B, and 491,409 B gzipped at level 9 (Node's `zlib`, whose header
+# names no file; the `gzip -9` command's names this one, 24 B more). Its
+# linear memory starts at 18 pages (1,152 KiB), 123,040 B of them the
+# module's data, copied in from its 170 data segments (the data SECTION is
+# 124,439 B encoded). Every instance pays that memory — a table object's own,
+# and the second it builds for one house copy (`copyOf`,
+# `worker/src/table.ts`). **This is the ONE place those figures are
+# measured**: `copyOf`'s doc and `worker/README.md` §6.3 cite it, as the
+# browser module's figures above are cited. Re-measure here, never there.
 #
 # **It is its own profile rather than a `[profile.release]` edit** because
 # nothing selects it without `--profile release-wasm`: the fifteen-gate release

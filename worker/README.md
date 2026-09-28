@@ -653,9 +653,9 @@ shipping a shared instance.
 
 **Each object owns one instance, and each instance owns one `Games`.** A trap costs one instance of
 one object: the shell discards it and the next request builds a new one from what SQLite holds.
-Another table never notices. The price is memory: a new instance starts with its own linear memory,
-18 pages or 1.125 MiB (read off the release build), and the spike read 1,441,792 B after a
-595-event replay.
+Another table never notices. The price is memory: a new instance starts with its own linear memory
+— read in ONE place, the root `Cargo.toml`'s `release-wasm` comment — and the spike read
+1,441,792 B after a 595-event replay.
 
 ### 6.4 What the spike measured before the design was written
 

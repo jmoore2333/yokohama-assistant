@@ -5,12 +5,14 @@
 //! This is HOST code. Its platform calls are the clock, the console and the
 //! bindgen glue, and nothing else —
 //! [`this_host_makes_no_platform_call_but_the_clock_and_the_console`] holds that
-//! over this crate's own non-test source, with the SAME EIGHT PATTERNS the
-//! layer's `platform_calls_stay_behind_the_server_feature` names. The two
-//! scans are not the same scan and this doc used to claim they were
-//! (whole-branch review, vacuity #5): the layer's ENFORCES per-item `#[cfg]`
-//! gating below a file's test module, while this one stops at the first
-//! top-level `#[cfg(test)]` and reads what is above it.
+//! over this crate's own non-test source, through the layer's own
+//! `platform::calls_in`, over its eight patterns (`platform::CALLS`; M6.5c2,
+//! spec §2.6). The two scans are not the same scan and this doc used to claim
+//! they were (whole-branch review, vacuity #5): the layer's own
+//! `platform_calls_stay_behind_the_server_feature` ENFORCES per-item `#[cfg]`
+//! gating below a file's test module, while the hosts' stops at the first
+//! top-level `#[cfg(test)]` and reads what is above it. The clock is the
+//! layer's `HostClock` too; the live reading is this host's own.
 //! It is the only caller of the layer in the browser, and its own only caller
 //! is the dedicated Web Worker the client half starts
 //! (`web/src/local/worker.ts`, which lands with that half) — nothing on the
@@ -22,12 +24,11 @@
 //! beyond the conversion a JS caller needs, and everything that could be wrong
 //! is reachable natively.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
-use yokohama_web::games::Games;
+use yokohama_web::games::{Games, HostClock};
 use yokohama_web::identity::User;
 use yokohama_web::store::{Doc, MemStore};
 
@@ -39,34 +40,23 @@ use yokohama_web::store::{Doc, MemStore};
 /// the acquisition path impossible to write.
 static GAMES: Mutex<Option<Games>> = Mutex::new(None);
 
-/// The clock: frozen to `FROZEN` while `FROZEN_ON`, else live.
-///
-/// Live is `Date.now()` on the target and a ticking counter everywhere else —
-/// the crate's own cells and the workspace lint gate compile for the host, and
-/// `js_sys::Date::now` there is a stub that panics. The ticking shape is
-/// `Games::ticking_clock`'s and for its reason: a constant would make every
-/// table's `created_at` a tie and turn each "newest first" claim into a claim
-/// about the id tie-break.
-static FROZEN_ON: AtomicBool = AtomicBool::new(false);
-static FROZEN: AtomicU64 = AtomicU64::new(0);
-/// Gated to the hosts that read it: on `wasm32` the live arm is `Date.now()`
-/// and this counter is dead code the target build warns about, and a warning
-/// no per-edit gate can see is a warning nobody removes.
-#[cfg(not(target_arch = "wasm32"))]
-static TICKS: AtomicU64 = AtomicU64::new(0);
+/// The clock: the layer's `HostClock` (M6.5c2, spec §2.6), frozen while
+/// pinned, else live. Live is `Date.now()` on the target and the clock's own
+/// tick everywhere else — the crate's own cells and the workspace lint gate
+/// compile for the host, and `js_sys::Date::now` there is a stub that panics.
+static CLOCK: HostClock = HostClock::new();
 
 fn now() -> u64 {
-    if FROZEN_ON.load(Ordering::Relaxed) {
-        return FROZEN.load(Ordering::Relaxed);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Date::now() / 1000.0) as u64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        TICKS.fetch_add(1, Ordering::Relaxed) + 1
-    }
+    CLOCK.now(|| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            (js_sys::Date::now() / 1000.0) as u64
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            CLOCK.tick()
+        }
+    })
 }
 
 /// The layer's log on this host (M6.5c2, spec §2.6): the browser's console.
@@ -247,16 +237,11 @@ pub fn read(doc: &str, id: &str) -> Result<Option<String>, JsValue> {
     read_inner(doc, id).map_err(|e| JsValue::from_str(&e))
 }
 
-/// A frozen reading, or `undefined` for the live clock.
+/// A frozen reading, or `undefined` for the live clock — whole seconds, as the
+/// layer's clock keeps them.
 #[wasm_bindgen]
 pub fn set_clock(seconds: Option<f64>) {
-    match seconds {
-        Some(s) => {
-            FROZEN.store(s as u64, Ordering::Relaxed);
-            FROZEN_ON.store(true, Ordering::Relaxed);
-        }
-        None => FROZEN_ON.store(false, Ordering::Relaxed),
-    }
+    CLOCK.set(seconds.map(|s| s as u64));
 }
 
 /// Read a backup file and say what each game in it is (M6.5b2, R-6.5b2.10 –
@@ -408,30 +393,24 @@ mod tests {
 
     /// **The crate's own scan** (spec §2.1): this is host code, and its
     /// platform calls are the clock and, since M6.5c2, the console the layer's
-    /// log writes to. The eight patterns the layer's
-    /// `platform_calls_stay_behind_the_server_feature` names are refused here
-    /// too, over this crate's own `src` with each file's top-level test module
-    /// cut out.
+    /// log writes to. Every `src/*.rs` of this crate is read by the layer's own
+    /// `platform::calls_in` — the hosts' scan over the eight patterns
+    /// (`platform::CALLS`), which stops at a file's first column-0
+    /// `#[cfg(test)]` (M6.5c2, spec §2.6).
     ///
-    /// Three anti-vacuity partners, and the second and third are the ones worth
-    /// reading: the scan must have looked at a file, and each of the two
-    /// allowed calls — the clock and the console — must be in CODE rather than
-    /// in prose. A doc comment naming `js_sys::Date::now` or the console import
-    /// would otherwise keep this cell green over a crate that had stopped
-    /// making the call at all.
+    /// Four anti-vacuity partners, and they are this host's own: the layer's
+    /// scan must find a call where there is one; this one must have looked at
+    /// a file; and each of the two allowed calls — the clock and the console —
+    /// must be in CODE rather than in prose. A doc comment naming
+    /// `js_sys::Date::now` or the console import would otherwise keep this
+    /// cell green over a crate that had stopped making the call at all.
     #[test]
     fn this_host_makes_no_platform_call_but_the_clock_and_the_console() {
+        assert!(
+            !yokohama_web::platform::calls_in("probe.rs", "use std::fs;\n").is_empty(),
+            "anti-vacuity: the layer's scan finds a call where there is one",
+        );
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let patterns = [
-            "SystemTime",
-            "Instant::now",
-            "std::fs",
-            "std::env",
-            "std::thread",
-            "std::process",
-            "tokio::",
-            "axum::",
-        ];
         let mut escaped: Vec<String> = Vec::new();
         let mut scanned = 0usize;
         let mut clock_in_code = false;
@@ -443,25 +422,15 @@ mod tests {
             }
             let name = path.file_name().unwrap().to_str().unwrap().to_string();
             let text = std::fs::read_to_string(&path).expect("readable");
-            // Top-level means column 0, so an inner `#[cfg(test)]` on a
-            // test-only item does not end the scan early — the layer's own rule.
+            scanned += 1;
+            escaped.extend(yokohama_web::platform::calls_in(&name, &text));
+            // The partners read the lines `calls_in` reads: those above the
+            // file's first column-0 `#[cfg(test)]`, less the comments.
             let lines: Vec<&str> = text.lines().collect();
             let end = lines.iter().position(|l| *l == "#[cfg(test)]").unwrap_or(lines.len());
-            scanned += 1;
-            for (n, line) in lines[..end].iter().enumerate() {
-                let is_comment = line.trim_start().starts_with("//");
-                for pat in patterns {
-                    if line.contains(pat) {
-                        escaped.push(format!("{name}:{}: {pat}: {}", n + 1, line.trim()));
-                    }
-                }
-                if !is_comment && line.contains("js_sys::Date::now") {
-                    clock_in_code = true;
-                }
-                if !is_comment && line.contains("js_namespace = console") {
-                    console_in_code = true;
-                }
-            }
+            let code: Vec<&str> = lines[..end].iter().copied().filter(|l| !l.trim_start().starts_with("//")).collect();
+            clock_in_code |= code.iter().any(|l| l.contains("js_sys::Date::now"));
+            console_in_code |= code.iter().any(|l| l.contains("js_namespace = console"));
         }
         assert!(escaped.is_empty(), "platform calls in the host crate: {escaped:#?}");
         assert!(scanned > 0, "anti-vacuity: the scan read no file");

@@ -19,15 +19,7 @@ use http::StatusCode;
 use yokohama_web::api::{self, EventsQuery};
 use yokohama_web::ApiError;
 
-use crate::{error_body, from_the_layer, host_refusal, identity_of, ReplyData};
-
-/// The cap on `wait`, RESTATED from the layer's `api::MAX_WAIT_SECONDS` (the
-/// orchestrator's ruling R-03). Since M6.5c2 the cap and its sentence are the
-/// layer's exports, `api::MAX_WAIT_SECONDS` and `api::check_wait`, which axum's
-/// `events` handler calls first; this module keeps its restatement until cycle
-/// C switches it to them. The refusal is still the HANDLER's, not the layer
-/// parser's: `parse_query` accepts `wait=26`.
-const MAX_WAIT_SECONDS: u64 = 25;
+use crate::{error_body, from_the_layer, host_refusal, identity_of, ReplyData, Scope};
 
 /// `GET /api/games/{id}/events?after=&wait=`, in the order axum's handler takes
 /// its extractors and then its own check:
@@ -38,8 +30,10 @@ const MAX_WAIT_SECONDS: u64 = 25;
 ///    mode);
 /// 2. **the query** — the layer's own `parse_query` into its own `EventsQuery`,
 ///    so an unknown key is the layer's 400, in axum's words;
-/// 3. **the cap** — a `wait` above 25 is the handler's 400, its sentence
-///    restated word for word;
+/// 3. **the cap** — `api::check_wait`, the layer's own (M6.5c2), which axum's
+///    handler calls too: a `wait` above 25 is its 400, in its sentence. The
+///    refusal is the HANDLER's, not the parser's: `parse_query` accepts
+///    `wait=26`;
 /// 4. **the reading** — `api::events_at`, the one function axum's handler and
 ///    its stream both answer with: `Ok` serialized at 200, `Err` in the layer's
 ///    error shape (`error_body`).
@@ -47,7 +41,9 @@ const MAX_WAIT_SECONDS: u64 = 25;
 /// The first three refuse before the `Games` is touched. The fourth answers
 /// through `from_the_layer`, the drain `dispatch` answers through, because
 /// `events_at` can build a cold handle — and a handle rebuilt with a bot to move
-/// pumps that move and persists it (plan re-review m-c).
+/// pumps that move and persists it (plan re-review m-c). It answers under
+/// `Scope::Table(id)`, so that record change clears the table's picker
+/// (`picker::watching`; R1's cleanup debt 1).
 pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
     let user = match identity_of(user) {
         Ok(user) => user,
@@ -59,14 +55,10 @@ pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
         Ok(q) => q,
         Err(e) => return host_refusal(e),
     };
-    if let Some(wait) = q.wait {
-        if wait > MAX_WAIT_SECONDS {
-            return host_refusal(ApiError::bad_request(format!(
-                "a request can be held for at most {MAX_WAIT_SECONDS} seconds, not {wait}"
-            )));
-        }
+    if let Err(e) = api::check_wait(q.wait) {
+        return host_refusal(e);
     }
-    from_the_layer(|games| match api::events_at(games, id, &user) {
+    from_the_layer(Scope::Table(id), |games| match api::events_at(games, id, &user) {
         Ok(events) => (200, serde_json::to_string(&events).expect("an Events serializes"), None),
         Err(e) => (e.status.as_u16(), error_body(&e), None),
     })
