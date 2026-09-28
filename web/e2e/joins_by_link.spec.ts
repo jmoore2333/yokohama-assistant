@@ -32,7 +32,7 @@
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, blame, deadEnd, nameThisBrowser, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
-import { LIVE, abandonOpened, awaitCreate, liveContextOptions, type Opening } from "./live";
+import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 // Whether a screen has a move on it — read from what can actually be pressed,
 // so a walk in flight reads as "not yet" rather than as a dead end. One
 // predicate for every walk that shares a table; its doc carries the
@@ -49,12 +49,12 @@ let opened: Opening | null = null;
 // **Live, the walk abandons the table it opened**, as its creator — in an
 // `afterEach` rather than a `finally`, for the measured reason
 // `two_browsers.spec.ts` gives: a timed-out body's `finally` runs only after
-// its pages are closed. It knows the table from the moment the create is SENT
-// (`awaitCreate`; R3's L-9), so a walk that fails before it reads the create's
-// reply still takes its table away. Locally it sends nothing: the local
-// server's games are scratch, and its archive directory — which an abandon's
-// save writes into — is read by other specs (`offline.spec.ts`,
-// `plays_locally.spec.ts`).
+// its pages are closed. It knows the table from the moment the create is SENT,
+// for as long as `awaitCreate`'s wait lasts (R3's L-9), so a walk that fails
+// before it reads the create's reply still takes its table away. Locally it
+// sends nothing: the local server's games are scratch, and its archive
+// directory — which an abandon's save writes into — is read by other specs
+// (`offline.spec.ts`, `plays_locally.spec.ts`).
 test.afterEach(async () => {
   const table = opened;
   opened = null;
@@ -118,10 +118,10 @@ test("a person holding only a link joins a locked open table and plays", async (
     ).toBeLessThanOrEqual(0);
     await pill.click();
     await expect(action, "one tap opens the corner").toBeVisible();
-    const opened = await readOverflow(a);
+    const openCorner = await readOverflow(a);
     expect(
-      opened.docScrollWidth - opened.docClientWidth,
-      `the open corner pushes the lobby sideways at 390px: ${blame(opened)}`,
+      openCorner.docScrollWidth - openCorner.docClientWidth,
+      `the open corner pushes the lobby sideways at 390px: ${blame(openCorner)}`,
     ).toBeLessThanOrEqual(0);
     await pill.click();
 
@@ -144,8 +144,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   await a.getByLabel("Table password", { exact: true }).fill("sesame");
   opened = awaitCreate(a);
   await a.getByRole("button", { name: "Open table" }).click();
-  const id = await opened.id;
-  if (id === null) throw new Error("the server named no table");
+  const id = await createdTable(opened);
   await expect(a).toHaveURL(new RegExp(`#/t/${id}$`));
   // The link A would send somebody, read off A's own screen — and then followed
   // below, which is what says the field holds an address and not a sentence.

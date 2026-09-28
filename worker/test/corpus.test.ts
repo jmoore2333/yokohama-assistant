@@ -54,8 +54,12 @@ type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agree
  *
  * **The rule's twin** is the live replay's, stated in
  * `worker/scripts/live-replay.mjs`'s `judge` (its "An exemption is spent only
- * on a value this host SENT" comment): the same rule over the same fields, one
- * statement per replay (ruling R-C3), each naming the other.
+ * on a value this host SENT" comment): the same rule over the same fields,
+ * stated once in each of the two WORKER replays (ruling R-C3), each naming the
+ * other. The browser host's node replay (`web/src/local/corpus.node.test.ts`)
+ * is not a third statement of it: it still spends an exemption on
+ * `not.toEqual` alone, which an absent field passes — a debt recorded
+ * forward, left this cycle (Task 7's review, M-5; ruling R-C20).
  */
 function hostFields(fixture: string, committed: unknown, got: unknown): HostFieldVerdict[] {
   const sent = (typeof got === "object" && got !== null ? got : {}) as Record<string, unknown>;
@@ -117,6 +121,32 @@ const THIRD_COLUMN = [
   "why_refusals",
   "why_refused",
 ];
+
+describe("hostFields — the presence rule, verdict by verdict (R3's L-5)", () => {
+  // Task 7's review, M-6: the replay below only ever meets `spent`, so each
+  // other verdict is pinned here, over the function alone — no object is
+  // touched. Mutant: `typeof value !== "string"` read as `value === undefined`
+  // (a number sent for a field would then be spent), or `agrees` folded into
+  // `spent`.
+  it("spends an exemption only on a string this host sent that differs, and takes out only the exempted fields", () => {
+    const committed = { identity: "open", signal: "sse", archive: "off", multiplayer: true };
+    expect(hostFields("health", committed, { identity: "cf-access", signal: "ws", archive: "r2" })).toEqual([
+      { field: "identity", verdict: "spent" },
+      { field: "signal", verdict: "spent" },
+      { field: "archive", verdict: "spent" },
+    ]);
+    expect(hostFields("health", committed, { signal: 7, archive: "off" }), "absent, a number, and agreeing").toEqual([
+      { field: "identity", verdict: "no-string" },
+      { field: "signal", verdict: "no-string" },
+      { field: "archive", verdict: "agrees" },
+    ]);
+    expect(hostFields("me", { mode: "open" }, null), "a body that is no object sends no field").toEqual([{ field: "mode", verdict: "no-string" }]);
+    expect(hostFields("games", committed, {}), "a fixture with nothing exempted").toEqual([]);
+    expect(withoutHostFields("health", committed)).toEqual({ multiplayer: true });
+    expect(withoutHostFields("games", committed)).toEqual(committed);
+    expect(withoutHostFields("health", null)).toBeNull();
+  });
+});
 
 describe("the objects serve the corpus (spec §5.3)", () => {
   it("replays the walk through the objects and every named reply is its committed file", { timeout: 600_000 }, async () => {

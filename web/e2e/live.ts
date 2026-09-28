@@ -288,21 +288,40 @@ export async function liveRequest<T>(call: () => Promise<T>): Promise<T> {
 
 /**
  * **A table a walk is opening**: known from the moment its create is SENT
- * (R3's L-9). A walk used to arm its own wait for the create's reply and set
- * its `opened` only once it had READ that reply, so a failure between the
- * click and that read — a budget run out, a reply it never parsed — left the
- * table in the shared lobby. Its `afterEach` hands this to [`abandonOpened`]
- * instead.
+ * (R3's L-9), for as long as [`awaitCreate`]'s wait lasts. A walk used to arm
+ * its own wait for the create's reply and set its `opened` only once it had
+ * READ that reply, so a failure between the click and that read — a budget run
+ * out, a reply it never parsed — left the table in the shared lobby. Its
+ * `afterEach` hands this to [`abandonOpened`] instead.
  */
 export type Opening = {
   /** The creator's page, whose context the abandon goes through: the DELETE
-   *  must carry that context's cookie and claimed header ([`abandonAsCreator`]). */
+   *  must carry that context's cookie and claimed header ([`abandonAsCreator`];
+   *  ruling R-C19). */
   page: Page;
   /** The table's id, read off the create's 201 the moment it lands, whether
    *  or not the walk gets that far — or `null` for a create that answered
-   *  anything else, or a wait that ended with no reply at all. */
+   *  anything else, or a wait that ended with no reply at all. It never
+   *  rejects. */
   id: Promise<string | null>;
+  /** Why `id` is `null`, or `null` when it is not (Task 7's review, I-1): a
+   *  SAFE line — the status the create answered, or the NAME of the error
+   *  the wait ended in, never that error's message, which could carry what
+   *  the request sent. [`createdTable`] throws it. It never rejects. */
+  reason: Promise<string | null>;
 };
+
+/** The one line for a wait that ended in `e` before any reply: its error's
+ *  NAME alone. In Playwright 1.62.1 the wait ends three ways — its timeout, a
+ *  `TimeoutError`; the page closing, and the page crashing, both named plain
+ *  `Error` — so a name other than `TimeoutError` is one of those two. */
+function waitEnded(e: unknown): string {
+  const name = e instanceof Error ? e.name : typeof e;
+  return name === "TimeoutError"
+    ? "the wait for its reply timed out (TimeoutError): no reply within the context's default timeout, the config's " +
+        "actionTimeout — the create was never sent, or was answered later, and a table answered later is left in the lobby"
+    : `the wait for its reply ended in ${name} before any reply: the page closed, or crashed`;
+}
 
 /**
  * Arms the wait for `page`'s create — `POST /api/games` — and answers its
@@ -311,22 +330,50 @@ export type Opening = {
  * land before the wait is armed.
  *
  * The wait is `page.waitForResponse`'s, which ends on its own: when the page
- * closes, or when its timeout passes — the context's default, which
- * Playwright 1.62.1 sets from the config's `actionTimeout` (15 s) on every
- * context a run opens, a spec's hand-made ones included. So a create that was
- * never sent reads `null` at the latest 15 s after the wait was armed, and an
- * `afterEach` awaiting it never hangs.
+ * closes or crashes, or when its timeout passes — the context's default,
+ * which Playwright 1.62.1 sets from the config's `actionTimeout` (15 s) on
+ * every context a run opens, a spec's hand-made ones included. So a create
+ * that was never sent reads `null` at the latest 15 s after the wait was
+ * armed, and an `afterEach` awaiting it never hangs. Every end is caught into
+ * `null` and a reason: neither promise rejects.
+ *
+ * **A create that WAS sent and answered after that wait reads `null` as
+ * well** (Task 7's review, M-4): the server made the table, and nothing here
+ * abandons it. Its reason names `TimeoutError` and says so; the table is
+ * taken away by the operator's force, which [`abandonAsCreator`]'s refusal
+ * names.
  */
 export function awaitCreate(page: Page): Opening {
-  const id = page
+  const settled: Promise<{ id: string | null; reason: string | null }> = page
     .waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/games")
     .then(async (r) => {
-      if (r.status() !== 201) return null;
-      const named = ((await r.json()) as { id?: unknown } | null)?.id;
-      return typeof named === "string" && named !== "" ? named : null;
+      if (r.status() !== 201) return { id: null, reason: `it answered ${r.status()}, not 201` };
+      let body: unknown;
+      try {
+        body = await r.json();
+      } catch (e) {
+        return { id: null, reason: `its 201 could not be read (${e instanceof Error ? e.name : typeof e})` };
+      }
+      const named = (body as { id?: unknown } | null)?.id;
+      return typeof named === "string" && named !== ""
+        ? { id: named, reason: null }
+        : { id: null, reason: "it answered 201 naming no table" };
     })
-    .catch(() => null);
-  return { page, id };
+    .catch((e: unknown) => ({ id: null, reason: waitEnded(e) }));
+  return { page, id: settled.then((s) => s.id), reason: settled.then((s) => s.reason) };
+}
+
+/**
+ * The table `opening` created, for the walk that goes on to play it: its id,
+ * or a throw that says why there is none — `opening.reason`, which names a
+ * status or an error's NAME and never a message (Task 7's review, I-1: the
+ * one sentence the three live specs used to throw, "the server named no
+ * table", was false for a wait that timed out and for a page that closed).
+ */
+export async function createdTable(opening: Opening): Promise<string> {
+  const id = await opening.id;
+  if (id !== null) return id;
+  throw new Error(`no table id came back from the create: ${await opening.reason}`);
 }
 
 /**

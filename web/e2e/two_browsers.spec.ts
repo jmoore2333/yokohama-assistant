@@ -41,7 +41,7 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
-import { LIVE, abandonOpened, awaitCreate, liveContextOptions, type Opening } from "./live";
+import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 // The readings every walk that SHARES a table makes — whose hand, whose move,
 // the table's chat, its stream, and the server's event count — live in
 // `shared_table.ts` since the exit's game needed them too (ruling I-88).
@@ -58,8 +58,9 @@ let opened: Opening | null = null;
 // lobby is shared with real people and every other run, so what a walk leaves
 // behind stays there. As its CREATOR, through A's own page; the game's save is
 // the Worker's, under the bucket's `test/` root. It knows the table from the
-// moment the create is SENT (`awaitCreate`; R3's L-9), so a walk that fails
-// before it reads the create's reply still takes its table away.
+// moment the create is SENT, for as long as `awaitCreate`'s wait lasts (R3's
+// L-9), so a walk that fails before it reads the create's reply still takes
+// its table away.
 //
 // **An `afterEach` and not a `finally`, and that was MEASURED** (Playwright
 // 1.62.1): when a test runs out of its budget, a `finally` in its body runs
@@ -151,8 +152,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await a.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
   opened = awaitCreate(a);
   await a.getByRole("button", { name: "Deal" }).click();
-  const id = await opened.id;
-  if (id === null) throw new Error("the server named no table");
+  const id = await createdTable(opened);
   streamPath = `/api/games/${id}/stream`;
 
   // A chooses, and is then waiting: the table does not start until B has

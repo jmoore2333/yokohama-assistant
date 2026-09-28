@@ -383,11 +383,21 @@ describe("every live API call in web/e2e goes through liveRequest", () => {
 //   - `opened` is set from `awaitCreate(…)` or to `null`, and nothing else;
 //   - the spec's `test.afterEach` calls `abandonOpened`.
 //
-// Its limit, stated: a create button found by any other locator (a regular
-// expression, a test id) is not read as a create. Two premises keep that from
-// passing quietly where it matters most: the two labels are still
-// `NewGame.tsx`'s, and each live spec makes at least one create click the
-// scan reads. A SECOND create in a spec, found another way, would go unread.
+//   - no `opened` is declared anywhere but the module's scope: a block's own
+//     `opened` would shadow the one the `afterEach` reads, and a create armed
+//     into it would be abandoned by nobody.
+//
+// Its limit, stated: the scan reads a create ONLY as a direct
+// `<page>.getByRole("button", { name: <a create label> }).click()` in a live
+// spec. Unread: a create button found by any other locator (a regular
+// expression, a test id), a chained or stored locator (`.first().click()`,
+// `const b = a.getByRole(…); await b.click()`), another action (`press("Enter")`
+// in the form, `dblclick`), and a create made from a helper MODULE, whose
+// sources this rule does not read for creates. Two premises catch only the
+// case where a spec's SOLE create leaves the scan's view: the two labels are
+// still `NewGame.tsx`'s, and each live spec makes at least one create click
+// the scan reads. A second create in a spec, reached any of those ways, would
+// go unread.
 
 /** The labels of the one button that sends `POST /api/games`. */
 const CREATE_BUTTONS = new Set(["Open table", "Deal"]);
@@ -455,6 +465,18 @@ function creates(file: string, source: string): { clicks: number; abandons: bool
         refused.push(`${where(n)} — a create not right after opened = awaitCreate(${page}), so its table is not known from the moment it is sent`);
       }
     }
+    if (
+      (ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isBindingElement(n) || ts.isFunctionDeclaration(n)) &&
+      n.name !== undefined &&
+      ts.isIdentifier(n.name) &&
+      n.name.text === "opened"
+    ) {
+      const moduleScope =
+        ts.isVariableDeclaration(n) && ts.isVariableDeclarationList(n.parent) && ts.isVariableStatement(n.parent.parent) && ts.isSourceFile(n.parent.parent.parent);
+      if (!moduleScope) {
+        refused.push(`${where(n)} — an opened declared inside a scope shadows the module's, which is the one the afterEach abandons`);
+      }
+    }
     if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && n.left.text === "opened") {
       const right = n.right;
       const fromCreate = ts.isCallExpression(right) && ts.isIdentifier(right.expression) && right.expression.text === "awaitCreate";
@@ -479,20 +501,58 @@ function creates(file: string, source: string): { clicks: number; abandons: bool
 }
 
 describe("creates — the rule, on sources written for it", () => {
-  it("refuses the old shape: the walk's own wait before the click, and opened set from the reply it read", () => {
-    const { clicks, refused } = creates(
+  // Task 7's review, M-1: the afterEach arm is pinned both ways — this cell
+  // reads `false` off a hook that abandons BY HAND, the next-but-one `true`.
+  // Mutant: `abandons` starting `true`.
+  it("refuses the old shape: the walk's own wait before the click, opened set from the reply it read, and a hook abandoning by hand", () => {
+    const { clicks, abandons, refused } = creates(
       "old.ts",
       [
         'const created = a.waitForResponse((r) => r.request().method() === "POST");',
         'await a.getByRole("button", { name: "Deal" }).click();',
         "const id = String(((await (await created).json()) as { id: string }).id);",
         "opened = { page: a, id };",
+        "test.afterEach(async () => {",
+        "  const table = opened;",
+        "  opened = null;",
+        "  if (LIVE && table) await abandonAsCreator(table.page, table.id);",
+        "});",
       ].join("\n"),
     );
     expect(clicks).toBe(1);
+    expect(abandons, "a hook that abandons by hand is not abandonOpened").toBe(false);
     expect(refused).toEqual([
       'old.ts:2: a.getByRole("button", { name: "Deal" }).click() — a create not right after opened = awaitCreate(a), so its table is not known from the moment it is sent',
       "old.ts:4: opened = { page: a, id } — opened is set from awaitCreate(…) or to null, and nothing else",
+    ]);
+  });
+  // Task 7's review, M-2: `opened` is matched by NAME, so a block's own
+  // `opened` would take the create while the module's stayed null — refused
+  // wherever it is declared, but at the module's scope.
+  // Mutant: a `let opened` in the test body, before the create.
+  it("refuses an opened declared anywhere but the module's scope — a block's, a parameter, a destructure, a loop's", () => {
+    const read = creates(
+      "shadow.ts",
+      [
+        "let opened: Opening | null = null;",
+        'test("t", async () => {',
+        "  let opened: Opening | null = null;",
+        "  const f = (opened: number) => opened;",
+        "  const { opened: renamed } = row;",
+        "  const { opened } = row;",
+        "  for (const opened of rows) f(opened);",
+        "  opened = awaitCreate(a);",
+        '  await a.getByRole("button", { name: "Deal" }).click();',
+        "});",
+      ].join("\n"),
+    );
+    // Line 5 declares `renamed`, not `opened`: a property read under another
+    // name is no shadow.
+    expect(read.refused).toEqual([
+      "shadow.ts:3: opened: Opening | null = null — an opened declared inside a scope shadows the module's, which is the one the afterEach abandons",
+      "shadow.ts:4: opened: number — an opened declared inside a scope shadows the module's, which is the one the afterEach abandons",
+      "shadow.ts:6: opened — an opened declared inside a scope shadows the module's, which is the one the afterEach abandons",
+      "shadow.ts:7: opened — an opened declared inside a scope shadows the module's, which is the one the afterEach abandons",
     ]);
   });
   it("refuses awaitCreate armed AFTER the click, on another page, or with a statement between", () => {

@@ -436,7 +436,11 @@ function judge(fixture, reply, context) {
       // that differs from the committed one: a field it dropped is a
       // mismatch, never `"off" → (absent)`. The rule's twin is the pool's,
       // `worker/test/corpus.test.ts`'s `hostFields` — the same rule over the
-      // same fields, one statement per replay (R3's L-5; ruling R-C3).
+      // same fields, stated once in each of the two WORKER replays (R3's L-5;
+      // ruling R-C3). The browser host's node replay
+      // (`web/src/local/corpus.node.test.ts`) still spends an exemption on
+      // `not.toEqual` alone, which an absent field passes: a recorded debt
+      // (Task 7's review, M-5; ruling R-C20).
       if (typeof got[field] !== "string") {
         diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
       } else if (isDeepStrictEqual(got[field], committed[field])) {

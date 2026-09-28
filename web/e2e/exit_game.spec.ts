@@ -84,6 +84,7 @@ import {
   abandonAsCreator,
   abandonOpened,
   awaitCreate,
+  createdTable,
   describeBounds,
   exitLayout,
   forgetHidden,
@@ -244,8 +245,9 @@ let opened: Opening | null = null;
 // `two_browsers.spec.ts` gives: a timed-out body's `finally` runs only after
 // its pages are closed. The walk abandons it itself at its end, which is one
 // of the things it is here to see; this is for a walk that did not get there —
-// from the moment the create is SENT (`awaitCreate`; R3's L-9), so a walk that
-// fails before it reads the create's reply still takes its table away.
+// from the moment the create is SENT, for as long as `awaitCreate`'s wait
+// lasts (R3's L-9), so a walk that fails before it reads the create's reply
+// still takes its table away.
 test.afterEach(async () => {
   const table = opened;
   opened = null;
@@ -348,8 +350,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
   await x.getByLabel("Table password", { exact: true }).fill(PASSWORD);
   opened = awaitCreate(x);
   await x.getByRole("button", { name: "Open table" }).click();
-  const id = await opened.id;
-  if (id === null) throw new Error("the server named no table");
+  const id = await createdTable(opened);
   streamPath = `/api/games/${id}/stream`;
   await expect(x).toHaveURL(new RegExp(`#/t/${id}$`));
 
