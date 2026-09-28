@@ -157,7 +157,12 @@ mod tests {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                if ["println!", "eprint!(", "print!(", "dbg!("].iter().any(|p| line.contains(p)) {
+                // The print macros (`println!` also matches `eprintln!`), and
+                // either standard stream reached through `io::` — the
+                // `writeln!(std::io::stderr(), …)` the macros alone cannot
+                // see. A bare `stderr()` imported by name is not matched.
+                const PRINTS: [&str; 6] = ["println!", "eprint!(", "print!(", "dbg!(", "io::stderr(", "io::stdout("];
+                if PRINTS.iter().any(|p| line.contains(p)) {
                     if name == "log.rs" {
                         seam += 1;
                     } else {

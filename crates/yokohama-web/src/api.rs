@@ -647,11 +647,13 @@ pub(crate) fn undo_allowed(
     // finished (`Games::live_handle` refuses one that is not), and its bot's
     // seat is a human one inside the resident `Repl` — so the CLI's undo, which
     // pops back to the last human move, would pop the BOT's final move and
-    // leave a game nobody can play.
+    // leave a game nobody can play. The bot is named by the `played` half of
+    // the refusal's pair (R-C5), so a same-name re-point reads "V4.2", never
+    // "V4" on a server that runs V4.
     if let Some((_, played)) = crate::bots::foreign(repl.session.record()).first() {
         return Err(format!(
             "undo is not offered on a game played against {}, which this server doesn't run",
-            crate::bots::label(played),
+            crate::bots::distinguishing_labels(played, &crate::bots::production()).0,
         ));
     }
     if table.distinct_humans() <= 1 {
