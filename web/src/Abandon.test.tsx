@@ -378,6 +378,36 @@ describe("the abandon control on a local game", () => {
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
   });
 
+  // **On the STATUS, never the sentence** (the whole-branch review's Minor 2):
+  // the two cells below are the witnesses. A 404 whose sentence says nothing
+  // about an archive still writes the fact down — the corpus's lobby-chat 404,
+  // another route switched off, is that sentence — and a refusal that is not a
+  // 404 leaves the fact alone however loudly its sentence names the archive:
+  // the corpus's 409 reads "archived".
+  it("remembers the archive OFF on a 404 whatever its sentence says", async () => {
+    const { onDone, onError, user } = local("dir", () => ({
+      status: 404,
+      body: wire.houseChatOff404,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.houseChatOff404.error));
+    expect(wire.houseChatOff404.error, "the premise: a sentence that names no archive").not.toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("off");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("leaves the archive fact alone on a refusal that is not a 404, whatever its sentence names", async () => {
+    const { onDone, onError, user } = local("dir", () => ({
+      status: 409,
+      body: wire.archive409,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
+    expect(wire.archive409.error, "the premise: a sentence that names the archive").toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("dir");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
   // No archive on this server: nothing to send, and the delete is local only.
   it("deletes without sending anything when the server keeps no archive", async () => {
     const { steps, onDone, user } = local("off", () => {

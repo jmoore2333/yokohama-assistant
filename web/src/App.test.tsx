@@ -3461,6 +3461,52 @@ describe("a local game", () => {
     expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
   });
 
+  // **On the STATUS, never the sentence** (the whole-branch review's Minor 2),
+  // and the two cells below are its witnesses at this site: a 404 whose
+  // sentence names no archive — the corpus's lobby-chat 404, another route
+  // switched off — still writes the fact down, and a refusal that is not a 404
+  // leaves it alone however loudly its sentence names the archive (the
+  // corpus's 409 reads "archived").
+  it("remembers the archive OFF when Send to the archive meets a 404 whatever its sentence says", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 404, body: wire.houseChatOff404 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.houseChatOff404.error)).toBeInTheDocument();
+    expect(wire.houseChatOff404.error, "the premise: a sentence that names no archive").not.toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("off");
+  });
+
+  it("leaves the archive fact alone when Send to the archive meets a refusal that is not a 404", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 409, body: wire.archive409 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.archive409.error)).toBeInTheDocument();
+    expect(wire.archive409.error, "the premise: a sentence that names the archive").toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("dir");
+    // And the control stays, because nothing said this server keeps no archive.
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+  });
+
   // **Two clicks in one tick are ONE send** (whole-branch review, Minor #4).
   // The control darkens on the ANSWER, so it cannot be the guard: before the
   // wave a double click posted twice, the second landed as `identical`, and a
