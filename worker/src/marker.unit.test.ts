@@ -82,6 +82,7 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
   // which a pool cell replaces at module scope for "no TTL, no expiry".
   it("reads the TTL from the configuration, null when unset", () => {
     const config = (ttlDays: number | null): ShellConfig => ({
+      door: "worker",
       archive: "r2",
       ttlDays,
       admins: null,

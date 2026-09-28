@@ -1,0 +1,43 @@
+// **The pool's OPEN door** (M6.5c2, spec §2.1; review R2.2-M2): the
+// configuration `vitest.config.ts`'s `open` project hands `cloudflareTest`.
+// Every object reads its door from its own configuration, so the open door is
+// proven in a pool of its own. It is never deployed — `npm run deploy` reads
+// `wrangler.jsonc` — and it carries a name of its own, with no `workers.dev`
+// URL and no preview URLs, for `wrangler.test.jsonc`'s reason.
+//
+// It is `wrangler.test.jsonc` with the door changed: the same assets block,
+// object classes, migrations and bucket, and the same variables but four.
+// Under `open` the shell reads no Access assertion, so the team's domain, the
+// audience and the dev door's client id are absent (the open door needs none
+// of them), and `YOKOHAMA_DEV_DOOR` is absent too.
+{
+  "name": "yokohama-web-open-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  "assets": {
+    "directory": "./.test-assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*", "/enter"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  "vars": {
+    "YOKOHAMA_WEB_IDENTITY": "open",
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000",
+    "YOKOHAMA_WEB_COUNT_WAKES": "on"
+  }
+}

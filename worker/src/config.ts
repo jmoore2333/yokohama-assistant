@@ -5,8 +5,14 @@ import { isAddress } from "./identity";
  *  frozen reading, or a reading that ticks one second per use. */
 export type Clock = { kind: "wall" } | { kind: "frozen"; at: number } | { kind: "tick"; next: number };
 
+/** The Worker's door (M6.5c2, spec §2.1; R-6.5c2.5). */
+export type Door = "worker" | "open";
+
 /** The Worker's variables as the shell uses them (spec §3.1). */
 export interface ShellConfig {
+  /** `YOKOHAMA_WEB_IDENTITY` (M6.5c2, spec §2.1): Cloudflare Access verified
+   *  by this shell, or the open door. No default. */
+  door: Door;
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
@@ -29,6 +35,7 @@ type Variable = { [K in keyof Env]-?: NonNullable<Env[K]> extends string ? K : n
  * string check (`strings`, below) without a word.
  */
 const ROWS: { readonly [K in Variable]: true } = {
+  YOKOHAMA_WEB_IDENTITY: true,
   ACCESS_TEAM_DOMAIN: true,
   ACCESS_AUD: true,
   DEV_DOOR_CLIENT_ID: true,
@@ -80,6 +87,22 @@ function strings(env: Env): void {
  *  (the orchestrator's ruling E2). */
 function folded(raw: string): string {
   return raw.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * `worker` | `open`, with NO default (M6.5c2, spec §2.1; R-6.5c2.5) — read as
+ * the layer reads the NAS's variable of this name (`IdentityMode::from_str`):
+ * trimmed, then matched exactly. `cf-access` is the NAS's door, not this
+ * host's: here the shell verifies Access itself, which is `worker`.
+ */
+function door(raw: string | null): Door {
+  const value = raw === null ? null : raw.trim();
+  if (value === "worker" || value === "open") return value;
+  return refuse(
+    value === null
+      ? "YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision"
+      : `YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(value)}`,
+  );
 }
 
 /** `r2` | `off`, absent = off (R-6.5c.14). The module matches these two
@@ -159,7 +182,8 @@ function clock(raw: string | null): Clock {
  * The Worker's configuration, or the sentence that refuses it — naming the
  * variable, the Worker's form of the NAS refusing to start. A variable that is
  * not a string is refused before any value is read; after that, the first
- * field refused, in the order `ShellConfig` lists them, is the one named.
+ * field refused, in the order `ShellConfig` lists them — the door first
+ * (M6.5c2) — is the one named.
  *
  * The three chat variables are held to strings here and parsed by the module
  * (`init`), with the layer's own function; nothing else here reads them.
@@ -168,6 +192,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
   try {
     strings(env);
     return {
+      door: door(text(env, "YOKOHAMA_WEB_IDENTITY")),
       archive: archive(env),
       ttlDays: ttlDays(text(env, "YOKOHAMA_WEB_TABLE_TTL_DAYS")),
       admins: admins(text(env, "YOKOHAMA_WEB_ADMINS")),
@@ -182,7 +207,8 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
 }
 
 /**
- * The module's `init` configuration (the plan's names table): the archive
+ * The module's `init` configuration (the plan's names table): the door as
+ * exactly `worker` or `open` (M6.5c2, spec §2.1), the archive
  * switch as exactly `off` or `r2`, `caller` verbatim (the module normalizes
  * it, under `r2`, as the layer normalizes an address), and the three chat
  * variables RAW, for the module to parse with the layer's own function.
@@ -195,6 +221,7 @@ export function moduleConfig(env: Env, caller: string | null): string {
   const c = shellConfig(env);
   if ("error" in c) throw new Error(c.error);
   return JSON.stringify({
+    identity: c.door,
     archive: c.archive,
     caller,
     lobby_chat: text(env, "YOKOHAMA_WEB_LOBBY_CHAT"),

@@ -3,6 +3,8 @@ import { credentialClaims, personClaims, signer, type Signer } from "../test/tok
 import type { Env } from "./env";
 import {
   asciiLower,
+  callerName,
+  claimedIdentity,
   forwardable,
   identityConfig,
   keySource,
@@ -438,4 +440,45 @@ describe("forwardable", () => {
       expect(forwardable(email)).toBe(false);
     },
   );
+});
+
+// M6.5c2, spec §2.1 (review R2.2-m3, R2.2-m6): an open-door claim — the header
+// on a fetch, the percent-DECODED `claimed` parameter on an upgrade, so any
+// character at all — judged as `address` judges an assertion's `email`: RAW by
+// `forwardable`, then trimmed and ASCII-lowercased. The shell never judges it
+// further: the layer's key grammar does, in the objects. Mutants: normalized
+// before it is judged (a Kelvin sign becomes `k`, an NBSP-led `ben` becomes
+// `ben`); a blank claim made a caller; the claim made a `person` (an
+// operator's rights).
+describe("claimedIdentity (M6.5c2, spec §2.1)", () => {
+  it("is a claimed name, trimmed and ASCII-lowercased, and never judged further", () => {
+    expect(claimedIdentity(" Ben ")).toEqual({ kind: "claimed", name: "ben" });
+    expect(claimedIdentity(" Ben  Castle "), "space runs are the layer's to collapse").toEqual({
+      kind: "claimed",
+      name: "ben  castle",
+    });
+    expect(claimedIdentity("a+b@x.test")).toEqual({ kind: "claimed", name: "a+b@x.test" });
+    expect(claimedIdentity(".."), "the key grammar refuses it, in the objects").toEqual({ kind: "claimed", name: ".." });
+  });
+  it("is no one for a value a header cannot carry, judged RAW", () => {
+    // A Kelvin sign, a no-break space, a carriage return, a NUL, an e-acute.
+    for (const raw of ["\u212Aevin", "\u00A0ben", "ben\r", "ben\u0000", "ren\u00E9"]) {
+      expect(claimedIdentity(raw), JSON.stringify(raw)).toEqual({ kind: "none" });
+    }
+  });
+  it("is no one with no claim, or a blank one", () => {
+    for (const raw of [null, "", "   ", "\t"]) expect(claimedIdentity(raw), JSON.stringify(raw)).toEqual({ kind: "none" });
+  });
+});
+
+// The one reader of the value an identity is forwarded as, and names its
+// archive object by. Mutant: a claim forwarded as nothing (the open door's
+// caller lost between the Worker and the object).
+describe("callerName (M6.5c2)", () => {
+  it("is the person's or the dev door's address, the claimed name, or nothing", () => {
+    expect(callerName({ kind: "person", email: "red@t.test" })).toBe("red@t.test");
+    expect(callerName({ kind: "dev", email: "probe@deploy.test" })).toBe("probe@deploy.test");
+    expect(callerName({ kind: "claimed", name: "ben" })).toBe("ben");
+    expect(callerName({ kind: "none" })).toBeUndefined();
+  });
 });

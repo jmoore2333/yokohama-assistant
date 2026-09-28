@@ -4,7 +4,7 @@ import { createModule, type Reply } from "../gen/factory.js";
 import { Instance, readReply } from "../src/module";
 import { OWED_PUMP_JSON, OWED_PUMP_TABLE_JSON } from "./fixtures.gen";
 
-const CONFIG = JSON.stringify({ archive: "off", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
+const CONFIG = JSON.stringify({ identity: "worker", archive: "off", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
 
 /** What `f` threw — the value itself, so a cell can tell a thrown string from
  *  one wrapped in an `Error`. */
@@ -80,7 +80,7 @@ describe("the guarded instance (the orchestrator's ruling I-29)", () => {
     expect(inst.get()).toEqual({ mod, fresh: false });
   });
   it("passes init's refusal through unchanged, and keeps no module", () => {
-    const bad = JSON.stringify({ archive: "s3", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
+    const bad = JSON.stringify({ identity: "worker", archive: "s3", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
     const inst = new Instance(bad);
     const sentence = 'YOKOHAMA_WEB_ARCHIVE must be r2 or off — got "s3"';
     expect(thrown(() => inst.get())).toBe(sentence);

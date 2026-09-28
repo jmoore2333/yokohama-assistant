@@ -5,6 +5,7 @@ import { earliest, guardAlarmName } from "./alarm";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
+import { CLAIMED_USER_HEADER } from "./identity";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
 import { expiryDeadline, gameOf, keptOf, markerEnd, markerSentence, ttlDaysOf, type Ending, type Marker, type Reason } from "./marker";
 import { Instance, pinnedTo, readReply, type Bump, type Replied } from "./module";
@@ -36,6 +37,22 @@ import {
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
 export const USER_HEADER = "X-Yokohama-User";
+
+/**
+ * The caller an object was handed (the plan's internal headers; M6.5c2, spec
+ * §2.1): the ONE header its door names, and no other — `X-Yokohama-User`, a
+ * caller the Worker verified, under `worker`; `X-Yokohama-Claimed-User`, a name
+ * a caller claimed, under `open`. The Worker strips every client
+ * `x-yokohama-*` header and sets its door's alone, so the two agree while the
+ * Worker and the object read one configuration — and were they ever to
+ * disagree, a claim would reach no caller rather than pass as a verified one.
+ * With a configuration the shell refuses there is no door and no caller: the
+ * object answers that refusal's 500 before it reads one.
+ */
+export function forwardedCaller(headers: Headers, config: ShellConfig | { error: string }): string | undefined {
+  if ("error" in config) return undefined;
+  return headers.get(config.door === "open" ? CLAIMED_USER_HEADER : USER_HEADER) ?? undefined;
+}
 /** A create's object name, percent-encoded (the plan's internal headers). */
 export const TABLE_ID_HEADER = "X-Yokohama-Table-Id";
 
@@ -64,8 +81,8 @@ const USED_RECENTLY = "this name was used recently — try another";
 type Transport = "events" | "stream";
 
 /** What a socket carries across hibernation: the caller it was admitted as,
- *  exactly as `X-Yokohama-User` named them — the viewer every frame it is
- *  sent is computed for. */
+ *  exactly as its door's header named them (`forwardedCaller`) — the viewer
+ *  every frame it is sent is computed for. */
 interface Attachment {
   user: string | undefined;
 }
@@ -181,7 +198,7 @@ export class Table extends DurableObject<Env> {
     if (transport === "stream" && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
     const incoming: Incoming = {
       id: this.ctx.id.name ?? requestedId(url.pathname, req.headers, create),
-      user: req.headers.get(USER_HEADER) ?? undefined,
+      user: forwardedCaller(req.headers, this.config),
       method: req.method,
       path: url.pathname,
       query: url.search.slice(1),

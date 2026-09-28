@@ -35,6 +35,12 @@ export interface Env {
    *  refused without it. */
   ARCHIVE?: R2Bucket;
 
+  /** `worker` | `open`, with NO default (M6.5c2, spec §2.1; R-6.5c2.5): the
+   *  door. `worker` is Cloudflare Access, verified by this shell — this
+   *  repository's configuration; `open` is a deployment with no identity
+   *  provider, where the name a caller claims is who they are. Unset, every
+   *  `/api/*` answers the 500 naming it. */
+  YOKOHAMA_WEB_IDENTITY?: string;
   /** The Access team's domain; its keys are
    *  `https://<domain>/cdn-cgi/access/certs` (spec §2.3). */
   ACCESS_TEAM_DOMAIN?: string;

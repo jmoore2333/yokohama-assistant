@@ -453,7 +453,7 @@ mod tests {
     /// (§"Names shared across tasks"): `caller` is the Archive object's
     /// address, and `null` on every other object.
     fn r2(caller: Option<&str>) -> String {
-        json!({"archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
+        json!({"identity": "worker", "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
             .to_string()
     }
 

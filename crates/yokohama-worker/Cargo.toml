@@ -20,8 +20,13 @@ crate-type = ["cdylib"]
 [dependencies]
 # The layer WITHOUT its server half, as the browser host takes it (R-6.5b.9):
 # axum, tokio and tokio-stream never enter this graph. This crate is the
-# layer's third host, and changes nothing in it.
-yokohama-web = { path = "../yokohama-web", default-features = false }
+# layer's third host, and changes nothing in it. `open-door` (M6.5c2, spec
+# §2.1; review R2.2-m1): the Worker offers the open door as a deployment
+# choice, so no Worker build refuses it at compile time — that refusal is the
+# axum host's, built without the feature. The module maps the shell's `open` to
+# `IdentityMode::Open` itself (`config.rs`); the feature writes the intent where
+# a reader of this manifest meets it.
+yokohama-web = { path = "../yokohama-web", default-features = false, features = ["open-door"] }
 yokohama-core = { path = "../yokohama-core" }
 # The CLI's library half, already in this graph through the layer. The cells
 # read `session::Session` to build the owed-pump fixture, and spec §2.4's picker

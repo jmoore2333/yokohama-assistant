@@ -3,7 +3,18 @@ import { Archive, ARCHIVE_PREFIX } from "./archive";
 import { shellConfig } from "./config";
 import type { Env } from "./env";
 import { House } from "./house";
-import { identityConfig, keySource, resolveIdentity, type Identity, type IdentityConfig, type KeySource } from "./identity";
+import {
+  callerName,
+  CLAIMED_PARAM,
+  CLAIMED_USER_HEADER,
+  claimedIdentity,
+  identityConfig,
+  keySource,
+  resolveIdentity,
+  type Identity,
+  type IdentityConfig,
+  type KeySource,
+} from "./identity";
 import { errorBody, log, respond } from "./respond";
 import { routableName, route, type Target } from "./route";
 import { HOUSE_NAME } from "./slot";
@@ -55,12 +66,19 @@ const NO_ONE: Identity = { kind: "none" };
  *    forwarded is the bytes it bounded.
  * 4. `/api/art`: the static art manifest projected onto the nine maps the
  *    layer's `ArtManifest` declares, as JSON (`art`).
- * 5. The caller: Access's assertion, verified (`resolveIdentity`), whose
- *    address was judged raw and then trimmed and ASCII-lowercased as the
- *    layer reads one. No assertion asks nothing of the key source; a key set
- *    that cannot be had is no caller, so the request fails CLOSED.
+ * 5. The caller, by the door (M6.5c2, spec §2.1). Under `worker`: Access's
+ *    assertion, verified (`resolveIdentity`), whose address was judged raw
+ *    and then trimmed and ASCII-lowercased as the layer reads one. No
+ *    assertion asks nothing of the key source; a key set that cannot be had
+ *    is no caller, so the request fails CLOSED. Under `open`: no assertion is
+ *    read and no key is asked for; the caller is the name claimed —
+ *    `X-Yokohama-Claimed-User` on a `fetch`, the `claimed` query parameter on
+ *    an upgrade, where a browser can put no header, and never the other
+ *    carrier — held to what a header can carry (`claimedIdentity`).
  * 6. The strip rule: a fresh `Headers` without any header named
- *    `x-yokohama-…`, and `X-Yokohama-User` set when there is a caller.
+ *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
+ *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
+ *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
  * 6a. `/api/admin` and below — the operator surface (spec §2.9) — pass the
  *    gate (`operatorGate`): with `YOKOHAMA_WEB_ADMINS` absent they are
  *    unrouted `/api/*`, the house's; a caller who is not a PERSON on the list
@@ -108,13 +126,17 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
 
   if (target.kind === "art") return art(req, url, env);
 
-  const identity = await identify(req.headers, keys, identityConfig(env, config.devDoor, Math.floor(Date.now() / 1000)));
+  const identity =
+    config.door === "open"
+      ? claimedIdentity(isUpgrade(req.headers) ? url.searchParams.get(CLAIMED_PARAM) : req.headers.get(CLAIMED_USER_HEADER))
+      : await identify(req.headers, keys, identityConfig(env, config.devDoor, Math.floor(Date.now() / 1000)));
 
   const headers = new Headers();
   for (const [name, value] of req.headers) {
     if (!name.toLowerCase().startsWith(STRIPPED)) headers.append(name, value);
   }
-  if (identity.kind !== "none") headers.set(USER_HEADER, identity.email);
+  const who = callerName(identity);
+  if (who !== undefined) headers.set(identity.kind === "claimed" ? CLAIMED_USER_HEADER : USER_HEADER, who);
 
   let forwarded: Forwarded;
   if (target.kind === "admin") {
@@ -287,16 +309,22 @@ function objectFor(
     }
     case "table":
       return env.TABLE.get(env.TABLE.idFromName(target.name));
-    case "archive":
-      // Named by the address exactly as `resolveIdentity` answered it —
-      // judged raw, then trimmed and ASCII-lowercased as the layer's
-      // `User::parse` reads a caller — so one caller is one object. With no
-      // caller, or an address longer than the layer accepts (which it
+    case "archive": {
+      // Named by the caller's name — an address, or an open-door claim —
+      // exactly as `resolveIdentity` or `claimedIdentity` answered it: judged
+      // raw, then trimmed and ASCII-lowercased as the layer's `User::parse`
+      // reads a caller — so one caller is one object. With no caller, or a
+      // name longer than the longest address the layer accepts (which it
       // refuses), the house's `dispatch` answers the layer's 401: no archive
       // object's name passes 262 bytes, far inside the 1,024 past which the
-      // platform would give it none.
-      if (identity.kind === "none" || new TextEncoder().encode(identity.email).length > ADDRESS_MAX_BYTES) return house();
-      return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + identity.email));
+      // platform would give it none. Under `open` a claim is held only to what
+      // a header can carry (spec §2.1), so a claim the key grammar refuses —
+      // `..`, a name of 40 letters — still names an object, whose `init`
+      // refuses it: that object's 500, naming the grammar's refusal.
+      const who = callerName(identity);
+      if (who === undefined || new TextEncoder().encode(who).length > ADDRESS_MAX_BYTES) return house();
+      return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + who));
+    }
     case "house":
       return house();
   }

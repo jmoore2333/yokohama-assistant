@@ -17,9 +17,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** `init`'s configuration: the archive off, no caller, the chat variables
- *  unset — the layer's defaults. */
-export const SMOKE_CONFIG = JSON.stringify({ archive: "off", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
+/** `init`'s configuration: the worker door — the one this repository
+ *  deploys (M6.5c2) — the archive off, no caller, the chat variables unset:
+ *  the layer's defaults. */
+export const SMOKE_CONFIG = JSON.stringify({
+  identity: "worker",
+  archive: "off",
+  caller: null,
+  lobby_chat: null,
+  chat_keep: null,
+  chat_text: null,
+});
 
 /** The smoke over the module in `gen`: a line saying what it answered, or a
  *  throw naming why it is refused. */

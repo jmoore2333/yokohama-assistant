@@ -45,7 +45,7 @@ use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
 use yokohama_web::games::Games;
-use yokohama_web::identity::{admit, resolve, IdentityMode, User, WORKER_HEADER};
+use yokohama_web::identity::{admit, resolve, User};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
 
@@ -75,6 +75,17 @@ pub(crate) static STORE: Mutex<Option<Arc<MemStore>>> = Mutex::new(None);
 /// The signal the one `Games` holds — the SAME `Arc`, so what the layer
 /// signals during a call is drained into that call's reply.
 pub(crate) static SIGNAL: Mutex<Option<Arc<RecordingSignal>>> = Mutex::new(None);
+
+/// The door [`init`] was given (M6.5c2, spec §2.1): replaced with the rest of
+/// the layer at every `init`, so an instance answers every call under ONE door
+/// — the door its object's own configuration names.
+pub(crate) static DOOR: Mutex<Option<config::Door>> = Mutex::new(None);
+
+/// The door `init` set, which every call that reads a caller or reports the
+/// host's facts follows.
+fn door() -> config::Door {
+    DOOR.lock().expect("the host's door").expect("init() before a caller is resolved")
+}
 
 /// The log the one `Games` holds — the SAME `Arc`, so what the layer logs
 /// during a call is drained into that call's reply (M6.5c2).
@@ -135,29 +146,33 @@ pub fn set_clock(seconds: Option<f64>) -> Option<f64> {
     prior
 }
 
-/// The deployment facts this host reports (spec §2.2; §4's second class).
-///
-/// **`cf-access`, although the module reads the `worker` mode's header**: the
-/// door a client is behind is Cloudflare Access, and R-6.5c.3 has the Worker
-/// forward its verdict to the objects as `X-Yokohama-User` — so `/api/me` and
-/// `/api/health` name the door, and [`identity_of`] reads the header. `"ws"`:
-/// a table's changes reach a browser over a WebSocket (spec §2.7). Multiplayer
-/// is both served and offered.
-const HOST: Host =
-    Host { identity_name: "cf-access", signal_kind: "ws", serves_games: true, multiplayer_offered: true };
+/// The deployment facts this host reports (spec §2.2; §4's second class), for
+/// the door `init` was given (M6.5c2, spec §2.1): its name on the wire —
+/// `cf-access` under `worker`, although the module reads the `worker` mode's
+/// header, because the door a client is behind is Cloudflare Access and
+/// R-6.5c.3 has the Worker forward its verdict to the objects as
+/// `X-Yokohama-User`; `open` under `open` ([`config::Door::wire_name`]).
+/// `"ws"`: a table's changes reach a browser over a WebSocket (spec §2.7).
+/// Multiplayer is both served and offered.
+fn host() -> Host {
+    Host { identity_name: door().wire_name(), signal_kind: "ws", serves_games: true, multiplayer_offered: true }
+}
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the `Games`, its store, its signal, its archive and its log together,
-/// an empty `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new
-/// receipt archive with no receipt and no pending plan, under `off` none. A
-/// refused configuration changes nothing. A bad VALUE's refusal names its variable
-/// (spec §2.2); a configuration of the wrong shape names none — JSON that is
-/// not an object is refused in this crate's own sentence, which names the five
-/// keys, and an unknown key or a value of the wrong JSON type in serde's words
-/// (`config.rs`) — and the shell never builds one. The clock is not reset:
-/// [`set_clock`] is its only writer.
+/// one — the door (M6.5c2), the `Games`, its store, its signal, its archive and
+/// its log together, an empty `picker::PICKERS`, and `receipt::RECEIPTS`: under
+/// `r2` a new receipt archive with no receipt and no pending plan, under `off`
+/// none. A refused configuration changes nothing — the door included, which is
+/// stored only once `config::parse` has accepted the whole. A bad VALUE's
+/// refusal names its variable (spec §2.2); a configuration of the wrong shape
+/// names none — JSON that is not an object is refused in this crate's own
+/// sentence, which names the six keys, and an unknown or missing key or a
+/// value of the wrong JSON type in serde's words (`config.rs`) — and the shell
+/// never builds one. The clock is not reset: [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
-    let config::Config { chat, archive } = config::parse(config)?;
+    let config::Config { door, chat, archive } = config::parse(config)?;
+    // The door before the `Games` is built: the layer is built for it.
+    *DOOR.lock().expect("the host's door") = Some(door);
     let store = Arc::new(MemStore::default());
     let signal = Arc::new(RecordingSignal::default());
     // The SAME `Arc` the layer holds, kept so a receipt reaches the archive the
@@ -325,31 +340,38 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
     }
 }
 
-/// Who the caller is, by the `worker` mode's ONE header (spec §2.3): the value
-/// the shell hands over goes into a header map as `X-Yokohama-User` and is read
-/// by the layer's own `identity::resolve` — so `anonymous`, like an absent or
-/// blank value, is no caller; so is a plain name (the layer's mode rule,
-/// M6.5c2); and a refusal is the layer's own sentence.
+/// Who the caller is, by the door's ONE header (spec §2.3; M6.5c2, spec §2.1):
+/// the value the shell hands over goes into a header map under the header the
+/// door's mode reads — `X-Yokohama-User` under `worker`,
+/// `X-Yokohama-Claimed-User` under `open` — and is read by the layer's own
+/// `identity::resolve` in that mode, with its key grammar and its mode rule:
+/// under `worker` an identity must have the email shape and a plain name
+/// reads as absent; under `open` any key the grammar accepts is a caller.
+/// `anonymous`, like an absent or blank value, is no caller, and a refusal is
+/// the layer's own sentence.
 ///
 /// A value no header can carry — one holding a control character other than a
-/// tab — never reaches `resolve`, so it takes `resolve`'s two steps here: the
-/// key grammar (`User::parse`, trimming as `resolve` would and refusing any
-/// control character that remains) and then the mode's rule (`identity::admit`),
-/// so `"ben\r"` is nobody exactly as a header naming `ben` is (review R2-m1).
-/// It is a 401 either way, with one difference in wording: a value whose only
-/// such characters are at its ends, which the trim removes, and which trims to
-/// nothing or to `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence,
-/// where `resolve` would answer its absent-caller sentence had a header carried
-/// it. No header can.
+/// tab — never reaches `resolve`, so it takes `resolve`'s two steps here, in
+/// the door's mode: the key grammar (`User::parse`, trimming as `resolve`
+/// would and refusing any control character that remains) and then the mode's
+/// rule (`identity::admit`), so `"ben\r"` is nobody at the worker door exactly
+/// as a header naming `ben` is (review R2-m1), and `ben` at the open door. It
+/// is a 401 wherever the mode refuses, with one difference in wording: a value
+/// whose only such characters are at its ends, which the trim removes, and
+/// which trims to nothing or to `anonymous` — `"anonymous\n"` — gets
+/// `User::parse`'s sentence, where `resolve` would answer its absent-caller
+/// sentence had a header carried it. No header can: the shell never forwards
+/// such a value (`address` in `worker/src/identity.ts`).
 pub fn identity_of(user: Option<&str>) -> Result<User, String> {
+    let mode = door().mode();
     let mut headers = http::HeaderMap::new();
     if let Some(raw) = user {
         let Ok(value) = http::HeaderValue::from_str(raw) else {
-            return User::parse(raw).and_then(|user| admit(IdentityMode::Worker, user));
+            return User::parse(raw).and_then(|user| admit(mode, user));
         };
-        headers.insert(WORKER_HEADER, value);
+        headers.insert(mode.header(), value);
     }
-    resolve(IdentityMode::Worker, &headers)
+    resolve(mode, &headers)
 }
 
 /// [`identity_of`] as a reply: 200 `{"user": <the normalized address>}`, or 401
@@ -377,7 +399,8 @@ pub fn identity(user: Option<String>) -> Reply {
 /// The caller is [`identity_of`]'s answer, carried into `api::dispatch` as the
 /// browser host carries its own: `Ok(&user)`, or `Err(sentence)` for the
 /// layer's 401 — so `/api/me` answers `user: null` and every route that needs
-/// a caller refuses in the `worker` mode's own words.
+/// a caller refuses in the door's mode's own words. The host's facts are
+/// `host()`'s, for the same door.
 ///
 /// It answers through `from_the_layer`, so the signal is drained while the
 /// `Games` is still held — and with spec §2.4's picker step around the layer's
@@ -392,6 +415,9 @@ pub fn dispatch_inner(
     body: &[u8],
 ) -> ReplyData {
     let caller = identity_of(user);
+    // Read before `from_the_layer` takes `GAMES`, so the door's lock is never
+    // taken under it.
+    let host = host();
     let identity: api::Identity<'_> = match &caller {
         Ok(u) => Ok(u),
         Err(sentence) => Err(sentence.as_str()),
@@ -399,7 +425,7 @@ pub fn dispatch_inner(
     let req = ApiRequest { method, path, query, content_type, body };
     from_the_layer(|games| {
         let (res, picker) =
-            picker::around(games, &req, caller.as_ref().ok(), || api::dispatch(games, &HOST, identity, &req));
+            picker::around(games, &req, caller.as_ref().ok(), || api::dispatch(games, &host, identity, &req));
         (res.status, res.body, picker)
     })
 }
@@ -583,6 +609,7 @@ pub fn debug_trap() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yokohama_web::identity::IdentityMode;
 
     /// The cells share the global `GAMES` and the global clock; they run one at
     /// a time, as `yokohama-wasm`'s do.
@@ -599,7 +626,15 @@ mod tests {
     }
 
     pub(crate) fn config(archive: &str) -> String {
-        format!(r#"{{"archive":"{archive}","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}}"#)
+        door_config(archive, "worker")
+    }
+
+    /// `init`'s configuration at `door` (M6.5c2, spec §2.1): the object
+    /// `worker/src/config.ts`'s `moduleConfig` builds, the door first.
+    pub(crate) fn door_config(archive: &str, door: &str) -> String {
+        format!(
+            r#"{{"identity":"{door}","archive":"{archive}","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}}"#
+        )
     }
 
     /// The objects read the caller from `X-Yokohama-User` (spec §2.3), so a
@@ -682,6 +717,86 @@ mod tests {
         }
     }
 
+    /// **The open door** (M6.5c2, spec §2.1; R-6.5c2.5): `init`'s `identity`
+    /// fixes the mode a caller is resolved under, and the door's name on the
+    /// wire. Under `open` a claimed NAME is a caller, keyed by the layer's own
+    /// grammar (trimmed, space runs collapsed, ASCII-lowercased), at every
+    /// admission — `dispatch` and the lobby socket's `identity` — and
+    /// `/api/me` and `/api/health` say `open`. The anti-vacuity partner is the
+    /// `worker` door at the next `init`: `cf-access`, and the same name no one
+    /// (the mode rule). Mutants: the door parsed and never read; the header
+    /// left at the `worker` mode's (every open caller no one); `Host` left
+    /// `cf-access`.
+    #[test]
+    fn the_open_door_resolves_a_claimed_name_and_names_itself_open() {
+        let _s = serial();
+        init_inner(&door_config("off", "open")).unwrap();
+        let r = dispatch_inner(Some("  Ben   Castle "), "GET", "/api/me", "", None, b"");
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"mode":"open","user":"ben castle"}"#));
+        let r = dispatch_inner(None, "GET", "/api/me", "", None, b"");
+        assert_eq!(r.body, r#"{"mode":"open","user":null}"#);
+        let health = dispatch_inner(Some("ben"), "GET", "/api/health", "", None, b"").body;
+        assert!(health.contains(r#""identity":"open""#), "{health}");
+        let r = identity_inner(Some("Ben"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"ben"}"#), "the lobby socket's admission, at the same door");
+        let r = identity_inner(None);
+        assert_eq!(r.status, 401);
+        assert!(!r.body.contains("from the edge Worker"), "the open mode's own sentence, not the worker mode's: {}", r.body);
+
+        init_inner(&config("off")).unwrap();
+        let r = dispatch_inner(Some("ben"), "GET", "/api/me", "", None, b"");
+        assert_eq!(r.body, r#"{"mode":"cf-access","user":null}"#, "the worker door: a plain name is no one");
+    }
+
+    /// `init` takes the Worker's two doors and no default (M6.5c2, spec §2.1).
+    /// `cf-access` is the NAS's door, not this host's — here the shell verifies
+    /// Access itself, which is `worker` — and a configuration naming no door is
+    /// refused in serde's words. A refused `init` changes nothing: the door the
+    /// last accepted one set stands. Mutants: a default door; any other string
+    /// read as `worker`; the door stored before the configuration is accepted.
+    #[test]
+    fn init_takes_the_workers_two_doors_and_no_default() {
+        let _s = serial();
+        init_inner(&door_config("off", "open")).unwrap();
+        let err = init_inner(&door_config("off", "cf-access")).unwrap_err();
+        assert_eq!(err, r#"YOKOHAMA_WEB_IDENTITY must be worker or open — got "cf-access""#);
+        let err = init_inner(r#"{"archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}"#)
+            .unwrap_err();
+        assert!(err.contains("missing field `identity`"), "{err}");
+        let err = init_inner(&door_config("s3", "worker")).unwrap_err();
+        assert!(err.contains("YOKOHAMA_WEB_ARCHIVE"), "{err}");
+        let r = dispatch_inner(Some("ben"), "GET", "/api/me", "", None, b"");
+        assert_eq!(r.body, r#"{"mode":"open","user":"ben"}"#, "every refused init changed nothing");
+    }
+
+    /// Spec §2.1 rule 4, at BOTH doors: a value no header can carry never
+    /// reaches `resolve` as itself. It takes `resolve`'s two steps here — the
+    /// key grammar, then the mode rule in the DOOR's mode — so `"ben\r"` is
+    /// the name `ben` at the open door and no one at the worker door
+    /// (`a_value_no_header_can_carry_is_held_to_the_worker_modes_rule`), in
+    /// the very words an absent caller gets; and a control character the
+    /// grammar's trim leaves inside the value is the grammar's refusal at
+    /// either door. The shell never forwards such a value (`address` in
+    /// `worker/src/identity.ts`). Mutant: the fallback's mode left at `Worker`
+    /// (the open door refuses `ben`).
+    #[test]
+    fn a_value_no_header_can_carry_is_judged_under_the_doors_own_mode() {
+        let _s = serial();
+        init_inner(&door_config("off", "open")).unwrap();
+        let r = identity_inner(Some("ben\r"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"ben"}"#));
+        init_inner(&config("off")).unwrap();
+        let worker = identity_inner(Some("ben\r"));
+        let absent = identity_inner(None);
+        assert_eq!((worker.status, &worker.body), (401, &absent.body), "a plain name at the worker door reads as absent");
+        for door in ["open", "worker"] {
+            init_inner(&door_config("off", door)).unwrap();
+            let r = identity_inner(Some("be\rn"));
+            let want = serde_json::json!({ "error": User::parse("be\rn").unwrap_err() }).to_string();
+            assert_eq!((r.status, r.body.as_str()), (401, want.as_str()), "{door}");
+        }
+    }
+
     /// `init` refuses a bad value NAMING the variable — the Worker's form of the
     /// NAS refusing to start (spec §2.6) — and the chat variables are the NAS's,
     /// through the layer's own parser.
@@ -690,9 +805,9 @@ mod tests {
         let _s = serial();
         let err = init_inner(&config("s3")).unwrap_err();
         assert!(err.contains("YOKOHAMA_WEB_ARCHIVE"), "{err}");
-        let err = init_inner(r#"{"archive":"off","caller":null,"lobby_chat":"maybe","chat_keep":null,"chat_text":null}"#).unwrap_err();
+        let err = init_inner(r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":"maybe","chat_keep":null,"chat_text":null}"#).unwrap_err();
         assert!(err.contains("YOKOHAMA_WEB_LOBBY_CHAT"), "{err}");
-        init_inner(r#"{"archive":"off","caller":null,"lobby_chat":"off","chat_keep":"all","chat_text":"280"}"#).unwrap();
+        init_inner(r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":"off","chat_keep":"all","chat_text":"280"}"#).unwrap();
         let body = dispatch_inner(Some("red@wire.test"), "GET", "/api/health", "", None, b"").body;
         for fact in [r#""lobby_chat":false"#, r#""chat_keep":null"#, r#""chat_text":280"#] {
             assert!(body.contains(fact), "{fact} in {body}");
@@ -718,7 +833,8 @@ mod tests {
         for array in [r#"["off",null,null,null,null]"#, r#"["r2","red@t.test",null,null,null]"#] {
             let err = init_inner(array).unwrap_err();
             assert_eq!(
-                err, "the module's init configuration is the object of its five keys — archive, caller, lobby_chat, chat_keep and chat_text",
+                err,
+                "the module's init configuration is the object of its six keys — identity, archive, caller, lobby_chat, chat_keep and chat_text",
                 "{array}"
             );
         }

@@ -14,6 +14,8 @@
 // socket this reader leans on.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CLAIMED_USER_KEY, identityHeaders } from "./api";
+import { patchServerFacts, resetFactsForTest } from "./local/facts";
 import type { Frame } from "./sse";
 import { FakeSocket } from "./test/fakeSocket";
 import { wire } from "./wire/contract";
@@ -244,5 +246,46 @@ describe("the socket reader", () => {
     expect(t.thrown).toEqual([]);
     await expect(onOpenThrows).rejects.toBe(boom);
     expect(t.closedWith).toBe(1000);
+  });
+});
+
+// M6.5c2, spec §2.1: a browser puts no header on a WebSocket upgrade, so under
+// the OPEN door the stored name rides the upgrade's URL as `claimed=` —
+// encoded by `URLSearchParams`, so a `+` is `%2B` and a space `+`, and the
+// Worker's `searchParams.get` reads back the very name the fetch header
+// carries. Under any other door, nothing: the edge's own session is the
+// identity there. Mutants: the name concatenated raw (`a+b` reads back
+// `a b`); the parameter under every door; a second statement of the stored
+// name that could drift from the header's.
+describe("the open door's claim on the upgrade (M6.5c2; Review Focus 1)", () => {
+  afterEach(() => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    resetFactsForTest();
+  });
+
+  it.each([
+    ["a+b@x.test", "?claimed=a%2Bb%40x.test"],
+    ["ben castle", "?claimed=ben+castle"],
+  ])("(Review Focus 1) carries %j as the fetch header's own value, URLSearchParams-encoded", (name, search) => {
+    localStorage.setItem(CLAIMED_USER_KEY, name);
+    patchServerFacts({ identity: "open" });
+    read("/api/games/wire/stream");
+    const url = new URL(FakeSocket.made.at(-1)!.url);
+    expect(url.search).toBe(search);
+    expect(url.searchParams.get("claimed")).toBe(name);
+    expect(url.searchParams.get("claimed"), "the value the fetch carries").toBe(identityHeaders()["x-yokohama-claimed-user"]);
+  });
+
+  it("carries no claim under any other door, nor under the open door with no stored name", () => {
+    localStorage.setItem(CLAIMED_USER_KEY, "ben");
+    for (const identity of ["cf-access", "worker", ""]) {
+      patchServerFacts({ identity });
+      read("/api/stream");
+      expect(FakeSocket.made.at(-1)!.url, JSON.stringify(identity)).toBe(`ws://${location.host}/api/stream`);
+    }
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    patchServerFacts({ identity: "open" });
+    read("/api/stream");
+    expect(FakeSocket.made.at(-1)!.url).toBe(`ws://${location.host}/api/stream`);
   });
 });

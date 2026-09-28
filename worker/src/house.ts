@@ -9,7 +9,7 @@ import { Instance, readReply, type Replied } from "./module";
 import { errorBody, log, respond } from "./respond";
 import { decide, type Ack, type HouseRow, type Slot } from "./slot";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
-import { isUpgrade, NOT_AN_UPGRADE, USER_HEADER } from "./table";
+import { forwardedCaller, isUpgrade, NOT_AN_UPGRADE } from "./table";
 
 /** The house chat's one id — the layer's `chat::HOUSE`, the only id its store
  *  takes for that document. It is also the object's name (`HOUSE_NAME`). */
@@ -26,7 +26,7 @@ const TRAP = "the lobby's engine stopped — try again";
 const RETIRED_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** What a lobby socket carries across hibernation: the caller it was admitted
- *  as, exactly as `X-Yokohama-User` named them. */
+ *  as, exactly as its door's header named them (`forwardedCaller`). */
 interface Attachment {
   user: string | undefined;
 }
@@ -109,7 +109,7 @@ export class House extends DurableObject<Env> {
     if (stream && req.method !== "GET") return respond(405, "");
     if (stream && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
     const incoming: Incoming = {
-      user: req.headers.get(USER_HEADER) ?? undefined,
+      user: forwardedCaller(req.headers, this.config),
       stream,
       method: req.method,
       path: url.pathname,

@@ -234,6 +234,25 @@ describe("the Worker's own answers (spec §2.3)", () => {
     expect((await worker("/assets/x.js", { env: bad })).status).toBe(404);
   });
 
+  // M6.5c2, spec §2.1 (R-6.5c2.5): the door has NO default. The Worker refuses
+  // before any object is reached, as it refuses every variable it cannot read
+  // — and a cell's override reaches the Worker's own `shellConfig` alone,
+  // which is exactly this instrument (review R2.2-M2): the objects read their
+  // configuration file's. Mutants: a default door (the absence read as
+  // `worker`); the check before routing (`/enter` answers 500).
+  it("an unset YOKOHAMA_WEB_IDENTITY answers 500 naming it on every /api/* path", async () => {
+    const unset = { ...env, YOKOHAMA_WEB_IDENTITY: undefined };
+    const body = JSON.stringify({
+      error: "YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision",
+    });
+    for (const path of ["/api/health", "/api/me", "/api/art", "/api/games/wire/table"]) {
+      const res = await worker(path, { env: unset, token: await person(RED) });
+      expect([res.status, res.text], path).toEqual([500, body]);
+    }
+    expect((await worker("/enter", { env: unset })).status).toBe(302);
+    expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
+  });
+
   // The NAS's answer is its typed `ArtManifest`: the file's nine maps, in the
   // struct's declaration order, and NOT the file's two generator keys — the
   // committed `art_manifest.json` (the orchestrator's ruling on Task 12's
@@ -320,6 +339,28 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect((await worker("/api/me", { headers: claimed, token: await person(BLUE) })).text).toBe(
       `{"mode":"cf-access","user":"${BLUE}"}`,
     );
+  });
+
+  // M6.5c2, spec §2.1: under `worker` the claim's carriers name no one without
+  // the credential — the header (battery 15, above) and the upgrade's
+  // `claimed` parameter alike — and a person's assertion is the caller
+  // whatever the parameter says. Mutants: the parameter read under `worker`;
+  // the door read per request rather than from the configuration.
+  it("under worker an upgrade's claimed parameter is no caller, and never outranks a person", async () => {
+    const anonymous = await worker(`/api/stream?${new URLSearchParams({ claimed: "ben" })}`, { headers: UPGRADE });
+    expect([anonymous.status, anonymous.webSocket]).toEqual([401, null]);
+    const who = "param-person@t.test";
+    const res = await worker(`/api/stream?${new URLSearchParams({ claimed: "evil@x.test" })}`, {
+      token: await person(who),
+      headers: UPGRADE,
+    });
+    const tab = await socket(res);
+    const attached = await runInDurableObject(houseStub(), (_o, state) =>
+      state.getWebSockets("lobby").map((ws) => ws.deserializeAttachment() as { user?: string }),
+    );
+    expect(attached).toContainEqual({ user: who });
+    expect(attached).not.toContainEqual({ user: "evil@x.test" });
+    tab.ws.close(1000, "done");
   });
 
   // Mutant: an archive with no caller sent to an Archive object of its own —

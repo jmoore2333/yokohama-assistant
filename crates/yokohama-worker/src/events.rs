@@ -5,7 +5,7 @@
 //! This module restates that handler, in its order.
 //!
 //! **`wait` is validated and never held** (spec §2.3) — safe only because this
-//! host reports `signal: "ws"` (`HOST` in `lib.rs`). No client runs the held
+//! host reports `signal: "ws"` (`host()` in `lib.rs`). No client runs the held
 //! arm against it: that arm re-asks a value source at once
 //! (`web/src/signal.ts`), so an immediate answer to it would spin against the
 //! object. What asks with `wait` here is spec §2.7's probe, which Task 8 adds to

@@ -2,27 +2,35 @@
 //! the Worker's variables, parsed and refused HERE — so a bad VALUE is refused
 //! at `init` naming its variable, the Worker's form of the NAS refusing to
 //! start. A configuration of the wrong SHAPE names no variable: JSON that is
-//! not an OBJECT is refused in this crate's own sentence, which names the five
-//! keys ([`parse`]); text that is not JSON, and an object with a key it does not
-//! have or a value of the wrong JSON type, such as `{"chat_keep": 500}` for the
-//! string `"500"`, in serde's words. The shell always builds the object, with
-//! every value a string or `null` (`worker/src/config.ts`'s `moduleConfig`, whose
-//! `shellConfig` refuses a variable that is not a string first: the
-//! orchestrator's ruling E3), so no deployment reaches those.
+//! not an OBJECT is refused in this crate's own sentence, which names the six
+//! keys ([`parse`]); text that is not JSON, an object with a key it does not
+//! have or MISSING the door, and a value of the wrong JSON type, such as
+//! `{"chat_keep": 500}` for the string `"500"`, in serde's words. The shell
+//! always builds the object, with every value a string or `null`
+//! (`worker/src/config.ts`'s `moduleConfig`, whose `shellConfig` refuses a
+//! variable that is not a string, and a door that is not named, first: the
+//! orchestrator's ruling E3; M6.5c2, spec §2.1), so no deployment reaches those.
 
 use serde::Deserialize;
 use yokohama_web::chat::ChatConfig;
-use yokohama_web::identity::User;
+use yokohama_web::identity::{IdentityMode, User};
+
+/// The door's variable (M6.5c2, spec §2.1; R-6.5c2.5): `worker` or `open`,
+/// with no default.
+pub(crate) const IDENTITY_VAR: &str = "YOKOHAMA_WEB_IDENTITY";
 
 /// The archive switch's variable (spec §3.1): `r2` or `off`.
 pub(crate) const ARCHIVE_VAR: &str = "YOKOHAMA_WEB_ARCHIVE";
 
-/// The five keys the shell sends, and no others: an unknown key is a
-/// misspelling in the shell, refused rather than ignored. Read ONLY from the
+/// The six keys the shell sends, and no others: an unknown key is a
+/// misspelling in the shell, refused rather than ignored, and a missing
+/// `identity` is refused too — the door has no default. Read ONLY from the
 /// object form ([`parse`]).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InitConfig {
+    /// The door (M6.5c2, spec §2.1), as `shellConfig` read it.
+    identity: String,
     archive: String,
     /// The Archive object's address (spec §2.6), and `null` on every other
     /// object. Read only under `r2`, where it is the receipt archive's
@@ -37,8 +45,48 @@ struct InitConfig {
 
 /// What `init` builds the layer with.
 pub(crate) struct Config {
+    pub(crate) door: Door,
     pub(crate) chat: ChatConfig,
     pub(crate) archive: Switch,
+}
+
+/// Which door this Worker has (M6.5c2, spec §2.1; R-6.5c2.5), fixed at `init`
+/// with the rest of the configuration: every object builds its module from its
+/// OWN configuration, so one deployment is one door everywhere. Two names move
+/// with it (review R2.2-m2): the layer's mode a caller is resolved under
+/// ([`Door::mode`]), and the door's name on the wire ([`Door::wire_name`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Door {
+    /// Cloudflare Access, verified by the shell, which hands the objects the
+    /// caller it verified — a person's assertion, or the dev door's claim under
+    /// the credential. This repository's configuration.
+    Worker,
+    /// No identity service (R-6.5c2.3): the name a caller claims is who they
+    /// are. The shell holds a claim only to what a header can carry; the
+    /// layer's key grammar judges the rest.
+    Open,
+}
+
+impl Door {
+    /// The layer's identity mode for this door.
+    pub(crate) fn mode(self) -> IdentityMode {
+        match self {
+            Self::Worker => IdentityMode::Worker,
+            Self::Open => IdentityMode::Open,
+        }
+    }
+
+    /// The door's name on the wire — `/api/me`'s `mode`, `/api/health`'s
+    /// `identity` — in the layer's own words: `cf-access` under `worker`,
+    /// because the door a client is behind is Cloudflare Access (the name
+    /// `web/src/types.ts` and the client's `useIdentityMode` have read since
+    /// M6.5c), and `open` under `open`.
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            Self::Worker => IdentityMode::CfAccess.name(),
+            Self::Open => IdentityMode::Open.name(),
+        }
+    }
 }
 
 /// The archive switch (spec §2.6).
@@ -51,6 +99,9 @@ pub(crate) enum Switch {
 }
 
 /// The configuration `init` builds the layer with.
+///
+/// **The door first** (M6.5c2, spec §2.1): exactly `worker` or `open`, refused
+/// naming its variable otherwise.
 ///
 /// The chat values go through the layer's own `ChatConfig::from_env_values`,
 /// whose refusals already name their variables — the NAS's names, parser and
@@ -73,12 +124,17 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     let value: serde_json::Value = serde_json::from_str(config)
         .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
     if !value.is_object() {
-        return Err("the module's init configuration is the object of its five keys — \
-                    archive, caller, lobby_chat, chat_keep and chat_text"
+        return Err("the module's init configuration is the object of its six keys — \
+                    identity, archive, caller, lobby_chat, chat_keep and chat_text"
             .to_string());
     }
     let c: InitConfig = serde_json::from_value(value)
         .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
+    let door = match c.identity.as_str() {
+        "worker" => Door::Worker,
+        "open" => Door::Open,
+        v => return Err(format!("{IDENTITY_VAR} must be worker or open — got {v:?}")),
+    };
     let archive = match c.archive.as_str() {
         "off" => Switch::Off,
         "r2" => Switch::R2 { caller: c.caller.as_deref().map(normalized).transpose()? },
@@ -86,7 +142,7 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     };
     let chat =
         ChatConfig::from_env_values(c.lobby_chat.as_deref(), c.chat_keep.as_deref(), c.chat_text.as_deref())?;
-    Ok(Config { chat, archive })
+    Ok(Config { door, chat, archive })
 }
 
 /// The archive caller as the layer normalizes an address.
