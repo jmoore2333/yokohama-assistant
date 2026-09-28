@@ -130,6 +130,10 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
         board: box(document.querySelector(".door-hero .board-mark")!.getBoundingClientRect()),
       };
     });
+    // **The text has a width before anything is compared with it** (the
+    // whole-branch review's Minor 4): an empty `Range` reads as a zero rect at
+    // the origin, and that rect "ends left of the board" at 861.
+    expect(text.right - text.left, `at ${width}px the title's text has a width`).toBeGreaterThan(100);
     const clear =
       text.right <= board.left || text.left >= board.right || text.bottom <= board.top || text.top >= board.bottom;
     expect(clear, `at ${width}px the title's text ${JSON.stringify(text)} meets the board ${JSON.stringify(board)}`).toBe(
