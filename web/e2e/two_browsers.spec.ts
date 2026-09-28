@@ -41,7 +41,7 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
-import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
+import { LIVE, abandonOpened, awaitCreate, liveContextOptions, type Opening } from "./live";
 // The readings every walk that SHARES a table makes — whose hand, whose move,
 // the table's chat, its stream, and the server's event count — live in
 // `shared_table.ts` since the exit's game needed them too (ruling I-88).
@@ -50,13 +50,16 @@ import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo } from ".
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
-/** The table this walk opened, and the page of the person who opened it. */
-let opened: { page: Page; id: string } | null = null;
+/** The table this walk is opening, and the page of the person opening it:
+ *  known from the moment its create is SENT ([`awaitCreate`]). */
+let opened: Opening | null = null;
 
 // **Live, the walk abandons the table it opened** (spec §5.4): the Worker's
 // lobby is shared with real people and every other run, so what a walk leaves
 // behind stays there. As its CREATOR, through A's own page; the game's save is
-// the Worker's, under the bucket's `test/` root.
+// the Worker's, under the bucket's `test/` root. It knows the table from the
+// moment the create is SENT (`awaitCreate`; R3's L-9), so a walk that fails
+// before it reads the create's reply still takes its table away.
 //
 // **An `afterEach` and not a `finally`, and that was MEASURED** (Playwright
 // 1.62.1): when a test runs out of its budget, a `finally` in its body runs
@@ -69,7 +72,7 @@ let opened: { page: Page; id: string } | null = null;
 test.afterEach(async () => {
   const table = opened;
   opened = null;
-  if (LIVE && table) await abandonAsCreator(table.page, table.id);
+  await abandonOpened(table);
 });
 
 /** The walk's own cap on MOVES. Idle looks have their own, below: the two
@@ -146,13 +149,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // presents anything — and it is the only way to reach the unlock face.
   await a.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await a.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
-  const created = a.waitForResponse(
-    (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
-  );
+  opened = awaitCreate(a);
   await a.getByRole("button", { name: "Deal" }).click();
-  const id = String(((await (await created).json()) as { id: string }).id);
-  expect(id, "the server named the table").toBeTruthy();
-  opened = { page: a, id };
+  const id = await opened.id;
+  if (id === null) throw new Error("the server named no table");
   streamPath = `/api/games/${id}/stream`;
 
   // A chooses, and is then waiting: the table does not start until B has

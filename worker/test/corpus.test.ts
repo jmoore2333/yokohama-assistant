@@ -37,6 +37,45 @@ const HOST_FIELDS: Record<string, string[]> = {
   me_signed_out: ["mode"],
 };
 
+/** What one exempted field of a named reply came to: `spent` when this host
+ *  sent it as a string that differs from the committed one; `no-string` when
+ *  it sent no string for it, absent or of another type; `agrees` when both
+ *  hosts sent the same value. */
+type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agrees" };
+
+/**
+ * Every exempted field of `fixture`'s reply, judged by the PRESENCE rule (R3's
+ * L-5): an exemption is spent only on a field this host SENT, as a string,
+ * that differs from the committed one. A field this host dropped is no
+ * difference between two hosts, and an exemption spent on it — or on a field
+ * both hosts agree on — is a hole a later host could hide behind (M6.5b's
+ * battery): `expect(undefined).not.toEqual(…)` passes, which is how the old
+ * check here let an absent field through.
+ *
+ * **The rule's twin** is the live replay's, stated in
+ * `worker/scripts/live-replay.mjs`'s `judge` (its "An exemption is spent only
+ * on a value this host SENT" comment): the same rule over the same fields, one
+ * statement per replay (ruling R-C3), each naming the other.
+ */
+function hostFields(fixture: string, committed: unknown, got: unknown): HostFieldVerdict[] {
+  const sent = (typeof got === "object" && got !== null ? got : {}) as Record<string, unknown>;
+  const cut = (typeof committed === "object" && committed !== null ? committed : {}) as Record<string, unknown>;
+  return (HOST_FIELDS[fixture] ?? []).map((field) => {
+    const value = sent[field];
+    if (typeof value !== "string") return { field, verdict: "no-string" };
+    return { field, verdict: value === cut[field] ? "agrees" : "spent" };
+  });
+}
+
+/** `value` with `fixture`'s exempted fields taken out — a copy, and only of an
+ *  object: anything else is answered as it is. */
+function withoutHostFields<T>(fixture: string, value: T): T {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const field of HOST_FIELDS[fixture] ?? []) delete copy[field];
+  return copy as T;
+}
+
 /**
  * The third column: every committed file no row of the replay names on this
  * host, SORTED. It is derived below exactly as the node replay derives its
@@ -95,20 +134,16 @@ describe("the objects serve the corpus (spec §5.3)", () => {
         named.add(row.fixture);
         const text = WIRE[row.fixture];
         if (text === undefined) throw new Error(`${row.fixture} is named by the walk and not committed`);
-        const committed = JSON.parse(text) as Record<string, unknown>;
-        const got = (reply.text ? JSON.parse(reply.text) : null) as Record<string, unknown>;
-        // An exempted field must really DIFFER between the two hosts: an
-        // exemption that differs nowhere is a hole a later host could hide
-        // behind (M6.5b's battery).
-        for (const field of HOST_FIELDS[row.fixture] ?? []) {
-          expect(got[field], `${row.fixture}.${field} is exempted, but both hosts agree on it`).not.toEqual(committed[field]);
+        const committed: unknown = JSON.parse(text);
+        const got: unknown = reply.text ? JSON.parse(reply.text) : null;
+        // An exempted field must be SENT by this host, as a string, and differ
+        // from the committed one (`hostFields`, the live replay's rule's twin;
+        // R3's L-5): an exemption spent on a field this host dropped, or on
+        // one both hosts agree on, is a hole a later host could hide behind.
+        for (const { field, verdict } of hostFields(row.fixture, committed, got)) {
+          expect(verdict, `${row.fixture}.${field} is exempted: this host must send it as a string, and differ`).toBe("spent");
         }
-        const strip = (v: Record<string, unknown>): Record<string, unknown> => {
-          const copy = { ...v };
-          for (const field of HOST_FIELDS[row.fixture!] ?? []) delete copy[field];
-          return copy;
-        };
-        expect(strip(got), `${row.fixture} (${label})`).toEqual(strip(committed));
+        expect(withoutHostFields(row.fixture, got), `${row.fixture} (${label})`).toEqual(withoutHostFields(row.fixture, committed));
       },
     });
     expect(sent, "every row of the three scripts was sent").toBe(WALK.length + WALK_HOST.length + ARCHIVE_WALK.length);

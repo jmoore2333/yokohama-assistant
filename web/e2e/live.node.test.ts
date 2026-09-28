@@ -43,6 +43,10 @@
 //
 // Node and not Playwright, beside the live tier's other node cells, so it runs
 // in `npm run test:wasm` where CI installs no Chromium.
+//
+// **And a second rule over the same live specs** (R3's L-9), at the end of the
+// file: every create is armed through `awaitCreate` right before its click,
+// and every `afterEach` abandons through `abandonOpened`.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -362,5 +366,182 @@ describe("every live API call in web/e2e goes through liveRequest", () => {
     }
     expect(refused, "live API calls outside liveRequest(…), or a toBeOK()").toEqual([]);
     expect(wrapped, "the wrapped calls the scan must find: the abandon's DELETE and the event count's GET at least").toBeGreaterThanOrEqual(2);
+  });
+});
+
+// ---- a live table is known from the moment its create is SENT (R3's L-9) ----
+//
+// A walk that armed its own wait for the create's reply, and set `opened` only
+// once it had READ that reply, left a window — the click to the read — in
+// which a failure left its table in the shared lobby. `awaitCreate` (live.ts)
+// arms the wait before the click and hands back the `Opening` the `afterEach`
+// abandons through `abandonOpened`. This holds every live spec to that:
+//
+//   - every click that CREATES a table — `NewGame.tsx`'s one button, which
+//     reads "Open table" or "Deal", as `getByRole("button", { name: … })` — is
+//     the statement right after `opened = awaitCreate(<the same page>)`;
+//   - `opened` is set from `awaitCreate(…)` or to `null`, and nothing else;
+//   - the spec's `test.afterEach` calls `abandonOpened`.
+//
+// Its limit, stated: a create button found by any other locator (a regular
+// expression, a test id) is not read as a create. Two premises keep that from
+// passing quietly where it matters most: the two labels are still
+// `NewGame.tsx`'s, and each live spec makes at least one create click the
+// scan reads. A SECOND create in a spec, found another way, would go unread.
+
+/** The labels of the one button that sends `POST /api/games`. */
+const CREATE_BUTTONS = new Set(["Open table", "Deal"]);
+
+/** The page a click creates a table on: `<page>.getByRole("button", { name:
+ *  <a create label> }).click()`'s `<page>`, as text — or `undefined`. */
+function createdOn(n: ts.Node, sf: ts.SourceFile): string | undefined {
+  if (!ts.isCallExpression(n) || !ts.isPropertyAccessExpression(n.expression) || n.expression.name.text !== "click") return undefined;
+  const locate = n.expression.expression;
+  if (!ts.isCallExpression(locate) || !ts.isPropertyAccessExpression(locate.expression) || locate.expression.name.text !== "getByRole") {
+    return undefined;
+  }
+  const [role, options] = locate.arguments;
+  if (role === undefined || !ts.isStringLiteralLike(role) || role.text !== "button") return undefined;
+  if (options === undefined || !ts.isObjectLiteralExpression(options)) return undefined;
+  const named = options.properties.some(
+    (p) =>
+      ts.isPropertyAssignment(p) &&
+      ts.isIdentifier(p.name) &&
+      p.name.text === "name" &&
+      ts.isStringLiteralLike(p.initializer) &&
+      CREATE_BUTTONS.has(p.initializer.text),
+  );
+  return named ? locate.expression.expression.getText(sf) : undefined;
+}
+
+/** The statement `n` stands in: its nearest ancestor that a block lists. */
+function statementOf(n: ts.Node): ts.Statement | undefined {
+  let at: ts.Node = n;
+  while (at.parent !== undefined && !ts.isBlock(at.parent) && !ts.isSourceFile(at.parent)) at = at.parent;
+  return at.parent === undefined ? undefined : (at as ts.Statement);
+}
+
+/** `opened = awaitCreate(<page>)`'s `<page>` when `s` is that statement. */
+function openedOn(s: ts.Statement | undefined, sf: ts.SourceFile): string | undefined {
+  if (s === undefined || !ts.isExpressionStatement(s)) return undefined;
+  const e = s.expression;
+  if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return undefined;
+  if (!ts.isIdentifier(e.left) || e.left.text !== "opened") return undefined;
+  const call = e.right;
+  if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.expression.text !== "awaitCreate") return undefined;
+  return call.arguments.length === 1 ? call.arguments[0]!.getText(sf) : undefined;
+}
+
+/** What one live spec does with the tables it opens: how many create clicks
+ *  it makes, whether its `test.afterEach` calls `abandonOpened`, and every
+ *  breach of the rule above as `file:line: the code`. */
+function creates(file: string, source: string): { clicks: number; abandons: boolean; refused: string[] } {
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const refused: string[] = [];
+  let clicks = 0;
+  let abandons = false;
+  const where = (n: ts.Node) =>
+    `${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}: ${n.getText(sf).split("\n")[0]}`;
+  const calls = (n: ts.Node, name: string): boolean =>
+    (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === name) || ts.forEachChild(n, (c) => calls(c, name) || undefined) === true;
+  const visit = (n: ts.Node): void => {
+    const page = createdOn(n, sf);
+    if (page !== undefined) {
+      clicks += 1;
+      const statement = statementOf(n);
+      const siblings: readonly ts.Statement[] = statement === undefined ? [] : (statement.parent as ts.Block | ts.SourceFile).statements;
+      const before = statement === undefined ? undefined : siblings[siblings.indexOf(statement) - 1];
+      if (openedOn(before, sf) !== page) {
+        refused.push(`${where(n)} — a create not right after opened = awaitCreate(${page}), so its table is not known from the moment it is sent`);
+      }
+    }
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && n.left.text === "opened") {
+      const right = n.right;
+      const fromCreate = ts.isCallExpression(right) && ts.isIdentifier(right.expression) && right.expression.text === "awaitCreate";
+      if (!fromCreate && right.kind !== ts.SyntaxKind.NullKeyword) {
+        refused.push(`${where(n)} — opened is set from awaitCreate(…) or to null, and nothing else`);
+      }
+    }
+    if (
+      ts.isCallExpression(n) &&
+      ts.isPropertyAccessExpression(n.expression) &&
+      ts.isIdentifier(n.expression.expression) &&
+      n.expression.expression.text === "test" &&
+      n.expression.name.text === "afterEach" &&
+      n.arguments.some((a) => calls(a, "abandonOpened"))
+    ) {
+      abandons = true;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return { clicks, abandons, refused };
+}
+
+describe("creates — the rule, on sources written for it", () => {
+  it("refuses the old shape: the walk's own wait before the click, and opened set from the reply it read", () => {
+    const { clicks, refused } = creates(
+      "old.ts",
+      [
+        'const created = a.waitForResponse((r) => r.request().method() === "POST");',
+        'await a.getByRole("button", { name: "Deal" }).click();',
+        "const id = String(((await (await created).json()) as { id: string }).id);",
+        "opened = { page: a, id };",
+      ].join("\n"),
+    );
+    expect(clicks).toBe(1);
+    expect(refused).toEqual([
+      'old.ts:2: a.getByRole("button", { name: "Deal" }).click() — a create not right after opened = awaitCreate(a), so its table is not known from the moment it is sent',
+      "old.ts:4: opened = { page: a, id } — opened is set from awaitCreate(…) or to null, and nothing else",
+    ]);
+  });
+  it("refuses awaitCreate armed AFTER the click, on another page, or with a statement between", () => {
+    const late = creates("late.ts", ['await a.getByRole("button", { name: "Open table" }).click();', "opened = awaitCreate(a);"].join("\n"));
+    const other = creates("other.ts", ["opened = awaitCreate(b);", 'await a.getByRole("button", { name: "Open table" }).click();'].join("\n"));
+    const between = creates(
+      "between.ts",
+      ["opened = awaitCreate(a);", "await a.waitForTimeout(1);", 'await a.getByRole("button", { name: "Open table" }).click();'].join("\n"),
+    );
+    for (const read of [late, other, between]) {
+      expect(read.clicks).toBe(1);
+      expect(read.refused).toHaveLength(1);
+    }
+  });
+  it("accepts the new shape inside a test's body, and reads the afterEach's abandon", () => {
+    const read = creates(
+      "new.ts",
+      [
+        "test.afterEach(async () => {",
+        "  const table = opened;",
+        "  opened = null;",
+        "  await abandonOpened(table);",
+        "});",
+        'test("t", async () => {',
+        "  opened = awaitCreate(x);",
+        '  await x.getByRole("button", { name: "Open table" }).click();',
+        "  const id = await opened.id;",
+        '  await x.getByRole("button", { name: "Open tables" }).click();',
+        "});",
+      ].join("\n"),
+    );
+    expect(read).toEqual({ clicks: 1, abandons: true, refused: [] });
+  });
+});
+
+describe("every live spec knows its table from the moment its create is sent (R3's L-9)", () => {
+  // Mutant: a live spec that arms its own wait for the create's reply and
+  // sets `opened` after it — the shape before this rule — or an afterEach
+  // that abandons by hand.
+  it("each creates through awaitCreate armed right before the click, sets opened from nothing else, and abandons through abandonOpened", () => {
+    // The premise: the two labels are still the create button's.
+    expect(readFileSync(join(here, "..", "src", "NewGame.tsx"), "utf8"), "NewGame.tsx's create button").toContain('{opensSeats ? "Open table" : "Deal"}');
+    const refused: string[] = [];
+    for (const spec of [...LIVE_SPECS, EXIT_SPEC]) {
+      const read = creates(spec, readFileSync(join(here, spec), "utf8"));
+      expect(read.clicks, `premise: ${spec} creates a table`).toBeGreaterThan(0);
+      refused.push(...read.refused);
+      if (!read.abandons) refused.push(`${spec}: its test.afterEach does not abandon through abandonOpened`);
+    }
+    expect(refused, "a create not armed through awaitCreate, opened set otherwise, or an afterEach abandoning by hand").toEqual([]);
   });
 });

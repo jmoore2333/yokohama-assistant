@@ -205,11 +205,13 @@ export function normalizeHouseChat(name, got, base, identities) {
  * What to delete when a first send meets an earlier run's save of a `wire`
  * record that has since changed (R3's M-1): each first send's record key, as
  * its committed reply names the path, and its `.table.json` twin — under the
- * root spec §2.6 gives the sender `who`, `test/` for an address ending
- * `.test` — and a `wrangler r2 object delete` for each.
+ * root spec §2.6 gives the sender `who`, `test/` for an EMAIL ending `.test`
+ * and the bucket's top for anything else, a plain name ending `.test` among
+ * them — and a `wrangler r2 object delete` for each.
  */
 export function resetRecipe(corpus, who) {
-  const root = who.endsWith(".test") ? "test/" : "";
+  // The module's own rule: `crates/yokohama-worker/src/receipt.rs`'s `is_test_identity`.
+  const root = who.includes("@") && who.endsWith(".test") ? "test/" : "";
   const keys = [...FIRST_SENDS].flatMap((fixture) => {
     const { path } = JSON.parse(corpus[fixture]);
     return [`${root}${path}`, `${root}${path.replace(/\.json$/, ".table.json")}`];
@@ -430,8 +432,11 @@ function judge(fixture, reply, context) {
     got = freezeClock(got);
     for (const field of HOST_FIELDS[fixture] ?? []) {
       if (!isObject(got)) break;
-      // An exemption is spent only on a value this host SENT and that
-      // differs: a field it dropped is a mismatch, never `"off" → (absent)`.
+      // An exemption is spent only on a value this host SENT, as a string,
+      // that differs from the committed one: a field it dropped is a
+      // mismatch, never `"off" → (absent)`. The rule's twin is the pool's,
+      // `worker/test/corpus.test.ts`'s `hostFields` — the same rule over the
+      // same fields, one statement per replay (R3's L-5; ruling R-C3).
       if (typeof got[field] !== "string") {
         diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
       } else if (isDeepStrictEqual(got[field], committed[field])) {

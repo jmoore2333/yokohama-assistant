@@ -284,6 +284,65 @@ export async function liveRequest<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
+// ---- a live table, known from the moment its create is SENT (R3's L-9) ----
+
+/**
+ * **A table a walk is opening**: known from the moment its create is SENT
+ * (R3's L-9). A walk used to arm its own wait for the create's reply and set
+ * its `opened` only once it had READ that reply, so a failure between the
+ * click and that read — a budget run out, a reply it never parsed — left the
+ * table in the shared lobby. Its `afterEach` hands this to [`abandonOpened`]
+ * instead.
+ */
+export type Opening = {
+  /** The creator's page, whose context the abandon goes through: the DELETE
+   *  must carry that context's cookie and claimed header ([`abandonAsCreator`]). */
+  page: Page;
+  /** The table's id, read off the create's 201 the moment it lands, whether
+   *  or not the walk gets that far — or `null` for a create that answered
+   *  anything else, or a wait that ended with no reply at all. */
+  id: Promise<string | null>;
+};
+
+/**
+ * Arms the wait for `page`'s create — `POST /api/games` — and answers its
+ * [`Opening`] at once. A walk calls it BEFORE the click that sends the create
+ * (`live.node.test.ts` holds every live spec to that), so the reply cannot
+ * land before the wait is armed.
+ *
+ * The wait is `page.waitForResponse`'s, which ends on its own: when the page
+ * closes, or when its timeout passes — the context's default, which
+ * Playwright 1.62.1 sets from the config's `actionTimeout` (15 s) on every
+ * context a run opens, a spec's hand-made ones included. So a create that was
+ * never sent reads `null` at the latest 15 s after the wait was armed, and an
+ * `afterEach` awaiting it never hangs.
+ */
+export function awaitCreate(page: Page): Opening {
+  const id = page
+    .waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/games")
+    .then(async (r) => {
+      if (r.status() !== 201) return null;
+      const named = ((await r.json()) as { id?: unknown } | null)?.id;
+      return typeof named === "string" && named !== "" ? named : null;
+    })
+    .catch(() => null);
+  return { page, id };
+}
+
+/**
+ * Every live spec's `afterEach` for the table it opened (spec §5.4; R3's
+ * L-9): the table's id awaited — whether or not the walk read the create's
+ * reply — and the table abandoned as its creator, through the creator's own
+ * page ([`abandonAsCreator`]), where there is one. Nothing for `null`, for a
+ * create that named no table, or locally: the local server's games are
+ * scratch (`two_browsers.spec.ts`'s `afterEach` says why).
+ */
+export async function abandonOpened(opening: Opening | null): Promise<void> {
+  if (!LIVE || opening === null) return;
+  const id = await opening.id;
+  if (id !== null) await abandonAsCreator(opening.page, id);
+}
+
 // ---- the exit's precondition: its windows stay visible (R3's R-N6) --------
 
 /** The binding a watched page reports its visibility through. */

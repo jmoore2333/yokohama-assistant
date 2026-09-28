@@ -18,6 +18,17 @@ export function rng(seed: number): () => number {
 }
 
 /**
+ * How many of the deal's designed 409s one watched page may spend (R3's
+ * L-7): ONE — its two lines, the response and Chromium's console line, each
+ * forgiven once, so `dealAnswers` reads at most 2 a page. A page meets the 409
+ * once: the table flipped to playing between two of its requests, and the
+ * screen goes to the board. A second is breakage, so a client that looped on
+ * the refusal fails the walk rather than having its lines forgiven by the
+ * hundred.
+ */
+export const DEAL_ANSWERS_PER_PAGE = 1;
+
+/**
  * Everything the page said that a player would call broken.
  *
  * Console ERRORS and uncaught exceptions only. Warnings are not collected: a
@@ -61,7 +72,8 @@ export function rng(seed: number): () => number {
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
  * Chromium's console line — counted apart, in `dealAnswers`, so a run says
- * which forgiveness it spent.
+ * which forgiveness it spent — ONE a page, its two lines once each
+ * ([`DEAL_ANSWERS_PER_PAGE`]; R3's L-7).
  */
 export function watchForBreakage(
   page: Page,
@@ -69,6 +81,8 @@ export function watchForBreakage(
 ): { failures: string[]; forgiven: number; dealAnswers: number } {
   const failures: string[] = [];
   const watch = { failures, forgiven: 0, dealAnswers: 0 };
+  /** The deal's designed 409s this page has spent, arm by arm. */
+  const dealt = { response: 0, console: 0 };
   const allowed = (status: number, url: string) =>
     expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
@@ -85,7 +99,8 @@ export function watchForBreakage(
       watch.forgiven += 1;
       return;
     }
-    if (isDealAnswerLine(text, m.location().url, BASE_URL)) {
+    if (isDealAnswerLine(text, m.location().url, BASE_URL) && dealt.console < DEAL_ANSWERS_PER_PAGE) {
+      dealt.console += 1;
       watch.dealAnswers += 1;
       return;
     }
@@ -94,7 +109,8 @@ export function watchForBreakage(
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
     if (r.status() >= 400 && r.url().startsWith(BASE_URL) && !allowed(r.status(), r.url())) {
-      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL)) {
+      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL) && dealt.response < DEAL_ANSWERS_PER_PAGE) {
+        dealt.response += 1;
         watch.dealAnswers += 1;
         return;
       }
