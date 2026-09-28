@@ -302,9 +302,10 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
   - It gives the open door its own section and trust model, for a home network, a LAN or a VPN with no
     identity provider: anyone who can reach the server may use any name.
   - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached only
-    through the existing cloudflared tunnel, behind Access. It has run `yokohama-web:0.5.0-m6.5b2.1`
-    since 2026-09-22 under the mode then called `claimed`, with server-sent events and a directory
-    archive, and it is ruled `cf-access`, which it takes at the M6.5c2 close.
+    through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
+    2026-09-22 under the mode then called `claimed`, and since the M6.5c2 close (2026-09-28) it runs
+    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, with server-sent events and a directory archive
+    (`deploy/RUNBOOK.md` §3.17 is that deployment's record).
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
@@ -353,8 +354,8 @@ What the code already does right:
   decision to make, not a default to inherit.
 
 *The paragraphs below are the room cycles' history. Since M6.5c2 the mode the first of them called
-`claimed` is named `open` (R-6.5c2.3), and the NAS is ruled `cf-access` (R-6.5c2.5), which it runs
-from the M6.5c2 close.*
+`claimed` is named `open` (R-6.5c2.3), and the NAS is ruled `cf-access` (R-6.5c2.5), which it has run
+since the M6.5c2 close (2026-09-28).*
 
 **What M6.1 added, and what it did not:**
 

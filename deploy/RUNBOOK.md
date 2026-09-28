@@ -40,9 +40,9 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
   header on a path that does not read it changes nothing. **There is no
   default:** an unset or unknown value refuses to start, naming the three
   accepted values, and a build without the `open-door` feature refuses `open`
-  by name. **This NAS is ruled `cf-access`** (R-6.5c2.5): Access is its door
-  AND its identity, the repository's default, and the NAS moves to it at the
-  M6.5c2 close (§3.17). Every route under `/api/games` requires an identity and
+  by name. **This NAS runs `cf-access`** (R-6.5c2.5; since the fourteenth
+  deployment, 2026-09-28, §3.17): Access is its door AND its identity, the
+  repository's default. Every route under `/api/games` requires an identity and
   answers **401** without one; a caller with no seat at a table gets **403**.
   Public: `/api/health`, `/api/labels`, `/api/art`, `/art/*`, `GET /api/me`,
   and the client bundle.
@@ -208,8 +208,8 @@ POST /build?remote=http://<workstation-lan-ip>:8899/ctx.tar.gz&t=yokohama-web:<t
 ```
 
 Resulting image: **19 MB**. Stop the file server as soon as the build answers (`kill %1`), then `rm -rf "$CTX"`.
-`<tag>` names the release and the cycle: the M6.5c2 close is to build `0.6.0-m6.5c2` (§3.17), and
-the first build, recorded above, was `0.5.0`.
+`<tag>` names the release and the cycle: the M6.5c2 close built `0.6.0-m6.5c2` (§3.17), and the
+first build, recorded above, was `0.5.0`.
 
 **`COPYFILE_DISABLE=1` is on the `tar` line since §3.16.** Without it, macOS
 `tar` writes an AppleDouble `._name` entry beside every file that carries an
@@ -332,8 +332,8 @@ past it at all. Two answers are not a failed deployment:
 Recorded on 2026-09-01, before identity existed: health
 `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead"}`,
 art 200 `image/webp`, help screenshots 200 `image/png`, create → list → `/at/0`
-→ out-of-range 404, then the smoke game deleted. §3.16 is the latest reading, taken under the old
-mode; §3.17 is where the M6.5c2 close is to record the first under `cf-access`.
+→ out-of-range 404, then the smoke game deleted. §3.17 is the latest reading, and the first under
+`cf-access`; §3.16 was the last under the old mode.
 
 ### 3.3 What this costs on the hardware — MEASURED
 
@@ -2022,6 +2022,182 @@ m6.4.1, m6.5a, m6.5b, m6.5b.1, m6.5b2-rc1, m6.5b2, m6.5b2.1.
   browser. The `/cdn-cgi` requests above are the edge's own subresources on an uncontrolled first
   load; they are not the Access navigation R-F6 exists for. It stays carried as the fix wave's
   §5.7 says.
+
+---
+
+### 3.17 M6.5c2 is live on `cf-access` — the fourteenth deployment, 2026-09-28 (a record, not a plan)
+
+From `ea4f174d`, cycle C's reviewed head on `web-room-m6.5c2c` (stacked on cycles B and A over M6.5c;
+the record of record is `docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md`). It is the first
+`0.6.0` on this host and **the first deployment of the layer's `CfAccess` arm on ANY host**: the
+mode this NAS ran from M6.1, `claimed`, is named `open` since M6.5c2 (R-6.5c2.3) and this binary
+refuses it, and the NAS is ruled `cf-access` (R-6.5c2.5), so the swap changes the `Env` line for
+the first time since §3.7. What else this release brings to this host: every save names its bot
+(`run.run_id` stamped by each host, the mirror's `bot`, the versioned refusal for a game not over
+against a bot this build does not run), the lobby's Finished group, the door and the identity states,
+the polish of B and C. The transport (`sse`) and the archive (`dir`) are unchanged. `deploy/README.md`
+is new since §3.16 (the self-host guide), and `RUNBOOK` §6 has moved to `worker/RUNBOOK.md`.
+
+- **Build:** the musl cross-compile per §1 read **`Finished release in 17.55s`** — four crates
+  recompiled at `0.6.0` (`yokohama-core`, `-bridge`, `-cli`, `-web`). The binary is
+  **6,747,440 bytes**, `ELF 64-bit LSB pie executable, x86-64, static-pie linked`, sha256
+  `a5d4ebcd2829ddc45c399c8334aaaaeb8dbb3a501407b06605f7d14cbd88796c` — **+156,064 B over §3.16's
+  6,591,376**, the three cycles' layer code and the version string. The `wasm32-unknown-linux-musl`
+  target was already on the pinned toolchain.
+- **The client build was `npm run build`**, the RELEASE module, run AFTER the close's e2e re-run
+  had left the DEBUG module behind. §1's preflight `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js`
+  read **0**. **`wasm-opt version 133`** read **1,814,905 → 1,197,069 B (−34.0%)** over both modules
+  — +21,846 B over §3.16's 1,175,223 under 132: the layer's own growth (the bot descriptors, the
+  versioned refusal, the run stamp) rides in the browser module, and 133 is not 132. What moved,
+  against §3.16:
+
+  | File | §3.16 | Now |
+  |---|---|---|
+  | bundle | `index-DEXKLtYz.js` 359,218 B | `index-BdDFy9mU.js` **387,210 B** (+27,992) |
+  | stylesheet | `index-CaXbZR8U.css` 37,738 B | `index-DcjjNWqH.css` **61,526 B** (+23,788) |
+  | local Worker | `worker-uoUYQefZ.js` 15,667 B | `worker-DHOWSAOP.js` **15,731 B** (+64) |
+  | module | `yokohama_wasm_bg-Cf0j0Dq2.wasm` 1,175,223 B | `yokohama_wasm_bg-Ciy339-r.wasm` **1,197,069 B** (+21,846) |
+  | `sw.js` | 29,045 B | **29,045 B** (the same generator; a different name inside) |
+
+  Unchanged: both fonts, both OFL texts, `manifest.webmanifest` 696 B, the 131 art files.
+- **The precache generator's four lines, verbatim:**
+
+  ```
+  precache: 153 entries, 10,010,662 B (release total ceiling 11,900,000 B)
+  precache: module 1,197,069 B at /assets/yokohama_wasm_bg-Ciy339-r.wasm (release module ceiling 1,400,000 B; release 1,400,000, debug 3,200,000)
+  precache: module 1,197,069 · bundle 464,467 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327
+  precache: yokohama-release-605fe69f17100c46 -> dist/sw.js (29,045 B), 131 art files
+  ```
+
+  The +73,690 B over §3.16's 9,936,972 is the four rows above, to the byte. The RELEASE ceilings
+  applied. **This is the same `web/dist` the Worker's twenty-first deployment ships**
+  (`worker/RUNBOOK.md` §15): one build, both hosts, one release name.
+- **Delivery:** the context tarball, cut with **`COPYFILE_DISABLE=1`** at **16:52:33Z** from a
+  directory of its own under the session's scratchpad (§2's P-1 shape, the first deployment made
+  under it): **11,338,490 B**, sha256
+  `9b1f8f5cafc16a40d1f4132813a5ad1e4b466f073ecb25797347aa9556a29ddc`, 174 entries, **0 `._`
+  entries**. Served by `python3 -m http.server 8899 --bind 192.168.1.221 --directory <that
+  directory>` (the workstation's LAN address today); **before the POST, `/.dev.vars` answered 404**,
+  the listing named `ctx.tar.gz` alone, and `HEAD /ctx.tar.gz` read 200 with the size. The NAS
+  (192.168.1.173) fetched it at **16:53:47Z**; the server was stopped at 16:54:26Z and 8899 read
+  connection refused after.
+- **Image:** `yokohama-web:0.6.0-m6.5c2`, Id
+  `sha256:ff05bda46ff4559eb1e492d06bf97f9ef779a803925caf977c758288f7a78ba7`, **24,672,200 B**,
+  created **16:54:03.30Z** through
+  `POST /build?remote=http://192.168.1.221:8899/ctx.tar.gz&t=yokohama-web:0.6.0-m6.5c2&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2; the proxy carries no build stream, so the image was READ back rather
+  than watched). It is **229,754 B larger than §3.16's 24,442,446**, and the layers say where:
+  - the binary layer is **6,747,440 B**, NEW — not §3.16's shared layer, since the server changed;
+  - the dist layer is **2,585,380 B**, up from 2,511,690 by exactly the precache's +73,690;
+  - the art layer is **7,454,327 B**, unchanged and shared (the 131 files).
+
+  The base is `alpine:3.21` (3.21.7). **Twenty-one tags now sit on the NAS**, `yokohama-web:0.5.0`
+  through `0.6.0-m6.5c2`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.5b2.1` container (`d2d66681d449…`,
+  created 2026-09-22T23:47:17Z). The old process exited at **16:54:26.604Z**, exit code 0: tini
+  forwarded SIGTERM and the graceful shutdown ran. Then `DELETE /containers/yokohama-web`, then
+  `POST /containers/create?name=yokohama-web` with §3's body:
+  - **`Env` exactly `["YOKOHAMA_WEB_IDENTITY=cf-access", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive"]`**
+    — the door changed from `claimed` for the first time since §3.7;
+  - **`YOKOHAMA_WEB_MULTIPLAYER` deliberately UNSET**, so it defaults to `on`;
+  - the two labels (`maintainer`, `purpose`), `NetworkMode: cf-internal`,
+    `RestartPolicy: unless-stopped`, and the named volume `yokohama-web-data` → `/data`.
+
+  That made container Id `10feaa56a4fefab2c26759cd98033bd464acb01c310cea175ede0bfb254141dc`,
+  created **16:54:48.02Z**, started **16:54:51.83Z**. Its log reads `yokohama-web listening on
+  http://0.0.0.0:8080` at **16:54:51.905Z**, and it was `healthy` on the first probe. It has the same
+  address on `cf-internal` (**172.21.0.4**), and cloudflared, DNS and Access were not touched.
+  **Downtime, old exit to new listening line, both off Docker: 25.3 s** — three times §3.16's
+  8.45 s, because the four swap calls were four separate proxy round trips from the orchestrating
+  session rather than one script; the host did nothing slower. Whether anyone was mid-game was not
+  checked (the volume held one table, the owner's own, with the owner at this keyboard).
+
+#### Verified through the tunnel
+
+Taken from the WARP-enrolled workstation at **16:55:20Z** with a browser User-Agent (§3.2's recipe,
+the first time under `cf-access`), 29 s after the listening line, health answering on the first try:
+
+```
+GET /api/health          200  {"server_version":"0.6.0","semantics_rev":7,
+                               "rules_hash":"d85445c479cb1ead","identity":"cf-access",
+                               "signal":"sse","archive":"dir","lobby_chat":true,
+                               "chat_keep":500,"chat_text":500,"multiplayer":true}
+GET /api/me              200  {"mode":"cf-access","user":"<the owner's address>"}
+GET /api/games?scope=mine 200 one table: sim-54b139c22c136cb0 · playing · over false · bot null
+GET /api/me      (credential)  200  {"mode":"cf-access","user":null}
+GET /api/games   (credential)  401
+GET /enter               302  location: https://yokohama-nas.moore.nyc/#/lobby
+GET /                    200  serving index-BdDFy9mU.js and index-DcjjNWqH.css
+GET /sw.js               200  content-length: 29045 · cache-control: no-store
+                               · cache name off the wire: yokohama-release-605fe69f17100c46
+                               · byte-equal to web/dist/sw.js
+GET /assets/yokohama_wasm_bg-Ciy339-r.wasm
+                         200  application/wasm · content-length: 1197069
+GET /art/areas/Church.webp
+                         200  image/webp · content-length: 51118
+```
+
+**The two readings this release owes:**
+
+- **`/api/me` names the owner under `cf-access`** — the load-bearing reading (§3.2), and the first
+  live reading of the layer's `CfAccess` arm on any host: Access's `Cf-Access-Authenticated-User-Email`
+  reaches this server through the tunnel and is read as the identity. The address is recorded here
+  as "the owner's address" and nowhere spelled (R-6.5c2.16). No STOP, no rollback.
+- **The negative half is state B, by design:** the `yokohama-worker` credential, presented through
+  `worker/RUNBOOK.md` §4's mode-600 header file (deleted after), earns an Access assertion with no
+  `email`, so no identity header reaches this server — `/api/me` reads `user: null` and
+  `/api/games` answers 401. Service Auth outranks WARP, so this was the credential even from the
+  owner's workstation.
+
+**The owner's own browser** (Claude-in-Chrome, connected mid-close) opened
+`https://yokohama-nas.moore.nyc/#/lobby`: the corner reads "Playing as" followed by the ACCESS
+identity, beside a "change name" button (the display name, never the identity), and no stored
+claimed name appears anywhere — B's Review Focus 3, read live. "Your tables" lists the one table
+(`2 players · opened 11 days ago`, chips "you · your move" and "the bot", Play, "Abandon and save");
+"Open tables" reads "no table is waiting for players."; "Being played" reads "nothing is being played
+right now."; no Finished group is drawn, since no finished game exists on this host (R-C6's rule,
+live); the lobby chat holds the NAS's six old posts, folded.
+
+**The tables on the volume, as counts** (Portainer's archive read of `/data/games`, the token from
+the portainer-mcp checkout's `.dev.vars` — the Keychain held no item this session): 12 files — 9
+records, **1 table document, 2 chat documents**; of the tables: only the owner seated 1, with a bot
+seat 1, `.test` seats 0, another person 0, `playing` 1, schema 3: 0 (a pre-M6.5a document, read by
+this binary with every new field at its default — its copy carries no bot descriptor, which is §2.4's
+"dealt before the deploy" case). The other eight records predate table documents.
+
+**Memory** (`GET /containers/yokohama-web/stats?stream=false`, 16:55:23Z): usage **11,231,232 B**
+(rss 368,640 B, page cache 10,862,592 B), 4 CPUs online, no throttling.
+
+**The cloudflared comment drift needs no re-sync.** The deployed `config.yml`'s Yokohama comment
+(this repo's `cloudflared-config.yml:58-59`) says the origin's door "is ruled `cf-access` … the NAS
+moves to it at that cycle's close" — a sentence in plan tense that this deployment made true; the
+ingress itself is unchanged, and the file on the NAS was not touched.
+
+#### Rollback
+
+`yokohama-web:0.5.0-m6.5b2.1` stays on the NAS. Recreate from it with §3's body and **the same
+`Env` line** — that binary knows `cf-access` (§5's M6.5c2 bullet); only `claimed`/`open` differ
+between the two.
+
+**Rolling back is NOT a schema rollback.** `TABLE_SCHEMA` stays 3 and the record format is the
+engine's at `SEMANTICS_REV` 7. An older binary ignores the mirror's `bot` field and reads `run_id`
+as the provenance it always was. What it DOES show: the engine-version drift line on every record
+this release wrote (`engine_version` `0.6.0` against its own `0.5.0`), the warning §2.6's filter
+exists to mask — a sentence on screen, not a refusal. The browser store did not move
+(`db.ts`'s version is unchanged), so no client-side rollback caveat of §3.15's kind applies.
+
+#### What this deployment does NOT claim
+
+- **No game was played on this host.** The lobby was read; no move was made, no table created, no
+  archive round trip ran through this container — §3.12's readings stand for the archive.
+- **`run_id` and the mirror's `bot` are on no document here yet**: both appear only on games played
+  after this deploy, and the one table predates it.
+- **No headed walk beyond the lobby**, and no phone. The corner reading above is the owner's own
+  profile at one width; the screens changed in B and C were photographed on the branch (the close's
+  pictures), not on this host.
+- **The update path was not exercised live**: no browser holding `d62d6763649a749f` was read taking
+  `605fe69f17100c46` through the door's offer.
+- **The edge's `index.html` rewrite (§3.16's finding) was not re-read**; nothing changed on the zone.
 
 ---
 

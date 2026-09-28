@@ -54,9 +54,9 @@ ingress:
   # HOSTNAME-WIDE: every path here is behind it, `/api/health` and the client
   # bundle included. That is load-bearing and not decorative. Since M6.1 the
   # origin reads an identity -- one header, named by `YOKOHAMA_WEB_IDENTITY`,
-  # required on every `/api/games` route -- and it is ruled `cf-access`
-  # (M6.5c2, R-6.5c2.5; the NAS moves to it at that cycle's close, and
-  # `deploy/RUNBOOK.md` §3 records the value each deployment runs): it reads
+  # required on every `/api/games` route -- and it runs `cf-access`
+  # (M6.5c2, R-6.5c2.5; the NAS moved to it at that cycle's close, 2026-09-28,
+  # and `deploy/RUNBOOK.md` §3 records the value each deployment runs): it reads
   # `Cf-Access-Authenticated-User-Email`, which Access sets on the requests it
   # forwards, so Access is this origin's door AND its identity. That header is
   # worth what the path to the port is worth: the origin does not verify

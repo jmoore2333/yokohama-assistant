@@ -25,7 +25,7 @@ Build it for yourself, and never push it to a public registry.
 The server reads exactly ONE identity header, and which one is your decision: `YOKOHAMA_WEB_IDENTITY` has
 **no default**, and a container started without it exits, naming the accepted values.
 
-**This repository's default, and the door its own NAS is ruled to run, is `cf-access`:**
+**This repository's default, and the door its own NAS runs (since 2026-09-28, `RUNBOOK.md` §3.17), is `cf-access`:**
 - the container sits behind a Cloudflare Tunnel whose hostname is a Cloudflare Access self-hosted
   application;
 - Access authenticates each person and adds `Cf-Access-Authenticated-User-Email` to every request it

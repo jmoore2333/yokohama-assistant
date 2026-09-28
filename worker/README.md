@@ -296,8 +296,10 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   `X-Yokohama-Claimed-User`. The live Playwright tier and the live replay play as several people
   through it.
 - The dev door's client id, `DEV_DOOR_CLIENT_ID`, is a Worker SECRET since M6.5c2, put at that
-  cycle's close, and the guard refuses it in `vars`. The dev door goes off before any public door:
-  it is one of the public door's preconditions, which the M6.5c2 close records.
+  cycle's close (the twenty-first deployment, 2026-09-28; `RUNBOOK.md` §15), and the guard refuses
+  it in `vars`. The dev door goes off before any public door: it is one of the public door's
+  preconditions, which the M6.5c2 cycle C close records
+  (`docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md` §6).
 
 **The open door — `open`, for a deployment with no identity provider.**
 - Players choose a name on the first screen, and the name is who they are. `/api/me` names this door
@@ -328,8 +330,8 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   - never `preview_urls`, because a preview version is not the deployed code, whatever the door;
   - never `YOKOHAMA_DEV_DOOR=on` in `vars`.
 - **Saves:** a plain name never files its saves under the bucket's `test/` root. That root takes
-  only an address ending `.test`, and R-6.5c2.12's lifecycle rule, set at the M6.5c2 close, expires
-  its objects after 30 days.
+  only an address ending `.test`, and R-6.5c2.12's lifecycle rule `expire-test-after-30-days`, set at
+  the M6.5c2 close (2026-09-28, `RUNBOOK.md` §15), expires its objects after 30 days.
 - **One refusal reads differently from the NAS's** (ruling R-C10): a claim the layer's grammar
   refuses, such as `..`, sent to `POST /api/archive`, names an Archive object before the layer can
   judge it, and that object's `init` answers a 500 carrying the layer's own sentence where the NAS
@@ -593,17 +595,19 @@ At the harness's rates, 1,000 inputs use this share of each Free daily ceiling:
 |---|---|---|
 | 100,000 Worker requests | 13,400, 13.4 % | 7,460 inputs; 5,000 to 6,200 after the account's other Workers |
 | 100,000 Durable Object requests | 13,700, 13.7 % | 7,300 inputs |
-| 5 million rows read | 470,000, 9.4 % | 10,600 inputs |
+| 5 million rows read | 470,000, 9.4 % at M6.5c; **56,000, 1.1 % since M6.5c2** (read live at the cycle C close, `RUNBOOK.md` §16) | 10,600 inputs at M6.5c; **about 89,000 since M6.5c2** |
 | 100,000 rows written | 2,500, 2.5 % | 40,000 inputs |
 
 **The request quotas bind first, not rows read.** The Worker requests go soonest, because the
 account's other Workers use 17,000 to 33,000 of them a day (spec §0.5), which leaves this host
 67,000 to 83,000 (spec §2.8). The Durable Object requests come next; the account's other objects
-use only 300 to 1,800 a day (spec §0.5). Rows read is the cost M6.5c did not reduce (its requests
-re-read the table's three documents up to three times, the whole-branch review's F-4; since M6.5c2 a
-warm request reads them once and a cold one twice, §11), and it is the third limit to bind, not the
-first. *(Corrected 2026-09-28, M6.5c2: the reads, not the row arithmetic, which is re-read at the
-M6.5c2 close.)*
+use only 300 to 1,800 a day (spec §0.5). Rows read was the cost M6.5c did not reduce (its requests
+re-read the table's three documents up to three times, the whole-branch review's F-4); since M6.5c2 a
+warm request reads them once and a cold one twice (§11), and the live three-page game at the cycle C
+close read **about 56 rows per input** (101,236 rows over a 1,795-input game, `RUNBOOK.md` §16) against
+M6.5c's 470 — so rows read now binds LAST, after rows written, and the Worker requests still bind
+first (that game read 13.8 requests an input, M6.5c's figure). *(Corrected 2026-09-28, M6.5c2: first
+the reads, then this arithmetic, re-read at the cycle C close.)*
 
 ### 5.3 Games per day
 
@@ -1596,7 +1600,7 @@ recipes "to deploy with no archive" and "to keep every table".
 - **`YOKOHAMA_WEB_ADMINS`**, the operator list, is a Worker secret, put with `wrangler secret put`
   from standard input. Its refusals name an entry by position, never by value.
 - **The Service Auth credential `yokohama-worker`** has a client id, its public half, put as the
-  Worker secret `DEV_DOOR_CLIENT_ID` since M6.5c2, at that cycle's close's deploy (it was a
+  Worker secret `DEV_DOOR_CLIENT_ID` since the twenty-first deployment (2026-09-28, `RUNBOOK.md` §15; it was a
   committed variable before, and stays in the history). Its secret lives only in the repository
   root's gitignored `.dev.vars`, and no recipe puts it on a command line or a screen: curl reads it
   from a mode-600 header file.
@@ -1724,8 +1728,8 @@ What a run leaves on the account:
 
 - two 90-day markers per Playwright run, at fresh `sim-` ids, because each spec abandons its table;
 - saves under the bucket's `test/` root for every `.test` identity's finished and abandoned games,
-  which no lifecycle rule removes yet: the owner ruled a 30-day rule on the prefix (R-6.5c2.12), set
-  at the M6.5c2 close;
+  which the lifecycle rule `expire-test-after-30-days` removes 30 days after they were written
+  (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
 - the replay's own first-send saves under `test/browser/red_at_wire.test/`, kept for good by the
   owner's direction;
 - a PERMANENT lobby chat post per replay run ("anyone up for a second table?", from `red@wire.test`)
@@ -1735,7 +1739,8 @@ What a run leaves on the account:
 ### 10.5 The `test/` root and the replay's reset
 
 Every save a `.test` ADDRESS makes lands under `test/`, apart from the owner's paths; a plain name
-never takes the `test/` root; the prefix's lifecycle rule is set at the M6.5c2 close (R-6.5c2.12).
+never takes the `test/` root; the prefix's lifecycle rule `expire-test-after-30-days` expires its
+objects after 30 days, set at the M6.5c2 close (R-6.5c2.12; 2026-09-28, `RUNBOOK.md` §15).
 *(Corrected 2026-09-28, M6.5c2.)* The replay's
 two first sends therefore meet their own earlier saves on every run after the first, and the
 archive's once-rule answers `200` with `"identical": true`, which the replay accepts for those two
@@ -1759,15 +1764,16 @@ the credential, which is never an operator.
 - **It is not public.** Access covers the whole hostname (R-6.5c.1). The path-scoped Access door
   that would open the single-player site to the public is built and proven locally but not
   deployed, the card art is not published, and the dev door is ON in production's variables, for
-  the live tiers; the public door's preconditions are recorded at the M6.5c2 close. *(Corrected
+  the live tiers; the public door's preconditions are recorded in the M6.5c2 cycle C close (§6). *(Corrected
   2026-09-28: `DEV_DOOR_CLIENT_ID` is a secret since M6.5c2, where this said it was committed.)*
   Going public is meant to be a configuration change; on a public door, a scanner's misses would
   each be a Worker invocation.
 - **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
   remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
   documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three
-  times (F-4, about 470 rows read per move in the three-page harness); the live figure per move is
-  re-read at the M6.5c2 close, and §5's arithmetic moves with it then. *(Corrected 2026-09-28: this
+  times (F-4, about 470 rows read per move in the three-page harness); the live figure per move read
+  **about 56** at the cycle C close (101,236 rows over 1,795 moves, `RUNBOOK.md` §16), and §5.2's
+  arithmetic carries it. *(Corrected 2026-09-28: this
   bullet said the cycle did not reduce rows read.)*
 - **A poisoned or `held` table needs the operator.** Nothing sweeps either, and the operator's
   listing does not flag them; the log does (`poison`, `held`, `expiry-blocked`). The listing's

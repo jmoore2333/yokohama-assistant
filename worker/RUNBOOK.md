@@ -169,10 +169,10 @@ the whole list; it leaves secrets alone.
 
 | Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
-| `YOKOHAMA_WEB_IDENTITY` | *not yet a variable (added 2026-09-28, M6.5c2):* the door, `worker` in `wrangler.jsonc` since M6.5c2 (R-6.5c2.5), first deployed at that cycle's close; `open` is the other door, which no Worker of this repository runs | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
+| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door, which no Worker of this repository runs | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
-| `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since M6.5c2, put at that cycle's close in the same deploy that drops the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
+| `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
@@ -314,8 +314,8 @@ expires in 2031 (spec §0.5).
 - **Where it lives.** The repository root's `.dev.vars`, gitignored since `952a68c`, holds two
   lines, `CF-Access-Client-Id=…` and `CF-Access-Client-Secret=…`, named as the headers Access
   expects. The client id is public, and the Worker holds it as the SECRET `DEV_DOOR_CLIENT_ID`
-  since M6.5c2, put at that cycle's close in the deploy that drops the variable, from `.dev.vars`
-  through a mode-600 file that is deleted after. *(Corrected 2026-09-28, M6.5c2: `wrangler.jsonc`
+  since the twenty-first deployment (2026-09-28, §15), put in the deploy that dropped the variable,
+  from `.dev.vars` through a mode-600 file that was deleted after. *(Corrected 2026-09-28, M6.5c2: `wrangler.jsonc`
   carried the client id as a variable until then.)* The secret is in no other file, and is never
   printed, committed or pasted.
 - **What it does.** A request presenting both headers gets an assertion whose `common_name` is the
@@ -706,9 +706,10 @@ grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with fil
 - **Two 90-day MARKERS per Playwright run**, at fresh `sim-` ids: each spec abandons its table in
   its `afterEach`, and the marker answers every request there for 90 days, then ends on its alarm.
 - **Saves under the bucket's `test/` root**: `test/rev7/over/` and `test/rev7/abandoned/` pairs for
-  the `.test` identities' finished and abandoned games. No lifecycle rule removes them yet: the
-  owner ruled a 30-day rule on the prefix (R-6.5c2.12), set at the M6.5c2 close. *(Corrected
-  2026-09-28: this said the choice was the owner's, carried to the cleanup cycle.)*
+  the `.test` identities' finished and abandoned games. The lifecycle rule
+  `expire-test-after-30-days` expires them 30 days after they were written (R-6.5c2.12; set at the
+  M6.5c2 close, §15). *(Corrected 2026-09-28: this said the choice was the owner's, carried to the
+  cleanup cycle; then that the rule was to be set at the close.)*
 - **The replay's own saves**: its two first sends' pairs,
   `test/browser/red_at_wire.test/rev7/over/wire.json` and
   `test/browser/red_at_wire.test/rev7/abandoned/wire.json`, each with its `.table.json` — kept for
@@ -1380,5 +1381,270 @@ npm run deploy   # in worker/, after npm run build in web/ and in worker/
 
 §6. The earlier version is the nineteenth's, `204aba6b-2794-4e95-8567-7558cf7c44b2` — the same
 code with the window open. Rolling back to it re-opens the window.
+
+---
+
+## 15. M6.5c2's doors, refinish and figures are live, with the dev door's client id a secret — the twenty-first deployment, 2026-09-28 (a record, not a plan)
+
+From `ea4f174d`, cycle C's reviewed head on `web-room-m6.5c2c` (stacked on cycles B and A over M6.5c;
+the record of record is `docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md`, and the spec's dated
+§10.8 carries the corrections). It brings the whole of M6.5c2 to the Worker: the two doors
+(`YOKOHAMA_WEB_IDENTITY` with no default, `worker` deployed, `open` proven in the pool and never
+deployed), the refinish rule (a same-game conflict stamps; every other conflict is final), the
+module's invariants and the layer's exported restatements, the `hasTables` memo (a warm request asks
+`sqlite_master` nothing), the listing's one time unit, the force that flags itself, the scripts' LOW
+findings, the `0.6.0` bump, the bot's version on every save and the versioned refusal, the lobby's
+Finished group and the client's polish — and **`DEV_DOOR_CLIENT_ID` as a SECRET, put in this same
+deploy, which drops it from `vars`** (A-1; spec §2.1). **Version `ce923774-aa81-4f2b-a8dc-b0fcb5a05f70`**,
+deployed at **16:48:09 UTC**. Every reading holds. The readings ran over WARP as the owner and,
+where a claimed identity was needed, through the credential.
+
+- **Build, ONCE, for both hosts** (§1): `web/`'s `npm run build` after the close's e2e re-run —
+  `debug_trap` **0**; `wasm-opt version 133` over both browser modules **1,814,905 → 1,197,069 B
+  (−34.0%)**; the precache generator's four lines verbatim:
+
+  ```
+  precache: 153 entries, 10,010,662 B (release total ceiling 11,900,000 B)
+  precache: module 1,197,069 B at /assets/yokohama_wasm_bg-Ciy339-r.wasm (release module ceiling 1,400,000 B; release 1,400,000, debug 3,200,000)
+  precache: module 1,197,069 · bundle 464,467 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327
+  precache: yokohama-release-605fe69f17100c46 -> dist/sw.js (29,045 B), 131 art files
+  ```
+
+  The release name is **`yokohama-release-605fe69f17100c46`**, and the same `web/dist` went to the
+  NAS as `yokohama-web:0.6.0-m6.5c2` (`deploy/RUNBOOK.md` §3.17). `worker/`'s `npm run build`: the
+  module **1,901,547 → 1,258,106 B (−33.8%)** with `wasm-opt` 133 (the root `Cargo.toml` paragraph
+  read 1,256,770 at `d431dbc1`; +1,336 B since, the layer's Task 6 code and the version string —
+  a reading to transcribe there in cycle D); `module-figures.mjs`: gzip (Node's zlib, level 9)
+  491,934 B, 18 pages, 170 data segments, 123,047 B of data (the section 124,446 B encoded);
+  `factory-glue: 16 exports (a release module: no debug_trap)`; `assemble-assets: 153 precache
+  entries verified — every file present, every SHA-256 the release's`; `smoke-release: … GET
+  /api/health 200` with `server_version 0.6.0` and `archive: "off"` (the smoke runs with the archive
+  off by design).
+- **The deploy, with the secret** (§2, §4), run in `worker/` with the tail already listening:
+
+  ```sh
+  S="$SCRATCH/dev-door.secrets"; umask 077
+  id="$(grep '^CF-Access-Client-Id=' ../.dev.vars | cut -d= -f2- | tr -d '[:space:]')"
+  printf 'DEV_DOOR_CLIENT_ID=%s\n' "$id" > "$S"; unset id
+  node scripts/deploy-guard.mjs && npx wrangler deploy --secrets-file "$S"
+  rm -f "$S"
+  npx wrangler secret list
+  ```
+
+  The secrets file read `-rw-------`, 59 B, and was DELETED after the deploy (`ls` found nothing);
+  its value is in no log and no document. **The guard PASSED every check** and printed the door
+  first — `wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell` —
+  then its verdict: the optimized release module built from the sources as they are; the assets tree
+  the release, with no debug browser module, assembled from the current `web/dist` and
+  `worker/static`; a door named, and its rules (no preview URL; at the worker door no `workers.dev`
+  URL and both Access values); no test clock; spec §2.3's assets block in all three configurations;
+  the same object bindings, migrations and bucket binding in each; no operator list or dev-door
+  client id in its `vars`. Wrangler (4.136.3) read 172 files, uploaded **6 new or modified assets**
+  (`/index.html`, the stylesheet, the Worker chunk, the bundle, `/sw.js`, the module; 148 already
+  there; 1.90 s), **Total Upload 1386.14 KiB / gzip 526.03 KiB, Worker Startup Time 2 ms**, listed
+  `env.DEV_DOOR_CLIENT_ID ("(hidden)")` beside the nine `vars` (`YOKOHAMA_WEB_IDENTITY ("worker")`,
+  the two Access values, `YOKOHAMA_DEV_DOOR ("on")`, the archive `r2`, the TTL 90, the three chat
+  values), and deployed the trigger `yokohama.moore.nyc (custom domain)`. `wrangler secret list`
+  names **`DEV_DOOR_CLIENT_ID` and `YOKOHAMA_WEB_ADMINS`** — names only.
+- **Reading 1 — health and the owner** (16:49 UTC, over WARP, a browser User-Agent): `/api/health`
+  200 `{"server_version":"0.6.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"cf-access","signal":"ws","archive":"r2","lobby_chat":true,"chat_keep":500,"chat_text":500,"multiplayer":true}`;
+  `/api/me` → `{"mode":"cf-access","user":"<the owner's address>"}` (recorded with that description
+  in the value's place, R-6.5c2.16).
+- **Reading 2 — the served release**: `/sw.js` 200, `text/javascript`, `content-length: 29045`,
+  `cache-control: no-store`, naming ONE generation `yokohama-release-605fe69f17100c46`, byte-equal to
+  `web/dist/sw.js`.
+- **Reading 3 — the dev door works with the secret** (§4's header-file recipe, the file mode 600 and
+  removed after): the credential + `X-Yokohama-Claimed-User: smoke@readme.test` → `/api/me`
+  `{"mode":"cf-access","user":"smoke@readme.test"}`; the credential alone → `{"mode":"cf-access","user":null}`.
+  So the secret reached the version that dropped the variable, and the dev door never shut.
+- **Reading 4 — `picker-dropped`**: every picker row stored under the twentieth is dropped at its
+  table's next request under this code (I-85, I-91). The tail read **0** such lines through the
+  close's readings: the lobby held no table of the owner's and none `playing` (`scope=mine` and
+  `scope=playing` both `count 0`), so no table object stored under earlier code was asked anything;
+  the tables the live tiers created below were all created under this version.
+- **Reading 5 — the rows read, the F-4 reading** (spec §2.7; `worker/README.md` §5.2). The
+  Durable Objects analytics before and after a counted burst on ONE throwaway table,
+  `sim-248e605df587a848`, created 201 at 16:51:17 UTC through the dev door as `burst@readme.test`
+  (seats `{user}` + `{bot: true}`), ONE cold `GET …/table` (200, 95 ms), then **50 warm
+  `GET …/table`, all 200, in 6 s**, then `DELETE` 204 and the marker's 404
+  (`this table was abandoned on 2026-09-28 — no move had been made, so there was nothing to keep`).
+  The day's figures moved from **266 rows read / 221 written / `yokohama-web` 3 requests** (16:42
+  UTC, before the deploy) to **491 / 253 / 63** (16:53 and again 16:56 UTC, the analytics settled):
+  **+225 rows read and +32 written for +60 Worker requests** — the burst's 50 warm reads, one cold
+  read, the create, the delete and its 404, two house listings, and seven reads that touch no object
+  (health, `/api/me` ×3, `/sw.js`). About **4 rows read per request all-in**, and consistent with the
+  pool's MEASURED **2 rows a warm table request** (cycle C Task 5's `reads.test.ts`: 32 → 2) once the
+  cold read (about 32), the create, the delete and the house's reads are set aside. M6.5c's live
+  figure was ~470 rows read per MOVE in a three-page game (§13's re-run: 1.2 M over 2,510 moves);
+  this cycle's per-move figure is Reading 7's.
+- **Reading 6 — the `test/` lifecycle rule** (R-6.5c2.12; spec §2.10), set at 16:49 UTC:
+
+  ```sh
+  npx wrangler r2 bucket lifecycle add yokohama-archive expire-test-after-30-days test/ --expire-days 30
+  npx wrangler r2 bucket lifecycle list yokohama-archive
+  ```
+
+  A prefix was given, so wrangler asked no whole-bucket question and `--force` was never passed
+  (nor `lock add`, which is a retention rule). The list reads back TWO rules: `Default Multipart
+  Abort Rule` (enabled, `(all prefixes)`, "Abort incomplete multipart uploads after 7 days") and
+  **`expire-test-after-30-days` (enabled, prefix exactly `test/`, "Expire objects after 30 days")**.
+  No expiring rule reads "(all prefixes)". Every save under `test/` — the live tiers', the replay's
+  first sends' and the exit's — is gone 30 days after it was written; the owner's own paths are out
+  of its reach by construction (§7's "What a live run leaves"). One observation: that one `npx
+  wrangler` call resolved the Homebrew global (`wrangler 4.112.0` at `/opt/homebrew/bin/wrangler`)
+  where every other call in `worker/` resolved the package's 4.136.3; both accept the same form, and
+  the rule is the bucket's whatever CLI added it.
+- **The live corpus replay, twice, sequentially** (§7), after the reset's four deletes
+  (`test/browser/red_at_wire.test/rev7/{over,abandoned}/wire{,.table}.json` — Task 9's version bump
+  had changed the walk's records, so the first sends would have met a 409): **run 1** (16:57–17:00
+  UTC) forces 204 ×3 before and after, **2,209 of 2,209 rows run, 86 named rows compared,
+  `firstSendAccepts` 201 for both first sends, mismatches none, HOLDS**; **run 2** (17:00–17:03 UTC)
+  the same 2,209/86, both first sends **200 with the once-rule's `identical: true`**, mismatches
+  none, HOLDS. The host-field exemption was spent as L-5 requires (`me_signed_out.mode: "open" →
+  "cf-access"`), and the house chat's `seq` taken back by 8 then 9 (the permanent posts). Each run
+  cost about 2,190 requests and about 21,800 rows read.
+- **The tail, an instrument reading**: `wrangler tail --format json` was started before the deploy
+  and held through the replays (1,139 events, every outcome `ok`, 0 exceptions, the replay's
+  `operator`/`forced`/`slot-pushed`/`slot-acked`/`archive-*` lines as §5 names them). **It lost its
+  connection at 17:04:02 UTC as the live Playwright tier started** ("Tail connection lost.
+  Reconnecting (attempt 1 of 5)" three times) and received nothing of that run — a fresh tail was
+  started for the re-run and the exit. A tail is not a log: what it did not carry is unobserved,
+  not absent.
+- **Reading 7 — the live Playwright tier on this version** (§7). **`joins_by_link` PASSED** (5.0 s;
+  table `sim-7c76bcb64da1d170`, 6 moves across two browsers in 4 s; the deal's 409 forgiven a 2 / b
+  0, the beacon's pair a 2 / b 2; the open table at 390 px: no overflow, the chat row 98 % of the
+  row). **`two_browsers` read RED once and PASSED once.** Run 1 (17:04 UTC, both specs in one
+  invocation, `workers: 1`) stopped at 13.9 s on `the watcher never asks /events while a stream is
+  open`: ONE `/events` ask by the watcher at the twentieth watch check, which on this host is the
+  socket arm's one probe after a close the client did not make (`web/src/signal.ts`; a hidden tab
+  or a teardown probes nothing) — so the watcher's socket closed once, unexplained, within the first
+  twenty applied moves. The tail had lost its connection at 17:04:02 UTC and carried nothing of that
+  table, so the server side of that close is UNOBSERVED; the workstation read a load of 10.9 on 10
+  cores (the close's mutation battery beside it). Run 2 (17:16–17:25 UTC, the spec alone, a fresh
+  tail attached throughout): **game `sim-a34bc7df08d68d31` finished in 1,795 moves, 535 s, 0 idle
+  looks, the largest hand seen 3; the watcher was held to 1,394 applied moves, asked `/events` 0
+  times and opened `/stream` ONCE — 1 at every one of 69 checkpoints**; the players' streams a 2 /
+  b 2, both before the first move; the deal's 409 forgiven 0 / 0 / 0; the beacon's pair 2 / 2 / 2;
+  every console clean; no `Call log`. The tail's 1,065 sampled events of that table (wrangler
+  samples a busy tail: 457 `/input` rows of 1,795 moves): `picker-dropped` 0, `object-failed` 0,
+  `frame-failed` 0, `trap` 0, exceptions 0; the object's `/input` CPU median 4 ms, max 26; one stream
+  upgrade row. **The rows read per move, LIVE: about 56** — 101,236 rows over the game's window
+  (run 1's short game inside it) for 1,795 moves — against M6.5c's ~470 (§13's re-run: 1.2 M over
+  2,510); rows written ≈ 2.5 a move and requests ≈ 13.8 a move, both unchanged, as spec §6 says.
+  Run 1's one probe stands as recorded and unexplained (the close's §7); the re-run with the tail
+  attached read none.
+
+### What this deployment does NOT claim
+
+- **No `picker-dropped` line was read.** Every picker row the twentieth stored is dropped at its
+  table's next request under this code, but no such table existed: the lobby held no table of the
+  owner's and none `playing` when this version went live, so the rule is proven in the pool
+  (cycle C's Task 4 cells), not observed live.
+- **Run 1's watcher socket close is unexplained.** The client's probe is the fact; what closed the
+  socket is not, since the tail was disconnected at that moment. One clean 1,795-move re-run is the
+  reading beside it, not an explanation.
+- **The tail samples.** Its counts over a busy game are of what it carried; the analytics' figures
+  (Readings 5 and 7) are the whole.
+- **The rows-read figure is one three-page harness game's**, as M6.5c's was; a plain two-person game
+  without the harness was not measured.
+- **No alarm-driven line is named** in this tail either; `ctx.id.name` inside a production
+  `alarm()` is still unread live (as §13).
+- **The operator surface was read only by the replay's forces** (204 ×6), not by a listing.
+
+### Rollback
+
+§6. The earlier version is the twentieth's, `6da906a5-a088-442e-bc43-d94904630982`. No migration
+was added, so `npx wrangler rollback` can return to it — but that version reads `DEV_DOOR_CLIENT_ID`
+from its OWN bindings, where it was a variable, so the dev door on the twentieth works as it did;
+what a rollback LOSES is everything §15's first paragraph lists (the doors, the refinish rule, the
+memo, `0.6.0`'s saves and refusal), and it drops every open picker this version stored (§6's
+bullet). The secret stays put through a rollback; nothing reads it there.
+
+## 16. The exit's window open — the twenty-second deployment, 2026-09-28 (a record, not a plan)
+
+From `ea4f174d`, the same code as the twenty-first. It opens the exit's window: `YOKOHAMA_WEB_COUNT_WAKES`
+reads `on`, so every counted wake writes `meta.wakes` and logs `wake {id, wakes}` (§7, "The exit's
+window"). **Version `43822b48-da53-48ab-9be9-96f6cb16a2a7`**, deployed at **17:26:40 UTC** between
+games (the two-browser game had ended at 17:24:57), run in `worker/`:
+
+```sh
+node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on
+```
+
+- **The deploy:** the guard PASSED every check (the door line first); 172 assets read, NONE
+  re-uploaded (the twenty-first's release); **Worker Startup Time 1 ms**; the bindings list shows
+  `env.YOKOHAMA_WEB_COUNT_WAKES ("(hidden)")` beside the nine `vars` and `env.DEV_DOOR_CLIENT_ID`;
+  `secret list` after it still names both secrets (a `--var` deploy inherits them). `/api/health`
+  200 on the new version.
+- **Reading 1 — the exit game** (17:26:55–17:32:13 UTC, headed, `WAKE_PAUSE_MS=60000`,
+  `EXIT_SCREEN` 1280x832): **PASSED, 1 passed in 5.3 min.** Table `sim-d67dacbd33f2a287` ("exit test
+  mulis5i6"). Its seating passed live: x opened it locked; y read x's lobby line, posted its own and
+  joined through the lobby's Open-tables link with the password; both kept; w unlocked it and watched
+  with no hand. The three windows a 2×2 grid under a 38 px inset — x 634×391 at (0,38), y at (640,38),
+  w at (0,435), each a 618×301 viewport — visible at every checkpoint after opening. **Forty moves in
+  311 s**; four long pauses of **60.0 s** after moves 5, 15, 25 and 35, nothing asked meanwhile, each
+  followed by the move's `POST …/input` answering in **84, 243, 81 and 75 ms** against an awake median
+  of **80 ms** — the wake as the page sees it. Table chat x 10 / y 10, the watcher's panel holding 20
+  lines; lobby chat x 1 / y 1; the watcher held to its events with no hand. The abandon: the address
+  answers **404** `this table was abandoned on 2026-09-28 — its game is in the archive`, x, y and w
+  were told, and the lobby listed it no more. Forgiven: the beacon's pair 2 / 2 / 2, the deal's 409
+  on x twice. Every console clean. No `Call log`. 317 s in all.
+- **Reading 2 — the wake witness**, off the tail (`tail22.json`: 1,580 events on the twenty-first
+  and this version, `ok` 1,571, `canceled` 6, `responseStreamDisconnected` 3, exceptions 0; 205 of
+  them the exit table's). **Four `wake` lines, `wakes` 1 → 2 → 3 → 4**, each on the first POST after a
+  60 s pause: 17:28:10.454 (CPU 11 ms, wall 33 ms), 17:29:28.098 (12 / 35), 17:30:48.350 (10 / 30)
+  and 17:32:05.837 (9 / 32). **The object hibernated in every pause and came back on the next move.**
+  A wake costs the object **9–12 ms of CPU**, against a **2 ms** median (the maximum 22) over the 32
+  sampled object-side move POSTs; the stateless Worker's own half 1 ms (max 4). §13's exit read 6–9 ms
+  a wake at a 2 ms median. The table's other lines: `slot-pushed` 7, `slot-acked` 6, `archive-landed`
+  1 (the abandon's save); `trap` 0, `picker-dropped` 0, `object-failed` 0.
+- **The quota** (§7), the day's figures: at 16:42 UTC, before any deploy, **12,568** Worker requests
+  account-wide (`yokohama-web` 3), 221 rows written, 266 read; at 16:56, after the deploy's readings
+  and the F-4 burst, 12,657 / 253 / 491; at 17:03, after both replays, 17,061 (`yokohama-web`
+  4,447) / 7,713 / 44,129; at 17:25, after the two-browser runs, **42,640 (`yokohama-web` 29,918) /
+  12,283 / 145,365**; at 17:32, after the exit, **43,334 (`yokohama-web` 30,564) / 12,443 / 147,887**.
+  The re-run cost about 24,800 requests, **13.8 a move**; the exit about 650 for 40 paced moves,
+  **16 a move** with three pages and chat (§13's exit read 35). Both guarded figures stayed under the
+  80,000 line all day.
+
+### What this deployment does NOT claim
+
+- **The window was open for six minutes** (17:26:40 to the twenty-third's 17:32:48); the four wakes
+  above are the only counted ones, and no other table is known to have been played meanwhile.
+- **Everything §15 does not claim.**
+
+### Rollback
+
+§6. The earlier version is the twenty-first's, `ce923774-aa81-4f2b-a8dc-b0fcb5a05f70` — the same
+code with the window closed. A `--var` is a binding, so a rollback to it closes the window.
+
+## 17. The exit's window closed — the twenty-third deployment, 2026-09-28 (a record, not a plan)
+
+From `ea4f174d`, the same code. It closes the exit's window: the plain deploy replaces the Worker's
+variables with `wrangler.jsonc`'s, which name no `YOKOHAMA_WEB_COUNT_WAKES`, so the switch reads off.
+Deployed at **17:32:48 UTC**, 35 s after the exit's abandon. **Version
+`36038818-4aa8-4544-961a-0bec2674782c`** — the version the M6.5c2 cycle C close leaves live.
+
+```sh
+npm run deploy   # in worker/, the release still built
+```
+
+- **The deploy:** the guard's every check passed; 172 assets read, none re-uploaded (the release is
+  still the twenty-first's, `yokohama-release-605fe69f17100c46`); **Worker Startup Time 3 ms**;
+  `YOKOHAMA_WEB_COUNT_WAKES` is no longer among the bindings, so the window is CLOSED;
+  `secret list` names `DEV_DOOR_CLIENT_ID` and `YOKOHAMA_WEB_ADMINS`.
+- **The tail:** `tail22.json`, running since 17:09 UTC, is recorded as stopped at 17:33 UTC.
+
+### What this deployment does NOT claim
+
+- Everything §15 and §16 do not claim, but for the open window.
+- **No request was read for the absence of a `wake` line.** The switch's absence from the bindings
+  list is the reading that the window is closed.
+
+### Rollback
+
+§6. The earlier version is the twenty-second's, `43822b48-da53-48ab-9be9-96f6cb16a2a7` — the same
+code with the window open; rolling back to it re-opens the window. The twenty-first,
+`ce923774-aa81-4f2b-a8dc-b0fcb5a05f70`, is the same code with it closed.
 
 ---
