@@ -595,9 +595,9 @@ describe("removing a game this build's bot cannot continue", () => {
   it("gives the hold back even when the delete is refused", async () => {
     stubWorker({
       call: (req) =>
-        req.method === "DELETE" ? { status: 403, body: { error: "you are not seated at this table" } } : undefined,
+        req.method === "DELETE" ? { status: 403, body: wire.notSeated403 } : undefined,
     });
-    await expect(removeForeign(ID)).rejects.toThrow("you are not seated at this table");
+    await expect(removeForeign(ID)).rejects.toThrow(wire.notSeated403.error);
     expect(steps()).toEqual(["hold", `DELETE /api/games/${ID}`, "release"]);
   });
 });
