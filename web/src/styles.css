@@ -2373,8 +2373,7 @@ details.fold #seed { max-width: 23rem; }
 /* The page's own title under the band: an `h3`, a level under the band's `h2`
  * crumb, drawn at a title's size rather than `.setup h3`'s. A table named by a
  * long id breaks anywhere rather than widen the page. */
-.setup h3.page-title { overflow-wrap: anywhere; }
-.setup h3.page-title { font-size: 1.9rem; font-weight: 600; margin: 0.2rem 0 0.3rem; }
+.setup h3.page-title { font-size: 1.9rem; font-weight: 600; margin: 0.2rem 0 0.3rem; overflow-wrap: anywhere; }
 /* A notice's title is a sentence, not a name: smaller, at every width (the
  * phone rule below is outranked). */
 .setup .notice-card h3.page-title { font-size: 1.35rem; margin-top: 0; }

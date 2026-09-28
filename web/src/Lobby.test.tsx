@@ -443,7 +443,7 @@ describe("the lobby", () => {
     // **Your tables only** (R-13, and the reason the row takes its section).
     // The creator must hold a seat (R-1.6), so on a server a table you opened
     // is one you sit at, listed under Your tables alone (`notMine`). The
-    // control still follows the SECTION and not `created_by`, so no other list
+    // control still follows the SECTION and not `created_by` ALONE, so no other list
     // can ever draw it. The corpus's open listing was read by another caller,
     // which puts the same table this browser opened in both sections here: the
     // one case that tells a section rule from a `created_by` rule. And the
