@@ -121,7 +121,7 @@ export function credential(file: string = DEV_VARS): { id: string; secret: strin
   try {
     text = readFileSync(file, "utf8");
   } catch {
-    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (RUNBOOK §6.4)`);
+    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
   }
   const values = new Map<string, string>();
   for (const line of text.split(/\r?\n/)) {
@@ -130,7 +130,7 @@ export function credential(file: string = DEV_VARS): { id: string; secret: strin
   }
   const read = (key: (typeof KEYS)[number]) => {
     const value = values.get(key);
-    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (RUNBOOK §6.4)`);
+    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
     return value;
   };
   return { id: read(KEYS[0]), secret: read(KEYS[1]) };
