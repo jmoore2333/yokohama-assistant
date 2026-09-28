@@ -9,7 +9,7 @@
 //! build runs it.
 //!
 //! **The labels are the layer's own words**, like `suggest`'s four authored
-//! refusals, and they are total by CONSTRUCTION: [`label`] reads a
+//! refusals, and they are total by CONSTRUCTION: [`bots::label`] reads a
 //! `Contestant` through an exhaustive `match` with no `_` arm at either level —
 //! the CLI's `bot::eligible` discipline — so the day core gains a V5 identity
 //! this crate stops compiling until V5 has a label. That one line is the only
@@ -19,7 +19,7 @@
 //! **Nothing here stores a bot.** `SeatDoc::Bot` still does not say which one
 //! (`table.rs`): a dealt table's is the record's, cached in the turn mirror
 //! ([`crate::table::TurnMirror::bot`]), and an undealt table's is the one
-//! `finalize` will deal, [`production`].
+//! `finalize` will deal, [`bots::production`].
 
 use std::collections::BTreeMap;
 
@@ -74,7 +74,7 @@ pub fn production() -> BotDescriptor {
 /// The label a person reads for `d`.
 ///
 /// Parsed through `Contestant::from_parts` over the record's two stored halves,
-/// as the CLI's resume path reads them, and named by [`label_of`]. A
+/// as the CLI's resume path reads them, and named by `label_of`. A
 /// descriptor this build cannot parse — a name it does not know, a knob out of
 /// range — answers its own controller name: an honest label for a bot nothing
 /// here can describe better.

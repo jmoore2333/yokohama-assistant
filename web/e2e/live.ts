@@ -316,6 +316,8 @@ export type Opening = {
  *  `TimeoutError`; the page closing, and the page crashing, both named plain
  *  `Error` — so a name other than `TimeoutError` is one of those two. */
 function waitEnded(e: unknown): string {
+  // The error's NAME only, never its message: a thrown Playwright call's
+  // message can carry the request's headers, the cookie among them (I-79).
   const name = e instanceof Error ? e.name : typeof e;
   return name === "TimeoutError"
     ? "the wait for its reply timed out (TimeoutError): no reply within the context's default timeout, the config's " +

@@ -6,7 +6,8 @@
 //
 //   node scripts/module-figures.mjs gen/yokohama_worker_bg.wasm
 //
-// It prints the module's bytes and its `gzip -9` size, the pages its linear
+// It prints the module's bytes and its gzip size at level 9 (Node's `gzipSync`,
+// whose header names no file: 24 B less than the `gzip -9` command's), the pages its linear
 // memory starts at — which every instance pays, a table object's second
 // instance for one house copy (`copyOf`, `src/table.ts`) among them — and its
 // data: the segments, their bytes, and the data section's encoded size.
@@ -16,7 +17,8 @@ import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
 /** The figures of the module `input` holds (WebAssembly core spec, binary
- *  format §5.5): its size and its `gzip -9` size, its one memory's initial
+ *  format §5.5): its size and its gzip size at level 9 (`gzipSync`, not the
+ *  `gzip -9` command: its header is 24 B smaller), its one memory's initial
  *  pages, and its data segments' count and bytes and the data section's
  *  size. */
 export function moduleFigures(input) {
@@ -25,6 +27,9 @@ export function moduleFigures(input) {
     throw new Error("not a WebAssembly module: it does not open with \\0asm");
   }
   let at = 8;
+  // A LEB128 `u32`, read as a JavaScript number with NO five-byte bound on the
+  // shift: a module this script reads is one `wasm-bindgen` and `wasm-opt`
+  // just wrote, so a malformed run is refused only by running off the end.
   const u32 = () => {
     let value = 0;
     let shift = 0;
@@ -55,6 +60,8 @@ export function moduleFigures(input) {
   while (at < b.length) {
     const id = b[at++];
     const size = u32();
+    // `end` is never checked against the module's length: a truncated section
+    // is caught by the reads inside it running past the end, not here.
     const end = at + size;
     if (id === 5) {
       if (u32() !== 1) throw new Error("the module declares more than one memory");

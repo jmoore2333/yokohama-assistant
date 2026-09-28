@@ -350,6 +350,11 @@ pub fn identity_of(user: Option<&str>) -> Result<User, String> {
 /// in the layer's error shape — the very body the layer's 401 writes for the
 /// same caller. It reads no document and signals nothing.
 ///
+/// The 401 body is built here by hand, as `{"error": <sentence>}`, because this
+/// entry point is no row of the layer's route table and never reaches the
+/// layer's own writer; the shape is the layer's, kept equal by the cells below
+/// and not by sharing code.
+///
 /// It is for admitting the lobby's socket, `GET /api/stream` (spec §2.5): that
 /// route is no row of the layer's route table, so [`dispatch`] would answer it
 /// 404.
@@ -505,8 +510,9 @@ pub(crate) enum Scope<'a> {
 /// signalled DURING it, and the plan of any put it deferred.
 ///
 /// `call` answers the status, the body and `Reply.picker` — which only the two
-/// calls that can change a picker compute (`picker.rs`); every other call
-/// answers `None`.
+/// calls that can change a picker's CONTENT compute (`picker.rs`); every other
+/// call answers `None` there. A [`Scope::Table`] call can still CLEAR a picker,
+/// through the watch on its game's record, without computing one.
 ///
 /// **Spec §2.4's picker rule rides every call** (R1's cleanup debt 1):
 /// `scope` names it — [`Scope::Dispatch`] where `around` applies it inside the

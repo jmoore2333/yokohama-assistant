@@ -109,7 +109,7 @@ fn is_token(token: &str) -> bool {
 ///
 /// **The undo RULE is not here** — R-P6 needs the table and the record, and
 /// lives in `lib.rs`'s `undo_allowed`. This is only the grammar's answer to
-/// "was that an undo", kept beside [`HEADS`] because that is where the two
+/// "was that an undo", kept beside `HEADS` because that is where the two
 /// words are admitted and where a third would be added.
 ///
 /// Whole-line equality after a trim, deliberately, and NOT a head test: `undo

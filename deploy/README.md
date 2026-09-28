@@ -209,4 +209,5 @@ The release — the client, the WebAssembly module, the fonts, the help pictures
 precached whole on a first visit. The door and a game against the bot then work offline, and the app
 installs to a home screen. A single-player game lives in the browser's own storage until it is finished,
 then goes to the archive if the server keeps one. A new image is a new release: an open tab offers
-"Reload to use it", and only a click takes it.
+"Reload to use it" on the door, and a waiting release nobody clicks activates by itself
+once every old page has closed.

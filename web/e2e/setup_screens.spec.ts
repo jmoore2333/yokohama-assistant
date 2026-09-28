@@ -329,7 +329,7 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         // polish 2): the quiet ones — the way back to this device, a row's
         // name and its Abandon, the pill and its action — drew 18-36px beside
         // primaries at 44, and the lobby chat's show and send (the task
-        // review's M-2) ~18px. Read with the corner OPEN and the chat SHOWN, so
+        // review's M-2) ~18px by eye — a figure this cell does not measure. Read with the corner OPEN and the chat SHOWN, so
         // the corner's action and the chat's send are drawn; a control with no
         // box (a shut fold's rows) is one nobody can press, and is left out
         // rather than read as zero. The listings' "more" is drawn only past a

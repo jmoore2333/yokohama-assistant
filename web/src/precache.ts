@@ -117,15 +117,12 @@ export const DEBUG_MODULE_MARKER = "debug_trap";
 
 /** The release module's ceiling, in bytes.
  *
- *  **Re-measured 2026-09-22 at the fix-wave head** (spec §2.7, R-6.5b2.15):
  *  `--profile release-wasm` plus `wasm-opt -Oz --strip-debug --strip-producers`
- *  is **1,175,223 B** on this workstation — it was 1,169,222 B at Task 5, and
- *  Task 8's `restore_read` is the difference. The Docker build was 1,173,055 B
- *  against Task 5's 1,169,222, the residue being the build host, and has not
- *  been re-measured since. `Cargo.toml`'s `release-wasm` comment is where these
- *  figures are taken and every other document cites it. The ceiling clears all
- *  of them with room, so ordinary growth does not trip it and a dependency that
- *  doubles the module does. */
+ *  is the module's size; the figure is the root `Cargo.toml`'s `release-wasm`
+ *  comment, and every other document cites it. The Docker stage's module reads
+ *  a few KB larger than the workstation's. The ceiling clears both with room,
+ *  so ordinary growth does not trip it and a dependency that doubles the
+ *  module does. */
 export const RELEASE_MODULE_CEILING = 1_400_000;
 
 /** The DEBUG module's ceiling, in bytes.
@@ -140,8 +137,8 @@ export const DEBUG_MODULE_CEILING = 3_200_000;
 /** The whole release's ceiling, in bytes.
  *
  *  **Re-measured 2026-09-22 at the fix-wave head**: 153 entries,
- *  **9,935,340 B** on this workstation — `dist` at 2,481,013 B (the module at
- *  1,175,223, the bundle and the Worker chunk at 410,991, the CSS, two fonts at
+ *  **9,935,340 B** on this workstation — `dist` at 2,481,013 B (the module, whose
+ *  figure is `Cargo.toml`'s to keep and which has since moved; the bundle and the Worker chunk at 410,991, the CSS, two fonts at
  *  98,728, five help pictures at 764,742, two OFL copies, the shell at 11,873,
  *  the web app manifest, two icon sources and four rasters at 19,456) plus the
  *  art at 7,454,327 B (131 pictures and their manifest). It was 9,903,378 B at

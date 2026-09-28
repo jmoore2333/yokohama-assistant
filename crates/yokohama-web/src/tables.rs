@@ -10,7 +10,7 @@
 //! answers 409 until that happens.
 //!
 //! The two writes a finalize makes are not one transaction, so both crash
-//! windows are repaired on the way past the next read ([`Games::settle`])
+//! windows are repaired on the way past the next read (`Games::settle`)
 //! rather than left to a human.
 //!
 //! **This module and [`crate::games`] are one type cut along a seam**, not two
@@ -337,11 +337,11 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 ///   `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4`,
 ///   so `players: 9` with nine seats and nine keeps satisfies every length
 ///   comparison and then panics on its fifth seat.
-/// - `start_seat`: [`config_from`] does `PlayerId::new(doc.start_seat)`, the
-///   same assertion, and [`Games::finalize`] makes that call under the lock.
+/// - `start_seat`: `config_from` does `PlayerId::new(doc.start_seat)`, the
+///   same assertion, and `Games::finalize` makes that call under the lock.
 ///   Measured on a hand-written `start_seat: 7`: `PlayerId must be 0-3, got 7`,
 ///   raised from inside `Games::keep`.
-/// - `keeps[i]`: [`choices_of`] does `Keep(keep - 1)` on a `u8`, so a stored
+/// - `keeps[i]`: `choices_of` does `Keep(keep - 1)` on a `u8`, so a stored
 ///   `0` is `attempt to subtract with overflow` in a debug build — measured, on
 ///   the same call.
 /// - `turn`: [`TableDoc::view`] does `PlayerId::new` on BOTH `to_move` and
@@ -360,7 +360,7 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// sent.
 ///
 /// Checked wherever a document ENTERS this process. From the store:
-/// [`Games::read_table`], which refuses, and [`Games::list_for`], which skips
+/// `Games::read_table`, which refuses, and [`Games::list_for`], which skips
 /// and says so — both, because the listing deliberately does not go through
 /// `read_table`, and one unreadable file must not take the other nineteen
 /// tables off the lobby. From a browser: the backup module's pair check
@@ -661,7 +661,7 @@ pub enum Scope {
     /// here**: over is not a `TableStatus` (`table.rs`), it is a `Playing`
     /// table whose session says so, so `status == Playing` IS "playing or
     /// over". A row's `over` and `winner` come off the turn mirror, which is
-    /// what lets the lobby say "over · <name> won" without rebuilding a
+    /// what lets the lobby say "over · `<name>` won" without rebuilding a
     /// session.
     ///
     /// The row does NOT promise the caller may watch: a locked table is listed
@@ -1126,7 +1126,7 @@ impl Games {
     /// load. The seat holder's arm is the same 200: asking a player for their
     /// own table's password is the one answer that is always wrong.
     ///
-    /// Held under this table's own lock ([`Games::lock_for`], R-2.9) across the
+    /// Held under this table's own lock (`Games::lock_for`, R-2.9) across the
     /// read and the write, so two unlocks in flight cannot each append over the
     /// other's version — and a conflict is reported rather than retried, since
     /// the caller knows their password and re-posting is free.
@@ -1654,7 +1654,7 @@ impl Games {
     /// and re-creating a deleted name works exactly as before.
     ///
     /// **It is a TABLE WRITER, so it holds this table's own lock** — since
-    /// M6.2 [`Games::lock_for`]'s and not the global `table_lock`, which now
+    /// M6.2 `Games::lock_for`'s and not the global `table_lock`, which now
     /// serializes `create` alone (R-2.9).
     /// Without it, a delete could read a table that was still dealing, and the
     /// last `keep` could then write the table and enter `finalize` before the
@@ -1665,7 +1665,7 @@ impl Games {
     /// and reproduced in
     /// `a_delete_cannot_interleave_with_the_keep_that_finalizes`.
     ///
-    /// The table is therefore read through [`Games::read_table`] and not
+    /// The table is therefore read through `Games::read_table` and not
     /// through [`Games::table`]: `table` goes via `settle`, which takes this
     /// same non-reentrant lock when a repair is due, and calling it from here
     /// would deadlock. The two refusals it raises are restated inline so the
@@ -2382,7 +2382,7 @@ mod tests {
     /// agrees with every other, so the length comparisons alone wave it through
     /// and only the 2..=4 bound catches it. Without that bound `seats_of` maps
     /// the fifth seat through `PlayerId::new(4)`, which panics — and `keep`
-    /// holds THAT TABLE's lock across the read ([`Games::lock_for`], R-2.9), so
+    /// holds THAT TABLE's lock across the read (`Games::lock_for`, R-2.9), so
     /// the panic POISONS that mutex and every later `keep`, `join`, `delete`
     /// and repairing `settle` AT THIS TABLE dies with it, with nothing anywhere
     /// able to clear it.

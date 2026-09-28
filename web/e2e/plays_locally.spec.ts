@@ -358,6 +358,8 @@ test("a whole game against the bot plays in the browser with no /api/ request wh
     fs.writeFileSync(PIN_TABLE, stored.table!);
     const git = (...args: string[]) => execFileSync("git", args, { cwd: HERE }).toString().trim();
     const head = git("rev-parse", "--short", "HEAD");
+    // On a detached checkout `--abbrev-ref HEAD` reads "HEAD" itself, which is
+    // what is recorded then: a name is not read that the checkout does not have.
     const branch = git("rev-parse", "--abbrev-ref", "HEAD");
     // The release and the branch the pin is cut on, READ rather than written
     // down (M6.5c2, R-6.5c2.19): the literal that stood here named M6.5b's tag

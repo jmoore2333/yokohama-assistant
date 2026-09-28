@@ -21,7 +21,7 @@
 //! **Art is optional and its absence is not an error.** A checkout with no
 //! `assets/art` answers `/api/art` with a 404 and the client draws what it
 //! drew before there was any art. What is NOT tolerated is a manifest that
-//! disagrees with the engine: [`tests`] fails if any identifier the engine can
+//! disagrees with the engine: the `tests` module fails if any identifier the engine can
 //! produce has no entry, if any entry names a file that is not on disk, or if
 //! any entry names an identifier the engine does not have. A half-covered
 //! manifest would show as a few silently missing pictures, which is exactly the

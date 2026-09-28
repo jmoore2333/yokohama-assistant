@@ -257,7 +257,7 @@ pub enum Viewer {
 ///
 /// **Nothing leaks through the choice, and that is why `build_frame` is not
 /// widened** (R-3.8). `build_dashboard` reads `seat` for exactly one thing, its
-/// own hand panel, which [`facts_for`] hides and [`drop_hand_for`] then removes
+/// own hand panel, which [`facts_for`] hides and `drop_hand_for` then removes
 /// entirely; and `build_decision_for` returns `viewer_is_deciding: false` over
 /// an empty option list for any seat that is not acting. So the choice decides
 /// nothing a spectator can see — which is what makes it a definition rather

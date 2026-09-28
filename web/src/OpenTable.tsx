@@ -80,7 +80,7 @@ export function OpenTable({
   /** **Abandon's refusal, in a strip of its own** (M6.5c2 cycle C; the task
    *  review's I-1, ruled R-C24): one state per strip, because each strip sits
    *  beside its own control. `error` is the join block's — the join's, the
-   *  password's and a refused copy's; this is the one the controls' Abandon
+   *  password's, a refused copy's and the opening read's catch; this is the one the controls' Abandon
    *  raises, drawn directly under the controls. One shared state would put an
    *  Abandon refusal a screen-height above its button on a seated face. */
   const [abandonError, setAbandonError] = useState<string | null>(null);

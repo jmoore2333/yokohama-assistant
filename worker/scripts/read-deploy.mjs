@@ -172,7 +172,9 @@ export async function deployedRelease(base, pairs, fetcher = fetch) {
   return { entries: precacheList(text), cacheName, cacheControl: res.headers.get("cache-control") };
 }
 
-/** What an answer that is not the release was, for a line about it: a
+/** What an answer that is not the release was, for a line about it (twins of
+ *  this wording: `said` in `live-replay.mjs` and `what` in `web/e2e/live.ts`; a
+ *  change to one is a change to all three): a
  *  redirect with no address — Access's carries a token — or a body's type and
  *  size in bytes, never its bytes. */
 export function answerShape(status, contentType, bytes) {

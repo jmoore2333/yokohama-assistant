@@ -15,7 +15,7 @@
 //! `playing`. Until then there is nothing for `Session::from_record` to rebuild
 //! and every route that needs a session answers 409. The two writes are not one
 //! transaction, so both crash windows are repaired on the next read
-//! ([`Games::settle`]) rather than left to a human.
+//! (`Games::settle`) rather than left to a human.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -143,7 +143,7 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// [`HostClock::now`]: `Date.now()` on the target, and [`HostClock::tick`]
 /// natively, where the crate's own cells and the lint gate compile and a
 /// `js_sys` call is a stub that panics. The ticking shape is
-/// [`Games::ticking_clock`]'s, for its reason: a constant would make every
+/// `Games::ticking_clock`'s, for its reason: a constant would make every
 /// table's `created_at` a tie. `const`-constructed, so a host holds one in a
 /// `static`.
 pub struct HostClock {
@@ -367,7 +367,7 @@ impl Games {
     /// defaulted — how a test asks for a keep small enough to watch a trim
     /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
     /// calls [`Games::with_parts`] and keeps the handle it passed; **its clock
-    /// ticks** — 1, 2, 3, one per reading, see [`Games::ticking_clock`] — so a
+    /// ticks** — 1, 2, 3, one per reading, see `Games::ticking_clock` — so a
     /// cell that pins a stamp by VALUE reaches for [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
         Self::with_parts(
@@ -632,7 +632,7 @@ impl Games {
     ///
     /// **A FOURTH write rides along and is not a guard**: the table document's
     /// turn mirror (R-plan-3), refreshed after the record lands and IGNORED if
-    /// it conflicts. See [`Games::mirror_turn`].
+    /// it conflicts. See `Games::mirror_turn`.
     ///
     /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
@@ -915,7 +915,7 @@ impl Games {
     /// A host whose archive put is ASYNCHRONOUS — a Durable Object uploads to R2
     /// after the move's reply — cannot complete it inside [`Games::persist`], so
     /// it calls this once the upload has landed. The stamp and its retry on a
-    /// version conflict stay [`Games::archive_if_over`]'s own code, never a
+    /// version conflict stay `Games::archive_if_over`'s own code, never a
     /// host's copy. Idempotent: a stamped, unfinished or archive-off table puts
     /// nothing. `Ok(())` means the retry RAN, not that a stamp landed: a refused
     /// put or a failed stamp is a [`crate::log`] line — which since M6.5c2

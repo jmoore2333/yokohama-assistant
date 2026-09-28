@@ -470,7 +470,7 @@ pub struct TableView {
     /// crosses.
     pub can_watch: bool,
     /// The table's bot, or `null` (M6.5c2, R-6.5c2.10): its label and whether
-    /// this build runs it — [`crate::bots::table_bot`]'s answer. An undealt
+    /// this build runs it — `crate::bots::table_bot`'s answer. An undealt
     /// table's is the production bot, which `finalize` will deal; a dealt one's
     /// is the record's, read off [`TurnMirror::bot`]; `null` at a table with no
     /// bot seat, and at a dealt one whose mirror predates the field.

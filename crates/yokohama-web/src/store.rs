@@ -168,7 +168,7 @@ const RESERVED_ID_SUFFIXES: [&str; 2] = [".table", ".chat"];
 /// reasoning) as `yokohama_bridge::capture::safe_table_id`, which guards the
 /// one other place in this repo where an outside string becomes a filename.
 ///
-/// The one SUBTRACTION from that allowlist is [`RESERVED_ID_SUFFIXES`] — read
+/// The one SUBTRACTION from that allowlist is `RESERVED_ID_SUFFIXES` — read
 /// it for why a name may not end in `.table` or `.chat`.
 pub fn is_safe_id(id: &str) -> bool {
     !id.is_empty()

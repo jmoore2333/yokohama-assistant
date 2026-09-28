@@ -3,13 +3,13 @@
 //!
 //! **One envelope, one game or all of them**, so there is a single format
 //! rather than two, and **one function decides what a valid game is** — the
-//! archive route calls [`check_pair`] and so does a restore, because a backup
+//! archive route calls [`backup::check_pair`] and so does a restore, because a backup
 //! and an upload that disagreed would mean a game you could send to the server
 //! but not put back on your own device.
 //!
 //! ## Why this module is not behind the `server` feature
 //!
-//! The browser host calls it. `crates/yokohama-wasm` wraps [`restore_report_json`]
+//! The browser host calls it. `crates/yokohama-wasm` wraps [`backup::restore_report_json`]
 //! as its one new export, so this file makes no platform call at all — no
 //! clock, no filesystem, no environment — and the layer's own
 //! `platform_calls_stay_behind_the_server_feature` scan is what holds that
@@ -18,7 +18,7 @@
 //!
 //! ## The three answers, and why there are three and not two
 //!
-//! [`Verdict`] separates **rejected** from **unplayable** because refusing a
+//! [`backup::Verdict`] separates **rejected** from **unplayable** because refusing a
 //! record at another `SEMANTICS_REV` outright would strand the only copy of a
 //! game (R-6.5b2.12). A cross-rev pair RESTORES, lists with its reason, and can
 //! be exported again; the bytes are never rewritten, which is what "never
@@ -29,7 +29,7 @@
 //! ## What is checked HERE and what is checked by the page
 //!
 //! This module decides whether a game is *valid* and whether it is
-//! *addressable* — [`check_pair`] and the id contract in [`restore_read`],
+//! *addressable* — [`backup::check_pair`] and the id contract in [`backup::restore_read`],
 //! which `TableDoc::agrees_with` cannot supply because it compares SETUP fields
 //! and knows nothing about the id or who may play. The **clash rule** is the
 //! page's, because it is about what is already in this browser's IndexedDB and
@@ -173,7 +173,7 @@ pub struct RestoreRow {
 /// not cheap and is immutable once built, so it is constructed once per process
 /// and shared by reference" — and an earlier draft departed from it, paying one
 /// per archive POST and one per record-carrying game in a restore (review M-4).
-/// So [`check_pair_with`] is the body and takes the rules; this is the ONE
+/// So `check_pair_with` is the body and takes the rules; this is the ONE
 /// public entry, for a caller that has no `Games` to borrow them from. The two
 /// in-crate callers pass what they already hold: `archive_post` the process's
 /// shared rules, `restore_read` one built per ENVELOPE rather than per game.

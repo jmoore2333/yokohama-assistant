@@ -5,7 +5,7 @@
 //! map with an SPA fallback, and the crate already carries the one dependency
 //! decision it had to justify. If asset serving ever needs range requests or
 //! compression negotiation, that is the moment to take the dependency — not
-//! before. Caching came off that list at M6.5b and is [`cache_control`]: one
+//! before. Caching came off that list at M6.5b and is `cache_control`: one
 //! header on one prefix is not a negotiation.
 //!
 //! In development none of this runs: Vite serves the client and proxies `/api`

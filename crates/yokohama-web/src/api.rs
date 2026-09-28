@@ -253,7 +253,7 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
 /// `GET` as axum's `MethodRouter` lists them — what the adapter writes into a
 /// 405's `Allow` header. Empty for a path no row matches.
 ///
-/// It takes the host's `serves_games` for the same reason [`find`] does: a 405
+/// It takes the host's `serves_games` for the same reason `find` does: a 405
 /// and its `Allow` are answers ABOUT the table, so they have to be read off the
 /// table this host actually serves.
 pub fn allowed_methods(path: &str, serves_games: bool) -> Vec<&'static str> {
@@ -473,7 +473,7 @@ pub fn labels(games: &Games) -> Labels {
 /// `events` and `stream` can share it: a table that is open or dealing has no
 /// record, and a function that fetched one would have to refuse those two
 /// before the routes that must answer them got a look. A route that needs a
-/// session asks [`games::Games::handle`] afterwards and gets the same 409 it
+/// session asks `Games::handle` afterwards and gets the same 409 it
 /// always did.
 ///
 /// **The table is read FIRST, as `seated` read it**, so a stranger holding an
@@ -793,7 +793,7 @@ pub struct Keep {
     pub seat: u8,
     pub card: u8,
     /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
-    /// only when it has no name yet — see [`Games::keep`](games::Games::keep).
+    /// only when it has no name yet — see [`Games::keep`](crate::games::Games::keep).
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -838,7 +838,7 @@ pub struct Unlock {
 
 /// `POST /api/games/{id}/unlock` — knock, and be remembered.
 ///
-/// The whole of the ladder is [`games::Games::unlock`]'s, held under the
+/// The whole of the ladder is `Games::unlock`'s, held under the
 /// table's own lock; this handler carries no rule of its own. It answers the
 /// `TableView`, whose `can_watch` now reads true, so a client that was
 /// drawing the unlock face has the payload it needs to draw the game instead
@@ -1974,7 +1974,7 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The EIGHT checks [`backup::check_pair_with`] makes, in spec §2.4's order**
+/// **The EIGHT checks `backup::check_pair_with` makes, in spec §2.4's order**
 /// (nine refusals through this route, because the archive-off 404 is asked
 /// first, and a rev that disagrees and a rev that is absent are two different
 /// sentences): the record parses; a `semantics_rev` present and equal to this
