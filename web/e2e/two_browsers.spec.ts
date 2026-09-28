@@ -130,22 +130,22 @@ test("two people at two browsers play to a winner and neither sees the other's h
 
   // A opens the table and names B in seat 1. The form's default at two players
   // seats the BOT there, so this is also the one walk that exercises the seat
-  // row's "another email" arm.
+  // row's "a specific person" arm.
   await signIn(a, "a@e2e.test");
   // The lobby is the first screen since M6.2; the form is one click on.
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
-  // `exact: true`: switching this row to an email puts a "Seat 1 email" field
-  // beside it, and `getByLabel` matches by substring.
-  await a.getByLabel("Seat 1", { exact: true }).selectOption("email");
-  await a.getByLabel("Seat 1 email").fill("b@e2e.test");
+  await expect(a.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  // **"A specific person"**, the arm this walk exists to exercise: a NAME on an
+  // open-door server, an ADDRESS behind Access (M6.5c2, spec §2.2) — either way
+  // the key B signs in as.
+  await a.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("person");
+  await a.getByLabel(/^Blue player's (name|address)$/).fill("b@e2e.test");
   // **A password, because the third browser is the one it is for** (spec §9.4).
   // It costs the two players nothing — both hold a seat and a seat holder never
-  // presents anything — and it is the only way to reach the unlock face, which
-  // is the screen between a link and a game somebody is here to watch.
-  await a.getByLabel("Ask for a password to join").check();
-  await a.getByLabel("Table password").fill(WATCH_PASSWORD);
+  // presents anything — and it is the only way to reach the unlock face.
+  await a.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
+  await a.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
   );

@@ -1434,10 +1434,39 @@ describe("the route", () => {
     // product change, kept: a player with three games open used to be shown a
     // blank create.
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "New game" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "New table" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "New table" }));
     expect(window.location.hash).toBe("#/new");
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New table", level: 3 })).toBeInTheDocument();
+  });
+
+  // **Each form leaves for its own channel's first screen** (M6.5c2, mock 07's
+  // Cancel): the table form for the lobby it came from, the local form for the
+  // door, where this browser's games are listed.
+  it("leaves the table form for the lobby and the local form for the door", async () => {
+    stubWorker();
+    window.location.hash = "#/new";
+    const { user } = app();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    act(() => {
+      window.location.hash = "#/new/local";
+    });
+    await screen.findByRole("heading", { name: "New game against the bot" });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+  });
+
+  // **The band says who is playing on the form, in the lobby's own corner**
+  // (mock 07: "Playing as …"): the identity corner, never the old "You are …"
+  // strip, which stays the game banner's.
+  it("draws the identity corner in the new-table form's band", async () => {
+    window.location.hash = "#/new";
+    app();
+    await screen.findByRole("heading", { name: "New table", level: 3 });
+    const band = document.querySelector<HTMLElement>(".lobby-band")!;
+    expect(within(band).getByText(/Playing as/)).toBeInTheDocument();
+    expect(band.textContent).not.toMatch(/You are /);
   });
 
   // **The two forms are two components, keyed by host** (whole-branch review,
@@ -1450,16 +1479,17 @@ describe("the route", () => {
     stubWorker();
     const { user } = app();
     await user.click(await screen.findByRole("button", { name: "New table" }));
-    await user.selectOptions(await screen.findByLabelText("Players"), "4");
+    await user.click(
+      within(await screen.findByRole("group", { name: "Players" })).getByRole("radio", { name: "4" }),
+    );
     // The premise, asserted: the server's form really is at four.
-    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe("4");
+    expect(within(screen.getByRole("group", { name: "Players" })).getByRole("radio", { name: "4" })).toBeChecked();
 
     act(() => {
       window.location.hash = "#/new/local";
     });
-    // The local form asks none of it — which is also how this cell tells the
-    // two apart, since both headings read "New game".
-    await waitFor(() => expect(screen.queryByLabelText("Players")).toBeNull());
+    // The local form asks none of it: its Players group goes.
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Players" })).toBeNull());
     await user.click(await screen.findByRole("button", { name: "Deal" }));
 
     const posted = currentWorker().posted.find(
@@ -1475,7 +1505,7 @@ describe("the route", () => {
     // followed in a cold tab, where no `hashchange` ever fires.
     window.location.hash = "#/new";
     app();
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New table", level: 3 })).toBeInTheDocument();
   });
 
   // **And the sentence does not follow you into the next table.** A refusal is
@@ -1558,7 +1588,7 @@ describe("the route", () => {
     );
     await screen.findByText("you are not seated at this table");
     await user.click(screen.getByRole("button", { name: "New table" }));
-    await screen.findByRole("heading", { name: "New game" });
+    await screen.findByRole("heading", { name: "New table", level: 3 });
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
     window.location.hash = "#/lobby";
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
@@ -3784,9 +3814,10 @@ describe("the first screen with no server", () => {
    *  cells. */
   const playsHere = async () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "New game" }));
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
-    // The form that needs no server: two seats, you and the bot.
-    expect(screen.getByText("the bot")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New game against the bot" })).toBeInTheDocument();
+    // The form that needs no server: two seats, you and the bot. Scoped to
+    // the seats: "The bot" is a First player segment too.
+    expect(within(screen.getByRole("list", { name: "Seats" })).getByText("The bot")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
   };
 

@@ -427,9 +427,15 @@ test("at four players the asking seat is in the frame on the middle turn", async
   // browser's, because above two players the form now defaults them to OPEN and
   // an open table is not dealt at all (§5.3).
   await newGameForm(page);
-  await page.getByLabel("Players", { exact: true }).selectOption("4");
-  for (const i of [1, 2, 3]) {
-    await page.getByLabel(`Seat ${i}`, { exact: true }).selectOption("me");
+  await page
+    .getByRole("group", { name: "Players" })
+    .getByRole("radio", { name: "4", exact: true })
+    .check();
+  // Each seat by its colour since M6.5c2 (mock 07) — the same lines
+  // `startGame` runs — and `exact`, because a colour is also a First player
+  // choice.
+  for (const color of ["Blue", "Yellow", "Green"]) {
+    await page.getByRole("combobox", { name: `${color} seat`, exact: true }).selectOption("me");
   }
   await page.getByRole("button", { name: "Deal" }).click();
   // Four seats, all this browser's (R-P10: no bot above two players), and the

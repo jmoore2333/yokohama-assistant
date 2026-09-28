@@ -335,10 +335,10 @@ test("two people and a watcher play a paced game across four hibernations, and i
   // x opens a two-seat table with seat 1 OPEN and a password on it — the
   // `joins_by_link` form, with a name only this run uses.
   await x.getByRole("button", { name: "New table" }).click();
-  await expect(x.getByRole("heading", { name: "New game" })).toBeVisible();
-  await x.getByLabel("Seat 1", { exact: true }).selectOption("open");
+  await expect(x.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  await x.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("open");
   await x.getByLabel("Name", { exact: true }).fill(NAME);
-  await x.getByLabel("Ask for a password to join").check();
+  await x.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await x.getByLabel("Table password", { exact: true }).fill(PASSWORD);
   const created = x.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",

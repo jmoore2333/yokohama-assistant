@@ -163,9 +163,6 @@ describe("the help panel and the lobby", () => {
     expect(text).toContain("change name");
     expect(text).toContain("this browser remembers it");
     expect(text).toContain("leave it blank and your address is used");
-    // And it is still not the form's own display name, which the next
-    // paragraph offers a reader could take for the same control.
-    expect(text).toContain("not the display name on the form below");
     expect(text).not.toContain("Beside You are at the top of the lobby");
   });
 

@@ -1076,7 +1076,7 @@ test("without Web Locks, a tab whose game was opened elsewhere exports the new o
   const hostA = await localHost(a);
   expect(await withoutLocks(hostA), "A's host has no Web Locks").toBe("undefined");
   await a.getByRole("button", { name: "New game", exact: true }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
+  await expect(a.getByRole("heading", { name: "New game against the bot", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "Deal" }).click();
   await a.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });
   const game = { id: a.url().split("#/t/")[1]! };

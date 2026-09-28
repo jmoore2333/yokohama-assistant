@@ -279,6 +279,17 @@ export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby
 }
 
 /**
+ * Set what this browser calls itself — the name a seat it takes is labelled
+ * with (M6.5c2, R-6.5c2.8). The forms and the join no longer ask for one — the
+ * lobby's corner owns it — so a walk that reads a seat's label says, here, what
+ * it is. The key is `api.ts`'s `DISPLAY_NAME_KEY`, spelled as a literal the way
+ * `plays_a_whole_game` spells the claimed user's.
+ */
+export async function nameThisBrowser(page: Page, name: string): Promise<void> {
+  await page.evaluate((n) => localStorage.setItem("yokohama.display_name", n), name);
+}
+
+/**
  * Open a table from the LOBBY's Your tables, BY ID.
  *
  * The lobby is the only way into a table this browser did not create, which is
@@ -326,7 +337,10 @@ export async function newGameForm(page: Page, email: string = WALKER): Promise<v
   // headings and every walk in this directory fails in strict mode.
   await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "New table" }).click();
-  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  // **`level: 3`**: the band draws its last crumb as the page's `<h2>`, which
+  // reads "New table" on this screen too, and strict mode refuses a locator
+  // that matches two (M6.5c2).
+  await expect(page.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
 }
 
 /** Start a fresh game through the lobby and the setup screen, exactly as a
@@ -358,15 +372,17 @@ export async function startGame(
   await newGameForm(page);
 
   if (players !== 2) {
-    await page.getByLabel("Players", { exact: true }).selectOption(String(players));
-    // **The hot seat is ASKED FOR since M6.2** (§5.3). Above two players the
-    // form defaults the other seats to OPEN, which opens a table that waits for
-    // people rather than one that deals — so every walk that plays 3P or 4P by
-    // itself says, in the form, that it holds every seat. Two `exact: true`
-    // queries, because `getByLabel` matches by substring and a row switched to
-    // an email would put "Seat 1 email" beside "Seat 1".
-    for (let i = 1; i < players; i += 1) {
-      await page.getByLabel(`Seat ${i}`, { exact: true }).selectOption("me");
+    await page
+      .getByRole("group", { name: "Players" })
+      .getByRole("radio", { name: String(players), exact: true })
+      .check();
+    // **The hot seat is ASKED FOR since M6.2** (§5.3): above two players the
+    // form opens the other seats, so a walk that plays 3P or 4P by itself says,
+    // in the form, that it holds every seat. Each seat is named by its colour
+    // since M6.5c2 (mock 07), and `exact`, because a colour is also a First
+    // player choice.
+    for (const color of ["Blue", "Yellow", "Green"].slice(0, players - 1)) {
+      await page.getByRole("combobox", { name: `${color} seat`, exact: true }).selectOption("me");
     }
   }
   // **The id comes off the RESPONSE, not off the banner.**
@@ -408,7 +424,7 @@ async function createLocal(page: Page, signedOut: boolean): Promise<string> {
   await page.goto("/#/");
   await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
   await page.getByRole("button", { name: "New game", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New game against the bot", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Deal" }).click();
   await page.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });
   const id = page.url().split("#/t/")[1] ?? "";

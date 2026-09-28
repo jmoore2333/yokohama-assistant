@@ -201,17 +201,18 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
         choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
         <em>change name</em> sets the name the seats you take and the messages you send are labelled
-        with, and this browser remembers it; leave it blank and your address is used. (It is not the{" "}
-        <em>display name</em> on the form below, which names you at one table.)
+        with, and this browser remembers it; leave it blank and your address is used.
       </p>
       <p>
-        The form is <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s
-        email, an open seat, or the bot. The bot is offered at two players only, because that is
-        where it has been measured. You can give the table a name, give yourself a display name,
-        and ask for a <strong>password</strong> that anyone joining has to type. Fill every seat
-        and the button reads Deal: the table opens at once. Leave a seat open and it reads Open
-        table, and the table waits. Either way nobody has played yet, and the game does not exist
-        until every seat has chosen its first card.
+        The form is <strong>one row per seat</strong>, in the colours&rsquo; own order &mdash; each
+        one you, a specific person, an open seat, or the bot. The bot is offered at two players
+        only, because that is where it has been measured, and the form names the version it plays
+        as. You choose who plays first, or leave it to a draw; you can give the table a name, and
+        ask for a <strong>password</strong> that anyone joining or spectating has to type. Under{" "}
+        <em>Advanced</em> you can ask for one particular setup by its seed, a whole number the form
+        checks as you type. Fill every seat and the button reads Deal: the table opens at once.
+        Leave a seat open and it reads Open table, and the table waits. Either way nobody has played
+        yet, and the game does not exist until every seat has chosen its first card.
       </p>
       <p>
         A table with a seat still open has a <strong>link</strong> &mdash; its own address, shown

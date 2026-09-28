@@ -1,117 +1,116 @@
-// Setup (spec §5.3): who sits where, and what the table is called.
+// Setup (spec §5.3; M6.5c2 spec §2.2, R-6.5c2.8, mock 07): who sits where, who
+// plays first, what the table is called, whether it wants a password — and,
+// folded away for a fixture or a diagnostic, which seed.
 //
-// **A FORM, and nothing else now.** The deal left it at M6.1 — a create opens a
-// DEALING table and each seat fetches its own two cards from `GET …/deal` — and
-// M6.2 took the saved-tables list with it: the lobby is the first screen and
-// lists both your games and the open ones, so a second list here would be the
-// same tables read two ways.
+// **TWO forms in one file, and they share only what is truly one thing.** The
+// table form (`#/new`) asks everything a room asks; the form for a game on this
+// device (`#/new/local`) asks only what a game against the bot can be asked —
+// its name and who starts. They share the segmented control, the submit's guard
+// and the create call.
 //
-// What is left is the question a create actually asks: how many seats, who holds
-// each one, what the table is called, what YOU are called at it, whether it
-// wants a password, and — for a fixture or a diagnostic — which seed.
+// **"Your name" left both forms** (R-6.5c2.8): the lobby's corner owns it, and
+// what a create sends as `display_name` is the name this browser already keeps,
+// read when the form is sent. The form is about the table.
 
 import { useRef, useState, type ReactNode } from "react";
 import {
   api,
   ApiError,
-  displayName as storedName,
+  displayName,
   LOCAL_USER,
-  setDisplayName,
+  useIdentityMode,
   type NewGameRequest,
   type SeatRequest,
 } from "./api";
+import { LobbyBand } from "./Band";
 import { seatClass } from "./Cards";
-import type { PlayerColor, TableView } from "./types";
+import { VersionTag } from "./Chips";
+import { normalizeName } from "./nameRule";
 import { Refusal } from "./Refusal";
+import { checkSeed, trimSeed } from "./seedRule";
+import type { PlayerColor, TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
+/** The seat colours, in the ENGINE's order. */
 const COLORS = ["Red", "Blue", "Yellow", "Green"] as const;
 
-/** One row of the seat list, as the form holds it before it is a `SeatRequest`.
- *
- *  `email` keeps its typed text even while the row is switched to `me`, so a
- *  player who flips a row back and forth does not lose what they typed. */
-type SeatRow = { kind: "me" | "email" | "bot" | "open"; email: string };
+/** The bot this build deals, by its short label (R-6.5c2.10) — read at BUILD
+ *  time from the contract file `wire_fixtures` emits and refuses when stale, so
+ *  the form asks the server nothing and states no second truth (spec §2.4). */
+const BOT_LABEL = productionBot.label;
 
-/** The default seating for a player count.
- *
- *  **The bot sits at seat 1, and only at two players (R-P10).** The server
- *  refuses a bot at three and four — "the bot is measured at two players only" —
- *  so the form does not offer one there.
- *
- *  **Above two players the other seats default to OPEN** (spec §5.3). Until
- *  M6.2 they defaulted to the person filling the form in, which made a hot seat
- *  the only 3P and 4P table this client could open; a room is people, and the
- *  seats they have not arrived at yet are open ones. A player who really is
- *  running a hot seat sets the rows to `me`, which is one control away. */
+/** One seat row as the form holds it before it is a `SeatRequest`. `person`
+ *  keeps its typed text while the row is switched away, so flipping a row back
+ *  and forth loses nothing. */
+type SeatRow = { kind: "me" | "person" | "bot" | "open"; person: string };
+
+/** Who plays first: a seat, or a draw made when the form is sent. */
+type First = number | "random";
+
+/** The default seating for a count. **The bot sits at seat 1, and only at two
+ *  players (R-P10)**; above two the other seats default to OPEN (spec §5.3). */
 const defaultSeats = (players: number): SeatRow[] =>
   Array.from({ length: players }, (_, i) => ({
     kind: i === 0 ? ("me" as const) : players === 2 ? ("bot" as const) : ("open" as const),
-    email: "",
+    person: "",
   }));
 
-export function NewGame({
-  me,
-  onCreated,
-  who,
-  local,
+/** A seat drawn over `n` from the browser's own generator, at the moment the
+ *  form is SENT (R-6.5c2.8). **Rejection sampling**, so every seat is equally
+ *  likely: a byte taken modulo three would favour seat 0 by one part in 85, so
+ *  a byte at or past the largest multiple of `n` is drawn again. */
+export function drawSeat(n: number): number {
+  const byte = new Uint8Array(1);
+  const limit = 256 - (256 % n);
+  for (;;) {
+    crypto.getRandomValues(byte);
+    if (byte[0]! < limit) return byte[0]! % n;
+  }
+}
+
+/** A few choices, one of them on: radio buttons drawn as segments (mock 07), so
+ *  the arrow keys walk the group and a screen reader says "2 of 3" for free. */
+function Segmented<T extends number | string>({
+  legend,
+  name,
+  options,
+  value,
+  onChange,
 }: {
-  /** Who this browser plays as, from the DOOR.
-   *
-   *  **Not from storage** (M6.1 Task 7's review). `api.ts` holds a claimed name
-   *  and attaches it as a header; what that header is WORTH is the server's
-   *  answer, and `/api/me` is the only thing that knows it. A form that read
-   *  storage would seat a name the server may not answer to — and under
-   *  Cloudflare Access or the edge Worker there is nothing in storage at all,
-   *  so it would post an empty seat.
-   *
-   *  The DISPLAY name below is read from storage, and that is not the same
-   *  thing: it is a label on a seat, not a claim about who is asking. */
-  me: string;
-  /** The table was opened. `App` takes it from here — the reply's `status` says
-   *  whether it is open or dealing, and `open` is what asks.
-   *
-   *  It may return a promise and is AWAITED inside `run`: `App`'s `open` is two
-   *  requests, and a refusal from either belongs in this screen's error line
-   *  rather than in an unhandled rejection. */
-  onCreated: (table: TableView) => void | Promise<void>;
-  /** The "You are …" strip and its sign-out button, built by `App` — a node
-   *  rather than an email and a callback, so there is one statement of the strip
-   *  and one wiring of the button. */
-  who?: ReactNode;
-  /** Open the table in THIS BROWSER (M6.5b, R-6.5b.8; spec §2.5).
-   *
-   *  The same form with everything a local table cannot be asked taken out:
-   *  two seats, you and the bot, no password (there is nobody to keep out),
-   *  and **no seed — never offered and never sent**, because `draw_seed`
-   *  inside the module draws it and the board is an injective fingerprint of
-   *  it. The submit goes to the Worker; `me` is not what seats it either, for
-   *  the reason `LOCAL_USER` exists: the module answers as one fixed address
-   *  whatever door this browser signed in at. */
-  local?: boolean;
+  legend: string;
+  name: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
 }) {
-  const [players, setPlayers] = useState(2);
-  const [seats, setSeats] = useState<SeatRow[]>(() => defaultSeats(2));
-  const [seedText, setSeedText] = useState("");
-  const [name, setName] = useState("");
-  /** What this browser calls itself, prefilled from the last table it opened.
-   *
-   *  Read ONCE, in the initializer: a value re-read on every render would
-   *  overwrite what the player is in the middle of typing. */
-  const [myName, setMyName] = useState(() => storedName() ?? "");
-  const [locked, setLocked] = useState(false);
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  return (
+    <fieldset className="form-field">
+      <legend>{legend}</legend>
+      <div className="seg">
+        {options.map((o) => (
+          <label key={String(o.value)} className={o.value === value ? "on" : undefined}>
+            <input
+              type="radio"
+              name={name}
+              checked={o.value === value}
+              onChange={() => onChange(o.value)}
+            />
+            {o.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+/** The submit's guard, for both forms. **A ref decides whether the request
+ *  happens; the state only disables the button** — React batches, so two clicks
+ *  in one tick both read a `busy` STATE of false, and two `POST /api/games` are
+ *  two different tables. */
+function useSubmit() {
   const [busy, setBusy] = useState(false);
-
-  // The same guard, and the same reasoning, as `App`'s `inFlight`.
-  //
-  // `busy` STATE could not hold it: React batches, so two clicks in the same
-  // tick both read `busy === false` and both post. Here that is two `POST
-  // /api/games`, and the two tables are genuinely different — the server draws a
-  // fresh bot seed per table — so the loser's document lands on disk and the
-  // client is silently switched onto the other one.
+  const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
-
   const run = async (fn: () => Promise<void>) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -126,245 +125,420 @@ export function NewGame({
       setBusy(false);
     }
   };
+  return { busy, error, run };
+}
 
+/** The name this browser keeps, trimmed, or nothing — read when a form is
+ *  SENT, so a name set in the lobby's corner a moment ago is the one used. */
+const keptName = (): Partial<Pick<NewGameRequest, "display_name">> => {
+  const shown = displayName()?.trim();
+  return shown ? { display_name: shown } : {};
+};
+
+export function NewGame({
+  me,
+  onCreated,
+  onCancel,
+  who,
+  local,
+}: {
+  /** Who this browser plays as, from the DOOR — never from storage: what a
+   *  claimed header is worth is the server's answer at `/api/me`. */
+  me: string;
+  /** The table was opened; `App` takes it from here. Awaited inside the
+   *  submit, so a refusal from `App`'s own two requests lands in this form. */
+  onCreated: (table: TableView) => void | Promise<void>;
+  /** Back out without opening anything: the lobby for the table form, the door
+   *  for the local one (mock 07's Cancel). */
+  onCancel: () => void;
+  /** The band's corner, built by `App` (the identity corner, Task 4). The
+   *  local form draws none — it is a game on this device (mock 07). */
+  who?: ReactNode;
+  /** Open the table in THIS BROWSER (M6.5b, R-6.5b.8): two seats, you and the
+   *  bot, no password and no seed — `draw_seed` inside the module draws it. */
+  local?: boolean;
+}) {
+  return local ? (
+    <LocalForm onCreated={onCreated} onCancel={onCancel} />
+  ) : (
+    <TableForm me={me} onCreated={onCreated} onCancel={onCancel} who={who} />
+  );
+}
+
+function TableForm({
+  me,
+  onCreated,
+  onCancel,
+  who,
+}: {
+  me: string;
+  onCreated: (table: TableView) => void | Promise<void>;
+  onCancel: () => void;
+  who?: ReactNode;
+}) {
+  const [players, setPlayers] = useState(2);
+  const [seats, setSeats] = useState<SeatRow[]>(() => defaultSeats(2));
+  const [first, setFirst] = useState<First>(0);
+  const [name, setName] = useState("");
+  const [locked, setLocked] = useState(false);
+  const [password, setPassword] = useState("");
+  const [seedText, setSeedText] = useState("");
+  const [advanced, setAdvanced] = useState(false);
+  const { busy, error, run } = useSubmit();
+  /** **A specific person is a NAME on an open door and an ADDRESS behind
+   *  Access** (spec §2.1): the door's own name, from `/api/health`. */
+  const byName = useIdentityMode() === "open";
   const colors = COLORS.slice(0, players) as PlayerColor[];
 
-  /** The seat list §3.1 reads: one entry per seat, in seat order, each exactly
-   *  one of `user` / `bot: true` / `open: true`.
-   *
-   *  **Normalized here, because the server normalizes too (R-1.1).** A table
-   *  seated under `blue@wire.test` does not answer to `Blue@Wire.test`, and the
-   *  person at that address would be told they hold no seat. */
-  const seatRequests = (): SeatRequest[] => {
-    // **A local table is seated by the MODULE's own address** (R-6.5b.1), not
-    // by whoever this browser signed in at and not by nobody: `dispatch` is
-    // handed `local@browser` for every local call, and a create naming any
-    // other address would open a table whose own player holds no seat.
-    if (local) return [{ user: LOCAL_USER }, { bot: true }];
-    return seats.map((row) => {
-      if (row.kind === "bot") return { bot: true };
-      if (row.kind === "open") return { open: true };
-      return { user: row.kind === "me" ? me : row.email.trim().toLowerCase() };
-    });
+  /** Blank is "the server draws one" and is never sent; anything else is
+   *  checked by the server's own rule as it is typed (spec §2.2). */
+  const seedVerdict = trimSeed(seedText) === "" ? null : checkSeed(seedText);
+  const seedError = seedVerdict !== null && !seedVerdict.ok ? seedVerdict.reason : null;
+
+  /** Why a "specific person" row cannot be sent: `null` when it can, `""` when
+   *  it is blank — held without a sentence, because nothing typed is not a
+   *  mistake yet — and the key grammar's own reason otherwise (`nameRule.ts`). */
+  const personError = (row: SeatRow): string | null => {
+    if (row.kind !== "person") return null;
+    if (row.person.trim() === "") return "";
+    const n = normalizeName(row.person);
+    return n.ok ? null : n.reason;
   };
+  const held = seedError !== null || seats.some((r) => personError(r) !== null);
 
-  const body = (): NewGameRequest => ({
-    players,
-    colors: [...colors],
-    start_seat: 0,
-    seats: seatRequests(),
-    // Blank means "the server draws one", which is the right default: the board
-    // is an injective fingerprint of the setup seed, so a small or sequential
-    // seed hands over the hidden set. The value is a STRING from the keystroke
-    // to the wire — a `u64` does not survive a JS number, and a rounded seed
-    // deals a different game from move one.
-    // **A local create never carries one**, whatever is in the field (there is
-    // none on that form): `draw_seed` inside the module draws it and it is
-    // never typed — spec §2.2.
-    ...(!local && seedText.trim() ? { seed: seedText.trim() } : {}),
-    ...(name.trim() ? { name: name.trim() } : {}),
-    ...(myName.trim() ? { display_name: myName.trim() } : {}),
-    // **Only when the box is ticked AND something was typed.** A password field
-    // left blank under a ticked box is a table nobody can join rather than a
-    // table anybody can — so the absent field is the honest thing to send, and
-    // the table opens unlocked.
-    // A local table has nobody to keep out, so the control is not drawn and
-    // the field cannot ride even if something were left in it.
-    ...(!local && locked && password.trim() ? { password: password.trim() } : {}),
-  });
-
+  /** **Rebuilt, not resized**: the bot is legal at two players only, so a seat
+   *  list carried across a count change would strand a bot at three (R-P10).
+   *  A first player the new count still has is kept. */
+  const setCount = (n: number) => {
+    setPlayers(n);
+    setSeats(defaultSeats(n));
+    setFirst((f) => (f === "random" || f < n ? f : 0));
+  };
   const setRow = (i: number, patch: Partial<SeatRow>) =>
     setSeats((rows) => rows.map((r, n) => (n === i ? { ...r, ...patch } : r)));
 
-  /** What the button says it will do, and the two things differ.
-   *
-   *  A table with an open seat is not dealt when it is created — it waits for
-   *  somebody to sit down — so a button reading "Deal" would promise the set
-   *  table and hand over a waiting room. */
+  const body = (): NewGameRequest => {
+    const seed = trimSeed(seedText);
+    return {
+      players,
+      colors: [...colors],
+      start_seat: first === "random" ? drawSeat(players) : first,
+      // **Normalized here, because the server keys it so** (R-1.1; spec §2.1):
+      // a seat bound under one spelling answers to that key alone.
+      seats: seats.map((row): SeatRequest => {
+        if (row.kind === "bot") return { bot: true };
+        if (row.kind === "open") return { open: true };
+        if (row.kind === "me") return { user: me };
+        const n = normalizeName(row.person);
+        return { user: n.ok ? n.key : row.person.trim() };
+      }),
+      // The seed is a STRING from the keystroke to the wire (`WireSeed`), and
+      // blank is omitted: the board is an injective fingerprint of the seed, so
+      // the server's own draw is the safe default.
+      ...(seed ? { seed } : {}),
+      ...(name.trim() ? { name: name.trim() } : {}),
+      ...keptName(),
+      // Only when ticked AND typed: a password field left blank under a ticked
+      // box would lock a table nobody can join.
+      ...(locked && password.trim() ? { password: password.trim() } : {}),
+    };
+  };
+
+  /** A table with an open seat is not dealt when it is created, so "Deal" there
+   *  would promise the set table and hand over a waiting room. */
   const opensSeats = seats.some((r) => r.kind === "open");
 
   return (
-    <div className="setup">
-      {/* This screen carries no banner, so the strip gets a row of its own —
-          the same node the dealing screen puts in its banner and the game screen
-          puts in its own, so there is one place a player reads who they are. */}
-      {who && <div className="who-strip">{who}</div>}
-      <h2>New game</h2>
-      {/* **R-P10, said where the choice is made.** The server refuses a bot at
-          three and four players by name; a form that only let the player find
-          that out as a 400 after filling it in would be telling them about a
-          field they never touched.
+    <div className="band-screen">
+      <LobbyBand crumbs={["Lobby", "New table"]} corner={who} />
+      <div className="setup">
+        {/* **Task 2's raised card**, and the title a level under the band's
+            crumb: the band's last crumb is the page's `<h2>` and reads "New
+            table" too (mock 07 draws both). */}
+        <section className="raised-card form-card" aria-labelledby="new-table-title">
+          <div className="card-band vp" aria-hidden="true" />
+          <div className="card-in">
+            <h3 id="new-table-title">New table</h3>
 
-          **A local table is not asked any of it** (R-6.5b.8): it is you and
-          the bot, in this browser, and the sentence says where the game lives
-          because that is the one thing about it a player cannot see. */}
-      <p className="lede">
-        {local
-          ? "You and the bot, played in this browser: the game is kept on this device and never reaches the server unless you send it there."
-          : "Seat one bot at two players; at three and four everyone is a person — the bot is measured at two players only."}
-      </p>
+            {/* **Free text, and never an id** (R-2.4); the placeholder is the
+                whole explanation (R-6.5c2.8: no subtext). */}
+            <div className="form-field">
+              <label htmlFor="name">Name</label>
+              <input
+                id="name"
+                value={name}
+                autoComplete="off"
+                placeholder="ID shown in the lobby if left blank"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
 
-      {local ? (
-        // The seating is not a choice here, so it is not a control: two seats,
-        // in seat order, with the colours the server's own default gives them.
-        seats.map((row, i) => (
-          <div className="field seat-row" key={i}>
-            <span className="meta">Seat {i}</span>
-            <span>{row.kind === "bot" ? "the bot" : "you"}</span>
-            <span className={`meta ${seatClass(colors[i])}`}>{colors[i]}</span>
-          </div>
-        ))
-      ) : (
-        <>
-          <div className="field">
-            <label htmlFor="players">Players</label>
-            <select
-              id="players"
+            <Segmented
+              legend="Players"
+              name="players"
+              options={[2, 3, 4].map((n) => ({ value: n, label: String(n) }))}
               value={players}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                setPlayers(n);
-                // **Rebuilt, not resized.** The bot is legal at two players only, so
-                // a seat list carried across a count change would either strand a
-                // bot at three players (which the server refuses) or leave two
-                // players with no bot and no way to ask for one.
-                setSeats(defaultSeats(n));
-              }}
-            >
-              {[2, 3, 4].map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </div>
+              onChange={setCount}
+            />
 
-          {seats.map((row, i) => (
-            <div className="field seat-row" key={i}>
-              <label htmlFor={`seat-${i}`}>Seat {i}</label>
-              <select
-                id={`seat-${i}`}
-                value={row.kind}
-                onChange={(e) => setRow(i, { kind: e.target.value as SeatRow["kind"] })}
-              >
-                <option value="me">me</option>
-                <option value="email">another email</option>
-                <option value="open">open seat</option>
-                {players === 2 && <option value="bot">bot</option>}
-              </select>
-              <span className={`meta ${seatClass(colors[i])}`}>{colors[i]}</span>
-              {row.kind === "email" && (
+            <fieldset className="form-field">
+              <legend>Seats</legend>
+              {seats.map((row, i) => {
+                const color = colors[i]!;
+                const why = personError(row);
+                return (
+                  <div className="form-seat" key={color}>
+                    <span className="color">
+                      <span className={`seat-dot ${seatClass(color)}`} aria-hidden="true" />
+                      {color}
+                    </span>
+                    <div className="pick">
+                      <select
+                        aria-label={`${color} seat`}
+                        value={row.kind}
+                        onChange={(e) => setRow(i, { kind: e.target.value as SeatRow["kind"] })}
+                      >
+                        <option value="me">You</option>
+                        <option value="open">Open seat</option>
+                        <option value="person">A specific person</option>
+                        {players === 2 && <option value="bot">The bot</option>}
+                      </select>
+                      {row.kind === "bot" && <VersionTag label={BOT_LABEL} />}
+                    </div>
+                    {row.kind === "person" && (
+                      <input
+                        className="person"
+                        aria-label={`${color} player's ${byName ? "name" : "address"}`}
+                        type={byName ? "text" : "email"}
+                        autoComplete="off"
+                        placeholder={byName ? "their name" : "someone@example.com"}
+                        value={row.person}
+                        aria-invalid={why ? true : undefined}
+                        aria-describedby={why ? `seat-${i}-error` : undefined}
+                        onChange={(e) => setRow(i, { person: e.target.value })}
+                      />
+                    )}
+                    {why ? (
+                      <p className="field-error" id={`seat-${i}-error`}>
+                        {why}
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {/* R-P10 said where the choice is made, with the version the bot
+                  plays as — shown, never chosen (R-6.5c2.10). */}
+              <p className="seat-note">
+                The bot <VersionTag label={BOT_LABEL} /> is offered at two players only: that is where
+                it has been measured.
+              </p>
+            </fieldset>
+
+            <Segmented<First>
+              legend="First player"
+              name="first"
+              options={[
+                ...colors.map((c, i) => ({ value: i as First, label: c })),
+                { value: "random" as First, label: "Random" },
+              ]}
+              value={first}
+              onChange={setFirst}
+            />
+
+            {/* **The checkbox carries the row's only label**, and the label
+                says what the password guards: joining AND spectating. The box
+                it reveals is asked about by its own name, with no placeholder
+                (R-6.5c2.8). */}
+            <div className="form-field">
+              <label className="toggle">
                 <input
-                  id={`seat-${i}-email`}
-                  aria-label={`Seat ${i} email`}
-                  value={row.email}
-                  inputMode="email"
-                  placeholder="someone@example.com"
-                  onChange={(e) => setRow(i, { email: e.target.value })}
+                  type="checkbox"
+                  checked={locked}
+                  onChange={(e) => {
+                    setLocked(e.target.checked);
+                    // Cleared with the box: an unticked form cannot carry a
+                    // word the player can no longer see.
+                    if (!e.target.checked) setPassword("");
+                  }}
+                />
+                <span className="switch-track" aria-hidden="true" />
+                Ask for a password to join or spectate
+              </label>
+              {locked && (
+                <input
+                  className="password"
+                  type="password"
+                  aria-label="Table password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                 />
               )}
             </div>
-          ))}
-        </>
-      )}
 
-      {/* **Free text, and never an id** (R-2.4). The server draws the storage id
-          and a client-chosen one is a name two people can collide on; this is
-          only what the lobby prints. */}
-      <div className="field">
-        <label htmlFor="name">Name</label>
-        <input
-          id="name"
-          value={name}
-          placeholder="blank — listed by its id"
-          onChange={(e) => setName(e.target.value)}
-        />
+            {/* **Held open while the seed is refused**: a button held for a
+                reason the player cannot see is a button that looks broken. */}
+            <details
+              className="fold"
+              open={advanced || seedError !== null}
+              onToggle={(e) => setAdvanced(e.currentTarget.open)}
+            >
+              <summary>Advanced</summary>
+              <div className="form-field">
+                <label htmlFor="seed">Seed</label>
+                <input
+                  id="seed"
+                  value={seedText}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-invalid={seedError !== null ? true : undefined}
+                  aria-describedby={seedError !== null ? "seed-error" : undefined}
+                  onChange={(e) => setSeedText(e.target.value)}
+                />
+                {seedError !== null && (
+                  <p className="field-error" id="seed-error">
+                    {seedError}
+                  </p>
+                )}
+              </div>
+            </details>
+
+            <div className="form-foot">
+              <button type="button" className="quiet-link" onClick={onCancel}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || held}
+                onClick={() =>
+                  run(async () => {
+                    await onCreated(await api.create(body()));
+                  })
+                }
+              >
+                {opensSeats ? "Open table" : "Deal"}
+              </button>
+            </div>
+            {error && <Refusal sentence={error} />}
+          </div>
+        </section>
       </div>
+    </div>
+  );
+}
 
-      {/* What YOU are called at this table, written onto every seat you hold and
-          onto no other — a name is a claim about the person who gave it. Kept in
-          this browser so the next table does not ask again. */}
-      <div className="field">
-        <label htmlFor="display-name">Your name</label>
-        <input
-          id="display-name"
-          value={myName}
-          placeholder="blank — your email is shown"
-          onChange={(e) => setMyName(e.target.value)}
-        />
-      </div>
+function LocalForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (table: TableView) => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [first, setFirst] = useState<First>(0);
+  const { busy, error, run } = useSubmit();
 
-      {/* **The checkbox carries the row's only label**, so the field is asked
-          about by one name rather than two. A "Password" caption beside it would
-          be a second label on the same control — the checkbox's accessible name
-          would read as both — and the field it reveals is then labelled by
-          something it is not.
+  const body = (): NewGameRequest => ({
+    players: 2,
+    colors: ["Red", "Blue"],
+    start_seat: first === "random" ? drawSeat(2) : first,
+    // **Seated by the MODULE's own address** (R-6.5b.1): `dispatch` answers as
+    // `local@browser` for every local call, so a create naming anyone else
+    // would open a table whose own player holds no seat. **No seed, ever**:
+    // `draw_seed` inside the module draws it (spec §2.2 of M6.5b).
+    seats: [{ user: LOCAL_USER }, { bot: true }],
+    ...(name.trim() ? { name: name.trim() } : {}),
+    ...keptName(),
+  });
 
-          **Neither this nor the seed is drawn for a local table**: there is
-          nobody to keep out of a game in your own browser, and the seed is the
-          module's to draw (spec §2.2, §2.5). */}
-      {!local && (
-        <div className="field password-field">
-          <label className="check" htmlFor="lock">
-            <input
-              id="lock"
-              type="checkbox"
-              checked={locked}
-              onChange={(e) => {
-                setLocked(e.target.checked);
-                // Cleared with the box, so an unticked form cannot carry a word
-                // the player can no longer see.
-                if (!e.target.checked) setPassword("");
-              }}
-            />{" "}
-            Ask for a password to join
-          </label>
-          {locked && (
-            <input
-              id="password"
-              type="password"
-              aria-label="Table password"
-              placeholder="the word people join with"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+  return (
+    <div className="band-screen">
+      <LobbyBand crumbs={["On this device"]} corner={undefined} />
+      <div className="setup">
+        <section className="raised-card form-card local" aria-labelledby="new-local-title">
+          <div className="card-band yen" aria-hidden="true" />
+          <div className="card-in">
+            {/* The tag beside the heading and not inside it, so the heading's
+                name is the sentence and the version is a fact next to it. */}
+            <div className="title-row">
+              <h3 id="new-local-title">New game against the bot</h3>
+              <VersionTag label={BOT_LABEL} />
+            </div>
+            <p className="lede">Two players: you and the bot.</p>
+
+            <div className="form-field">
+              <label htmlFor="name">Name</label>
+              <input
+                id="name"
+                value={name}
+                autoComplete="off"
+                placeholder="Optional"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+
+            {/* The seating is not a choice here, so it is not a control. */}
+            <div className="form-field">
+              <span className="field-label" id="local-seats">
+                Seats
+              </span>
+              <ul className="form-seats" aria-labelledby="local-seats">
+                <li className="form-seat">
+                  <span className="color">
+                    <span className={`seat-dot ${seatClass("Red")}`} aria-hidden="true" />
+                    Red
+                  </span>
+                  <span>You</span>
+                </li>
+                <li className="form-seat">
+                  <span className="color">
+                    <span className={`seat-dot ${seatClass("Blue")}`} aria-hidden="true" />
+                    Blue
+                  </span>
+                  <span>
+                    The bot <VersionTag label={BOT_LABEL} />
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <Segmented<First>
+              legend="First player"
+              name="first"
+              options={[
+                { value: 0, label: "You" },
+                { value: 1, label: "The bot" },
+                { value: "random", label: "Random" },
+              ]}
+              value={first}
+              onChange={setFirst}
             />
-          )}
-        </div>
-      )}
 
-      {!local && (
-        <div className="field">
-          <label htmlFor="seed">Seed</label>
-          <input
-            id="seed"
-            value={seedText}
-            inputMode="numeric"
-            placeholder="blank — the server draws one"
-            onChange={(e) => setSeedText(e.target.value)}
-          />
-        </div>
-      )}
-
-      <button
-        type="button"
-        className="primary"
-        disabled={busy}
-        onClick={() =>
-          run(async () => {
-            // Remembered on SUBMIT, not on every keystroke: a name half typed
-            // and then abandoned is not what this browser is called.
-            setDisplayName(myName.trim());
-            // **The host is the caller's INTENT**, which is what `create`'s own
-            // `host` argument is for (R-6.5b.12): a create carries no id yet,
-            // so nothing in the path could route it.
-            await onCreated(await api.create(body(), local ? "local" : undefined));
-          })
-        }
-      >
-        {opensSeats ? "Open table" : "Deal"}
-      </button>
-
-      {error && <Refusal sentence={error} />}
+            <div className="form-foot">
+              <button type="button" className="quiet-link" onClick={onCancel}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary yen"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    // **The host is the caller's INTENT** (R-6.5b.12): a create
+                    // carries no id yet, so nothing in the path could route it.
+                    await onCreated(await api.create(body(), "local"));
+                  })
+                }
+              >
+                Deal
+              </button>
+            </div>
+            {error && <Refusal sentence={error} />}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

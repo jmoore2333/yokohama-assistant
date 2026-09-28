@@ -925,14 +925,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    form that pushed the input off the edge would be a page that scrolls
    sideways (the width gate's own rule, applied before the gate sees it). */
 .field.seat-row { flex-wrap: wrap; }
-/* The password row's caption IS its checkbox's label, so it is not the
-   uppercase column heading every other `.field label` is — it is a sentence
-   beside a control, and it wraps rather than reserving 9rem of gutter. */
-.field.password-field { flex-wrap: wrap; }
-.field .check {
-  min-width: 0; display: flex; align-items: center; gap: 0.4rem;
-  text-transform: none; letter-spacing: normal; font-size: 12px;
-}
 .field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
 
 .on-this-device .local-fault { color: var(--fg-dim); }
@@ -2253,4 +2245,146 @@ a.primary-link {
   .row-abandon { grid-column: 2; grid-row: 2; margin-top: 0.3rem; }
   .row-seats { grid-column: 1 / -1; grid-row: 3; margin-top: 0.5rem; }
   .row-action .row-go { min-height: 44px; }
+}
+
+/* ---- M6.5c2: the setup screens' shared frame (spec section 2.2) -------------
+ *
+ * A screen with the lobby band across its top and its `.setup` column under it;
+ * the column's own 3rem top margin was for a page with no header. Focus is
+ * drawn on every control under the band, in the lobby's own idiom. */
+.band-screen > .setup { margin-top: 1.5rem; }
+.band-screen :focus-visible { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* ---- M6.5c2: the two forms (R-6.5c2.8; mock 07, mock 11) --------------------
+ *
+ * Task 2's raised card (`.raised-card`, `.card-band.vp` / `.yen`, `.card-in`):
+ * the table form's band is the VP blue its submit is, the local form's the yen
+ * its Deal is (`button.primary.yen`). The form's own: its width, a roomier
+ * inside, and its title — an `h3` under the band's `h2` crumb, drawn at a
+ * title's size rather than `.setup h3`'s, which it follows in the file at the
+ * same specificity (the shared block styles `.raised-card h2` only). */
+.form-card { max-width: 35rem; margin: 0 auto; }
+.form-card > .card-in { padding: 1.1rem 1.4rem 1.25rem; }
+.form-card h3 { font-size: 1.5rem; font-weight: 600; margin: 0.1rem 0 0; }
+.form-card .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
+.form-card .lede { color: var(--fg-dim); font-size: 12.5px; margin: 0.25rem 0 0; }
+.form-field { margin: 0.9rem 0 0; padding: 0; border: 0; min-width: 0; }
+.form-field > label:not(.toggle), .form-field > legend, .form-field > .field-label {
+  display: block; padding: 0; margin: 0 0 0.4rem;
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-faint);
+}
+.form-card input:not([type="radio"]):not([type="checkbox"]), .form-card select {
+  width: 100%; min-height: 2.15rem;
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line-bright);
+  border-radius: var(--radius); padding: 0.45rem 0.65rem; font: inherit;
+}
+/* A select draws the mock's small caret rather than the platform's own arrow,
+ * from two gradients in `--fg-faint` (no image, no new colour). */
+.form-card select {
+  appearance: none; padding-right: 2rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-faint) 50%),
+    linear-gradient(135deg, var(--fg-faint) 50%, transparent 50%);
+  background-position: calc(100% - 1.05rem) 50%, calc(100% - 0.75rem) 50%;
+  background-size: 5px 5px; background-repeat: no-repeat;
+}
+.form-card input::placeholder { color: var(--fg-faint); }
+/* A refused field is orange, focused or not. The selector repeats the base
+ * rule's two `:not()`s, which count toward its specificity: without them the
+ * base rule's border wins and only the glow shows (measured in the headed look). */
+.form-card input:not([type="radio"]):not([type="checkbox"])[aria-invalid="true"] {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn) 18%, transparent);
+}
+.form-card input[aria-invalid="true"]:focus-visible { outline-color: var(--warn); }
+.field-error { color: var(--warn); font-size: 11.5px; margin: 0.4rem 0 0; }
+
+/* Segments: the radio IS the segment, transparent over its label, so a click
+ * anywhere on the label lands on it and the arrow keys walk the group. */
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line-bright); border-radius: 5px; overflow: hidden; }
+.seg label {
+  position: relative; display: inline-flex; align-items: center;
+  padding: 0.38rem 0.95rem; color: var(--fg-dim); cursor: pointer;
+  border-right: 1px solid var(--line-bright);
+}
+.seg label:last-child { border-right: 0; }
+.seg label.on {
+  color: var(--fg); font-weight: 700;
+  background: color-mix(in oklab, var(--vp) 14%, var(--bg-raised));
+  box-shadow: inset 0 -2px 0 var(--vp);
+}
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--vp); outline-offset: -2px; }
+
+/* One seat: its colour, then who holds it. A person's field drops UNDER the
+ * choice, so a phone never fits three controls on one line. */
+.form-seat {
+  display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center;
+  gap: 0.35rem 0.7rem; padding: 0.4rem 0; border-bottom: 1px solid var(--line);
+}
+.form-seat:last-of-type { border-bottom: 0; }
+.form-seats { list-style: none; margin: 0; padding: 0; }
+.form-seat .color { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 12px; }
+.form-seat .pick { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.form-seat .person, .form-seat .field-error { grid-column: 2; }
+.seat-note { color: var(--fg-faint); font-size: 11.5px; margin: 0.45rem 0 0; }
+
+/* The password switch: a real checkbox, transparent over its whole label as a
+ * segment's radio is, above a drawn track and knob — so a click anywhere on the
+ * switch or its words lands on the checkbox itself (a 1px box under the track
+ * was a box the track covered). `switch-track`, never `track`, which is the
+ * dashboard's own unscoped flex row. */
+.toggle { position: relative; display: inline-flex; align-items: center; gap: 0.6rem; cursor: pointer; }
+.toggle input {
+  position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%;
+  margin: 0; opacity: 0; cursor: pointer;
+}
+.toggle .switch-track {
+  flex: none; position: relative; width: 30px; height: 17px; border-radius: 99px;
+  background: var(--line-bright); transition: background 0.15s;
+}
+.toggle .switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--bg); transition: transform 0.15s;
+}
+.toggle input:checked + .switch-track { background: var(--vp); }
+.toggle input:checked + .switch-track::after { transform: translateX(13px); }
+.toggle input:focus-visible + .switch-track { outline: 2px solid var(--vp); outline-offset: 2px; }
+.form-field .password { margin-top: 0.5rem; max-width: 19rem; }
+
+/* The fold the seed lives in; its marker is drawn, so every engine draws one. */
+.fold { margin-top: 1rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
+.fold > summary { cursor: pointer; font-size: 12px; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: "\25B8\00a0"; color: var(--fg-faint); }
+.fold[open] > summary::before { content: "\25BE\00a0"; }
+.fold .form-field { margin-top: 0.6rem; }
+.fold #seed { max-width: 23rem; }
+
+/* The way out and the way on, on one line. */
+.form-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.1rem; }
+.quiet-link {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: var(--fg-dim); text-decoration: underline;
+  text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.quiet-link:hover { color: var(--fg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle .switch-track, .toggle .switch-track::after { transition: none; }
+}
+/* A phone (mock 11): one column, and every control a thumb's size — 44 px, which
+ * the browser suite's width cells read back. */
+@media (max-width: 480px) {
+  .band-screen > .setup { margin-top: 1rem; }
+  .form-card > .card-in { padding: 1rem; }
+  /* The local card's title and its tag stay on one line. */
+  .form-card h3 { font-size: 1.3rem; }
+  .form-card input:not([type="radio"]):not([type="checkbox"]), .form-card select,
+  .form-foot button.primary, .seg label { min-height: 2.75rem; }
+  .form-foot button.primary { flex: 1 1 auto; }
+  /* Segments take the card's width, so four colours and Random share one row
+   * rather than wrap Random under them. */
+  .seg { display: flex; }
+  .seg label { flex: 1 1 auto; justify-content: center; padding: 0 0.5rem; }
 }

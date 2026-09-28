@@ -31,7 +31,7 @@
 import type { Page } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, nameThisBrowser, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
 // Whether a screen has a move on it — read from what can actually be pressed,
 // so a walk in flight reads as "not yet" rather than as a dead end. One
@@ -126,21 +126,17 @@ test("a person holding only a link joins a locked open table and plays", async (
   }
 
   await a.getByRole("button", { name: "New table" }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
-  // **`exact: true` on all three, and each for its own collision.**
-  // `getByLabel` matches by substring and case-insensitively: "Seat 1" also
-  // matches the "Seat 1 email" field an email row reveals, "Name" also matches
-  // "Your name", and the password box is labelled "Table password" precisely so
-  // that it and the checkbox beside it ("Ask for a password to join") are asked
-  // about by different names.
-  await a.getByLabel("Seat 1", { exact: true }).selectOption("open");
+  await expect(a.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  // **Each seat is its colour's since M6.5c2** (mock 07), and `exact`, because
+  // "Blue" is also a First player choice.
+  await a.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("open");
   await a.getByLabel("Name", { exact: true }).fill("Link test");
   // **A LONG name, deliberately** — it is what the chat row below is measured
-  // under (live review, I-1). The review's own worst case is shorter than this
-  // and needs no arranging at all: an un-named watcher is labelled by their
-  // email and marked " · watching", which is the DEFAULT case at a table.
-  await a.getByLabel("Your name", { exact: true }).fill("Annabelle the Cartographer");
-  await a.getByLabel("Ask for a password to join").check();
+  // under (live review, I-1). The form no longer asks for one (R-6.5c2.8: the
+  // lobby's corner owns it), so it is what this browser KEEPS, set where the
+  // create reads it.
+  await nameThisBrowser(a, "Annabelle the Cartographer");
+  await a.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await a.getByLabel("Table password", { exact: true }).fill("sesame");
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",

@@ -1382,10 +1382,16 @@ export function App() {
    *  this draws the door's words in the place the listings would be. The games
    *  in THIS BROWSER are no longer stacked on top of it — they are the other
    *  channel now, at `#/`, and the lobby carries one link back to them. */
+  /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
+   *  mocks 02, 07, 08, 09): who is playing, and the one change the door
+   *  allows — the identity corner the lobby draws, so the forms and a table's
+   *  screens say it in the lobby's own words. The "You are …" strip (`who`)
+   *  stays the game banner's and the deal's. */
+  const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
   const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
-      corner={signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined}
+      corner={serverCorner}
       notice={notice ?? null}
       door={doorContent}
       serverUp={serverUp}
@@ -1468,7 +1474,16 @@ export function App() {
       // hand-typed `#/new/local`, kept the 4 beside two seats and the module
       // refused the create in `check_shape`'s words. A key is what makes the
       // switch a remount.
-      return <NewGame key="local" local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
+      return (
+        <NewGame
+          key="local"
+          local
+          me={LOCAL_USER}
+          onCreated={(t) => open(t.id)}
+          onCancel={() => toDoor()}
+          who={who}
+        />
+      );
     if (dealing && isLocal(dealing))
       return (
         <Dealing
@@ -1490,7 +1505,15 @@ export function App() {
     // lobby rather than as a gate.
     if (!signedIn) return lobbyScreen(error);
     if (route.kind === "new")
-      return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
+      return (
+        <NewGame
+          key="server"
+          me={signedIn}
+          onCreated={(t) => open(t.id)}
+          onCancel={() => toLobby()}
+          who={serverCorner}
+        />
+      );
     if (dealing)
       return (
         <Dealing
