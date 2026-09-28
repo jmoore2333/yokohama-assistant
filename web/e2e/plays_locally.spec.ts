@@ -356,14 +356,23 @@ test("a whole game against the bot plays in the browser with no /api/ request wh
     fs.mkdirSync(FIXTURES, { recursive: true });
     fs.writeFileSync(PIN_RECORD, saved);
     fs.writeFileSync(PIN_TABLE, stored.table!);
-    const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: HERE })
-      .toString()
-      .trim();
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: HERE }).toString().trim();
+    const head = git("rev-parse", "--short", "HEAD");
+    const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+    // The release and the branch the pin is cut on, READ rather than written
+    // down (M6.5c2, R-6.5c2.19): the literal that stood here named M6.5b's tag
+    // and branch, and stayed as written while M6.5b2, M6.5c and M6.5c2 moved
+    // the branch and M6.5c2 the version. `web/package.json` carries the
+    // workspace's version — the npm packages follow the release, one number,
+    // pinned by `the_two_npm_packages_carry_the_workspace_version`.
+    const version = (
+      JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8")) as { version: string }
+    ).version;
     fs.writeFileSync(
       PIN_SIDECAR,
       `${JSON.stringify(
         {
-          release: `yokohama-web 0.5.0-m6.5b (branch web-room-m6.5b at ${head})`,
+          release: `yokohama-web ${version} (branch ${branch} at ${head})`,
           date: new Date().toISOString().slice(0, 10),
           browser: `Chromium ${page.context().browser()?.version() ?? "unknown"} (Playwright)`,
           module_sha256: createHash("sha256").update(fs.readFileSync(MODULE)).digest("hex"),

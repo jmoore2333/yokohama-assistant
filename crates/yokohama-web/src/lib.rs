@@ -4554,6 +4554,42 @@ mod tests {
         assert_eq!(body["identity"], "open");
     }
 
+    /// **One release number across the workspace and both npm packages**
+    /// (M6.5c2, R-6.5c2.19). `server_version` above is the workspace's
+    /// `[workspace.package] version`, which every member crate inherits, so
+    /// every save this build writes carries the same number as its
+    /// `engine_version`; the two npm packages ship in the same release, so a
+    /// bump that forgets one of them is a release that names itself twice.
+    /// The numbers are read from the committed manifests rather than restated
+    /// here: a copy would go stale at exactly the bump it exists for. Each
+    /// package is read three times — the manifest, the lock's root and the
+    /// lock's `packages[""]` — because a lock that disagrees with its package
+    /// is the half `npm version` writes and a hand edit forgets.
+    #[test]
+    fn the_two_npm_packages_carry_the_workspace_version() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for package in ["web", "worker"] {
+            let read = |file: &str| -> serde_json::Value {
+                let path = root.join(package).join(file);
+                let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            };
+            let manifest = read("package.json");
+            let lock = read("package-lock.json");
+            for (what, got) in [
+                ("package.json", manifest["version"].as_str()),
+                ("package-lock.json", lock["version"].as_str()),
+                ("package-lock.json's root package", lock["packages"][""]["version"].as_str()),
+            ] {
+                assert_eq!(
+                    got,
+                    Some(env!("CARGO_PKG_VERSION")),
+                    "{package}/{what} does not carry the workspace's version"
+                );
+            }
+        }
+    }
+
     /// An answer to a prompt the game is no longer asking is REFUSED, not
     /// applied against whatever it is asking instead.
     ///
