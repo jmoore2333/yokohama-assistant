@@ -2352,14 +2352,17 @@ a.primary-link {
 .toggle input:focus-visible + .switch-track { outline: 2px solid var(--vp); outline-offset: 2px; }
 .form-field .password { margin-top: 0.5rem; max-width: 19rem; }
 
-/* The fold the seed lives in; its marker is drawn, so every engine draws one. */
-.fold { margin-top: 1rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
-.fold > summary { cursor: pointer; font-size: 12px; list-style: none; }
-.fold > summary::-webkit-details-marker { display: none; }
-.fold > summary::before { content: "\25B8\00a0"; color: var(--fg-faint); }
-.fold[open] > summary::before { content: "\25BE\00a0"; }
-.fold .form-field { margin-top: 0.6rem; }
-.fold #seed { max-width: 23rem; }
+/* The fold the seed lives in; its marker is drawn, so every engine draws one.
+ * **`details.fold`, never a bare `.fold`**: the class is also on the turn
+ * account's and every chat header's fold BUTTON (`TurnAccount.tsx`,
+ * `Chat.tsx`), which a bare rule gave a 16px top margin (review I-1). */
+details.fold { margin-top: 1rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
+details.fold > summary { cursor: pointer; font-size: 12px; list-style: none; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "\25B8\00a0"; color: var(--fg-faint); }
+details.fold[open] > summary::before { content: "\25BE\00a0"; }
+details.fold .form-field { margin-top: 0.6rem; }
+details.fold #seed { max-width: 23rem; }
 
 /* The way out and the way on, on one line. */
 .form-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.1rem; }

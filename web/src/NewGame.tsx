@@ -377,13 +377,25 @@ function TableForm({
             </div>
 
             {/* **Held open while the seed is refused**: a button held for a
-                reason the player cannot see is a button that looks broken. */}
+                reason the player cannot see is a button that looks broken.
+                The seed field is inside the fold, so a refused seed is only
+                ever typed into an open one, and what holds it open is the
+                summary's own click, cancelled while the seed is refused (a
+                keyboard's Enter or Space on a summary arrives as that click).
+                `open` alone could not: closing the fold leaves its value true
+                before and after, so React writes nothing back (review I-2). */}
             <details
               className="fold"
               open={advanced || seedError !== null}
               onToggle={(e) => setAdvanced(e.currentTarget.open)}
             >
-              <summary>Advanced</summary>
+              <summary
+                onClick={(e) => {
+                  if (seedError !== null) e.preventDefault();
+                }}
+              >
+                Advanced
+              </summary>
               <div className="form-field">
                 <label htmlFor="seed">Seed</label>
                 <input

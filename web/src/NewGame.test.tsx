@@ -220,13 +220,26 @@ describe("the first player", () => {
 
   it("keeps a first player the count still has, and falls back to Red when it does not", async () => {
     const { stub, user } = show();
+    // Kept: Blue is seat 1 at three players and at two (review M-1: this half
+    // was named and not asserted).
     await user.click(segment("Players", "3"));
+    await user.click(segment("First player", "Blue"));
+    await user.click(segment("Players", "2"));
+    expect(segment("First player", "Blue")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).start_seat).toBe(1);
+    // Kept: Random is a choice at every count.
+    await user.click(segment("First player", "Random"));
+    await user.click(segment("Players", "4"));
+    expect(segment("First player", "Random")).toBeChecked();
+    // Fallen back: Yellow is seat 2, which two players do not have.
     await user.click(segment("First player", "Yellow"));
     await user.click(segment("Players", "2"));
     expect(segment("First player", "Red")).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect(posted(stub).start_seat).toBe(0);
+    await waitFor(() => expect(creates(stub)).toHaveLength(2));
+    expect((creates(stub)[1]!.body as { start_seat: number }).start_seat).toBe(0);
   });
 });
 
@@ -334,8 +347,11 @@ describe("the seed", () => {
   });
 
   // **Checked AS IT IS TYPED, in the fold, and the button held** (R-6.5c2.8).
+  // The fold is opened first: the field is inside it, so that is the only way
+  // a browser lets anyone type there.
   it("explains a bad seed inside the fold and holds the button until it is fixed or cleared", async () => {
     const { user } = show();
+    await user.click(screen.getByText("Advanced", { selector: "summary" }));
     const seed = screen.getByLabelText("Seed");
     await user.type(seed, "18446744073709551616");
     expect(within(fold()).getByText(/^Too large: a seed is a whole number/)).toBeInTheDocument();
@@ -346,6 +362,26 @@ describe("the seed", () => {
     await user.clear(seed);
     expect(screen.queryByText(/^Too large:/)).toBeNull();
     expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
+  });
+
+  // **Held open while refused, in the order a browser allows** (review I-2).
+  // The seed field is inside the fold, so a refused seed is only ever typed
+  // into an OPEN fold; closing it over the refusal would hide the reason the
+  // button is held. So the summary's click does nothing while the seed is
+  // refused, and once the seed is fixed the fold closes as any fold does.
+  it("holds the fold open over a refused seed, and lets it close once the seed is fixed", async () => {
+    const { user } = show();
+    const summary = screen.getByText("Advanced", { selector: "summary" });
+    await user.click(summary);
+    expect(fold().open, "the premise: one click opens the fold").toBe(true);
+    await user.type(screen.getByLabelText("Seed"), "1e3");
+    await user.click(summary);
+    expect(fold().open, "held open while refused").toBe(true);
+    expect(within(fold()).getByText(/^Not a whole number:/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    await user.clear(screen.getByLabelText("Seed"));
+    await user.click(summary);
+    expect(fold().open, "once fixed it closes as any fold does").toBe(false);
   });
 
   // **(Review Focus 2) The fold agrees with the server on every committed
@@ -392,10 +428,12 @@ describe("sending the form", () => {
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
   });
 
+  // The refusal is the corpus's own body (`wire.error`), never a hand-written
+  // one (the M2.5 rule; review M-4).
   it("shows a refused create's sentence rather than swallowing it", async () => {
-    const { user } = show(() => ({ status: 400, body: { error: "a seat names neither a user nor the bot" } }));
+    const { user } = show(() => ({ status: 400, body: wire.error }));
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    expect(await screen.findByText(/neither a user nor the bot/)).toBeInTheDocument();
+    expect(await screen.findByText(wire.error.error)).toBeInTheDocument();
   });
 
   it("goes back without sending anything on Cancel", async () => {

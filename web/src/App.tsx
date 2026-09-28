@@ -1374,6 +1374,13 @@ export function App() {
     />
   );
 
+  /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
+   *  mocks 02, 07): who is playing, and the one change the door allows — the
+   *  identity corner the lobby draws, so the new-table form says it in the
+   *  lobby's own words. The "You are …" strip (`who`) stays the game banner's
+   *  and the deal's. */
+  const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
+
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
    *  answer, or the card that says the server cannot be reached.
    *
@@ -1382,12 +1389,6 @@ export function App() {
    *  this draws the door's words in the place the listings would be. The games
    *  in THIS BROWSER are no longer stacked on top of it — they are the other
    *  channel now, at `#/`, and the lobby carries one link back to them. */
-  /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
-   *  mocks 02, 07, 08, 09): who is playing, and the one change the door
-   *  allows — the identity corner the lobby draws, so the forms and a table's
-   *  screens say it in the lobby's own words. The "You are …" strip (`who`)
-   *  stays the game banner's and the deal's. */
-  const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
   const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
@@ -1481,7 +1482,6 @@ export function App() {
           me={LOCAL_USER}
           onCreated={(t) => open(t.id)}
           onCancel={() => toDoor()}
-          who={who}
         />
       );
     if (dealing && isLocal(dealing))
