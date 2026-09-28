@@ -599,9 +599,11 @@ At the harness's rates, 1,000 inputs use this share of each Free daily ceiling:
 **The request quotas bind first, not rows read.** The Worker requests go soonest, because the
 account's other Workers use 17,000 to 33,000 of them a day (spec §0.5), which leaves this host
 67,000 to 83,000 (spec §2.8). The Durable Object requests come next; the account's other objects
-use only 300 to 1,800 a day (spec §0.5). Rows read is the cost this cycle did not reduce (every
-request re-reads the table's three documents up to three times, the whole-branch review's F-4), and
-it is the third limit to bind, not the first.
+use only 300 to 1,800 a day (spec §0.5). Rows read is the cost M6.5c did not reduce (its requests
+re-read the table's three documents up to three times, the whole-branch review's F-4; since M6.5c2 a
+warm request reads them once and a cold one twice, §11), and it is the third limit to bind, not the
+first. *(Corrected 2026-09-28, M6.5c2: the reads, not the row arithmetic, which is re-read at the
+M6.5c2 close.)*
 
 ### 5.3 Games per day
 
@@ -867,8 +869,9 @@ functions (`dispatch_inner` and so on), which is where the logic lives, so `carg
 yokohama-worker` reaches all of it natively. The calls that reach the layer answer a `Reply`: the
 layer's `status` and `body`; the `bumps`, every signal call made during the call, in order, as JSON
 (`{"bump": id}`, `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`); an `archive`
-plan when a put was deferred (§7.5); and the `picker` row, or a `dropped` one, when it changed
-(§7.3).
+plan when a put was deferred (§7.5); the `picker` row, or a `dropped` one, when it changed
+(§7.3); and `logs`, the lines the layer logged during the call (§10.2). *(Corrected 2026-09-28:
+`logs` is the field M6.5c2's log seam added.)*
 
 **Two routes are this host's, not the layer's**, because on the NAS they belong to axum's router
 rather than to `dispatch`:

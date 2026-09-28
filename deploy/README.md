@@ -148,9 +148,11 @@ docker run -d --name yokohama-web \
 - **`/data` is the one thing that must outlive the container.** Every applied move is written there as the
   game's record, and a game is rebuilt from it. Use a named volume: the server runs as uid 10001, and a
   named volume takes the image's ownership on first use, where a host bind mount arrives owned by root.
-- **`127.0.0.1:8080`** keeps the port on this machine, for a tunnel or a proxy on the same host. For the
-  open door on a LAN, bind the LAN address you mean — never `0.0.0.0` on a machine with a public
-  interface.
+- **`127.0.0.1:8080`** keeps the port on this machine, for a tunnel or a proxy on the same host. On a
+  machine others share, loopback is a path too: under `cf-access` any process there can send the
+  header and be anyone, so there prefer a Docker network the tunnel shares and publish nothing (§6).
+  For the open door on a LAN, bind the LAN address you mean — never `0.0.0.0` on a machine with a
+  public interface.
 
 | Variable | Values | Unset means |
 |---|---|---|
@@ -183,8 +185,8 @@ It needs `docker`, `curl` and `python3`, and it starts the image three times, pu
 Under each door it reads `/api/health`, `/api/me` and `/api/games` with and without a caller, and fetches
 the client and one art file. It prints each serving container's memory, the image's size as Docker
 reports it, and `smoke: PASS` — or `smoke: FAIL` and the first thing that was wrong. Every container it
-starts is removed with its volume. CI runs the same script on every image it builds
-(`.github/workflows/docker.yml`).
+starts is removed with its volume. CI runs the same script on the image it builds without a project
+link, and checks the image it builds with one for the link alone (`.github/workflows/docker.yml`).
 
 ## 6. Behind a proxy
 

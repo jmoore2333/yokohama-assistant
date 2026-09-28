@@ -50,12 +50,12 @@ What answers what:
   - any method but GET on `…/events`, `…/stream` or `/api/stream`: **405**, empty; a GET of
     `…/stream` or `/api/stream` that is not an upgrade: **426** `this host streams over
     WebSocket`;
-  - the create's three: **400** `the request body must be a JSON object`, **400** `a game id,
-    when given, must be a string`, **500** `the create's id does not name the table it was routed
-    to`. *(Corrected 2026-09-28, M6.5c2: the first is the layer's own sentence since M6.5c2,
-    `api::NOT_AN_OBJECT` in `crates/yokohama-web/src/api.rs`, which the layer answers for any body
-    that is not a JSON object and the module speaks in the layer's words; this line named a host
-    sentence, `a game must be created from a JSON object`, before it.)*
+  - the create's two: **400** `a game id, when given, must be a string`, **500** `the create's id
+    does not name the table it was routed to`. *(Corrected 2026-09-28, M6.5c2: this line named
+    three, the first a host sentence, `a game must be created from a JSON object`. Since M6.5c2 a
+    body that is not a JSON object reaches the layer, whose own 400 answers it, `the request body
+    must be a JSON object` — `api::NOT_AN_OBJECT` in `crates/yokohama-web/src/api.rs`; the module
+    keeps that sentence only as an unreachable guard.)*
   - a create naming a table that holds a MARKER, or whose REMOVAL the lobby has not yet
     acknowledged: **409** `this name was used recently — try another` (spec §2.4; Tasks 12 and 14),
     so a new table's first copy can never overwrite a removal the house has not received;
@@ -706,8 +706,9 @@ grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with fil
 - **Two 90-day MARKERS per Playwright run**, at fresh `sim-` ids: each spec abandons its table in
   its `afterEach`, and the marker answers every request there for 90 days, then ends on its alarm.
 - **Saves under the bucket's `test/` root**: `test/rev7/over/` and `test/rev7/abandoned/` pairs for
-  the `.test` identities' finished and abandoned games. No lifecycle rule removes them; the choice
-  is the owner's, carried to the cleanup cycle.
+  the `.test` identities' finished and abandoned games. No lifecycle rule removes them yet: the
+  owner ruled a 30-day rule on the prefix (R-6.5c2.12), set at the M6.5c2 close. *(Corrected
+  2026-09-28: this said the choice was the owner's, carried to the cleanup cycle.)*
 - **The replay's own saves**: its two first sends' pairs,
   `test/browser/red_at_wire.test/rev7/over/wire.json` and
   `test/browser/red_at_wire.test/rev7/abandoned/wire.json`, each with its `.table.json` — kept for
