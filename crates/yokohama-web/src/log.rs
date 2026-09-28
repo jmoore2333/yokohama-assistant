@@ -142,6 +142,11 @@ mod tests {
     /// the scan SAW it.
     #[test]
     fn the_layer_prints_only_through_its_log() {
+        // The print macros (`println!` also matches `eprintln!`), and either
+        // standard stream reached through `io::` — the
+        // `writeln!(std::io::stderr(), …)` the macros alone cannot see. A bare
+        // `stderr()` imported by name is not matched.
+        const PRINTS: [&str; 6] = ["println!", "eprint!(", "print!(", "dbg!(", "io::stderr(", "io::stdout("];
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let (mut prints, mut seam) = (Vec::new(), 0usize);
         for entry in std::fs::read_dir(&src).expect("src is readable") {
@@ -157,11 +162,6 @@ mod tests {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                // The print macros (`println!` also matches `eprintln!`), and
-                // either standard stream reached through `io::` — the
-                // `writeln!(std::io::stderr(), …)` the macros alone cannot
-                // see. A bare `stderr()` imported by name is not matched.
-                const PRINTS: [&str; 6] = ["println!", "eprint!(", "print!(", "dbg!(", "io::stderr(", "io::stdout("];
                 if PRINTS.iter().any(|p| line.contains(p)) {
                     if name == "log.rs" {
                         seam += 1;

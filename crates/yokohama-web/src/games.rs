@@ -1253,6 +1253,108 @@ mod tests {
         assert!(games.read_table(PLAYED_ID).unwrap().is_none(), "and gone");
     }
 
+    /// **A same-name re-point is told apart in every foreign-bot sentence, and
+    /// keeps its label on every screen** (M6.5c2, R-C5, R-C17). The committed
+    /// pair's bot seat is re-pointed to THIS build's controller and knobs at the
+    /// NEXT controller version — the record's seat and the table mirror's copy
+    /// alike — so the bot is foreign while its label ties with production's.
+    /// Every other foreign fixture pairs two labels that already differ, where
+    /// [`crate::bots::distinguishing_labels`] and `label` answer alike, so this
+    /// cell is what reads the difference at each caller:
+    ///
+    /// - unfinished: the 409 through `dispatch` — its sentence and its
+    ///   `foreign_bot` pair, joined in `lib.rs`'s `From<GameError>` — and the
+    ///   Worker's stamp path, `archive_over_retry`, with the same pair;
+    /// - finished: `why` bare AND at a bot move (`foreign_why`'s two sites) and
+    ///   the undo refusal;
+    /// - both: the screens still read the plain label — the lobby row's `bot`,
+    ///   `ClientState.bots`, and the Players panel's bot badge beside them.
+    #[test]
+    fn a_same_name_re_point_is_told_apart_in_every_refusal_and_keeps_its_label_on_every_screen() {
+        let running = crate::bots::production();
+        let next = running.version + 1;
+        let label = crate::bots::label(&running);
+        let (played, runs) = (format!("{label}.{next}"), format!("{label}.{}", running.version));
+        let repointed = |cut: Option<usize>| -> Games {
+            let (record, table) = foreign_pair(&running.controller, cut);
+            let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+            record.run.as_mut().expect("run provenance").seats[1].version = next;
+            let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+            table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
+            let foreign = crate::bots::foreign(&record);
+            assert_eq!(foreign.len(), 1, "premise: the bot seat is foreign");
+            assert_eq!(crate::bots::label(&foreign[0].1), label, "premise: its label ties with production's");
+            let games = games();
+            games.load_document(Doc::Record, PLAYED_ID, &serde_json::to_string(&record).unwrap()).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &serde_json::to_string(&table).unwrap()).unwrap();
+            games
+        };
+        const HOST: crate::api::Host = crate::api::Host {
+            identity_name: "local",
+            signal_kind: "none",
+            serves_games: true,
+            multiplayer_offered: false,
+        };
+        let ask = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, serde_json::Value) {
+            let user = who("local@browser");
+            let req = crate::api::ApiRequest {
+                method,
+                path,
+                query,
+                content_type: (!body.is_empty()).then_some("application/json"),
+                body: body.as_bytes(),
+            };
+            let res = crate::api::dispatch(games, &HOST, Ok(&user), &req);
+            (res.status, serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null))
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+
+        // Unfinished, the bot to move: the 409 on the wire, the pair beside it.
+        let unfinished = repointed(Some(BOT_TO_MOVE_AT));
+        let want = serde_json::json!({
+            "error": format!("This game was played against {played}. This server now runs {runs} and can't continue it."),
+            "foreign_bot": { "played": played, "runs": runs },
+        });
+        assert_eq!(ask(&unfinished, "GET", &base, "", ""), (409, want), "the 409 names the two versions");
+        match unfinished.archive_over_retry(PLAYED_ID) {
+            Err(GameError::ForeignBot { played: p, runs: r }) => assert_eq!((p, r), (played.clone(), runs.clone())),
+            other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a stamp")),
+        }
+        let (status, table) = ask(&unfinished, "GET", &format!("{base}/table"), "", "");
+        assert_eq!(status, 200, "{table}");
+        assert_eq!(table["bot"], serde_json::json!({ "label": label, "runs_here": false }), "the lobby row keeps the label");
+
+        // Finished: it opens, the screens keep the label, and `why` and undo
+        // name the version.
+        let finished = repointed(None);
+        let (status, state) = ask(&finished, "GET", &base, "", "");
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["over"], true, "premise: finished");
+        assert_eq!(state["bots"], serde_json::json!([{ "seat": 1, "label": label }]), "`ClientState.bots` keeps the label");
+        let players = state["frame"]["dashboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|p| p.get("Players"))
+            .expect("a Players panel");
+        let is_bot: Vec<bool> =
+            players["players"].as_array().unwrap().iter().map(|p| p["is_bot"].as_bool().unwrap()).collect();
+        assert_eq!(is_bot, [false, true], "the panel's badge sits on the seat `bots` labels");
+        let foreign_why = serde_json::json!({
+            "ok": null,
+            "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run.") },
+        });
+        // Event 4 is a move seat 1 made (`a_finished_foreign_game_opens_scores_
+        // downloads_and_masks_the_conversion` reads it so over the same pair);
+        // were it not, `account_parts` would answer and this would fail loudly.
+        for query in ["", "event=4"] {
+            assert_eq!(ask(&finished, "GET", &format!("{base}/why"), query, ""), (200, foreign_why.clone()), "why?{query}");
+        }
+        let (status, v) = ask(&finished, "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
+        assert_eq!(status, 403, "{v}");
+        assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run"));
+    }
+
     /// **Every game this layer deals names the host it was played on** (M6.5c2,
     /// spec §2.4) — `finalize` stamps `run.run_id` from the `RunHost` the host
     /// passed to [`Games::with_parts`] — and every later write keeps it: a move

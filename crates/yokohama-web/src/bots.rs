@@ -165,8 +165,9 @@ pub fn foreign(record: &GameRecord) -> Vec<(u8, BotDescriptor)> {
 }
 
 /// The pair a foreign-bot refusal names beside its sentence
-/// (`"foreign_bot": {"played", "runs"}`): the label of the bot the game was
-/// played against, and of the one this build runs.
+/// (`"foreign_bot": {"played", "runs"}`): the two strings
+/// [`distinguishing_labels`] answers for the bot the game was played against
+/// and the one this build runs — their labels, told apart where they tie.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ForeignBot {
     pub played: String,
@@ -190,12 +191,20 @@ pub struct ForeignBot {
 /// - they tie: each gains its controller version, `{label}.{version}`
 ///   (`V4.2`, `V4.3`);
 /// - those tie too: each gains its controller and every parameter,
-///   `{label} ({controller} k=v,…)`, the parameters in `BTreeMap` order.
+///   `{label} ({controller} k=v,…)`, the parameters in `BTreeMap` order —
+///   `{label} ({controller})` when it has none.
 ///
-/// Two different descriptors answer two different strings: the last arm is
-/// reached only when the labels and the versions tie, so the controller or a
-/// parameter differs, and it prints both. Equal descriptors are one bot, which
-/// no refusal names ([`foreign`] is every seat that is not [`production`]).
+/// **Against [`production`]** — the only `runs` any caller passes — two
+/// different descriptors answer two different strings. The last arm is reached
+/// only when the labels and the versions tie. Then either the controllers
+/// differ, and it prints both; or both are production's controller and
+/// `played` PARSED (unparsed, its label would be that controller's name, never
+/// production's label), so each key is one `from_parts` accepts — none holds
+/// `=` or `,` — and the parameters that differ print differently. Between two
+/// ARBITRARY descriptors that does not hold: crafted keys can render two maps
+/// alike (`{a: 1, b: 2}` and `{"a=1,b": 2}` both print `a=1,b=2`). Equal
+/// descriptors are one bot, which no refusal names ([`foreign`] is every seat
+/// that is not [`production`]).
 ///
 /// **The screens keep [`label`]**: the lobby's row, the Players panel and
 /// `ClientState.bots` name one bot each, and "V4" is its name there. Only a
@@ -212,7 +221,11 @@ pub fn distinguishing_labels(played: &BotDescriptor, runs: &BotDescriptor) -> (S
     }
     let knobbed = |l: &str, d: &BotDescriptor| {
         let params: Vec<String> = d.params.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        format!("{l} ({} {})", d.controller, params.join(","))
+        if params.is_empty() {
+            format!("{l} ({})", d.controller)
+        } else {
+            format!("{l} ({} {})", d.controller, params.join(","))
+        }
     };
     (knobbed(&played_label, played), knobbed(&runs_label, runs))
 }
@@ -279,18 +292,23 @@ mod tests {
     /// **A foreign-bot refusal never names one bot twice** (M6.5c2, R-C5): two
     /// labels that differ stand as they are; two that tie gain each side's
     /// controller version; two that tie on that too gain each side's controller
-    /// and knobs. Three rows, one per arm, each pair distinct.
+    /// and knobs, or the controller alone when there are none. Four rows — one
+    /// per arm, and the last arm's knobless form — each pair distinct.
     #[test]
     fn a_refusal_s_two_labels_are_told_apart_by_version_and_then_by_knobs() {
         // Row 1: labels that differ are today's pair — the corpus's V2 vs V4.
         let v2 = descriptor_of(Contestant::NamedTable(NamedIdentity::V2Padded));
         assert_eq!(distinguishing_labels(&v2, &production()), ("V2".to_string(), "V4".to_string()));
 
-        // Row 2: a same-name re-point — V4's name at another controller version.
+        // Row 2: a same-name re-point — V4's name at the next controller
+        // version, both strings read off V4's own, so a real bump moves nothing.
         let v4 = descriptor_of(Contestant::NamedTable(NamedIdentity::V4Step9Draft1));
-        let repointed = BotDescriptor { version: 3, ..v4.clone() };
+        let repointed = BotDescriptor { version: v4.version + 1, ..v4.clone() };
         assert_eq!(label(&v4), label(&repointed), "premise: the two labels tie");
-        assert_eq!(distinguishing_labels(&v4, &repointed), ("V4.2".to_string(), "V4.3".to_string()));
+        assert_eq!(
+            distinguishing_labels(&v4, &repointed),
+            (format!("V4.{}", v4.version), format!("V4.{}", v4.version + 1)),
+        );
 
         // Row 3: one controller at one version, another knob — the parameters
         // in `BTreeMap` order, the two identity keys read off the descriptor.
@@ -311,6 +329,19 @@ mod tests {
             ),
         );
         assert_ne!(pair.0, pair.1, "the pair is distinct");
+
+        // Row 4: a knobless pair renders the controller alone, no trailing
+        // space. Two knobless descriptors tie only when an unparseable
+        // controller is spelled like a knobless bot's label — its label is its
+        // own name — so the row is that: "uniform rung" against the uniform rung.
+        let uniform = descriptor_of(Contestant::Policy(RolloutPolicy::Uniform));
+        let spelled = BotDescriptor { controller: "uniform rung".to_string(), ..uniform.clone() };
+        assert!(uniform.params.is_empty(), "premise: knobless");
+        assert_eq!(label(&spelled), label(&uniform), "premise: the two labels tie");
+        assert_eq!(
+            distinguishing_labels(&spelled, &uniform),
+            ("uniform rung (uniform rung)".to_string(), "uniform rung (uniform)".to_string()),
+        );
     }
 
     /// A descriptor this build cannot parse answers its controller name.
