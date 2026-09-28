@@ -34,7 +34,8 @@ const MAX_WAIT_SECONDS: u64 = 25;
 ///
 /// 1. **the caller** — [`identity_of`]; a refusal is the 401 carrying its
 ///    sentence, the one `dispatch`'s 401 carries for the same caller (for an
-///    absent caller, `identity::resolve`'s `worker`-mode sentence);
+///    absent caller, `identity::resolve`'s absent-caller sentence in the door's
+///    mode);
 /// 2. **the query** — the layer's own `parse_query` into its own `EventsQuery`,
 ///    so an unknown key is the layer's 400, in axum's words;
 /// 3. **the cap** — a `wait` above 25 is the handler's 400, its sentence

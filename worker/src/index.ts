@@ -313,8 +313,11 @@ function objectFor(
       // Named by the caller's name — an address, or an open-door claim —
       // exactly as `resolveIdentity` or `claimedIdentity` answered it: judged
       // raw, then trimmed and ASCII-lowercased as the layer's `User::parse`
-      // reads a caller — so one caller is one object. With no caller, or a
-      // name longer than the longest address the layer accepts (which it
+      // reads a caller — so one SPELLING is one object. Under `worker` that is
+      // one caller; under `open` a claim's space runs are left for the key
+      // grammar, so two spellings of one key name two objects
+      // (`claimedIdentity`'s doc, `identity.ts`). With no caller, or a name
+      // longer than the longest address the layer accepts (which it
       // refuses), the house's `dispatch` answers the layer's 401: no archive
       // object's name passes 262 bytes, far inside the 1,024 past which the
       // platform would give it none. Under `open` a claim is held only to what

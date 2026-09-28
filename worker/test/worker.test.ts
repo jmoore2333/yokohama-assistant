@@ -344,10 +344,14 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
   // M6.5c2, spec §2.1: under `worker` the claim's carriers name no one without
   // the credential — the header (battery 15, above) and the upgrade's
   // `claimed` parameter alike — and a person's assertion is the caller
-  // whatever the parameter says. Mutants: the parameter read under `worker`;
-  // the door read per request rather than from the configuration.
+  // whatever the parameter says. The anonymous half claims an ADDRESS: the
+  // worker mode reads a plain name as absent however it is forwarded, so only
+  // an address can show a parameter that reached `X-Yokohama-User`. Mutants:
+  // the parameter read under `worker` (forwarded as the worker door's header,
+  // the anonymous half; displacing the person, the person half); the door read
+  // per request rather than from the configuration.
   it("under worker an upgrade's claimed parameter is no caller, and never outranks a person", async () => {
-    const anonymous = await worker(`/api/stream?${new URLSearchParams({ claimed: "ben" })}`, { headers: UPGRADE });
+    const anonymous = await worker(`/api/stream?${new URLSearchParams({ claimed: "evil@x.test" })}`, { headers: UPGRADE });
     expect([anonymous.status, anonymous.webSocket]).toEqual([401, null]);
     const who = "param-person@t.test";
     const res = await worker(`/api/stream?${new URLSearchParams({ claimed: "evil@x.test" })}`, {

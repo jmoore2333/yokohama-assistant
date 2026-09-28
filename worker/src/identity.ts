@@ -66,7 +66,8 @@ export function isAddress(email: string): boolean {
 }
 
 /**
- * The address a raw value names: `raw` judged by `forwardable` BEFORE
+ * The address a raw value names — or, at the open door, the name a caller
+ * claimed (`claimedIdentity`, M6.5c2): `raw` judged by `forwardable` BEFORE
  * anything else is done to it, then trimmed and ASCII-lowercased as the
  * layer's `User::parse` reads a caller — or `undefined` for a raw value that
  * is not forwardable, or blank.
@@ -252,13 +253,18 @@ export function identityConfig(env: Env, devDoor: boolean, nowSeconds: number): 
 /**
  * Whether a RAW address — an assertion's `email` claim, or the claimed
  * header, before anything is trimmed or lowercased — can travel as the
- * objects' `X-Yokohama-User`: every character a tab, a space or visible
+ * objects' `X-Yokohama-User`; or, at the open door (M6.5c2), whether a
+ * claimed name — the header, or an upgrade's percent-decoded `claimed`
+ * parameter, which can hold a character on which `headers.set` throws, such
+ * as a carriage return (review R2.2-m3) — can travel as their
+ * `X-Yokohama-Claimed-User`: every character a tab, a space or visible
  * ASCII, the bytes the layer's own `resolve` reads a header with (`http`'s
  * `HeaderValue::to_str`), which reads any other value as ABSENT. workerd would
- * send such a value on regardless, as UTF-8, with a warning that a browser's
- * `Headers` would throw. So a raw address outside the set is no caller here:
- * `resolveIdentity` answers `none` for it, no identity header is forwarded,
- * and the layer answers as it does for no one (the orchestrator's rulings:
+ * send a non-ASCII value on regardless, as UTF-8, with a warning that a
+ * browser's `Headers` would throw. So a raw value outside the set is no caller
+ * here: `resolveIdentity` or `claimedIdentity` answers `none` for it, no
+ * identity header is forwarded, and the layer answers as it does for no one
+ * (the orchestrator's rulings:
  * Task 2's review, E1; Task 11's review, I1 — judged raw, because JavaScript's
  * `trim()` and `toLowerCase()` would first turn some such addresses into
  * visible ASCII, and into another user's).

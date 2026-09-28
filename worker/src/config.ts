@@ -90,10 +90,15 @@ function folded(raw: string): string {
 }
 
 /**
- * `worker` | `open`, with NO default (M6.5c2, spec §2.1; R-6.5c2.5) — read as
- * the layer reads the NAS's variable of this name (`IdentityMode::from_str`):
- * trimmed, then matched exactly. `cf-access` is the NAS's door, not this
- * host's: here the shell verifies Access itself, which is `worker`.
+ * `worker` | `open`, with NO default (M6.5c2, spec §2.1; R-6.5c2.5).
+ *
+ * **Trimmed, then matched EXACTLY — never case-folded**, unlike the on/off
+ * switches (`folded`): the layer's own parser reads this same variable on the
+ * self-host (`IdentityMode::from_str`, `match s.trim()`), and one variable
+ * reads one rule on both hosts, so `Open` or `WORKER`, which the NAS refuses,
+ * is refused here too (the orchestrator's ruling R-C11). `cf-access` is the
+ * NAS's door, not this host's: here the shell verifies Access itself, which is
+ * `worker`.
  */
 function door(raw: string | null): Door {
   const value = raw === null ? null : raw.trim();
