@@ -233,7 +233,7 @@ Partly false, moot or drifted:
 - **Row 49:** three cited lines drifted.
 - **Row 100:** the door's Remove deletes without sending.
 
-**Notes from the triage** (every non-empty note the owner left on the private page, by row, verbatim).
+**Notes from the triage** (every non-empty note on the private page, by row, verbatim). These are the page's pre-filled calls and notes, the orchestrator's of 2026-09-28 made before any owner change (spec §10.9); the owner changed none of them as of that date, and the page's `triage` store was re-listed empty at cycle D's start.
 
 - **Row 2:** verify with one click first
 - **Row 4:** one fetch per scope
