@@ -9,7 +9,7 @@ on:
 # does not already run heavily; nothing is added here beyond that (the
 # owner's ruling R-6.5c2.24, "CI stays lean"), and M6.5c2 added only three
 # things: the whole-game gate's return, the step that names the layer's test
-# binaries, and `--test browser_played_pin` on the layer's test line (two
+# binaries, and `--test browser_played_pin` on the layer's test line (four
 # cells no workflow had run). It runs four jobs, each a separate claim so
 # that a red one names its lane: the engine crate (`test`); the table layer
 # and the browser host, the whole-game gate among them (`web-server`); the
@@ -68,7 +68,7 @@ jobs:
   # 13 s, 857 s and 16 s on identical code (M6.1 close §6.1): its vs-bot arm
   # placed nothing and leaned on the bot to end the game, and on some
   # OS-entropy seeds it livelocked (M6.3 close §6.3). The same filter also
-  # left out `tests/browser_played_pin.rs`, whose two cells no workflow had
+  # left out `tests/browser_played_pin.rs`, whose four cells no workflow had
   # then ever run. M6.5c2 gave the vs-bot arm the two-people arm's two guards
   # (the placement probe and the stuck-picker rule) and a recorded bot stream
   # seed, and a run over 50 OS-entropy seeds ended every game, the longest in
@@ -207,7 +207,7 @@ jobs:
           echo "the layer's test binaries, every one named by a step: $got"
       - run: cargo test -p yokohama-web --lib --test wire_fixtures --test browser_played_pin
       # M6.5b's fix wave: the browser host's own crate. It is host code with
-      # four cells — among them the scan that holds its platform calls to the
+      # seven cells — among them the scan that holds its platform calls to the
       # clock — and nothing in CI ran them: the `build:wasm` step above only
       # COMPILES it for the browser. This is the class CLAUDE.md's gate rule
       # names, "a suite no documented gate line names is a suite that never

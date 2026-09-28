@@ -33,21 +33,34 @@ name: docker
 # exports every layer of every stage, the server stage's build step among
 # them: its `--mount=type=cache` mounts (`/usr/local/cargo/registry`,
 # `/src/target`) stay out of the layer, and the layer is still exported. So a
-# run pays a cold `cargo build` of the server and the module only when one of
-# that stage's inputs differs from the cached run's — `rust-toolchain.toml`,
+# run pays a cold `cargo build` of the server and the module whenever that
+# step's layer cannot come back from the cache. That happens when one of the
+# server stage's inputs differs from the cached run's: `rust-toolchain.toml`,
 # `Cargo.toml`, `Cargo.lock` or anything under `crates/` (a change under
-# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, or a core change an
-# earlier, untriggered push carried in) — and on any run that finds no cache
-# yet, the first or one after GitHub evicts it. Every other run is WARM: one
-# triggered only by `web/**`, the smoke script, this file or a dispatch
-# restores the server stage and pays the client stage alone. The layers above
-# the source `COPY` (the toolchain, binaryen, `wasm-bindgen-cli`) and the
-# client's `npm ci` come back on both kinds.
+# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, a core change an
+# earlier, untriggered push carried in, or a dockerignore edit that changes
+# what reaches them). It happens when one of the server stage's instructions
+# in `deploy/Dockerfile` is edited, and when the floating base tag
+# `rust:1-slim-trixie` has been republished since the cached run. And it
+# happens when the run can restore no cache at all: the first run, one after
+# GitHub evicts the cache, or one whose ref cannot read the cache an earlier
+# run wrote (a run restores its own ref's caches and the default branch's,
+# and a pull request its base branch's too, so a new pull request finds no
+# other pull request's). Every other run is WARM, typically one triggered only
+# by `web/**`, the smoke script, this file, an edit to the Dockerfile's client
+# or runtime stage, or a dispatch: it restores the server stage and pays the
+# client stage alone.
+# A cold run caused by a changed input still restores the layers above that
+# input's step (the toolchain, binaryen and `wasm-bindgen-cli` sit above the
+# source `COPY`); a run with no cache, or after the base is republished,
+# restores none of them.
 #
-# **R-C9's fifteen minutes are a COLD wall** (ruling R-C21). It is read from
-# the first run at the M6.5c2 close's push — cold by construction, with no
-# cache yet and `crates/yokohama-web/**` changed — and afterwards only from a
-# run whose log shows `[server 10/10]` executing rather than `CACHED`. The
+# **R-C9's fifteen minutes are a COLD wall** (ruling R-C21, as amended). It is
+# read from the first run on the M6.5c2 close's PULL REQUEST (the `push`
+# trigger is master-only; the branch's push runs `test.yml` alone) — cold by
+# construction, with no cache yet and `crates/yokohama-web/**` changed — and
+# afterwards only from a run whose log shows the server build layer,
+# `[server 10/10]`, executing rather than `CACHED`. The
 # first runs' walls are recorded in the M6.5c2 close; if a cold build reads
 # over fifteen minutes the trigger drops to master pushes and dispatch (R-C9),
 # and a cache-mount export step is the option only if the walls warrant it.
