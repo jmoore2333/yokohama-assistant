@@ -30,7 +30,8 @@ export function GameMenu({
    *  still lands in this menu's own line. */
   onSwitch: (id: string) => void | Promise<void>;
   /** The way OUT of this game, and since M6.2 it goes to the lobby rather than
-   *  straight to the form (spec §5.1). The lobby is where a player picks
+   *  straight to the form (spec §5.1), or to the door in a build that serves
+   *  no lobby (`leaveLabel`). The lobby is where a player picks
    *  between their tables and the open ones, and its own "New table" button is
    *  one click further on — so a control that jumped past it would be the only
    *  route in the client that skipped the first screen. */

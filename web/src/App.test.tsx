@@ -1825,6 +1825,9 @@ describe("the route", () => {
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
       // NOT the bounce every other refusal of the game takes.
       expect(window.location.hash).toBe("#/t/wire");
+      // A SERVER game's screen names who is playing: "On this device" is the
+      // local screens' word, and this game is the server's.
+      expect(screen.getByText(`You are ${wire.me.user}`)).toBeInTheDocument();
       // `wire.me` is the table's creator, and the layer's delete is the
       // creator's (`tables.rs:1670-1677`).
       expect(dealt.created_by).toBe(wire.me.user);
@@ -1834,6 +1837,19 @@ describe("the route", () => {
       expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
       await user.click(screen.getByRole("button", { name: "Lobby" }));
       await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    // **The seat half of the creator rule**: the layer's delete is the
+    // creator's SEATED, so the table's creator who holds no seat at it is
+    // offered none. The one field moved from `dealt` is `my_seats`;
+    // `created_by` is kept, so only the seat test can withhold the control.
+    it("offers no Abandon to the table's creator who holds no seat at it", async () => {
+      window.location.hash = "#/t/wire";
+      expect(dealt.created_by).toBe(wire.me.user);
+      app(answers({ ...dealt, my_seats: [] }));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
     });
 
     it("offers no Abandon to a player who did not open the table", async () => {
@@ -3826,6 +3842,12 @@ describe("a local game", () => {
     // the other says it was recovered.
     const sentence =
       "this save was recorded under game-semantics revision 6, but this build plays revision 7 — the save cannot be resumed";
+    // **And this browser KNOWS it** (M6.5c2 R-B19): the label reads the
+    // REMEMBERED archive fact, and a local screen reads no health before
+    // Abandon is clicked — so without this the label below was "Abandon" by
+    // default, and a screen that passed `local` here as well as on a foreign
+    // game's would have passed it.
+    rememberServerFacts({ ...wire.health, archive: "dir" });
     const caught = catchDownload();
     try {
       const { user } = await openLocal(
@@ -3894,12 +3916,42 @@ describe("a local game", () => {
   // `VITE_MULTIPLAYER=false` four "Lobby" controls on LOCAL screens led to a
   // lobby whose game routes do not exist. Each now leads to the DOOR, where this
   // browser's games are listed, and says so. The anti-vacuity partners are the
-  // cells that press "Lobby" on these screens in a build that serves one — the
-  // broken save's above, and the Game menu's directly below.
+  // cells that press "Lobby" on these screens in a build that serves one — ONE
+  // per control, so a control sent to the door in every build fails its own:
+  // the broken save's above, and the Game menu's, the lock screen's and the
+  // local deal's directly below.
   it("keeps a local game's Game-menu way out to the lobby in a build that serves one", async () => {
     const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL });
     await screen.findByText(/end triggers:/);
     await user.click(gameMenu());
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  it("keeps the other tab's lock screen's way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+    await screen.findByText("This game is open in another tab");
+    expect(screen.queryByRole("button", { name: "On this device" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  it("keeps the local deal's way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          // The corpus's dealing table, re-addressed to this device — the
+          // one edit `fakeWorker.ts` allows a fixture.
+          call: (req) =>
+            req.path === `/api/games/${LOCAL}/table`
+              ? { status: 200, body: { ...wire.tableDealing, id: LOCAL } }
+              : undefined,
+        },
+      },
+    );
+    await screen.findByRole("heading", { name: "Choose your card" });
+    expect(screen.queryByRole("button", { name: "On this device" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
   });
@@ -3928,6 +3980,50 @@ describe("a local game", () => {
     // which the corpus table carries — hence the prefix, as the broken-save
     // cell above reads it.
     expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+  });
+
+  // **And its Abandon SENDS FIRST, as every other local Abandon does**
+  // (R-6.5b.6; M6.5c2 R-B19). Unlike a save that no longer rebuilds, the
+  // archive takes this record — its check is a strict replay and asks nothing
+  // of the bot — so the game is sent before it is deleted. ONE timeline across
+  // the two hosts is what makes the order a claim: the server's archive write
+  // and the module's delete, in the order they were made.
+  it("abandons a local game this build's bot cannot continue by sending it to the archive first", async () => {
+    rememberServerFacts({ ...wire.health, archive: "dir" });
+    const order: string[] = [];
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: {
+          pair: () => ({ record: RECORD, table: TABLE }),
+          call: (req) => {
+            if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
+              return { status: 409, body: wire.foreignBot409 };
+            if (req.path === `/api/games/${LOCAL}` && req.method === "DELETE") {
+              order.push("delete");
+              return { status: 204, body: undefined };
+            }
+            return undefined;
+          },
+        },
+        server: (call) => {
+          if (call.method === "POST" && call.path === "/api/archive") {
+            order.push("archive");
+            return wire.archivePostAbandoned;
+          }
+          return undefined;
+        },
+      },
+    );
+    await screen.findByText(wire.foreignBot409.error);
+    const abandon = screen.getByRole("button", { name: /^abandon / });
+    expect(abandon).toHaveTextContent("Abandon and save");
+    await user.click(abandon);
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    await waitFor(() => expect(order).toEqual(["archive", "delete"]));
+    // And back to the door, where this browser's games are listed.
+    await screen.findByRole("heading", { name: "On this device" });
   });
 
   describe("in a single-player build", () => {

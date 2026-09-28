@@ -244,12 +244,21 @@ export function App() {
    *
    *  **And a game of EITHER host that this build's bot cannot continue**
    *  (M6.5c2, spec §2.4): the same screen, because the same things are left —
-   *  the sentence, and the Abandon that archives it. A server game that refuses
-   *  for any OTHER reason is the server's record on a server whose other games
-   *  are fine, and keeps the bounce it has always had. */
-  const [broken, setBroken] = useState<{ id: string; table: TableView; sentence: string } | null>(
-    null,
-  );
+   *  the sentence, and the Abandon that archives it: the server's own delete
+   *  archives a server game, and a local one is SENT to the archive first, as
+   *  every other local Abandon is (R-6.5b.6) — the archive takes its record,
+   *  because its check is a strict replay and asks nothing of the bot. That is
+   *  what `foreign` is for: a save that no longer rebuilds is the one game the
+   *  archive would refuse, so its Abandon deletes without sending. A server
+   *  game that refuses for any OTHER reason is the server's record on a server
+   *  whose other games are fine, and keeps the bounce it has always had. */
+  const [broken, setBroken] = useState<{
+    id: string;
+    table: TableView;
+    sentence: string;
+    /** The refusal was the FOREIGN-BOT one, not a rebuild that failed. */
+    foreign: boolean;
+  } | null>(null);
   /** Where the archive put a local game this session, keyed by id (spec §2.5).
    *
    *  **Why it is remembered at all**: the local table document carries no
@@ -636,7 +645,7 @@ export function App() {
         } catch (e) {
           if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
             show(null);
-            setBroken({ id, table: doc, sentence: e.message });
+            setBroken({ id, table: doc, sentence: e.message, foreign: false });
             tableOnScreen.current = id;
             return;
           }
@@ -646,7 +655,7 @@ export function App() {
           // hosts. A SCREEN and not a bounce, for the broken save's reason.
           if (e instanceof ApiError && e.status === 409 && isForeignBot(e.body)) {
             show(null);
-            setBroken({ id, table: doc, sentence: e.message });
+            setBroken({ id, table: doc, sentence: e.message, foreign: true });
             tableOnScreen.current = id;
             return;
           }
@@ -1483,9 +1492,13 @@ export function App() {
                 Save game file
               </button>
             )}
-            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
-                `local` means "send this game to the archive first", and the
-                archive would refuse a save that no longer rebuilds — it is the
+            {/* **`local` for a FOREIGN local game only** (M6.5c2 R-B19).
+                `local` means "send this game to the archive first" (R-6.5b.6),
+                and the archive takes a foreign game's record — its check is a
+                strict replay and asks nothing of the bot — so that game is sent
+                before it is deleted, like every other local Abandon. **NOT for
+                a save that no longer rebuilds** (spec §4: "Abandon still
+                works"): the archive would refuse exactly that record — it is the
                 rebuild that has stopped working — so sending first would leave
                 a game that can never be abandoned; the bytes beside this button
                 are the copy that still works. A server table's own delete
@@ -1495,6 +1508,7 @@ export function App() {
             {mayAbandon && (
               <Abandon
                 table={broken.table}
+                local={local && broken.foreign}
                 onDone={() => (local ? toDoor() : toLobby())}
                 onError={setError}
               />

@@ -90,7 +90,8 @@ export function Dealing({
   onToggleSection: (k: SectionKey) => void;
   /** The table has started. `App` opens the game; this screen is replaced. */
   onPlaying: () => void | Promise<void>;
-  /** Back to the lobby.
+  /** Back to the lobby, or to the door in a build that serves no lobby
+   *  (`leaveLabel`).
    *
    *  **A screen you cannot leave is a screen you are stuck on.** The M5.5 set
    *  table had "Re-deal" for this; a table is PERSISTED now, so leaving is not
