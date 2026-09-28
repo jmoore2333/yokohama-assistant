@@ -93,8 +93,8 @@ RUN apt-get update \
 # **Both of those are Task-5 readings of a module that has since GROWN** (Task
 # 8's `restore_read`), and **this stage has not been re-measured since**. The
 # current figures are measured in ONE place and every other document cites it:
-# the `release-wasm` comment in the root `Cargo.toml` — 1,175,223 B raw /
-# 456,048 B gzipped on the workstation at the M6.5b2 close. **A ceiling on the
+# the `release-wasm` comment in the root `Cargo.toml`.
+# **A ceiling on the
 # module must clear the LARGER host's figure**, because this stage is what a
 # deployment ships, and the cross-host gap is the thing to re-measure before
 # any ceiling is tightened.

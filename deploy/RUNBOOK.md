@@ -124,8 +124,7 @@ on plain `--release`) for `wasm32-unknown-unknown`, reading it from
 `target/wasm32-unknown-unknown/release-wasm/`, and runs `wasm-bindgen` twice:
 the web glue INTO `web/src/local/wasm/` (gitignored; Vite bundles it and emits
 the module as a hashed asset, `web/dist/assets/yokohama_wasm_bg-<hash>.wasm`,
-about 1.2 MB raw since `wasm-opt` — it was ~2.8 MB raw / ~760 KB gzip before —
-served `immutable` since the M6.5b fix wave; the exact figures are measured in
+served `immutable` since the M6.5b fix wave; its figures are measured in
 ONE place, the `release-wasm` comment in the root `Cargo.toml`, and re-measured
 at each release) and the Node glue into `web/wasm-node/` for
 `npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG

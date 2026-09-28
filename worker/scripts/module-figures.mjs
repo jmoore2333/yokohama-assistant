@@ -60,8 +60,10 @@ export function moduleFigures(input) {
   while (at < b.length) {
     const id = b[at++];
     const size = u32();
-    // `end` is never checked against the module's length: a truncated section
-    // is caught by the reads inside it running past the end, not here.
+    // `end` is never checked against the module's length. A truncated section
+    // other than the memory section, or a data segment cut short, ends the walk
+    // silently and figures are still printed (`segments 0`, or a `dataBytes`
+    // larger than the bytes present): a limit of this reading script, recorded.
     const end = at + size;
     if (id === 5) {
       if (u32() !== 1) throw new Error("the module declares more than one memory");

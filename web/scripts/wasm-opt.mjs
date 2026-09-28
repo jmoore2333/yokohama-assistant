@@ -6,7 +6,7 @@
 // there, never here.
 // That is the single largest file in the release and the one a cold start
 // compiles before anything is playable, so a build that quietly skipped the
-// pass would ship a module 53% larger than the one every recorded figure and
+// pass would ship a module far larger than the one every recorded figure and
 // every `npm run test:wasm` replay was taken on.
 //
 // So an absent `wasm-opt` is a REFUSAL that names the package to install, and

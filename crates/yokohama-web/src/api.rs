@@ -473,7 +473,7 @@ pub fn labels(games: &Games) -> Labels {
 /// `events` and `stream` can share it: a table that is open or dealing has no
 /// record, and a function that fetched one would have to refuse those two
 /// before the routes that must answer them got a look. A route that needs a
-/// session asks `Games::handle` afterwards and gets the same 409 it
+/// session asks [`Games::handle`](crate::games::Games::handle) afterwards and gets the same 409 it
 /// always did.
 ///
 /// **The table is read FIRST, as `seated` read it**, so a stranger holding an
@@ -838,7 +838,7 @@ pub struct Unlock {
 
 /// `POST /api/games/{id}/unlock` — knock, and be remembered.
 ///
-/// The whole of the ladder is `Games::unlock`'s, held under the
+/// The whole of the ladder is [`Games::unlock`](crate::games::Games::unlock)'s, held under the
 /// table's own lock; this handler carries no rule of its own. It answers the
 /// `TableView`, whose `can_watch` now reads true, so a client that was
 /// drawing the unlock face has the payload it needs to draw the game instead
