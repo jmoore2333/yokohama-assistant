@@ -14,7 +14,7 @@ import {
   logOutcome,
   parsePlan,
   parseStamp,
-  stampArm,
+  settledArm,
   type ArchiveOwed,
   type Outcome,
   type Plan,
@@ -518,16 +518,27 @@ export class Table extends DurableObject<Env> {
    *
    * - **`failed`**: counted in `archive_owed` and retried by the alarm on the
    *   backoff (`retryArchive`).
-   * - **`conflict`**: final at every site — `archive_owed` cleared, and the
-   *   alarm re-armed to what is still due, or deleted when nothing is.
-   * - **`landed` or `identical`**: the module — woken first when it is new —
-   *   takes the outcome as its receipt and stamps with the layer's own code at
-   *   the RECORDED reading (`stamp`), so its put makes the stored plan and
-   *   meets the receipt. Its answer decides (`stampArm`): `stamped` completes
-   *   the save and clears `archive_owed`; `no-longer-over` clears it too;
-   *   `retry` — the game over, the stamp not landed — keeps it owed, counted,
-   *   its plan the one the stamp re-made at that reading when the module
-   *   deferred one. The stamped table row, `archive_owed` and the slot the
+   * - **`landed`, `identical` or `conflict`**: the module — woken first when it
+   *   is new — takes the outcome as its receipt, a conflict's with the record
+   *   the key held (R-6.5c2.11), and stamps with the layer's own code at the
+   *   RECORDED reading (`stamp`), so its put makes the stored plan and meets
+   *   the receipt. What the two leave together decides (`settledArm`):
+   *   `stamped` completes the save and clears `archive_owed` — after a
+   *   conflict, only where the layer found the key holding an earlier
+   *   completion of THIS game (the same seed, configuration and choices), which
+   *   it compares in Rust, never here; `no-longer-over` clears it too; `final`
+   *   — a conflict the stamp did not land on, whatever the stamp answered:
+   *   another game's record at the key, which only a caller-chosen id can
+   *   reach — clears it and retries nothing, the M6.5c spec §2.6 arm kept for
+   *   a different game; `retry` — after a `landed` or `identical` upload, the
+   *   stamp refused (a reply that is no 200, logged `stamp-refused`) or not
+   *   landed with the game over — keeps it owed, counted, its plan the one the
+   *   stamp re-made at that reading when the module deferred one. A refused
+   *   stamp is retried on the backoff and never thrown: the layer's
+   *   foreign-bot rule refuses a game not over against a bot this build does
+   *   not run, a 409, until the creator's Abandon or the table's expiry —
+   *   neither of which rebuilds — clears it (spec §2.4). The stamped table
+   *   row, `archive_owed` and the slot the
    *   changed copy owes go in ONE batch (`commit`). A trap is the side
    *   channel's (spec §2.4): logged, the module discarded, and the save
    *   retried.
@@ -540,17 +551,18 @@ export class Table extends DurableObject<Env> {
    *   match, the stamp would retry, and the plan it re-made — of that same
    *   stored record, at the recorded reading — is the one owed.
    *
-   * **The undo case, and what it leaves** (the orchestrator's ruling I3;
-   * Task 6's escalation e, RECORDED and not fixed this cycle). An undo at a
-   * one-person table that lands during the upload's I/O leaves the game not
-   * over at the stamp: nothing is owed, and the first completion's copy stays
-   * in the bucket unstamped. A replay to the SAME end meets it as
-   * `identical`, and stamps. A replay to a DIFFERENT end meets it as a
-   * `conflict` — final, so that game is never stamped: the creator's later
-   * abandon plans the same record key and is refused for good, and an expiry
-   * is `held` until the operator's `?force`. The NAS stamps inside `persist`,
-   * where no undo can land between the put and the stamp; a rule that stamps
-   * on such a conflict is the owner's to make.
+   * **The undo case** (the orchestrator's ruling I3; Task 6's escalation e;
+   * made whole by R-6.5c2.11). An undo at a one-person table that lands during
+   * the upload's I/O leaves the game not over at the stamp: nothing is owed,
+   * and the first completion's copy stays in the bucket unstamped. A replay to
+   * the SAME end meets it as `identical`, and stamps. A replay to a DIFFERENT
+   * end meets it as a `conflict` carrying that first completion — the same
+   * game — and stamps too: the archive keeps the first ending, and the table
+   * is abandonable and expires as any stamped table does
+   * (`test/archive.test.ts`, the refinish race). Two completions' uploads can
+   * OVERLAP — `uploads` keys each by its plan, and two endings are two plans —
+   * and then one completion's record can land beside the other's table: R2
+   * has no cross-key atomicity, and that pair is best-effort (spec §2.5).
    *
    * Answers whether its batch wrote a slot.
    */
@@ -560,10 +572,6 @@ export class Table extends DurableObject<Env> {
     if (current?.plan.key !== owed.plan.key) return false;
     if (outcome.outcome === "failed") {
       this.retryArchive(current);
-      return false;
-    }
-    if (outcome.outcome === "conflict") {
-      this.batch((sql) => deleteMeta(sql, "archive_owed"), this.dueBesidesArchive(sql));
       return false;
     }
     const config = this.config;
@@ -588,9 +596,14 @@ export class Table extends DurableObject<Env> {
         return false;
       }
       const { status, body, archive: replanned } = completed.reply;
+      // Only a 200 carries the two booleans; any other reply is the layer's
+      // refusal in its error shape — a foreign bot's 409 among them — which
+      // is logged and read as no stamp, never parsed (a throw here would
+      // escape the upload, and an alarm with it).
       const stamp = status === 200 ? parseStamp(body) : undefined;
-      log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...(stamp ?? { status, body }) });
-      const arm = stamp === undefined ? "retry" : stampArm(stamp);
+      if (stamp === undefined) log("stamp-refused", { id, status });
+      else log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...stamp });
+      const arm = settledArm(outcome, stamp);
       done = this.commit(
         id,
         completed,
@@ -618,10 +631,13 @@ export class Table extends DurableObject<Env> {
 
   /**
    * An owed save's completion, in the module: the upload's `outcome`
-   * installed as the receipt, `stamp_archive(id)` pinned to the RECORDED
-   * reading (`pinnedTo`, which restores the setting after it), and the layer's
-   * documents read back — under ONE `guarded`. Answers the call, or
-   * `undefined` when it trapped, logged.
+   * installed as the receipt, a conflict's with the record the key held
+   * (R-6.5c2.11) — the outcome's JSON as `executePlan` built it, the held
+   * record a string inside it and never parsed here — `stamp_archive(id)`
+   * pinned to the RECORDED reading (`pinnedTo`, which restores the setting
+   * after it), and the layer's documents read back — under ONE `guarded`.
+   * Answers the call, whatever its status (`settleUpload` reads a reply that
+   * is no 200 as a refused stamp), or `undefined` when it trapped, logged.
    */
   private stamp(id: string, instance: Instance, owed: ArchiveOwed, outcome: Outcome): Called | undefined {
     let stage = "receipt";

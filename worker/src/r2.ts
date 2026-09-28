@@ -24,8 +24,13 @@ export type Plan = { key: string; record_key: string; table_key: string; record:
  *  `detail` is MANDATORY — the module refuses a receipt without one (Task 6's
  *  review, escalation c): the record's key for `landed`, `identical` and
  *  `conflict`; for `failed`, R2's message — or, in the one case
- *  `executePlan` names, the host's own sentence. */
-export type Outcome = { outcome: "landed" | "identical" | "conflict" | "failed"; detail: string };
+ *  `executePlan` names, the host's own sentence. A `conflict` also carries
+ *  `held`, the record the key holds, as its exact TEXT (M6.5c2, R-6.5c2.11):
+ *  the module's receipt hands it to the layer, whose refinish rule compares
+ *  it, in Rust; the module refuses `held` beside any other outcome. The shell
+ *  never parses it (a record carries a seed above 2^53), and never logs it
+ *  (`logOutcome` names the detail alone). */
+export type Outcome = { outcome: "landed" | "identical" | "conflict" | "failed"; detail: string; held?: string };
 
 /** `meta.archive_owed` (spec §2.4, §2.6): a game-over plan the layer did not
  *  re-dispatch, the P-2 reading pinned for the call that made it, and how many
@@ -49,7 +54,8 @@ export type Site = "game-over" | "abandon" | "expiry" | "operator" | "browser";
  * The shell's line for an upload's outcome (spec §2.8; the layer's own lines
  * reach this log through `readReply` since M6.5c2, under names of their own):
  * `archive-<outcome>`, naming the object, the site, the record's key and the
- * outcome's detail, and `extra` beside them.
+ * outcome's detail, and `extra` beside them. Never the record a conflict
+ * holds: the line names the detail, and `held` stays the module's to read.
  */
 export function logOutcome(id: string | undefined, site: Site, plan: Plan, outcome: Outcome, extra: Record<string, unknown> = {}): void {
   log(`archive-${outcome.outcome}`, { id, site, record_key: plan.record_key, detail: outcome.detail, ...extra });
@@ -91,27 +97,38 @@ async function textAt(bucket: Bucket, key: string): Promise<string | null> {
  * **A plan carried out in `DirArchive::put`'s own order** (spec §2.6):
  *
  * 1. the RECORD key read: these very bytes are `identical`, other bytes a
- *    `conflict` — either way nothing is written; absent, go on;
+ *    `conflict` carrying them — either way nothing is written; absent, go on;
  * 2. the TABLE key put UNCONDITIONALLY: overwriting a half pair's table is the
  *    repair, and a re-plan's new `archived_at` lands instead of conflicting;
  * 3. the RECORD key put create-if-absent. When that precondition fails — a
  *    concurrent writer put a record between 1 and 3 — the record is read
- *    again: these very bytes `identical`, other bytes a `conflict`. A re-read
- *    that finds NO record is `failed`, carrying the host's own sentence,
- *    "`<record_key>` refused a create as present, then read as absent";
+ *    again: these very bytes `identical`, other bytes a `conflict`, carrying
+ *    them. A re-read that finds NO record is `failed`, carrying the host's own
+ *    sentence, "`<record_key>` refused a create as present, then read as
+ *    absent";
  * 4. anything else that fails is `failed`, carrying R2's message.
  *
  * The table goes first and the record's key is the once-marker, so an upload
  * that stops half way leaves a table with no record — which the next put
  * repairs — and never a record without its table. The records are compared as
- * TEXT. The conditional form is `onlyIf` with an `If-None-Match: *` header;
- * the first deploy that touches R2 reads it live (spec §3.2).
+ * TEXT, and a conflict hands the held text on, unparsed, for the module to
+ * compare (R-6.5c2.11). Because the record key is read BEFORE the table is
+ * put, a conflict at step 1 writes nothing: this plan's table never lands
+ * beside a record that is not this plan's (spec §2.5, "The archive's pair").
+ * A conflict at step 3 has already put this plan's table — the race R2 has no
+ * cross-key atomicity to close, recorded as best-effort (spec §2.5). The
+ * conditional form is `onlyIf` with an `If-None-Match: *` header; the first
+ * deploy that touches R2 reads it live (spec §3.2).
  */
 export async function executePlan(bucket: Bucket, plan: Plan): Promise<Outcome> {
-  const at = (outcome: "landed" | "identical" | "conflict"): Outcome => ({ outcome, detail: plan.record_key });
+  const at = (outcome: "landed" | "identical"): Outcome => ({ outcome, detail: plan.record_key });
+  // What the key holds, against this plan's record — as TEXT: a conflict hands
+  // the held text on, for the module to compare (R-6.5c2.11).
+  const against = (held: string): Outcome =>
+    held === plan.record ? at("identical") : { outcome: "conflict", detail: plan.record_key, held };
   try {
     const held = await textAt(bucket, plan.record_key);
-    if (held !== null) return at(held === plan.record ? "identical" : "conflict");
+    if (held !== null) return against(held);
     await bucket.put(plan.table_key, plan.table);
     const created = await bucket.put(plan.record_key, plan.record, { onlyIf: new Headers({ "If-None-Match": "*" }) });
     if (created !== null) return at("landed");
@@ -123,7 +140,7 @@ export async function executePlan(bucket: Bucket, plan: Plan): Promise<Outcome> 
       // not known to be whole, so the upload is retried as a failure.
       return { outcome: "failed", detail: `${plan.record_key} refused a create as present, then read as absent` };
     }
-    return at(raced === plan.record ? "identical" : "conflict");
+    return against(raced);
   } catch (e) {
     return { outcome: "failed", detail: e instanceof Error ? e.message : String(e) };
   }
@@ -155,4 +172,24 @@ export function parseStamp(body: string): Stamp {
 export function stampArm(stamp: Stamp): "stamped" | "no-longer-over" | "retry" {
   if (stamp.stamped) return "stamped";
   return stamp.over ? "retry" : "no-longer-over";
+}
+
+/**
+ * What an owed save's upload and its stamp leave TOGETHER (M6.5c2,
+ * R-6.5c2.11; spec §2.5):
+ *
+ * - a `conflict` the stamp LANDED on is `stamped`: the key held an earlier
+ *   completion of this same game, which the layer compared in Rust, and the
+ *   save is complete;
+ * - a `conflict` it did not land on is `final`, whatever the stamp answered —
+ *   `{stamped: false, over: true}`, `{stamped: false, over: false}`, or no 200
+ *   at all — as the M6.5c spec §2.6 ruled every conflict: nothing owed, and
+ *   nothing retried, since another game's record at the key (which only a
+ *   caller-chosen id can reach) no retry can clear;
+ * - every other outcome is `stampArm`'s, and a stamp that answered no 200 is
+ *   `retry`.
+ */
+export function settledArm(outcome: Outcome, stamp: Stamp | undefined): "stamped" | "no-longer-over" | "retry" | "final" {
+  if (outcome.outcome === "conflict") return stamp?.stamped ? "stamped" : "final";
+  return stamp === undefined ? "retry" : stampArm(stamp);
 }

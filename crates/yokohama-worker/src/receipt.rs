@@ -122,13 +122,19 @@ pub struct Plan {
 }
 
 /// An upload's outcome, as the shell hands it to [`receipt_inner`]
-/// (§"Names shared across tasks"): one of four words, and a detail — R2's
-/// message, or the key.
+/// (§"Names shared across tasks"): one of four words, a detail — R2's
+/// message, or the key — and, on a `conflict`, the record the key HELD, as its
+/// exact text (M6.5c2, R-6.5c2.11), which the layer's refinish rule compares.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Outcome {
     pub outcome: Kind,
     pub detail: String,
+    /// The record the key already held — beside a `conflict` only
+    /// ([`parse_outcome`] refuses it elsewhere), and only where the shell read
+    /// it. `None` reads as not the same game.
+    #[serde(default)]
+    pub held: Option<String>,
 }
 
 /// The four outcomes of an upload carried out in `DirArchive::put`'s order
@@ -201,7 +207,7 @@ impl Archive for ReceiptArchive {
     /// 2. the plan's key over its four parts ([`plan_key`]);
     /// 3. a receipt for that key, REMOVED and answered: `landed` and
     ///    `identical` as themselves, `conflict` as a conflict at the record
-    ///    key, `failed` as its detail;
+    ///    key carrying the record it held, `failed` as its detail;
     /// 4. with no receipt, the plan recorded and the put deferred.
     fn put(
         &self,
@@ -219,9 +225,9 @@ impl Archive for ReceiptArchive {
             return match receipt.outcome {
                 Kind::Landed => Ok(PutOutcome::Landed),
                 Kind::Identical => Ok(PutOutcome::Identical),
-                // `held` rides the receipt once the shell hands the held text back
-                // (M6.5c2's cycle C); until then this archive cannot say.
-                Kind::Conflict => Err(PutError::Conflict { key: record_key, held: None }),
+                // The held record's text, as the shell read it from the key
+                // (M6.5c2, R-6.5c2.11): the layer's refinish rule compares it.
+                Kind::Conflict => Err(PutError::Conflict { key: record_key, held: receipt.held }),
                 Kind::Failed => Err(PutError::Failed(receipt.detail)),
             };
         }
@@ -270,9 +276,9 @@ pub(crate) fn drain_plan() -> Option<String> {
 /// see it.
 ///
 /// Refused, with a sentence: an outcome that is not the object the shell writes
-/// — `{"outcome": "landed" | "identical" | "conflict" | "failed", "detail": …}`
-/// and no other key — and any receipt with the archive `off`, where no put is
-/// deferred.
+/// — `{"outcome": "landed" | "identical" | "conflict" | "failed", "detail": …}`,
+/// a `conflict` optionally with `"held": <text>`, and no other key — and any
+/// receipt with the archive `off`, where no put is deferred.
 pub fn receipt_inner(plan_key: &str, outcome: &str) -> Result<(), String> {
     let guard = RECEIPTS.lock().expect("the host's receipts");
     let archive = guard
@@ -287,12 +293,22 @@ pub fn receipt_inner(plan_key: &str, outcome: &str) -> Result<(), String> {
 /// also reads a struct from a positional ARRAY, a form `deny_unknown_fields`
 /// does not govern, so an array is refused before serde reads it — `picker.rs`'s
 /// rule for its row.
+///
+/// `held` beside anything but a `conflict` is refused (M6.5c2): the shell
+/// sets it only where the key held other bytes, so a landed, identical or
+/// failed receipt carrying a record is a shell defect. The sentence names no
+/// byte of the record.
 fn parse_outcome(json: &str) -> Result<Outcome, String> {
     let value: Value = serde_json::from_str(json).map_err(|e| format!("a receipt's outcome is not JSON: {e}"))?;
     if !value.is_object() {
         return Err(format!("a receipt's outcome is the object {{\"outcome\", \"detail\"}}, not {json}"));
     }
-    serde_json::from_value(value).map_err(|e| format!("a receipt's outcome does not parse: {e}"))
+    let outcome: Outcome =
+        serde_json::from_value(value).map_err(|e| format!("a receipt's outcome does not parse: {e}"))?;
+    if outcome.held.is_some() && !matches!(outcome.outcome, Kind::Conflict) {
+        return Err("a receipt carries the held record only beside a conflict".to_string());
+    }
+    Ok(outcome)
 }
 
 /// `stamp_archive(id)` (spec §2.6's game-over site; R-6.5c.9): finish a
@@ -322,22 +338,31 @@ fn parse_outcome(json: &str) -> Result<Outcome, String> {
 ///   handle's reading, the one `archive_if_over` takes, and never the table's
 ///   `turn` mirror, a cache that can be stale.
 ///
-/// The shell (Task 13) derives three arms from the pair, and a `conflict`
-/// receipt clears `archive_owed` whatever they say (final at every site, spec
-/// §2.6):
+/// The shell reads its arms from the pair and the upload's outcome together
+/// (`settledArm`, `worker/src/r2.ts`):
 ///
-/// - `stamped: true` — the save is complete: clear `archive_owed`;
+/// - `stamped: true` — the save is complete: clear `archive_owed`. After a
+///   `conflict` receipt this is the refinish rule (M6.5c2, R-6.5c2.11): the
+///   record the key held was an earlier completion of THIS game — the same
+///   seed, configuration and choices, which the layer compares — the archive
+///   keeps it, and the table is stamped;
 /// - `stamped: false, over: false` — the game is no longer over (below):
 ///   clear it too;
-/// - `stamped: false, over: true` — the stamp did not land: a `failed`
+/// - `stamped: false, over: true` — the stamp did not land. After a `conflict`
+///   receipt the conflict is FINAL: cleared, and never retried. The key holds
+///   another game's record, a text that is no record, or a record the shell
+///   did not hand on, which no retry can change — or, rarely, this game's,
+///   with the stamp write itself failed, which spec §2.5 leaves final too:
+///   every conflict but the one the layer stamped. Otherwise it is a `failed`
 ///   receipt, a put that met none (its plan, deferred again, in this reply's
-///   `archive`), or a stamp write that failed. The alarm retries.
+///   `archive`), or a stamp write that failed, and the alarm retries.
 ///
 /// **No longer over** (ruling E3): after an undo at a one-person table,
 /// `archive_if_over` puts nothing and stamps nothing. A later completion puts
 /// afresh; where the first completion's copy has landed with different bytes,
-/// that put is a `Conflict` the shell logs — the archive keeps the first
-/// completion, as the directory archive does. A game abandoned
+/// that put is a `Conflict` carrying the first completion, and the layer
+/// stamps (R-6.5c2.11) — the archive keeps the first completion, as the
+/// directory archive does. A game abandoned
 /// instead, whose copy landed under `over/` without its stamp, is archived
 /// again under `abandoned/` — the directory archive's own behaviour
 /// (`Archive`'s doc), kept for parity.
@@ -1273,6 +1298,73 @@ mod tests {
         let s = stamp_archive_inner(OWED);
         assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, r#"{"stamped":false,"over":true}"#, None));
         assert_eq!(archived_at(OWED), None, "nothing stamped");
+    }
+
+    /// **R-6.5c2.11 through the receipt** (M6.5c2, spec §2.5; review M3; Review
+    /// Focus 3): a `conflict` receipt carries the record the key held, and the
+    /// stamp's put meets it as `PutError::Conflict { held }` — the layer's
+    /// same-game rule reads it in Rust, never the shell. A record of THIS game
+    /// (the same seed, configuration and choices) stamps: here the committed
+    /// pair cut short, whose events differ from the stored record's, because
+    /// the rule compares a game's setup and never its moves — in the race it
+    /// is the game's earlier completion (the pool's refinish cells). A held
+    /// text that does not parse as a record (that same record cut off by its
+    /// last byte), another game's record, or a conflict whose held record the
+    /// shell did not read stays unstamped, `over: true`. Mutants: `held`
+    /// dropped between the receipt and the put (the first row unstamped);
+    /// `held` read as always the same game (the other rows stamped).
+    #[test]
+    fn a_conflict_receipt_carrying_a_record_of_this_game_stamps() {
+        let _s = serial();
+        let _p = pin(1_789_001_100);
+        let full = read(web_fixtures().join("browser-played-2p.json"));
+        let same_game = partial_of(&full, 587);
+        let cut_off = &same_game[..same_game.len() - 1];
+        let other_game = {
+            let mut record: GameRecord = serde_json::from_str(&same_game).unwrap();
+            record.seed = record.seed.wrapping_add(1);
+            serde_json::to_string(&record).unwrap()
+        };
+        assert!(serde_json::from_str::<GameRecord>(cut_off).is_err(), "premise: the cut-off text is no record");
+        for (what, held, stamped) in [
+            ("a record of this game", Some(same_game.as_str()), true),
+            ("a text that is no record", Some(cut_off), false),
+            ("another game's record", Some(other_game.as_str()), false),
+            ("a record the shell did not read", None, false),
+        ] {
+            init_inner(&r2(None)).unwrap();
+            let plan = plan_of(&pump_owed_game_over());
+            assert_ne!(plan["record"].as_str(), held, "{what}: premise: the key holds OTHER bytes than the plan's");
+            let receipt = match held {
+                Some(text) => json!({"outcome": "conflict", "detail": plan["record_key"], "held": text}),
+                None => json!({"outcome": "conflict", "detail": plan["record_key"]}),
+            };
+            receipt_inner(key(&plan), &receipt.to_string()).unwrap();
+            let s = stamp_archive_inner(OWED);
+            let want = if stamped { r#"{"stamped":true,"over":true}"# } else { r#"{"stamped":false,"over":true}"# };
+            assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, want, None), "{what}");
+            assert_eq!(archived_at(OWED), stamped.then_some(1_789_001_100), "{what}");
+        }
+    }
+
+    /// The held record rides a CONFLICT and nothing else (M6.5c2): the shell
+    /// sets it only where the key held other bytes, and a landed, identical or
+    /// failed receipt carrying a whole game is a shell defect, refused rather
+    /// than ignored — in a sentence naming no byte of the record. `held` is
+    /// the record's TEXT, so a number there is refused too. Mutant: `held`
+    /// accepted beside any outcome.
+    #[test]
+    fn a_receipt_carries_the_held_record_only_beside_a_conflict() {
+        let _s = serial();
+        init_inner(&r2(None)).unwrap();
+        receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x","held":"{}"}"#).unwrap();
+        receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x"}"#).unwrap();
+        for kind in ["landed", "identical", "failed"] {
+            let err = receipt_inner("a-key", &json!({"outcome": kind, "detail": "x", "held": "{\"seed\":1}"}).to_string())
+                .unwrap_err();
+            assert_eq!(err, "a receipt carries the held record only beside a conflict", "{kind}");
+        }
+        assert!(receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x","held":5}"#).is_err(), "held is the record's TEXT");
     }
 
     /// **The layer's log reaches the reply — but a DEFERRED put is not a line**

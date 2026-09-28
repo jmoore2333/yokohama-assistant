@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { executePlan, parsePlan, parseStamp, stampArm, type Bucket, type Plan } from "./r2";
+import { describe, expect, it, vi } from "vitest";
+import { executePlan, logOutcome, parsePlan, parseStamp, settledArm, stampArm, type Bucket, type Outcome, type Plan } from "./r2";
 
 /**
  * A plan as the module writes one (the plan's names table). The record's seed
@@ -86,13 +86,19 @@ describe("executePlan, in DirArchive::put's order (spec §2.6)", () => {
     expect(bucket.puts).toEqual([]);
   });
 
-  // The record is compared as its TEXT. Mutants: a comparison that parses the
-  // two records (both seeds read as one number: identical); any write.
-  it("answers conflict, writing nothing, when the record key holds other bytes — a digit past 2^53 among them", async () => {
+  // The record is compared as its TEXT, and a conflict hands the text the key
+  // holds on to the module, whose refinish rule reads it (M6.5c2,
+  // R-6.5c2.11): as TEXT, since parsed it would lose its seed's last digits.
+  // Mutants: a comparison that parses the two records (both seeds read as one
+  // number: identical); any write; `held` left off, or re-serialized.
+  it("answers conflict, writing nothing, when the record key holds other bytes — a digit past 2^53 among them — and hands those bytes on, unparsed", async () => {
     const bucket = new FakeBucket();
     bucket.objects.set(PLAN.record_key, OTHER_SEED);
     expect(JSON.parse(OTHER_SEED), "premise: parsed, the two records are equal").toEqual(JSON.parse(PLAN.record));
-    expect(await executePlan(bucket.asBucket, PLAN)).toEqual({ outcome: "conflict", detail: PLAN.record_key });
+    const outcome = await executePlan(bucket.asBucket, PLAN);
+    expect(outcome).toEqual({ outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED });
+    expect(outcome.held, "the held bytes, exactly").toBe(OTHER_SEED);
+    expect(JSON.stringify(JSON.parse(OTHER_SEED)), "premise: a parse and a re-serialization lose the digits").not.toBe(OTHER_SEED);
     expect(bucket.puts).toEqual([]);
     expect(bucket.objects.get(PLAN.record_key)).toBe(OTHER_SEED);
   });
@@ -108,16 +114,17 @@ describe("executePlan, in DirArchive::put's order (spec §2.6)", () => {
   });
 
   // A concurrent writer's record lands between the read and the create. The
-  // create refuses, and the record is read again. Mutants: the refusal read as
+  // create refuses, and the record is read again: a conflict then carries the
+  // racer's bytes, as the first read's does. Mutants: the refusal read as
   // landed; the record put unconditionally (the racer's record overwritten);
-  // the second read skipped.
+  // the second read skipped; the re-read's conflict without `held`.
   it.each([
-    ["the same bytes", PLAN.record, "identical"],
-    ["other bytes", OTHER_SEED, "conflict"],
-  ] as const)("reads the record again when its create loses a race to %s", async (_what, bytes, outcome) => {
+    ["the same bytes", PLAN.record, { outcome: "identical", detail: PLAN.record_key }],
+    ["other bytes", OTHER_SEED, { outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED }],
+  ] as const)("reads the record again when its create loses a race to %s", async (_what, bytes, want) => {
     const bucket = new FakeBucket();
     bucket.racer = { key: PLAN.record_key, bytes };
-    expect(await executePlan(bucket.asBucket, PLAN)).toEqual({ outcome, detail: PLAN.record_key });
+    expect(await executePlan(bucket.asBucket, PLAN)).toEqual(want);
     expect(bucket.objects.get(PLAN.record_key), "the racer's record stands").toBe(bytes);
     expect(bucket.puts.map((p) => p.key)).toEqual([PLAN.table_key, PLAN.record_key]);
   });
@@ -193,5 +200,60 @@ describe("the stamp's reply and its arm (the orchestrator's ruling I3)", () => {
     expect(stampArm({ stamped: false, over: true })).toBe("retry");
     // A stamp that landed earlier stays landed, whatever the game did since.
     expect(stampArm({ stamped: true, over: false })).toBe("stamped");
+  });
+});
+
+// R-6.5c2.11 (M6.5c2, spec §2.5): a conflict goes to the stamp, and what the
+// upload and the stamp leave TOGETHER is `settledArm`'s. A conflict the stamp
+// landed on — the layer found an earlier completion of this same game at the
+// key — completes the save; one it did not land on, WHATEVER the stamp
+// answered, is final as every conflict was (the M6.5c spec §2.6 arm, kept for
+// another game): never retried. Every other outcome is `stampArm`'s, and a
+// stamp that answered no 200 is retried. Mutants: a conflict read through
+// `stampArm` (another game's `{stamped: false, over: true}` retried hourly for
+// ever); a conflict completed without its stamp; a landed upload's refused
+// stamp not retried.
+describe("what an upload and its stamp leave together (R-6.5c2.11)", () => {
+  const conflict: Outcome = { outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED };
+  it("completes a conflict the stamp landed on, and leaves every other conflict final", () => {
+    expect(settledArm(conflict, { stamped: true, over: true })).toBe("stamped");
+    for (const stamp of [{ stamped: false, over: true }, { stamped: false, over: false }, undefined]) {
+      expect(settledArm(conflict, stamp), JSON.stringify(stamp)).toBe("final");
+    }
+  });
+  it("reads every other outcome as stampArm does, and retries a stamp that answered no 200", () => {
+    for (const outcome of [
+      { outcome: "landed", detail: PLAN.record_key },
+      { outcome: "identical", detail: PLAN.record_key },
+    ] as const) {
+      for (const stamp of [
+        { stamped: true, over: true },
+        { stamped: true, over: false },
+        { stamped: false, over: false },
+        { stamped: false, over: true },
+      ]) {
+        expect(settledArm(outcome, stamp), `${outcome.outcome} ${JSON.stringify(stamp)}`).toBe(stampArm(stamp));
+      }
+      expect(settledArm(outcome, { stamped: false, over: true }), outcome.outcome).toBe("retry");
+      expect(settledArm(outcome, undefined), `${outcome.outcome}: no 200`).toBe("retry");
+    }
+  });
+});
+
+// The held record is a whole game — a seed above 2^53, and every move — and it
+// is the MODULE's to read: the shell hands it on and never logs it. Mutant: the
+// outcome spread into the line.
+describe("logOutcome", () => {
+  it("names the outcome's detail, and never the record a conflict holds", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      logOutcome("t", "game-over", PLAN, { outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED }, { attempt: 0 });
+      expect(spy.mock.calls.map(([line]) => JSON.parse(String(line)) as unknown)).toEqual([
+        { event: "archive-conflict", id: "t", site: "game-over", record_key: PLAN.record_key, detail: PLAN.record_key, attempt: 0 },
+      ]);
+      expect(String(spy.mock.calls[0]?.[0]), "no byte of the held record").not.toContain("18446744073709551614");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

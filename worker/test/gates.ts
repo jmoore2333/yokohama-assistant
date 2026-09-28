@@ -217,3 +217,33 @@ export function heldPuts(): { through: PutThrough; reached(): boolean; open(): v
     open: () => door.open(),
   };
 }
+
+/**
+ * Two uploads' puts, each held at a gate of its OWN — the M6.5c2 refinish
+ * race's (spec §2.5): the FIRST put to arrive waits at `openFirst`'s gate, the
+ * SECOND at `openSecond`'s, and every later put goes straight through. An
+ * upload's first put is its table's (`executePlan`), so two overlapping
+ * uploads each wait at their table's put and are released one at a time: open
+ * the first, and its record put follows its table's through; then the second.
+ * Gates made in the cell's own context, as `heldPuts`'s are. `arrived()`
+ * counts the puts that have reached the bucket.
+ */
+export function heldInTurn(): { through: PutThrough; arrived(): number; openFirst(): void; openSecond(): void; openAll(): void } {
+  const [first, second] = [gate(), gate()];
+  let arrived = 0;
+  return {
+    through: async (real, key, value, options) => {
+      const turn = arrived++;
+      if (turn === 0) await first.opened;
+      else if (turn === 1) await second.opened;
+      return real.put(key, value, options);
+    },
+    arrived: () => arrived,
+    openFirst: () => first.open(),
+    openSecond: () => second.open(),
+    openAll: () => {
+      first.open();
+      second.open();
+    },
+  };
+}
