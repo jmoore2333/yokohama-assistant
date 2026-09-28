@@ -531,9 +531,12 @@ export class Table extends DurableObject<Env> {
    *   clears it and retries nothing, the M6.5c spec §2.6 arm kept for all of
    *   them (spec §2.5, §10.5). Among them: another game's record at the key,
    *   which only a caller-chosen id can reach, or a text that is no record,
-   *   which no retry could clear; and, rarely, a record of this game whose
-   *   stamp did not land or was refused, which a retry might have, and the
-   *   rule leaves final all the same (`settledArm` names every case);
+   *   which a retry would meet again while the key holds it (nothing this
+   *   shell runs deletes an archived key; a key under `test/` alone expires,
+   *   after 30 days); rarely, a record of this game whose stamp's write failed
+   *   or whose put met no receipt, which a retry might have landed and the
+   *   rule leaves final all the same; and a stamp the layer refused, which no
+   *   retry of this save lands (`settledArm` names every case, and why);
    *   `retry` — after a `landed` or `identical` upload, the stamp refused (a
    *   reply that is no 200, logged `stamp-refused`) or not landed with the
    *   game over — keeps it owed, counted, its plan the one the stamp re-made
@@ -551,8 +554,11 @@ export class Table extends DurableObject<Env> {
    *   owed only for a game already over, so the wake here finds it over, or —
    *   the undo case — back at a human's decision, and owes no bot run. Were
    *   a pump to move the record there, the receipt's plan would no longer
-   *   match, the stamp would retry, and the plan it re-made — of that same
-   *   stored record, at the recorded reading — is the one owed.
+   *   match. After a `landed` or `identical` upload the stamp would retry,
+   *   and the plan it re-made — of that same stored record, at the recorded
+   *   reading — is the one owed; after a `conflict` its
+   *   `{stamped: false, over: true}` is `final`, and what is owed is the
+   *   wake's own plan, at the wake's reading (`owing`).
    *
    * **The undo case** (the orchestrator's ruling I3; Task 6's escalation e;
    * made whole by R-6.5c2.11). An undo at a one-person table that lands during

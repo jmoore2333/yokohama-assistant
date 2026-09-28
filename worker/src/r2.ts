@@ -187,15 +187,22 @@ export function stampArm(stamp: Stamp): "stamped" | "no-longer-over" | "retry" {
  *   stamp. By the stamp's answer:
  *   - `{stamped: false, over: true}`: the key holds another game's record
  *     (which only a caller-chosen id can reach) or a text that is no record,
- *     which no retry could clear, since nothing this shell runs deletes an
- *     archived key; or the conflict carried no `held`, which `executePlan`
- *     never builds and the layer reads as not the same game; or, rarely, the
- *     key holds a record of this game and the stamp did not land — its write
- *     failed, or its put met no receipt — which a retry might have landed;
+ *     which a retry would meet again while the key holds it: nothing this
+ *     shell runs deletes an archived key (a key under `test/` alone expires,
+ *     after 30 days, R-6.5c2.12); or the conflict carried no `held`, which
+ *     `executePlan` never builds and the layer reads as not the same game;
+ *     or, rarely, the key holds a record of this game and the stamp did not
+ *     land — its write failed, or its put met no receipt — which a retry
+ *     might have landed;
  *   - `{stamped: false, over: false}`: the game is no longer over, and owes
  *     nothing, as `no-longer-over` reads it;
- *   - no 200: the stamp was refused — a foreign bot's 409 among them — which a
- *     retry might have landed;
+ *   - no 200: the layer refused the stamp without judging the held record,
+ *     and no retry of this save lands it. The module's refusals answer the
+ *     table's state, and none is transient. The foreign-bot rule's 409, the
+ *     one a save owed across an undo can meet, comes only for a game not
+ *     over; a stamp lands only on a game over; and no move finishes that game
+ *     while every rebuild is refused. Its bound is the creator's Abandon or
+ *     the table's expiry, neither of which rebuilds;
  * - every other outcome is `stampArm`'s, and a stamp that answered no 200 is
  *   `retry`.
  */

@@ -733,9 +733,10 @@ describe("game over (spec §2.6)", () => {
   // where it is no earlier completion of this game the layer logs its
   // refusal and stamps nothing, so the conflict is FINAL: `archive_owed`
   // cleared, nothing retried, the bucket untouched, the alarm re-armed to the
-  // table's expiry. Two such held texts, neither of which a retry could ever
-  // clear: another game's record (the walk's, another seed), which only a
-  // caller-chosen id can reach, and a text that is no record. Mutants: a
+  // table's expiry. Two such held texts, each of which a retry would meet
+  // again (nothing this shell runs deletes an archived key): another game's
+  // record (the walk's, another seed), which only a caller-chosen id can
+  // reach, and a text that is no record. Mutants: a
   // conflict retried (still owed, an alarm
   // at a rung); `held` read as the same game (a stamp); a conflict's stamp
   // answer read through `stampArm` (a retry).
