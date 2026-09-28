@@ -150,5 +150,9 @@ limit · R-C29 the sequence first, the battery after · R-C30 the red live run r
     leave the core `test` job as the only job a core-only push pays. The one coupling to state in the change, not to
     fear: the committed wire corpus pins the engine's wire-visible words and `rules_hash`, so a core change that moved
     them would fail `cargo test -p yokohama-web` — which the per-edit rule already runs locally after every task
-    (`CLAUDE.md` Commands), and which a `SEMANTICS_REV` bump (a STOP) would make its author run in any case. Cycle C's
-    first CI readings (the close §8) are the last full-run figures before the filter.
+    (`CLAUDE.md` Commands), and which a `SEMANTICS_REV` bump (a STOP) would make its author run in any case. **And the
+    duplication the owner saw at the close:** `test.yml` triggers on `push` AND `pull_request`, so every commit on a branch
+    with an open PR runs its four jobs TWICE (the close's push and pull-request runs 36460015068 and 36460020190 were
+    the same jobs a minute apart); restrict `test.yml`'s `push` to `branches: [master]` as `docker.yml` already is, so a
+    branch commit runs once, through its pull request. Cycle C's first CI readings (the close §8.1) are the last
+    full-run figures before either change.
