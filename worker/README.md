@@ -1641,7 +1641,7 @@ returns to an earlier version, but never across a Durable Object migration, nor 
 to a bucket that no longer exists.
 
 **A rollback across the M6.5c fix wave**, to the eighteenth deployment or earlier, has two known
-consequences (RUNBOOK §6). Rolling forward again needs nothing.
+consequences (`worker/RUNBOOK.md` §6). Rolling forward again needs nothing.
 
 1. **Generation order.** The older code draws a table's generation in SECONDS, and every seconds
    generation orders before every retired MILLISECONDS one. So a table forced under the newer code

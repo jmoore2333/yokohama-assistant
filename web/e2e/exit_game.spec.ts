@@ -45,7 +45,7 @@
 // table DURING each pause (nothing, if the pause meant anything). NOT seen here at all: the eviction and the wake
 // themselves. The orchestrator reads those off `wrangler tail` — the
 // `wake {id, wakes}` line under `YOKOHAMA_WEB_COUNT_WAKES=on` (ruling I-84),
-// the window RUNBOOK §6.7 opens and closes — with each request's CPU beside
+// the window `worker/RUNBOOK.md` §7 opens and closes — with each request's CPU beside
 // it.
 //
 // **Its own precondition: every window VISIBLE** (R3's R-N6; ruling I-91). A
@@ -70,7 +70,7 @@
 //
 // **What it leaves on the account**: what any live spec's abandon leaves —
 // the game's save under the bucket's `test/` root (all three people are
-// `.test` identities) and the table's 90-day marker (RUNBOOK §6) — and TWO
+// `.test` identities) and the table's 90-day marker (`worker/RUNBOOK.md`) — and TWO
 // posts in the REAL house chat, one each from x and y, which real people see
 // in the lobby until newer messages trim them.
 

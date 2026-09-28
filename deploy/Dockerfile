@@ -9,7 +9,7 @@
 # 3.10 (RUNBOOK §1–§3); until M6.5c2 this paragraph said the NAS ran this
 # image. `.github/workflows/docker.yml` builds this one and smoke-runs it.
 # (Hosted multiplayer on Cloudflare is the Worker in `worker/`, which runs no
-# image — RUNBOOK §6.)
+# image — `worker/RUNBOOK.md`.)
 #
 # Built for `linux/amd64` deliberately: the architecture of the NAS (a DS1517+,
 # an Intel Atom C2538) and of the runner `docker.yml` builds on. The build

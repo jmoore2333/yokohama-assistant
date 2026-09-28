@@ -6,7 +6,7 @@
 //   node scripts/read-deploy.mjs console <base-url> [--headers <file>]
 //
 // `--headers` names a FILE of `Name: value` lines — the Service Auth
-// credential, as RUNBOOK §6's recipe writes it — never a value on argv. The
+// credential, as `worker/RUNBOOK.md` §4's recipe writes it — never a value on argv. The
 // file's headers go to the base URL's ORIGIN only, and no value of theirs is
 // ever printed: a secret sent to a third-party origin would leak, and would
 // add a CORS preflight that is itself a console error. Without the file the

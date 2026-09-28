@@ -50,7 +50,7 @@ describe("essence", () => {
   });
 });
 
-// The credential's header file (RUNBOOK §6): `Name: value` per line. The
+// The credential's header file (`worker/RUNBOOK.md` §4): `Name: value` per line. The
 // value is the secret, so no error may carry it.
 describe("parseHeaderFile", () => {
   it("reads Name: value lines, skipping blank ones", () => {

@@ -30,7 +30,7 @@ on:
 #   (`worker/scripts/live-replay.mjs`) and the opt-in exit spec: they play on
 #   the owner's Cloudflare account through a credential and the owner's WARP
 #   login, spend its shared daily quota, and leave markers and saves behind
-#   (deploy/RUNBOOK.md §6.7);
+#   (worker/RUNBOOK.md §7);
 # - the fifteen release-tier gates, which run before merges and closes;
 # - the deploy guard's build-dependent checks (`worker/scripts/deploy-guard.mjs`
 #   checks 1, 2, 8 and 9: the release module, the assets tree, and whether
@@ -40,7 +40,7 @@ on:
 #   run here, inside the `worker` job's `npm run test:scripts`.
 #
 # No job reads a secret or `.dev.vars`, and none deploys: the Worker ships from
-# the owner's workstation through `npm run deploy` (RUNBOOK §6.2).
+# the owner's workstation through `npm run deploy` (worker/RUNBOOK.md §2).
 
 permissions:
   contents: read
