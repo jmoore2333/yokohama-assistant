@@ -53,14 +53,17 @@ ingress:
   # under ONE audience and the owner's two email allow-list policies. It is
   # HOSTNAME-WIDE: every path here is behind it, `/api/health` and the client
   # bundle included. That is load-bearing and not decorative. Since M6.1 the
-  # origin does read an identity -- one header, named by
-  # `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route -- but it
-  # runs in `claimed` mode, which authenticates the DOOR and not the SEAT:
-  # anyone past Access can claim any email. So Access is still the only thing
-  # separating strangers from the game store, and removing it from this
-  # hostname makes the store readable by anyone who sends a header. This
-  # tunnel is also the one path to the container's port 8080, which is
-  # published nowhere; that is the other half of why the arrangement holds.
+  # origin reads an identity -- one header, named by `YOKOHAMA_WEB_IDENTITY`,
+  # required on every `/api/games` route -- and it is ruled `cf-access`
+  # (M6.5c2, R-6.5c2.5; the NAS moves to it at that cycle's close, and
+  # `deploy/RUNBOOK.md` §3 records the value each deployment runs): it reads
+  # `Cf-Access-Authenticated-User-Email`, which Access sets on the requests it
+  # forwards, so Access is this origin's door AND its identity. That header is
+  # worth what the path to the port is worth: the origin does not verify
+  # Access's signed assertion, so anything that reached port 8080 without
+  # passing Access could send the header and be anyone. This tunnel is the one
+  # path to the container's port 8080, which is published nowhere; that is the
+  # other half of why the arrangement holds.
   #
   # M6.5b2's spec (§3.2) designs a PATH-SCOPED application instead -- one
   # application, six destinations (its own heading says FIVE and then lists
