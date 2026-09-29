@@ -1041,9 +1041,11 @@ export interface ChatPage {
   last: number;
   /** The document's REVISION (M6.5c2 cycle D, R-D4): +1 per message and per
    *  message deleted. `rev - last` moves exactly when a message a reader may
-   *  already hold was deleted, which is how a panel whose host passes no
-   *  numbers (the open table, the lobby) learns of a delete from its next
-   *  delta read. */
+   *  already hold was deleted. The panel keeps this page's `rev - last` and
+   *  compares each frame's with it: every chat host is a count host
+   *  (`Events.chat`/`chat_rev` at a table, the house frame's `chat`/`rev` in
+   *  the lobby), and those are the same document's `last` and `rev` on both
+   *  hosts. */
   rev: number;
 }
 

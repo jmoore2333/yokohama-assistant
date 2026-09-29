@@ -23,18 +23,24 @@
 //! **Since M6.4 the house carries TWO counters** ([`House`], R-6.4.7): `seq`
 //! for the writes a lobby listing reads and `chat` for a house message. One
 //! channel because a lobby holds one connection; two numbers so that a frame
-//! SAYS which of the two moved — which is a capability and not yet a saving.
-//! **A third since M6.5c2 cycle D** (R-D4): `rev`, the house chat's revision,
-//! which a message moves with `chat` and a DELETE moves alone. **It is carried
-//! for the contract, and no client reads it yet**: the lobby is a `"wake"`
-//! consumer that drops the frame, and its chat panel learns of a delete from
-//! the `rev` on the house chat PAGE its next read returns. What the frame's
-//! `rev` does today is wake every lobby on a delete, which `chat` alone would
-//! not.
-//! At HEAD the lobby is a `"wake"` consumer and drops the frame, so a house
-//! message costs every visible lobby its three listing reads (recorded in the
-//! M6.4 close as a LEAVE item); the second counter is what a `"value"` consumer
-//! would need to tell them apart.
+//! SAYS which of the two moved. **A third since M6.5c2 cycle D** (R-D4): `rev`,
+//! the house chat's revision, which a message moves with `chat` and a DELETE
+//! moves alone.
+//!
+//! **The lobby reads `chat` and `rev` off the frame** (M6.5c2 cycle D, row
+//! 130): its chat panel is a COUNT host on them (the client's `Source.peek`),
+//! reading its delta when `chat` passes the `last` of the page it holds and
+//! re-reading what it holds when `rev` moves further than `chat` — so a
+//! table's move, which moves `seq` alone, costs the panel nothing. **Those two
+//! are the house chat DOCUMENT's `last` and `rev` on both hosts**: the Worker
+//! reads them off the stored document for every frame it sends, and the NAS seeds
+//! [`Signals`] from the stored document when it starts
+//! (`Signals::seed_house`, the final review's C1) and moves them in step with
+//! it after. `seq` is the frame's own sequence and names nothing stored.
+//! **The lobby's LISTINGS still take every frame as a wake-up** and refetch
+//! all three, a house message included (recorded in the M6.4 close as a LEAVE
+//! item): telling a message from a listing write there is the half no consumer
+//! takes yet.
 
 /// What a write site calls when something it wrote has changed.
 ///
@@ -78,7 +84,8 @@ impl Signal for NoSignal {
 /// outside `server` since M6.5c2 (spec §2.6's restatements): `house_stream`
 /// writes it as each `house` event's data, and the Worker module's lobby socket
 /// writes the same bytes by calling this, not a copy pinned to this crate's
-/// source text. No client reads `rev` off the frame yet — see the module doc.
+/// source text. The lobby reads `chat` and `rev` off it, as the house chat
+/// document's own numbers — see the module doc.
 pub fn house_frame(seq: u64, chat: u64, rev: u64) -> String {
     format!("{{\"seq\":{seq},\"chat\":{chat},\"rev\":{rev}}}")
 }
@@ -107,11 +114,16 @@ pub struct Bump {
 /// finalize, a move, a delete — and `chat` moves on a house message and on
 /// nothing else. `rev` moves on a house message AND on a house message
 /// deleted, so a frame whose `rev` moved further than its `chat` says that a
-/// message a reader holds has changed. They are separate so that a consumer CAN tell them apart
-/// and refetch only the half that moved. **No consumer does today**: the lobby
-/// reads this channel in `"wake"` mode and refetches all three listings on any
-/// frame, chat included, which is the M6.4 close's own LEAVE item. Read this as
-/// the shape a later `"value"` consumer needs, not as a saving already taken.
+/// message a reader holds has changed. They are separate so that a consumer
+/// can tell them apart and refetch only the half that moved. **The lobby's chat
+/// panel does** (M6.5c2 cycle D, row 130): it reads when `chat` passes what it
+/// holds and re-reads when `rev` moves further than `chat`, so a table's move
+/// costs it nothing. **The lobby's listings do not**: they refetch all three
+/// on any frame, chat included, which is the M6.4 close's own LEAVE item.
+///
+/// `chat` and `rev` START at the stored house chat document's `last` and `rev`
+/// (`Signals::seed_house`, the final review's C1), so they are the document's
+/// numbers and not a count this process began at 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg(feature = "server")]
 pub struct House {
@@ -256,8 +268,8 @@ mod tests {
     ///
     /// Two counters on one coalescing channel rather than two channels: a lobby
     /// holds ONE connection, and the frame is what a consumer would read to
-    /// tell a message from a listing write. (None does at HEAD — the lobby
-    /// wakes on either; see [`House`].) The second half of this cell is the
+    /// tell a message from a listing write. (The lobby's chat panel does; its
+    /// listings wake on either — see [`House`].) The second half of this cell is the
     /// half that can fail — a `bump_house_chat` that reached for `seq`, or a
     /// `bump` that touched `chat`, would make the frame's two numbers one
     /// number wearing two names.

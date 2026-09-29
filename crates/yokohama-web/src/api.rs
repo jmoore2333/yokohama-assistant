@@ -980,8 +980,10 @@ pub struct ChatPage {
     /// The document's REVISION (M6.5c2 cycle D, R-D4), beside `last` for the
     /// same reason `last` is the document's: a reader holding `rev - last`
     /// from its previous page sees it move exactly when a message it may
-    /// already hold was deleted — at every host, including the two whose
-    /// signal is a wake-up with no numbers (the open table and the lobby).
+    /// already hold was deleted. Every chat panel is a count host and compares
+    /// that held difference with each signal frame's — `Events.chat` and
+    /// `chat_rev` at a table, the house frame's `chat` and `rev` in the lobby —
+    /// which are this document's `last` and `rev` on both hosts.
     pub rev: u64,
 }
 
