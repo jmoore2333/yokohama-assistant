@@ -1771,41 +1771,33 @@ pub struct Events {
     pub chat_rev: u64,
 }
 
-/// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
+/// `…/events`'s query, PARSED AND IGNORED since M6.5c2 cycle D (R-D5).
 ///
-/// **It is here now so the transport can change without the client changing.**
-/// M6.3 chooses among a held request, server-sent events and a Durable Object
-/// notifier, and every one of those answers "what has happened since N" — so
-/// the polled form takes the same parameter and answers immediately whether or
-/// not `events` has moved past it. A client written against this cycle keeps
-/// working when the transport underneath it is replaced.
+/// **Both keys stay so an older release keeps working.** M6.3 carried a resume
+/// cursor (`after`) and a hold (`wait`) for the held-request transport; the
+/// held arm is retired on every host, and the route answers at once whatever
+/// either key says. An older precached release's close probe still sends
+/// `wait=25`, and with the key gone `deny_unknown_fields` would answer it a
+/// 400.
 ///
-/// Typed `usize`, so a negative or non-numeric cursor is a 400 from serde
-/// rather than a value this handler would have to range-check; and
-/// `deny_unknown_fields` through the layer's `parse_query` makes a MISSPELLED
-/// cursor a 400 too, rather than a silent `None` that polls from the beginning forever.
+/// Typed `usize` and `u64`, so a negative or non-numeric value is still a 400
+/// from serde; `deny_unknown_fields` through the layer's `parse_query` still
+/// makes a MISSPELLED key a 400 rather than a silent default; and a `wait`
+/// above [`MAX_WAIT_SECONDS`] is still a 400 ([`check_wait`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsQuery {
+    /// A resume cursor: parsed and ignored (R-D5). No host ever acted on it.
     #[serde(default)]
     pub after: Option<usize>,
-    /// Hold this request open for up to N seconds, or until the table bumps
-    /// (R-plan-5, spec §3.3).
-    ///
-    /// **The held-request transport, shipped whether or not it is the one the
-    /// client reads.** R-3.1 decides between server-sent events and this on a
-    /// measurement through the real tunnel; carrying both costs one cell here
-    /// and makes the fallback a one-line change in the client's reader rather
-    /// than a second plan. It subscribes to the same channel `…/stream` does
-    /// and answers the same object, so a client that swaps transports swaps
-    /// nothing else.
-    ///
-    /// Absent, the route answers at once, exactly as it always has.
+    /// A hold of up to N seconds: parsed, bounded by [`check_wait`], and
+    /// ignored (R-D5). The route answers at once.
     #[serde(default)]
     pub wait: Option<u64>,
 }
 
-/// The longest a `?wait` may hold (spec §3.3).
+/// The longest a `?wait` may name (spec §3.3) — kept, with its refusal, since
+/// the hold was retired (R-D5): the value is still bounded, and then ignored.
 ///
 /// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
 /// silently given 25 would read the early answer as "nothing changed for two
@@ -2537,11 +2529,11 @@ mod tests {
         assert!(res.body.contains(r#""foreign_bot":{"played":"V2 lookahead""#), "anti-vacuity: the third shape: {}", res.body);
     }
 
-    /// **The wait cap is the layer's, exported** (M6.5c2): 25 holds, 26 is a
-    /// 400 in the handler's own words — a refusal, never a clamp — and no
-    /// `wait` holds nothing. The axum handler calls this;
-    /// `events_can_be_held_until_a_bump_and_the_wait_is_bounded` (`lib.rs`)
-    /// pins it there end to end.
+    /// **The wait cap is the layer's, exported** (M6.5c2): 25 is accepted, 26
+    /// is a 400 in the handler's own words — a refusal, never a clamp — and no
+    /// `wait` is accepted too. Since R-D5 an accepted `wait` is ignored. The
+    /// axum handler calls this; `a_wait_is_accepted_and_answered_at_once`
+    /// (`lib.rs`) pins it there end to end.
     #[test]
     fn a_wait_above_the_cap_is_refused_never_clamped() {
         assert_eq!(MAX_WAIT_SECONDS, 25);

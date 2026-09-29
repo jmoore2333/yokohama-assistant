@@ -892,9 +892,11 @@ rather than to `dispatch`:
   turning a duplicate-key 400 into a 201.
 - **`events`** (`src/events.rs`), `GET /api/games/{id}/events`, restates axum's handler in its
   order: the caller, the query through the layer's own parser, then a `wait` above 25 s refused with
-  the handler's own sentence. Then it answers AT ONCE: `wait` is validated and never held. A held
-  request would keep an object invocation open for nothing, and the only client that asks with
-  `wait` on this host is the socket arm's one probe (§8), which wants an immediate answer.
+  the handler's own sentence. Then it answers AT ONCE: `after` and `wait` are parsed and ignored, as
+  axum's handler does too since M6.5c2 cycle D retired the held arm on every host (R-D5). A held
+  request would keep an object invocation open for nothing. The keys stay for an older precached
+  release, whose socket arm's one probe (§8) sends `wait=25`; the current client's probe sends no
+  query. *(Corrected 2026-09-29: until then the probe of every release sent `wait=25`.)*
 
 A refusal the module writes itself is built by the layer's own `api::error_body`, which the layer
 exports since M6.5c2; the lobby socket's 401 (`identity_inner`) still writes its `{"error": …}` by

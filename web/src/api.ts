@@ -323,23 +323,25 @@ export const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
  *  `GET /api/health` on entering the multiplayer channel (M6.5b2: no longer at
  *  boot — the door asks nothing) and then read by `usePolled` on every open.
  *
- *  **A deployment fact and never a preference** (spec R-3.1): the edge in front
- *  of this server may not hold a stream open, and the held request is the same
- *  server's answer to that. The default is the stream, so a health that does
- *  not answer leaves the client reading the transport the server prefers —
- *  a wrong guess here costs a failed open and one trip round the ladder, not a
- *  screen that never updates.
+ *  **A deployment fact and never a preference** (spec R-3.1): which transport
+ *  a host serves is its own code decision. The default is the stream, so a
+ *  health that does not answer leaves the client reading the transport the
+ *  server prefers — a wrong guess here costs a failed open and one trip round
+ *  the ladder, not a screen that never updates.
  *
  *  **`"ws"` is the Worker's (M6.5c, R-6.5c.6; spec §2.7)**: the stream's own
  *  frames over a hibernatable WebSocket. The NAS goes on answering `"sse"`.
+ *  **There is no third value** (M6.5c2 cycle D, R-D5): the held request M6.3
+ *  built beside the stream is retired on every host, and no host reports
+ *  `"held"`.
  *
  *  **Per SOURCE since M6.5b** (spec §2.3): the value lives in
  *  `local/facts.ts`, keyed by server or local, and this reads the SERVER's.
  *  Its union never holds the local `"none"` — the transport arm never asks
  *  this about a local game, because it reads `Source.host` instead. */
-export const signalKind = (): "sse" | "held" | "ws" => serverFacts().signal;
+export const signalKind = (): "sse" | "ws" => serverFacts().signal;
 
-export const setSignalKind = (k: "sse" | "held" | "ws"): void => {
+export const setSignalKind = (k: "sse" | "ws"): void => {
   patchServerFacts({ signal: k });
 };
 
@@ -1001,15 +1003,15 @@ export const api = {
    *  setup screen asks to learn that the last seat has chosen, since a dealing
    *  table answers here rather than refusing.
    *
-   *  `after` is the RESUME CURSOR. This server validates it and does not act on
-   *  it: the reply is immediate whether or not `events` has moved past it. It
-   *  is sent anyway, because M6.3's held request and stream answer this same
-   *  shape with this same cursor, and a caller written against it keeps working
-   *  when the transport underneath is replaced. */
-  events: (game: string, after?: number, wait?: number) =>
+   *  **The reply is immediate on every host** (M6.5c2 cycle D, R-D5): the
+   *  held request, and the `wait` this took for it, are retired. `after` is a
+   *  resume cursor every host parses and ignores; nothing here sends it today.
+   *  An older release's `wait` is parsed and ignored the same way, which is
+   *  what keeps its probe from meeting a 400. */
+  events: (game: string, after?: number) =>
     call<Events>(
       "GET",
-      `/api/games/${id(game)}/events${query({ after, wait })}`,
+      `/api/games/${id(game)}/events${query({ after })}`,
     ),
 
   /** The retained messages above `after`, and the newest number ever assigned.

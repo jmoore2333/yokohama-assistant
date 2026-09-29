@@ -262,7 +262,7 @@ export class Table extends DurableObject<Env> {
     const marker = markerOf(this.ctx.storage.sql);
     if (marker !== undefined) return this.markerAlarm(marker);
     this.recopy(id);
-    await Promise.all([this.deliverSlot(), this.deliverArchive()]);
+    await Promise.all([this.deliverSlot(), this.deliverArchive({ fromRequest: false })]);
     await this.expiry(id);
   }
 
@@ -499,13 +499,23 @@ export class Table extends DurableObject<Env> {
    * **While the switch reads `off`** the owed save is KEPT and not uploaded,
    * and nothing re-arms the alarm for it (spec §2.6): the alarm logs
    * `archive-owed-kept`, and no request calls this. Switched back on, the next
-   * request or alarm resumes it.
+   * request past the gate, or the next alarm, resumes it.
+   *
+   * **The gate** (R-D6, R-6.5c2.30's "a short backoff after a failure"): on
+   * the REQUEST path (`fromRequest`) it returns at once while `not_before`,
+   * which a failure sets at the rung its alarm is armed for, has not passed —
+   * so while R2 is down a request pays a read of the owed row here and
+   * nothing else, and the save is attempted once per rung, by the alarm or
+   * the first request after it. The ALARM path ignores the gate: the alarm IS
+   * the rung. Game over's first attempt meets no gate, since no failure has
+   * set one.
    */
-  private async deliverArchive(): Promise<void> {
+  private async deliverArchive({ fromRequest }: { fromRequest: boolean }): Promise<void> {
     const id = this.ctx.id.name;
     const sql = this.ctx.storage.sql;
     const owed = archiveOwedOf(sql);
     if (id === undefined || owed === undefined || "error" in this.config) return;
+    if (fromRequest && owed.not_before !== undefined && Date.now() < owed.not_before) return;
     if (Number(getMeta(sql, "load_traps") ?? "0") >= 2) return;
     if (!this.archiveOn()) {
       log("archive-owed-kept", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
@@ -561,7 +571,8 @@ export class Table extends DurableObject<Env> {
    *   `retry` — after a `landed` or `identical` upload, the stamp refused (a
    *   reply that is no 200, logged `stamp-refused`) or not landed with the
    *   game over — keeps it owed, counted, its plan the one the stamp re-made
-   *   at that reading when the module deferred one. A refused stamp is never
+   *   at that reading when the module deferred one, and gated at its retry as
+   *   a failed upload is (`not_before`, R-D6). A refused stamp is never
    *   thrown, and after a `landed` or `identical` upload it is retried on the
    *   backoff: the layer's foreign-bot rule refuses a game not over against a
    *   bot this build does not run, a 409, until the creator's Abandon or the
@@ -634,18 +645,20 @@ export class Table extends DurableObject<Env> {
       if (stamp === undefined) log("stamp-refused", { id, status });
       else log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...stamp });
       const arm = settledArm(outcome, stamp);
+      const retry = arm === "retry" ? this.retryAt(current) : undefined;
       done = this.commit(
         id,
         completed,
         woken,
-        arm === "retry"
+        retry !== undefined
           ? {
               owe: {
                 plan: replanned === undefined ? current.plan : parsePlan(replanned),
                 reading: current.reading,
                 attempt: current.attempt + 1,
+                not_before: retry,
               },
-              due: this.retryAt(current),
+              due: retry,
             }
           : (owing(woken.restored) ?? "clear"),
       );
@@ -686,20 +699,22 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * `owed` still owed, one more failure counted, in ONE batch — with a load
-   * trap's reset when this turn's wake cleared one — and the alarm re-armed to
-   * its retry (`retryAt`), unless a load trap since has poisoned the table,
-   * which re-arms nothing (spec §2.4).
+   * `owed` still owed, one more failure counted and its gate (`not_before`)
+   * set to its retry (`retryAt`), in ONE batch — with a load trap's reset when
+   * this turn's wake cleared one — and the alarm re-armed to that same retry,
+   * unless a load trap since has poisoned the table, which re-arms nothing
+   * (spec §2.4). A request before the retry uploads nothing (R-D6).
    */
   private retryArchive(owed: ArchiveOwed, clearTraps = false): void {
     const sql = this.ctx.storage.sql;
     const poisoned = Number(getMeta(sql, "load_traps") ?? "0") >= 2;
+    const due = this.retryAt(owed);
     this.batch(
       (sql) => {
-        setMeta(sql, "archive_owed", JSON.stringify({ ...owed, attempt: owed.attempt + 1 }));
+        setMeta(sql, "archive_owed", JSON.stringify({ ...owed, attempt: owed.attempt + 1, not_before: due }));
         if (clearTraps) clearLoadTraps(sql);
       },
-      poisoned ? undefined : this.retryAt(owed),
+      poisoned ? undefined : due,
     );
   }
 
@@ -1113,7 +1128,7 @@ export class Table extends DurableObject<Env> {
       return expired.done;
     });
     if (done?.pushing) this.ctx.waitUntil(this.deliverSlot());
-    if (done?.archiving) this.ctx.waitUntil(this.deliverArchive());
+    if (done?.archiving) this.ctx.waitUntil(this.deliverArchive({ fromRequest: false }));
   }
 
   /**
@@ -1168,7 +1183,7 @@ export class Table extends DurableObject<Env> {
     if (marker !== undefined) return respond(404, errorBody(markerSentence(marker)));
     const expired = await this.ctx.blockConcurrencyWhile(() => this.expire(id, { reason: "operator" }));
     if (expired.done?.pushing) this.ctx.waitUntil(this.deliverSlot());
-    if (expired.done?.archiving) this.ctx.waitUntil(this.deliverArchive());
+    if (expired.done?.archiving) this.ctx.waitUntil(this.deliverArchive({ fromRequest: true }));
     return respond(expired.status, expired.body);
   }
 
@@ -1245,7 +1260,7 @@ export class Table extends DurableObject<Env> {
     const { id } = incoming;
     this.sendFrames(id, bumps);
     if (done.pushing) this.ctx.waitUntil(this.deliverSlot());
-    if (done.archiving) this.ctx.waitUntil(this.deliverArchive());
+    if (done.archiving) this.ctx.waitUntil(this.deliverArchive({ fromRequest: true }));
     return incoming.transport === "stream" ? this.admit(id, incoming.user, reply) : respond(reply.status, reply.body);
   }
 
@@ -1552,9 +1567,9 @@ export class Table extends DurableObject<Env> {
    * Every write goes in ONE `batch`, and a request with nothing to write runs
    * none — so a probe creates nothing. Answers whether the batch wrote a
    * slot, which the request then pushes; whether a save is owed after it,
-   * with the switch on, which the request then uploads — one this batch
-   * wrote, or one owed before it: the next request resumes it (spec §2.6);
-   * and the marker it wrote.
+   * with the switch on, which the request then hands to `deliverArchive` —
+   * one this batch wrote, or one owed before it: the next request past its
+   * gate resumes it (spec §2.6; R-D6); and the marker it wrote.
    */
   private commit(id: string, called: Called, parts: BatchParts, archive?: ArchiveWrite, ending?: Ending): Committed {
     const sql = this.ctx.storage.sql;
@@ -1609,6 +1624,12 @@ export class Table extends DurableObject<Env> {
     } else {
       alarm = earliest(alarm, this.archiveRung(sql));
     }
+    // A save owed after this batch goes to `deliverArchive` from the request,
+    // which returns at once while the last failure's gate (`not_before`) has
+    // not passed (R-D6). So while R2 is down, a request pays a read of the
+    // owed row there and nothing else: no upload and no failure batch — one
+    // attempt per rung, the alarm's or the first request's after it. Before
+    // R-D6 every request re-attempted, and each failure climbed the ladder.
     const archiving = owes && this.archiveOn();
     if (writes.length === 0) return { pushing: false, archiving, marker };
     this.batch(() => {
@@ -2093,7 +2114,9 @@ function owing(p: Pinned | null): ArchiveWrite | undefined {
 }
 
 /** `meta.archive_owed` — the shell's own JSON, the plan's record and table
- *  strings inside it — or `undefined` when no save is owed. */
+ *  strings inside it — or `undefined` when no save is owed. A row without
+ *  `not_before` — one no failure has gated, or one a build before R-D6 wrote
+ *  — reads as ungated: `deliverArchive` tests the field for `undefined`. */
 function archiveOwedOf(sql: SqlStorage): ArchiveOwed | undefined {
   const text = getMeta(sql, "archive_owed");
   return text === undefined ? undefined : (JSON.parse(text) as ArchiveOwed);

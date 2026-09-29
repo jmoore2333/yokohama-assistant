@@ -222,8 +222,8 @@ the whole list; it leaves secrets alone.
     reads as the archive being off;
   - a game-over save still owed from when the archive was on is KEPT and not retried: no request
     uploads it, no alarm is re-armed for it, and any alarm that runs — one armed before the switch,
-    or one for other work — logs `archive-owed-kept`. Set back to `r2`, the table's next request or
-    alarm resumes it.
+    or one for other work — logs `archive-owed-kept`. Set back to `r2`, the table's next alarm
+    resumes it, or its next request once the last failure's rung has passed (R-D6, below).
 - **The TTL** (R-6.5c.15): `wrangler.jsonc` sets `YOKOHAMA_WEB_TABLE_TTL_DAYS` to `90`, the owner's
   value, from Task 14's commit on; it is live from the seventeenth deployment (§11). A table's
   last activity is the newest write of its record, its table document or its chat; a table untouched
@@ -461,8 +461,11 @@ expires in 2031 (spec §0.5).
     create-if-absent put was refused and the record then read as absent. `attempt`, at the
     game-over site, counts this save's earlier tries that did not complete it, and at the expiry
     site the table's earlier expiries that did not end it. A failed
-    game-over save is retried on the backoff — 30 s, 2 min, 10 min, then hourly — by the alarm, and
-    by the table's next request.
+    game-over save is retried on the backoff — 30 s, 2 min, 10 min, then hourly — by the alarm, or
+    by the table's first request once the rung has passed: a request inside the rung uploads
+    nothing, so an R2 outage costs a request a read of the owed row and no attempt. *(Corrected
+    2026-09-29, M6.5c2 cycle D, R-D6: until then every request re-attempted it, and each failure
+    climbed the ladder.)*
   - **`archive-stamped`** `{id, record_key, reading, stamped, over}`: a game-over save that landed
     (or was already there), stamped by the layer's own `stamp_archive` at the plan's recorded
     `reading`. `stamped: true` completes the save; `stamped: false, over: false` — an undo at a

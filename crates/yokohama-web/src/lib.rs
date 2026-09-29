@@ -268,10 +268,11 @@ where
 /// **Which change transport this build serves, by name** (M6.3, R-plan-4).
 ///
 /// A compile-time constant and deliberately NOT an environment variable: the
-/// choice between server-sent events and the held request is a code decision
-/// recorded in the cycle's close, taken on a measurement through the real
-/// tunnel (R-3.1). A deployment that could flip it would be a deployment that
-/// could put the client on a transport nobody measured.
+/// transport a host serves is a code decision recorded in the cycle's close,
+/// taken on a measurement through the real tunnel (R-3.1). A deployment that
+/// could flip it would be a deployment that could put the client on a
+/// transport nobody measured. The held request M6.3 built beside server-sent
+/// events is retired (M6.5c2 cycle D, R-D5): no host reports `held`.
 ///
 /// It reaches the client on `/api/health` beside the identity mode, for the
 /// same reason that field is there: it is a deployment fact a client cannot
@@ -578,10 +579,13 @@ impl AppState {
 /// not because two bodies were kept in step. The lock is taken only to read
 /// three fields, and nothing inside it searches or builds.
 ///
-/// **`?wait` holds the request open** (R-plan-5): it is admitted first, then
-/// subscribes, then answers on the first bump or at the deadline. Both arms
-/// answer the same way — a held request that times out is not an error, it is
-/// "nothing has changed".
+/// **It answers at once: `?after` and `?wait` are parsed and IGNORED** (M6.5c2
+/// cycle D, R-D5). The held arm — a `wait` held open until a bump or its
+/// deadline — is retired on every host, and no host reports `held`. The keys
+/// stay because an older precached release's close probe still sends
+/// `wait=25`, and `EventsQuery`'s `deny_unknown_fields` would otherwise answer
+/// it a 400; a `wait` above the cap is still that 400 (`check_wait`), never a
+/// silent clamp.
 #[cfg(feature = "server")]
 async fn events(
     State(state): State<Arc<AppState>>,
@@ -590,18 +594,6 @@ async fn events(
     QueryArgs(q): QueryArgs<EventsQuery>,
 ) -> ApiResult<Events> {
     api::check_wait(q.wait)?;
-    if let Some(wait) = q.wait {
-        // **Admitted BEFORE it subscribes**, for the reason `stream` states:
-        // `Signals::subscribe` makes a sender for any id at all, so holding a
-        // request for a table the caller may not read — or that does not
-        // exist — would be a refusal delayed by 25 seconds and an entry in a
-        // map that nothing prunes.
-        let _admitted = api::events_at(&state.games, &id, &user)?;
-        let mut rx = state.signals.subscribe(&id);
-        // Either arm is an answer: the bump, the deadline, or a closed channel
-        // (the table was deleted, which the read below reports as a 404).
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(wait), rx.changed()).await;
-    }
     Ok(Json(api::events_at(&state.games, &id, &user)?))
 }
 
@@ -6466,8 +6458,8 @@ mod tests {
     ///
     /// One deployment fact a client cannot infer from a successful call, beside
     /// the identity mode for the same reason. A compile-time constant rather
-    /// than configuration: the fallback from SSE to a held request is a code
-    /// decision recorded in the close, not something a deployment may flip.
+    /// than configuration: the transport is a code decision recorded in the
+    /// close, not something a deployment may flip.
     #[tokio::test]
     async fn health_names_the_signal() {
         let (status, v) = get_json("/api/health").await;
@@ -6510,50 +6502,39 @@ mod tests {
         assert_eq!(v["chat_text"], 140);
     }
 
-    /// **`?wait` is accepted, bounded, and answers on a bump** (R-plan-5).
+    /// **`?wait` is accepted and answered at once** (M6.5c2 cycle D, R-D5).
     ///
-    /// The held-request fallback ships whether or not R-3.1's measurement needs
-    /// it, because it costs this cell and makes the fallback a one-line change
-    /// in the client's reader rather than a second plan. Three readings: a wait
-    /// with nothing happening returns at its own deadline rather than hanging,
-    /// a wait that a bump lands inside returns EARLY, and a wait above the cap
-    /// is a 400 rather than a clamp nobody was told about.
+    /// The held arm is retired on every host. An older precached release's
+    /// close probe still sends `wait=25`, so the key is parsed, bounded and
+    /// IGNORED: with nothing happening the reading answers now, the same
+    /// object a plain `…/events` answers, rather than at the wait's deadline.
+    /// `after`, the other key such a release may carry, is parsed and ignored
+    /// the same way. A wait above the cap is still a 400 rather than a clamp
+    /// nobody was told about.
     #[tokio::test]
-    async fn events_can_be_held_until_a_bump_and_the_wait_is_bounded() {
+    async fn a_wait_is_accepted_and_answered_at_once() {
         let state = Arc::new(AppState::in_memory());
-        start_as(&state, "held", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        start_as(&state, "waits", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, plain) = get_as(&state, "red@wire.test", "/api/games/waits/events").await;
+        assert_eq!(status, StatusCode::OK, "{plain}");
 
-        // Nothing is happening: the deadline answers.
-        let began = tokio::time::Instant::now();
-        let (status, e) = get_as(&state, "red@wire.test", "/api/games/held/events?wait=1").await;
-        assert_eq!(status, StatusCode::OK, "{e}");
-        assert!(began.elapsed() >= std::time::Duration::from_millis(900), "it did not hold");
-        assert_eq!(e["status"], "playing", "{e}");
+        // Nothing is happening, and the answer comes far inside the wait.
+        for query in ["wait=25", "after=0&wait=25", "after=7"] {
+            let began = tokio::time::Instant::now();
+            let (status, e) =
+                get_as(&state, "red@wire.test", &format!("/api/games/waits/events?{query}")).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {e}");
+            assert!(
+                began.elapsed() < std::time::Duration::from_secs(5),
+                "{query}: it held for {:?}",
+                began.elapsed(),
+            );
+            assert_eq!(e, plain, "{query}: the same reading as a plain `…/events`");
+        }
 
-        // A bump inside the window answers early.
-        let s = Arc::clone(&state);
-        let mover = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let (_, game) = get_as(&s, "red@wire.test", "/api/games/held").await;
-            let line = first_option(&game);
-            post_as(
-                &s,
-                "red@wire.test",
-                "/api/games/held/input",
-                serde_json::json!({ "line": line }),
-            )
-            .await
-        });
-        let began = tokio::time::Instant::now();
-        let (status, e) = get_as(&state, "blue@wire.test", "/api/games/held/events?wait=25").await;
-        assert_eq!(status, StatusCode::OK, "{e}");
-        let (status, moved) = mover.await.expect("the mover");
-        assert_eq!(status, StatusCode::OK, "{moved}");
-        assert!(began.elapsed() < std::time::Duration::from_secs(25), "the bump did not wake it");
-
-        // And the cap is a refusal, not a clamp.
+        // And the cap is still a refusal, not a clamp.
         let (status, err) =
-            get_as(&state, "red@wire.test", "/api/games/held/events?wait=26").await;
+            get_as(&state, "red@wire.test", "/api/games/waits/events?wait=26").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
         assert!(err["error"].as_str().unwrap_or_default().contains("25"), "{err}");
     }
