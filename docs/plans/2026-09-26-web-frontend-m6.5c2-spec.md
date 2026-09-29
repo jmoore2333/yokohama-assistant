@@ -1554,3 +1554,31 @@ seat-email roster, layer and client — Opus; (7) chat delete and moderation, an
 (8) the R2 backoff and the held-request arm — Opus; (9) the Worker refactors under budget — Opus; (10) the layer's test
 debts and the livelock run — Sonnet; (11) the client's defects by screen — Opus; (12) the local host and backup — Opus;
 (13) the client's test debts — Sonnet; (14) the close. What E holds is its row above.
+
+### 10.10 Corrections recorded in execution — cycle D (2026-09-29)
+
+Found while executing `docs/plans/2026-09-28-web-frontend-m6.5c2d-plan.md` (fifteen tasks, the reviewed
+head `4212f6a0`; the close is `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`, whose §5 carries
+every ruling with its cost). None changes a mechanism of §2; each is a sentence the plan or an earlier
+section wrote that execution found false, or a shape the plan sketched that the tree already had.
+
+| where | the correction |
+|---|---|
+| the plan's Names table (`undo_allowed`) | `Result<bool, UndoRefusal>` → `Result<(), UndoRefusal>`: nothing reads the bool. |
+| the plan's two sentences for the poison refusal | the Names table and Task 5's Interfaces disagreed; the task's own sentence was used ("the game's handle was poisoned; the next request rebuilds it"). |
+| the plan's `DirArchive` defect (Task 5) | `write_over` already wrote `.tmp` then renamed; the real defect was the read-then-write RACE — closed by publishing the record with `hard_link` (atomic create-if-absent); needs a filesystem with hard links (btrfs and APFS have them). |
+| the plan's chat whitespace sentence | the route already refused whitespace with 400 "a message needs some words"; the stored-shape rule was what accepted it — the existing sentence stays, `check_shape` refuses whitespace-only stored text. |
+| the plan's `trim(Some(0))` red cell | already total: the cell is a PIN, mutation-proven instead of red. |
+| the plan's "`HOUSE` reserved by a named check" | `is_safe_id` refuses the constant's own VALUE (`_house`) by name; the plain id `house` stays legal. |
+| the plan's row-11 sentence (the one-person table's archive residual) | the measured truth: a lost stamp AND either a stale mirror or an undo past game over at a one-person table. |
+| the plan's "added to both exact-set lists" (Task 10's fixtures) | the exact-set lists hold only files no walk row names; walk-emitted fixtures join `contract.ts`'s rows. |
+| the plan's Names table (`{ kind: "unreadable", sentence }`) | the host's single spelling `{ unreadable }` (PR #37's N-1). |
+| the M6.2 close's "a seatless creator may abandon" | false at HEAD: `config_of` refuses a seatless creator (R-1.6); Abandon shows when `mine` AND the creator holds a seat. |
+| `CLAUDE.md`'s whole-game-gate clause | the two-identities arm IS a witness to the acting-seat fence since Task 10 (every input probed). |
+| §5 of `worker/RUNBOOK.md`, `picker-dropped` | "the player's next click is a 409" holds for the click a browser sends (with `expect`); a bare line is answered by the prompt it lands on — measured at the twenty-fourth deployment. |
+| §7 of `worker/RUNBOOK.md`, the query API | an events-view `count` is bounded by `limit`; totals are `calculations`; a shell log line is found by the `needle`, its fields under `source`. |
+| §7 of `worker/RUNBOOK.md`, "a PERMANENT house-chat post per replay run" | since cycle D the walk's delete row tombstones that post in the same run; a rollback to a pre-D version then takes the lobby's chat down (§6). |
+| `deploy/RUNBOOK.md` §5 and the plan's brief | a rollback across cycle D does not heal "until a trim": the older binary answers 500 on every chat read and post of a tombstoned document until the roll forward (measured on the base). |
+| this spec's Option A (the count hosts, §10.9's R-D rows) | Option A holds only where the frame's `chat`/`rev` ARE the document's `last`/`rev` — true on the Worker, and on the NAS after the close's C1 seed (the house frame's counters read from the stored document at start). |
+| Task 14's commit subject ("hardened") | row 19's two once-flaky jsdom cells were NOT reproduced over five loaded runs and no cell was hardened; a reviewed SHA is never amended, so the truth is recorded forward here and in the close's §7. |
+| the plan's Task 15.E.5 (`nas-build.sh`) | the prepared script cut a `git archive` and named the self-hoster's `Dockerfile`; the NAS's recipe is `deploy/RUNBOOK.md` §2's runtime image from the musl binary — rewritten before use. |

@@ -440,7 +440,9 @@ expires in 2031 (spec §0.5).
     request's batch that deletes the row has committed, as `wake` is: a request whose own call
     traps commits nothing, so the row stays, and the next request's wake drops it and logs it
     (R1's N-2). A picker open across a deploy that changed that code starts over, and the player's
-    next click is a 409. So after the first deployment past the eighteenth, every picker open at it
+    next click is a 409. *(Measured at the twenty-fourth deployment, §18: the 409 is the answer to the
+    click a browser sends, which carries `expect`; a bare `{"line"}` without it falls to the prompt the
+    table now asks and is answered by that prompt — `Unrecognized input`, 200.)* So after the first deployment past the eighteenth, every picker open at it
     is dropped at its table's next request, logged with `stored: null`.
   - **`restore-refused`** `{id, status, body}`: the wake's `restore_picker` met the layer's own
     refusal — a stored record that does not parse, or does not replay — and the request went on to
@@ -717,7 +719,14 @@ the account's; the figures lag by some minutes. **What a run costs**, read this 
 
 A past run that had no tail reads through the Workers Observability query API, `POST
 /accounts/<account id>/workers/observability/telemetry/query` over the dataset `cloudflare-workers`,
-grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with filters.
+grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with filters. *(Read at the
+twenty-fourth deployment, §18, and load-bearing for any count taken this way: an events-view result's
+`count` is bounded by the request's `limit` — a TOTAL is a `view: "calculations"` query with a `count`
+calculation, `chartType: "aggregate"`; a shell log line — `picker-dropped`, `archive-landed` and the
+rest — is found by the full-text `needle` (`parameters.needle: {value: "picker-dropped"}`), its
+fields under the event's `source` and its `$metadata.type` `cf-worker`, where the request rows are
+`cf-worker-event` and carry `$workers.cpuTimeMs`/`wallTimeMs`; a filter on `source.event` or on
+`$metadata.message includes` reads 0 over a real line.)*
 
 ### What a live run leaves on the account
 
@@ -733,7 +742,13 @@ grouped by `$workers.outcome` and `$metadata.type`, or `view: "events"` with fil
   `test/browser/red_at_wire.test/rev7/abandoned/wire.json`, each with its `.table.json` — kept for
   good, by the owner's direction — and the walk's own game-over pair under `test/rev7/over/`.
 - **A PERMANENT house-chat post per replay run**: Red (`red@wire.test`), "anyone up for a second
-  table?", which real people see in the lobby until 500 newer messages trim it.
+  table?", which real people see in the lobby until 500 newer messages trim it. *(Corrected 2026-09-29,
+  M6.5c2 cycle D: since cycle D the walk's `house_chat_delete` row DELETES that post in the same run —
+  the replay re-targets `/api/chat/1` to the live document's own number — so what a run leaves is a
+  TOMBSTONE, drawn as "message removed" in the lobby, and the house chat document's `rev` moves by
+  one. A rollback to a version from before cycle D then meets the tombstone (§6's last bullet): the
+  lobby's chat answers 500 until the roll forward. As of the twenty-fourth deployment the house chat
+  holds two, from the close's two replay runs.)*
 - While a Playwright run lasts, the live lobby lists its tables, each with a long name and a
   password.
 
@@ -1664,5 +1679,177 @@ npm run deploy   # in worker/, the release still built
 §6. The earlier version is the twenty-second's, `43822b48-da53-48ab-9be9-96f6cb16a2a7` — the same
 code with the window open; rolling back to it re-opens the window. The twenty-first,
 `ce923774-aa81-4f2b-a8dc-b0fcb5a05f70`, is the same code with it closed.
+
+---
+
+## 18. M6.5c2 cycle D is live — the twenty-fourth deployment, 2026-09-29 (a record, not a plan)
+
+From `4212f6a0`, cycle D's reviewed head on `web-room-m6.5c2d` (stacked on cycle C over A and B; the
+record of record is `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`, and the spec's dated §10.10
+carries the corrections). What cycle D brings to the Worker: **the R2 backoff on the request path**
+(R-D6 — a save a game over owes is retried by the alarm or by the first request past the rung, never
+by every request); **the held-request arm retired on every host** (R-D5); `table.ts` as a base and four
+mixins, the four script dedups and the replay split (R-D7, inside the budget); the seat-email roster
+off the wire (R-6.5c2.35); chat delete and moderation as tombstones with a revision counter (R-D4) and
+the archive route's 1 MiB cap and check order; the client's defects by screen — the lobby and the open
+table as COUNT hosts on the house frame's `chat`/`rev`, a lost-message gap after a reconnect closed;
+backup and restore bounded and version-first; **the door's project link**, the first release built
+with `YOKOHAMA_PROJECT_URL` (`https://github.com/jmoore2333/yokohama-assistant/`); and, because the
+layer's sources changed, **a new picker code digest** — every picker open under the twenty-third is
+dropped at its table's next request. **Version `974e0a93-d069-4bf5-8d75-684dd146d3fb`**, deployed at
+**15:43:05 UTC** (`Deployed yokohama-web triggers` two seconds before). Every reading holds. The
+readings ran over WARP as the owner and, where a claimed identity was needed, through the credential
+(§4's header file, mode 600, deleted after).
+
+- **Build, ONCE, for both hosts** (§1): `web/`'s `npm run build` with the link, the RELEASE module —
+  `debug_trap` **0**; `wasm-opt version 133` over both browser modules **1,843,940 → 1,215,865 B
+  (−34.1%)**; the precache generator's four lines verbatim:
+
+  ```
+  precache: 153 entries, 10,036,763 B (release total ceiling 11,900,000 B)
+  precache: module 1,215,865 B at /assets/yokohama_wasm_bg-OvdimP7Y.wasm (release module ceiling 1,400,000 B; release 1,400,000, debug 3,200,000)
+  precache: module 1,215,865 · bundle 471,772 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327
+  precache: yokohama-release-d97c124af854a3ff -> dist/sw.js (29,045 B), 131 art files
+  ```
+
+  The release name is **`yokohama-release-d97c124af854a3ff`**, and the same `web/dist` went to the
+  NAS as `yokohama-web:0.6.0-m6.5c2d` (`deploy/RUNBOOK.md` §3.18). `worker/`'s `npm run build`: the
+  module **1,928,529 → 1,275,056 B (−33.9%)** with `wasm-opt` 133 (+16,950 B over §15's 1,258,106,
+  the cycle's layer code); `module-figures.mjs`: gzip (Node's zlib, level 9) 498,330 B, 18 pages, 171
+  data segments, 123,648 B of data (the section 125,055 B encoded) — transcribed to the root
+  `Cargo.toml`'s `release-wasm` comment at the close; `factory-glue: 16 exports (a release module: no
+  debug_trap)`; `assemble-assets: 153 precache entries verified — every file present, every SHA-256
+  the release's` (156 files, 10,066,176 B); `smoke-release: … GET /api/health 200` (`server_version
+  0.6.0`, `archive: "off"` by design); no `gen/.unoptimized`; `assets/sw.js` byte-equal to
+  `web/dist/sw.js`.
+- **The deploy** (§2), `npm run deploy` in `worker/` at 15:42:53Z, with a tail already listening: the
+  guard printed the door first — `wrangler.jsonc deploys the worker door — Cloudflare Access, verified
+  by the shell` — and **PASSED every check**. Wrangler (4.136.3) read 172 files, uploaded **6 new or
+  modified assets** (`/index.html`, the stylesheet, the Worker chunk, the bundle, `/sw.js`, the module;
+  148 already there; 2.00 s), **Total Upload 1408.40 KiB / gzip 534.17 KiB, Worker Startup Time 2 ms**,
+  listed the nine `vars` unchanged (`YOKOHAMA_WEB_IDENTITY ("worker")`, the two Access values,
+  `YOKOHAMA_DEV_DOOR ("on")`, the archive `r2`, the TTL 90, the three chat values) and deployed the
+  trigger `yokohama.moore.nyc (custom domain)`. The secrets were INHERITED, none put: `wrangler secret
+  list` names **`DEV_DOOR_CLIENT_ID` and `YOKOHAMA_WEB_ADMINS`** — names only.
+- **Reading 1 — health and the owner** (15:43:38Z, over WARP, a browser User-Agent): `/api/health` 200
+  `{"server_version":"0.6.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"cf-access","signal":"ws","archive":"r2","lobby_chat":true,"chat_keep":500,"chat_text":500,"multiplayer":true}`;
+  `/api/me` → `{"mode":"cf-access","user":"<the owner's address>"}` (R-6.5c2.16). The dev door before
+  the deploy: the credential + `X-Yokohama-Claimed-User: smoke@readme.test` → `smoke@readme.test`.
+- **Reading 2 — the served release**: `/sw.js` 200, `text/javascript`, `content-length: 29045`,
+  `cache-control: no-store`, naming ONE generation `yokohama-release-d97c124af854a3ff`, byte-equal to
+  `web/dist/sw.js`; `/` serves `index-oCCrOYjf.js` and `index-BO2LRdmb.css`; the module 200
+  `application/wasm` 1,215,865 B; the bundle carries the project link (grep 1).
+- **Reading 3 — `picker-dropped`, the FIRST live reading on any deployment** (I-85, I-91; the close's
+  E.4, straw-poll row 110). Before the deploy, through the dev door as `smoke@readme.test`: a throwaway
+  table `sim-8bb2ffbfb0b4d0a3` (201 at 15:41:46Z; `{user}` + `{bot: true}`), its deal read, `keep
+  {"card": 1, "seat": 0}` 200 (a first try with the card's ID, 14, was the 400 `keep 14 — the dealt
+  cards are numbered 1 and 2` — the position, as the walk sends it), `input "1"` (the additional-action
+  skip), then `input "1"` again → **the placement picker `place_a` OPEN** (`selected [] · max_areas 3`),
+  its row stored under the twenty-third's code. Then the deploy. Then the table's next request, `GET
+  …/table` at 15:43:28Z — 200, and the object logged **`picker-dropped {id: sim-8bb2ffbfb0b4d0a3,
+  stored: 505d6a43…6d14, running: 8b07f8ad…3af4}`**: `stored` NON-NULL (a row the stamped
+  twenty-third wrote), `running` this build's digest of the engine's, the CLI's and the layer's sources.
+  Read on the tail (event timestamp 1790696609400) and through the Workers Observability query API
+  (the `needle` `picker-dropped`: one event, `$workers.scriptVersion.id` `974e0a93…`, the object
+  `82396042…`, the trigger `GET /api/games/sim-8bb2ffbfb0b4d0a3/table`, timestamp 1790696609401).
+  **The next click:** a bare `{"line":"A09"}` fell to the options prompt and read 200 `Unrecognized
+  input — type 'help'.`; the click a browser sends, `{"line":"A09","expect":"place_a"}`, read **409
+  `this game is asking "options", not "place_a" — the prompt moved on (a restart drops an open picker).
+  Re-read the game and answer what it asks.`** — the layer's `expect` arm, live. The table then read
+  `options` with its one event kept. The throwaway table was deleted (204 at 15:46:10Z; one move had
+  been made, so its pair went to the archive under `test/`, and the marker answers 404 `this table was
+  abandoned on 2026-09-29 — its game is in the archive`). Since the deploy the same API read
+  `restore-refused` 0, `object-failed` 0, `trap` 0, `load-trap` 0, `frame-failed` 0, `identity-failed`
+  0, `init-refused` 0, and no outcome other than `ok`.
+- **Reading 4 — the query API's shape** (§7's dated note): a shell log line is found by the `needle`,
+  its fields under `source`; a total is a `calculations` `count`; an events-view `count` is bounded by
+  `limit`.
+- **The live corpus replay, twice, sequentially** (§7; the close's F.2), with no reset owed — the walk's
+  records did not move in cycle D, so BOTH runs' first sends read **200 with the once-rule's
+  `identical: true`**: run 1 (15:51:33Z → 15:54:08Z) and run 2 (15:54:18Z → 15:56:50Z) each forced
+  204 ×3 before and after, ran **2,213 of 2,213 rows** (§15's 2,209 + cycle D's four: the chat delete
+  and Task 10's two fixtures' rows), compared **90 named rows** (§15's 86), spent 14 exemptions
+  (`filterLobby` ×4 with 0 rows dropped; `HOST_FIELDS` ×5 — `health.identity/signal/archive`,
+  `me.mode`, `me_signed_out.mode`; `normalizeHouseChat` ×2 — `seq`/`last` taken back by 12 then 13,
+  `rev` by 0 then 2; `houseDeleteRow house_chat_delete: /api/chat/1 sent as /api/chat/13` then `/14`;
+  `firstSendAccepts` ×2), lobby re-reads 0, **mismatches none, HOLDS ×2**. The house chat's base moved
+  12/0 → 13/2 between the runs: each run leaves Red's post as a TOMBSTONE (§7's corrected bullet).
+- **The tail, an instrument reading**: the first tail (15:41Z → 15:57Z, 30 events to 15:44Z) carried
+  the deploy and the one `picker-dropped`; a FRESH tail was attached at 15:57:15Z for the live
+  Playwright tier and read back with a health probe first (2 rows) — it **lost its connection ONCE
+  during the game and reconnected** ("attempt 1 of 5"), and carried **1,048 events** to its stop at
+  16:07Z: outcomes `ok` 1,041, `responseStreamDisconnected` 3, `canceled` 2, **exceptions 0**;
+  entrypoints House 326 · worker 357 · Table 363; the game's sampled rows 685, its Table `/input`
+  rows 145 of 1,171 moves (a busy tail is sampled), **`/input` CPU median 3 ms, max 25**; one stream
+  upgrade; log lines `slot-pushed` 36 = `slot-acked` 36 and nothing else.
+- **The live Playwright tier on this version** (§7; the close's F.3): `cd web &&
+  YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link`, 15:57:41Z → 16:03:33Z,
+  **`2 passed (5.8m)`**, no `Call log`. **`joins_by_link`**: table `sim-4faa5f85982ef3a3`, 6 moves
+  across two browsers in 5 s; the deal's 409 forgiven a 2 / b 0; the beacon's pair a 2 / b 2; the open
+  table at 390 px: overflow 0, the chat row 98% of the row. **`two_browsers`**: game
+  **`sim-0ca21859ee962979` finished in 1,171 moves, 344 s, 0 idle looks, the largest hand seen 2; the
+  watcher held to 837 applied moves, asked `/events` 0 times and opened `/stream` ONCE — 1 at every
+  checkpoint**. §15's "run 1's watcher socket close" (row 109) is CLOSED by this clean run with the
+  tail attached throughout. **The query API's counts for the two specs' window** (since 15:57:30Z;
+  `calculations`): object invocations **Table 15,727 · House 1,159**; outcomes `ok` 32,863 ·
+  `canceled` 42 · `responseStreamDisconnected` 14 over every invocation; the game's **Table `/input`
+  invocations 1,638** for 1,171 applied moves (the harness's refused and repeated lines among them),
+  its **Table `/stream` upgrades 5** (three pages and the reconnects at game over); **the Worker's
+  stateless requests naming the game 15,276 ≈ 13.0 a move**.
+- **One large replay, timed** (the close's F.4; straw-poll row 117): `POST /api/archive` at 16:06:20Z
+  through the dev door as `smoke@readme.test`, the body `{record, table}` as strings — the largest
+  finished record in the tree, `crates/yokohama-web/tests/fixtures/browser-played-2p.json` (54,103 B,
+  595 events, `engine_version 0.5.0`) with its table document (554 B), 61,778 B on the wire: **201 in
+  0.82 s total (0.81 s to the first byte; connect 0.04 s, TLS 0.06 s)** →
+  `{"leaf":"over","path":"browser/smoke_at_readme.test/rev7/over/local-242a5429453c593c.json","identical":false}`.
+  The cost, off the tail and the query API alike: the Worker's stateless row CPU 4 ms / wall 695 ms;
+  the **`Archive` object's row CPU 73 ms / wall 566 ms**, `archive-landed {site: browser, record_key:
+  test/browser/smoke_at_readme.test/rev7/over/local-242a5429453c593c.json}` (a `.test` caller, so the
+  `test/` root and the 30-day rule). Recorded, never asserted.
+- **The quota guard** (§7; the owner's line 80,000 a UTC day for each guarded figure), read through the
+  GraphQL analytics, one dataset per call:
+
+  | read at (UTC) | Worker requests, account | `yokohama-web` | rows written | rows read |
+  |---|---|---|---|---|
+  | 15:39:55 (before the deploy) | 14,466 | 26 | 202 | 706 |
+  | 15:50:50 (after the deploy, the picker table, the NAS's game) | 14,548 | 47 | 248 | 1,099 |
+  | 16:03:34 (after the two replays and the two live specs) | 34,446 | 19,474 | 10,265 | 106,068 |
+  | 16:08:41 (settled; after the timed replay) | 36,821 | 21,057 | 10,702 | 115,814 |
+
+  Both guarded figures stayed far under the line. The two replays and the two live specs together cost
+  `yokohama-web` **+21,010 requests, +10,454 rows written, +114,715 rows read**; setting the replays
+  aside at §15's per-run costs (~2,190 requests, ~3,750 rows written, ~21,800 rows read), the two
+  specs' 1,177 moves read about **13 requests, ~2 rows written and ~52 rows read a move** — §15's
+  13.8 / 2.5 / 56, the same order (Option A took the lobby's per-move chat read off the client).
+
+### What this deployment does NOT claim
+
+- **`picker-dropped` was read ONCE, on one table, with a non-null `stored`.** The `stored: null` case —
+  a row written before the eighteenth deployment — has still never been observed live; no such row can
+  exist any more.
+- **The 409 was read from `curl`, not from a browser's click**: the client's `expect` is what a browser
+  sends, and the layer's arm answered it; no headed picker was left open across the deploy.
+- **The R2 backoff was not exercised live** (no outage): proven in the pool (Task 8), and the request
+  path's rung is unread here.
+- **The roster's rule was not tried by a live stranger** (a `.test` identity is the walk's own).
+- **The tail samples**, and lost its connection once during the game; the query API's figures
+  (`calculations`) are the whole.
+- **The rows-read figure is one three-page harness game's**, as §15's was.
+- **No alarm-driven line is named**; no `wake` counted (the window stays closed); the operator
+  surface read only by the replay's forces (204 ×6).
+- **The update path was not read**: no browser holding `605fe69f17100c46` was watched taking
+  `d97c124af854a3ff` through the door's offer.
+- **Every count here that came from the query API was taken over the events since a wall-clock
+  instant**, not over a request id set; the two live specs' window also holds the tail's own probes.
+
+### Rollback
+
+§6. The earlier version is the twenty-third's, `36038818-4aa8-4544-961a-0bec2674782c`. No migration
+was added, so `npx wrangler rollback` can return to it — and **a rollback to it, or earlier, is the
+cycle-D TOMBSTONE rollback of §6's last bullet, and it BITES at once**: the close's two replay runs
+left two deleted messages in the live HOUSE chat (§7's corrected bullet), so the twenty-third answers
+500 on every lobby chat read and post until the roll forward. What a rollback LOSES besides: the R2
+backoff, the roster off the wire, the tombstones' own reading, the client's count hosts and the
+door's link; and it drops every picker this version stored (§6's bullet). The secrets stay put.
 
 ---
