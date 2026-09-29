@@ -317,9 +317,11 @@ pub struct Health {
     /// Which change transport to read: the server's `SIGNAL_KIND` (M6.3, R-plan-4).
     ///
     /// The second such fact, and it is here for the same reason as the first:
-    /// the client's polling hook has to know whether to open `…/stream` or to
-    /// hold a request against `…/events?wait=25`, and it cannot tell from a
-    /// successful call to anything else.
+    /// the client's signal hook has to know whether to read `…/stream` as a
+    /// stream (`"sse"`, the NAS) or as a socket (`"ws"`, the Worker), and it
+    /// cannot tell from a successful call to anything else. Its one plain
+    /// `…/events` read is the socket's probe; since M6.5c2 cycle D (R-D5) no
+    /// client holds a request, and a `wait` is accepted and ignored.
     pub signal: &'static str,
     /// Which archive this deployment writes finished and abandoned games to
     /// (M6.5a, R-6.5a.13): `"off"`, `"dir"`, or M6.5c's `"r2"`. The client's

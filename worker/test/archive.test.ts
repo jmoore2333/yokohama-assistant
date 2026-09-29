@@ -1244,12 +1244,14 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
   // is KEPT while it reads `off`: the alarm logs it and neither uploads nor
   // re-arms for it — it re-arms to the table's expiry, the one deadline still
   // kept while off (spec §2.6: "at the latest its expiry") — and a request
-  // retries nothing. Switched back on, the next request resumes it once the
-  // gate its failure set has passed (R-D6; inside the rung a request uploads
-  // nothing — the outage cell above): the rung is moved into the past, a
-  // premise, since the cell runs in well under 30 s. Mutants: the owed save
-  // retried while off; the alarm re-armed for it while off; a request that
-  // never resumes it, or a gate that never opens to a request.
+  // retries nothing. Switched back on, the next request resumes it. The gate
+  // the first failure set (R-D6; inside it a request uploads nothing — the
+  // outage cell above) is moved into the past BEFORE the off period, a
+  // premise, since the cell runs in well under 30 s: so the switch, and not
+  // the gate, is what stops the off period's request, and nothing stands
+  // between the switch coming back on and the resumption. Mutants: the owed
+  // save retried while off; the alarm re-armed for it while off; a request
+  // that never resumes it, or a gate that never opens to a request.
   it("an owed save is kept, not retried, while off (battery 27), and resumes at the next request once on", async () => {
     const id = "off-owed";
     const stub = await owedGameOver(id);
@@ -1263,6 +1265,7 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
       await failing.restore();
     }
     const failedTo = Date.now();
+    await rungPassed(stub);
     const owed = await owedOf(stub);
     expect(owed?.attempt, "premise: a save is owed").toBe(1);
     const retry = await alarmOf(stub);
@@ -1290,7 +1293,6 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
       off.restore();
     }
 
-    await rungPassed(stub);
     await evictDurableObject(stub);
     const resumed = await logsDuring(async () => {
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
