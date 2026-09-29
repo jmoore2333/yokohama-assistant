@@ -57,11 +57,15 @@
 // or a seed prints as `<redacted>`.
 
 import { readFileSync, readdirSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { HOST_FIELDS, order } from "./corpus-walk.mjs";
+import { KEYS, ORIGIN, readCredential } from "./dev-vars.mjs";
 
-/** The deployed Worker's origin, the only one this script sends to. */
-export const ORIGIN = "https://yokohama.moore.nyc";
+// The origin, the only one this script sends to, the credential and its
+// reader (`dev-vars.mjs`), and the walk's order (`corpus-walk.mjs`): each
+// stated once, and imported where the live tier and the pool need them too.
+export { ORIGIN, order, readCredential };
 
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`: the reading every committed
  *  `created_at` and page cursor carries. */
@@ -72,19 +76,6 @@ const NOT_A_CLOCK = 1_700_000_000n;
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const REPO = new URL("../../", import.meta.url);
-
-/** The repository root's `.dev.vars`, which holds the credential. */
-const DEV_VARS = fileURLToPath(new URL(".dev.vars", REPO));
-
-/** The credential's two keys, named as the headers Access expects. */
-const KEYS = ["CF-Access-Client-Id", "CF-Access-Client-Secret"];
-
-/**
- * The fields a HOST is entitled to differ on (spec §4's second class), as the
- * pool's replay names them: this host reads `cf-access`, `ws` and `r2`, and
- * the axum host the corpus was cut from `open`, `sse` and `off`.
- */
-const HOST_FIELDS = { health: ["identity", "signal", "archive"], me: ["mode"], me_signed_out: ["mode"] };
 
 /** The lobby's pages: shared with the owner's tables and the e2e's. */
 const LOBBY = new Set(["games", "games_next", "games_open", "games_playing"]);
@@ -280,32 +271,6 @@ export function firstSendAccepts(committed, status, got) {
 
 // ---- the rows, and where they go ----
 
-/**
- * The credential in `file`: its `CF-Access-Client-Id=` and
- * `CF-Access-Client-Secret=` lines, among any others. A file or a key that is
- * absent — or a value that is empty — is refused by NAME: the file and the
- * key, never a value.
- */
-export function readCredential(file = DEV_VARS) {
-  let text;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-  }
-  const values = new Map();
-  for (const line of text.split(/\r?\n/)) {
-    const eq = line.indexOf("=");
-    if (eq !== -1) values.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
-  }
-  const read = (key) => {
-    const value = values.get(key);
-    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-    return value;
-  };
-  return { id: read(KEYS[0]), secret: read(KEYS[1]) };
-}
-
 /** The three request scripts, from `web/src/wire-script/`. */
 export function loadScripts() {
   const read = (name) => JSON.parse(readFileSync(new URL(`web/src/wire-script/${name}`, REPO), "utf8"));
@@ -320,22 +285,6 @@ export function loadCorpus() {
       .filter((f) => f.endsWith(".json"))
       .map((f) => [f.slice(0, -".json".length), readFileSync(new URL(f, dir), "utf8")]),
   );
-}
-
-/**
- * The rows in the order they run, each with its script's name and its index
- * there — the pool's `order` (`test/walk.ts`): `walk-host.json`'s rows after
- * the walk row their `after` names (`-1`: before the first), then
- * `archive-walk.json`'s.
- */
-export function order(walk, host, archive) {
-  const hosted = host.map((row, index) => ({ script: "walk-host.json", index, row }));
-  const at = (after) => hosted.filter(({ row }) => row.after === after);
-  const rows = [...at(-1)];
-  walk.forEach((row, index) => rows.push({ script: "walk.json", index, row }, ...at(index)));
-  if (rows.length !== walk.length + host.length) throw new Error("a host row names no walk row to follow");
-  archive.forEach((row, index) => rows.push({ script: "archive-walk.json", index, row }));
-  return rows;
 }
 
 /** Where `row` is sent: the Worker's origin, and nowhere else. */

@@ -43,25 +43,16 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { readPrecacheList } from "./precache-list.mjs";
 
 // ---- the pure half (`read-deploy.test.mjs`) ----
 
-/** One entry as `web/scripts/precache.mjs` prints the list into `sw.js`. */
-const ENTRY = /\{ path: "([^"\\]*)", digest: "([0-9a-f]{64})", type: "([^"\\]*)" \}/g;
-
 /** The deployed release's precache list, out of its `sw.js`: every entry's
- *  path, digest and type. The count of digests is the anti-vacuity: a list
+ *  path, digest and type, by the ONE reader (`readPrecacheList`,
+ *  `precache-list.mjs`). The count of digests is the anti-vacuity: a list
  *  whose printed shape drifted must not read as a shorter list. */
 export function precacheList(swText) {
-  const entries = [...swText.matchAll(ENTRY)].map(([, path, digest, type]) => ({ path, digest, type }));
-  if (entries.length === 0) {
-    throw new Error("the deployed sw.js carries no precache entries — is it web/scripts/precache.mjs's output?");
-  }
-  const digests = swText.split('digest: "').length - 1;
-  if (digests !== entries.length) {
-    throw new Error(`the deployed sw.js carries ${digests} digests but read ${entries.length} entries — its list's shape is not the one this reader knows`);
-  }
-  return entries;
+  return readPrecacheList(swText, "deployed");
 }
 
 /** A media type's essence: its parameters dropped, lowercased — how the
