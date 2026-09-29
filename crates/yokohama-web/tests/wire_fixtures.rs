@@ -521,9 +521,16 @@ fn frozen_clock() -> yokohama_web::games::Clock {
 /// stopped carrying one fails here rather than being normalized away. The ID
 /// half is left alone — it is the row the page ended at, which is the whole
 /// content of the field.
+///
+/// **A cursor is known by the PAGE it belongs to, not by its name** (M6.5c2
+/// cycle D, dossier row 38): `next` is read as one only on an object that IS a
+/// listing ([`is_page`]), so a field named `next` on any other payload is
+/// walked like every other field rather than parsed — and refused — as a
+/// cursor. [`freeze_clock_reads_a_cursor_only_on_a_page`] holds both halves.
 fn freeze_clock(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            let page = is_page(map);
             for (key, v) in map.iter_mut() {
                 if key == "created_at" {
                     let seen = v.as_u64().unwrap_or_else(|| {
@@ -535,7 +542,7 @@ fn freeze_clock(value: &mut Value) {
                          a field that has stopped being stamped",
                     );
                     *v = json!(FROZEN_CREATED_AT);
-                } else if key == "next" {
+                } else if page && key == "next" {
                     // `null` is the last page and carries no clock at all.
                     if let Some(cursor) = v.as_str() {
                         let (at, id) = cursor.split_once(',').unwrap_or_else(|| {
@@ -559,6 +566,27 @@ fn freeze_clock(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(freeze_clock),
         _ => {}
     }
+}
+
+/// Is this object a LISTING page — `GamesList`, exactly `games` (a list) and
+/// `next` — the one shape whose `next` is a cursor ([`freeze_clock`])?
+fn is_page(map: &serde_json::Map<String, Value>) -> bool {
+    map.len() == 2 && map.get("games").is_some_and(Value::is_array) && map.contains_key("next")
+}
+
+/// [`freeze_clock`]'s cursor rule, both halves: a page's cursor has its clock
+/// frozen and its row kept; a `next` on anything that is not a page is walked
+/// like any field — a string left as it is, where the name-keyed arm refused
+/// it as a cursor with no clock in it.
+#[test]
+fn freeze_clock_reads_a_cursor_only_on_a_page() {
+    let mut page = json!({ "games": [], "next": "1790000000,wire" });
+    freeze_clock(&mut page);
+    assert_eq!(page["next"], json!(format!("{FROZEN_CREATED_AT},wire")));
+
+    let mut other = json!({ "next": "the next seat", "players": 2 });
+    freeze_clock(&mut other);
+    assert_eq!(other, json!({ "next": "the next seat", "players": 2 }));
 }
 
 /// Which of the walk's two people holds the seat that is to move.
@@ -3185,15 +3213,35 @@ async fn the_stored_table_document_carries_every_seats_address() {
 /// searched for — they are strings this codebase really does write down, and
 /// their lengths are pinned (16 bytes of salt and a SHA-256, in hex) so a lock
 /// that silently became empty would fail here rather than make every search
-/// trivially pass. **Neither password has such a partner and neither can have
-/// one**: nothing stores either of them, which is the property — so those two
-/// searches rest on the salt and the hash having proved the mechanism finds what
-/// is there, and on the mutations recorded in the task report.
+/// trivially pass. **The two passwords' partner is the walk's request script**
+/// (M6.5c2 cycle D, dossier row 38): nothing STORES either of them, which is
+/// the property, but both are SENT, and the rows `wire-script/walk.json` is
+/// written from are where a request body is written down. So the passwords are
+/// read out of the rows that carry one, both constants are asserted to be
+/// exactly what was sent, and the search is shown to find each in the text
+/// the script is emitted as — the mechanism finding what is there, as the
+/// salt's and the hash's partners show it for theirs.
 #[tokio::test]
 async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
     // This run's payloads, taken before the golden compares them — the same
-    // corpus the committed files are cut from.
-    let run = corpus().await.payloads;
+    // corpus the committed files are cut from — and the request script beside
+    // them, which the golden holds byte for byte to `walk.json`. The rows and
+    // not the committed file: a regeneration rewrites that file while this
+    // test may be reading it.
+    let Corpus { payloads: run, script, .. } = corpus().await;
+    let sent: std::collections::BTreeSet<String> = script
+        .iter()
+        .filter_map(|row| row.body.as_ref()?.get("password")?.as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        sent,
+        [WIRE_PASSWORD, WIRE_WRONG_PASSWORD].map(str::to_string).into_iter().collect(),
+        "the walk sends exactly the table's password and its one wrong attempt",
+    );
+    let emitted = serde_json::to_string_pretty(&script).expect("pretty JSON");
+    for needle in &sent {
+        assert!(emitted.contains(needle.as_str()), "the search finds {needle:?} where the script writes it");
+    }
 
     let api = Api::new();
     let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;

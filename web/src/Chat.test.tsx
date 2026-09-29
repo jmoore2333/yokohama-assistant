@@ -4,7 +4,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Chat, when } from "./Chat";
+import { CHAT_READ_BOUND, Chat, when } from "./Chat";
 import { DISPLAY_NAME_KEY, setChatText } from "./api";
 import { OPEN_KEY } from "./chatFold";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
@@ -160,27 +160,27 @@ describe("the chat panel", () => {
     expect(stub.matching("GET", "/chat")).toHaveLength(before + 1);
   });
 
-  it("fetches on a tick, folded or not, and never draws a held message twice", async () => {
-    // **Every chat GET answers the WHOLE page** (ruling R-pre-5): a stub that
-    // answered the cursor would hand the tick an EMPTY delta, and the filter
-    // this cell names would never meet a message the panel already holds.
-    const stub = chatStub((call) =>
-      call.method === "GET" && call.path.includes("/chat") ? wire.chat : undefined,
-    );
-    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+  it("asks nothing more at mount for a count it holds, and draws a held message once when a delta hands it back", async () => {
+    // **Every chat GET after the mount answers the WHOLE page** (ruling
+    // R-pre-5), one message longer: a stub that answered the cursor would hand
+    // the count an EMPTY delta, and the filter this cell names would never meet
+    // a message the panel already holds. The fourth is the corpus's first,
+    // renumbered above the page.
+    open();
+    const fourth = { ...wire.chat.messages[0]!, seq: wire.chat.last + 1 };
+    let answer: ChatPage = wire.chat;
+    const stub = chatStub((call) => (call.method === "GET" && call.path.includes("/chat") ? answer : undefined));
+    const { rerender } = render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     await settle();
-    const before = stub.matching("GET", "/chat").length;
-    // **The mount is ONE fetch here too** (ruling R-pre-4): the host's first
-    // tick IS the mount's own frame, and a panel that answered both would ask
-    // twice before anything had happened.
-    expect(before).toBe(1);
-    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
-    await waitFor(() => expect(stub.matching("GET", "/chat")).toHaveLength(before + 1));
-    // The delta comes back carrying the messages the panel already holds: one
-    // row per seq, still.
+    // **The mount is ONE fetch** (ruling R-pre-4): a count the mount read
+    // already covers asks for nothing more — the connection's own first frame,
+    // on every host since the wake hosts read their counters (row 130).
+    expect(stub.matching("GET", "/chat")).toHaveLength(1);
+    answer = { ...wire.chat, messages: [...wire.chat.messages, fourth], last: fourth.seq, rev: wire.chat.rev + 1 };
+    rerender(<Chat scope={TABLE} count={fourth.seq} colors={colors} sendName={false} />);
+    await waitFor(() => expect(stub.matching("GET", "/chat")).toHaveLength(2));
     await settle();
-    await userEvent.click(await screen.findByRole("button", { name: "show" }));
-    expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length);
+    expect(screen.getAllByRole("listitem"), "one row per seq, still").toHaveLength(wire.chat.messages.length + 1);
   });
 
   it("counts new messages on the folded header and clears them on unfold", async () => {
@@ -193,38 +193,34 @@ describe("the chat panel", () => {
     expect(screen.queryByLabelText(/new$/)).toBeNull();
   });
 
-  /** **The badge on a WAKE host, which is where `unread` is the badge at all**
-   *  (final review, Importants 2 and 3).
-   *
-   *  The cell above drives a COUNT host, where the badge is `count - last` and
-   *  `unread` is never read — so the unfold's reset was pinned by nothing, and
-   *  removing it left every suite green. Here the panel is told only "look
-   *  again", `unread` IS the number on the header, and the three claims can
-   *  each fail on their own:
+  /** **The folded header counts what ARRIVED, never the history** (final
+   *  review, Importants 2 and 3). It is `count - last` on every host since the
+   *  wake hosts, and the tally of their own (`unread`) that this cell used to
+   *  drive, went (M6.5c2 cycle D, row 130). Three claims, each able to fail on
+   *  its own:
    *
    *  - the mount read does not count (Important 3): the retained history was
-   *    already there, and a wake host that counted it said "3 new" on every
-   *    visit to a room nobody had spoken in since;
+   *    already there, and a panel that counted it said "3 new" on every visit
+   *    to a room nobody had spoken in since;
    *  - a message arriving while folded does count;
    *  - the unfold clears it, which a RE-FOLD is what shows — folded again with
    *    nothing further arrived, the header carries no badge at all. */
-  it("counts nothing at mount on a wake host, counts what arrives, and the unfold clears it", async () => {
-    let answer: ChatPage = wire.chat;
-    chatStub((call) => (call.method === "GET" ? answer : undefined));
-    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+  it("counts nothing at mount, counts what arrives while folded, and the unfold clears it", async () => {
+    const fourth = { ...wire.chat.messages[0]!, seq: wire.chat.last + 1 };
+    chatStub((call) =>
+      call.method === "GET" && call.path.includes(`after=${wire.chat.last}`)
+        ? { messages: [fourth], last: fourth.seq, rev: wire.chat.rev + 1 }
+        : undefined,
+    );
+    const { rerender } = render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     await settle();
     expect(
       screen.queryByLabelText(/new$/),
       "the history retained at this table did not ARRIVE while folded",
     ).toBeNull();
 
-    // One more message, on the next wake.
-    answer = {
-      messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }],
-      last: wire.chat.last + 1,
-      rev: wire.chat.rev + 1,
-    };
-    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    // One more message, on the next frame.
+    rerender(<Chat scope={TABLE} count={fourth.seq} colors={colors} sendName={false} />);
     expect(await screen.findByLabelText("1 new")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "show" }));
@@ -353,6 +349,40 @@ describe("the chat panel", () => {
     expect(rows[0]!).toHaveTextContent(wire.chatPost.text);
   });
 
+  /** **A trigger that arrives mid-read is re-asked in a LOOP, and the loop has
+   *  a bound** (row 130, M6.4's Task 6 LEAVE). The re-ask was `await
+   *  read(again)` from inside `read`: a room that kept a trigger arriving
+   *  during every read grew one nested call per read for as long as it lasted.
+   *  Here every read is held open while the next count lands, so each answer
+   *  owes a re-ask; the loop takes `CHAT_READ_BOUND` reads, then stops with the
+   *  owed trigger parked for the next one — and the next trigger is read. The
+   *  pages are the empty room's with `last` and `rev` moved together, so no
+   *  delete is read into them. */
+  it("re-asks a trigger that landed mid-read in a loop, and stops at its bound", async () => {
+    open();
+    const pending: Array<(r: Reply) => void> = [];
+    chatStub((call) =>
+      call.method === "GET" && call.path.includes("/chat") ? new Promise<Reply>((r) => pending.push(r)) : undefined,
+    );
+    const at = (n: number) => <Chat scope={TABLE} count={n} colors={colors} sendName={false} />;
+    const { rerender } = render(at(0));
+    await waitFor(() => expect(pending, "the mount read").toHaveLength(1));
+    let count = 0;
+    let reads = 1;
+    for (let round = 0; round < 3 * CHAT_READ_BOUND; round += 1) {
+      count += 1;
+      rerender(at(count));
+      pending.shift()!({ ...emptyRoom, last: count - 1, rev: count - 1 });
+      await settle();
+      if (pending.length === 0) break;
+      reads += 1;
+    }
+    expect(reads, "one call reads at most the bound").toBe(CHAT_READ_BOUND);
+    // The owed trigger is not lost: the next one starts a fresh loop.
+    rerender(at(count + 1));
+    await waitFor(() => expect(pending, "the next trigger is read").toHaveLength(1));
+  });
+
   it("sends the browser's name for a watcher and at the house", async () => {
     open();
     localStorage.setItem(OPEN_KEY, JSON.stringify(["wire", "house"]));
@@ -362,7 +392,7 @@ describe("the chat panel", () => {
       if (call.method === "POST") return wire.chatPostWatcher;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
-    render(<Chat scope={{ kind: "house" }} tick={0} sendName />);
+    render(<Chat scope={{ kind: "house" }} sendName />);
     const user = userEvent.setup();
     await user.type(await screen.findByRole("textbox", { name: "Say something" }), "hi all{Enter}");
     await waitFor(() => expect(stub.matching("POST", "/api/chat")).toHaveLength(1));
@@ -423,10 +453,11 @@ describe("the chat panel", () => {
     // height GROWS with the rows, so a follow computed before the append lands
     // on a different number from one applied after it. The real geometry is the
     // browser walk's to check.
+    open();
     const ROW = 100;
     let answer: ChatPage = emptyRoom;
     chatStub((call) => (call.method === "GET" ? answer : undefined));
-    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+    const { rerender } = render(<Chat scope={TABLE} count={0} colors={colors} sendName={false} />);
     await settle();
     const box = document.querySelector<HTMLOListElement>("ol.chat-lines")!;
     let top = 0;
@@ -445,7 +476,7 @@ describe("the chat panel", () => {
     // An empty box IS at its bottom, so the three that arrive are followed —
     // to the height AFTER they are in the DOM, which is the whole of R-6-1.
     answer = wire.chat;
-    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    rerender(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     await waitFor(() =>
       expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length),
     );
@@ -459,7 +490,7 @@ describe("the chat panel", () => {
       last: wire.chat.last + 1,
       rev: wire.chat.rev + 1,
     };
-    rerender(<Chat scope={TABLE} tick={2} colors={colors} sendName={false} />);
+    rerender(<Chat scope={TABLE} count={wire.chat.last + 1} colors={colors} sendName={false} />);
     await waitFor(() =>
       expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length + 1),
     );
@@ -679,21 +710,28 @@ describe("the chat panel's delete", () => {
     await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
   });
 
-  /** **A WAKE host learns of a delete from the page's own `rev`** (Q1): the
-   *  open table and the lobby drop their frames and pass a tick, so the delta
-   *  read is the panel's only news — and when its `rev - last` has moved, the
-   *  panel re-reads what it holds. An append on a tick re-reads nothing. */
-  it("re-reads on a tick whose delta shows the revision moved, and not on an append", async () => {
+  /** **A delta whose `rev - last` has moved is a delete the panel re-reads
+   *  for** (Q1) — the page's own half of the revision rule, which holds
+   *  whatever the frame says. It was the wake hosts' only news of a delete;
+   *  every host passes the frame's `rev` since M6.5c2 cycle D (row 130), so it
+   *  is the half that catches a delete riding in one read beside an append.
+   *  This host passes no `rev`, so the page is the only thing that can tell.
+   *  An append's delta re-reads nothing. The pages are the corpus's: an
+   *  append is the fourth message (the first, renumbered); a delete beside an
+   *  append is `chat_deleted.json`'s rows and that fourth, then a fifth. */
+  it("re-reads when a count's delta shows the revision moved, and not on an append", async () => {
     open();
     const room = roomStub();
-    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+    const m = (seq: number) => ({ ...wire.chat.messages[0]!, seq });
+    const { rerender } = render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     await settle();
-    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    room.set({ ...wire.chat, messages: [...wire.chat.messages, m(4)], last: 4, rev: wire.chat.rev + 1 });
+    rerender(<Chat scope={TABLE} count={4} colors={colors} sendName={false} />);
     await settle();
-    expect(room.reads(), "a tick with nothing new: the delta alone").toEqual(["0", "3"]);
-    room.deleted();
-    rerender(<Chat scope={TABLE} tick={2} colors={colors} sendName={false} />);
-    await waitFor(() => expect(room.reads()).toEqual(["0", "3", "3", "0"]));
+    expect(room.reads(), "an append: the delta alone").toEqual(["0", "3"]);
+    room.set({ ...wire.chatDeleted, messages: [...wire.chatDeleted.messages, m(4), m(5)], last: 5, rev: wire.chatDeleted.rev + 2 });
+    rerender(<Chat scope={TABLE} count={5} colors={colors} sendName={false} />);
+    await waitFor(() => expect(room.reads()).toEqual(["0", "3", "4", "0"]));
     await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
   });
 
@@ -756,7 +794,7 @@ describe("the chat panel's delete", () => {
       if (call.method === "GET") return { ...wire.houseChat, messages: [{ ...wire.houseChat.messages[0]!, author: wire.houseChatPost.author }] };
       return undefined;
     });
-    render(<Chat scope={{ kind: "house" }} tick={0} sendName heading="h3" />);
+    render(<Chat scope={{ kind: "house" }} sendName heading="h3" />);
     const [row] = await screen.findAllByRole("listitem");
     await userEvent.click(within(row!).getByRole("button", { name: "Delete this message" }));
     await waitFor(() => expect(stub.matching("DELETE", `/api/chat/${wire.houseChatPost.seq}`)).toHaveLength(1));

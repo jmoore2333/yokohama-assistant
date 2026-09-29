@@ -16,6 +16,7 @@
 import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
+import { isCreate, isGamesList } from "./matchers";
 import { openDb, readPair } from "../local/db";
 import type { UnreadableReply } from "../local/exportPair";
 import type { Envelope, ReportRow } from "../backup";
@@ -152,7 +153,9 @@ function corpusReply(req: Extract<Req, { kind: "call" }>): CallReply | undefined
   if (path === "/api/health") return { status: 200, body: wire.health };
   if (path === "/api/me") return { status: 200, body: wire.me };
   if (path === "/api/labels") return { status: 200, body: wire.labels };
-  if (path === "/api/games" && method === "GET") {
+  // The one listing the local host is asked for: this browser's own, `mine`.
+  // Any other scope falls through to the throw a cell would want to see.
+  if (isGamesList(req, "mine")) {
     // The lobby row shape, re-addressed and with the corpus row's own NAME
     // cleared — the `gamesNamed` rule: a row is listed as `name ?? id`, so a
     // row that kept `wire` would be found by no cell that looks for its id.
@@ -161,7 +164,7 @@ function corpusReply(req: Extract<Req, { kind: "call" }>): CallReply | undefined
       body: { games: [{ ...named(wire.games.games[0]!, "local-1"), name: null }], next: null },
     };
   }
-  if (path === "/api/games" && method === "POST") {
+  if (isCreate(req)) {
     return { status: 201, body: named(wire.tableDealing, "local-1") };
   }
   if (game === undefined || rest === null) return undefined;

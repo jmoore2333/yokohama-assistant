@@ -17,14 +17,18 @@
 // click must not take a seat, and a locked table needs its password typed
 // anyway. Nothing on this screen posts a join but a button.
 //
-// **The table is fetched here as well as watched**, which is the lobby's own
-// shape and for the lobby's own reason: this screen holds an id and nothing
-// else, and the opening read is what keeps it from saying "loading…" until
-// somebody else acts. The watch is `usePolled` in its default `"wake"` mode
-// (M6.3 R-7.1): a frame off `…/{id}/stream` is an `Events` and this screen's
-// value is a `TableView`, so the frame is the wake-up and `GET …/table` is the
-// answer. The stream's ON-CONNECT frame is therefore a second read of the table
-// at connect, which is one request and buys the reconnect its compare.
+// **The table is handed in, and fetched here only when it is not** (M6.5c2
+// cycle D, dossier row 17). `App`'s `open` has just read `GET …/table` to know
+// this is an open table at all, so it passes that document down and a visit
+// costs one read rather than two; without one — a cell, or a host that has
+// none — the opening read is what keeps the screen from saying "loading…"
+// until somebody else acts, the lobby's own shape. The watch is `usePolled` in
+// its default `"wake"` mode (M6.3 R-7.1): a frame off `…/{id}/stream` is an
+// `Events` and this screen's value is a `TableView`, so the frame is the
+// wake-up and `GET …/table` is the answer. The stream's ON-CONNECT frame is
+// therefore a read of the table at connect, which is one request and buys the
+// reconnect its compare. The frame's own chat counters go to the chat panel
+// (`peek`), which is a count host here.
 //
 // **Leaving this screen is a re-OPEN, not a jump to the dealing screen.** The
 // three ways a table stops being open — the signal, the join's own reply, and a
@@ -43,17 +47,22 @@ import { hashOf } from "./route";
 import { SeatCard } from "./SeatCard";
 import { seatName } from "./tables";
 import { usePolled, type End } from "./signal";
-import type { PlayerColor, SeatView, TableView } from "./types";
+import type { Events, PlayerColor, SeatView, TableView } from "./types";
 import { Refusal } from "./Refusal";
 
 export function OpenTable({
   game,
+  table: handed,
   onStarted,
   onLeave,
   who,
 }: {
   /** The table, by id. */
   game: string;
+  /** The table's document, where the host has just read it (`App`'s `open`):
+   *  drawn at once, and not read again at mount. Absent, the screen reads it
+   *  itself. */
+  table?: TableView;
   /** The table is no longer open. `App` re-opens it and its STATUS picks the
    *  screen: a table still dealing draws the deal, one already playing draws
    *  the game. Deliberately not `onDealing`, which would be a name that is
@@ -71,7 +80,7 @@ export function OpenTable({
    *  and merely placed here beside the signal's own word. */
   who?: ReactNode;
 }) {
-  const [table, setTable] = useState<TableView | null>(null);
+  const [table, setTable] = useState<TableView | null>(handed ?? null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   /** **Abandon's refusal, in a strip of its own** (M6.5c2 cycle C; the task
@@ -81,14 +90,14 @@ export function OpenTable({
    *  raises, drawn directly under the controls. One shared state would put an
    *  Abandon refusal a screen-height above its button on a seated face. */
   const [abandonError, setAbandonError] = useState<string | null>(null);
-  /** "Something about this table may have changed" (spec §6.2), counted.
-   *
-   *  This screen's hook is a `"wake"` consumer — a frame is not its value, so
-   *  the frame's own `chat` number never reaches here — and `take` is where
-   *  every answer about the table lands, from the opening read, the stream and
-   *  a join's reply alike. So the panel is told to ask for its delta off the
-   *  same wake this screen already acts on, which is the only source it has. */
-  const [tick, setTick] = useState(0);
+  /** The table's chat count and revision, off the stream's own frame
+   *  (`Source.peek`; M6.5c2 cycle D, row 130) — the panel's `count` and `rev`.
+   *  The frame is an `Events` and still only a wake for the table read, but
+   *  its `chat`/`chat_rev` are the table's own, so the panel is a COUNT host
+   *  here as it is on the deal and the game: the connection's first frame asks
+   *  nothing when the mount read already holds its number, and an own post's
+   *  frame asks nothing once its 201 has moved the cursor. */
+  const [chat, setChat] = useState<{ count: number; rev: number } | null>(null);
   // The guard against a SECOND join going out while the first is in flight —
   // a ref and not the state, for the reason `App`'s own `inFlight` is one:
   // React batches, so two clicks in one tick both read a state flag as false
@@ -106,14 +115,10 @@ export function OpenTable({
   const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
 
   /** One answer about this table, from wherever it came — the opening read, a
-   *  poll tick, a join's reply, a re-read after a refusal. A table that is no
+   *  frame's re-read, a join's reply, a re-read after a refusal. A table that is no
    *  longer open is handed back rather than drawn: there is nothing on this
    *  screen to say about it. */
   const take = useCallback((t: TableView) => {
-    // FIRST, and before the status branch: a table that has just stopped being
-    // open is handed back, and a tick that rode behind that branch would be the
-    // one wake this screen never passed on.
-    setTick((n) => n + 1);
     if (t.status !== "open") {
       started.current();
       return;
@@ -121,9 +126,13 @@ export function OpenTable({
     setTable(t);
   }, []);
 
-  // The opening read. See the note at the top of the file for why this is not
-  // the hook's job.
+  // The opening read — only when nothing was handed in. See the note at the
+  // top of the file for why this is not the hook's job. The handed document
+  // is read through a ref, so a host re-rendering with a new object for the
+  // same table does not re-run this.
+  const wasHanded = useRef(handed !== undefined);
   useEffect(() => {
+    if (wasHanded.current) return;
     let live = true;
     api
       .table(game)
@@ -139,6 +148,10 @@ export function OpenTable({
       key: game,
       once: () => api.table(game),
       stream: `/api/games/${encodeURIComponent(game)}/stream`,
+      peek: (data) => {
+        const e = eventsOf(data);
+        if (e) setChat({ count: e.chat, rev: e.chat_rev });
+      },
     },
     true,
     take,
@@ -356,7 +369,14 @@ export function OpenTable({
             invite, in the MAIN column (the spec-gap answer, not mock 08's
             rail). */}
         {seated && (
-          <Chat scope={{ kind: "table", id: game }} tick={tick} canModerate={table.mine} colors={colors} sendName={false} />
+          <Chat
+            scope={{ kind: "table", id: game }}
+            count={chat?.count}
+            rev={chat?.rev}
+            canModerate={table.mine}
+            colors={colors}
+            sendName={false}
+          />
         )}
 
         <div className="open-table-controls">
@@ -364,7 +384,12 @@ export function OpenTable({
               cannot drift apart again. `onDone` is the leave: the table is
               gone, and there is nothing here to go back to. Outlined in the
               warning colour, the quieter danger (mock 08). */}
-          {seated && table.mine && (
+          {/* **The creator's, seated or not** (M6.5c2 cycle D, dossier row
+              17): it was drawn only on the seated face, so a creator holding
+              no seat — who reads the stranger's face — could not delete the
+              table they made. `create` refuses such a table today (R-1.6);
+              this is the screen's rule held on its own. */}
+          {table.mine && (
             <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
           )}
           <button type="button" className="quiet-link" onClick={() => leave.current()}>
@@ -439,6 +464,18 @@ function Invite({
       )}
     </section>
   );
+}
+
+/** The chat counters of one frame off the table's stream — an `Events` — or
+ *  `null` for a frame that carries none. Read defensively: it is a frame off
+ *  the wire, and a bad one should cost the panel its count, not the screen. */
+function eventsOf(data: string): Pick<Events, "chat" | "chat_rev"> | null {
+  try {
+    const e = JSON.parse(data) as Partial<Events>;
+    return typeof e.chat === "number" && typeof e.chat_rev === "number" ? { chat: e.chat, chat_rev: e.chat_rev } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Does this refusal body carry the table's STATUS?

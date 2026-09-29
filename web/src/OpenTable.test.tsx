@@ -90,7 +90,7 @@ function show(
     // its DOM. A STRANGER's screen draws no panel and asks for nothing, which
     // is the half the cell below pins.
     if (call.method === "GET" && call.path.includes("/chat"))
-      return { ...wire.chat, messages: [], last: 0 };
+      return { ...wire.chat, messages: [], last: 0, rev: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -260,6 +260,22 @@ describe("the open table, to a stranger with one seat to take", () => {
     // And the table was not re-read: a 403 is about the caller, not about the
     // table having moved.
     expect(stub.matching("GET", "/table")).toHaveLength(1);
+  });
+
+  // **A join sent with no password at a locked table is refused in the
+  // server's words** (dossier row 38): the corpus's `join_403_locked` had
+  // contract cells only, and no screen was shown drawing it. Nothing typed,
+  // so the join carries no password key at all.
+  it("says a locked table wants its password when Join is pressed with none typed", async () => {
+    const { stub, user } = show((call) => {
+      if (call.path.endsWith("/table")) return wire.tableOpen;
+      if (call.path.endsWith("/join")) return { status: 403, body: wire.join403Locked };
+      return undefined;
+    });
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
+    expect(await screen.findByText(wire.join403Locked.error)).toBeInTheDocument();
+    expect(stub.matching("POST", "/join")[0]!.body).toEqual({ seat: 1 });
+    expect(screen.getByLabelText("Table password")).toHaveValue("");
   });
 
   // **The refusal sits by the field it is about** (M6.5c2 cycle C, polish 4):
@@ -514,6 +530,21 @@ describe("the open table, to somebody sitting at it", () => {
     expect(await screen.findByRole("button", { name: "abandon wire2" })).toBeInTheDocument();
   });
 
+  // **The creator's control follows `mine`, not the seat** (dossier row 17). A
+  // creator who holds no seat reads the stranger's face — nothing to send on,
+  // a seat to take — and the control was gated on holding one, so the one
+  // person who may delete the table was offered no way to. `create` refuses
+  // such a table today ("the creator must hold a seat", R-1.6), so this is the
+  // screen's rule held on its own: the corpus's stranger reading with ONE
+  // field moved, `mine`, which is the whole of what the control reads.
+  it("offers the abandon control to the table's creator who holds no seat at it", async () => {
+    const creator = { ...wire.tableOpen, mine: true };
+    expect(creator.my_seats).toHaveLength(0);
+    show(tableIs(creator));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(screen.getByRole("button", { name: `abandon ${creator.name ?? creator.id}` })).toBeInTheDocument();
+  });
+
   it("offers nothing to abandon to a person who merely sits here", async () => {
     showSeated(tableIs(asGuest(seated())));
     await screen.findByLabelText("Invite link");
@@ -723,5 +754,34 @@ describe("the open table's chat", () => {
     expect(screen.queryByText("Chat")).toBeNull();
     expect(document.querySelector("section.panel.chat")).toBeNull();
     expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);
+  });
+
+  // **One chat read at mount** (M6.5c2 cycle D, row 130). The panel was handed
+  // a tick per wake, and the stream's ON-CONNECT frame is a wake — so every
+  // visit read the chat twice before anything was said. The panel reads the
+  // frame's own `chat`/`chat_rev` now (`peek`), and a connection's first frame
+  // that carries the number the mount read already holds asks for nothing. The
+  // frame is the corpus's open-table `Events`; the page, the empty room with
+  // the same `rev`, so neither the count nor the revision says anything moved.
+  // **The frame is written AFTER the panel's mount read**, the order a network
+  // gives it (the stream opens behind the transport's health read): written at
+  // connect in a stubbed tick, it lands before the panel exists and the cell
+  // would witness nothing.
+  it("reads the chat once at mount, and not again for the connection's own first frame", async () => {
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    const { stub } = showSeated((call) => {
+      if (call.path.endsWith("/table")) return seated();
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      if (call.method === "GET" && call.path.includes("/chat"))
+        return { ...wire.chat, messages: [], last: wire.eventsOpen.chat, rev: wire.eventsOpen.chat_rev };
+      return undefined;
+    });
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    await until(() => stub.matching("GET", "/chat").length === 1, "the panel's mount read");
+    stream.push("signal", wire.eventsOpen);
+    await until(() => stub.matching("GET", "/table").length >= 2, "the frame's table read");
+    await flush();
+    expect(stub.matching("GET", "/chat")).toHaveLength(1);
   });
 });

@@ -36,7 +36,7 @@ import {
   startOutbox,
 } from "./outbox";
 import { stubWorker, workerAnswersWith } from "./test/fakeWorker";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 const GAME = "local-7";
@@ -70,7 +70,7 @@ function hosts(opts: {
       return opts.pair ?? { record: RECORD, table: TABLE };
     },
     call: (req) => {
-      if (req.path === "/api/games" && req.method === "GET") {
+      if (isGamesList(req, "mine")) {
         return {
           status: 200,
           body: {

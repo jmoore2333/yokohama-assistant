@@ -1029,7 +1029,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   background: none; border: 1px solid transparent; border-radius: 6px;
   padding: 0.2rem; cursor: pointer; font: inherit; color: inherit;
 }
-.deal-pick.chosen { border-color: var(--vp); box-shadow: 0 0 0 1px var(--vp); }
 .deal-pick:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 
 /* ---- the door (M6.1) ---------------------------------------------------- */

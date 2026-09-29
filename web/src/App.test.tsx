@@ -20,7 +20,7 @@ import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
-import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, playOneLocalMove, positionsWalked, renderApp, runRange, signedOutReply, stubApi, stubLocalGame, type ApiCall, type ApiStub, type Reply } from "./test/harness";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isCreate, isGamesList, openStream, playOneLocalMove, positionsWalked, renderApp, runRange, signedOutReply, stubApi, stubLocalGame, type ApiCall, type ApiStub, type Reply } from "./test/harness";
 import { resetPersistenceRequestForTests } from "./storage";
 import { stubStorage } from "./test/platform";
 import { wire } from "./wire/contract";
@@ -68,6 +68,65 @@ function noticeScreen({
   expect(document.querySelector(".who-strip"), "not the old who-strip").toBeNull();
   return cards[0]!;
 }
+
+/** Let a chain of stubbed replies settle over REAL turns of the event loop:
+ *  a body arrives through the platform's own machinery and not every step is
+ *  a microtask, so a request issued one turn after another resolves is not
+ *  one a microtask-deep settle can see. */
+const flushReal = async (rounds = 6) => {
+  for (let i = 0; i < rounds; i += 1)
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+};
+
+/** **The pair guard's 409** (M6.5c2 cycle D, Task 4; `games::live_handle`): a
+ *  stored pair whose table and record disagree about which seats are bots.
+ *  **The ONE derived refusal in this file**: no corpus row carries it, because
+ *  every pair the walk writes agrees, so it is the foreign-bot fixture with its
+ *  sentence changed and its `foreign_bot` pair dropped. A derived payload keeps
+ *  passing after the server changes, and here that is covered on the other
+ *  side: the body's SHAPE — exactly `{"error": …}`, no `status`, no
+ *  `foreign_bot` — is pinned by `api.rs`'s
+ *  `a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409`,
+ *  whose row 1 is this sentence. */
+const pairRefused = (() => {
+  const { foreign_bot: _pair, ...plain } = wire.foreignBot409;
+  void _pair;
+  return {
+    ...plain,
+    error:
+      "the table document does not agree with the record: seat 1 is a person in the record (bga-human) but a bot at the table",
+  };
+})();
+
+// ---- a switch from the Game menu that is refused (dossier row 17) ---------
+//
+// **A refused switch keeps the game you were in, and the address with it.**
+// `open` writes the hash BEFORE it fetches, so a refusal left `#/t/<the table
+// you asked for>` over the game you never left — and the next run of the route
+// effect opened that table again and took the player to the lobby with its
+// refusal. The menu says the refusal on its own line; the screen and the
+// address stay on the game.
+describe("a refused switch from the Game menu", () => {
+  it("leaves the game drawn and the address on it", async () => {
+    await renderApp(wire.options, (call) => {
+      if (isGamesList(call, "mine")) return gamesNamed(wire.options.id, "sim-other");
+      if (call.path.endsWith("/api/games/sim-other/table")) return { status: 403, body: wire.notSeated403 };
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await user.click(gameMenu());
+    await user.click(await screen.findByRole("button", { name: "sim-other" }));
+    expect(await screen.findByText(wire.notSeated403.error)).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe(`#/t/${wire.options.id}`));
+    await flushReal();
+    expect(window.location.hash, "and it stays there").toBe(`#/t/${wire.options.id}`);
+    expect(screen.getByText(/end triggers:/), "the game is still drawn").toBeInTheDocument();
+    expect(gameMenu()).toHaveTextContent(wire.options.id);
+    expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
+  });
+});
 
 describe("the in-flight guard", () => {
   // **The defect, exactly.** The board tile was the one mutation control with
@@ -1330,7 +1389,7 @@ describe("the boards a player switches during setup", () => {
       // DEALING table, the dealing screen fetches the caller's own two cards,
       // and the keep that finishes the dealing answers with the table at
       // `playing` — which is when the GAME is read back.
-      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isCreate(call))
         return { status: 201, body: wire.tableDealing };
       if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
       if (call.path.endsWith("/deal")) return wire.deal;
@@ -1552,7 +1611,7 @@ describe("the route", () => {
     await user.click(await screen.findByRole("button", { name: "Deal" }));
 
     const posted = currentWorker().posted.find(
-      (p) => (p as { method?: string }).method === "POST" && (p as { path?: string }).path === "/api/games",
+      (p) => p.kind === "call" && isCreate(p),
     ) as { body: string } | undefined;
     const body = JSON.parse(posted?.body ?? "{}") as { players: number; seats: unknown[] };
     expect(body.seats).toHaveLength(2);
@@ -1672,7 +1731,7 @@ describe("the route", () => {
     const held = gate<Reply>();
     let tables = 0;
     const { stub, user } = app((call) => {
-      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isCreate(call))
         return { status: 201, body: wire.tableDealing };
       if (call.path.endsWith("/table")) {
         tables += 1;
@@ -1701,6 +1760,48 @@ describe("the route", () => {
     await screen.findByRole("heading", { name: "Choose your card" });
     expect(stub.matching("GET", "/table")).toHaveLength(1);
     expect(stub.matching("GET", "/deal")).toHaveLength(1);
+  });
+
+  // **Back during an in-flight open never draws the table left behind**
+  // (dossier row 17). `open` awaits `GET …/table` and then the game; a player
+  // who pressed Back while either was out is at another address by the time
+  // the answer lands, and `open` drew the game anyway — a board under
+  // `#/lobby`. It now checks the route after each await. The route change is
+  // made by hand, which is what Back does to this client: a `hashchange`.
+  it("never draws a table whose open was left by Back while it was in flight", async () => {
+    const held = gate<Reply>();
+    const { stub, user } = app((call) => {
+      if (isGamesList(call, "mine")) return gamesNamed("wire");
+      if (call.path.endsWith("/api/games/wire/table")) return held.promise;
+      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return wire.options;
+      return undefined;
+    });
+    await user.click(await screen.findByRole("link", { name: "wire" }));
+    await waitFor(() => expect(stub.matching("GET", "/api/games/wire/table")).toHaveLength(1));
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
+    held.resolve(wire.table);
+    await flushReal();
+    expect(screen.queryByText(/end triggers:/), "no board under the lobby's address").toBeNull();
+    expect(
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/wire")),
+      "and the game was never asked for",
+    ).toHaveLength(0);
+    expect(window.location.hash).toBe("#/lobby");
+    expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+  });
+
+  // **The open-table screen is HANDED the document `open` read** (dossier row
+  // 17): it read the table again at mount, so every visit to an open table
+  // cost two `GET …/table` before anything had happened. The resting stream
+  // here says nothing on connect, so a second read could only be the screen's.
+  it("reads an open table once on the way in, and the open-table screen draws the document it is handed", async () => {
+    window.location.hash = "#/t/wire";
+    const { stub } = app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    await flushReal();
+    expect(stub.matching("GET", "/api/games/wire/table")).toHaveLength(1);
   });
 
   // ---- the open table, and the hand-over BY STATUS (spec §5.4) -------------
@@ -1885,6 +1986,26 @@ describe("the route", () => {
       expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
       await user.click(within(card).getByRole("button", { name: "Lobby" }));
       await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    // **A pair whose table and record disagree about a bot seat is the same
+    // screen** (Task 4's guard, carried here): every host answers it with a
+    // plain 409 before anything is replayed, and it fell to the generic
+    // refusal — a bounce to the lobby — where the foreign-bot 409 reaches this
+    // screen. What is left is the same: the server's sentence and the Abandon
+    // that never rebuilds. The 409 is `pairRefused`, whose note says why it is
+    // derived and which layer cell pins its shape.
+    it("draws a pair whose table and record disagree about a bot seat on the same screen", async () => {
+      window.location.hash = `#/t/${id}`;
+      app((call) => {
+        if (call.path.endsWith(`/api/games/${id}/table`)) return dealt;
+        if (call.method === "GET" && call.path.endsWith(`/api/games/${id}`)) return { status: 409, body: pairRefused };
+        return undefined;
+      });
+      expect(await screen.findByText(pairRefused.error)).toBeInTheDocument();
+      expect(window.location.hash).toBe(`#/t/${id}`);
+      const card = noticeScreen({ path: "Lobby", heading: dealt.name ?? id, corner: wire.me.user!, sentence: pairRefused.error });
+      expect(within(card).getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
     });
 
     // **The seat half of the creator rule**: the layer's delete is the
@@ -2158,7 +2279,8 @@ describe("the door", () => {
       // server that ignores its own header, and signing in would prove nothing.
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
-      if (call.path.split("?")[0]!.endsWith("/api/games")) return wire.games;
+      if (isGamesList(call, "mine")) return wire.games;
+      if (isGamesList(call)) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       return undefined;
@@ -2171,7 +2293,9 @@ describe("the door", () => {
     await screen.findByRole("heading", { name: "Choose a name" });
     // **Nothing is asked for from behind the door.** Every `/api/games` route
     // is a 401 without an identity, so a client that listed first would show
-    // the player a refusal as their first screen.
+    // the player a refusal as their first screen. `matching` is a SUBSTRING
+    // test, and here that is the point: no route under `/api/games` at all,
+    // not only the listing (`isGamesList`).
     expect(stub.matching("GET", "/api/games")).toHaveLength(0);
 
     const user = userEvent.setup();
@@ -2460,7 +2584,7 @@ describe("the door", () => {
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (isGamesList(call)) return gamesNamed();
-      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
+      if (isCreate(call))
         return { status: 201, body: wire.tableDealing };
       // The table crosses from dealing to playing at the keep, which is what
       // makes the game open at all — see the boards cell above for the shape.
@@ -2518,7 +2642,7 @@ describe("the door", () => {
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -2547,7 +2671,7 @@ describe("the door", () => {
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -3370,7 +3494,7 @@ describe("a local game", () => {
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -4158,6 +4282,47 @@ describe("a local game", () => {
     noticeScreen({ path: null, heading: "On this device", corner: null, sentence: refusal.error });
   });
 
+  // **A local pair whose table and record disagree about a bot seat** (Task
+  // 4's guard, carried here) — a restored pair is the realistic way in. The
+  // module answers the plain 409 (`pairRefused`) and it reached the generic
+  // bounce to the door; it is the broken-save screen now. **Its Abandon
+  // deletes WITHOUT sending**, the save that no longer rebuilds' rule and not
+  // the foreign game's: the archive's `check_pair` refuses this very pair
+  // ("the table document does not agree with the record", the corpus's
+  // `archive_400_table`), so sending first would leave a game that can never
+  // be abandoned.
+  it("shows a local pair whose table and record disagree about a bot seat as the broken-save screen, and abandons it without sending", async () => {
+    rememberServerFacts({ ...wire.health, archive: "dir" });
+    const order: string[] = [];
+    const { user, stub } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: {
+          pair: () => ({ record: RECORD, table: TABLE }),
+          call: (req) => {
+            if (req.path === `/api/games/${LOCAL}` && req.method === "GET") return { status: 409, body: pairRefused };
+            if (req.path === `/api/games/${LOCAL}` && req.method === "DELETE") {
+              order.push("delete");
+              return { status: 204, body: undefined };
+            }
+            return undefined;
+          },
+        },
+      },
+    );
+    await screen.findByText(pairRefused.error);
+    expect(window.location.hash).toBe(`#/t/${LOCAL}`);
+    const card = noticeScreen({ path: null, heading: "On this device", corner: null, sentence: pairRefused.error });
+    expect(within(card).getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+    const abandon = within(card).getByRole("button", { name: /^abandon / });
+    expect(abandon).toHaveTextContent(/^Abandon$/);
+    await user.click(abandon);
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    await waitFor(() => expect(order).toEqual(["delete"]));
+    expect(stub.matching("POST", "/api/archive"), "nothing was sent").toHaveLength(0);
+  });
+
   // **And its Abandon SENDS FIRST, as every other local Abandon does**
   // (R-6.5b.6; M6.5c2 R-B19). Unlike a save that no longer rebuilds, the
   // archive takes this record — its check is a strict replay and asks nothing
@@ -4235,7 +4400,7 @@ describe("a local game", () => {
         {
           hooks: {
             call: (req) =>
-              req.path === "/api/games" && req.method === "GET"
+              isGamesList(req, "mine")
                 ? { status: 200, body: gamesNamed(LOCAL, "local-2") }
                 : undefined,
           },
@@ -4292,7 +4457,7 @@ describe("a local game", () => {
           {
             hooks: {
               call: (req) =>
-                req.path === "/api/games" && req.method === "GET"
+                isGamesList(req, "mine")
                   ? {
                       status: 200,
                       body: { games: [...gamesNamed(LOCAL, "local-2", "local-3").games, foreign], next: null },
@@ -4696,7 +4861,7 @@ describe("the option words", () => {
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -4914,7 +5079,7 @@ describe("the facts this page asks the server for", () => {
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       if (isGamesList(call)) return gamesNamed();
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });

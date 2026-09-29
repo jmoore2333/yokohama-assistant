@@ -38,7 +38,7 @@ import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
 import { Refusal } from "./Refusal";
 import { Unlock } from "./Unlock";
-import { channelOf, navigate, useRoute, type Route } from "./route";
+import { channelOf, navigate, parseRoute, useRoute, type Route } from "./route";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { useSignal, type End } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
@@ -130,6 +130,25 @@ async function saveGameFile(game: string): Promise<void> {
 const isForeignBot = (body: unknown): boolean =>
   typeof body === "object" && body !== null && "foreign_bot" in body;
 
+/** Is this the refusal of a stored pair the host will not rebuild — Task 4's
+ *  guard in `games::live_handle`, a table and a record that disagree about
+ *  which seats are bots (M6.5c2 cycle D)?
+ *
+ *  **By the body's SHAPE, since it carries no field of its own**: a 409 on the
+ *  game read of a table that reads `playing`, with neither `status` (the
+ *  three table-status 409s, which a re-open answers) nor `foreign_bot`. The
+ *  layer pins that body as exactly `{"error": …}`
+ *  (`a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409`),
+ *  and at HEAD it is the only plain 409 that read can answer. The cost of the
+ *  shape, stated: a plain 409 added to that read later lands on this screen
+ *  too — its sentence and an Abandon — rather than on the lobby. */
+const isUnrebuilt = (e: ApiError): boolean =>
+  e.status === 409 &&
+  typeof e.body === "object" &&
+  e.body !== null &&
+  !("status" in e.body) &&
+  !("foreign_bot" in e.body);
+
 export function App() {
   // **Which screen this is, as the URL** (spec §5.1). Read here and acted on in
   // one effect below `open`, so there is ONE place that turns a route into a
@@ -219,8 +238,12 @@ export function App() {
    *
    *  The fourth screen, and a sibling of `dealing` rather than a mode of it: an
    *  open table has no deal to show and no game to play, and what a caller does
-   *  there is take a seat. `show` clears it, exactly as it clears `dealing`. */
-  const [openTable, setOpenTable] = useState<string | null>(null);
+   *  there is take a seat. `show` clears it, exactly as it clears `dealing`.
+   *
+   *  **The document `open` read is held beside the id** (M6.5c2 cycle D,
+   *  dossier row 17), `unlock`'s shape: the screen draws it at once instead of
+   *  reading the same table a second time on the way in. */
+  const [openTable, setOpenTable] = useState<{ id: string; table: TableView } | null>(null);
   /** The table whose PASSWORD is being asked for, when there is one (spec §5.3).
    *
    *  The fifth screen, and a sibling of the other two rather than a mode of
@@ -250,8 +273,13 @@ export function App() {
    *  every other local Abandon is (R-6.5b.6) — the archive takes its record,
    *  because its check is a strict replay and asks nothing of the bot. That is
    *  what `foreign` is for: a save that no longer rebuilds is the one game the
-   *  archive would refuse, so its Abandon deletes without sending. A server
-   *  game that refuses for any OTHER reason is the server's record on a server
+   *  archive would refuse, so its Abandon deletes without sending.
+   *
+   *  **And a stored pair whose table and record disagree about a bot seat**
+   *  (M6.5c2 cycle D, Task 4's guard): refused on every host before anything
+   *  is replayed, it is a save that does not open here, with `foreign: false`
+   *  for the same reason — the archive refuses that pair too. A server game
+   *  that refuses for any OTHER reason is the server's record on a server
    *  whose other games are fine, and keeps the bounce it has always had. */
   const [broken, setBroken] = useState<{
     id: string;
@@ -583,10 +611,18 @@ export function App() {
    *  happened. */
   const open = useCallback(
     async (id: string, opening = false) => {
+      // **Where the player was, for a refusal to put back** (M6.5c2 cycle D,
+      // dossier row 17). A switch from the Game menu starts on another game's
+      // address; a refusal left the hash naming the table that refused while
+      // that game stayed drawn, and the next run of the route effect opened the
+      // refused table again and took the player to the lobby. Only a GAME still
+      // on screen is put back — the one thing a refusal here must not cost.
+      const from = parseRoute(window.location.hash);
+      const back = from.kind === "table" && from.id !== id && tableOnScreen.current === from.id ? from : null;
       // **The hash is set FIRST, before anything is fetched** (spec §5.1). A
       // table opened from a row, from the Game menu or by a create is the same
       // screen as one opened from a link, so the address is written the same
-      // way — and a refusal below then leaves the route effect to put it back.
+      // way.
       navigate({ kind: "table", id });
       // **The guard against opening the same table twice.** `navigate` changes
       // the hash synchronously, so the route effect runs while this call is
@@ -594,16 +630,27 @@ export function App() {
       // test it can make is still false. The ref is the only thing that knows a
       // request is in flight for this id.
       openingId.current = id;
+      /** **Does the address still name this table?** Asked after every await
+       *  (M6.5c2 cycle D, dossier row 17): a player who pressed Back while a
+       *  read was out is somewhere else by the time it answers, and drawing the
+       *  table then put a board under `#/lobby`. Where the address has moved
+       *  on, this open is over: nothing is drawn and nothing is reported — the
+       *  route effect has already answered the address the player chose. */
+      const here = () => {
+        const now = parseRoute(window.location.hash);
+        return now.kind === "table" && now.id === id;
+      };
       try {
         // `doc`, not `table`: the state of the same name is what this puts BACK,
         // and one name for both would read as a self-assignment.
         const doc = await api.table(id);
+        if (!here()) return;
         if (doc.status === "open") {
           // Nobody has dealt yet and there may be no seat here for this caller
           // at all. `show(null)` first, for the same reason the dealing arm
           // does it.
           show(null);
-          setOpenTable(id);
+          setOpenTable({ id, table: doc });
           tableOnScreen.current = id;
           return;
         }
@@ -649,6 +696,7 @@ export function App() {
         try {
           next = await api.get(id);
         } catch (e) {
+          if (!here()) return;
           if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
             show(null);
             setBroken({ id, table: doc, sentence: e.message, foreign: false });
@@ -665,12 +713,37 @@ export function App() {
             tableOnScreen.current = id;
             return;
           }
+          // **A stored pair this host will not rebuild** (M6.5c2 cycle D; Task
+          // 4's guard in `games::live_handle`): a table and a record that
+          // disagree about which seats are bots, refused on every host with a
+          // plain 409 before anything is replayed. It took the bounce every
+          // other refusal takes; it is the same screen as the two above, because
+          // the same things are left — the sentence, and an Abandon, which
+          // never rebuilds. `foreign: false`, the broken save's rule: the
+          // archive's `check_pair` refuses this very pair, so a local game is
+          // deleted without being sent. See `isUnrebuilt` for why it is told
+          // apart by the body's shape.
+          if (e instanceof ApiError && isUnrebuilt(e)) {
+            show(null);
+            setBroken({ id, table: doc, sentence: e.message, foreign: false });
+            tableOnScreen.current = id;
+            return;
+          }
           throw e;
         }
+        if (!here()) return;
         show(next, opening);
         // AFTER `show`, which clears it: React batches both into one render, so
         // the last write is the one that stands.
         setTable(doc);
+      } catch (e) {
+        // Refused, and the player moved on while it was out: nothing to say
+        // about a table nobody is looking at, and nothing to put back.
+        if (!here()) return;
+        // The game that was on screen stays, and so does its address — with no
+        // history entry left pointing at the table that refused.
+        if (back) navigate(back, { replace: true });
+        throw e;
       } finally {
         openingId.current = null;
       }
@@ -1623,7 +1696,12 @@ export function App() {
     if (openTable)
       return (
         <OpenTable
-          game={openTable}
+          // KEYED by the table, because the document is its first state: a
+          // switch from one open table to another is a new screen, not the old
+          // one's state under a new id.
+          key={openTable.id}
+          game={openTable.id}
+          table={openTable.table}
           // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
           // What the open table knows is that it is no longer open; whether
           // that is the deal or a game already running is `open`'s own
@@ -1642,7 +1720,7 @@ export function App() {
           // recovers only when the poll's own refusal fires one tick later.
           // Same two lines the route effect uses for a refused `#/t/<id>`.
           onStarted={() =>
-            void open(openTable, true).catch((e) =>
+            void open(openTable.id, true).catch((e) =>
               toLobby(e instanceof ApiError ? e.message : String(e)),
             )
           }

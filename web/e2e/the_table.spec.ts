@@ -166,16 +166,22 @@ test("the Game menu switches between saved games from inside a game", async ({ p
   await page.locator(".game-menu > summary").click();
   await page.getByRole("button", { name: a.id, exact: true }).click();
   await expect(page.locator(".game-menu > summary")).toContainText(a.id);
-  // **No second click on the summary here, and this cell is the only place the
-  // reason can be checked.** The menu stays OPEN across a switch, and the list
-  // it is showing has already recomputed against the game just loaded, so the
-  // way back is a button already on screen; a second summary click would CLOSE
-  // it. `GameMenu.test.tsx` cannot see either half — jsdom ships no UA
-  // stylesheet for `details`, so a closed menu's buttons are just as findable
-  // there — while Chromium's are `display: none`, and the first draft of this
-  // line waited fifteen seconds for a button that was never going to appear.
-  await page.getByRole("button", { name: b.id, exact: true }).click();
+  // **The menu CLOSES once a switch has landed** (M6.5c2 cycle D, dossier row
+  // 2), and this is the cell where closed means hidden. It used to stay open,
+  // and this cell leaned on that — it clicked the way back without reopening.
+  // `GameMenu.test.tsx` reads the `open` attribute; only Chromium applies the
+  // UA stylesheet that hides a closed menu's rows (`display: none`), so the
+  // way back is asserted NOT visible before the summary click and visible
+  // after it.
+  const menu = page.locator("details.game-menu");
+  const back = page.getByRole("button", { name: b.id, exact: true });
+  await expect(menu).not.toHaveAttribute("open", "");
+  await expect(back).toBeHidden();
+  await page.locator(".game-menu > summary").click();
+  await expect(back).toBeVisible();
+  await back.click();
   await expect(page.locator(".game-menu > summary")).toContainText(b.id);
+  await expect(menu).not.toHaveAttribute("open", "");
   expect(watch.failures).toEqual([]);
 });
 

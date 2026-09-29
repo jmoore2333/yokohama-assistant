@@ -110,6 +110,15 @@ export interface Source<T> {
    *  so a frame naming a table would sometimes name the wrong one). Handing
    *  such a frame over as a `T` would have the lobby render `{seq: 4}`. */
   frames?: "value" | "wake";
+  /** A `"wake"` source's look at the FRAME itself, handed its `data` unparsed
+   *  just before the re-read it causes (M6.5c2 cycle D, row 130). The frame is
+   *  still not the value — a `watch` channel coalesces, so it names no table —
+   *  but its COUNTERS are true of the moment it was written: the lobby reads
+   *  the house chat's `chat`/`rev` off the house frame, and the open table its
+   *  own off the table's `Events`, and hands them to the chat panel as its
+   *  count. Never called for a `"value"` source, whose frame IS the value, nor
+   *  for the socket arm's probe, which reads no frame. */
+  peek?: (data: string) => void;
   /** `"local"` for a game the module in this browser's own Worker answers
    *  (M6.5b, R-6.5b.12): there is NOTHING to wait for, because the bot's
    *  trailing run returns inside the reply that caused it and nobody else sits
@@ -159,6 +168,13 @@ export interface End {
 /**
  * Watch `source` while the tab is VISIBLE and `active`, and hand every answer
  * to `onValue`.
+ *
+ * **Named for the poll it replaced** (M6.5c2 cycle D, dossier row 55). Until
+ * M6.3 this was an interval asking `once()` every few seconds; since then it
+ * holds a stream or a socket and asks only when a frame says to (the file's
+ * note), and it arms no timer while connected. The name stayed because every
+ * consumer, its cells and `CLAUDE.md` say it, and a rename would move all of
+ * them for no change in behaviour.
  *
  * `active` is the caller's "there is something to wait for": a screen holding
  * the prompt has nothing to wait on, and a finished game has nothing to wait
@@ -267,7 +283,12 @@ export function usePolled<T>(
       try {
         for (;;) {
           again = false;
-          const v = await src.current!.once();
+          // A source that has gone to `null` (the screen dropped its resource
+          // while a frame was being handed over) has nothing to re-read, and
+          // the teardown of this run is already on its way.
+          const source = src.current;
+          if (!source) return;
+          const v = await source.once();
           if (stopped) return;
           failures.current = 0;
           setLink("live");
@@ -330,7 +351,10 @@ export function usePolled<T>(
         }
         if (f.event !== "signal" && f.event !== "house") return;
         if (frames === "value") latest.current(JSON.parse(f.data) as T);
-        else void reread();
+        else {
+          src.current?.peek?.(f.data);
+          void reread();
+        }
       };
       // **The CONNECTION, and it is what both of these hang on.**
       //

@@ -19,7 +19,7 @@ import { patchServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { trimSeed } from "./seedRule";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
-import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { gate, isCreate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
 
@@ -33,11 +33,11 @@ const BOT = productionBot.label;
 
 /** The create posts, and NOT the other posts beside them. */
 const creates = (stub: ReturnType<typeof stubApi>): ApiCall[] =>
-  stub.matching("POST", "/api/games").filter((c) => c.path.split("?")[0]!.endsWith("/api/games"));
+  stub.calls.filter(isCreate);
 
 /** The opening reply: a create answers 201 with a DEALING table (§4.2). */
 const created = (call: ApiCall): Reply | undefined =>
-  call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games")
+  isCreate(call)
     ? { status: 201, body: wire.tableDealing }
     : undefined;
 
@@ -432,7 +432,7 @@ describe("sending the form", () => {
   it("posts create exactly once however fast Deal is clicked", async () => {
     const held = gate<unknown>();
     const { stub } = show((call) =>
-      call.method === "POST" && call.path.endsWith("/api/games") ? held.promise : undefined,
+      isCreate(call) ? held.promise : undefined,
     );
     const deal = screen.getByRole("button", { name: "Deal" });
     act(() => {
@@ -474,7 +474,7 @@ describe("the form for a game on this device", () => {
   /** The one create this tab's Worker was sent. */
   const localBody = () => {
     const post = currentWorker().posted.find(
-      (p) => p.kind === "call" && p.method === "POST" && p.path === "/api/games",
+      (p) => p.kind === "call" && isCreate(p),
     ) as { body: string } | undefined;
     return JSON.parse(post?.body ?? "{}") as Record<string, unknown>;
   };

@@ -1,7 +1,7 @@
 // The session control in the banner: saved games, new game, no reload.
 
 import { readFileSync } from "node:fs";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { gameMenu, gamesNamed, isGamesList, renderApp } from "./test/harness";
@@ -34,16 +34,51 @@ describe("the Game menu", () => {
     // The summary now names the other game, and the list has RECOMPUTED: the
     // game we came from is the one now on offer.
     //
-    // The menu is also still open — but jsdom cannot see that, and saying so
-    // here would be a claim this file does not check. jsdom ships no UA
+    // The rows are found whether or not the menu is open: jsdom ships no UA
     // stylesheet for `details`, so a CLOSED menu's buttons are exactly as
-    // findable (measured: `display: block`, `getByRole` resolves). The browser
-    // cell in `e2e/the_table.spec.ts` is where the openness is really tested —
-    // it clicks the way back without reopening the menu, which only works in
-    // Chromium if the menu stayed open across the switch.
+    // findable (measured: `display: block`, `getByRole` resolves). Whether it
+    // is open is its `open` attribute, which the cell below reads.
     await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: wire.options.id })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "sim-other" })).toBeNull();
+  });
+
+  // **The menu closes once a switch has landed** (dossier row 2). Nothing
+  // closed the `<details>` when `onSwitch` resolved, so a switch from one
+  // playing game to another — where the banner stays mounted — left the list
+  // open over the game just chosen. The `open` attribute is the menu's state,
+  // and jsdom keeps it; what jsdom cannot see is a stylesheet hiding the rows,
+  // so openness is read off the attribute and never off visibility.
+  it("closes once a switch has landed", async () => {
+    const other = { ...wire.options4p, id: "sim-other" };
+    await renderApp(wire.options, (call) => {
+      if (isGamesList(call, "mine")) return gamesNamed(wire.options.id, "sim-other");
+      if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await user.click(gameMenu());
+    const menu = document.querySelector<HTMLDetailsElement>("details.game-menu")!;
+    expect(menu.open, "the premise: the summary click opened it").toBe(true);
+    await user.click(await screen.findByRole("button", { name: "sim-other" }));
+    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    await waitFor(() => expect(menu.open, "closed once the switch landed").toBe(false));
+  });
+
+  // **And a REFUSED switch leaves it open**, because the refusal is said on
+  // the menu's own line: closing it would put the sentence out of sight.
+  it("stays open with the refusal when a switch is refused", async () => {
+    await renderApp(wire.options, (call) => {
+      if (isGamesList(call, "mine")) return gamesNamed(wire.options.id, "sim-other");
+      if (call.path.endsWith("/api/games/sim-other/table")) return { status: 403, body: wire.notSeated403 };
+      return undefined;
+    });
+    const user = userEvent.setup();
+    await user.click(gameMenu());
+    const menu = document.querySelector<HTMLDetailsElement>("details.game-menu")!;
+    await user.click(await screen.findByRole("button", { name: "sim-other" }));
+    expect(await within(menu).findByText(wire.notSeated403.error)).toBeInTheDocument();
+    expect(menu.open).toBe(true);
   });
 
   it("returns to the lobby without a reload", async () => {

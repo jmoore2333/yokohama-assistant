@@ -8,7 +8,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY } from "./api";
 import type { Channel } from "./route";
-import { stubApi } from "./test/harness";
+import { gate, signedOutReply, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import { doorSentence, failureOf, useMe } from "./whoami";
 
@@ -91,6 +91,43 @@ describe("useMe", () => {
     await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
     expect(result.current.notice).toBeNull();
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  // **A 401 that lands while a deliberate sign-out re-reads says nothing**
+  // (dossier row 3). `signOut` drops the stored name and asks `/api/me` again,
+  // but `me` goes on naming the old player until that answer lands — so a
+  // request a screen sends in that window goes out with no name, is refused
+  // 401, and `App` hands its sentence to `signedOut`. The player asked to
+  // leave; the name step must not greet them with the refusal leaving caused.
+  // The second half is the guard's other edge: once the server names somebody
+  // again, a 401 is news once more and carries its sentence.
+  it("says nothing about a 401 that lands while a deliberate sign-out is re-reading", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    let held: { promise: Promise<Reply>; resolve: (v: Reply) => void } | null = null;
+    stubApi((call) => {
+      if (!call.path.endsWith("/api/me")) return undefined;
+      if (held) return held.promise;
+      return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+    });
+    const { result } = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+
+    const reread = gate<Reply>();
+    held = reread;
+    act(() => result.current.signOut());
+    // The re-read is out, and a screen's request, sent with no name, is refused.
+    const sentence = signedOutReply().body.error;
+    act(() => result.current.signedOut(sentence));
+    held = null;
+    reread.resolve(wire.meSignedOut);
+    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    expect(result.current.notice, "the sign-out was asked for").toBeNull();
+
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    act(() => result.current.signedOut(sentence));
+    await waitFor(() => expect(result.current.notice, "signed in again, a 401 is news").toBe(sentence));
   });
 
   it("carries the server's own sentence when the door refuses", async () => {

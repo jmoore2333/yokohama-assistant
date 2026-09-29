@@ -638,16 +638,6 @@ export interface GamesList {
   next: string | null;
 }
 
-/** Which of the two dealt cards a seat keeps. `card` is 1 or 2, as they are
- *  numbered on screen. */
-export interface KeepRequest {
-  seat: number;
-  card: 1 | 2;
-  /** What this seat is called on screen (spec §5.6). The server writes it onto
-   *  the seat only where it has none yet, so a keep never renames somebody. */
-  name?: string;
-}
-
 /** The 409 a session route answers while its table is still open or dealing:
  *  the ordinary error shape, plus the one status this client BRANCHES on.
  *

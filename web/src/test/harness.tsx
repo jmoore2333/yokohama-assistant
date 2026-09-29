@@ -18,6 +18,7 @@ import { App } from "../App";
 import { CLAIMED_USER_KEY } from "../api";
 import { wire } from "../wire/contract";
 import { currentWorker, stubWorker } from "./fakeWorker";
+import { isCreate, isGamesList } from "./matchers";
 import type { ClientState, GamesList } from "../types";
 
 /** What `GET /api/games` answers with, naming these games.
@@ -40,18 +41,9 @@ export const gamesNamed = (...ids: string[]): GamesList => ({
   next: null,
 });
 
-/** Is this call the LOBBY LISTING, and — when `scope` is given — that scope's?
- *
- *  **One matcher, because there are now two listings behind one path.** Every
- *  stub in this suite matched `GET /api/games` by its path alone, and M6.2's
- *  `?scope=open` walks straight through such a check: a cell stubbing the open
- *  list would silently be handed the `mine` reply and pass while asserting the
- *  wrong thing. A 28th restatement of the path test is how that happens twice. */
-export const isGamesList = (call: ApiCall, scope?: "mine" | "open" | "playing"): boolean => {
-  const [path, query] = call.path.split("?");
-  if (call.method !== "GET" || !path!.endsWith("/api/games")) return false;
-  return scope === undefined || new URLSearchParams(query ?? "").get("scope") === scope;
-};
+/** The listing's and the create's matchers (`matchers.ts`, which says why they
+ *  live apart), re-exported so a cell imports its stub's tools from one place. */
+export { isCreate, isGamesList };
 
 /** What the server answers a request it cannot name a caller for.
  *

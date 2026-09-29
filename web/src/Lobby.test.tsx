@@ -7,13 +7,13 @@
 // that stubbed the open list would be handed the `mine` reply and pass while
 // asserting the wrong thing.
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
 import { setLobbyChat } from "./api";
 import { OPEN_KEY } from "./chatFold";
-import { fakeStream, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
 import type { TableView } from "./types";
@@ -56,9 +56,12 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     // file now makes that request whether or not it is about the chat. A lobby
     // where nothing has been said, derived from the corpus's own page rather
     // than typed out here (the `gamesNamed` rule), so a cell that is not about
-    // the chat has none of it in its DOM. A cell that IS answers first.
+    // the chat has none of it in its DOM. A cell that IS answers first. Its
+    // `rev` is moved to 0 with its `last`: a room nobody has spoken in has
+    // moved neither, and the panel — a count host here since M6.5c2 cycle D —
+    // reads a `rev` ahead of `last` as a delete.
     if (call.method === "GET" && call.path.startsWith("/api/chat"))
-      return { ...wire.houseChat, messages: [], last: 0 };
+      return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(<Lobby me={ME} corner={<span className="identity-corner">{ME}</span>} />);
@@ -468,29 +471,32 @@ describe("the lobby", () => {
       );
     });
 
-    // **Your tables only** (R-13, and the reason the row takes its section).
-    // The creator must hold a seat (R-1.6), so on a server a table you opened
-    // is one you sit at, listed under Your tables alone (`notMine`). The
-    // control still follows the SECTION and not `mine` ALONE, so no other list
-    // can ever draw it. The corpus's open listing was read by a caller who did
-    // not open the table (`mine: false`), so ONE field is moved on its rows,
-    // `mine`, which is all the section-versus-`mine` question reads — which
-    // puts the same table, `mine: true`, in both sections: the one case that
-    // tells a section rule from a `mine` rule. And the control sits in its own cell under the
-    // action (`.row-abandon`), never in the action's.
-    it("draws the control in Your tables and not in Open tables", async () => {
-      const opened = { ...wire.gamesOpen, games: wire.gamesOpen.games.map((g) => ({ ...g, mine: true })) };
-      show((call) => (isGamesList(call, "open") ? opened : undefined));
-      const mine = section("Your tables");
+    // **The creator's control follows `mine`, on whichever row their table is
+    // listed** (dossier row 17, M6.5c2 cycle D). It followed the SECTION —
+    // Your tables only — so a creator who holds no seat, whose table is listed
+    // under Open tables and never under Your tables (the `mine` scope is the
+    // tables you SIT at), was offered it nowhere. `create` refuses such a
+    // table today ("the creator must hold a seat", R-1.6), so this is the
+    // lobby's rule held on its own. A table is still listed once for its
+    // reader (`notMine`), so the control is never drawn twice. The corpus's
+    // open listing, read by a stranger, with ONE field moved on its first row —
+    // `mine`, its creator's seatless reading — and the reader sitting at
+    // nothing, so Your tables is empty. And the control sits in its own cell
+    // under the action (`.row-abandon`), never in the action's.
+    it("draws the control on a seatless creator's row in Open tables, and on no other row there", async () => {
+      const [first, ...rest] = wire.gamesOpen.games;
+      const opened = { ...wire.gamesOpen, games: [{ ...first!, mine: true }, ...rest] };
+      expect(first!.my_seats, "the premise: a seatless reading").toHaveLength(0);
+      show((call) => {
+        if (isGamesList(call, "open")) return opened;
+        if (isGamesList(call, "mine")) return { ...wire.games, games: [] };
+        return undefined;
+      });
       const open = section("Open tables");
-      // Anti-vacuity: the corpus puts the SAME table, opened by this browser,
-      // in both sections (its open listing read from outside), so the two
-      // reads below differ only in which section they are.
-      const control = await within(mine).findByRole("button", { name: "abandon wire" });
+      const control = await within(open).findByRole("button", { name: `abandon ${first!.name ?? first!.id}` });
       expect(control.closest(".row-abandon")).not.toBeNull();
       expect(control.closest(".row-action")).toBeNull();
-      expect(within(open).getByRole("link", { name: "wire" })).toBeInTheDocument();
-      expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
+      expect(within(open).getAllByRole("button", { name: /^abandon / }), "only the creator's row").toHaveLength(1);
     });
 
     // Read, not moved: the corpus's playing table as its SECOND seat reads it
@@ -527,6 +533,64 @@ describe("the lobby", () => {
     // setup screen's own list used to fail in: a swallowed refusal told a
     // signed-out player they had nothing.
     expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+
+  // **One scope refused leaves the other two standing** (dossier row 4). The
+  // three listings were ONE `Promise.all`, so a refusal of any one blanked all
+  // three on the first read: Your tables said nothing over a strip that was
+  // about Open tables. Each section takes its own answer now, and the refusal
+  // is said once, in the section it is about.
+  it("draws the two lists that answered on the first read, and one strip in the section that was refused", async () => {
+    show((call) => {
+      if (isGamesList(call, "open")) return { status: 500, body: wire.error };
+      if (isGamesList(call, "playing")) return wire.gamesPlaying;
+      return undefined;
+    });
+    const mine = section("Your tables");
+    const open = section("Open tables");
+    const playing = section("Being played");
+    await waitFor(() => expect(within(mine).getAllByRole("listitem")).toHaveLength(wire.games.games.length));
+    expect(within(playing).getAllByRole("listitem")).toHaveLength(wire.gamesPlaying.games.length);
+    expect(within(open).getByText(wire.error.error)).toBeInTheDocument();
+    expect(within(open).queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getAllByText(wire.error.error), "said once").toHaveLength(1);
+    expect(screen.queryByText(/loading/)).toBeNull();
+  });
+
+  // **And a LATER read with one scope refused keeps that section's rows under
+  // its strip while the other two are refreshed** — a wake's re-read is the
+  // same three listings, and one refusal is not a reason to leave the rest of
+  // the screen older than the store. The second `mine` answer is the corpus's
+  // listing cut to its first row, so a refresh is visible as one row fewer.
+  it("keeps a refused section's rows under its strip on a later read, and refreshes the others", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      let reads = 0;
+      show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (isGamesList(call, "mine")) {
+          reads += 1;
+          return reads === 1 ? wire.games : { ...wire.games, games: wire.games.games.slice(0, 1) };
+        }
+        if (isGamesList(call, "open") && reads > 1) return { status: 500, body: wire.error };
+        return undefined;
+      });
+      const mine = () => section("Your tables");
+      const open = () => section("Open tables");
+      await until(() => within(mine()).queryAllByRole("listitem").length === wire.games.games.length, "the first read");
+      const openRows = wire.gamesOpen.games.length;
+      expect(within(open()).getAllByRole("listitem")).toHaveLength(openRows);
+      await until(() => stream.opens() > 0, "the house stream is open");
+
+      stream.push("house", { seq: 1, chat: 0 });
+      await until(() => within(mine()).queryAllByRole("listitem").length === 1, "Your tables was refreshed");
+      expect(within(open()).getAllByRole("listitem"), "the refused section keeps its rows").toHaveLength(openRows);
+      expect(within(open()).getByText(wire.error.error)).toBeInTheDocument();
+      expect(screen.getAllByText(wire.error.error), "said once").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -693,16 +757,15 @@ describe("the lobby's chat", () => {
     }
   });
 
-  // **The house frame is a WAKE, and the panel's tick is this screen's own**
-  // (spec §6.2). The house channel coalesces and carries no table, so the lobby
-  // refetches its lists on any frame; the chat is told to ask for its delta the
-  // same way, off the same wake, rather than being handed a count it cannot
-  // read from a frame that names no table.
-  it("asks the house chat for its delta on a house frame", async () => {
+  // **The lobby chat is a COUNT host off the house frame** (M6.5c2 cycle D,
+  // row 130). The house frame carries the house chat's newest number beside
+  // the sequence every table's move bumps; the panel used to be handed a tick
+  // per wake and asked for a delta on every one — every move of every game on
+  // the server — and made a second read at mount off the lobby's own opening
+  // read. It reads its delta now only when `chat` passes what it holds, and
+  // the mount read is the only read until then.
+  it("reads the lobby chat once at mount, not on a table's move, and again when the house chat moves", async () => {
     setLobbyChat(true);
-    // Remembered OPEN, because a folded count-driven panel fetches nothing —
-    // but a wake-driven one asks whatever its fold state, and this cell would
-    // pass for the wrong reason if the fold were the thing being read.
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
     const stream = fakeStream();
     vi.useFakeTimers();
@@ -713,12 +776,47 @@ describe("the lobby's chat", () => {
         return undefined;
       });
       await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => within(section("Your tables")).queryAllByRole("listitem").length > 0, "the lists landed");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "one read at mount, the lists' landing none").toHaveLength(1);
+      // A table moved: the sequence moves and the house chat does not.
+      stream.push("house", { seq: 1, chat: wire.houseChat.last, rev: wire.houseChat.rev });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "a table's move asks the chat nothing").toHaveLength(1);
+      stream.push("house", { seq: 2, chat: wire.houseChat.last + 1, rev: wire.houseChat.rev + 1 });
+      await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **And nothing for its own post** (row 130): the 201 has already moved the
+  // cursor to the message the house frame then counts. The room starts empty
+  // (the resting `show` answer), so the post's number lands above it.
+  it("asks the lobby chat nothing for its own post", async () => {
+    setLobbyChat(true);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (call.method === "POST" && call.path === "/api/chat") return { status: 201, body: wire.houseChatPost };
+        return undefined;
+      });
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => screen.queryByRole("textbox", { name: "Say something" }) !== null, "the chat's input");
+      const box = screen.getByRole("textbox", { name: "Say something" });
+      fireEvent.change(box, { target: { value: "hi all" } });
+      fireEvent.submit(box.closest("form")!);
+      await until(() => stub.matching("POST", "/api/chat").length === 1, "the post went out");
+      await flush();
       const before = stub.matching("GET", "/api/chat").length;
-      stream.push("house", { seq: 1, chat: 1 });
-      await until(
-        () => stub.matching("GET", "/api/chat").length > before,
-        "the chat delta was asked for",
-      );
+      expect(before, "the mount read").toBe(1);
+      stream.push("house", { seq: 1, chat: wire.houseChatPost.seq, rev: wire.houseChatPost.seq });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "the frame counts the post the 201 drew").toHaveLength(before);
+      expect(screen.getByText(wire.houseChatPost.text)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -786,7 +884,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const retry = vi.fn();
@@ -819,7 +917,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const { rerender } = render(<Lobby me={ME} />);
@@ -846,7 +944,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const { rerender } = render(<Lobby me={ME} onReached={() => {}} />);
@@ -863,7 +961,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     render(<Lobby me={ME} serverUp={false} onReached={onReached} />);

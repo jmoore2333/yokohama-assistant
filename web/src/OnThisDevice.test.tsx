@@ -19,7 +19,7 @@ import { OnThisDevice } from "./OnThisDevice";
 import { api, rememberServerFacts } from "./api";
 import { resetFactsForTest } from "./local/facts";
 import { enqueue, resetOutboxForTests } from "./outbox";
-import { stubApi } from "./test/harness";
+import { isGamesList, stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
@@ -56,7 +56,7 @@ describe("On this device", () => {
     // The read went to the MODULE. `fetch` is the setup file's throwing stub,
     // so a section that asked the server would have failed loudly instead.
     expect(
-      currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
+      currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine")),
     ).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -80,7 +80,7 @@ describe("On this device", () => {
     };
     stubWorker({
       call: (req) =>
-        req.path === "/api/games" && req.method === "GET"
+        isGamesList(req, "mine")
           ? { status: 200, body: { games: [game], next: null } }
           : undefined,
     });
@@ -128,7 +128,7 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     await waitFor(() =>
       expect(
-        currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
+        currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine")),
       ).toHaveLength(1),
     );
     await waitFor(() => expect(screen.queryByRole("link", { name: LOCAL })).toBeNull());
@@ -163,7 +163,7 @@ describe("On this device", () => {
     it("lists a game that is not over under Will not open here, not as a link, with Back up and Remove", async () => {
       stubWorker({
         call: (req) =>
-          req.method === "GET" && req.path === "/api/games"
+          isGamesList(req, "mine")
             ? { status: 200, body: { games: [row("local-9", false)], next: null } }
             : undefined,
       });
@@ -183,7 +183,7 @@ describe("On this device", () => {
     it("keeps a FINISHED game against a foreign bot as an ordinary row: it opens as it always did", async () => {
       stubWorker({
         call: (req) =>
-          req.method === "GET" && req.path === "/api/games"
+          isGamesList(req, "mine")
             ? { status: 200, body: { games: [row("local-9", true)], next: null } }
             : undefined,
       });
@@ -196,7 +196,7 @@ describe("On this device", () => {
       let games = [row("local-9", false)];
       stubWorker({
         call: (req) => {
-          if (req.method === "GET" && req.path === "/api/games")
+          if (isGamesList(req, "mine"))
             return { status: 200, body: { games, next: null } };
           if (req.method === "DELETE" && req.path === "/api/games/local-9") {
             games = [];
@@ -223,7 +223,7 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     await screen.findByRole("link", { name: LOCAL });
     const listings = () =>
-      currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games" && p.method === "GET");
+      currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine"));
     expect(listings()).toHaveLength(1);
 
     // A write on the local host — a create, a move, a delete — is what the
@@ -457,7 +457,7 @@ describe("keeping the games on this device", () => {
     });
     stubWorker({
       call: (req) =>
-        req.path === "/api/games" && req.method === "GET"
+        isGamesList(req, "mine")
           ? { status: 200, body: { games: [], next: null } }
           : undefined,
     });
