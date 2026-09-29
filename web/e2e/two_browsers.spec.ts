@@ -41,6 +41,7 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
+import { CAP } from "./caps";
 import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 // The readings every walk that SHARES a table makes — whose hand, whose move,
 // the table's chat, its stream, and the server's event count — live in
@@ -76,12 +77,10 @@ test.afterEach(async () => {
   await abandonOpened(table);
 });
 
-/** The walk's own cap on MOVES. Idle looks have their own, below: the two
- *  failures are different — a game that will not end, and a table where nobody
- *  is moving — and a single counter would report the second as the first.
- *  A hit throws `capReached`, which names the cap, the turn and the
- *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
-const CAP = 4000;
+// The walk's cap on MOVES is `CAP` (`caps.ts`). Idle looks have their own,
+// below: the two failures are different — a game that will not end, and a
+// table where nobody is moving — and a single counter would report the second
+// as the first.
 
 /** The word the third browser has to present before it may read this table. */
 const WATCH_PASSWORD = "sesame";

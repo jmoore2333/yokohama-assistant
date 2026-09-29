@@ -617,12 +617,18 @@ const BACKUP_POINTER =
  *  `call`'s server branch never reaches it, because a hosted game's write is
  *  the server's problem and has the server's own remedy. */
 function withUnsaved<T>(out: T, reason: string | null): T {
-  const warned = out as { warnings?: unknown };
-  if (out && typeof out === "object" && Array.isArray(warned.warnings)) {
-    warned.warnings = [
-      ...(warned.warnings as string[]),
-      `APPLIED BUT NOT SAVED — ${reason ?? "the browser refused the write"} — ${BACKUP_POINTER}`,
-    ];
+  const line = `APPLIED BUT NOT SAVED — ${reason ?? "the browser refused the write"} — ${BACKUP_POINTER}`;
+  // **A reply with no `warnings` of its own is GIVEN the array** (M6.5c2 cycle
+  // D, dossier row 56). The line used to be appended only where the reply
+  // already carried one, so it was DROPPED here from a create or a keep the
+  // store refused — a table, which has none. It is carried now, on every reply
+  // with a body. **Carried is not shown**: the screens that read those two
+  // replies (the create's `onCreated`, the deal's keep) draw no `warnings`
+  // today. And a reply with no body — a delete's 204 — has nothing here to
+  // carry it on.
+  if (out && typeof out === "object") {
+    const warned = out as { warnings?: unknown };
+    warned.warnings = Array.isArray(warned.warnings) ? [...(warned.warnings as string[]), line] : [line];
   }
   return out;
 }

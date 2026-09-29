@@ -30,17 +30,12 @@ import {
   watchForBreakage,
 } from "./harness";
 import type { Affordance } from "./harness";
+import { CAP } from "./caps";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
 // and a silent absence.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
-
-/** The walk's own cap. Well above what a game takes (the run prints its own
- *  figure), and low enough that a loop fails as a loop rather than as a timeout.
- *  A hit throws `capReached`, which names the cap, the turn and the
- *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
-const CAP = 4000;
 
 test("a whole two-player game plays through to a winner", async ({ page }) => {
   const watch = watchForBreakage(page);

@@ -59,6 +59,28 @@ export type Reply = { seq: number } & Record<string, unknown>;
  *  recovered when what happened was that it could not be read. */
 export const RESTART_SENTENCE = "the local host restarted — reloaded from the last saved move";
 
+/** What the Worker's answer to a game's acquisition or a restore's adoption
+ *  said when this browser's storage could not be read (M6.5c2 cycle D,
+ *  dossier row 14) — its sentence, carried whole.
+ *
+ *  **A type of its own, so a screen can tell it from every other rejection.**
+ *  A Worker that will not start, a pending call settled by a restart and a
+ *  store that cannot be read all arrive here as rejections; only the last is
+ *  a thing the player can be shown a face for, with Reload, and the first two
+ *  already have their own lines. */
+export class LocalStoreUnreadable extends Error {
+  constructor(sentence: string) {
+    super(sentence);
+    this.name = "LocalStoreUnreadable";
+  }
+}
+
+/** A Take over the Worker answered `held: false` — a steal of the same game
+ *  from another tab landed first, and aborted this one before it was granted.
+ *  The player is told, rather than shown a screen that believes it plays the
+ *  game here (M6.5c2 cycle D, dossier row 56). */
+export const TAKEOVER_REFUSED_SENTENCE = "another tab took this game first \u2014 take it over again to play it here";
+
 let worker: Worker | null = null;
 let seq = 0;
 const pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void }>();
@@ -72,10 +94,12 @@ const heldByPage = new Set<string>();
 /** Restarts with nothing answered in between.
  *
  *  **One is recovery; a second in a row is a host that cannot boot**, and
- *  restarting again is a loop — a module that fails to load, or an IndexedDB
- *  that will not open, traps on every message including the `hold` the restart
- *  itself sends. The budget is replenished by any ordinary reply, which is the
- *  only evidence that the host works. */
+ *  restarting again is a loop — a module that fails to load traps on every
+ *  message including the `hold` the restart itself sends. (An IndexedDB that
+ *  will not open is NOT this since M6.5c2 cycle D: the Worker answers it in
+ *  the storage's own words, an ordinary reply, and nothing restarts.) The
+ *  budget is replenished by any ordinary reply, which is the only evidence
+ *  that the host works. */
 let restartsWithoutAnswer = 0;
 
 /** Settle every waiting call with one sentence, and tell whoever is listening.
@@ -242,7 +266,11 @@ function restart(): void {
   fail(RESTART_SENTENCE);
   // `start()` happens inside `ask`; asking for the holds is what starts the new
   // Worker. Nothing else can be posted ahead of them: every other `ask` is now
-  // waiting on the gate.
+  // waiting on the gate. **A Worker that cannot even be BUILT rejects its
+  // `ask` rather than throwing out of it** (M6.5c2 cycle D, dossier row 56),
+  // so this `Promise.all` is always reached and the gate always opens; before,
+  // the throw escaped `ids.map` and every later call waited on a gate nothing
+  // would ever open.
   void Promise.all(ids.map((id) => ask({ kind: "hold", id }).catch(() => undefined))).then(() => {
     // Only the LATEST restart's gate is cleared here: a second trap during the
     // first recovery installs its own, and clearing unconditionally would drop
@@ -263,11 +291,32 @@ function ask<T extends Record<string, unknown>>(msg: ReqBody): Promise<T> {
   // closes the one path that reached it without another tab being involved.
   const gate = msg.kind === "hold" ? null : reacquiring;
   if (gate) return gate.then(() => ask<T>(msg));
-  const w = start();
+  // **`ask` never throws; it rejects** (M6.5c2 cycle D, dossier row 56). Its
+  // callers chain on the promise — the restart's re-holds above most of all —
+  // and a synchronous throw skipped every one of them.
+  let w: Worker;
+  try {
+    w = start();
+  } catch (e) {
+    // The browser would not build the Worker at all — a script the page may
+    // not load. The same sentence and the same consequence as a Worker that
+    // was built and then failed to start (`onerror`, below `start`): every
+    // listener is told, and the next call tries again.
+    const sentence = `the local host failed to start: ${e instanceof Error ? e.message : String(e)}`;
+    drop(sentence);
+    return Promise.reject(new Error(sentence));
+  }
   const mine = (seq += 1);
   return new Promise<T>((resolve, reject) => {
     pending.set(mine, { resolve: (r) => resolve(r as unknown as T), reject });
-    w.postMessage({ seq: mine, ...msg });
+    try {
+      w.postMessage({ seq: mine, ...msg });
+    } catch (e) {
+      // A message that was never sent has no reply to wait for: out of the
+      // pending list, and the call refused with what `postMessage` said.
+      pending.delete(mine);
+      reject(e instanceof Error ? e : new Error(String(e)));
+    }
   });
 }
 
@@ -285,13 +334,28 @@ export async function localCall(
   const cut = path.indexOf("?");
   const p = cut === -1 ? path : path.slice(0, cut);
   const q = cut === -1 ? "" : path.slice(cut + 1);
-  const r = await ask<{ status: number; body: string; saved?: Saved; reason?: string }>({
+  const r = await ask<
+    { status: number; body: string; saved?: Saved; reason?: string } & Partial<UnreadableReply>
+  >({
     kind: "call",
     method,
     path: p,
     query: q,
     body: body === undefined ? null : JSON.stringify(body),
   });
+  // **The Worker could not read this browser's storage to answer at all** —
+  // its startup (`ready`) failed on the open or the read (M6.5c2 cycle D,
+  // dossier row 14). Nothing was applied and nothing written, so no listing is
+  // told to re-read; the answer is a refusal in the storage's own words, as a
+  // 503 — the host is up and its store is not — so `settle` raises it the way
+  // every other refusal is raised. (No GAME read meets it: a game is read only
+  // after its hold is granted, and a hold made while the startup fails is
+  // refused by the same store first — so `App`'s broken-save arm, which takes
+  // any local 5xx on a game read, never sees this one.)
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) {
+    return { status: 503, text: JSON.stringify({ error: unreadable }), saved: false, reason: null };
+  }
   // **Every write, whatever it wrote**, so the local listing can re-read. A
   // GET changes nothing a list shows — except the bot's pump on a cold read,
   // which only ever happens on the way into the screen that is about to draw
@@ -437,7 +501,13 @@ export async function localRestoreRead(envelope: string): Promise<string> {
  * and a restore is the one change that does not arrive through a call.
  */
 export async function localAdopt(ids: string[]): Promise<number> {
-  const r = await ask<{ adopted: number }>({ kind: "adopt", ids });
+  const r = await ask<{ adopted: number } & Partial<UnreadableReply>>({ kind: "adopt", ids });
+  // **A store that could not be read is refused, and restarts nothing**
+  // (M6.5c2 cycle D, dossier row 14). Nothing was adopted, so no listing is
+  // told to re-read; the games are on the device, and the next start loads
+  // them.
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) throw new LocalStoreUnreadable(unreadable);
   for (const f of [...writeHandlers]) f();
   return r.adopted;
 }
@@ -448,16 +518,32 @@ export async function localAdopt(ids: string[]): Promise<number> {
  *  the Worker's store from IndexedDB, so the holder always starts from the
  *  last state ANY tab acknowledged. */
 export async function hold(id: string): Promise<boolean> {
-  const ok = (await ask<{ held: boolean }>({ kind: "hold", id })).held;
-  if (ok) heldByPage.add(id);
-  return ok;
+  return acquired(await ask<{ held: boolean } & Partial<UnreadableReply>>({ kind: "hold", id }), id);
 }
 
 /** Take it anyway (R-6.5b.5). The lock is STOLEN, which is what turns the other
- *  tab read-only: its own request rejects and its Worker tells its page. */
+ *  tab read-only: its own request rejects and its Worker tells its page.
+ *
+ *  **A steal the Worker did not grant is REFUSED, and is not recorded**
+ *  (M6.5c2 cycle D, dossier row 56): the reply's `held` used to be ignored and
+ *  the game added to what this page holds whatever it said — so the screen
+ *  believed it played a game another tab had just taken, and a restart would
+ *  re-acquire it. */
 export async function takeover(id: string): Promise<void> {
-  await ask({ kind: "takeover", id });
-  heldByPage.add(id);
+  if (!acquired(await ask<{ held: boolean } & Partial<UnreadableReply>>({ kind: "takeover", id }), id)) {
+    throw new Error(TAKEOVER_REFUSED_SENTENCE);
+  }
+}
+
+/** An acquisition's answer, read ONCE for both: the storage's refusal as a
+ *  [`LocalStoreUnreadable`] (M6.5c2 cycle D, dossier row 14), and a granted
+ *  hold recorded as this page's. */
+function acquired(r: { held?: boolean } & Partial<UnreadableReply>, id: string): boolean {
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) throw new LocalStoreUnreadable(unreadable);
+  const ok = r.held === true;
+  if (ok) heldByPage.add(id);
+  return ok;
 }
 
 /** Let it go — what the game screen does when it unmounts, so navigating away
@@ -488,6 +574,12 @@ export const onLocalFault = (f: (sentence: string) => void): (() => void) => {
 /** Whether this tab has a Worker at all — what tells "the module never loaded"
  *  from "nobody has played locally yet". */
 export const localHostStarted = (): boolean => worker !== null;
+
+/** How many calls are waiting for an answer — **for the CELLS**, and named
+ *  so, as [`resetLocalHostForTests`] is: a waiting call is otherwise visible
+ *  only when it is finally settled, and one that is never going to be answered
+ *  is exactly what a cell has to be able to count. */
+export const pendingCallsForTests = (): number => pending.size;
 
 /**
  * Terminate the Worker and forget everything this page held.

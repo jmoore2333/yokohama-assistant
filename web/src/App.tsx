@@ -31,6 +31,7 @@ import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
+import { BrokenStore } from "./BrokenStore";
 import { LockScreen, LOST_SENTENCE } from "./LockScreen";
 import { localPair } from "./local/client";
 import { useLocalHold, type LockState } from "./local/useLocalHold";
@@ -920,14 +921,33 @@ export function App() {
     // this tab's Worker is the answer, and the server is not asked at all.
     // The Worker is already running there: the door's own listing starts it.
     if (wordsFrom.current === "server") return;
+    // **The effect's cleanup** (M6.5c2 cycle D, dossier row 56: it had none).
+    // An answer that lands after the effect is gone — the channel changed, the
+    // door signed in or out, the screen unmounted — is dropped rather than
+    // set. And a read that had NOT landed gives its claim on `wordsFrom` back,
+    // so the next run asks again: React's StrictMode runs this effect, cleans
+    // it up and runs it again before any answer, and a claim kept across that
+    // would have dropped the only read ever made. A read that DID land keeps
+    // its claim, which is what keeps the server's words from being asked for
+    // twice or overwritten by the module's.
+    let live = true;
+    let landed = false;
+    const land = (words: Labels | null) => {
+      landed = true;
+      if (live) setLabels(words);
+    };
+    const cleanup = () => {
+      live = false;
+      if (!landed) wordsFrom.current = null;
+    };
     if (channel === "local") {
       if (wordsFrom.current === "local") return;
       wordsFrom.current = "local";
       api
         .labels("local")
-        .then(setLabels)
-        .catch(() => setLabels(null));
-      return;
+        .then(land)
+        .catch(() => land(null));
+      return cleanup;
     }
     // **Past the door, the SERVER is asked** — it is the one that may have been
     // updated — under a bound, and the Worker answers when that read fails OR
@@ -942,8 +962,9 @@ export function App() {
     wordsFrom.current = "server";
     bounded(api.labels(), BOUND_MS)
       .catch(() => api.labels("local"))
-      .then(setLabels)
-      .catch(() => setLabels(null));
+      .then(land)
+      .catch(() => land(null));
+    return cleanup;
   }, [channel, door.me?.user]);
 
   useEffect(() => {
@@ -1553,6 +1574,21 @@ export function App() {
           leaveLabel={localExit.label}
         />
       );
+    // **This browser's storage could not be read** (M6.5c2 cycle D, dossier
+    // row 14): the game's acquisition — its generation, then the rebuild's
+    // read — failed, and the Worker said so in the storage's own words rather
+    // than trapping into a restart that would meet the same store. Here for
+    // the lock screen's reason: nothing has been read, so there is no game to
+    // draw under it. See `BrokenStore` for the face, and why it is a file of
+    // its own.
+    if (lockId !== null && lockState === "unreadable")
+      return (
+        <BrokenStore
+          sentence={lock.sentence ?? ""}
+          onLeave={() => leave(localExit.to)}
+          leaveLabel={localExit.label}
+        />
+      );
     // **A save in this browser that no longer rebuilds** (spec §4): the
     // engine's own sentence, the bytes still saveable and the game still
     // abandonable — neither of which asks the module to replay anything.
@@ -1985,7 +2021,13 @@ export function App() {
           // **A build that serves no lobby lists this browser's games**: its
           // server has no game routes to list from (the whole-branch review's
           // Important 1), and every game this screen can show is a local one.
-          savedFrom={multiplayerOffered() ? undefined : "local"}
+          // **And so does a LOCAL game's screen in a build that serves one**
+          // (M6.5c2 cycle D, dossier row 56): the games a player switches to
+          // from a game on this device are the other games on this device —
+          // the server's tables are the lobby's list, and on a page whose
+          // server cannot be reached asking it drew a refusal under a local
+          // game.
+          savedFrom={multiplayerOffered() && !isLocal(state.id) ? undefined : "local"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
             The banner is one row at 1440 and 1280 by a gate that measures it

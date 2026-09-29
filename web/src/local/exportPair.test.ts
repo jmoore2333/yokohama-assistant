@@ -13,6 +13,8 @@
 import { describe, expect, it } from "vitest";
 import {
   exportPair,
+  failureReply,
+  fromStorage,
   pairSource,
   StoreUnreadable,
   unreadableOf,
@@ -204,5 +206,57 @@ describe("the unreadable reply", () => {
   it("reads an ordinary pair, with or without a record, as no refusal at all", () => {
     expect(unreadableOf({ ...STORE })).toBeNull();
     expect(unreadableOf({ record: null, table: null })).toBeNull();
+  });
+});
+
+// ---- the actor's answer to a failure, everywhere else it reads the store ----
+//
+// **The export arm's rule, carried to the other three places the Worker reads
+// IndexedDB** (M6.5c2 cycle D, dossier row 14): a game's acquisition (its
+// generation, then the rebuild's read of every pair), the Worker's startup
+// (`ready`: the open, then the same rebuild) and a restore's reconciliation
+// (`adopt`). `worker.ts` wraps each storage call in [`fromStorage`] and answers
+// every failed request through [`failureReply`] — both imported from here for
+// this file's own reason: the Worker cannot be loaded in a cell, and a tested
+// model beside an untested copy would be two implementations.
+describe("a failure, answered", () => {
+  it("names a storage read that failed as unreadable storage, in the storage's own words", async () => {
+    const failed = fromStorage(async () => {
+      throw new DOMException("The database connection is closing.", "InvalidStateError");
+    });
+    await expect(failed).rejects.toBeInstanceOf(StoreUnreadable);
+    await expect(failed).rejects.toThrow(
+      "this browser's storage could not be read \u2014 The database connection is closing.",
+    );
+  });
+
+  it("hands a read that worked straight through, and never re-wraps a refusal it is given", async () => {
+    expect(await fromStorage(async () => 7)).toBe(7);
+    const already = new StoreUnreadable(new Error("Connection lost."));
+    await expect(
+      fromStorage(async () => {
+        throw already;
+      }),
+    ).rejects.toBe(already);
+  });
+
+  // The split the whole rule is for: unreadable storage is an ORDINARY reply
+  // the page can draw; anything else is the module's trap, which the page
+  // recovers from with a fresh Worker.
+  it("answers unreadable storage as an ordinary reply, and a module fault as the trap", () => {
+    const refusal = new StoreUnreadable(new Error("Connection lost."));
+    const unreadable = failureReply(4, refusal);
+    expect(unreadable).toEqual({ seq: 4, ...unreadableReply(refusal) });
+    expect(unreadable, "never the trap").not.toHaveProperty("trapped");
+    expect(unreadableOf(unreadable)).toBe("this browser's storage could not be read \u2014 Connection lost.");
+
+    const trap = failureReply(5, new Error("RuntimeError: unreachable executed"));
+    expect(trap).toEqual({
+      seq: 5,
+      status: 500,
+      body: JSON.stringify({ error: "the local host stopped: Error: RuntimeError: unreachable executed" }),
+      trapped: true,
+    });
+    expect(unreadableOf(trap)).toBeNull();
   });
 });

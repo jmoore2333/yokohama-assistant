@@ -3853,6 +3853,29 @@ describe("a local game", () => {
     expect(document.querySelector("button.option")).toBeNull();
   });
 
+  // **A store this browser cannot read is its own face** (M6.5c2 cycle D,
+  // dossier row 14). The acquisition reads IndexedDB — the game's generation,
+  // then every stored pair — and when that failed the Worker used to answer
+  // with a trap: the page threw its host away, said the host had restarted,
+  // and drew no screen for the game at all — nothing a player could act on.
+  // Now the answer is the storage's own sentence, drawn on the lock screen's
+  // shape with Reload — and, as with the other tab's lock, nothing of the
+  // game has been read.
+  it("draws the broken-store face with Reload when this browser's storage could not be read, and reads nothing", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => ({ unreadable: sentence }) } });
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    const face = document.querySelector<HTMLElement>(".broken-store");
+    expect(face, "the face is its own screen").not.toBeNull();
+    expect(within(face!).getByRole("button", { name: "Reload" })).toBeEnabled();
+    // The way out this build offers a local screen — the lobby, since this
+    // build serves one (the single-player build's cells send it to the door).
+    expect(within(face!).getByRole("button", { name: "Lobby" })).toBeEnabled();
+    expect(screen.queryByText("This game is open in another tab"), "not the other tab's face").toBeNull();
+    expect(callsOn(LOCAL), "nothing of the game was read").toEqual([]);
+    expect(FakeWorker.instances, "and the host was not restarted").toHaveLength(1);
+  });
+
   it("opens the game when Take over is clicked", async () => {
     const { user } = await openLocal(
       { ...wire.optionsMany, id: LOCAL },
@@ -4196,6 +4219,38 @@ describe("a local game", () => {
     await user.click(gameMenu());
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  // **A LOCAL game's Game menu lists this browser's games in EVERY build**
+  // (M6.5c2 cycle D, dossier row 56). The single-player build's cell below
+  // was the fix for a build with no lobby; in a build that serves one, the
+  // menu on a local game's screen still asked the SERVER — so it listed the
+  // player's hosted tables as the games to switch to from a local one, and on
+  // a page whose server cannot be reached it drew that refusal under a local
+  // game. The server here lists a table of its own, and it is the row that
+  // must NOT appear.
+  it("lists this browser's games in a local game's Game menu in a build that serves a lobby too", async () => {
+    const { user, stub } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          call: (req) =>
+            isGamesList(req, "mine") ? { status: 200, body: gamesNamed(LOCAL, "local-2") } : undefined,
+        },
+        server: (call) => (isGamesList(call, "mine") ? gamesNamed("sim-9") : undefined),
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    const before = stub.calls.length;
+    await user.click(gameMenu());
+    const menu = document.querySelector<HTMLElement>(".game-menu")!;
+    await waitFor(() => expect(within(menu).queryByText("loading\u2026")).toBeNull());
+    expect(within(menu).getByRole("button", { name: "local-2" }), "this browser's other game").toBeInTheDocument();
+    expect(within(menu).queryByRole("button", { name: "sim-9" }), "not the server's table").toBeNull();
+    expect(
+      stub.calls.slice(before).map((c) => `${c.method} ${c.path}`),
+      "nothing the menu did reached fetch",
+    ).toEqual([]);
   });
 
   it("keeps the other tab's lock screen's way out to the lobby in a build that serves one", async () => {

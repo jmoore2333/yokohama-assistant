@@ -31,16 +31,11 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 import { archiveDir, BASE_URL, haveBrowser } from "../playwright.config";
 import { act, atTheGame, capReached, deadEnd, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 import type { Affordance } from "./harness";
+import { CAP, REV } from "./caps";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
 // `every_spec_can_skip.spec.ts` reads this directory for.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
-
-/** The walk's own cap, the same figure every other walk here carries: well
- *  above what a game takes, low enough that a loop fails as a loop.
- *  A hit throws `capReached`, which names the cap, the turn and the
- *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
-const CAP = 4000;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "..", "..", "crates", "yokohama-web", "tests", "fixtures");
@@ -69,10 +64,6 @@ function callerSegment(email: string): string {
 }
 
 const SEGMENT = callerSegment(WALKER);
-
-/** This build's semantics rev, which is the archive's own directory level.
- *  Asserted against the path the server reports rather than assumed. */
-const REV = "rev7";
 
 /**
  * The page's dedicated Worker — the local host itself.
@@ -396,6 +387,19 @@ test("a reload comes back from IndexedDB with every committed move, and the repl
   page,
 }) => {
   const watch = watchForBreakage(page);
+  // **The cold-pump clause stays PARKED** (spec §6.5; the M6.5b close's Task 8
+  // ruling). §6.5 wanted this reload to prove the bot's trailing run is played
+  // on a cold read of a record that ENDS at the bot's turn, and no local record
+  // ends there. The M6.5b ruling rested on every local game seating the person
+  // first; the local form has since offered "First player: The bot", and the
+  // M6.5c2 cycle D dossier asked whether that reaches the arm (row 24,
+  // `docs/plans/2026-09-28-web-frontend-m6.5c2d-dossier.md`). It does not: the
+  // create plays the bot's opening run BEFORE the first record is written
+  // (`tables.rs`, `bring_alive` ahead of the record-first write), and every
+  // input persists after its own pump — so a bot-first game, too, stores its
+  // first record at the person's turn. The arm is still read code with no
+  // production path; the one way to it is a RESTORED pair whose record ends at
+  // the bot's turn, which is not this cell's.
   const game = await startGame(page, { local: true });
   const pick = rng(0x5245_4c4f); // "RELO"
   // A long preamble on purpose: the O-3 figure below is the cost of a COLD
@@ -640,7 +644,7 @@ test("a store that will not even be READ still exports the move it refused, and 
 // failed read was a trap: the page terminated this host, for an export the
 // page's own read could have answered all along. (The restart re-holds nothing
 // here, so another host starts only when something asks again.)
-test("a tab whose host cannot read IndexedDB still backs everything up, and its host is not restarted", async ({
+test("a tab whose host cannot read IndexedDB still backs everything up, is refused the game as a face, and its host is not restarted", async ({
   page: a,
   context,
 }) => {
@@ -700,6 +704,30 @@ test("a tab whose host cannot read IndexedDB still backs everything up, and its 
   expect(startedB, "B started no second local host").toBe(hostsB);
   expect(b.workers()).toContain(hostB);
   await expect(b.getByText("the local host restarted")).toHaveCount(0);
+
+  // **The same store refuses B the GAME, as a face and not a trap** (M6.5c2
+  // cycle D, dossier row 14). Opening a local game takes its ownership
+  // generation in IndexedDB, and B's host cannot run that transaction either.
+  // That used to be a trap: B's page threw its host away and said "the local
+  // host restarted" about a store it had not read, and drew no screen for the
+  // game. It is the storage's own sentence now, drawn with Reload, from the
+  // one host B started. A leaves the game first, and the lock is seen to go,
+  // so what B meets is the store and not A's tab.
+  await a.goto("/");
+  const lockName = `yokohama:local:${game.id}`;
+  await expect
+    .poll(
+      () => b.evaluate(async (name) => ((await navigator.locks.query()).held ?? []).some((l) => l.name === name), lockName),
+      { message: "A's tab let the game go" },
+    )
+    .toBe(false);
+  await b.locator(`.on-this-device a[href="#/t/${game.id}"]`).click();
+  const face = b.locator(".broken-store");
+  await expect(face).toContainText("this browser's storage could not be read");
+  await expect(face.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(b.getByText("This game is open in another tab")).toHaveCount(0);
+  expect(startedB, "and B's host is still the one it started").toBe(hostsB);
+  expect(b.workers()).toContain(hostB);
   expect(watchA.failures).toEqual([]);
   expect(watchB.failures).toEqual([]);
 });

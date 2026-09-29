@@ -211,16 +211,30 @@ fn doc_of(name: &str) -> Result<Doc, String> {
     }
 }
 
+/// The store's absence, as the refusal it is (M6.5c2 cycle D, dossier row 56).
+///
+/// **A refusal and not an `expect`**: a panic here traps the module, and a
+/// trapped module is the recovery the page makes for a FAULT — a fresh Worker —
+/// when what happened is a caller that asked before [`init`]. The Worker always
+/// `init`s first, so this names a mistake rather than a state anything ships.
+fn no_store(export: &str) -> String {
+    format!("init() before {export}(): this host has no store yet")
+}
+
 pub fn load_inner(doc: &str, id: &str, text: &str) -> Result<(), String> {
+    // The kind FIRST, so a kind that is not one is named whether or not there
+    // is a store to put it in.
+    let doc = doc_of(doc)?;
     let guard = GAMES.lock().expect("the host's games");
-    let games = guard.as_ref().expect("init() before load()");
-    games.load_document(doc_of(doc)?, id, text)
+    let games = guard.as_ref().ok_or_else(|| no_store("load"))?;
+    games.load_document(doc, id, text)
 }
 
 pub fn read_inner(doc: &str, id: &str) -> Result<Option<String>, String> {
+    let doc = doc_of(doc)?;
     let guard = GAMES.lock().expect("the host's games");
-    let games = guard.as_ref().expect("init() before read()");
-    games.read_document(doc_of(doc)?, id)
+    let games = guard.as_ref().ok_or_else(|| no_store("read"))?;
+    games.read_document(doc, id)
 }
 
 /// Write a stored document into the store — a CREATE, which refuses a present
@@ -237,11 +251,39 @@ pub fn read(doc: &str, id: &str) -> Result<Option<String>, JsValue> {
     read_inner(doc, id).map_err(|e| JsValue::from_str(&e))
 }
 
+/// Pin the clock to `seconds`, or `None` for the live reading — whole seconds,
+/// as the layer's clock keeps them; a fraction is dropped, as the live arm
+/// drops it.
+///
+/// **A reading that is not one is REFUSED, by name, and changes nothing**
+/// (M6.5c2 cycle D, dossier row 56). `s as u64` saturates: a negative reading
+/// and `NaN` became 0 — the epoch — and an infinity `u64::MAX`, so a caller's
+/// mistake stamped every time the layer writes at a date nobody chose, in
+/// silence.
+pub fn set_clock_inner(seconds: Option<f64>) -> Result<(), String> {
+    let reading = match seconds {
+        None => None,
+        Some(s) if s.is_nan() => {
+            return Err("set_clock: NaN is not a clock reading \u{2014} whole seconds from 0, or undefined for the live clock".to_string())
+        }
+        Some(s) if s.is_infinite() => {
+            return Err(format!("set_clock: {s} is not a clock reading \u{2014} it is not finite"))
+        }
+        Some(s) if s < 0.0 => {
+            return Err(format!("set_clock: {s} is not a clock reading \u{2014} it is negative, and the clock counts from 0"))
+        }
+        Some(s) => Some(s as u64),
+    };
+    CLOCK.set(reading);
+    Ok(())
+}
+
 /// A frozen reading, or `undefined` for the live clock — whole seconds, as the
-/// layer's clock keeps them.
+/// layer's clock keeps them. A reading that is not one throws its refusal
+/// ([`set_clock_inner`]).
 #[wasm_bindgen]
-pub fn set_clock(seconds: Option<f64>) {
-    CLOCK.set(seconds.map(|s| s as u64));
+pub fn set_clock(seconds: Option<f64>) -> Result<(), JsValue> {
+    set_clock_inner(seconds).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Read a backup file and say what each game in it is (M6.5b2, R-6.5b2.10 –
@@ -382,13 +424,58 @@ mod tests {
     fn the_clock_freezes_and_ticks() {
         let _s = serial();
         init();
-        set_clock(Some(1_789_000_000.0));
+        set_clock_inner(Some(1_789_000_000.0)).expect("a reading");
         assert_eq!(now(), 1_789_000_000);
         assert_eq!(now(), 1_789_000_000, "frozen is frozen — two readings agree");
-        set_clock(None);
+        set_clock_inner(None).expect("the live clock");
         let a = now();
         let b = now();
         assert!(b > a, "the native clock ticks: {a} then {b}");
+    }
+
+    /// **A reading that is not one is REFUSED, by name** (M6.5c2 cycle D,
+    /// dossier row 56). `s as u64` saturates: a negative reading and `NaN`
+    /// both became 0 — the epoch — and an infinity `u64::MAX`, so a caller's
+    /// mistake froze every stamp the layer writes at a date nobody chose, in
+    /// silence. Each is refused in a sentence naming what it was given, and a
+    /// refusal leaves the setting it met exactly as it was.
+    #[test]
+    fn set_clock_refuses_a_negative_nan_or_infinite_reading_by_name() {
+        let _s = serial();
+        set_clock_inner(Some(1_789_000_000.0)).expect("a reading");
+        for (given, named) in [(-1.0, "-1"), (f64::NAN, "NaN"), (f64::INFINITY, "inf"), (f64::NEG_INFINITY, "-inf")] {
+            let err = set_clock_inner(Some(given)).expect_err("not a clock reading");
+            assert!(err.contains(named), "the refusal names {named}: {err}");
+            assert_eq!(now(), 1_789_000_000, "{named} changed nothing");
+        }
+        // The edges that ARE readings: zero, and a fraction (dropped, as the
+        // live arm drops it).
+        set_clock_inner(Some(0.0)).expect("the epoch is a reading");
+        assert_eq!(now(), 0);
+        set_clock_inner(Some(1_789_000_000.9)).expect("a fraction is a reading");
+        assert_eq!(now(), 1_789_000_000);
+        set_clock_inner(None).expect("the live clock");
+    }
+
+    /// **Before `init()` there is no store, and that is a REFUSAL, not a
+    /// panic** (M6.5c2 cycle D, dossier row 56): `load` and `read` answered it
+    /// with an `expect` that trapped the module, and a trapped module is the
+    /// recovery the page makes for a FAULT. The kind is read first, so a kind
+    /// that is not one is named whether or not a store exists.
+    #[test]
+    fn load_and_read_before_init_are_refused_by_name_and_the_kind_is_read_first() {
+        let _s = serial();
+        *GAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let err = load_inner("table", "local-1", "{}").expect_err("no store yet");
+        assert!(err.contains("init()"), "{err}");
+        let err = read_inner("record", "local-1").expect_err("no store yet");
+        assert!(err.contains("init()"), "{err}");
+        let err = load_inner("chat", "local-1", "{}").expect_err("not a kind");
+        assert!(err.contains("no such document kind: \"chat\""), "{err}");
+        let err = read_inner("house", "local-1").expect_err("not a kind");
+        assert!(err.contains("no such document kind: \"house\""), "{err}");
+        init();
+        assert_eq!(read_inner("table", "local-1").expect("a store now"), None);
     }
 
     /// **The crate's own scan** (spec §2.1): this is host code, and its

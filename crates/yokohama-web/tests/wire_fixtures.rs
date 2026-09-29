@@ -174,11 +174,13 @@ struct ScriptRow {
 /// **One request only a HOST serves, positioned in `walk.json`** (M6.5c, spec
 /// §5.3) — a row of `web/src/wire-script/walk-host.json`.
 ///
-/// `walk.json` cannot hold these: the browser host has no `/events` and no
-/// `/api/art`, so [`corpus`] drops every [`hosts_own`] row from it. A Worker
-/// host DOES serve them, and replays them at the point in the walk where they
-/// were made — which `after` says without restating the walk: the index in
-/// `walk.json` of the last row kept before this one, or `-1` for none.
+/// `walk.json` cannot hold these: the browser host has no `/events` at all,
+/// and answers `/api/art` with the layer's own 404 ("art is served by the
+/// host") where the corpus froze the axum host's manifest — so [`corpus`]
+/// drops every [`hosts_own`] row from it. A Worker host DOES serve them, and
+/// replays them at the point in the walk where they were made — which `after`
+/// says without restating the walk: the index in `walk.json` of the last row
+/// kept before this one, or `-1` for none.
 ///
 /// Serialized FLAT, `after` beside the [`ScriptRow`]'s own fields, so a reader
 /// of either file reads one row shape.
@@ -221,15 +223,23 @@ fn digest_of(value: &Value) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// The routes the HOST serves and the layer does not — the three transport
-/// routes and the art.
+/// The routes whose answer is the HOST's own and not `dispatch`'s — the three
+/// transport routes, which `dispatch` has no row for, and the art.
 ///
-/// Single-sourced because two callers ask the same question for the same
-/// reason: [`Api::compare_with_dispatch`] cannot compare a route `dispatch`
-/// does not have, and the script cannot ask a second host to replay one. A
-/// payload captured from one of these is therefore in the third column of spec
-/// §5's table — not served by that host — by construction rather than by a
-/// list.
+/// **The art is the one `dispatch` DOES route** (M6.5c2 cycle D, dossier row
+/// 56, correcting a reason that said otherwise): `/api/art` is in
+/// `api::routes()` so the 405/404 arithmetic is one table, and `dispatch`
+/// answers it with a typed 404 — "art is served by the host" — because the
+/// manifest lives behind the server feature and the axum adapter answers the
+/// route before calling it. So its answer on this router is not `dispatch`'s
+/// by design, for the same consequence as the transport routes' absence.
+///
+/// Single-sourced because two callers ask the same question for that reason:
+/// [`Api::compare_with_dispatch`] cannot compare the router's answer with
+/// `dispatch`'s where the two differ by design, and the script cannot ask a
+/// second host to replay what only a host answers. A payload captured from one
+/// of these is therefore in the third column of spec §5's table — not served
+/// by that host — by construction rather than by a list.
 fn hosts_own(path: &str) -> bool {
     path.ends_with("/events")
         || path.ends_with("/stream")
@@ -2478,9 +2488,10 @@ async fn corpus() -> Corpus {
     }
 
     // The HOST's own routes leave the script with the rows that named them: the
-    // browser host has no `/events`, no `/stream` and no `/api/art`, so those
-    // requests are not askable of it and the payloads they produced fall into
-    // the third column — derived here, rather than written down in the replay.
+    // browser host has no `/events` and no `/stream`, and answers `/api/art`
+    // with the layer's 404 rather than a manifest, so those requests are not
+    // askable of it and the payloads they produced fall into the third column —
+    // derived here, rather than written down in the replay.
     script.retain(|r| !hosts_own(&r.path));
 
     // Sorted, so the file set is a set and its order is not an accident of the
@@ -3596,6 +3607,25 @@ async fn the_stream_s_first_frame_is_the_events_route_s_reply_by_value() {
     assert_eq!(framed, polled, "the stream and the route answer the same object");
 }
 
+/// One drift line: both lengths and WHERE the two first differ — the byte
+/// offset and its line (M6.5c2 cycle D, dossier row 56). The payload arm
+/// always named the offset; the three script arms named only the lengths, and
+/// `walk.json` is some 24,000 pretty-printed lines, so a drift there said "it
+/// moved" and nothing about where.
+fn drift_line(label: &str, committed: &str, emitted: &str, makes: &str) -> String {
+    let at = committed
+        .bytes()
+        .zip(emitted.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| committed.len().min(emitted.len()));
+    let line = committed.as_bytes()[..at].iter().filter(|b| **b == b'\n').count() + 1;
+    format!(
+        "  {label} — committed {} bytes, {makes} {} bytes; first difference at byte {at} (line {line})",
+        committed.len(),
+        emitted.len(),
+    )
+}
+
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     let dir = wire_dir();
@@ -3617,16 +3647,9 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
         match std::fs::read_to_string(&path) {
             Ok(committed) if committed == emitted => {}
-            Ok(committed) => drifted.push(format!(
-                "  {name}.json — committed {} bytes, server emits {} bytes; first difference at byte {}",
-                committed.len(),
-                emitted.len(),
-                committed
-                    .bytes()
-                    .zip(emitted.bytes())
-                    .position(|(a, b)| a != b)
-                    .unwrap_or_else(|| committed.len().min(emitted.len())),
-            )),
+            Ok(committed) => {
+                drifted.push(drift_line(&format!("{name}.json"), &committed, &emitted, "server emits"))
+            }
             Err(e) => drifted.push(format!("  {name}.json — {e}")),
         }
     }
@@ -3660,10 +3683,11 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     } else {
         match std::fs::read_to_string(&script_path) {
             Ok(committed) if committed == emitted_script => {}
-            Ok(committed) => drifted.push(format!(
-                "  wire-script/walk.json — committed {} bytes, the walk makes {} bytes",
-                committed.len(),
-                emitted_script.len(),
+            Ok(committed) => drifted.push(drift_line(
+                "wire-script/walk.json",
+                &committed,
+                &emitted_script,
+                "the walk makes",
             )),
             Err(e) => drifted.push(format!("  wire-script/walk.json — {e}")),
         }
@@ -3692,10 +3716,11 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
         match std::fs::read_to_string(&path) {
             Ok(committed) if committed == emitted => {}
-            Ok(committed) => drifted.push(format!(
-                "  wire-script/{file} — committed {} bytes, the walk makes {} bytes",
-                committed.len(),
-                emitted.len(),
+            Ok(committed) => drifted.push(drift_line(
+                &format!("wire-script/{file}"),
+                &committed,
+                &emitted,
+                "the walk makes",
             )),
             Err(e) => drifted.push(format!("  wire-script/{file} — {e}")),
         }

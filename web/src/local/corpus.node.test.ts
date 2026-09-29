@@ -181,6 +181,39 @@ const NOT_SERVED = [
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`, which the walk's own clock reads. */
 const FROZEN_CREATED_AT = 1_789_000_000;
 
+/** A reply's body, parsed — `null` for an empty one — and a body that is not
+ *  JSON refused in a sentence naming the ROW that got it and quoting the
+ *  start of what came back (M6.5c2 cycle D, dossier row 56). */
+function replyOf(text: string, row: string): Record<string, unknown> | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `${row} answered something that is not JSON: ${JSON.stringify(text.slice(0, 80))} (${why})`,
+    );
+  }
+}
+
+// **A reply that is not JSON names the ROW that got it** (M6.5c2 cycle D,
+// dossier row 56). The walk is 2,209 requests long, and a bare `SyntaxError`
+// from the parse — "Unexpected token '<'" — says nothing about which of them
+// answered with something other than this API's shape. Its own suite, with no
+// module: it is about the replay's reading of a reply, not about the module.
+describe("the replay's reading of a reply", () => {
+  it("refuses a reply that is not JSON by naming the row and quoting what came back", () => {
+    expect(() => replyOf("<html>oops</html>", "GET /api/games/wire/log")).toThrow(
+      /GET \/api\/games\/wire\/log answered something that is not JSON: "<html>oops<\/html>"/,
+    );
+  });
+
+  it("parses a JSON reply, and reads an empty one as no body", () => {
+    expect(replyOf('{"a":1}', "GET /api/me")).toEqual({ a: 1 });
+    expect(replyOf("", "DELETE /api/games/wire")).toBeNull();
+  });
+});
+
 describe.skipIf(!have)("the browser host serves the corpus", () => {
   it("replays the walk through the module and every named reply is its committed file", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
@@ -223,7 +256,10 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
       const committed = JSON.parse(
         fs.readFileSync(path.join(wire, `${row.fixture}.json`), "utf8"),
       ) as Record<string, unknown>;
-      const got = (text ? JSON.parse(text) : null) as Record<string, unknown>;
+      const got = replyOf(text, `${row.method} ${row.path}${row.query ? `?${row.query}` : ""}`) as Record<
+        string,
+        unknown
+      >;
       // **An exempted field must really DIFFER between the two hosts.** The
       // exemption list is the replay's own accounting, and nothing else checks
       // it: the close's mutation battery added `archive` to `health`'s list and

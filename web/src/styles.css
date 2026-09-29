@@ -1684,7 +1684,11 @@ ol.account .mover { font-weight: 700; }
  * §3.2.2's own words are "Blue is playing · skip". Wrapping is allowed because
  * a narrow deck has to put the way out somewhere; nothing below 1201px changes,
  * the strip staying inside the sticky deck as it already did. */
-.decision.walking {
+/* ONE rule for the walk's strip and the lock's (M6.5c2 cycle D, dossier row
+ * 56): the lock's strip below is the same row for the same reason, and it used
+ * to restate these six declarations rule for rule. */
+.decision.walking,
+.decision.locked-out {
   display: flex; flex-direction: row; flex-wrap: wrap;
   align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
   font-family: var(--display); font-size: 1.05rem;
@@ -1696,16 +1700,12 @@ ol.account .mover { font-weight: 700; }
  * The strip that REPLACES the answer bar when another tab takes the game is a
  * row, exactly as the walk's strip is one and for the same reason: `.decision`
  * is a column, and a sentence sitting over a full-width button is not the
- * shape either of them wants.
+ * shape either of them wants — so it shares the walk's rule above.
  *
- * The two standalone screens — the lock's, and a game that will not open —
- * are each a `.notice-card` under the band since M6.5c2 (the latter since
- * cycle C), with a row of their own. */
-.decision.locked-out {
-  display: flex; flex-direction: row; flex-wrap: wrap;
-  align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
-  font-family: var(--display); font-size: 1.05rem;
-}
+ * The standalone screens — the lock's, a game that will not open, and (since
+ * M6.5c2 cycle D) a store this browser cannot read — are each a `.notice-card`
+ * under the band since M6.5c2 (the second since cycle C), with a row of their
+ * own. */
 .decision.locked-out .primary { margin-left: auto; }
 
 /* ---- M5.5: the set table ------------------------------------------------

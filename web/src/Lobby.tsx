@@ -270,7 +270,14 @@ export function Lobby({
    *  screen made four listing reads. A ref costs nothing and asks nothing of
    *  the caller. */
   const reached = useRef(onReached);
-  reached.current = onReached;
+  // **Kept current in an effect, never during render** (M6.5c2 cycle D,
+  // dossier row 56): a render may be thrown away before it commits, and a ref
+  // written there would hand `take` a callback from a render that never
+  // happened. Declared BEFORE the opening read's effect, so it has run by the
+  // time any read can land.
+  useEffect(() => {
+    reached.current = onReached;
+  });
 
   /** One reading, taken scope by scope: a listing that answered replaces its
    *  section's and clears its strip; one that was refused keeps the section's

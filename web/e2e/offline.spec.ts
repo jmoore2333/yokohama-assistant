@@ -78,15 +78,11 @@ import {
   WALKER,
   type Game,
 } from "./harness";
+import { CAP, REV } from "./caps";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
 // `every_spec_can_skip.spec.ts` reads this directory for.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
-
-/** The walk's own cap, the same figure every other walk here carries.
- *  A hit throws `capReached`, which names the cap, the turn and the
- *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
-const CAP = 4000;
 
 /** How long a cold install is given. `INSTALL_DEADLINE_MS` in `swInstall.ts` is
  *  120 s for the install itself, and this is the same budget plus the page's
@@ -120,9 +116,6 @@ const ENVELOPE = path.join(HERE, "..", "src", "wire-script", "backup-envelope.js
 const SEGMENT = [...WALKER]
   .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
   .join("");
-
-/** This build's semantics rev, which is the archive's own directory level. */
-const REV = "rev7";
 
 /**
  * Where `api.ts` keeps the name this browser signs its requests with
