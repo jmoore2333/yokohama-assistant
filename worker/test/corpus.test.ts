@@ -40,7 +40,7 @@ type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agree
  * check here let an absent field through.
  *
  * **The rule's twin** is the live replay's, stated in
- * `worker/scripts/live-replay.mjs`'s `judge` (its "An exemption is spent only
+ * `worker/scripts/replay/judge.mjs`'s `judge` (its "An exemption is spent only
  * on a value this host SENT" comment): the same rule over the same fields,
  * stated once in each of the two WORKER replays (ruling R-C3), each naming the
  * other. The browser host's node replay (`web/src/local/corpus.node.test.ts`)

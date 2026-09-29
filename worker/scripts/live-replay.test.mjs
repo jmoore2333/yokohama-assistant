@@ -2,22 +2,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { order } from "./corpus-walk.mjs";
+import { ORIGIN, readCredential } from "./dev-vars.mjs";
+import { replay } from "./live-replay.mjs";
 import {
   FROZEN_CREATED_AT,
-  ORIGIN,
   filterLobby,
   firstSendAccepts,
   freezeClock,
   houseDeleteRow,
-  loadCorpus,
-  loadScripts,
   normalizeHouseChat,
-  order,
-  readCredential,
-  replay,
   resetRecipe,
-  urlOf,
-} from "./live-replay.mjs";
+} from "./replay/exemptions.mjs";
+import { loadCorpus, loadScripts, urlOf } from "./replay/scripts.mjs";
 
 // **The live corpus replay's cells** (spec §5.3's live half; the plan's Task
 // 15). Every reply body a cell compares is a COMMITTED payload, or one derived
