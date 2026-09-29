@@ -1561,6 +1561,25 @@ export function App() {
   // is the form whether or not a table happens to be dealing; `#/` is the lobby;
   // `#/t/<id>` is whichever of the three a table's own status makes it, which is
   // `open`'s question and the route effect's answer.
+  // **This browser's storage could not be read** (M6.5c2 cycle D, dossier row
+  // 14): the game's acquisition — its generation, then the rebuild's read —
+  // failed, and the Worker said so in the storage's own words rather than
+  // trapping into a restart that would meet the same store. See `BrokenStore`
+  // for the face, and why it is a file of its own.
+  //
+  // **Ahead of `!state`, so it replaces a game ON SCREEN too** (fix round 1,
+  // review Minors 1 and 3): a restart whose fresh Worker cannot read the store
+  // leaves a game this tab no longer owns and cannot write, and a Take back
+  // the store refuses is the same fact. Where nothing was read — a hold
+  // refused this way on the way in — there is no game under it to replace.
+  if (lockId !== null && lockState === "unreadable")
+    return (
+      <BrokenStore
+        sentence={lock.sentence ?? ""}
+        onLeave={() => leave(localExit.to)}
+        leaveLabel={localExit.label}
+      />
+    );
   if (!state) {
     // **Another tab has this game open** (R-6.5b.5), and nothing has been read:
     // FIRST here, before the deal and before the game, because the dealing
@@ -1570,21 +1589,6 @@ export function App() {
         <LockScreen
           state={lockState}
           onTakeover={retake}
-          onLeave={() => leave(localExit.to)}
-          leaveLabel={localExit.label}
-        />
-      );
-    // **This browser's storage could not be read** (M6.5c2 cycle D, dossier
-    // row 14): the game's acquisition — its generation, then the rebuild's
-    // read — failed, and the Worker said so in the storage's own words rather
-    // than trapping into a restart that would meet the same store. Here for
-    // the lock screen's reason: nothing has been read, so there is no game to
-    // draw under it. See `BrokenStore` for the face, and why it is a file of
-    // its own.
-    if (lockId !== null && lockState === "unreadable")
-      return (
-        <BrokenStore
-          sentence={lock.sentence ?? ""}
           onLeave={() => leave(localExit.to)}
           leaveLabel={localExit.label}
         />

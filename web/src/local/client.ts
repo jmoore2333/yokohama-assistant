@@ -85,6 +85,7 @@ let worker: Worker | null = null;
 let seq = 0;
 const pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void }>();
 const lostHandlers = new Set<(id: string) => void>();
+const storeHandlers = new Set<(id: string, sentence: string) => void>();
 const writeHandlers = new Set<() => void>();
 const faultHandlers = new Set<(sentence: string) => void>();
 /** The games the PAGE believes it holds — what to re-acquire after a restart.
@@ -271,13 +272,45 @@ function restart(): void {
   // so this `Promise.all` is always reached and the gate always opens; before,
   // the throw escaped `ids.map` and every later call waited on a gate nothing
   // would ever open.
-  void Promise.all(ids.map((id) => ask({ kind: "hold", id }).catch(() => undefined))).then(() => {
+  void Promise.all(
+    ids.map((id) =>
+      ask<{ held?: boolean } & Partial<UnreadableReply>>({ kind: "hold", id })
+        .then((r) => reheld(r, id))
+        .catch(() => undefined),
+    ),
+  ).then(() => {
     // Only the LATEST restart's gate is cleared here: a second trap during the
     // first recovery installs its own, and clearing unconditionally would drop
     // it.
     if (reacquiring === gate) reacquiring = null;
     open();
   });
+}
+
+/**
+ * A restart's re-hold of `id`, read by the hold's own rule (fix round 1,
+ * review Minor 1). It used to be ignored. So a fresh Worker whose store could
+ * not be read answered `{ unreadable }`, an ordinary reply, and the id stayed
+ * on the page's list; the next write came back `not-held`, and the page said
+ * the game "was opened in another tab" — false.
+ *
+ * - **The store could not be read**: the game leaves the page's list and every
+ *   listener is told the storage's sentence for that game — the screen draws
+ *   the broken-store face ([`onStoreUnreadable`]).
+ * - **Not granted**: another tab took the game while this one restarted, and
+ *   that IS the loss — [`noteLost`], one statement for every path to it.
+ *
+ * Read before the gate opens, so a call waiting on the gate meets a page that
+ * already knows.
+ */
+function reheld(r: { held?: boolean } & Partial<UnreadableReply>, id: string): void {
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) {
+    heldByPage.delete(id);
+    for (const f of [...storeHandlers]) f(id, unreadable);
+    return;
+  }
+  if (r.held !== true) noteLost(id);
 }
 
 function ask<T extends Record<string, unknown>>(msg: ReqBody): Promise<T> {
@@ -487,7 +520,18 @@ export const localPair = async (
  * go through the trap path.
  */
 export async function localRestoreRead(envelope: string): Promise<string> {
-  const r = await ask<{ report?: string; refused?: string }>({ kind: "restore_read", envelope });
+  const r = await ask<{ report?: string; refused?: string } & Partial<UnreadableReply>>({
+    kind: "restore_read",
+    envelope,
+  });
+  // **The STORE's refusal first, and never as the file's** (fix round 1,
+  // review Important 1). `restore_read` is queued like every other message,
+  // so it waits on the Worker's startup; when that cannot read the store the
+  // reply is `{ unreadable }` and carries neither a report nor a refusal —
+  // and the fallback below would have told the player their FILE could not
+  // be read.
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) throw new LocalStoreUnreadable(unreadable);
   if (typeof r.report === "string") return r.report;
   throw new Error(r.refused ?? "the local host could not read this file");
 }
@@ -503,9 +547,12 @@ export async function localRestoreRead(envelope: string): Promise<string> {
 export async function localAdopt(ids: string[]): Promise<number> {
   const r = await ask<{ adopted: number } & Partial<UnreadableReply>>({ kind: "adopt", ids });
   // **A store that could not be read is refused, and restarts nothing**
-  // (M6.5c2 cycle D, dossier row 14). Nothing was adopted, so no listing is
-  // told to re-read; the games are on the device, and the next start loads
-  // them.
+  // (M6.5c2 cycle D, dossier row 14). The refusal is about the STORE and not
+  // a count: a later id's read can fail after earlier ones were loaded (fix
+  // round 1, review Minor 5), so some games may be in the module already. No
+  // listing is told to re-read here; the restore's own re-read afterwards, and
+  // the next start, list whatever the module holds — the games are on the
+  // device either way.
   const unreadable = unreadableOf(r);
   if (unreadable !== null) throw new LocalStoreUnreadable(unreadable);
   for (const f of [...writeHandlers]) f();
@@ -559,6 +606,15 @@ export const onLost = (f: (id: string) => void): (() => void) => {
   return () => lostHandlers.delete(f);
 };
 
+/** A game this page held could not be acquired again after a restart,
+ *  because this browser's storage could not be read — the game and the
+ *  storage's sentence (fix round 1, review Minor 1; see [`reheld`]). The hook
+ *  draws it as the broken-store face. */
+export const onStoreUnreadable = (f: (id: string, sentence: string) => void): (() => void) => {
+  storeHandlers.add(f);
+  return () => storeHandlers.delete(f);
+};
+
 /** Something local was written — the cue to re-read a local listing. */
 export const onLocalWrite = (f: () => void): (() => void) => {
   writeHandlers.add(f);
@@ -599,6 +655,7 @@ export function resetLocalHostForTests(): void {
   heldByPage.clear();
   restartsWithoutAnswer = 0;
   lostHandlers.clear();
+  storeHandlers.clear();
   writeHandlers.clear();
   faultHandlers.clear();
 }

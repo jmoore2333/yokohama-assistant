@@ -212,6 +212,23 @@ describe("the replay's reading of a reply", () => {
     expect(replyOf('{"a":1}', "GET /api/me")).toEqual({ a: 1 });
     expect(replyOf("", "DELETE /api/games/wire")).toBeNull();
   });
+
+  // **And the walk USES it** (fix round 1, review Minor 2): the two cells
+  // above pin the helper, and a walk that went back to parsing its replies by
+  // hand would leave both green. The walk's cell is read from this file and
+  // must reach its replies through `replyOf` and parse none itself.
+  it("is the only way the walk reads a reply", () => {
+    const source = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+    // Anchored at the START OF A LINE, which this cell's own text never is:
+    // the first draft searched for the bare title, found it in this very
+    // line, and so read ITSELF — green over a walk that parsed by hand.
+    const start = source.indexOf('\n  it("replays the walk through the module');
+    expect(start, "the walk's cell is in this file").toBeGreaterThan(-1);
+    const walk = source.slice(start, source.indexOf("\n  it(", start + 1));
+    expect(walk, "anti-vacuity: the slice is the walk, which dispatches").toContain("wasm.dispatch(");
+    expect(walk).toContain("replyOf(text, ");
+    expect(walk).not.toMatch(/JSON\.parse\(\s*text\b/);
+  });
 });
 
 describe.skipIf(!have)("the browser host serves the corpus", () => {

@@ -13,10 +13,12 @@ import {
   localCall,
   localHostStarted,
   localPair,
+  localRestoreRead,
   LocalStoreUnreadable,
   onLocalFault,
   onLocalWrite,
   onLost,
+  onStoreUnreadable,
   pendingCallsForTests,
   release,
   resetLocalHostForTests,
@@ -555,6 +557,62 @@ describe("the two failures that must never leave a pending list", () => {
       expect(wrote, "nothing was written, so no listing is told to re-read").not.toHaveBeenCalled();
       expect(FakeWorker.instances).toHaveLength(1);
       expect(currentWorker().terminated).toBe(false);
+    });
+
+    // **The restore's first step reads the store's answer too** (fix round 1,
+    // review Important 1). `restore_read` is queued like every other message,
+    // so it waits on the Worker's startup; when the startup cannot read the
+    // store the reply is `{ unreadable }`, and a reader that looked only for a
+    // report or a refusal told the player "the local host could not read this
+    // file" — blaming the FILE for the STORE.
+    it("refuses a restore's reading in the STORE's words, never the file's, and restarts nothing", async () => {
+      stubWorker({ restore: () => ({ unreadable: sentence }) });
+      const refused = await localRestoreRead("{}").then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(refused, "the storage's refusal, typed").toBeInstanceOf(LocalStoreUnreadable);
+      expect((refused as Error).message).toBe(sentence);
+      expect(FakeWorker.instances).toHaveLength(1);
+      expect(currentWorker().terminated).toBe(false);
+    });
+
+    // **A restart's re-hold is read by the hold's own rule** (fix round 1,
+    // review Minor 1). The restart re-acquires every game the page held, and
+    // before this round it ignored each answer. A fresh Worker whose store
+    // cannot be read answered `{ unreadable }`, an ordinary reply, so the id
+    // stayed on the page's list; the next write came back `not-held`, and the
+    // page said "This game was opened in another tab", which is false. Now the
+    // storage's refusal is SAID for that game, which the screen draws as the
+    // broken-store face, and the game is dropped from the list. A re-hold
+    // answered not held is the loss, which is true: another tab has the game.
+    it("reads a restart's re-holds by the hold's rule: the store's refusal is said, a refused hold is the loss", async () => {
+      let fresh = false;
+      stubWorker({
+        hold: (id) => (!fresh ? true : id === "local-1" ? { unreadable: sentence } : false),
+        call: (req) =>
+          req.path.endsWith("/ports")
+            ? { status: 500, body: { error: "unreachable executed" }, trapped: true }
+            : undefined,
+      });
+      const store = vi.fn();
+      onStoreUnreadable(store);
+      const lost = vi.fn();
+      onLost(lost);
+      expect(await hold("local-1")).toBe(true);
+      expect(await hold("local-2")).toBe(true);
+
+      fresh = true;
+      await expect(localCall("GET", "/api/games/local-1/ports")).rejects.toThrow(RESTART_SENTENCE);
+      await tick();
+      expect(store).toHaveBeenCalledExactlyOnceWith("local-1", sentence);
+      expect(lost).toHaveBeenCalledExactlyOnceWith("local-2");
+
+      // Neither is re-held by the next restart: nothing is left on the list,
+      // and a restart with nothing held starts no Worker of its own.
+      currentWorker().onmessage!({ data: { seq: 99, status: 500, body: "{}", trapped: true } } as MessageEvent<unknown>);
+      await tick();
+      expect(FakeWorker.instances).toHaveLength(2);
     });
 
     it("refuses a restore's adoption in its sentence, tells no listing it wrote, and restarts nothing", async () => {

@@ -8,7 +8,7 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resetLocalHostForTests } from "./client";
+import { localCall, resetLocalHostForTests } from "./client";
 import { useLocalHold } from "./useLocalHold";
 import { currentWorker, FakeWorker, stubWorker } from "../test/fakeWorker";
 import type { Req } from "./client";
@@ -117,6 +117,37 @@ describe("the hold on a local game", () => {
     expect(currentWorker().terminated).toBe(false);
     unmount();
     expect(posted("release")).toEqual([]);
+  });
+
+  // **A Take over the store refuses is the same face** (fix round 1, review
+  // Minor 3): not the lock screen's refusal line, which drew the sentence
+  // without the Reload that is its one remedy.
+  it("reports UNREADABLE when a Take over could not read the store", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    stubWorker({ hold: (_id, steal) => (steal ? { unreadable: sentence } : false) });
+    const { result, unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("elsewhere"));
+    await act(() => result.current.takeover());
+    expect(result.current).toMatchObject({ id: "local-1", state: "unreadable", sentence });
+    unmount();
+    expect(posted("release"), "and the refused steal is not released").toEqual([]);
+  });
+
+  // **And a game this tab HELD whose restart could not read the store** (fix
+  // round 1, review Minor 1): the client says so for that game, and the hook
+  // draws the same face.
+  it("reports UNREADABLE when a restart could not acquire the game again", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    let fresh = false;
+    stubWorker({
+      hold: () => (fresh ? { unreadable: sentence } : true),
+      call: () => ({ status: 500, body: { error: "unreachable executed" }, trapped: true }),
+    });
+    const { result } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("held"));
+    fresh = true;
+    await act(() => localCall("GET", "/api/games/local-1/ports").catch(() => undefined));
+    await waitFor(() => expect(result.current).toMatchObject({ id: "local-1", state: "unreadable", sentence }));
   });
 
   // **The hook releases only what it may be holding** (M6.5c2 cycle D, dossier

@@ -3876,6 +3876,35 @@ describe("a local game", () => {
     expect(FakeWorker.instances, "and the host was not restarted").toHaveLength(1);
   });
 
+  // **And over a game ON SCREEN** (fix round 1, review Minor 1). A trap
+  // restarts the host, and the fresh one must acquire the game again; when it
+  // cannot read the store, the game on screen is one this tab no longer owns
+  // and cannot write, so the face replaces it — before this round the screen
+  // stayed, and the next move read "This game was opened in another tab".
+  it("replaces a game on screen with the broken-store face when its restart cannot read the store", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    let fresh = false;
+    await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          hold: () => (fresh ? { unreadable: sentence } : true),
+          call: (req) => {
+            if (!req.path.endsWith("/input")) return undefined;
+            fresh = true;
+            return { status: 500, body: { error: "unreachable executed" }, trapped: true };
+          },
+        },
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await userEvent.setup().click(firstOptionButton());
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(document.querySelector(".broken-store"), "the face").not.toBeNull();
+    expect(screen.queryByText(/end triggers:/), "and the game is off the screen").toBeNull();
+    expect(screen.queryByText("This game was opened in another tab")).toBeNull();
+  });
+
   it("opens the game when Take over is clicked", async () => {
     const { user } = await openLocal(
       { ...wire.optionsMany, id: LOCAL },

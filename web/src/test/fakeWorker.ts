@@ -86,7 +86,7 @@ export interface FakeWorkerHooks {
   /** What the module's `restore_read` says about a file — the rows, or a
    *  refusal about the FILE. A cell that is about ONE verdict sets this and
    *  says so; everything else falls through to [`fakeVerdicts`]. */
-  restore?: (envelope: string) => ReportRow[] | { refused: string } | undefined;
+  restore?: (envelope: string) => ReportRow[] | { refused: string } | UnreadableReply | undefined;
 }
 
 /**
@@ -292,9 +292,14 @@ export class FakeWorker {
         break;
       case "restore_read": {
         const answer = hooks.restore?.(req.envelope) ?? fakeVerdicts(req.envelope);
+        // `{ unreadable }` is the Worker's startup failing to read the store
+        // before the validator was ever asked (its `ready`), which is not an
+        // answer about the FILE.
         reply = Array.isArray(answer)
           ? { report: JSON.stringify(answer) }
-          : { refused: answer.refused };
+          : "refused" in answer
+            ? { refused: answer.refused }
+            : { ...answer };
         break;
       }
       case "adopt": {

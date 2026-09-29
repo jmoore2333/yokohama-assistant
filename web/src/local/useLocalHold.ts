@@ -13,7 +13,7 @@
 // without closing anything.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { hold, LocalStoreUnreadable, onLost, release, takeover } from "./client";
+import { hold, LocalStoreUnreadable, onLost, onStoreUnreadable, release, takeover } from "./client";
 import { isLocal } from "./ids";
 
 /** What this tab may do with the game the route names.
@@ -118,10 +118,20 @@ export function useLocalHold(id: string | null): Hold {
     const off = onLost((lost) => {
       if (lost === id && live) setAnswer({ id, state: "lost", sentence: null });
     });
+    // **A restart that could not acquire this game again** (fix round 1,
+    // review Minor 1): the fresh Worker's store could not be read. The same
+    // face as a hold refused that way, and nothing to release — the fresh
+    // Worker does not hold the game.
+    const offStore = onStoreUnreadable((gone, sentence) => {
+      if (gone !== id || !live) return;
+      refused.current = id;
+      setAnswer({ id, state: "unreadable", sentence });
+    });
     return () => {
       live = false;
       current.current = null;
       off();
+      offStore();
       // **Only what this screen may be holding** (dossier row 56): nothing for
       // a hold that was refused. **And fire-and-forget on purpose**: a screen
       // being torn down has nothing to do with the answer, and an await here
@@ -138,7 +148,16 @@ export function useLocalHold(id: string | null): Hold {
     try {
       await takeover(id);
     } catch (e) {
-      if (current.current === id) refused.current = id;
+      if (current.current === id) {
+        refused.current = id;
+        // **A steal the STORE refused is the broken-store face** (fix round
+        // 1, review Minor 3), as a hold refused that way is — not the lock
+        // screen's refusal line, which drew the sentence without Reload.
+        if (e instanceof LocalStoreUnreadable) {
+          setAnswer({ id, state: "unreadable", sentence: e.message });
+          return;
+        }
+      }
       throw e;
     }
     // The route may have moved on while the steal was in flight: this answer
