@@ -1,0 +1,43 @@
+{
+  "bot": null,
+  "can_watch": true,
+  "chosen": [
+    false,
+    false,
+    false
+  ],
+  "colors": [
+    "Red",
+    "Blue",
+    "Green"
+  ],
+  "created_at": 1789000000,
+  "creator": null,
+  "id": "wire-open3",
+  "locked": false,
+  "mine": true,
+  "my_seats": [
+    0
+  ],
+  "name": "wire-open3",
+  "over": null,
+  "players": 3,
+  "seats": [
+    {
+      "invited": "red@wire.test",
+      "kind": "human",
+      "name": null,
+      "you": true
+    },
+    {
+      "kind": "open"
+    },
+    {
+      "kind": "open"
+    }
+  ],
+  "start_seat": 0,
+  "status": "open",
+  "to_move": null,
+  "winner": null
+}

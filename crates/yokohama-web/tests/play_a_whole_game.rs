@@ -267,13 +267,17 @@ fn bot_stream_seed(api: Api, id: &str) -> (Api, u64) {
     (api.restarted(), seed)
 }
 
-/// **The vs-bot arm's input cap, MEASURED** (M6.5c2, spec §2.6): 50 runs over
-/// OS-entropy bot seeds at Task 8's tree (base `605c3ddd`), after the placement
-/// probe and the stuck-picker rule — inputs min 136, median 386 (383 and 389 at
-/// the 25th and 26th of 50), max 1,212, and every run's bot seed in the
-/// ledger's `task-8-gate-50.txt`. The cap is the next thousand above four
-/// times that maximum, so a regression fails in minutes where the old 20,000
-/// cost half an hour (M6.3 close §6.3: 1,813 s).
+/// **The vs-bot arm's input cap, MEASURED** (M6.5c2 cycle D, R-D9): 500 runs
+/// over OS-entropy bot seeds, this test alone, in the RELEASE profile, from an
+/// export of `18f270fa` on the orchestrator's MacBook Air, 2026-09-29
+/// 05:17:31Z to 05:24:11Z. 500 started, 500 finished, none failed, and 500
+/// distinct bot seeds. Inputs: min 95, median 453, max 1,503, with 4 games over
+/// 1,000 and none over 2,500. Turns: min 13, median 71, max 255. The cap
+/// stays at the next thousand above three times that maximum, so a regression
+/// fails in minutes where the old 20,000 cost half an hour (M6.3 close §6.3:
+/// 1,813 s). It replaces the M6.5c2 cycle A reading of 50 runs (min 136,
+/// median 386, max 1,212, base `605c3ddd`). Every run's bot seed is in the
+/// ledger's `task-10-gate-500.txt`.
 const VS_BOT_CAP: usize = 5_000;
 
 #[tokio::test]
@@ -719,6 +723,9 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // one per APPLIED MOVE rather than one per loop pass — see below.
     let mut watched_position: Option<u64> = None;
     let mut positions_watched = 0usize;
+    // How many out-of-turn posts the server refused. Each is the OTHER
+    // identity posting the mover's own line; the count says the probe ran.
+    let mut probes_refused = 0usize;
     // How many of red's replay frames carried an OPEN hand before the strip.
     // Without it "the dashboards agree once the hands are taken out" is a claim
     // about two payloads that may never have differed.
@@ -791,6 +798,32 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         }
 
         let Some(line) = choose(&mine, &mut rng) else { break };
+
+        // **The acting-seat fence, witnessed at EVERY input of a whole game**
+        // (M6.5c2 cycle D, Review Focus 4): the OTHER identity posts the very
+        // line the mover is about to post. It is a 403 that names the seat by
+        // the seat's word (`it is seat {n}'s turn (…)`: a name, else a colour),
+        // carries no address, and leaves the event count where it was. The
+        // catcher for the "non-acting probe answered 200" defect: every other
+        // cell of the fence posts once at a hand-built table, and this one is
+        // the only place a fence that loosened on some phase, picker or turn
+        // deep into a real game would be seen.
+        let (_, before) = api.call_as(watcher, "GET", "/api/games/two/events", None).await;
+        let (status, refused) = api
+            .call_as(watcher, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{watcher} posted {line:?} out of turn and was not refused: {refused}");
+        let said = refused["error"].as_str().unwrap_or_default();
+        let named = said
+            .strip_prefix(&format!("it is seat {seat}'s turn ("))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("the refusal must name seat {seat} by the seat's word: {refused}"));
+        assert!(!named.is_empty(), "the seat's word is a name or a colour, never empty: {refused}");
+        assert!(!said.contains('@'), "the refusal carries no address: {refused}");
+        let (_, after) = api.call_as(watcher, "GET", "/api/games/two/events", None).await;
+        assert_eq!(before["events"], after["events"], "a refused move applied nothing: {before} -> {after}");
+        probes_refused += 1;
+
         let (status, next) = api
             .call_as(mover, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
             .await;
@@ -801,6 +834,9 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         assert_built_for(&next, mover, seat);
         state = next;
     }
+
+    // The non-acting probe ran at every input of the loop, not at none of them.
+    assert!(probes_refused > 0, "the non-acting probe never ran, so the fence was never witnessed");
 
     // The probe really did run, rather than falling through to `confirm` every
     // time — without this the paragraph above about a game that never places

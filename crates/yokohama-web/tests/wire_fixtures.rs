@@ -1814,6 +1814,29 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     );
     out.push(("table_bot".to_string(), table_bot));
 
+    // **The deal at that bot table, before it is finalized** (M6.5c2 cycle D,
+    // straw poll row 32): the corpus had no `…/deal` at a bot table. The
+    // walker's own two cards and the deal's other fields, at a table whose
+    // other seat is a bot — the shape the set-table screen draws at a vs-bot
+    // game, and one whose bot must not appear in the reader's cards. Undealt
+    // is deterministic (the bot's stream seed is drawn at finalize), and the
+    // reader is the walker, so Task 6's by-value pin scans it too.
+    let (status, deal_bot_table) = bots.call("GET", "/api/games/wire-bot/deal", None).await;
+    assert_eq!(status, StatusCode::OK, "{deal_bot_table}");
+    assert_eq!(deal_bot_table["seat"], 0, "the walker holds seat 0 at the bot table: {deal_bot_table}");
+    out.push(("deal_bot_table".to_string(), deal_bot_table));
+
+    // **A three-player table with TWO seats still open** (row 32): every open
+    // fixture before it was a 2P table with one. `open` is the status a table
+    // keeps for as long as any seat is unfilled, so the second open seat must
+    // not flip it.
+    let (status, table_two_open) = bots.call("POST", "/api/games", Some(three_player_two_open_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_two_open}");
+    assert_eq!(table_two_open["status"], "open", "two seats open, so the table is open: {table_two_open}");
+    let open_seats = table_two_open["seats"].as_array().expect("seats").iter().filter(|s| s["kind"] == "open").count();
+    assert_eq!(open_seats, 2, "premise: two seats are open: {table_two_open}");
+    out.push(("table_two_open".to_string(), table_two_open));
+
     // **A game played against a bot this build does not run** (M6.5c2,
     // R-6.5c2.10), from an `Api` of its own: the committed browser-played pair
     // with its bot seat renamed to `v2-padded` — cut at 300 events (not over:
@@ -1895,6 +1918,20 @@ fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, Stri
     }
     (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
 }
+/// The 3P table with two open seats `table_two_open` is read from: the walker
+/// at seat 0 and nobody named at seats 1 and 2.
+fn three_player_two_open_body() -> Value {
+    json!({
+        "players": 3,
+        "colors": ["Red", "Blue", "Green"],
+        "start_seat": 0,
+        "seed": SETUP_SEED,
+        "seats": [{ "user": WALKER }, { "open": true }, { "open": true }],
+        "name": "wire-open3",
+        "id": "wire-open3",
+    })
+}
+
 /// The vs-bot table the `table_bot` fixture is read from: the walker at seat 0,
 /// the bot at seat 1, at the corpus seed.
 fn bot_table_body() -> Value {

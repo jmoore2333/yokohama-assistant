@@ -143,6 +143,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
  *   holding the committed pair re-seated against another bot — which no script
  *   replays.
+ * - `deal_bot_table` and `table_two_open` (cycle D) come from that same vs-bot
+ *   table's `Api`, which no script replays.
  */
 const NOT_SERVED = [
   "art_manifest",
@@ -169,6 +171,8 @@ const NOT_SERVED = [
   "archive_400_table",
   "production_bot",
   "table_bot",
+  "deal_bot_table",
+  "table_two_open",
   "foreign_bot_409",
   "table_foreign",
   "why_foreign",

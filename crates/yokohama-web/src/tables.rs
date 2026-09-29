@@ -2205,7 +2205,18 @@ mod tests {
     /// names which of the two it was.
     #[test]
     fn a_table_and_a_message_are_stamped_by_the_clock_the_games_was_built_with() {
-        let games = games().with_clock(Arc::new(|| 1_700_000_000));
+        // Built through `with_parts` (cycle D, row 40): the clock is a PART the
+        // host chooses, and `with_clock` after the default constructor is a
+        // second route to it that no host takes.
+        let games = Games::with_parts(
+            Arc::new(Rules::standard()),
+            Arc::new(MemStore::default()),
+            crate::chat::ChatConfig::default(),
+            Arc::new(crate::signal::NoSignal),
+            Arc::new(|| 1_700_000_000),
+            Arc::new(crate::archive::NoArchive),
+            crate::games::RunHost::Server,
+        );
         let red = who("red@t.test");
         let view = games.create(&req("clock"), &red).expect("a table");
         let (doc, _) = games.read_table(&view.id).expect("a readable store").expect("the table");
@@ -5619,6 +5630,29 @@ mod tests {
         assert!(!view.locked);
         assert_eq!(counted.writes(), before, "an unlocked table is unlocked without a write");
         assert!(free.read_table("free").unwrap().unwrap().0.unlocked.is_empty());
+    }
+
+    /// **`unlock` bumps no signal** (controller ruling R-pre-3, cycle D row
+    /// 39): the doc on [`Games::unlock`] said so and no cell read a receiver.
+    /// Both channels are subscribed BEFORE the unlock, the unlock is one that
+    /// WRITES (the roster gains the caller, so a write happened and a bump
+    /// would have had something to announce), and neither has changed after.
+    /// The catcher for battery row 26: a bump added after the unlock's write.
+    #[test]
+    fn an_unlock_that_writes_bumps_no_signal() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        playing(&games, &two_people_locked("locked", "sesame"), &["red@t.test", "blue@t.test"]);
+        let table = signals.subscribe("locked");
+        let house = signals.subscribe_house();
+        let grey = who("grey@t.test");
+        games.unlock("locked", &grey, "sesame").expect("the password");
+        assert_eq!(
+            games.read_table("locked").unwrap().unwrap().0.unlocked,
+            vec!["grey@t.test".to_string()],
+            "premise: the unlock wrote the roster",
+        );
+        assert!(!table.has_changed().expect("the table channel is open"), "no bump on the table's channel");
+        assert!(!house.has_changed().expect("the house channel is open"), "and none on the house's");
     }
 
     /// **One unlock admits ONE caller, and a second unlock by the same caller

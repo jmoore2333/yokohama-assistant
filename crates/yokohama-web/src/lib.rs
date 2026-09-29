@@ -972,6 +972,45 @@ mod tests {
         (status, bytes.to_vec())
     }
 
+    /// **A body past the adapter's 2 MiB limit is a `400` in the adapter's own
+    /// sentence** (cycle D, straw poll row 40): `the body could not be read`,
+    /// where axum's `JsonBody` had said `Failed to buffer the request body:
+    /// length limit exceeded`. No cell pinned either wording. The limit's
+    /// other side is the anti-vacuity half: a body of exactly 2 MiB is READ
+    /// (and then refused as the malformed JSON it is, in a different
+    /// sentence), so the cell is about the limit and not about every big body.
+    #[tokio::test]
+    async fn a_body_past_two_mebibytes_is_a_400_in_the_adapters_own_sentence() {
+        async fn post_bytes(len: usize) -> (StatusCode, serde_json::Value) {
+            let res = app(Arc::new(AppState::in_memory()))
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/games")
+                        .header(identity::CLAIMED_HEADER, "red@wire.test")
+                        .header("content-type", "application/json")
+                        .body(Body::from(vec![b' '; len]))
+                        .expect("a request"),
+                )
+                .await
+                .expect("the router answers");
+            let status = res.status();
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+            (status, serde_json::from_slice(&bytes).expect("a JSON error body"))
+        }
+        let (status, over) = post_bytes((2 << 20) + 1).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{over}");
+        let said = over["error"].as_str().expect("an error sentence");
+        assert!(said.starts_with("the body could not be read"), "the adapter's own sentence: {over}");
+        assert!(!said.contains("Failed to buffer"), "not axum's extractor's: {over}");
+        let (status, at_limit) = post_bytes(2 << 20).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{at_limit}");
+        assert!(
+            !at_limit["error"].as_str().unwrap_or_default().starts_with("the body could not be read"),
+            "a body AT the limit is read, and refused for what it says: {at_limit}",
+        );
+    }
+
     /// [`raw`] with the `Location` header and the body as text (M6.5b2, spec
     /// §2.1). One helper and not two, because the two questions a turnstile
     /// raises are asked of the same call: where it sends a browser when it is
@@ -2336,15 +2375,86 @@ mod tests {
             ("GET", "/areas", None),
             ("GET", "/log", None),
             ("GET", "/events", None),
+            // **The transport, the unlock, the finished game's bytes and the
+            // chat's delete** (cycle D, straw poll row 39): each is a route
+            // this list once lacked, so no sweep over it ever asked them.
+            ("GET", "/stream", None),
+            ("POST", "/unlock", Some(serde_json::json!({ "password": "x" }))),
+            ("GET", "/record", None),
             ("GET", "/at/0", None),
+            ("GET", "/at?from=0&to=1", None),
             ("GET", "/suggest", None),
             ("GET", "/why", None),
             ("GET", "/index/orders", None),
             ("GET", "/result", None),
             ("GET", "/chat", None),
             ("POST", "/chat", Some(serde_json::json!({ "text": "hello" }))),
+            // A number nobody was given, so a caller who is admitted reads the
+            // 404 and one who is not reads the door's own sentence first.
+            ("DELETE", "/chat/9999", None),
             ("DELETE", "", None),
         ]
+    }
+
+    /// **`session_routes()` names every game route the router serves**
+    /// (cycle D, straw poll row 39): it had been kept by hand, and `/stream`,
+    /// `/unlock`, `/record` and the chat's delete were each missing with every
+    /// sweep green. The table's rows come from `api::routes`, the one table
+    /// `dispatch` reads; the transport routes are the ones `app()` writes for
+    /// itself, read off the SOURCE of `app` because axum's router cannot list
+    /// its own routes.
+    ///
+    /// The catcher for a route added to the router and not to this list: the
+    /// cell names it. Both directions, so a list entry that is no route at all
+    /// (a typo the sweeps would answer 404 to and call a refusal) fails too.
+    #[test]
+    fn session_routes_names_every_game_route_of_the_router() {
+        let listed = session_routes();
+        let path_of = |suffix: &str| format!("/api/games/x{}", suffix.split('?').next().expect("a path"));
+
+        // The routes the layer's own table serves, with each `{name}` bound to
+        // a value the list uses.
+        let mut expected: Vec<(String, String)> = api::routes(true)
+            .into_iter()
+            .filter(|r| r.pattern.starts_with("/api/games/{id}"))
+            .map(|r| {
+                let path = r
+                    .pattern
+                    .replace("{id}", "x")
+                    .replace("{seq}", "9999")
+                    .replace("{k}", "0")
+                    .replace("{kind}", "orders");
+                (r.method.to_string(), path)
+            })
+            .collect();
+        // The routes `app()` registers itself: the three transport routes are
+        // the only ones that never reach `dispatch`.
+        let source = include_str!("lib.rs");
+        let app_body = source
+            .split("pub fn app(state: Arc<AppState>) -> Router {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("app()'s body");
+        let mut transport = 0;
+        for line in app_body.lines().filter(|l| l.contains(".route(\"/api/games/{id}/")) {
+            let word = line.split(".route(\"/api/games/{id}/").nth(1).and_then(|r| r.split('"').next()).expect("a route word");
+            expected.push(("GET".to_string(), format!("/api/games/x/{word}")));
+            transport += 1;
+        }
+        assert_eq!(transport, 2, "app() writes events and stream for itself: {app_body}");
+
+        for (method, path) in &expected {
+            assert!(
+                listed.iter().any(|(m, suffix, _)| m == &method.as_str() && &path_of(suffix) == path),
+                "the router serves {method} {path} and session_routes() does not name it",
+            );
+        }
+        for (method, suffix, _) in &listed {
+            assert!(
+                expected.iter().any(|(m, path)| m == method && *path == path_of(suffix)),
+                "session_routes() names {method} {suffix}, which the router does not serve",
+            );
+        }
     }
 
     /// **Every route that needs a session refuses a signed-in stranger at an
@@ -2448,7 +2558,9 @@ mod tests {
         //    it was (ruling #8 closed the one that did).
         for table in ["opent", "dealt", "lockt"] {
             for (method, suffix, body) in session_routes() {
-                if suffix == "/table" || suffix == "/join" {
+                // `join` and `unlock` keep their own ladders, which the admission
+                // grid asserts by hand.
+                if suffix == "/table" || suffix == "/join" || suffix == "/unlock" {
                     continue;
                 }
                 // **The third exception, and it is at OPEN only** (§3.5 row 2,
@@ -2456,8 +2568,9 @@ mod tests {
                 // joiner's open-table screen learns when the seats fill. It is
                 // asserted just below rather than quietly skipped, and the
                 // `dealt` and `lockt` rows of this very loop are what keep the
-                // widening from having spread.
-                if suffix == "/events" && table == "opent" {
+                // widening from having spread. `…/stream` is the same signal,
+                // and an admitted stream never ends, so it is asked by status.
+                if (suffix == "/events" || suffix == "/stream") && table == "opent" {
                     continue;
                 }
                 let uri = format!("/api/games/{table}{suffix}");
@@ -2496,6 +2609,11 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{at_open}");
         assert_eq!(at_open["status"], "open", "{at_open}");
         assert_eq!(at_open["your_turn"], false, "{at_open}");
+        assert_eq!(
+            stream_status(&state, "/api/games/opent/stream", STRANGER).await,
+            StatusCode::OK,
+            "the stream is admitted alike at OPEN",
+        );
 
         // 2. `table` is the widening: at open since R-2.7, and at playing and
         //    over since R-3.13 — a would-be watcher has to read `locked` and
@@ -2550,7 +2668,9 @@ mod tests {
         for (method, suffix, body) in session_routes() {
             if suffix == "/table"
                 || suffix == "/join"
+                || suffix == "/unlock"
                 || suffix == "/events"
+                || suffix == "/stream"
                 || suffix == "/chat"
                 || method == "DELETE"
             {
@@ -3596,6 +3716,17 @@ mod tests {
         /// `POST …/chat` (M6.4): the same admission and a 201 — the one write a
         /// watcher may make (R-6.4.11).
         ChatPost,
+        /// `GET …/stream`: admitted EXACTLY as `events` is (§3.5's last
+        /// sentence), asked by status alone — an admitted stream never ends.
+        Stream,
+        /// `GET …/record` (cycle D): the finished game's bytes to a SEAT
+        /// HOLDER only — 409 while it runs, 403 to a watcher and to a
+        /// stranger alike.
+        Record,
+        /// `DELETE …/chat/{seq}` (cycle D, R-D4): admitted as the post is,
+        /// then the message's own answer — here a number nobody was given, so
+        /// a 404 to anyone the door lets in.
+        ChatDelete,
     }
 
     /// Every session route with the answer it owes. The bodies are
@@ -3615,6 +3746,8 @@ mod tests {
             ("GET", "/areas", None, Kind::Read),
             ("GET", "/log", None, Kind::Read),
             ("GET", "/events", None, Kind::Signal),
+            ("GET", "/stream", None, Kind::Stream),
+            ("GET", "/record", None, Kind::Record),
             ("GET", "/at/0", None, Kind::Read),
             // R-6.5b.10: the run route is admitted exactly as `at/{k}` is.
             ("GET", "/at?from=0&to=1", None, Kind::Read),
@@ -3624,6 +3757,7 @@ mod tests {
             ("GET", "/result", None, Kind::Result),
             ("GET", "/chat", None, Kind::Chat),
             ("POST", "/chat", Some(serde_json::json!({ "text": "grid" })), Kind::ChatPost),
+            ("DELETE", "/chat/9999", None, Kind::ChatDelete),
             ("DELETE", "", None, Kind::Write),
         ]
     }
@@ -3823,7 +3957,12 @@ mod tests {
                         continue; // M6.2's, and a DELETE would end the grid.
                     }
                     let uri = format!("/api/games/{table}{suffix}");
-                    let (got, answer) = request_as(&state, who, method, &uri, body).await;
+                    let (got, answer) = if kind == Kind::Stream {
+                        // No body is read: an admitted stream stays open.
+                        (stream_status(&state, &uri, who).await, serde_json::Value::Null)
+                    } else {
+                        request_as(&state, who, method, &uri, body).await
+                    };
                     let want = match kind {
                         Kind::Table => {
                             if seated || playing || word == "open" {
@@ -3847,8 +3986,19 @@ mod tests {
                         // 403 would end their stream and bounce them to the
                         // lobby. It stops at `open`: a stranger at `dealing` is
                         // still refused, because nobody watches a deal.
-                        Kind::Signal if seated || watches || word == "open" => StatusCode::OK,
-                        Kind::Signal => StatusCode::FORBIDDEN,
+                        Kind::Signal | Kind::Stream if seated || watches || word == "open" => StatusCode::OK,
+                        Kind::Signal | Kind::Stream => StatusCode::FORBIDDEN,
+                        // **The record is a seat holder's alone** (M6.5a): a
+                        // watcher who may read the whole game is still refused
+                        // its bytes, and a seat holder is told the game is not
+                        // over until it is.
+                        Kind::Record if !seated => StatusCode::FORBIDDEN,
+                        Kind::Record if word == "over" => StatusCode::OK,
+                        Kind::Record => StatusCode::CONFLICT,
+                        // A delete is admitted as the post is, and then the
+                        // number nobody was given is the message's own 404.
+                        Kind::ChatDelete if seated || watches => StatusCode::NOT_FOUND,
+                        Kind::ChatDelete => StatusCode::FORBIDDEN,
                         // **The chat is admitted exactly as a READ is, at every
                         // status** (M6.4, spec §3.2): a seat holder always, a
                         // watcher once the table admits them, and nobody else.
@@ -3871,7 +4021,7 @@ mod tests {
                         got, want,
                         "{who} at {table} ({word}): {method} {uri} answered {answer}",
                     );
-                    if got == StatusCode::FORBIDDEN && kind != Kind::Write {
+                    if got == StatusCode::FORBIDDEN && kind != Kind::Write && kind != Kind::Stream && kind != Kind::Record {
                         // The SENTENCE discriminates the two refused rows: a
                         // caller who can do something about it is told what.
                         let expected = if shut_out { LOCKED } else { NOT_SEATED };

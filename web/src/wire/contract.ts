@@ -153,11 +153,13 @@ import tableDealing from "./table_dealing.json";
 import table from "./table.json";
 import deal from "./deal.json";
 import dealWaiting from "./deal_waiting.json";
+import dealBotTable from "./deal_bot_table.json";
 import dealing409 from "./dealing_409.json";
 import gamesList from "./games.json";
 import gamesOpen from "./games_open.json";
 import gamesNext from "./games_next.json";
 import tableOpen from "./table_open.json";
+import tableTwoOpen from "./table_two_open.json";
 import open409 from "./open_409.json";
 import join403Locked from "./join_403_locked.json";
 import join403Password from "./join_403_password.json";
@@ -264,6 +266,9 @@ const _table: Widen<TableView> = table;
 // that is the "waiting for the others" screen.
 const _deal: Widen<DealView> = deal;
 const _dealWaiting: Widen<DealView> = dealWaiting;
+// ...and the deal at a table whose other seat is a BOT (cycle D, row 32): the
+// caller's two cards, and nothing of the bot's.
+const _dealBotTable: Widen<DealView> = dealBotTable;
 const _gamesList: Widen<GamesList> = gamesList;
 // ---- M6.2: the room's opening ------------------------------------------
 //
@@ -271,6 +276,8 @@ const _gamesList: Widen<GamesList> = gamesList;
 // the one payload in the corpus whose `my_seats` is empty, and the only place
 // an `open` seat and a `locked` table reach the client's declared types.
 const _tableOpen: Widen<TableView> = tableOpen;
+// ...and a THREE-player table with two seats still open (cycle D, row 32).
+const _tableTwoOpen: Widen<TableView> = tableTwoOpen;
 // The lobby's two lists. `games_open` is the OTHER question (tables I could sit
 // at, whoever made them), and `games_next` is the only payload anywhere whose
 // `next` is a cursor rather than null — so the string arm of that field is
@@ -542,8 +549,8 @@ void [
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
-  _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
-  _tableOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
+  _tableDealing, _table, _deal, _dealWaiting, _dealBotTable, _gamesList, _dealing409, _notSeated403,
+  _tableOpen, _tableTwoOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
   _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
   _events, _eventsDealing, _eventsOpen,
@@ -884,8 +891,10 @@ export const wire = {
   table: as<TableView>(table),
   deal: as<DealView>(deal),
   dealWaiting: as<DealView>(dealWaiting),
+  dealBotTable: as<DealView>(dealBotTable),
   games: as<GamesList>(gamesList),
   tableOpen: as<TableView>(tableOpen),
+  tableTwoOpen: as<TableView>(tableTwoOpen),
   gamesOpen: as<GamesList>(gamesOpen),
   gamesNext: as<GamesList>(gamesNext),
   open409: as<DealingErrorBody>(open409),

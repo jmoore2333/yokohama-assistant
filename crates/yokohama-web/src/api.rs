@@ -3366,6 +3366,31 @@ mod tests {
         }
     }
 
+    /// **The reply to a move whose write CONFLICTED says so, out loud** (M6.5c2
+    /// cycle D, straw poll row 31): the move applied, the store answered
+    /// `Conflict` at the swap, and the 200 carries `APPLIED BUT NOT SAVED`
+    /// instead of a refusal the server did not make. Its games.rs partner
+    /// asserts the eviction; this asserts the sentence on the wire. The catcher
+    /// for battery row 25.
+    #[test]
+    fn a_move_whose_write_conflicted_is_answered_applied_but_not_saved() {
+        use crate::games::test_support::{conflicting_games, req, who};
+        use std::sync::atomic::Ordering;
+        let (games, store) = conflicting_games();
+        let red = who("red@t.test");
+        games.create(&req("cnf"), &red).expect("a table");
+        games.keep("cnf", &red, yokohama_core::PlayerId::new(0), 1, None).expect("red keeps");
+        store.armed.store(true, Ordering::SeqCst);
+        let (status, body) = ask(&games, "red@t.test", "POST", "/api/games/cnf/input", "", r#"{"line":"1"}"#);
+        assert_eq!(status, 200, "{body}");
+        let warnings = body["warnings"].as_array().expect("warnings ride the reply");
+        assert!(
+            warnings.iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("APPLIED BUT NOT SAVED")
+                && w.contains("changed under this handle"))),
+            "{body}",
+        );
+    }
+
     /// **A hot seat's holder is never told it is not their turn** (M6.5c2 cycle
     /// D, row 129) — the catcher for an acting-seat fence that compares against
     /// the seat `admitted` read under its OWN lock take.

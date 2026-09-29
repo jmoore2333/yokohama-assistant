@@ -270,6 +270,12 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   .table.replaying .board { outline: 1px solid var(--reachable); outline-offset: 4px; }
 }
 @media (min-width: 1600px) { .app { --side: 30rem; } }
+/* **--side: 36rem is COUPLED to the chat's `@container (max-width: 34rem)`
+ * rule below** (cycle D, straw poll row 39): the side column's chat row must
+ * stay narrower than 34rem, which it is at 514px of the 576px column here, so
+ * a --side raised past about 38rem lets the column outgrow the rule and the
+ * stacked layout stops applying to it. No instrument sees CSS; this comment
+ * is the only thing that ties the two numbers. */
 @media (min-width: 1900px) { .app { --side: 36rem; } }
 
 /* ---- board ------------------------------------------------------------- */
@@ -1476,7 +1482,11 @@ ol.account .mover { font-weight: 700; }
  * **34rem is chosen to leave the WIDE hosts alone**: the side column is 322px
  * of row at 1280 and 514px at 1900, so it is always narrow; the open table's
  * and the lobby's panels are ~800px, so they keep the one-row layout they have
- * today, at every viewport above the phone. */
+ * today, at every viewport above the phone.
+ *
+ * **34rem is COUPLED to `--side: 36rem` at >= 1900px, above**: the side
+ * column's chat row (514px there) must stay under it. Change either and read
+ * the other; nothing checks them against each other. */
 @container (max-width: 34rem) {
   .chat-lines li { grid-template-columns: auto 1fr auto; }
   .chat-lines li .chat-text { grid-column: 1 / -1; grid-row: 2; }

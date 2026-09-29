@@ -87,11 +87,14 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
  *   holding the committed pair re-seated against another bot — which no script
  *   replays.
+ * - `deal_bot_table` and `table_two_open` (cycle D) come from that same vs-bot
+ *   table's `Api`, which no script replays.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
  */
 const THIRD_COLUMN = [
+  "deal_bot_table",
   "explanation_terminal",
   "foreign_bot_409",
   "house_chat_off_404",
@@ -102,6 +105,7 @@ const THIRD_COLUMN = [
   "site_space_words",
   "table_bot",
   "table_foreign",
+  "table_two_open",
   "watching",
   "why",
   "why_foreign",

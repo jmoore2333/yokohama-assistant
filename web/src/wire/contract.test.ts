@@ -87,6 +87,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["table", wire.table, KEYS.table],
     ["deal", wire.deal, KEYS.dealView],
     ["deal_waiting", wire.dealWaiting, KEYS.dealView],
+    ["deal_bot_table", wire.dealBotTable, KEYS.dealView],
     ["games", wire.games, KEYS.gamesList],
     ["dealing_409", wire.dealing409, KEYS.dealingError],
     ["not_seated_403", wire.notSeated403, KEYS.apiError],
@@ -94,6 +95,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     // seat at it; the lobby's other list and its paged form; and the four ways
     // a caller is turned away from a table it may not open or sit at.
     ["table_open", wire.tableOpen, KEYS.table],
+    ["table_two_open", wire.tableTwoOpen, KEYS.table],
     ["games_open", wire.gamesOpen, KEYS.gamesList],
     ["games_next", wire.gamesNext, KEYS.gamesList],
     ["open_409", wire.open409, KEYS.dealingError],

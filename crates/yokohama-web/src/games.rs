@@ -914,12 +914,15 @@ impl Games {
         // distinction `conflict`'s doc draws and `WriteError` now carries in
         // its type.
         //
-        // **NO CELL DRIVES THE CONFLICT ARM**, and saying so is worth the line.
-        // Within one process the guards above have already read the store under
-        // the same `written` lock, so the only way to reach it is a SECOND
-        // PROCESS writing between that read and this write — which no test here
-        // can arrange. It is defence in depth against a window the old code
-        // could not see at all, not a covered invariant.
+        // **`a_conflict_at_the_swap_evicts_the_handle_and_the_reply_says_it_is_not_saved`
+        // DRIVES THIS ARM** through a store double that answers `Conflict` on a
+        // record write. Within one process the guards above have already read
+        // the store under the same `written` lock, so a real conflict here
+        // still needs a SECOND PROCESS writing between that read and this
+        // write; the double stands in for that process, which proves what the
+        // arm DOES (evict, and say so on the reply) and not that the window is
+        // reachable. It is defence in depth against a window the old code could
+        // not see at all.
         let version = match self.store.write_if_version(Doc::Record, id, &json, expected) {
             Ok(v) => v,
             Err(WriteError::Conflict { .. }) => {
@@ -1171,12 +1174,10 @@ mod tests {
     /// **Every bump site answers under [`NoSignal`]** (M6.5a, R-6.5a.8, spec
     /// §2.4).
     ///
-    /// The premise, and it is a premise rather than an assertion: the layer is
-    /// built by [`test_support::games`], which installs `NoSignal` because
-    /// `Games::new` defaults to it. Nothing here can check that at run time — a
-    /// `dyn Signal` does not say which one it is — so the dependence is written
-    /// down at that helper as well, where a change to the default would be
-    /// made.
+    /// **The layer is built here through [`Games::with_parts`] with `NoSignal`
+    /// passed explicitly** (cycle D, straw poll row 40), so the signal under
+    /// test is the one the cell names and not whichever one `Games::new`
+    /// happens to default to.
     ///
     /// The walk drives one write of every kind that bumps and REQUIRES each to
     /// answer `Ok`: `create`, the finalize's `flip_to_playing` and `persist`
@@ -1191,10 +1192,11 @@ mod tests {
     /// on their way to asserting something else; a bump site that had kept a
     /// `Signals`-shaped assumption would break one of them and be reported as
     /// whatever that cell was about. This one exists for the crossing itself.
-    /// It is the only `NoSignal` cell that drives every method THROUGH this
-    /// type's write sites — measured at M6.5a, the nearest other reached three
+    /// It is the `NoSignal` cell that drives every method THROUGH this type's
+    /// write sites — measured at M6.5a, the nearest other reached three
     /// (`a_delete_removes_the_chat_and_its_count`, which sends no house
-    /// message) — so a failure here names the signal rather than a symptom.
+    /// message), and the count of others is not maintained here — so a failure
+    /// here names the signal rather than a symptom.
     /// Mutation-proven at M6.5a: each of `NoSignal`'s then four bodies was
     /// made to panic in turn, and this cell failed on all four.
     ///
@@ -1202,7 +1204,15 @@ mod tests {
     /// nothing to observe, which is the point.
     #[test]
     fn every_bump_site_answers_under_no_signal() {
-        let games = games();
+        let games = Games::with_parts(
+            Arc::new(Rules::standard()),
+            Arc::new(MemStore::default()),
+            ChatConfig::default(),
+            Arc::new(NoSignal),
+            Games::ticking_clock(),
+            Arc::new(NoArchive),
+            RunHost::Server,
+        );
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
 
         // `create` — the bump at the end of its success arm.
@@ -2258,6 +2268,35 @@ mod tests {
         assert!(!house.has_changed().expect("the house channel is open"));
     }
 
+    /// **The swap's CONFLICT arm, driven** (M6.5c2 cycle D, straw poll row 31):
+    /// a store that answers `Conflict` at the record write — the second process
+    /// the arm exists for — makes `persist` refuse, name the change, bump
+    /// nothing and EVICT the handle, so the next request replays the store
+    /// rather than go on answering from a `Repl` whose line diverged. The
+    /// catcher for battery row 25. The Io arm (`a_write_the_store_refuses_bumps_nothing`)
+    /// evicts nothing; the last assertion here is what tells the two apart.
+    #[test]
+    fn a_conflict_at_the_swap_evicts_the_handle_and_the_reply_says_it_is_not_saved() {
+        use std::sync::atomic::Ordering;
+        let (games, store) = conflicting_games();
+        let id = "cswap".to_string();
+        let handle = playing(&games, &req("cswap"), &["red@t.test"]);
+        store.armed.store(true, Ordering::SeqCst);
+
+        let mut repl = handle.lock().expect("the handle");
+        repl.step("1");
+        let err = games.persist(&id, &repl).expect_err("the store answered a conflict");
+        assert!(err.contains("changed under this handle"), "the arm's own sentence: {err}");
+        drop(repl);
+
+        store.armed.store(false, Ordering::SeqCst);
+        let rebuilt = games.handle(&id).expect("a rebuild off the store");
+        assert!(
+            !Arc::ptr_eq(&rebuilt, &handle),
+            "a conflict evicts the handle; an Io failure would have kept it",
+        );
+    }
+
     /// **`persist`'s bump follows the MIRROR write, not merely the record
     /// write** (spec §2: "`persist`, after the record write and `mirror_turn`
     /// → `bump`").
@@ -2898,7 +2937,8 @@ pub(crate) mod test_support {
     /// defaults to it (M6.5a, R-6.5a.8). That is a premise
     /// `every_bump_site_answers_under_no_signal` rests on and cannot assert —
     /// a `dyn Signal` does not say which one it is — so a change to the
-    /// default belongs with a re-read of that cell. Every cell in THIS module that watches a
+    /// default no longer touches that cell, which builds its own through
+    /// `with_parts`. Every cell in THIS module that watches a
     /// bump uses [`watched_games`] instead (the route cells watch through
     /// `AppState`'s own `signals`).
     pub(crate) fn games() -> Games {
@@ -2925,6 +2965,48 @@ pub(crate) mod test_support {
             super::RunHost::Server,
         );
         (games, signals)
+    }
+
+    /// A [`Store`] that answers `WriteError::Conflict` on every RECORD write
+    /// once armed, and behaves as [`MemStore`] otherwise — the stand-in for a
+    /// second process that wrote between `persist`'s read and its swap. Table
+    /// and chat writes always pass, so `create` and `keep` are ordinary.
+    #[derive(Default)]
+    pub(crate) struct ConflictingRecordWrites {
+        pub inner: MemStore,
+        pub armed: std::sync::atomic::AtomicBool,
+    }
+
+    impl Store for ConflictingRecordWrites {
+        fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, crate::store::Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<crate::store::Version>,
+        ) -> Result<crate::store::Version, crate::store::WriteError> {
+            if doc == Doc::Record && self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::store::WriteError::Conflict { current: None });
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// A [`Games`] over a fresh [`ConflictingRecordWrites`], NOT yet armed,
+    /// and the store to arm.
+    pub(crate) fn conflicting_games() -> (Games, Arc<ConflictingRecordWrites>) {
+        let store = Arc::new(ConflictingRecordWrites::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        (games, store)
     }
 
     /// The corpus seed. **At this seed seat 1's argmax is card 1** (57 against
