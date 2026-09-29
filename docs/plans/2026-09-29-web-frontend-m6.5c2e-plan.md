@@ -14,7 +14,7 @@
 browser is no longer pinned to its last release), D's leftovers closed, the door's three build values, the owner's-eye
 polish off pictures, lobby paging and "Abandon and save" made true, the waiting-table expiry, requests per move
 bounded, the door window's instruments; then, against E's own release, the update reading on both hosts, the live
-tiers, the seven screenshots, the phones on the simulators, the rate-limit rule at a measured value, and the public
+tiers, the ten screenshots, the phones on the simulators, the rate-limit rule at a measured value, and the public
 door vetted in two states then REVERTED; then the documents — the lane document, `CLAUDE.md`'s web passages to
 pointers, the guidingpath archive by grouping, the board, the README in R-6.5c2.45's shape; then the close, PR #43,
 and on the owner's word at the wrap the merge #31 → #43 and `v0.6.0`.
