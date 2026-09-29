@@ -84,11 +84,24 @@ describe.skipIf(!have)("the browser host's restore validator", () => {
   // A file this build cannot read is refused AS A WHOLE, through the export the
   // page really calls — and the refusal reaches JS as a thrown error, which is
   // the shape `client.ts`'s `localRestoreRead` turns into its rejection.
+  //
+  // **The version-2 file carries a key version 1 lacks** (M6.5c2 cycle D, the
+  // mutation battery's row 41), as `backup.rs`'s own
+  // `an_envelope_of_another_version_is_refused_whole` makes its file: a newer
+  // envelope is newer because it says something this build does not know. A
+  // file that bumped only the number parsed whole as version 1, so it answered
+  // "version 2" whichever the order, and the version-before-parse order had no
+  // witness on this host. With the key, a whole parse first answers serde's
+  // "unknown field" and this cell fails.
   it("refuses a file of another version, as a throw", () => {
-    const newer = envelope.replace('"envelope": 1', '"envelope": 2');
-    expect(newer, "the mutation must actually change the fixture").not.toBe(envelope);
+    const newer = envelope
+      .replace('"envelope": 1', '"envelope": 2')
+      .replace('{\n  "kind"', '{\n  "added_in_version_2": true,\n  "kind"');
+    expect(newer, "the mutation must change the version").toContain('"envelope": 2');
+    expect(newer, "and add a key version 1 lacks").toContain('"added_in_version_2": true');
     // Refused BY ITS VERSION (M6.5c2 cycle D, straw poll row 15), in the
-    // sentence `backup.rs`'s `restore_read` words.
+    // sentence `backup.rs`'s `restore_read` words, and not by the key.
     expect(() => wasm.restore_read(newer)).toThrow(/version 2 backup/);
+    expect(() => wasm.restore_read(newer)).not.toThrow(/added_in_version_2/);
   });
 });

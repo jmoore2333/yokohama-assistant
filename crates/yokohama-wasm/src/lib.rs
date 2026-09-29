@@ -549,10 +549,23 @@ mod tests {
         assert_eq!(rows[0]["id"], "local-242a5429453c593c");
         assert_eq!(rows[0]["verdict"]["events"], 595);
 
-        let newer = ENVELOPE.replace("\"envelope\": 1", "\"envelope\": 2");
-        assert_ne!(newer, ENVELOPE, "the mutation must actually change the fixture");
+        // **The version-2 file carries a key version 1 lacks** (M6.5c2 cycle
+        // D, the mutation battery's row 41), as `yokohama_web::backup`'s own
+        // `an_envelope_of_another_version_is_refused_whole` makes its file. A
+        // file that bumped only the number parsed whole as version 1, so it
+        // answered "version 2" whichever the order and the version-before-parse
+        // order had no witness on this host; with the key, a whole parse first
+        // answers serde's "unknown field" and this cell fails.
+        let newer = ENVELOPE
+            .replacen("\"envelope\": 1", "\"envelope\": 2", 1)
+            .replacen("{\n  \"kind\"", "{\n  \"added_in_version_2\": true,\n  \"kind\"", 1);
+        assert!(
+            newer.contains("\"envelope\": 2") && newer.contains("\"added_in_version_2\": true"),
+            "the mutation must change the version and add a key version 1 lacks",
+        );
         let err = restore_read_inner(&newer).expect_err("a version this build does not know");
         assert!(err.contains("version 2 backup"), "{err}");
+        assert!(!err.contains("added_in_version_2"), "by its version, not by its key: {err}");
     }
 
 }
