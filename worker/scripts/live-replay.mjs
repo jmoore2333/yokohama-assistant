@@ -186,12 +186,15 @@ export function filterLobby(name, committed, got, ids) {
  * and never recomputed from what was kept: a person talking in the lobby
  * during a run moves it, and that run fails.
  *
- * **By `seq` alone, since M6.5c2 cycle D** (R-6.5c2.35): the filter also
- * kept only messages whose `author.user` was one of the replay's identities,
- * and no author carries an address any more — nor can "ours" be told from a
- * name, which anyone may choose. No verdict moved: a message after the base
- * that is not the replay's moves `last`, which fails the run as it always did,
- * and it now fails the page's compare beside it.
+ * **By `seq` alone, since M6.5c2 cycle D** (R-6.5c2.35; the orchestrator's
+ * ruling, seq-only): the filter also kept only messages whose `author.user`
+ * was one of the replay's identities, and that filter went with `user` — no
+ * author carries an address any more, and "ours" cannot be told from a name,
+ * which anyone may choose. It existed to drop OLDER messages by other
+ * identities below the base, which `seq > base` drops on its own; a foreign
+ * message ABOVE the base moves `last` and already failed the run, so the
+ * verdict is unchanged — and that message is now KEPT, so the page's compare
+ * fails beside it.
  */
 export function normalizeHouseChat(name, got, base) {
   if (!HOUSE_CHAT.has(name)) throw new Error(`${name} is not a house chat payload`);

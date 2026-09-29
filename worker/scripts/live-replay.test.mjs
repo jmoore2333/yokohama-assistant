@@ -111,13 +111,18 @@ describe("normalizeHouseChat", () => {
     expect(post.seq, "the premise").toBe(1);
     expect(normalizeHouseChat("house_chat_post", { ...post, seq: BASE + 1 }, BASE)).toEqual(post);
   });
-  it("takes the page's last and every seq back, and drops an earlier run's message", () => {
+  // **The anti-vacuity partner of the foreign case below** (the orchestrator's
+  // seq-only ruling): this run's OWN message above the base is kept, an older
+  // one below it is dropped, and the run HOLDS — the normalized page is the
+  // committed one, whole.
+  it("takes the page's last and every seq back, drops an earlier run's message, keeps its own, and holds", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
     const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE - 3 }, { ...ours, seq: BASE + 1 }] };
     const normalized = normalizeHouseChat("house_chat", got, BASE);
     expect(normalized.messages, "only this run's own message, at seq 1").toEqual(page.messages);
     expect(normalized.last).toBe(1);
+    expect(normalized, "the run holds").toEqual(page);
   });
   // **A message after the base that is not this run's is KEPT, and the run
   // differs twice** (M6.5c2 cycle D, R-6.5c2.35). The filter used to drop it by
