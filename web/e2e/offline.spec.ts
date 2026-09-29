@@ -638,10 +638,17 @@ test("the update offered to a tab NO worker controls: its click reloads it once 
   // browser had read.** Every other "Reload to use it" in this file is pressed
   // in a CONTROLLED tab, which hears `controllerchange` and reloads on it. A
   // tab nothing controls — the visit that installed the release, since nothing
-  // calls `clients.claim()` — is handed nothing and hears none, so the click
+  // calls `clients.claim()` — is not promised a `controllerchange`, so the click
   // has to wait for the worker it asked for to reach `activated` instead
   // (`reloadWhenActivated`). Unit cells hold the branch (`swRegister.test.ts`);
   // this holds that the PLATFORM's events make it land.
+  //
+  // **What it proves, and what it does not.** It proves the uncontrolled tab
+  // reloads onto the new release after its click, and that the tab beside it
+  // does not; mutating away the `reloadWhenActivated` call fails it. It does
+  // NOT prove the branch choice: Chromium also sends this tab a
+  // `controllerchange`, so forcing the controlled branch (`if (true)`) still
+  // passes. The choice is held by the unit cells only.
   //
   // **Staged with two tabs, and the second is what makes an offer exist.** An
   // update waits only while some client is still served by the old worker; with
