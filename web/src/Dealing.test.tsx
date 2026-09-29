@@ -562,41 +562,50 @@ describe("the dealing screen, following the other seats", () => {
   // **A keep at another browser that does not finish the deal leaves the table
   // DEALING, and the frame it causes says exactly that.** The handler dropped
   // it — it acted only on a status that had LEFT dealing — so at three seats
-  // and more the line went on naming a seat that had already chosen.
+  // and more the line went on naming a seat that had chosen.
+  //
+  // **The connection's own frame comes FIRST, as on both real hosts** (the
+  // Task 11 review's I-3): the NAS stream writes the current `Events` on
+  // connect and the Worker's `admit` sends one. The keep's frame is the
+  // SECOND, so a screen that re-read on the first frame alone — which drops
+  // every later keep, row 1's defect as production shows it — fails here.
   it("re-reads who it is waiting on when a dealing frame follows another seat's keep", async () => {
     vi.useFakeTimers();
-    const { stream, at } = signalling();
-    const deals = dealThen(threeSeats([true, false, false]), threeSeats([true, false, true]));
+    const { stream, at } = signalling(() => [["signal", wire.eventsDealing]]);
+    const before = threeSeats([true, false, false]);
+    const deals = dealThen(before, before, threeSeats([true, false, true]));
     const stub = stubApi((call) => (call.path.endsWith("/deal") ? deals(call) : at(call)));
     render(<Host />);
     await until(() => waitingLine() === "waiting on Blue, invited", "the first reading names both seats");
-    await until(() => stream.opens() > 0, "the table's stream was opened");
+    await until(() => stub.matching("GET", "/deal").length === 2, "the connection's own frame was read");
+    expect(waitingLine(), "nothing had moved at connect").toBe("waiting on Blue, invited");
 
     stream.push("signal", wire.eventsDealing);
     await settle();
-    expect(stub.matching("GET", "/deal"), "the frame re-read the deal").toHaveLength(2);
+    expect(stub.matching("GET", "/deal"), "the keep's frame re-read the deal").toHaveLength(3);
     expect(waitingLine()).toBe("waiting on Blue");
   });
 
   // **A frame where only the chat moved is a message, not a keep** — `Events`
   // carries no keep count, and `chat`/`chat_rev` are the fields that tell a
   // post (or a delete) from a keep. Two fields moved on the dealing reading,
-  // taken from the corpus's own playing one.
+  // taken from the corpus's own playing one. The connection's frame first,
+  // then a keep's (the anti-vacuity: a frame that is not only a chat move DOES
+  // re-read, after the first), then the message's.
   it("does not re-read the deal for a frame where only the chat moved", async () => {
     vi.useFakeTimers();
-    const { stream, at } = signalling();
-    const deals = dealThen(threeSeats([true, false, false]), threeSeats([true, false, true]));
+    const { stream, at } = signalling(() => [["signal", wire.eventsDealing]]);
+    const deals = dealThen(threeSeats([true, false, false]), threeSeats([true, false, false]), threeSeats([true, false, true]));
     const stub = stubApi((call) => (call.path.endsWith("/deal") ? deals(call) : at(call)));
     render(<Host />);
     await until(() => waitingLine() !== null, "the first reading");
-    await until(() => stream.opens() > 0, "the table's stream was opened");
-    // Anti-vacuity: a frame that is not only a chat move DOES re-read.
+    await until(() => stub.matching("GET", "/deal").length === 2, "the connection's own frame was read");
     stream.push("signal", wire.eventsDealing);
     await settle();
-    expect(stub.matching("GET", "/deal"), "the premise: a keep's frame re-reads").toHaveLength(2);
+    expect(stub.matching("GET", "/deal"), "the premise: a keep's frame re-reads").toHaveLength(3);
 
     stream.push("signal", { ...wire.eventsDealing, chat: wire.events.chat, chat_rev: wire.events.chat_rev });
     await settle();
-    expect(stub.matching("GET", "/deal"), "a message is not a keep").toHaveLength(2);
+    expect(stub.matching("GET", "/deal"), "a message is not a keep").toHaveLength(3);
   });
 });

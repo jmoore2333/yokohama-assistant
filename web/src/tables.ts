@@ -190,6 +190,17 @@ export function seatChips(t: TableView): ChipModel[] {
  *  game one of them sets aside is never offered by another. */
 export const isStranded = (t: TableView): boolean => Boolean(t.bot && !t.bot.runs_here && !t.over);
 
+/** May THIS reader abandon this server table? **The layer's own rule**, read
+ *  off the two facts about the reader that every table carries (M6.5c2 cycle
+ *  D, the Task 11 review's I-1): `delete_locked` refuses a caller who holds no
+ *  seat — "you are not seated at this table" — before it asks whether they
+ *  created it. So the control is the creator's, SEATED, and one predicate
+ *  says so for the open table, a lobby row and the broken-game screen alike:
+ *  a control drawn over a guaranteed refusal is not a control. A creator who
+ *  holds no seat is unreachable through `create` (R-1.6, "the creator must
+ *  hold a seat"), and the layer refuses that delete by design. */
+export const mayAbandon = (t: TableView): boolean => t.mine && t.my_seats.length > 0;
+
 /** A row's one control (R-6.5c2.7), or why it has none. */
 export type RowAction =
   | { kind: "go"; label: "Play" | "View" | "Take a seat" | "Spectate"; primary: boolean; padlock: boolean }

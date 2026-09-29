@@ -471,32 +471,30 @@ describe("the lobby", () => {
       );
     });
 
-    // **The creator's control follows `mine`, on whichever row their table is
-    // listed** (dossier row 17, M6.5c2 cycle D). It followed the SECTION —
-    // Your tables only — so a creator who holds no seat, whose table is listed
-    // under Open tables and never under Your tables (the `mine` scope is the
-    // tables you SIT at), was offered it nowhere. `create` refuses such a
-    // table today ("the creator must hold a seat", R-1.6), so this is the
-    // lobby's rule held on its own. A table is still listed once for its
-    // reader (`notMine`), so the control is never drawn twice. The corpus's
-    // open listing, read by a stranger, with ONE field moved on its first row —
-    // `mine`, its creator's seatless reading — and the reader sitting at
-    // nothing, so Your tables is empty. And the control sits in its own cell
-    // under the action (`.row-abandon`), never in the action's.
-    it("draws the control on a seatless creator's row in Open tables, and on no other row there", async () => {
-      const [first, ...rest] = wire.gamesOpen.games;
-      const opened = { ...wire.gamesOpen, games: [{ ...first!, mine: true }, ...rest] };
-      expect(first!.my_seats, "the premise: a seatless reading").toHaveLength(0);
-      show((call) => {
-        if (isGamesList(call, "open")) return opened;
-        if (isGamesList(call, "mine")) return { ...wire.games, games: [] };
-        return undefined;
-      });
+    // **The creator's, SEATED — the layer's rule** (R-13; `mayAbandon`, as
+    // ruled after the Task 11 review's I-1). The layer's delete refuses a
+    // caller who holds no seat before it asks who created the table —
+    // `delete_locked`: "you are not seated at this table" — so a creator's
+    // SEATLESS reading carries no control, and a seated one does. A table you
+    // sit at is listed under Your tables alone (`notMine`), so on a server the
+    // control is drawn there and nowhere else. The corpus's open listing was
+    // read by a caller who did not open the table (`mine: false`), so ONE field
+    // is moved on its rows, `mine`, which puts the same table, `mine: true`, in
+    // both sections — seated under Your tables, seatless under Open tables: the
+    // one case that tells the seat rule from a `mine` rule. And the control
+    // sits in its own cell under the action (`.row-abandon`), never in the
+    // action's.
+    it("draws the control for the seated creator in Your tables, and none for a seatless creator's reading in Open tables", async () => {
+      const opened = { ...wire.gamesOpen, games: wire.gamesOpen.games.map((g) => ({ ...g, mine: true })) };
+      expect(opened.games[0]!.my_seats, "the premise: a seatless reading").toHaveLength(0);
+      show((call) => (isGamesList(call, "open") ? opened : undefined));
+      const mine = section("Your tables");
       const open = section("Open tables");
-      const control = await within(open).findByRole("button", { name: `abandon ${first!.name ?? first!.id}` });
+      const control = await within(mine).findByRole("button", { name: "abandon wire" });
       expect(control.closest(".row-abandon")).not.toBeNull();
       expect(control.closest(".row-action")).toBeNull();
-      expect(within(open).getAllByRole("button", { name: /^abandon / }), "only the creator's row").toHaveLength(1);
+      expect(within(open).getByRole("link", { name: "wire" })).toBeInTheDocument();
+      expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
     });
 
     // Read, not moved: the corpus's playing table as its SECOND seat reads it

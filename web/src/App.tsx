@@ -44,6 +44,7 @@ import { useSignal, type End } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
+import { mayAbandon } from "./tables";
 import {
   buildRun,
   dwellFor,
@@ -141,7 +142,13 @@ const isForeignBot = (body: unknown): boolean =>
  *  (`a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409`),
  *  and at HEAD it is the only plain 409 that read can answer. The cost of the
  *  shape, stated: a plain 409 added to that read later lands on this screen
- *  too — its sentence and an Abandon — rather than on the lobby. */
+ *  too — its sentence and an Abandon — rather than on the lobby. **One other
+ *  plain 409 has the shape, and cannot reach this screen** (the Task 11
+ *  review's m-4): the local Worker answers a write it could not keep with
+ *  `{"error": <taken over>}` on any method, and a GET writes when its rebuild
+ *  pumps a bot. That is the lock's refusal, and the lock screen outranks
+ *  `broken` when the screen is drawn; Take back re-opens the game, and `show`
+ *  clears `broken`. */
 const isUnrebuilt = (e: ApiError): boolean =>
   e.status === 409 &&
   typeof e.body === "object" &&
@@ -741,7 +748,12 @@ export function App() {
         // about a table nobody is looking at, and nothing to put back.
         if (!here()) return;
         // The game that was on screen stays, and so does its address — with no
-        // history entry left pointing at the table that refused.
+        // history entry left pointing at the table that refused. **The cost,
+        // stated** (the Task 11 review's m-2): the switch pushed an entry and
+        // this REPLACES it, so the history holds the game twice, and the first
+        // Back changes nothing a player can see. `history.back()` would pop it,
+        // but it arrives as a queued `popstate` racing the route effect; one
+        // inert Back is the cheaper of the two.
         if (back) navigate(back, { replace: true });
         throw e;
       } finally {
@@ -1548,9 +1560,10 @@ export function App() {
     // spec §2.4): the same screen, host-aware — see `broken`'s own doc.
     if (broken) {
       const local = isLocal(broken.id);
-      /** The layer's delete is the CREATOR's, seated (`tables.rs:1670-1677`); a
-       *  local game's is always this browser's own. */
-      const mayAbandon = local || (broken.table.mine && broken.table.my_seats.length > 0);
+      /** The layer's delete is the CREATOR's, seated (`mayAbandon`, the one
+       *  predicate the open table and the lobby read too); a local game's is
+       *  always this browser's own. */
+      const abandonable = local || mayAbandon(broken.table);
       const name = broken.table.name ?? broken.id;
       // **The lock screen's shape** (M6.5c2 cycle C; the whole-branch review's
       // Minor 6): the band and ONE notice card, so a player who follows a row
@@ -1599,7 +1612,7 @@ export function App() {
                     archives it (R-6.5a.11). A local game lands on the door, where
                     the rest of this browser's games are listed; a server game on
                     the lobby. */}
-                {mayAbandon && (
+                {abandonable && (
                   <Abandon
                     table={broken.table}
                     local={local && broken.foreign}

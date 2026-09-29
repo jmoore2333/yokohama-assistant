@@ -47,7 +47,7 @@ import { PasswordTag } from "./Chips";
 import { api, ApiError, displayName } from "./api";
 import { hashOf } from "./route";
 import { SeatCard } from "./SeatCard";
-import { seatName } from "./tables";
+import { mayAbandon, seatName } from "./tables";
 import { usePolled, type End } from "./signal";
 import type { Events, PlayerColor, SeatView, TableView } from "./types";
 import { Refusal } from "./Refusal";
@@ -387,12 +387,11 @@ export function OpenTable({
               cannot drift apart again. `onDone` is the leave: the table is
               gone, and there is nothing here to go back to. Outlined in the
               warning colour, the quieter danger (mock 08). */}
-          {/* **The creator's, seated or not** (M6.5c2 cycle D, dossier row
-              17): it was drawn only on the seated face, so a creator holding
-              no seat — who reads the stranger's face — could not delete the
-              table they made. `create` refuses such a table today (R-1.6);
-              this is the screen's rule held on its own. */}
-          {table.mine && (
+          {/* **The creator's, SEATED** — the layer's rule, `mayAbandon`: its
+              delete refuses a caller who holds no seat ("you are not seated
+              at this table") before it asks who created the table, so a
+              seatless creator is offered nothing a press would refuse. */}
+          {mayAbandon(table) && (
             <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
           )}
           <button type="button" className="quiet-link" onClick={() => leave.current()}>

@@ -245,7 +245,7 @@ export function Dealing({
       // delete) bumps the table too, so `chat`/`chat_rev` moving is the one
       // sign that a frame is not a keep. A frame that moves both — a keep and
       // a message coalesced into one — reads as a message, and the next frame
-      // corrects it. The first frame of all (the connection's own) re-reads,
+      // that is not a message corrects it. The first frame of all (the connection's own) re-reads,
       // because nothing is known to compare it with. And none while this
       // browser's own keep is out: its reply re-reads the deal itself.
       const onlyChat = before !== null && (before.chat !== e.chat || before.rev !== e.chat_rev);

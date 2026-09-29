@@ -531,19 +531,22 @@ describe("the open table, to somebody sitting at it", () => {
     expect(await screen.findByRole("button", { name: "abandon wire2" })).toBeInTheDocument();
   });
 
-  // **The creator's control follows `mine`, not the seat** (dossier row 17). A
-  // creator who holds no seat reads the stranger's face — nothing to send on,
-  // a seat to take — and the control was gated on holding one, so the one
-  // person who may delete the table was offered no way to. `create` refuses
-  // such a table today ("the creator must hold a seat", R-1.6), so this is the
-  // screen's rule held on its own: the corpus's stranger reading with ONE
-  // field moved, `mine`, which is the whole of what the control reads.
-  it("offers the abandon control to the table's creator who holds no seat at it", async () => {
+  // **A PIN: the table's creator who holds no seat is offered NO Abandon**
+  // (dossier row 17, as ruled after the Task 11 review's I-1). The layer's
+  // delete refuses a caller who holds no seat before it asks who created the
+  // table — `delete_locked`: "you are not seated at this table" — so a control
+  // here would be drawn over a guaranteed refusal; the rule is `mayAbandon`,
+  // the one the lobby and the broken-game screen read. The state is
+  // unreachable through `create` ("the creator must hold a seat", R-1.6); the
+  // M6.2 close's "reachable if a create fills every seat with other people's
+  // emails" is false at HEAD. The corpus's stranger reading with ONE field
+  // moved, `mine`, so only the seat can withhold the control.
+  it("offers no abandon control to the table's creator who holds no seat at it, whose delete the layer refuses", async () => {
     const creator = { ...wire.tableOpen, mine: true };
     expect(creator.my_seats).toHaveLength(0);
     show(tableIs(creator));
     await screen.findByRole("button", { name: "Join as Blue" });
-    expect(screen.getByRole("button", { name: `abandon ${creator.name ?? creator.id}` })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
   it("offers nothing to abandon to a person who merely sits here", async () => {

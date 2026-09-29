@@ -57,7 +57,7 @@ import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
-import { rowAction, rowMeta, seatChips, type Section } from "./tables";
+import { mayAbandon, rowAction, rowMeta, seatChips, type Section } from "./tables";
 import type { GamesList, TableView } from "./types";
 
 /** The three listings, one per section. */
@@ -382,21 +382,18 @@ export function Lobby({
   /** One row: the name (the row's one LINK) with the password tag, the line
    *  under it, a chip per seat, and the one action.
    *
-   *  **Abandoning is the CREATOR's, on the row their table is listed under**
-   *  (R-13; M6.5c2 cycle D, dossier row 17), in a cell of its own under the
-   *  action (`.row-abandon`) and quieter than it: in the action's cell it moved
-   *  the action off the row's line. It follows `mine` and not the section: it
-   *  was Your tables' alone, and a creator who holds no seat — whose table is
-   *  listed under Open tables, Being played or Finished and never under Your
-   *  tables, which lists the tables you SIT at — was offered it nowhere. A
-   *  table is listed once for its reader (`notMine` keeps a table you sit at
-   *  out of the other three), so the control is never drawn twice. The action
-   *  and Abandon both NAME the table in their accessible names, so a control
-   *  can never be about another row. */
+   *  **Abandoning is the CREATOR's, SEATED** (R-13), in a cell of its own
+   *  under the action (`.row-abandon`) and quieter than it: in the action's
+   *  cell it moved the action off the row's line. The rule is the layer's
+   *  (`mayAbandon`, M6.5c2 cycle D): its delete refuses a caller who holds no
+   *  seat before it asks who created the table. A table you sit at is listed
+   *  under Your tables alone (`notMine`), so the control is only ever drawn
+   *  there, and once. The action and Abandon both NAME the table in their
+   *  accessible names, so a control can never be about another row. */
   const row = (t: TableView, section: Section) => {
     const action = rowAction(t, section);
     const name = t.name ?? t.id;
-    const yours = t.mine;
+    const yours = mayAbandon(t);
     return (
       <li key={t.id} className={section === "mine" ? "lobby-row mine" : "lobby-row"}>
         <div className="row-title">
@@ -573,8 +570,8 @@ export function Lobby({
                     `#/t/<id>` as the other two do, and what that lands on is
                     the spectator screen, or at a locked table the face that
                     asks for its password, which the padlock on Spectate is
-                    warning about. Abandon only on the creator's own row
-                    (`row`), which here is a creator who holds no seat. */}
+                    warning about. No Abandon: that is the creator's,
+                    seated, under Your tables (`mayAbandon`). */}
                 <section className="lobby-section playing-tables">
                   <header className="section-head">
                     <h3>Being played</h3>

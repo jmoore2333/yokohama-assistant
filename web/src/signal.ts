@@ -172,7 +172,8 @@ export interface End {
  * **Named for the poll it replaced** (M6.5c2 cycle D, dossier row 55). Until
  * M6.3 this was an interval asking `once()` every few seconds; since then it
  * holds a stream or a socket and asks only when a frame says to (the file's
- * note), and it arms no timer while connected. The name stayed because every
+ * note); on the stream arm it arms no timer while connected, and the socket
+ * arm's one timer is its keep-alive (`ws.ts`). The name stayed because every
  * consumer, its cells and `CLAUDE.md` say it, and a rename would move all of
  * them for no change in behaviour.
  *
