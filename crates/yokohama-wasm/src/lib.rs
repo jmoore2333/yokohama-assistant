@@ -465,7 +465,7 @@ mod tests {
         let newer = ENVELOPE.replace("\"envelope\": 1", "\"envelope\": 2");
         assert_ne!(newer, ENVELOPE, "the mutation must actually change the fixture");
         let err = restore_read_inner(&newer).expect_err("a version this build does not know");
-        assert!(err.contains("envelope"), "{err}");
+        assert!(err.contains("version 2 backup"), "{err}");
     }
 
 }

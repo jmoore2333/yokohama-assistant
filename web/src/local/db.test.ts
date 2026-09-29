@@ -27,10 +27,15 @@ import {
   readGeneration,
   readOutbox,
   readOutboxRow,
+  readCompat,
+  readPair,
+  restoreOne,
   retryingStart,
   takeGeneration,
   writeDocs,
+  type CompatNote,
 } from "./db";
+import { wire } from "../wire/contract";
 
 /** Let every already-queued microtask run, with no timer advanced — what a
  *  cell asserting that a promise has NOT settled has to wait out. */
@@ -321,5 +326,49 @@ describe("the outbox rows of a game", () => {
     await putOutboxRow(db, { id: "local-2", state: "sent", at: 1, fingerprint: "1:2" });
     await forgetGame(db, "local-2");
     expect(await readOutbox(db)).toEqual([]);
+  });
+});
+
+// ---- a compatibility row is RE-DERIVED at restore (M6.5c2 cycle D, row 16) --
+//
+// **The state a `SEMANTICS_REV` bump leaves behind.** A build at rev N-1 that
+// was handed a rev-N game kept it with a row saying why it would not open, and
+// `already-here` wrote nothing — so once this device plays rev N, the row goes
+// on hiding a game the module opens happily, under a reason that has stopped
+// being true. Staged today with a row naming the CURRENT rev, which is exactly
+// what that row says after the bump: the note that made "no way to test" the
+// reason to leave it (the old doc on `restoreOne`) was too strong.
+describe("a compatibility row across a revision bump", () => {
+  /** This build's revision, as the corpus's own health payload states it. */
+  const REV = wire.health.semantics_rev;
+  /** What the build BEFORE the bump wrote about a game saved at this one's rev. */
+  const staleNote: CompatNote = {
+    semantics_rev: REV,
+    rules_hash: null,
+    reason: `saved at semantics rev ${REV}; this app plays rev ${REV - 1}`,
+    restored_at: 0,
+  };
+
+  it("drops a row naming the CURRENT rev at the next restore, and the game is listed as playable", async () => {
+    const db = await openDb();
+    const pair = { record: "R", table: "T" };
+    expect(await restoreOne(db, "local-old", { ...pair, compat: JSON.stringify(staleNote) })).toBe(
+      "restored",
+    );
+    expect(
+      (await readCompat(db)).map((r) => r.id),
+      "the premise: the row the earlier build wrote is on this device",
+    ).toEqual(["local-old"]);
+
+    // The same file, restored again on THIS build: the validator no longer
+    // calls the game unplayable, so the caller hands no compatibility note.
+    expect(await restoreOne(db, "local-old", pair), "the game opens here now").toBe("restored");
+    // **Listed as playable**: the one thing that hides a row from the door's
+    // playable list is this store's compatibility row (`unplayableIds`).
+    expect(await readCompat(db)).toEqual([]);
+    // The documents are the file's exact bytes, never rewritten.
+    expect(await readPair(db, "local-old")).toEqual(pair);
+    // And it is still safe to run twice: nothing left to re-derive.
+    expect(await restoreOne(db, "local-old", pair)).toBe("already-here");
   });
 });

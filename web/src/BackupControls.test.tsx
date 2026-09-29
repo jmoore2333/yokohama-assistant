@@ -16,7 +16,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BackUpEverything, BackUpOne, Restore, Unplayable } from "./BackupControls";
 import { buildEnvelope, listUnplayable, restorePairs, type Envelope } from "./backup";
-import { openDb, writeDocs } from "./local/db";
+import { DB_NAME, openDb, writeDocs } from "./local/db";
 import { resetLocalHostForTests } from "./local/client";
 import { resetFactsForTest } from "./local/facts";
 import { breakTheWorker, stubWorker } from "./test/fakeWorker";
@@ -142,6 +142,57 @@ describe("the backup controls", () => {
   });
 });
 
+// ---- another tab holding the OLD storage version (Review Focus 5) ---------
+//
+// **The control's half**, beside `backup.test.ts`'s cell for the bound itself:
+// the sentence reaches the SCREEN, and the one-file-per-click guard (`busy`)
+// is given back — the second click, once the old tab is closed, writes the
+// file. Before the bound, the first click answered nothing and left `busy`
+// set, so the second click was swallowed as well: a button that never worked
+// again on that page (straw poll row 12).
+//
+// Here the click's OWN open is the upgrade the old tab blocks, so the browser
+// says `blocked` to it and the answer is immediate — no timer is needed, and a
+// control that ignored `blocked` would wait out the whole bound past the
+// cell's `findByText`.
+describe("Back up everything while another tab holds the old storage version", () => {
+  const holdVersionOne = (): Promise<IDBDatabase> =>
+    new Promise((resolve, reject) => {
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains("docs"))
+          db.createObjectStore("docs", { keyPath: ["doc", "id"] });
+        if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "id" });
+      };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+
+  it("names the other tab, and the button works again once it is closed (Review Focus 5)", async () => {
+    const old = await holdVersionOne();
+    const d = catchDownload();
+    try {
+      render(<BackUpEverything />);
+      const button = screen.getByRole("button", { name: "Back up everything" });
+      await userEvent.click(button);
+      expect(
+        await screen.findByText("another tab holds this app's storage; close it and try again"),
+      ).toBeInTheDocument();
+      expect(d.clicks).toHaveLength(0);
+
+      old.close();
+      await putPair("local-1", RECORD_TEXT, tableFor("local-1"));
+      await userEvent.click(button);
+      await waitFor(() => expect(d.clicks).toHaveLength(1));
+      // The sentence goes with the refusal it was about.
+      expect(screen.queryByText(/another tab holds/)).toBeNull();
+    } finally {
+      d.restore();
+    }
+  });
+});
+
 describe("the restore report", () => {
   // The five outcomes, in one render, in spec §4's words — and the CLASH names
   // its row, which is R-6.5b2.11's own sentence.
@@ -181,13 +232,13 @@ describe("the restore report", () => {
   // A refusal about the FILE is not five rows saying nothing: it is one
   // sentence, and no report at all.
   it("shows a whole-file refusal on its own, with no rows", async () => {
-    stubWorker({ restore: () => ({ refused: "this is envelope version 2; this build reads version 1" }) });
+    stubWorker({ restore: () => ({ refused: "this is a version 2 backup; this build reads version 1" }) });
     render(<Restore />);
     await userEvent.upload(
       screen.getByLabelText("Restore from a backup"),
       fileOf(buildEnvelope([{ id: "local-x", record: RECORD_TEXT, table: tableFor("local-x") }])),
     );
-    expect(await screen.findByText(/envelope version 2/)).toBeInTheDocument();
+    expect(await screen.findByText(/version 2 backup/)).toBeInTheDocument();
     expect(screen.queryByText("local-x")).not.toBeInTheDocument();
   });
 });

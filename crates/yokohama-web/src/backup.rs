@@ -351,32 +351,70 @@ fn verdict_of(game: &BackupGame, rules: &yokohama_core::Rules) -> Verdict {
     }
 }
 
+/// The two fields every version of the envelope keeps where this one has
+/// them — its `kind` and its `envelope` number — and nothing else.
+///
+/// **Deliberately WITHOUT `deny_unknown_fields`**, the one place in this file
+/// that reads a file leniently: a later version is later because it says
+/// something this build does not know, and the whole point of reading the head
+/// first is to answer that file by its version rather than by the key.
+#[derive(Deserialize)]
+struct Head {
+    kind: String,
+    envelope: u32,
+}
+
+/// The version a BACKUP file says it is, read before anything else in it is
+/// (M6.5c2 cycle D, straw poll row 15).
+///
+/// **Before the whole parse, because the whole parse is version 1's.**
+/// [`Envelope`] denies unknown fields, so a version-2 file that adds one was
+/// answered with serde's "unknown field …" — a key the player never chose,
+/// hiding the one fact they can act on. [`restore_read`] asks this first and
+/// refuses another version as `this is a version N backup; this build reads
+/// version 1`.
+///
+/// **Its own refusals are about a file that is not a backup at all**: text
+/// that is not an object carrying a string `kind` and a whole `envelope`
+/// number, and a `kind` that is something else. The kind is read here, before
+/// the version, so a file of another kind is never told it is "a version N
+/// backup".
+pub fn envelope_version_of(text: &str) -> Result<u32, String> {
+    let head: Head = serde_json::from_str(text)
+        .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
+    if head.kind != ENVELOPE_KIND {
+        return Err(format!(
+            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
+            head.kind
+        ));
+    }
+    Ok(head.envelope)
+}
+
 /// Read a backup file and say what each game in it is.
 ///
 /// **The envelope's own shape is checked before any game is**, and a refusal
 /// here is about the FILE: nothing is written and no per-game verdict is
 /// reported, because a file this build cannot read is not a file it can half
-/// apply.
+/// apply. **Its version is checked before its shape** ([`envelope_version_of`]),
+/// because version 1's shape is the question only a version-1 file can answer.
 ///
 /// Duplicate ids are refused here too. The page refuses them as well and does
 /// so before it asks — deliberately two statements of one rule, because the
 /// page must be able to refuse a file with the module dead, and this function
 /// is a public validator that has to be total on its own.
 pub fn restore_read(envelope: &str) -> Result<Vec<(String, Verdict)>, String> {
+    let version = envelope_version_of(envelope)?;
+    if version != ENVELOPE_VERSION {
+        return Err(format!(
+            "this is a version {version} backup; this build reads version {ENVELOPE_VERSION}"
+        ));
+    }
+    // The `kind` was read with the version, and a second, differing `kind` in
+    // the same object is serde's "duplicate field", so the two reads cannot
+    // disagree about it.
     let env: Envelope = serde_json::from_str(envelope)
         .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
-    if env.kind != ENVELOPE_KIND {
-        return Err(format!(
-            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
-            env.kind
-        ));
-    }
-    if env.envelope != ENVELOPE_VERSION {
-        return Err(format!(
-            "this is envelope version {}; this build reads version {ENVELOPE_VERSION}",
-            env.envelope
-        ));
-    }
     let mut seen = std::collections::BTreeSet::new();
     for g in &env.games {
         if !seen.insert(g.id.as_str()) {
@@ -548,14 +586,72 @@ mod tests {
     }
 
     /// The envelope's own shape is checked before any game is. A future version
-    /// is refused as a whole rather than half-read.
+    /// is refused as a whole rather than half-read — and **refused BY ITS
+    /// VERSION** (M6.5c2 cycle D, straw poll row 15; the catcher for "the
+    /// envelope parsed whole first").
+    ///
+    /// A newer envelope is newer because it says something this build does
+    /// not know, so the realistic version-2 file carries a key version 1 does
+    /// not have. Parsed whole first, `deny_unknown_fields` answered that file
+    /// with serde's "unknown field …", which names a key the player never
+    /// chose and hides the one fact they can act on: which build reads it.
     #[test]
     fn an_envelope_of_another_version_is_refused_whole() {
         let original = envelope_of(&[]);
-        let env = original.replace("\"envelope\":1", "\"envelope\":2");
-        assert_ne!(env, original, "the mutation must actually change the envelope");
+        let env = original
+            .replace("\"envelope\":1", "\"envelope\":2")
+            .replace("{\"kind\"", "{\"added_in_version_2\":true,\"kind\"");
+        assert!(
+            env.contains("\"envelope\":2") && env.contains("added_in_version_2"),
+            "the mutation must actually change the envelope: {env}",
+        );
         let err = restore_read(&env).expect_err("a version this build does not know");
-        assert!(err.contains("envelope"), "{err}");
+        assert_eq!(err, "this is a version 2 backup; this build reads version 1");
+        assert!(!err.contains("added_in_version_2"), "by its version, not by its key: {err}");
+    }
+
+    /// **The version is read from the file's HEAD, before anything else in it
+    /// is**: [`envelope_version_of`] answers for a version-2 file that carries
+    /// a key version 1 lacks AND lacks a field version 1 requires — the two
+    /// ways a later format can differ — because it reads only the two fields
+    /// every version has to keep in place to be refusable at all.
+    ///
+    /// Its refusals are about a file that is not a BACKUP, and neither is
+    /// worded as a version: a file of another kind never reaches the version
+    /// question, so it is never told it is "a version 2 backup".
+    #[test]
+    fn the_version_is_read_before_the_rest_of_the_file() {
+        let v1 = envelope_of(&[]);
+        assert_eq!(envelope_version_of(&v1), Ok(ENVELOPE_VERSION), "the control: this build's own file");
+
+        let v2 = v1
+            .replace("\"envelope\":1", "\"envelope\":2")
+            .replace("{\"kind\"", "{\"added_in_version_2\":true,\"kind\"")
+            .replace(",\"games\":[]", "");
+        assert!(
+            v2.contains("\"envelope\":2") && v2.contains("added_in_version_2") && !v2.contains("\"games\""),
+            "the mutation must actually change the envelope: {v2}",
+        );
+        assert!(
+            serde_json::from_str::<Envelope>(&v2).is_err(),
+            "the premise: this file does not parse as a version-1 envelope",
+        );
+        assert_eq!(envelope_version_of(&v2), Ok(2));
+
+        let err = envelope_version_of("this is a photograph").expect_err("not JSON");
+        assert!(err.starts_with("this is not a backup envelope this build reads"), "{err}");
+        let other = v2.replace("\"yokohama-backup\"", "\"something-else\"");
+        assert_ne!(other, v2, "the mutation must actually change the envelope");
+        let err = envelope_version_of(&other).expect_err("another file's kind");
+        assert!(err.contains("\"something-else\"") && !err.contains("version 2"), "{err}");
+
+        // The head reads the `kind` that the whole parse reads, because a
+        // second `kind` in one object is refused rather than taken: the two
+        // reads of one file cannot disagree about what it is.
+        let doubled = v1.replace("{\"kind\"", "{\"kind\":\"something-else\",\"kind\"");
+        assert_ne!(doubled, v1, "the mutation must actually change the envelope");
+        let err = envelope_version_of(&doubled).expect_err("two kinds in one file");
+        assert!(err.contains("duplicate field"), "{err}");
     }
 
     /// The other two whole-file refusals, and the one that is not about a

@@ -180,6 +180,33 @@ describe("On this device", () => {
       expect(screen.queryByRole("link", { name: "local-9" })).toBeNull();
     });
 
+    // **Its row does not depend on this browser's store** (M6.5c2 cycle D,
+    // straw poll row 100): it comes from the MODULE's listing. The section's
+    // own read of the compatibility rows failing used to replace the whole of
+    // "Will not open here" with that read's error line, so a store this page
+    // could not read hid a row it never needed — and with it the only Remove
+    // that game has.
+    it("keeps it under Will not open here when this browser's store cannot be read", async () => {
+      stubWorker({
+        call: (req) =>
+          isGamesList(req, "mine")
+            ? { status: 200, body: { games: [row("local-9", false)], next: null } }
+            : undefined,
+      });
+      vi.spyOn(indexedDB, "open").mockImplementation(() => {
+        throw new DOMException("the operation is insecure", "SecurityError");
+      });
+      render(<OnThisDevice />);
+      const block = (await screen.findByRole("heading", { level: 3, name: "Will not open here" })).closest(
+        ".unplayable",
+      )!;
+      expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
+      expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
+      // And the read that failed still says so, where it failed.
+      expect(within(block as HTMLElement).getByText(/the games that will not open could not be read/)).toBeInTheDocument();
+      expect(screen.getByText(/this device's games could not be listed/)).toBeInTheDocument();
+    });
+
     it("keeps a FINISHED game against a foreign bot as an ordinary row: it opens as it always did", async () => {
       stubWorker({
         call: (req) =>
@@ -244,6 +271,26 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     expect(await screen.findByText(/could not be read/)).toBeInTheDocument();
     expect(screen.queryByText(/no game on this device yet/)).toBeNull();
+  });
+
+  // **An unreadable store is a LINE, never an empty list** (M6.5c2 cycle D,
+  // straw poll row 100). The card's own read of this browser's database — the
+  // rows that say which games will not open — used to fall back to "hide
+  // nothing" when it failed, so a module listing nothing beside a store that
+  // could not be read drew "no game on this device yet": a false sentence on a
+  // device whose games are there and cannot be reached.
+  it("says the games could not be listed when this browser's store cannot be read", async () => {
+    stubWorker({
+      call: (req) =>
+        isGamesList(req, "mine") ? { status: 200, body: { games: [], next: null } } : undefined,
+    });
+    vi.spyOn(indexedDB, "open").mockImplementation(() => {
+      throw new DOMException("the operation is insecure", "SecurityError");
+    });
+    render(<OnThisDevice />);
+    const line = await screen.findByText(/this device's games could not be listed/);
+    expect(line).toHaveTextContent("the operation is insecure");
+    expect(within(section()).queryByText(/no game on this device yet/)).toBeNull();
   });
 
   it("says why when the module faults after the section is drawn", async () => {

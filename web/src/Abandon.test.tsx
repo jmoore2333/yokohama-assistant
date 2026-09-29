@@ -343,6 +343,31 @@ describe("the abandon control on a local game", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  // **A REFUSING archive is not a reason to keep a game for ever** (M6.5c2
+  // cycle D, straw poll row 100). The two cells above hold the first answer —
+  // the game is kept, the server's sentence shown, the confirm face still up —
+  // and that answer stands. But a refusal is the archive's settled word about
+  // THIS record (a 409 names a different record under the id; a 400 is a
+  // record it will not replay), so trying again meets it again, and the game's
+  // own screen had no way to be rid of it. The third deliberate click the `ask`
+  // face already offers is offered here too, and it sends nothing.
+  it("offers Abandon without saving after a refused send, and deletes on it without sending again", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => ({
+      status: 409,
+      body: wire.archive409,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
+    // The first answer, unchanged: kept, and still asking.
+    expect(steps).toEqual(["health", "archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["health", "archive", "delete"]);
+  });
+
   // **The archive unreachable** (R-6.5b.7): the client's own sentence, because
   // there is no server sentence to carry — and the game stays.
   it("keeps the game when the archive cannot be reached", async () => {
@@ -355,6 +380,9 @@ describe("the abandon control on a local game", () => {
     );
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
+    // **No third choice for a send that never got an answer**: trying again is
+    // the remedy there, and the refusal cell above is the one that offers it.
+    expect(screen.queryByRole("button", { name: `abandon ${LOCAL} without saving` })).toBeNull();
   });
 
   // **A 404 is the deployment's answer, not the moment's** (M6.5c2 spec §2.8;
@@ -373,6 +401,8 @@ describe("the abandon control on a local game", () => {
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
     expect(archiveAnswer()).toBe("off");
+    // Nor after a 404: the next confirm deletes, because the archive is off.
+    expect(screen.queryByRole("button", { name: `abandon ${LOCAL} without saving` })).toBeNull();
     // The label redraws from the fact: no "and save" over nowhere to save to.
     await user.click(screen.getByRole("button", { name: `cancel abandoning ${LOCAL}` }));
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);

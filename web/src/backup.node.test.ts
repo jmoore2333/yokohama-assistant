@@ -87,6 +87,8 @@ describe.skipIf(!have)("the browser host's restore validator", () => {
   it("refuses a file of another version, as a throw", () => {
     const newer = envelope.replace('"envelope": 1', '"envelope": 2');
     expect(newer, "the mutation must actually change the fixture").not.toBe(envelope);
-    expect(() => wasm.restore_read(newer)).toThrow(/envelope/);
+    // Refused BY ITS VERSION (M6.5c2 cycle D, straw poll row 15), in the
+    // sentence `backup.rs`'s `restore_read` words.
+    expect(() => wasm.restore_read(newer)).toThrow(/version 2 backup/);
   });
 });

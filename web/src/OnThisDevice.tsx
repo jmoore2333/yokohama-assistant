@@ -53,19 +53,33 @@ export function OnThisDevice({
    *  place: the layer builds a row from the TABLE document, which a restored
    *  cross-rev pair may have in a shape this build reads perfectly well, while
    *  the thing that says the game will not open is this browser's own
-   *  compatibility row. A failure to read it is not a failure to list — the
-   *  games are still there — so it falls back to hiding nothing. */
+   *  compatibility row. */
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  /** Why this browser's own store could not be read, when it could not.
+   *
+   *  **A line, never a list that passes for complete** (M6.5c2 cycle D, straw
+   *  poll row 100). This read used to fall back to hiding nothing in silence,
+   *  so beside a module listing nothing the card said "no game on this device
+   *  yet" — a false sentence on a device whose games are there and cannot be
+   *  reached — and beside a listing it drew every row as playable with no word
+   *  that the rows which say otherwise were never read. The rows it would have
+   *  hidden still fall back to shown: they are the module's, and they open
+   *  through it. */
+  const [unlisted, setUnlisted] = useState<string | null>(null);
 
   const read = useCallback(
     () =>
       Promise.all([
         api.list("mine", undefined, "local"),
-        unplayableIds().catch(() => new Set<string>()),
+        unplayableIds().then(
+          (ids) => ({ ids, why: null }),
+          (e: unknown) => ({ ids: new Set<string>(), why: e instanceof Error ? e.message : String(e) }),
+        ),
       ])
         .then(([l, cannot]) => {
           setGames(l.games);
-          setHidden(cannot);
+          setHidden(cannot.ids);
+          setUnlisted(cannot.why);
           setFault(null);
         })
         .catch((e: unknown) => setFault(e instanceof ApiError ? e.message : String(e))),
@@ -112,12 +126,22 @@ export function OnThisDevice({
        (`styles.css`). */
     <section className="raised-card door-card on-this-device">
       <h2 className="card-cap">On this device</h2>
+      {fault === null && unlisted !== null && (
+        /* **Beside the rows, and in place of "no game on this device yet"**:
+           what the MODULE lists is still drawn — its rows open through the
+           Worker, not through this read — and this line says the list may be
+           neither whole nor sorted, because the rows that say which games
+           will not open are what could not be read. */
+        <p className="muted local-fault">this device&apos;s games could not be listed &mdash; {unlisted}</p>
+      )}
       {fault !== null ? (
         <p className="muted local-fault">the games on this device could not be read &mdash; {fault}</p>
       ) : games === null ? (
         <p className="muted">loading&hellip;</p>
       ) : games.length === 0 ? (
-        <p className="muted">no game on this device yet &mdash; start one with New game.</p>
+        unlisted !== null ? null : (
+          <p className="muted">no game on this device yet &mdash; start one with New game.</p>
+        )
       ) : playable.length === 0 ? (
         /* **Games, but none this build can open.** "No game on this device yet"
            would be false — they are here and they are listed, under "Will not
@@ -150,7 +174,16 @@ export function OnThisDevice({
       <div className="device-foot backup-controls">
         <Readiness status={readiness} />
         <BackUpEverything label="Back up" />
-        <Restore onDone={() => setRestored((n) => n + 1)} />
+        {/* A restore re-reads the list as well as the unplayable rows: a
+            restore that re-derives a compatibility row (`restoreOne`) moves a
+            game between the two, and a store that could not be read before may
+            be read now. */}
+        <Restore
+          onDone={() => {
+            setRestored((n) => n + 1);
+            void read();
+          }}
+        />
       </div>
       <Unplayable reload={restored} foreign={foreign} onRemoved={() => void read()} />
     </section>
