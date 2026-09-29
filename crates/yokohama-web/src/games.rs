@@ -1006,9 +1006,11 @@ impl Games {
     /// unstamped game is put again at its next abandon: under `over/` when the
     /// table's mirror says over (R-6.5b.13), where the copy that landed here
     /// answers `Identical` and nothing is added — but under `abandoned/`, a
-    /// DIFFERENT path (`archive::paths` is per reason), when the mirror is stale
-    /// as well. So a lost stamp is a second copy only beside a stale mirror
-    /// (M6.5c2 cycle D, row 11; `Games::delete` names that residual).
+    /// DIFFERENT path (`archive::paths` is per reason), when the mirror no
+    /// longer says over. So a lost stamp is a second copy only beside a STALE
+    /// mirror, or after an undo past game over at a one-person table, where the
+    /// CLI's undo applies (M6.5c2 cycle D, row 11, and Task 5's review;
+    /// `Games::delete` names that residual).
     ///
     /// Retried once on a version conflict — an `unlock` or a `join` writing the
     /// document in the same instant is the only other writer left at game over
@@ -2802,6 +2804,40 @@ mod tests {
         assert!(!Arc::ptr_eq(&rebuilt, &handle), "a new handle, not the poisoned one");
         let rebuilt = rebuilt.lock().expect("the rebuilt handle is not poisoned");
         assert_eq!(rebuilt.session.record().events.len(), stored, "rebuilt from what the store holds");
+    }
+
+    /// **A poisoned table lock is ENTERED, not panicked on** (M6.5c2 cycle D,
+    /// R-D8's second half, row 128; Task 5's review) — the catcher for `enter`
+    /// gone back to `expect`.
+    ///
+    /// A `Mutex<()>` guards no data, so a writer that died inside one leaves
+    /// nothing for the next to distrust. `expect` made that one panic a table
+    /// nobody could join, keep, chat at, unlock or delete — and at the id
+    /// space's lock, a process that could open no table at all. Both arms run
+    /// inside `catch_unwind`, so the failure is this cell's and the process
+    /// the next assertion runs in is the one the poison was meant to spare.
+    #[test]
+    fn a_poisoned_table_lock_is_entered_and_the_table_keeps_answering() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let games = games();
+        let red = who("red@t.test");
+        let poison = |lock: &Mutex<()>| {
+            let died = catch_unwind(AssertUnwindSafe(|| {
+                let _held = lock.lock().unwrap();
+                panic!("a writer died inside the lock");
+            }));
+            assert!(died.is_err() && lock.is_poisoned(), "premise: the lock is poisoned");
+        };
+        let id = games.create(&two_people("poisoned-table", CORPUS_SEED), &red).expect("a table").id;
+        poison(&games.lock_for(&id));
+        let kept = catch_unwind(AssertUnwindSafe(|| games.keep(&id, &red, PlayerId::new(0), 1, None)))
+            .unwrap_or_else(|_| panic!("the keep PANICKED on the table's poisoned lock"));
+        assert!(kept.is_ok(), "the keep answers through the table's poisoned lock");
+
+        poison(&games.table_lock);
+        let created = catch_unwind(AssertUnwindSafe(|| games.create(&two_people("after", CORPUS_SEED), &red)))
+            .unwrap_or_else(|_| panic!("the create PANICKED on the id space's poisoned lock"));
+        assert!(created.is_ok(), "a table still opens through the id space's poisoned lock");
     }
 
     /// **A deleted table's lock is pruned, and a lock another writer holds is

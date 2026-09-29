@@ -99,9 +99,12 @@ impl std::fmt::Display for PutError {
 /// 11, correcting the M6.5a close's edge): since M6.5b (R-6.5b.13) the next
 /// abandon files an unstamped game whose table MIRROR says over under `over/`,
 /// where the landed copy answers [`PutOutcome::Identical`] and the delete goes
-/// ahead. A second copy under `abandoned/` needs the stamp lost AND the mirror
-/// stale — its own write failed or lost a race — at once; that residual is
-/// `Games::delete`'s to state, and it does. What it does NOT prevent: the same
+/// ahead. A second copy under `abandoned/` needs the stamp lost AND a mirror
+/// that no longer says over, at once: a STALE mirror (its own write failed or
+/// lost a race), or an undo past game over at a one-person table, where the
+/// CLI's undo applies and the mirror then truly reads not over (measured by
+/// Task 5's review). That residual is `Games::delete`'s to state, and it
+/// does. What it does NOT prevent: the same
 /// save sent by two different callers lands twice, under two prefixes (spec
 /// §2.4 — the training side dedups by digest).
 pub trait Archive: Send + Sync {

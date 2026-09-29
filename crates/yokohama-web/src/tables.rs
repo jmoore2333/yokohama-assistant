@@ -1799,8 +1799,12 @@ impl Games {
                     // unstamped one whose mirror says over lands under `over/`,
                     // where its landed copy answers `Identical`
                     // (`a_landed_put_whose_stamp_failed_then_abandoned_lands_once_under_over`).
-                    // So the residual is a stale mirror AND a lost stamp at once:
-                    // named, not closed.
+                    // So the residual is a lost stamp AND a mirror that no longer
+                    // says over: a stale one, or a true one after an undo past
+                    // game over at a one-person table, where the CLI's undo
+                    // applies — no lie there, but the first ending's copy already
+                    // sits under `over/` (measured by Task 5's review). Named,
+                    // not closed.
                     let why = if doc.turn.as_ref().is_some_and(|t| t.over) {
                         crate::archive::Why::Over
                     } else {
@@ -2779,8 +2783,10 @@ mod tests {
     /// archived ONCE at the next abandon. The table's mirror says over, so the
     /// abandon puts under `over/`, where the landed copy answers `Identical`
     /// and the delete goes ahead. What would put a second copy under
-    /// `abandoned/` is a lost stamp AND a stale mirror together — the residual
-    /// `delete`'s doc names and does not close.
+    /// `abandoned/` is a lost stamp AND a mirror that no longer says over — a
+    /// stale one, or a true one after an undo past game over at a one-person
+    /// table (measured by Task 5's review) — the residual `delete`'s doc names
+    /// and does not close.
     ///
     /// Over a real [`crate::archive::DirArchive`], because `Identical` is the
     /// directory's own answer to the same bytes, and a double that recorded the
