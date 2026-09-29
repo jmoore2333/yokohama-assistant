@@ -10,28 +10,29 @@
 // inline they would be ternaries drifting apart, and the same table would read
 // differently depending on which screen you opened.
 
-import type { PlayerColor, PlayerId, SeatDoc, TableView } from "./types";
+import type { PlayerColor, PlayerId, SeatView, TableView } from "./types";
 
 /** One seat, in the words a row reads: what the person there is CALLED, the
  *  bot, or a seat nobody has taken yet.
  *
- *  **The name, and the email only when there is no name (spec §5.6).** A
- *  display name is what a player typed about themselves, and an address is what
- *  a table is keyed by — so a lobby reading addresses tells three people at one
- *  table whose turn it is in a string none of them chose. `name` is null for a
- *  seat filled before M6.2 and for anyone who left the field blank, which is
- *  what the fallback is for.
+ *  **The name; and with no name, "you", the address the creator typed, or
+ *  "invited"** (spec §5.6; M6.5c2 cycle D, R-6.5c2.35). A display name is what a
+ *  player typed about themselves. The server hands this reader no other
+ *  person's address: `invited` is the one it does — to the table's creator,
+ *  for a seat nobody has named — and every other reader of an unnamed seat
+ *  reads the word. `name` is null for a seat filled before M6.2 and for anyone
+ *  who left the field blank, which is what the fallbacks are for.
  *
  *  A `switch` over the tag rather than a ternary, so a fourth kind of seat is a
  *  compile error here instead of a row that prints `undefined`. */
-export function seatName(seat: SeatDoc): string {
+export function seatName(seat: SeatView): string {
   switch (seat.kind) {
     case "bot":
       return "the bot";
     case "open":
       return "open seat";
     case "human":
-      return seat.name ?? seat.user;
+      return seat.name ?? (seat.you ? "you" : seat.invited ?? "invited");
   }
 }
 
@@ -45,7 +46,8 @@ export function seatNames(t: TableView): string {
   return t.seats.map(seatName).join(", ");
 }
 
-/** Who holds one seat, in the words a row uses: a person's email, or the bot.
+/** Who holds one seat, in the words a row uses: `seatName`'s, never an
+ *  address this reader was not handed.
  *
  *  A seat number past the end reads as "nobody" rather than throwing: this is
  *  display text, and a lobby that goes blank because one row is odd is worse

@@ -2842,7 +2842,9 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"], "it is seat 0's turn (red@wire.test)");
+        // The seat's colour, since red gave no name: never the address
+        // (M6.5c2 cycle D, R-6.5c2.35).
+        assert_eq!(body["error"], "it is seat 0's turn (Red)");
         let (status, body) = post_as(
             &state,
             "red@wire.test",
@@ -2935,7 +2937,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"], "it is seat 1's turn (blue@wire.test)");
+        assert_eq!(body["error"], "it is seat 1's turn (Blue)");
 
         // Blue IS the acting seat and has not moved yet, so blue's undo would
         // cross red's turn boundary. This is R-P6's own refusal.
@@ -3248,9 +3250,11 @@ mod tests {
             let (hs, hb) =
                 post_as(state, holder, &format!("/api/games/{id}/input"), line.clone()).await;
             let (ws, wb) = post_as(state, watcher, &format!("/api/games/{id}/input"), line).await;
-            assert_ne!(
-                wb["error"].as_str(),
-                Some("it is seat 0's turn (red@wire.test)"),
+            // A PREFIX, not the old sentence: the turn's holder is named by
+            // seat name or colour since M6.5c2 cycle D (R-6.5c2.35), and an
+            // exact-sentence `assert_ne` would pass against any rewording.
+            assert!(
+                !wb["error"].as_str().unwrap_or_default().starts_with("it is seat "),
                 "{id}: input must not name a turn on a game that has none: {wb}",
             );
             assert!(
@@ -3259,9 +3263,11 @@ mod tests {
             );
             assert_eq!(hs, StatusCode::OK, "{id}: the acting holder's own path is unchanged");
             assert_eq!(ws, StatusCode::FORBIDDEN, "{id}: and the watcher still cannot act: {wb}");
-            assert_ne!(
-                wb["error"].as_str(),
-                Some("it is seat 0's turn (red@wire.test)"),
+            // A PREFIX, not the old sentence: the turn's holder is named by
+            // seat name or colour since M6.5c2 cycle D (R-6.5c2.35), and an
+            // exact-sentence `assert_ne` would pass against any rewording.
+            assert!(
+                !wb["error"].as_str().unwrap_or_default().starts_with("it is seat "),
                 "{id}: input must not name a turn on a game that has none: {wb}",
             );
         }
@@ -6571,7 +6577,10 @@ mod tests {
         assert_eq!(m["text"], "hi", "trimmed");
         assert_eq!(m["author"]["kind"], "seat");
         assert_eq!(m["author"]["seat"], 0);
-        assert_eq!(m["author"]["user"], "red@wire.test");
+        // The reply is the message as its POSTER reads it: `you`, and no
+        // address (M6.5c2 cycle D, R-6.5c2.35).
+        assert_eq!(m["author"]["you"], true, "{m}");
+        assert!(m["author"].get("user").is_none(), "no author carries an address: {m}");
 
         let (status, m) = post_as(
             &state,
@@ -6588,6 +6597,11 @@ mod tests {
         let (status, page) = get_as(&state, "blue@wire.test", "/api/games/t/chat").await;
         assert_eq!(status, StatusCode::OK, "{page}");
         assert_eq!(page["messages"].as_array().map(Vec::len), Some(2));
+        // Built for BLUE: neither message is blue's, and neither poster's
+        // address reaches them.
+        assert_eq!(page["messages"][0]["author"]["you"], false, "{page}");
+        assert_eq!(page["messages"][1]["author"]["you"], false, "{page}");
+        assert!(!page.to_string().contains('@'), "an author's address reached another reader: {page}");
         assert_eq!(page["last"], 2);
         let (_, delta) = get_as(&state, "blue@wire.test", "/api/games/t/chat?after=1").await;
         assert_eq!(delta["messages"][0]["seq"], 2);
@@ -7003,7 +7017,8 @@ mod tests {
             (StatusCode::BAD_REQUEST, Some("a name has no control characters")),
             "{got}",
         );
-        assert_eq!(on.games.house_page(0).expect("a page").1, 0, "and nothing was appended");
+        let grey = identity::User::parse("grey@wire.test").expect("an email");
+        assert_eq!(on.games.house_page(&grey, 0).expect("a page").1, 0, "and nothing was appended");
 
         let off = Arc::new(AppState::in_memory_with_chat(chat::ChatConfig {
             lobby: false,

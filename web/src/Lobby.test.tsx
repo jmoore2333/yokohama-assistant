@@ -33,9 +33,11 @@ const lists = (call: ApiCall): Reply | undefined => {
   return undefined;
 };
 
-/** Who this browser is, and who opened every table the corpus carries — so the
- *  abandon control is on every row, and the cell that wants it absent moves
- *  `created_by` instead. */
+/** Who this browser is — the door's answer, which the band's corner draws.
+ *  Since M6.5c2 cycle D (R-6.5c2.35) no row control compares it with anything:
+ *  the creator's Abandon follows each row's `mine`, as the server said it for
+ *  that row's reader, and the corpus's `mine` rows are the walk's creator's
+ *  readings (`wire.games`, `wire.tableForeign`). */
 const ME = "red@wire.test";
 
 function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
@@ -126,10 +128,11 @@ describe("the lobby", () => {
     // they click is on the row.
     expect(wire.gamesPlaying.games[0]!.locked).toBe(true);
     expect(within(row).getByLabelText("password required")).toBeInTheDocument();
-    // **Not yours to abandon.** `created_by` on the corpus row is this browser's
-    // own address, so the control would be drawn by a `created_by === me` test
-    // alone — the section is what withholds it.
-    expect(wire.gamesPlaying.games[0]!.created_by).toBe(ME);
+    // **Not yours to abandon.** The row is a watcher's reading, `mine: false`
+    // (R-6.5c2.35) — and it is under Being played, not Your tables. The cell
+    // that tells the SECTION rule from the `mine` rule is "draws the control
+    // in Your tables and not in Open tables", below.
+    expect(wire.gamesPlaying.games[0]!.mine).toBe(false);
     expect(within(playing).queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
@@ -148,9 +151,11 @@ describe("the lobby", () => {
     expect(filling.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 waiting for 1 more");
     expect(chips(filling)).toEqual(["you", "open seat"]);
     // Read from OUTSIDE (the open list is a stranger's view), the unnamed seat
-    // falls back to its address, on the same screen as the named one above.
+    // reads "invited" — never the address it is keyed by, which the server no
+    // longer sends a stranger (M6.5c2 cycle D, R-6.5c2.35).
     const stranger = within(section("Open tables")).getByRole("link", { name: "wire2" }).closest("li")!;
-    expect(chips(stranger)).toEqual(["red@wire.test", "open seat"]);
+    expect(chips(stranger)).toEqual(["invited", "open seat"]);
+    expect(stranger.textContent).not.toContain("@");
     expect(stranger.querySelector(".row-meta")!.textContent).toMatch(/^2 players \u00b7 opened /);
   });
 
@@ -319,12 +324,14 @@ describe("the lobby", () => {
   // **The bot's version** (R-6.5c2.10, mock 10), from the row's own
   // `TableView.bot`: the corpus's undealt vs-bot table (`table_bot.json`,
   // which shows the production bot) and its foreign one (`table_foreign.json`,
-  // a bot this build does not run). One field moved on the foreign table,
-  // `created_by`, to this browser, so its creator's Abandon has a row to be on.
+  // a bot this build does not run). No field moved: the foreign row is its
+  // CREATOR's own reading (`mine: true`, R-6.5c2.35), so its creator's Abandon
+  // has a row to be on.
   it("names the bot and its version, and says so where this server cannot continue a game", async () => {
     expect(wire.tableBot.bot).toEqual({ label: productionBot.label, runs_here: true });
     expect(wire.tableForeign.bot!.runs_here).toBe(false);
-    const foreign = { ...wire.tableForeign, created_by: ME };
+    const foreign = wire.tableForeign;
+    expect(foreign.mine).toBe(true);
     show((call) =>
       isGamesList(call, "mine") ? { ...wire.games, games: [wire.tableBot, foreign] } : undefined,
     );
@@ -464,14 +471,17 @@ describe("the lobby", () => {
     // **Your tables only** (R-13, and the reason the row takes its section).
     // The creator must hold a seat (R-1.6), so on a server a table you opened
     // is one you sit at, listed under Your tables alone (`notMine`). The
-    // control still follows the SECTION and not `created_by` ALONE, so no other list
-    // can ever draw it. The corpus's open listing was read by another caller,
-    // which puts the same table this browser opened in both sections here: the
-    // one case that tells a section rule from a `created_by` rule. And the
-    // control sits in its own cell under the action (`.row-abandon`), never in
-    // the action's.
+    // control still follows the SECTION and not `mine` ALONE, so no other list
+    // can ever draw it. The corpus's open listing was read by a caller who did
+    // not open the table (`mine: false`), so ONE field is moved on its rows —
+    // `mine`, to the reading their creator gets with no seat there (the
+    // Worker's seatless creator; the corpus has none) — which puts the same
+    // table, `mine: true`, in both sections: the one case that tells a section
+    // rule from a `mine` rule. And the control sits in its own cell under the
+    // action (`.row-abandon`), never in the action's.
     it("draws the control in Your tables and not in Open tables", async () => {
-      show();
+      const opened = { ...wire.gamesOpen, games: wire.gamesOpen.games.map((g) => ({ ...g, mine: true })) };
+      show((call) => (isGamesList(call, "open") ? opened : undefined));
       const mine = section("Your tables");
       const open = section("Open tables");
       // Anti-vacuity: the corpus puts the SAME table, opened by this browser,
@@ -484,8 +494,12 @@ describe("the lobby", () => {
       expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
     });
 
+    // Read, not moved: the corpus's playing table as its SECOND seat reads it
+    // — seated (`my_seats: [1]`), so listed under Your tables, and not its
+    // creator (`mine: false`).
     it("offers nothing to abandon at a table this browser did not open", async () => {
-      const theirs = { ...wire.games.games[0]!, created_by: "someone@else.test" };
+      const theirs = wire.table;
+      expect([theirs.mine, theirs.my_seats.length > 0]).toEqual([false, true]);
       show((call) =>
         isGamesList(call, "mine") ? { ...wire.games, games: [theirs] } : undefined,
       );
@@ -575,8 +589,9 @@ describe("the Finished group", () => {
     expect(view.querySelector("svg.padlock")).toBeNull();
     expect(within(row).getByLabelText("password required")).toBeInTheDocument();
     // The other lists' row: one link, not gold-edged, and no Abandon, which is
-    // the creator's under Your tables — this browser opened the table.
-    expect(won.created_by).toBe(ME);
+    // the creator's under Your tables — and this row is a watcher's reading
+    // (`mine: false`, R-6.5c2.35).
+    expect(won.mine).toBe(false);
     expect(row).toHaveClass("lobby-row");
     expect(row).not.toHaveClass("mine");
     expect(row.querySelectorAll("a")).toHaveLength(1);

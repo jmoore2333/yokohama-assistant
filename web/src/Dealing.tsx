@@ -66,7 +66,6 @@ const pad = (id: number) => `O${String(id).padStart(2, "0")}`;
 
 export function Dealing({
   game,
-  me,
   art,
   labels,
   sections,
@@ -78,10 +77,6 @@ export function Dealing({
 }: {
   /** The table being dealt. */
   game: string;
-  /** Who this browser plays as, from the door — used to say "you" rather than
-   *  your own email back at you on the seats you hold yourself, which at a
-   *  hot-seat table is most of them. */
-  me: string;
   art: ArtManifest | null;
   labels: Labels | null;
   /** Owned by `App` (R-T12-4), so this screen and the game agree about which
@@ -362,7 +357,7 @@ export function Dealing({
                 <span className={seatClass(colors[i])}>{colors[i]}</span> &middot; seat {i}
               </h2>
               <p className="muted deal-state">
-                {seat.kind === "human" && seat.user === me ? "you" : seatName(seat)} &middot;{" "}
+                {seat.kind === "human" && seat.you ? "you" : seatName(seat)} &middot;{" "}
                 {table.chosen[i] ? "chosen" : "waiting"}
               </p>
             </section>

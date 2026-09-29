@@ -33,7 +33,7 @@ use yokohama_core::{
 // `check_shape` under an alias: this module has one of its own, for the TABLE
 // document, and two rules with one name in one file is how the wrong one comes
 // to be called.
-use crate::chat::{check_shape as check_chat_shape, check_text, Author, ChatDoc, Message, HOUSE};
+use crate::chat::{check_shape as check_chat_shape, check_text, Author, ChatDoc, Message, MessageView, HOUSE};
 use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, enter, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
@@ -1051,14 +1051,27 @@ impl Games {
     /// the document a second time for that number was a second read per page.
     /// The KEY is `id` and never `table.id`, for `Games::write_chat`'s reason:
     /// a document's own `id` is read out of a file.
-    pub fn chat_page(&self, id: &str, table: &TableDoc, after: u64) -> Result<(Vec<Message>, u64), GameError> {
-        let (doc, _) = self.read_chat(ChatAt::Table { id, players: table.players })?;
-        Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
+    ///
+    /// **Built for `reader`** (M6.5c2 cycle D, R-6.5c2.35, R-D3): each message
+    /// crosses as [`ChatDoc::page_for`] hands it — `you` on the reader's own,
+    /// and no author's address.
+    pub fn chat_page(
+        &self,
+        id: &str,
+        table: &TableDoc,
+        reader: &User,
+        after: u64,
+    ) -> Result<(Vec<MessageView>, u64), GameError> {
+        let (mut doc, _) = self.read_chat(ChatAt::Table { id, players: table.players })?;
+        doc.messages.retain(|m| m.seq > after);
+        Ok((doc.page_for(reader), doc.last))
     }
 
-    pub fn house_page(&self, after: u64) -> Result<(Vec<Message>, u64), GameError> {
-        let (doc, _) = self.read_chat(ChatAt::House)?;
-        Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
+    /// The house's page, built for `reader` as [`Games::chat_page`]'s is.
+    pub fn house_page(&self, reader: &User, after: u64) -> Result<(Vec<MessageView>, u64), GameError> {
+        let (mut doc, _) = self.read_chat(ChatAt::House)?;
+        doc.messages.retain(|m| m.seq > after);
+        Ok((doc.page_for(reader), doc.last))
     }
 
     /// The count a signal frame carries (R-plan-5), from the cache or from one
@@ -1763,11 +1776,11 @@ impl Games {
         if doc.seats_of(user).is_empty() {
             return Err(GameError::Forbidden("you are not seated at this table".to_string()));
         }
+        // The sentence names the ROLE and never the person (M6.5c2 cycle D,
+        // R-6.5c2.35): it named `created_by`, handing the creator's address to
+        // every other seat that pressed Abandon.
         if !doc.is_creator(user) {
-            return Err(GameError::Forbidden(format!(
-                "only {} can delete this table",
-                doc.created_by
-            )));
+            return Err(GameError::Forbidden("only the table's creator can delete this table".to_string()));
         }
         // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): a playing
         // table with at least one event and no archive stamp is archived
@@ -1861,6 +1874,7 @@ impl Games {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::table::SeatView;
     use crate::chat::ChatLimits;
     use crate::games::test_support::*;
     use crate::store::{GameId, MemStore, Store};
@@ -3331,6 +3345,22 @@ mod tests {
         assert!(matches!(games.table(&id, &red), Err(GameError::NotFound(_))));
     }
 
+    /// **A seated non-creator's delete names nobody** (M6.5c2 cycle D,
+    /// R-6.5c2.35, R-D3): the refusal said `only {created_by} can delete this
+    /// table`, which handed the creator's address to every other seat that
+    /// pressed Abandon. The sentence now says who may, without saying who that
+    /// is.
+    #[test]
+    fn a_seated_non_creators_delete_refusal_names_no_address() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("named", CORPUS_SEED), &red).unwrap().id;
+        match games.delete(&id, &blue) {
+            Err(GameError::Forbidden(m)) => assert_eq!(m, "only the table's creator can delete this table"),
+            other => panic!("a seated non-creator's delete is a 403: {other:?}"),
+        }
+    }
+
     /// Two creates of one name cannot both succeed.
     ///
     /// `create` was check-then-write with nothing held across it: `exists` ->
@@ -3480,7 +3510,7 @@ mod tests {
         ];
         let v = games.create(&r, &red).expect("an open table");
         assert_eq!(v.status, TableStatus::Open);
-        assert_eq!(v.seats[1], SeatDoc::Open);
+        assert_eq!(v.seats[1], SeatView::Open);
         assert_eq!(v.chosen, vec![false, false, false]);
         let v = games.create(&req("bot2"), &red).expect("a bot table");
         assert_eq!(v.status, TableStatus::Dealing, "a 2P bot table is full at create");
@@ -3578,18 +3608,24 @@ mod tests {
         let mut r = two_people("ignored", CORPUS_SEED);
         r.id = None;
         r.name = Some("Thursday's game".into());
-        r.display_name = Some("Jeremy".into());
+        r.display_name = Some("Ben Castle".into());
         r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
         let v = games.create(&r, &red).expect("a table");
         assert!(v.id.starts_with("sim-"), "drawn: {}", v.id);
         assert_eq!(v.name.as_deref(), Some("Thursday's game"));
         for s in &v.seats {
-            assert_eq!(s, &SeatDoc::Human { user: "red@t.test".into(), name: Some("Jeremy".into()) });
+            assert_eq!(s, &SeatView::Human { name: Some("Ben Castle".into()), you: true, invited: None });
         }
         let mut r = two_people("named", CORPUS_SEED);
-        r.display_name = Some("Jeremy".into());
+        r.display_name = Some("Ben Castle".into());
         let v = games.create(&r, &red).expect("a table");
-        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: None }, "not blue's");
+        // Blue's seat carries no name, so its creator — and only its creator —
+        // is handed the address they typed (R-D3).
+        assert_eq!(
+            v.seats[1],
+            SeatView::Human { name: None, you: false, invited: Some("blue@t.test".into()) },
+            "not blue's",
+        );
     }
 
     /// **The password is trimmed on the way in and the view says only that one
@@ -3666,7 +3702,7 @@ mod tests {
         assert!(e.to_string().contains("taken"), "the taken seat precedes the password: {e}");
 
         let v = games.join("locked", &blue, s1, Some(" Alex "), Some("sesame")).expect("seated");
-        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: Some("Alex".into()) });
+        assert_eq!(v.seats[1], SeatView::Human { name: Some("Alex".into()), you: true, invited: None });
         assert_eq!(v.my_seats, vec![s1]);
         assert_eq!(v.status, TableStatus::Dealing, "the filling join flips");
         assert!(matches!(games.join("locked", &blue, s1, None, Some("sesame")), Err(GameError::Dealing)));
@@ -3727,7 +3763,7 @@ mod tests {
         let red = who("red@t.test");
         let blue = who("blue@t.test");
         let mut r = two_people("kn", CORPUS_SEED);
-        r.display_name = Some("Jeremy".into());
+        r.display_name = Some("Ben Castle".into());
         games.create(&r, &red).expect("a table");
         games.keep("kn", &blue, PlayerId::new(1), 1, Some("Alex")).expect("blue keeps with a name");
 
@@ -3746,9 +3782,9 @@ mod tests {
         // And the refused keep wrote NOTHING: seat 0 can still choose, which it
         // could not if the refusal had left `keeps[0]` behind ("already
         // chosen"). This is also the last keep, so it finalizes.
-        let v = games.keep("kn", &red, PlayerId::new(0), 1, Some("Not Jeremy")).expect("red keeps");
-        assert_eq!(v.seats[0], SeatDoc::Human { user: "red@t.test".into(), name: Some("Jeremy".into()) });
-        assert_eq!(v.seats[1], SeatDoc::Human { user: "blue@t.test".into(), name: Some("Alex".into()) });
+        let v = games.keep("kn", &red, PlayerId::new(0), 1, Some("Not Ben")).expect("red keeps");
+        assert_eq!(v.seats[0], SeatView::Human { name: Some("Ben Castle".into()), you: true, invited: None });
+        assert_eq!(v.seats[1], SeatView::Human { name: Some("Alex".into()), you: false, invited: None });
         assert_eq!(v.status, TableStatus::Playing, "the last keep finalized");
     }
 
@@ -4535,10 +4571,11 @@ mod tests {
     // ---------------------------------------------------------------------
 
     /// A table's chat page the way `api::chat_read` asks for one: the table
-    /// read first, then passed in (M6.5c2 cycle D, row 130).
-    fn page_of(games: &Games, id: &str, after: u64) -> Result<(Vec<Message>, u64), GameError> {
+    /// read first, then passed in (M6.5c2 cycle D, row 130) — read by red, the
+    /// seat every cell here creates its table as.
+    fn page_of(games: &Games, id: &str, after: u64) -> Result<(Vec<MessageView>, u64), GameError> {
         let (table, _) = games.read_table(id)?.expect("a table to page");
-        games.chat_page(id, &table, after)
+        games.chat_page(id, &table, &who("red@t.test"), after)
     }
 
     fn red_seat() -> Author {
@@ -4550,7 +4587,9 @@ mod tests {
     /// lowercased, `User::parse`) and the name (trimmed, `check_name`) and
     /// threw both results away, so a document written by hand or brought back
     /// by a restore served `" RED@T.test "` beside a seat whose key is
-    /// `red@t.test` — two people, to a client comparing them.
+    /// `red@t.test` — two people, to a client comparing them. The address no
+    /// longer crosses (R-6.5c2.35), and the normal form is what makes the
+    /// reader's `you` answerable: the padded, upper-cased address is red's.
     #[test]
     fn a_stored_author_is_served_in_its_normal_form() {
         let games = games();
@@ -4566,7 +4605,10 @@ mod tests {
         let json = serde_json::to_string(&stored).expect("a chat document");
         games.store().write_if_version(Doc::Chat, &id, &json, None).expect("stored");
         let (page, _) = page_of(&games, &id, 0).expect("served");
-        assert_eq!(page, [message(Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) })]);
+        assert_eq!(
+            page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
+            [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red".into()), you: true }],
+        );
     }
 
     /// **An append lands, numbers from 1, and bumps the TABLE after its write**
@@ -4819,7 +4861,7 @@ mod tests {
         );
         assert!(!house.has_changed().unwrap(), "a refused append bumps nothing");
         assert_eq!(house.borrow().chat, 1, "and leaves the counter where it was");
-        let (page, last) = games.house_page(0).expect("a page");
+        let (page, last) = games.house_page(&who("g@t.test"), 0).expect("a page");
         assert_eq!((page.len(), last), (1, 1), "and wrote nothing");
     }
 

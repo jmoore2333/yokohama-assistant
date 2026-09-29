@@ -594,16 +594,25 @@ fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
     }
 }
 
-/// Who holds `seat` at this table, for a refusal that names them.
+/// Who holds `seat` at this table, for a refusal that names them — by the
+/// seat's NAME, or by its COLOUR when its holder gave none, and NEVER by
+/// address (M6.5c2 cycle D, R-6.5c2.35, R-D3): the sentence goes to every
+/// other seated caller who presses a key out of turn, and it used to hand them
+/// the acting seat's email.
 ///
-/// A bot has no email and is named as what it is. The `None` arm is the same
-/// unreachable-by-construction shape as [`admitted`]'s viewer seat:
-/// `Games::read_table` refuses a document whose `seats` disagrees with its
-/// `players`.
-fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
-    match table.seats.get(usize::from(seat.0)) {
-        Some(crate::table::SeatDoc::Human { user, .. }) => user,
-        _ => "the bot",
+/// A bot is named as what it is, as it always was. The colour's `None` arm is
+/// the same unreachable-by-construction shape as [`admitted`]'s viewer seat:
+/// `Games::read_table` refuses a document whose `colors` or `seats` disagrees
+/// with its `players`.
+fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> String {
+    let i = usize::from(seat.0);
+    match table.seats.get(i) {
+        Some(crate::table::SeatDoc::Human { name: Some(name), .. }) => name.clone(),
+        Some(crate::table::SeatDoc::Human { name: None, .. }) => table
+            .colors
+            .get(i)
+            .map_or_else(|| format!("seat {i}"), |c| yokohama_cli::render::color_name(*c).to_string()),
+        _ => "the bot".to_string(),
     }
 }
 
@@ -960,7 +969,9 @@ pub struct ChatQuery {
 /// it from an empty page.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatPage {
-    pub messages: Vec<chat::Message>,
+    /// Built for the reader ([`chat::ChatDoc::page_for`]): `you` on their own
+    /// messages, and no author's address (M6.5c2 cycle D, R-6.5c2.35).
+    pub messages: Vec<chat::MessageView>,
     pub last: u64,
 }
 
@@ -990,7 +1001,7 @@ pub fn chat_read(
     // chat is bounded by its seat count, and reading the document again for
     // that one number was a second read per page.
     let (table, _) = admitted(games, id, user)?;
-    let (messages, last) = games.chat_page(id, &table, q.after.unwrap_or(0))?;
+    let (messages, last) = games.chat_page(id, &table, user, q.after.unwrap_or(0))?;
     Ok(ChatPage { messages, last })
 }
 
@@ -1004,17 +1015,21 @@ pub fn chat_read(
 /// lock": `admitted` runs first, and on a dealing table where every human has
 /// kept it goes through `settle`, which takes that table's lock to finish the
 /// deal.)
+///
+/// **The reply is the message as its POSTER reads it** (M6.5c2 cycle D,
+/// R-6.5c2.35): `you: true`, and no address — the page's shape, so a client
+/// reads one author type.
 pub fn chat_post(
     games: &Games,
     user: &User,
     id: &str,
     req: &ChatPost,
-) -> Result<chat::Message, ApiError> {
+) -> Result<chat::MessageView, ApiError> {
     let (table, viewer) = admitted(games, id, user)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
     let message = games.chat_append(id, author, &text)?;
-    Ok(message)
+    Ok(message.view_for(user))
 }
 
 /// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
@@ -1068,9 +1083,9 @@ pub fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
 }
 
 /// `GET /api/chat?after=N` — the house. Any signed-in caller.
-pub fn house_chat_read(games: &Games, _user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
+pub fn house_chat_read(games: &Games, user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
     lobby_chat_on(games)?;
-    let (messages, last) = games.house_page(q.after.unwrap_or(0))?;
+    let (messages, last) = games.house_page(user, q.after.unwrap_or(0))?;
     Ok(ChatPage { messages, last })
 }
 
@@ -1080,16 +1095,18 @@ pub fn house_chat_read(games: &Games, _user: &User, q: &ChatQuery) -> Result<Cha
 /// Which is not a simplification but the shape rule's own answer: the house
 /// document is checked with `players: None`, and a `Seat` author there is
 /// refused on write. There is nothing to be seated at.
+///
+/// The reply is the message as its poster reads it, as [`chat_post`]'s is.
 pub fn house_chat_post(
     games: &Games,
     user: &User,
     req: &ChatPost,
-) -> Result<chat::Message, ApiError> {
+) -> Result<chat::MessageView, ApiError> {
     lobby_chat_on(games)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
     let message = games.house_append(author, &text)?;
-    Ok(message)
+    Ok(message.view_for(user))
 }
 
 pub fn keep(
@@ -3005,6 +3022,33 @@ mod tests {
         assert_eq!(reads("playing", &red), 1, "playing, the handle cold");
         games.evict_for_test("playing");
         assert_eq!(reads("playing", &green), 1, "playing, a watcher, the handle cold");
+    }
+
+    /// **The non-acting refusal names the seat, never its holder's address**
+    /// (M6.5c2 cycle D, R-6.5c2.35, R-D3): `it is seat {n}'s turn (…)` carries
+    /// the seat's NAME, or its COLOUR when its holder gave none. It was the
+    /// holder's email, handed to every other seated caller who pressed a key
+    /// out of turn.
+    ///
+    /// Two tables, one per arm: seat 1 unnamed reads its colour, and seat 1
+    /// named reads the name — so a sentence that always said the colour would
+    /// fail the second half.
+    #[test]
+    fn a_non_acting_callers_refusal_names_the_seat_by_name_or_colour_never_an_address() {
+        use crate::games::test_support::{games, two_people, who, CORPUS_SEED};
+        let games = games();
+        for (id, blue_name, said) in [("colour", None, "Blue"), ("named", Some("Ada Bell"), "Ada Bell")] {
+            let mut req = two_people(id, CORPUS_SEED);
+            req.start_seat = 1;
+            let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+            games.create(&req, &red).expect("a table");
+            games.keep(id, &red, yokohama_core::PlayerId::new(0), 1, None).expect("red keeps");
+            games.keep(id, &blue, yokohama_core::PlayerId::new(1), 1, blue_name).expect("blue keeps");
+            let (status, body) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/input"), "", r#"{"line":"1"}"#);
+            assert_eq!(status, 403, "{body}");
+            assert_eq!(body["error"], format!("it is seat 1's turn ({said})"), "{id}");
+            assert!(!body.to_string().contains('@'), "{id}: no address in the refusal: {body}");
+        }
     }
 
     /// **A hot seat's holder is never told it is not their turn** (M6.5c2 cycle

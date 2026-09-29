@@ -106,44 +106,50 @@ describe("filterLobby", () => {
 });
 
 describe("normalizeHouseChat", () => {
-  const identities = ["red@wire.test", "blue@wire.test"];
-
   it("takes the post's seq back by the base: base + 1 reads 1", () => {
     const post = committed("house_chat_post");
     expect(post.seq, "the premise").toBe(1);
-    expect(normalizeHouseChat("house_chat_post", { ...post, seq: BASE + 1 }, BASE, identities)).toEqual(post);
+    expect(normalizeHouseChat("house_chat_post", { ...post, seq: BASE + 1 }, BASE)).toEqual(post);
   });
-  it("takes the page's last and every seq back, and drops an earlier run's message and a foreign one", () => {
+  it("takes the page's last and every seq back, and drops an earlier run's message", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
-    const got = {
-      last: BASE + 2,
-      messages: [
-        { ...ours, seq: BASE - 3 },
-        { ...ours, seq: BASE + 1 },
-        { ...ours, author: { ...ours.author, user: "someone@example.com" }, seq: BASE + 2 },
-      ],
-    };
-    const normalized = normalizeHouseChat("house_chat", got, BASE, identities);
+    const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE - 3 }, { ...ours, seq: BASE + 1 }] };
+    const normalized = normalizeHouseChat("house_chat", got, BASE);
     expect(normalized.messages, "only this run's own message, at seq 1").toEqual(page.messages);
-    // `last` is taken back and NEVER recomputed from what was kept: a person
-    // talking in the lobby during a run moves it, and that fails the run.
-    expect(normalized.last).toBe(2);
+    expect(normalized.last).toBe(1);
   });
-  // On a SECOND run the base IS the first run's own post, by one of the
-  // replay's own identities — so only `seq > base` drops it.
+  // **A message after the base that is not this run's is KEPT, and the run
+  // differs twice** (M6.5c2 cycle D, R-6.5c2.35). The filter used to drop it by
+  // its author's address, which no author carries any more; nothing else can
+  // say whose it is (a name is anyone's to choose). The verdict never rested on
+  // the drop: `last` is taken back and NEVER recomputed from what was kept, so
+  // a person talking in the lobby during a run moved it then and fails the run
+  // now — and the page itself no longer matches either.
+  it("keeps a message after the base that is not this run's, so the run differs by last and by the page", () => {
+    const page = committed("house_chat");
+    const ours = page.messages[0];
+    const theirs = { ...ours, author: { ...ours.author, name: "Someone Else" }, seq: BASE + 2 };
+    const normalized = normalizeHouseChat("house_chat", { last: BASE + 2, messages: [{ ...ours, seq: BASE + 1 }, theirs] }, BASE);
+    expect(normalized.last, "last is not the committed page's").toBe(2);
+    expect(normalized.last).not.toBe(page.last);
+    expect(normalized.messages).toHaveLength(2);
+    expect(normalized.messages).not.toEqual(page.messages);
+  });
+  // On a SECOND run the base IS the first run's own post — `seq > base` is
+  // what drops it.
   it("drops the replay's own message AT the base: the previous run's post", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
     const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE }, { ...ours, seq: BASE + 1 }] };
-    expect(normalizeHouseChat("house_chat", got, BASE, identities)).toEqual(page);
+    expect(normalizeHouseChat("house_chat", got, BASE)).toEqual(page);
   });
   it("refuses a name that is not the house chat, and a seq or last that is not a number", () => {
-    expect(() => normalizeHouseChat("chat", committed("chat"), BASE, identities)).toThrow("chat is not a house chat payload");
-    expect(() => normalizeHouseChat("house_chat_post", committed("error"), BASE, identities)).toThrow(
+    expect(() => normalizeHouseChat("chat", committed("chat"), BASE)).toThrow("chat is not a house chat payload");
+    expect(() => normalizeHouseChat("house_chat_post", committed("error"), BASE)).toThrow(
       "house_chat_post: the reply's seq is not a number",
     );
-    expect(() => normalizeHouseChat("house_chat", committed("error"), BASE, identities)).toThrow(
+    expect(() => normalizeHouseChat("house_chat", committed("error"), BASE)).toThrow(
       "house_chat: the reply's last is not a number",
     );
   });

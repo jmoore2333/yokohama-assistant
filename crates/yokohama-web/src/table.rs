@@ -20,6 +20,13 @@
 //! instead, and it carries a boolean in each one's place: `chosen` per seat
 //! (whether a seat has answered is public at any table; which card it took is
 //! not) and `locked` for the password.
+//!
+//! **And the ADDRESSES cross to their owners alone** (M6.5c2 cycle D,
+//! R-6.5c2.35, R-D3). A seat's `user` and the table's `created_by` stay in this
+//! document as the keys every binding is written under; the view carries a
+//! [`SeatView`] per seat — a `name`, a `you`, and to the table's creator alone
+//! the address they typed for a seat nobody has named yet — and the creator as
+//! the flag `mine` and the name `creator`.
 
 use serde::{Deserialize, Serialize};
 use yokohama_core::{PlayerColor, PlayerId};
@@ -41,8 +48,10 @@ pub enum SeatDoc {
         user: String,
         /// What this seat is CALLED on screen (M6.2). `None` on every seat a
         /// schema-1 document bound, and on a seat whose holder gave no name —
-        /// the client falls back to the email, which is why this is optional
-        /// rather than defaulted to something here.
+        /// which the view says as `you` to its holder, as the address to the
+        /// creator who typed it, and as the word "invited" to everyone else
+        /// ([`SeatView`]), and is why this is optional rather than defaulted to
+        /// something here.
         #[serde(default)]
         name: Option<String>,
     },
@@ -383,18 +392,32 @@ impl TableDoc {
         self.created_by == user.as_str()
     }
 
-    /// What a SEATED caller is handed. See the module doc for the two fields
-    /// that do not cross.
+    /// The creator's seat NAME: the first seat they hold that carries one, or
+    /// `None` — a creator who holds no seat (the Worker's seatless table),
+    /// or whose seats are all unnamed. Never the address.
+    fn creator_name(&self) -> Option<String> {
+        self.seats.iter().find_map(|s| match s {
+            SeatDoc::Human { user, name: Some(name) } if *user == self.created_by => Some(name.clone()),
+            _ => None,
+        })
+    }
+
+    /// What a caller is handed — built FOR `user`: every per-reader field
+    /// (`mine`, each seat's `you` and `invited`, `my_seats`, `can_watch`) is
+    /// this caller's answer. See the module doc for what never crosses, and
+    /// for the addresses, which cross to their owners alone.
     pub fn view(&self, user: &User) -> TableView {
+        let mine = self.is_creator(user);
         TableView {
             id: self.id.clone(),
             name: self.name.clone(),
-            created_by: self.created_by.clone(),
+            mine,
+            creator: self.creator_name(),
             created_at: self.created_at,
             players: self.players,
             colors: self.colors.clone(),
             start_seat: self.start_seat,
-            seats: self.seats.clone(),
+            seats: self.seats.iter().map(|s| SeatView::of(s, user, mine)).collect(),
             chosen: self
                 .seats
                 .iter()
@@ -413,15 +436,54 @@ impl TableDoc {
     }
 }
 
+/// One seat as a reader is handed it (M6.5c2 cycle D, R-6.5c2.35, R-D3):
+/// tagged like [`SeatDoc`], with the same three arms, and NO address but the
+/// creator's own typing.
+///
+/// - `name` is what the seat's holder gave, or `null`.
+/// - `you` is whether the READER holds this seat.
+/// - `invited` is the address the creator typed at create, served to the
+///   creator alone and only while the seat has no name — the one way the
+///   person who invited somebody can still tell their seats apart before that
+///   person has said what to call them. Every other reader of an unnamed seat
+///   is handed the word "invited" by the client.
+///
+/// **An address is not a display.** It was, until this cycle: every reader of
+/// a table was handed every seat's email, the lobby's to anyone signed in.
+/// Two people who pick one name are told apart by their colour, as they are on
+/// the board.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SeatView {
+    Human { name: Option<String>, you: bool, invited: Option<String> },
+    Bot,
+    Open,
+}
+
+impl SeatView {
+    /// `seat` as `reader` is handed it, where `mine` is whether the reader
+    /// created the table.
+    pub fn of(seat: &SeatDoc, reader: &User, mine: bool) -> Self {
+        match seat {
+            SeatDoc::Human { user, name } => SeatView::Human {
+                name: name.clone(),
+                you: user == reader.as_str(),
+                invited: (mine && name.is_none()).then(|| user.clone()),
+            },
+            SeatDoc::Bot => SeatView::Bot,
+            SeatDoc::Open => SeatView::Open,
+        }
+    }
+}
+
 /// The table on the wire.
 ///
-/// **Other seats' EMAILS are here, and they are readable by ANY signed-in
-/// caller at an OPEN table since M6.2 (R-2.7) and at a PLAYING or finished one
-/// since M6.3 (R-3.13).** They reach the view because the seats were invited by
-/// email and a table whose other seats are anonymous cannot say whose turn it
-/// is; since M6.2 a seat may also carry the display NAME its holder gave, which
-/// is what the screen prefers, and the email stays because a name is chosen,
-/// not unique, and two people at one table may pick the same one.
+/// **No address but the reader's own crosses here** (M6.5c2 cycle D,
+/// R-6.5c2.35, R-D3). Until this cycle every seat's EMAIL and the creator's
+/// were here, readable by ANY signed-in caller at an OPEN table (R-2.7) and at
+/// a PLAYING or finished one (R-3.13). A seat is now a [`SeatView`] — a name,
+/// a `you`, and to the creator alone the address they typed for a seat nobody
+/// has named — and the creator is `mine` and `creator`.
 ///
 /// **The one caller this type is withheld from is a caller with NO SEAT at a
 /// table that is DEALING** — a seat holder reads the roster at every status,
@@ -436,18 +498,24 @@ impl TableDoc {
 /// locked table's seats with `my_seats: []` and `can_watch: false`.
 ///
 /// What is still withheld from this type at every status is the module doc's
-/// three-and-now-four: the `seed`, the `keeps`, the `lock`, and M6.3's
-/// `unlocked` list.
+/// list: the `seed`, the `keeps`, the `lock`, M6.3's `unlocked` list, and
+/// every address but the reader's own and the creator's `invited`.
 #[derive(Debug, Clone, Serialize)]
 pub struct TableView {
     pub id: String,
     pub name: Option<String>,
-    pub created_by: String,
+    /// Whether the READER created this table — what draws the creator's own
+    /// controls (Abandon, the invite's password hint). A fact about the
+    /// reader, like `can_watch`.
+    pub mine: bool,
+    /// The creator's seat NAME, or `null` when they hold no seat or gave no
+    /// name — never their address.
+    pub creator: Option<String>,
     pub created_at: u64,
     pub players: u8,
     pub colors: Vec<PlayerColor>,
     pub start_seat: u8,
-    pub seats: Vec<SeatDoc>,
+    pub seats: Vec<SeatView>,
     /// True for a bot seat from the start, and for a human seat once it has
     /// kept. The keeps themselves never cross.
     pub chosen: Vec<bool>,
@@ -848,6 +916,102 @@ mod tests {
         let mut humans = dealt;
         humans.seats[1] = SeatDoc::Human { user: "b@t.test".into(), name: None };
         assert_eq!(bot_of(&humans), Value::Null, "no bot seat, whatever the mirror says");
+    }
+
+    /// Every path in `v` at which a string VALUE contains `@`, and every key that
+    /// does — the tree walk `wire_fixtures`' address pin makes, in small.
+    fn at_signs(v: &serde_json::Value, path: &mut Vec<String>, hits: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) if s.contains('@') => hits.push(path.join(".")),
+            serde_json::Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    path.push(i.to_string());
+                    at_signs(item, path, hits);
+                    path.pop();
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (k, item) in map {
+                    path.push(k.clone());
+                    if k.contains('@') {
+                        hits.push(path.join("."));
+                    }
+                    at_signs(item, path, hits);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// **The view names no address but the reader's own** (M6.5c2 cycle D,
+    /// R-6.5c2.35, R-D3): a seat is a `name`, a `you` and — to the table's
+    /// CREATOR alone — the address they typed for a seat whose holder has not
+    /// yet given a name; the creator is a flag and a name.
+    ///
+    /// Three readers of one table, because the rule is per reader: the
+    /// creator sees the address they typed, the invited seat sees itself as
+    /// `you` and no address at all, and a stranger sees no address either.
+    /// A human seat's KEY SET is pinned too, so a seat that re-gains `user`
+    /// fails here by name and not only by the `@` search.
+    #[test]
+    fn the_view_names_no_address_but_the_readers_own() {
+        use serde_json::{json, Value};
+        let mut d = open_doc();
+        d.created_by = "red@wire.test".into();
+        d.seats = vec![
+            SeatDoc::Human { user: "red@wire.test".into(), name: None },
+            SeatDoc::Human { user: "blue@wire.test".into(), name: None },
+            SeatDoc::Open,
+        ];
+        let red = User::parse("red@wire.test").expect("an email");
+        let blue = User::parse("blue@wire.test").expect("an email");
+        let grey = User::parse("grey@wire.test").expect("an email");
+        let view = |d: &TableDoc, u: &User| serde_json::to_value(d.view(u)).expect("a view");
+        let hits = |v: &Value| {
+            let mut hits = Vec::new();
+            at_signs(v, &mut Vec::new(), &mut hits);
+            hits
+        };
+
+        let theirs = view(&d, &red);
+        assert_eq!(theirs["mine"], true, "the creator's view: {theirs}");
+        assert_eq!(theirs["seats"][1]["invited"], "blue@wire.test", "the address the creator typed");
+        assert_eq!(theirs["seats"][1]["you"], false);
+        assert_eq!(theirs["seats"][0]["you"], true, "the creator's own seat");
+        assert_eq!(theirs["creator"], Value::Null, "the creator has no name yet");
+        assert_eq!(theirs.get("created_by"), None, "the creator crosses as a flag and a name: {theirs}");
+        for path in hits(&theirs) {
+            assert!(
+                path.starts_with("seats.") && path.ends_with(".invited"),
+                "the creator is handed an address outside an `invited` seat, at {path}: {theirs}",
+            );
+        }
+        let keys = |seat: &Value| {
+            let mut keys: Vec<String> = seat.as_object().expect("a seat").keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(keys(&theirs["seats"][1]), ["invited", "kind", "name", "you"], "a human seat's keys");
+
+        let invited = view(&d, &blue);
+        assert_eq!(invited["seats"][1]["you"], true, "the invited seat is `you` to its holder");
+        assert_eq!(invited["mine"], false);
+        for i in 0..2 {
+            assert_eq!(invited["seats"][i]["invited"], Value::Null, "seat {i}: `invited` is the creator's alone");
+        }
+        assert_eq!(hits(&invited), Vec::<String>::new(), "no address reaches the invited seat: {invited}");
+
+        let stranger = view(&d, &grey);
+        assert_eq!(stranger["mine"], false);
+        assert_eq!(stranger["seats"][0], json!({ "kind": "human", "name": null, "you": false, "invited": null }));
+        assert_eq!(hits(&stranger), Vec::<String>::new(), "no address reaches a stranger: {stranger}");
+
+        d.seats[0] = SeatDoc::Human { user: "red@wire.test".into(), name: Some("Red".into()) };
+        for u in [&red, &blue, &grey] {
+            assert_eq!(view(&d, u)["creator"], "Red", "the creator's seat name, to every reader");
+        }
+        assert_eq!(view(&d, &red)["seats"][0]["invited"], Value::Null, "a named seat is its name, even to the creator");
     }
 
     /// The view carries the BOOLEAN and never the list: who else is watching is

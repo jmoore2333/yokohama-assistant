@@ -34,16 +34,29 @@ const seated = (over: Partial<TableView> = {}): TableView => ({
   ...over,
 });
 
+/** `seated()` as a GUEST reads it — somebody who sits at the table and did not
+ *  open it. The corpus has no such reading of an OPEN table (the one guest the
+ *  walk seats fills the last seat, and the table deals), so the two fields the
+ *  server answers differently to a guest are moved (M6.5c2 cycle D,
+ *  R-6.5c2.35): `mine`, and each seat's `invited`, which is the creator's
+ *  alone. */
+const asGuest = (t: TableView): TableView => ({
+  ...t,
+  mine: false,
+  seats: t.seats.map((s) => (s.kind === "human" ? { ...s, invited: null } : s)),
+});
+
 /** A FOUR-seat table with two seats still open, as a stranger reads it. **Every
  *  value is the corpus's** — the stranger's own open table, with Blue's seat
- *  from `table.json` and the open seat's shape from `table_open.json` — and only
- *  the SIZE moves: the walk's tables are two-seat, so no committed payload has
- *  two seats free, and the several-seat face is the one R-6.5c2.9 is about. */
+ *  as a stranger reads it (`table_watchable.json`: named, not `you`) and the
+ *  open seat's shape from `table_open.json` — and only the SIZE moves: the
+ *  walk's tables are two-seat, so no committed payload has two seats free, and
+ *  the several-seat face is the one R-6.5c2.9 is about. */
 const fourWithTwoOpen = (): TableView => ({
   ...wire.tableOpen,
   players: 4,
   colors: ["Red", "Blue", "Yellow", "Green"],
-  seats: [wire.tableOpen.seats[0]!, wire.table.seats[1]!, wire.tableOpen.seats[1]!, wire.tableOpen.seats[1]!],
+  seats: [wire.tableOpen.seats[0]!, wire.tableWatchable.seats[1]!, wire.tableOpen.seats[1]!, wire.tableOpen.seats[1]!],
   chosen: [false, false, false, false],
 });
 
@@ -83,7 +96,6 @@ function show(
   render(
     <OpenTable
       game="wire"
-      me="red@wire.test"
       onStarted={onStarted}
       onLeave={onLeave}
       {...props}
@@ -142,6 +154,24 @@ describe("the open table, to a stranger with one seat to take", () => {
     expect(screen.queryByLabelText("Invite link")).toBeNull();
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
     expect(screen.queryByLabelText("Your name")).toBeNull();
+  });
+
+  // **An unnamed seat reads "invited" to a stranger, and no address reaches
+  // the page** (M6.5c2 cycle D, R-6.5c2.35). `wire2` as the lobby's stranger
+  // read it (`games_open.json`): its creator sits at seat 0 and gave no name,
+  // so the server sends no name, no `you`, no `invited` and no `creator` —
+  // and the page says "invited" and "the creator's table" rather than the
+  // address the seat is keyed by, which it was never handed.
+  it("shows a stranger an unnamed seat as invited and never an address", async () => {
+    const t = wire.gamesOpen.games[1]!;
+    const seat = t.seats[0]!;
+    if (seat.kind !== "human") throw new Error("wire2's seat 0 is its creator's");
+    expect([seat.name, seat.you, seat.invited, t.creator, t.mine]).toEqual([null, false, null, null, false]);
+    show(tableIs(t), { game: t.id });
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(cards()[0]!).toHaveTextContent("invited");
+    expect(screen.getByText(/the creator's table \u00b7 2 players \u00b7 one seat left/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("@");
   });
 
   // **The first player is the table's `start_seat`, not the first card** (the
@@ -376,7 +406,7 @@ describe("the open table, to somebody sitting at it", () => {
   // Somebody ELSE seated invites too, and is not told they set a password they
   // did not set.
   it("reminds a seated guest of the table's password without claiming they set it", async () => {
-    showSeated(tableIs(seated({ locked: true, created_by: "someone@else.test" })));
+    showSeated(tableIs(asGuest(seated({ locked: true }))));
     await screen.findByLabelText("Invite link");
     expect(screen.getByText("They'll need the table's password.")).toBeInTheDocument();
     expect(screen.queryByText(/password you set/)).toBeNull();
@@ -397,7 +427,10 @@ describe("the open table, to somebody sitting at it", () => {
     if (mine.kind !== "human") throw new Error("wire2's seat 0 is the creator's");
     expect(cards()[0]!).toHaveTextContent("Red \u00b7 first player");
     expect(cards()[0]!).toHaveTextContent("You");
-    expect(cards()[0]!).toHaveTextContent(mine.name ?? mine.user);
+    // No name given, so the card is "You" and nothing else: not the address
+    // the creator's own `invited` carries (M6.5c2 cycle D, R-6.5c2.35).
+    expect(mine.name).toBeNull();
+    expect(cards()[0]!.textContent).not.toContain("@");
     expect(cards()[1]!).toHaveTextContent("Open seat");
     expect(cards()[1]!).toHaveTextContent("anyone in the lobby, with the password");
     expect(screen.getByText(/Waiting for 1 more player \u00b7 2 players/)).toBeInTheDocument();
@@ -476,12 +509,13 @@ describe("the open table, to somebody sitting at it", () => {
   // where the screen goes when the table is gone.
   it("offers the abandon control to the person who opened the table", async () => {
     showSeated(tableIs(seated()));
-    // `created_by` is `red@wire.test`, which is who this browser is.
+    // `wire2` is its creator's own reading: `mine` is true (R-6.5c2.35).
+    expect(seated().mine).toBe(true);
     expect(await screen.findByRole("button", { name: "abandon wire2" })).toBeInTheDocument();
   });
 
   it("offers nothing to abandon to a person who merely sits here", async () => {
-    showSeated(tableIs(seated({ created_by: "someone@else.test" })));
+    showSeated(tableIs(asGuest(seated())));
     await screen.findByLabelText("Invite link");
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
@@ -575,7 +609,7 @@ describe("the open table's watch", () => {
         : undefined;
     });
     render(
-      <OpenTable game="wire" me="red@wire.test" onStarted={onStarted} onLeave={() => {}} />,
+      <OpenTable game="wire" onStarted={onStarted} onLeave={() => {}} />,
     );
     await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onStarted).not.toHaveBeenCalled();
@@ -610,7 +644,7 @@ describe("the open table's watch", () => {
         ? wire.tableOpen
         : { status: 404, body: { error: "no such game" } };
     });
-    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    render(<OpenTable game="wire" onStarted={() => {}} onLeave={onLeave} />);
     await until(() => stream.opens() > 0, "the table's stream was opened");
     stream.push("signal", wire.eventsDealing);
     await settle();
@@ -644,7 +678,7 @@ describe("the open table's watch", () => {
       if (call.path.endsWith("/stream")) return stream.reply(call);
       return call.path.endsWith("/table") ? wire.tableOpen : undefined;
     });
-    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    render(<OpenTable game="wire" onStarted={() => {}} onLeave={onLeave} />);
     await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onLeave).not.toHaveBeenCalled();
 

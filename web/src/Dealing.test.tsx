@@ -32,12 +32,10 @@ import type { DealView } from "./types";
  *  without this component keeping a second copy of it. */
 function Host({
   game = "wire",
-  me = "red@wire.test",
   onPlaying = () => {},
   onLeave = () => {},
 }: {
   game?: string;
-  me?: string;
   onPlaying?: () => void;
   onLeave?: (sentence?: string) => void;
 }) {
@@ -45,7 +43,6 @@ function Host({
   return (
     <Dealing
       game={game}
-      me={me}
       art={wire.artManifest}
       labels={wire.labels}
       sections={sections}
@@ -501,7 +498,7 @@ describe("the dealing screen", () => {
       }),
     );
     stubApi(() => undefined); // nothing hosted is asked for a local table
-    render(<Host game="local-1" me="local@browser" />);
+    render(<Host game="local-1" />);
     await screen.findAllByRole("button", { name: /^keep O\d\d/ });
     expect(screen.queryByRole("log")).toBeNull();
     // …and nothing was ASKED of the local host about chat either.

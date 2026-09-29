@@ -85,11 +85,11 @@ describe("the chat panel", () => {
     render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     const rows = await screen.findAllByRole("listitem");
     expect(rows).toHaveLength(wire.chat.messages.length);
-    // A seat: a chip in the seat's colour class and the seat's name or email.
+    // A seat: a chip in the seat's colour class and the seat's name.
     const red = wire.chat.messages[0]!;
     if (red.author.kind !== "seat") throw new Error("the first corpus message is red's");
     expect(rows[0]!.querySelector(`.chat-who.seat-${colors[red.author.seat]!.toLowerCase()}`)).not.toBeNull();
-    expect(rows[0]!).toHaveTextContent(red.author.name ?? red.author.user);
+    expect(rows[0]!).toHaveTextContent(red.author.name!);
     // The watcher: their given name, marked.
     const green = wire.chat.messages[2]!;
     if (green.author.kind !== "watcher") throw new Error("the third corpus message is the watcher's");
@@ -106,22 +106,34 @@ describe("the chat panel", () => {
     for (const r of rows) expect(r.querySelector("time")).not.toBeNull();
   });
 
-  it("falls back to a seat's address when the seat has no name", async () => {
+  // **With no name, "you", the seat, or "someone" — never an address**
+  // (M6.5c2 cycle D, R-6.5c2.35): the server sends no author's address, so the
+  // fallback is the reader's own `you`, then the seat's number, then, for a
+  // watcher, the word.
+  it("falls back to you, the seat or someone when an author has no name", async () => {
     open();
-    // **DERIVED from the corpus, never hand-authored** — both corpus seats
-    // carry names, so `name ?? user` had a branch no fixture reached. One row
-    // with its name taken away is the smallest thing that reaches it.
-    const red = wire.chat.messages[0]!;
-    if (red.author.kind !== "seat") throw new Error("the first corpus message is red's");
+    // **DERIVED from the corpus, never hand-authored** — every corpus author
+    // carries a name, so the fallbacks had branches no fixture reached. The
+    // page with each name taken away is the smallest thing that reaches them:
+    // red's own message (`you`), blue's (not `you`) and the watcher's.
+    const [red, blue, green] = wire.chat.messages;
+    if (red?.author.kind !== "seat" || blue?.author.kind !== "seat" || green?.author.kind !== "watcher") {
+      throw new Error("the corpus page is red's, blue's, then the watcher's");
+    }
+    expect([red.author.you, blue.author.you, green.author.you]).toEqual([true, false, false]);
     const nameless: ChatPage = {
       ...wire.chat,
-      messages: [{ ...red, author: { ...red.author, name: null } }],
+      messages: [red, blue, green].map((m) => ({ ...m, author: { ...m.author, name: null } })),
     };
     chatStub((call) => (call.method === "GET" ? nameless : undefined));
     render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
     const rows = await screen.findAllByRole("listitem");
-    expect(rows[0]!).toHaveTextContent(red.author.user);
-    expect(rows[0]!).not.toHaveTextContent(red.author.name!);
+    expect(rows.map((r) => r.querySelector(".chat-who")!.firstChild!.textContent)).toEqual([
+      "you",
+      `seat ${blue.author.seat}`,
+      "someone",
+    ]);
+    for (const r of rows) expect(r.textContent).not.toContain("@");
   });
 
   it("fetches the delta when the count rises above what it holds, and NOTHING when it does not", async () => {

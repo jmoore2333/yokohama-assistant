@@ -1471,8 +1471,7 @@ export function App() {
       const local = isLocal(broken.id);
       /** The layer's delete is the CREATOR's, seated (`tables.rs:1670-1677`); a
        *  local game's is always this browser's own. */
-      const mayAbandon =
-        local || (broken.table.created_by === signedIn && broken.table.my_seats.length > 0);
+      const mayAbandon = local || (broken.table.mine && broken.table.my_seats.length > 0);
       const name = broken.table.name ?? broken.id;
       // **The lock screen's shape** (M6.5c2 cycle C; the whole-branch review's
       // Minor 6): the band and ONE notice card, so a player who follows a row
@@ -1549,10 +1548,10 @@ export function App() {
       );
     }
     // **The two screens a game in this browser reaches with the door shut**
-    // (spec §2.5): the local create, and the deal it opens. Both are seated by
+    // (spec §2.5): the local create, and the deal it opens. The create seats
     // `LOCAL_USER`, because the module answers as that one address whatever
-    // this browser signed in at — a dealing screen handed the signed-in name
-    // would find no seat of its own at a table this device owns outright.
+    // this browser signed in at; the deal reads its own seats off the table's
+    // `you` (M6.5c2 cycle D, R-6.5c2.35), so it is handed no address at all.
     if (route.kind === "new" && route.local)
       // **Keyed by HOST** (whole-branch review, Minor #1). The two forms sit at
       // the same position in this tree, so React reconciles one into the other
@@ -1573,7 +1572,6 @@ export function App() {
       return (
         <Dealing
           game={dealing}
-          me={LOCAL_USER}
           art={art}
           labels={labels}
           sections={enabled}
@@ -1604,7 +1602,6 @@ export function App() {
       return (
         <Dealing
           game={dealing}
-          me={signedIn}
           art={art}
           labels={labels}
           sections={enabled}
@@ -1621,7 +1618,6 @@ export function App() {
       return (
         <OpenTable
           game={openTable}
-          me={signedIn}
           // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
           // What the open table knows is that it is no longer open; whether
           // that is the deal or a game already running is `open`'s own

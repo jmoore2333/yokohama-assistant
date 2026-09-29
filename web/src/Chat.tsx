@@ -322,13 +322,17 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   const title = scope.kind === "house" ? "Lobby chat" : "Chat";
   const label = (m: ChatMessage) => {
     const a = m.author;
+    // A name, else "you" for the reader's own, else the seat or "someone":
+    // no author carries an address (M6.5c2 cycle D, R-6.5c2.35).
     if (a.kind === "seat")
-      return <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? a.user}</span>;
+      return (
+        <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? (a.you ? "you" : `seat ${a.seat}`)}</span>
+      );
     if (a.kind === "bot")
       return <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? "bot"}</span>;
     return (
       <span className={`chat-who${scope.kind === "table" ? " watching" : ""}`}>
-        {a.name ?? a.user}
+        {a.name ?? (a.you ? "you" : "someone")}
         {scope.kind === "table" && <span className="meta"> &middot; spectating</span>}
       </span>
     );

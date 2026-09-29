@@ -2,7 +2,7 @@
   "author": {
     "kind": "watcher",
     "name": "Red",
-    "user": "red@wire.test"
+    "you": true
   },
   "created_at": 1789000000,
   "seq": 1,

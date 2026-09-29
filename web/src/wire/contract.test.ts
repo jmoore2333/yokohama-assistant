@@ -207,7 +207,37 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     }
     for (const m of [wire.chatPost, wire.chatPostWatcher]) {
       expect(keys(m)).toEqual(listed(KEYS.chatMessage));
+      // The post's own reply is the message as its POSTER reads it (M6.5c2
+      // cycle D, R-6.5c2.35), so its author is checked by kind too — the
+      // reply is where an author re-gaining `user` would show first.
+      expect(keys(m.author)).toEqual(listed(byKind[m.author.kind as keyof typeof byKind]));
+      expect(m.author.kind !== "bot" && m.author.you, "a post's reply is the poster's own").toBe(true);
     }
+  });
+
+  // **Every HUMAN seat in the corpus carries exactly four keys, and no
+  // address** (M6.5c2 cycle D, R-6.5c2.35). `Widen<TableView>` distributes
+  // over the seat union, so a human seat that re-gained `user` would still
+  // match its widened arm at compile time: only this can see it. The seats
+  // are FOUND, by walking every typed fixture for a `seats` array, rather than
+  // listed, so a table payload added later is covered without an edit here.
+  it("every human seat in the corpus is a name, a you and an invited", () => {
+    const humans: unknown[] = [];
+    const walk = (v: unknown, key: string): void => {
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (key === "seats" && (item as { kind?: unknown } | null)?.kind === "human") humans.push(item);
+          walk(item, "");
+        }
+      } else if (v !== null && typeof v === "object") {
+        for (const [k, item] of Object.entries(v)) walk(item, k);
+      }
+    };
+    walk(wire, "");
+    // Anti-vacuity: the corpus's tables hold human seats, named and not.
+    expect(humans.length).toBeGreaterThan(10);
+    for (const seat of humans) expect(keys(seat)).toEqual(listed(KEYS.seatHuman));
+    expect(humans.some((h) => (h as { name: unknown }).name === null)).toBe(true);
   });
 
   // **`why`'s thirteenth refusal is the LAYER's** (M6.5c2, review R2-m5): a
@@ -561,9 +591,15 @@ describe("what the corpus itself has to be true of", () => {
     expect(wire.tableOpen.seats.map((s) => s.kind)).toEqual(["human", "open"]);
     const held = wire.tableOpen.seats[0]!;
     if (held.kind !== "human") throw new Error("fixture moved");
-    expect(held.user).toBe("red@wire.test");
-    // The display name the creator gave, beside the email it can never replace.
+    // The display name the creator gave — and, since M6.5c2 cycle D
+    // (R-6.5c2.35), nothing else about them: the reader is a stranger, so the
+    // seat is not theirs and no address crosses.
     expect(held.name).toBe("Red");
+    expect(held.you).toBe(false);
+    expect(held.invited).toBeNull();
+    expect(wire.tableOpen.mine).toBe(false);
+    expect(wire.tableOpen.creator).toBe("Red");
+    expect(JSON.stringify(wire.tableOpen)).not.toContain("@");
     // `locked` is the boolean that crosses in the password's place: the salt
     // and the hash stay on the server, and `wire_fixtures.rs` searches every
     // payload of the run for all three.
@@ -655,6 +691,9 @@ describe("what the corpus itself has to be true of", () => {
     // Whose turn it is, named — a bare "403" leaves a player with nothing to
     // do next.
     expect(wire.wrongSeat403.error).toMatch(/seat \d+'s turn/);
+    // By the seat's NAME, never its holder's address (M6.5c2 cycle D,
+    // R-6.5c2.35): this sentence goes to every other seated caller.
+    expect(wire.wrongSeat403.error).toBe("it is seat 1's turn (Blue)");
     expect(wire.undoRefused403.error).toContain("undo");
   });
 

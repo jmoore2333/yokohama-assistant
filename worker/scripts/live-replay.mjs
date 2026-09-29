@@ -182,11 +182,18 @@ export function filterLobby(name, committed, got, ids) {
 /**
  * The house chat's two payloads read on the SHARED house chat (spec §9.3):
  * `seq` and `last` taken back by `base` — the `last` read at the run's start —
- * and the page's messages filtered to those after `base` from the replay's own
- * `identities`. `last` is taken back and never recomputed from what was kept:
- * a person talking in the lobby during a run moves it, and that run fails.
+ * and the page's messages filtered to those after `base`. `last` is taken back
+ * and never recomputed from what was kept: a person talking in the lobby
+ * during a run moves it, and that run fails.
+ *
+ * **By `seq` alone, since M6.5c2 cycle D** (R-6.5c2.35): the filter also
+ * kept only messages whose `author.user` was one of the replay's identities,
+ * and no author carries an address any more — nor can "ours" be told from a
+ * name, which anyone may choose. No verdict moved: a message after the base
+ * that is not the replay's moves `last`, which fails the run as it always did,
+ * and it now fails the page's compare beside it.
  */
-export function normalizeHouseChat(name, got, base, identities) {
+export function normalizeHouseChat(name, got, base) {
   if (!HOUSE_CHAT.has(name)) throw new Error(`${name} is not a house chat payload`);
   if (name === "house_chat_post") {
     if (typeof got?.seq !== "number") throw new Error(`${name}: the reply's seq is not a number`);
@@ -194,9 +201,8 @@ export function normalizeHouseChat(name, got, base, identities) {
   }
   if (typeof got?.last !== "number") throw new Error(`${name}: the reply's last is not a number`);
   if (!Array.isArray(got.messages)) throw new Error(`${name}: the reply carries no messages list`);
-  const ours = new Set(identities);
   const messages = got.messages
-    .filter((m) => typeof m?.seq === "number" && m.seq > base && ours.has(m?.author?.user))
+    .filter((m) => typeof m?.seq === "number" && m.seq > base)
     .map((m) => ({ ...m, seq: m.seq - base }));
   return { ...got, last: got.last - base, messages };
 }
@@ -457,11 +463,11 @@ function judge(fixture, reply, context) {
     }
     if (HOUSE_CHAT.has(fixture)) {
       const listed = Array.isArray(got?.messages) ? got.messages.length : 0;
-      got = normalizeHouseChat(fixture, got, context.base, context.identities);
+      got = normalizeHouseChat(fixture, got, context.base);
       spent.push(
         fixture === "house_chat_post"
           ? `normalizeHouseChat ${fixture}: seq taken back by ${context.base}`
-          : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}; ${count(listed - got.messages.length, "other message")} dropped`,
+          : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}; ${count(listed - got.messages.length, "earlier message")} dropped`,
       );
     }
   } catch (e) {
@@ -490,7 +496,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function replay({ walk, host, archive, corpus, credential, fetcher = fetch, log = console.log, pause = sleep }) {
   const rows = order(walk, host, archive);
   const ids = tableIds(walk);
-  const identities = [...new Set(rows.map(({ row }) => row.who).filter((who) => who !== null))];
   const reader = rows.find(({ row }) => row.fixture === "house_chat")?.row;
   if (reader === undefined) throw new Error("no row of the scripts reads the house chat, so there is no base to read");
   // Every row's address, checked BEFORE anything is sent — the forces
@@ -537,7 +542,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       // follows it, as on every other road out.
       result.stopped = `the house chat's base could not be read: ${baseReply.status}${said(baseReply)}`;
     }
-    const context = { corpus, ids, identities, base: last };
+    const context = { corpus, ids, base: last };
 
     for (const { script, index, row } of result.stopped === null ? rows : []) {
       const label = `${script} row ${index}: ${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;

@@ -533,20 +533,23 @@ export interface DealCard {
 
 // ---- the table: who sits where (M6.1) ------------------------------------
 
-/** Who plays one seat: a person, the built-in bot, or nobody yet.
+/** Who plays one seat, as THIS reader is handed it: a person, the built-in
+ *  bot, or nobody yet.
  *
- *  A human seat carries the server's NORMALIZED email — the key every binding
- *  is written under — and, since M6.2, the display `name` its holder gave. The
- *  name is `null` on a seat bound before names existed and on a seat whose
- *  holder gave none, so a screen that shows one falls back to the email; and
- *  the email stays beside it because a name is chosen rather than unique, and
- *  two people at one table may pick the same one.
+ *  **No address crosses but the reader's own typing** (M6.5c2 cycle D,
+ *  R-6.5c2.35, R-D3). A human seat carries the display `name` its holder gave
+ *  (`null` on a seat bound before names existed and on a seat whose holder
+ *  gave none), `you` — whether the reader holds it — and `invited`: the
+ *  address the table's CREATOR typed for it, served to the creator alone and
+ *  only while the seat has no name. Everyone else reads an unnamed seat as
+ *  "invited" (`seatName`). Two people who pick one name are told apart by their
+ *  colour, as they are on the board.
  *
  *  `open` is an unfilled seat at an open table (M6.2): anyone signed in may
  *  take it through `api.join`. It never appears once the table has left
  *  `open` — the server refuses to read back a document where the two disagree. */
-export type SeatDoc =
-  | { kind: "human"; user: string; name: string | null }
+export type SeatView =
+  | { kind: "human"; name: string | null; you: boolean; invited: string | null }
   | { kind: "bot" }
   | { kind: "open" };
 
@@ -565,13 +568,18 @@ export type TableStatus = "open" | "dealing" | "playing";
 export interface TableView {
   id: string;
   name: string | null;
-  created_by: string;
+  /** Whether the READER created this table — what draws the creator's own
+   *  controls. A fact about the reader, like `can_watch`. */
+  mine: boolean;
+  /** The creator's seat NAME, or `null` when they hold no seat or gave no name
+   *  — never their address. */
+  creator: string | null;
   /** Unix SECONDS, not a formatted string — the lobby sorts on it. */
   created_at: number;
   players: number;
   colors: PlayerColor[];
   start_seat: number;
-  seats: SeatDoc[];
+  seats: SeatView[];
   /** True for a bot seat from the start, and for a human seat once it has kept. */
   chosen: boolean[];
   /** The seats the CALLER holds. Empty for a caller not seated at an OPEN
@@ -1006,12 +1014,15 @@ export interface Outcome {
 
 // ---- M6.4: the chat ------------------------------------------------------
 
-/** Who said it (M6.4, R-6.4.2, R-6.4.15). Tagged like `SeatDoc`, so an arm can be
- *  added on both sides of the wire; `bot` is read and rendered and produced by
- *  no route yet. */
+/** Who said it (M6.4, R-6.4.2, R-6.4.15), as THIS reader is handed it.
+ *  Tagged like `SeatView`, so an arm can be added on both sides of the wire;
+ *  `bot` is read and rendered and produced by no route yet.
+ *
+ *  **No address** (M6.5c2 cycle D, R-6.5c2.35): `you` marks the reader's own
+ *  messages, and a poster with no name reads as their seat or as "someone". */
 export type ChatAuthor =
-  | { kind: "seat"; seat: PlayerId; user: string; name: string | null }
-  | { kind: "watcher"; user: string; name: string | null }
+  | { kind: "seat"; seat: PlayerId; name: string | null; you: boolean }
+  | { kind: "watcher"; name: string | null; you: boolean }
   | { kind: "bot"; seat: PlayerId; name: string | null };
 
 export interface ChatMessage {

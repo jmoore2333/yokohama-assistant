@@ -68,7 +68,8 @@ pub struct Message {
     pub text: String,
 }
 
-/// Who said it.
+/// Who said it, as STORED — the address in `user` is the key `you` is read
+/// from, and never crosses the wire ([`AuthorView`] does).
 ///
 /// **Tagged, the `SeatDoc` shape, so an arm can be added additively on both
 /// sides of the wire (R-6.4.15).** `Bot` is read and written and PRODUCED BY NO
@@ -93,6 +94,53 @@ pub enum Author {
         #[serde(default)]
         name: Option<String>,
     },
+}
+
+/// Who said it, as a READER is handed it (M6.5c2 cycle D, R-6.5c2.35, R-D3):
+/// the [`Author`] arms with the address taken out and `you` put in.
+///
+/// **The address stays in the document and never crosses.** Every message
+/// used to carry its poster's `user` to every reader — the house's to anyone
+/// signed in — so a room was a roster of addresses. `you` is the one fact a
+/// reader needs about an author's identity: whether it is them. A poster
+/// with no name is drawn from the seat's colour, or as "someone" for a
+/// watcher, by the client.
+///
+/// Tagged with the document's arm names, so an arm added to [`Author`] is
+/// added here in the same words.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthorView {
+    Seat { seat: u8, name: Option<String>, you: bool },
+    Watcher { name: Option<String>, you: bool },
+    /// A bot is nobody's `you`, so the arm carries no such field.
+    Bot { seat: u8, name: Option<String> },
+}
+
+/// One message as a READER is handed it: [`Message`] with its author as an
+/// [`AuthorView`].
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageView {
+    pub seq: u64,
+    /// Unix seconds — the same key [`Message::created_at`] is named for.
+    pub created_at: u64,
+    pub author: AuthorView,
+    pub text: String,
+}
+
+impl Message {
+    /// This message as `reader` is handed it — `you` read off the STORED
+    /// address, which is normalized on read ([`normalized`]) and compared
+    /// with the reader's normalized key.
+    pub fn view_for(&self, reader: &User) -> MessageView {
+        let you = |user: &String| user == reader.as_str();
+        let author = match &self.author {
+            Author::Seat { seat, user, name } => AuthorView::Seat { seat: *seat, name: name.clone(), you: you(user) },
+            Author::Watcher { user, name } => AuthorView::Watcher { name: name.clone(), you: you(user) },
+            Author::Bot { seat, name } => AuthorView::Bot { seat: *seat, name: name.clone() },
+        };
+        MessageView { seq: self.seq, created_at: self.created_at, author, text: self.text.clone() }
+    }
 }
 
 /// The two retention numbers (R-6.4.8), from the launch variables.
@@ -252,6 +300,15 @@ impl ChatDoc {
                 self.messages.drain(..drop);
             }
         }
+    }
+}
+
+impl ChatDoc {
+    /// Every retained message, as `reader` may be handed it — see
+    /// [`MessageView`]. A caller that wants a page from a cursor filters
+    /// `messages` first.
+    pub fn page_for(&self, reader: &User) -> Vec<MessageView> {
+        self.messages.iter().map(|m| m.view_for(reader)).collect()
     }
 }
 
@@ -535,6 +592,45 @@ mod tests {
             matches!(b.author, Author::Bot { seat: 1, .. }),
             "the arm no route produces still reads (R-6.4.15)",
         );
+    }
+
+    /// **A page is built for its READER** (M6.5c2 cycle D, R-6.5c2.35, R-D3):
+    /// `you` marks the reader's own messages and no author carries a `user` —
+    /// the address every poster's message used to carry to every reader, the
+    /// house's to anyone signed in. The stored document keeps the address, so
+    /// `you` is still answerable.
+    ///
+    /// Two readers of one page, so a `you` that was constant (or keyed on the
+    /// seat rather than the poster) fails one of them.
+    #[test]
+    fn a_page_marks_you_on_the_readers_own_messages_and_carries_no_user() {
+        use serde_json::{json, Value};
+        let authored = |seq: u64, author: Author| Message { seq, created_at: 1, author, text: "hi".into() };
+        let d = doc(vec![
+            authored(1, Author::Seat { seat: 0, user: "red@wire.test".into(), name: Some("Red".into()) }),
+            authored(2, Author::Seat { seat: 1, user: "blue@wire.test".into(), name: None }),
+            authored(3, Author::Watcher { user: "green@wire.test".into(), name: None }),
+            authored(4, Author::Bot { seat: 1, name: Some("V4".into()) }),
+        ]);
+        let red = User::parse("red@wire.test").expect("an email");
+        let green = User::parse("green@wire.test").expect("an email");
+        let authors = |reader: &User| -> Vec<Value> {
+            let page = serde_json::to_value(d.page_for(reader)).expect("a page");
+            assert!(!page.to_string().contains('@'), "an address reached a reader: {page}");
+            page.as_array().expect("a list").iter().map(|m| m["author"].clone()).collect()
+        };
+        assert_eq!(
+            authors(&red),
+            [
+                json!({ "kind": "seat", "seat": 0, "name": "Red", "you": true }),
+                json!({ "kind": "seat", "seat": 1, "name": null, "you": false }),
+                json!({ "kind": "watcher", "name": null, "you": false }),
+                json!({ "kind": "bot", "seat": 1, "name": "V4" }),
+            ],
+        );
+        let to_green = authors(&green);
+        assert_eq!(to_green[0]["you"], false, "red's message is not green's");
+        assert_eq!(to_green[2], json!({ "kind": "watcher", "name": null, "you": true }), "green's own");
     }
 
     /// **Each of the three variables HAS a default, and a bad value is refused

@@ -1842,37 +1842,44 @@ describe("the route", () => {
   // that archives the game — and a bounce to the lobby offered neither.
   describe("a game this build's bot cannot continue", () => {
     const refusal = wire.foreignBot409;
-    /** The corpus's playing table — `wire.me` created it and sits at it — with
-     *  ONE field moved, the one fact these cells are about: the bot, taken from
-     *  the corpus's own foreign row (`wire.tableForeign`), run nowhere here and
-     *  named as the refusal names it. */
-    const dealt: TableView = { ...wire.table, bot: wire.tableForeign.bot };
+    /** **The table as the person who CREATED it and sits at it reads it**: the
+     *  corpus's own foreign row (`wire.tableForeign`), whose bot is run nowhere
+     *  here, whose `mine` is `true` and whose `my_seats` holds seat 0 — the
+     *  two reader-relative facts Abandon is drawn from, as the SERVER said
+     *  them (M6.5c2 cycle D, R-6.5c2.35: the client no longer compares an
+     *  address to decide whose table it is). */
+    const dealt: TableView = wire.tableForeign;
+    const id = dealt.id;
+    /** **The same kind of game as a player who JOINED it reads it**: the
+     *  corpus's playing table as its SECOND seat reads it (`mine: false`,
+     *  `my_seats: [1]`), with ONE field moved — its bot, the foreign row's. */
+    const joined: TableView = { ...wire.table, bot: wire.tableForeign.bot };
     const answers = (table: TableView) => (call: ApiCall): Reply | undefined => {
-      if (call.path.endsWith("/api/games/wire/table")) return table;
-      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: refusal };
+      if (call.path.endsWith(`/api/games/${table.id}/table`)) return table;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${table.id}`)) return { status: 409, body: refusal };
       return undefined;
     };
 
     it("stays on the table's screen with the server's sentence, Abandon for its creator, and the way back", async () => {
-      window.location.hash = "#/t/wire";
+      window.location.hash = `#/t/${id}`;
       const { user } = app(answers(dealt));
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
       // NOT the bounce every other refusal of the game takes.
-      expect(window.location.hash).toBe("#/t/wire");
+      expect(window.location.hash).toBe(`#/t/${id}`);
       // **The lock screen's shape**: the band — "Lobby / wire", the table's
       // name the page's heading — with the identity corner, which names who
       // is playing (a SERVER game's screen: "On this device" is the local
       // screens' word), and the server's sentence in one notice card.
       const card = noticeScreen({
         path: "Lobby",
-        heading: dealt.name!,
+        heading: dealt.name ?? id,
         corner: wire.me.user!,
         sentence: refusal.error,
       });
-      // `wire.me` is the table's creator, and the layer's delete is the
-      // creator's (`tables.rs:1670-1677`).
-      expect(dealt.created_by).toBe(wire.me.user);
-      expect(within(card).getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      // The reader created the table and sits at it, and the layer's delete
+      // is the creator's, seated.
+      expect([dealt.mine, dealt.my_seats.length > 0]).toEqual([true, true]);
+      expect(within(card).getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
       // A server game's record is served only once it is over, so its bytes are
       // not offered here — "Save game file" is the LOCAL screen's alone.
       expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
@@ -1882,23 +1889,27 @@ describe("the route", () => {
 
     // **The seat half of the creator rule**: the layer's delete is the
     // creator's SEATED, so the table's creator who holds no seat at it is
-    // offered none. The one field moved from `dealt` is `my_seats`;
-    // `created_by` is kept, so only the seat test can withhold the control.
+    // offered none. The one field moved from `dealt` is `my_seats`; `mine` is
+    // kept, so only the seat test can withhold the control.
     it("offers no Abandon to the table's creator who holds no seat at it", async () => {
-      window.location.hash = "#/t/wire";
-      expect(dealt.created_by).toBe(wire.me.user);
+      window.location.hash = `#/t/${id}`;
+      expect(dealt.mine).toBe(true);
       app(answers({ ...dealt, my_seats: [] }));
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
-      const card = noticeScreen({ path: "Lobby", heading: dealt.name!, corner: wire.me.user!, sentence: refusal.error });
+      const card = noticeScreen({ path: "Lobby", heading: dealt.name ?? id, corner: wire.me.user!, sentence: refusal.error });
       expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
       expect(within(card).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
     });
 
+    // Read from the corpus, not moved: the joined player's own reading says
+    // `mine: false` beside a seat they hold, so only the creator test can
+    // withhold the control.
     it("offers no Abandon to a player who did not open the table", async () => {
-      window.location.hash = "#/t/wire";
-      app(answers({ ...dealt, created_by: "ada.bell@wire.test" }));
+      window.location.hash = `#/t/${joined.id}`;
+      expect([joined.mine, joined.my_seats.length > 0]).toEqual([false, true]);
+      app(answers(joined));
       expect(await screen.findByText(refusal.error)).toBeInTheDocument();
-      const card = noticeScreen({ path: "Lobby", heading: dealt.name!, corner: wire.me.user!, sentence: refusal.error });
+      const card = noticeScreen({ path: "Lobby", heading: joined.name!, corner: wire.me.user!, sentence: refusal.error });
       expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
       expect(within(card).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
     });
@@ -1922,16 +1933,16 @@ describe("the route", () => {
     // screen, drawn with the words the body carries. One field moved from the
     // corpus's refusal, `error`.
     it("reads the foreign_bot field and not the sentence: other words, the same screen", async () => {
-      window.location.hash = "#/t/wire";
+      window.location.hash = `#/t/${id}`;
       const reworded = { ...refusal, error: "another sentence" };
       app((call) => {
-        if (call.path.endsWith("/api/games/wire/table")) return dealt;
-        if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: reworded };
+        if (call.path.endsWith(`/api/games/${id}/table`)) return dealt;
+        if (call.method === "GET" && call.path.endsWith(`/api/games/${id}`)) return { status: 409, body: reworded };
         return undefined;
       });
       expect(await screen.findByText(reworded.error)).toBeInTheDocument();
-      expect(window.location.hash).toBe("#/t/wire");
-      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      expect(window.location.hash).toBe(`#/t/${id}`);
+      expect(screen.getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
     });
 
     // **Review Focus 5's third half: the refused game opens no stream.** The
@@ -1945,15 +1956,15 @@ describe("the route", () => {
     // `flush` (installed BEFORE the render, since the signal opens from a
     // zero-delay timer of its own), and `try`/`finally` puts the real one back.
     it("opens no stream and asks no events for a game it will not open", async () => {
-      window.location.hash = "#/t/wire";
+      window.location.hash = `#/t/${id}`;
       vi.useFakeTimers();
       try {
         const { stub } = app(answers(dealt));
         await until(() => screen.queryByText(refusal.error) !== null, "the server's sentence was drawn");
         await flush();
-        expect(window.location.hash).toBe("#/t/wire");
+        expect(window.location.hash).toBe(`#/t/${id}`);
         const streams = stub.calls.filter(
-          (c) => c.path.startsWith("/api/games/wire/") && /\/(stream|events)(\?|$)/.test(c.path),
+          (c) => c.path.startsWith(`/api/games/${id}/`) && /\/(stream|events)(\?|$)/.test(c.path),
         );
         expect(streams, "no stream and no events for the refused game").toEqual([]);
       } finally {

@@ -52,6 +52,7 @@ import type {
   AreasPanel,
   ArtManifest,
   ApiErrorBody,
+  SeatView,
   ChatAuthor,
   ChatMessage,
   ChatPage,
@@ -638,10 +639,15 @@ const HEALTH = [
 ] as const;
 const ME = ["mode", "user"] as const;
 const TABLE = [
-  "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
+  "id", "name", "mine", "creator", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
   "can_watch", "bot",
 ] as const;
+// M6.5c2 cycle D (R-6.5c2.35): a HUMAN seat, which carries no address. Its own
+// list because `Widen<TableView>` distributes over the seat union — a human
+// seat that re-gained `user` would still match its widened arm — so the
+// runtime half checks every human seat in the corpus against these four.
+const SEAT_HUMAN = ["kind", "name", "you", "invited"] as const;
 // M6.5c2: the table's bot, one bot seat, and the door's contract file.
 const TABLE_BOT = ["label", "runs_here"] as const;
 const SEAT_BOT = ["seat", "label"] as const;
@@ -693,8 +699,10 @@ const INDEX_CARD = ["face", "location", "selection"] as const;
 // visible rather than silent.
 const CHAT_PAGE = ["messages", "last"] as const;
 const CHAT_MESSAGE = ["seq", "created_at", "author", "text"] as const;
-const CHAT_AUTHOR_SEAT = ["kind", "seat", "user", "name"] as const;
-const CHAT_AUTHOR_WATCHER = ["kind", "user", "name"] as const;
+// No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
+// and a `you`, and the address stays in the server's document.
+const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "name", "you"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -716,6 +724,7 @@ const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 // `_me` is taken by the widened assignment above, so the key list takes `_mk`.
 const _mk: KeysOf<Me, typeof ME> = ME;
 const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
+const _sh: KeysOf<Extract<SeatView, { kind: "human" }>, typeof SEAT_HUMAN> = SEAT_HUMAN;
 const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
 const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
@@ -753,7 +762,7 @@ const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_E
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
-      _tv, _dv, _gl, _d4,
+      _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
       _cg, _cm, _as, _aw, _tb, _sb, _pb, _fe, _fb];
@@ -778,6 +787,7 @@ export const KEYS = {
   health: HEALTH,
   me: ME,
   table: TABLE,
+  seatHuman: SEAT_HUMAN,
   dealView: DEAL_VIEW,
   gamesList: GAMES_LIST,
   events: EVENTS,

@@ -109,11 +109,12 @@ export function Lobby({
   /** Who this browser plays as, from the door — `null` when the door has not
    *  opened, which since M6.5b is a screen this component still draws.
    *
-   *  **Only one row control needs the address, and it is the destructive one**
-   *  (R-13): a table is abandoned by the person who OPENED it, so the control
-   *  is drawn from `created_by === me` rather than from "you sit here". Passed
-   *  down rather than read from `/api/me` again, because `App` has already
-   *  asked and a second answer is a second thing that can disagree.
+   *  **No row control reads the address any more** (M6.5c2 cycle D,
+   *  R-6.5c2.35): the destructive one (R-13) is the table's CREATOR's, and the
+   *  row says so itself — `TableView.mine`, a fact about this reader — rather
+   *  than handing every reader the creator's address to compare. Passed down
+   *  rather than read from `/api/me` again, because `App` has already asked
+   *  and a second answer is a second thing that can disagree.
    *
    *  **`null` also stops every request this screen makes.** Every
    *  `/api/games` route is a 401 without an identity, so a lobby that listed
@@ -312,7 +313,7 @@ export function Lobby({
   const row = (t: TableView, section: Section) => {
     const action = rowAction(t, section);
     const name = t.name ?? t.id;
-    const yours = section === "mine" && t.created_by === me;
+    const yours = section === "mine" && t.mine;
     return (
       <li key={t.id} className={section === "mine" ? "lobby-row mine" : "lobby-row"}>
         <div className="row-title">

@@ -41,22 +41,19 @@ import { PasswordTag } from "./Chips";
 import { api, ApiError, displayName } from "./api";
 import { hashOf } from "./route";
 import { SeatCard } from "./SeatCard";
+import { seatName } from "./tables";
 import { usePolled, type End } from "./signal";
-import type { PlayerColor, SeatDoc, TableView } from "./types";
+import type { PlayerColor, SeatView, TableView } from "./types";
 import { Refusal } from "./Refusal";
 
 export function OpenTable({
   game,
-  me,
   onStarted,
   onLeave,
   who,
 }: {
   /** The table, by id. */
   game: string;
-  /** Who this browser plays as, from the door — compared against the table's
-   *  `created_by` to decide whether the abandon control is this person's. */
-  me: string;
   /** The table is no longer open. `App` re-opens it and its STATUS picks the
    *  screen: a table still dealing draws the deal, one already playing draws
    *  the game. Deliberately not `onDealing`, which would be a name that is
@@ -234,15 +231,16 @@ export function OpenTable({
    *  offers the seat that is there. Two or more, and each open card has its
    *  own. Nobody is seated by arriving — one click, never zero. */
   const onlySeat = !seated && free.length === 1 ? free[0]! : null;
-  /** Whose table this is, in the words its creator's seat shows (§5.6). */
-  const opener = table.seats.find((s) => s.kind === "human" && s.user === table.created_by);
-  const owner = opener?.kind === "human" ? (opener.name ?? opener.user) : table.created_by;
+  /** Whose table this is, in the words its creator's seat shows (§5.6): the
+   *  seat's NAME, which the server sends as `creator`, and never an address
+   *  (M6.5c2 cycle D, R-6.5c2.35). */
+  const owner = table.creator ?? "the creator";
 
   /** One seat, as its card says it (mocks 08, 09). A taken seat is its holder's
    *  NAME with "seated" — not mock 08's "seated by you when you opened the
    *  table", which nothing here can know: a seat bound at create and one joined
-   *  later are the same `SeatDoc`. */
-  const face = (s: SeatDoc, i: number) => {
+   *  later are the same `SeatView`. */
+  const face = (s: SeatView, i: number) => {
     const color = colors[i]!;
     const caption = i === table.start_seat ? `${color} \u00b7 first player` : color;
     switch (s.kind) {
@@ -278,10 +276,14 @@ export function OpenTable({
       // a fourth kind of seat is a compile error here and not a blank card.
       case "bot":
         return { color, caption, who: "The bot" };
+      // The holder's NAME, and no address (M6.5c2 cycle D, R-6.5c2.35): your
+      // own seat notes the name you gave, and another's reads `seatName` — its
+      // name, the address you typed if you created the table and they have
+      // given none, or "invited".
       case "human":
         return table.my_seats.includes(i)
-          ? { color, caption, who: "You", note: s.name ?? s.user }
-          : { color, caption, who: s.name ?? s.user, note: "seated" };
+          ? { color, caption, who: "You", note: s.name ?? undefined }
+          : { color, caption, who: seatName(s), note: "seated" };
     }
   };
 
@@ -344,7 +346,7 @@ export function OpenTable({
         {error && <Refusal sentence={error} />}
 
         {seated && (
-          <Invite url={url} locked={table.locked} mine={table.created_by === me} onRefused={setError} />
+          <Invite url={url} locked={table.locked} mine={table.mine} onRefused={setError} />
         )}
 
         {/* ONLY for a seated caller (spec §6.2). The table read is the one route
@@ -362,7 +364,7 @@ export function OpenTable({
               cannot drift apart again. `onDone` is the leave: the table is
               gone, and there is nothing here to go back to. Outlined in the
               warning colour, the quieter danger (mock 08). */}
-          {seated && table.created_by === me && (
+          {seated && table.mine && (
             <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
           )}
           <button type="button" className="quiet-link" onClick={() => leave.current()}>

@@ -106,25 +106,34 @@ describe("seatNames", () => {
     expect(seatName({ kind: "open" })).toBe("open seat");
   });
 
-  // **The name where there is one, the address where there is not** (spec
-  // §5.6), read off ONE payload that carries both: `wire.gamesOpen` lists a
-  // table whose seat 0 is named and a table whose seat 0 is not.
-  it("prefers the name a player gave and falls back to the address", () => {
+  // **The name where there is one; where there is not, "you", the address the
+  // creator typed, or "invited"** (spec §5.6; M6.5c2 cycle D, R-6.5c2.35),
+  // read off the corpus: `wire.gamesOpen` is a stranger's list with a named
+  // seat 0 and an unnamed one, and `wire.games` is the creator's own list.
+  it("prefers the name a player gave, then you, then the address the creator typed, then invited", () => {
     const named = wire.gamesOpen.games[0]!;
     const unnamed = wire.gamesOpen.games[1]!;
     const first = named.seats[0]!;
     const second = unnamed.seats[0]!;
-    if (first.kind !== "human" || second.kind !== "human") throw new Error("fixture moved");
-    // Anti-vacuity: the two rows differ in exactly the field under test, and
-    // both name the same person — so what changes below is the wording and not
-    // the seat.
+    const own = wire.games.games[1]!.seats[0]!;
+    if (first.kind !== "human" || second.kind !== "human" || own.kind !== "human") throw new Error("fixture moved");
+    // Anti-vacuity: the three are one person's seats — named, and unnamed as a
+    // stranger and as its own holder read it — so what changes below is the
+    // reading and not the seat.
     expect(first.name).toBe("Red");
-    expect(second.name).toBeNull();
-    expect(first.user).toBe(second.user);
+    expect([second.name, second.you, second.invited]).toEqual([null, false, null]);
+    expect([own.name, own.you]).toEqual([null, true]);
     expect(seatName(first)).toBe("Red");
-    expect(seatName(second)).toBe("red@wire.test");
+    expect(seatName(second)).toBe("invited");
+    expect(seatName(own)).toBe("you");
     expect(seatNames(named)).toBe("Red, open seat");
-    expect(seatNames(unnamed)).toBe("red@wire.test, open seat");
+    expect(seatNames(unnamed)).toBe("invited, open seat");
+    // The creator reading ANOTHER person's unnamed seat: the corpus's walk
+    // invites nobody by address, so the one field moved is `you`, on the
+    // creator's own reading — which leaves the `invited` the server sends the
+    // creator, and nobody else.
+    expect(seatName({ ...own, you: false })).toBe(own.invited);
+    expect(own.invited).toContain("@");
   });
 });
 
