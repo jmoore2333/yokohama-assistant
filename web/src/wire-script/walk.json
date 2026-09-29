@@ -488,6 +488,42 @@
   },
   {
     "who": "red@wire.test",
+    "method": "DELETE",
+    "path": "/api/games/wire/chat/1",
+    "query": "",
+    "body": null,
+    "status": 204,
+    "fixture": "chat_delete"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "DELETE",
+    "path": "/api/games/wire/chat/1",
+    "query": "",
+    "body": null,
+    "status": 403,
+    "fixture": "chat_delete_403"
+  },
+  {
+    "who": "red@wire.test",
+    "method": "GET",
+    "path": "/api/games/wire/chat",
+    "query": "",
+    "body": null,
+    "status": 200,
+    "fixture": "chat_deleted"
+  },
+  {
+    "who": "red@wire.test",
+    "method": "DELETE",
+    "path": "/api/chat/1",
+    "query": "",
+    "body": null,
+    "status": 204,
+    "fixture": "house_chat_delete"
+  },
+  {
+    "who": "red@wire.test",
     "method": "POST",
     "path": "/api/games/wire/input",
     "query": "",

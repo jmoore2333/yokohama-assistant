@@ -30,7 +30,7 @@
     "fixture": "events_dealing"
   },
   {
-    "after": 48,
+    "after": 52,
     "who": "blue@wire.test",
     "method": "GET",
     "path": "/api/games/wire/events",

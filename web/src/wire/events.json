@@ -1,5 +1,6 @@
 {
   "chat": 3,
+  "chat_rev": 4,
   "events": 1,
   "status": "playing",
   "to_move": 0,

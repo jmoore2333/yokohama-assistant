@@ -1732,8 +1732,11 @@ What a run leaves on the account:
   (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
 - the replay's own first-send saves under `test/browser/red_at_wire.test/`, kept for good by the
   owner's direction;
-- a PERMANENT lobby chat post per replay run ("anyone up for a second table?", from `red@wire.test`)
-  and two per exit run, which real people see until 500 newer messages trim them;
+- no lobby chat post: each replay run deletes the house post it made ("anyone up for a second
+  table?", from `red@wire.test`), and each exit run the two its players made, before it ends
+  (M6.5c2 cycle D). A deleted post stays in the house chat as a "message removed" tombstone
+  under its number until 500 newer messages trim it — the text is gone at once. A run that stops
+  before its delete row leaves its post, as before;
 - while a run lasts, its tables in the live lobby.
 
 ### 10.5 The `test/` root and the replay's reset

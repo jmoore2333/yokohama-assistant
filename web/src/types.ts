@@ -400,6 +400,11 @@ export interface Events {
    *  fetch for the text. It is the document's own `last`, so a trim never walks
    *  it backwards past a cursor the client is holding. */
   chat: number;
+  /** The table's chat REVISION (M6.5c2 cycle D, R-D4): +1 per message AND per
+   *  message deleted, so `chat` is a count for the text and this a revision
+   *  for the shape — `chat_rev - chat` moves exactly when a message a reader
+   *  may already hold was deleted. */
+  chat_rev: number;
 }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
@@ -1031,7 +1036,12 @@ export interface ChatMessage {
    *  pins a clock by key name. */
   created_at: number;
   author: ChatAuthor;
+  /** The empty string on a tombstone. */
   text: string;
+  /** A TOMBSTONE (M6.5c2 cycle D, R-D4): taken down by its author or the
+   *  table's creator. Its number, clock and author stay, so every cursor holds
+   *  and the row still says who posted. */
+  deleted: boolean;
 }
 
 /** `GET …/chat?after=N`: the retained messages above N, and the newest number
@@ -1039,6 +1049,12 @@ export interface ChatMessage {
 export interface ChatPage {
   messages: ChatMessage[];
   last: number;
+  /** The document's REVISION (M6.5c2 cycle D, R-D4): +1 per message and per
+   *  message deleted. `rev - last` moves exactly when a message a reader may
+   *  already hold was deleted, which is how a panel whose host passes no
+   *  numbers (the open table, the lobby) learns of a delete from its next
+   *  delta read. */
+  rev: number;
 }
 
 export interface ChatPost {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routableName, route, TABLE_NAME_MAX_BYTES } from "./route";
+import { abandons, routableName, route, TABLE_NAME_MAX_BYTES } from "./route";
 
 // Spec §2.3's routing table, row by row. What each target then does is
 // `handle`'s, and `test/worker.test.ts` holds it.
@@ -51,6 +51,21 @@ describe("route (spec §2.3)", () => {
     expect(route("GET", `/api/games/${"a".repeat(64)}/table`)).toEqual({ kind: "table", name: "a".repeat(64) });
     expect(route("GET", `/api/games/${"a".repeat(65)}/table`)).toEqual({ kind: "house" });
     expect(route("GET", `/api/games/${"a".repeat(1_100)}`)).toEqual({ kind: "house" });
+  });
+
+  // M6.5c2 cycle D (R-D4): a chat message's DELETE lives under the table too,
+  // and it is an ordinary request, never the abandon. Mutants: the method
+  // read alone (every DELETE the abandon — the chat's delete would take the
+  // table down); the path read alone (a GET of the table the abandon).
+  it("the abandon is DELETE on the table's own path, and nothing below it", () => {
+    expect(abandons("DELETE", "/api/games/wire")).toBe(true);
+    expect(abandons("DELETE", "/api/games/caf%C3%A9")).toBe(true);
+    expect(abandons("DELETE", "/api/games/wire/chat/3")).toBe(false);
+    expect(abandons("DELETE", "/api/games/wire/")).toBe(false);
+    expect(abandons("GET", "/api/games/wire")).toBe(false);
+    expect(abandons("POST", "/api/games/wire")).toBe(false);
+    expect(route("DELETE", "/api/games/wire/chat/3")).toEqual({ kind: "table", name: "wire" });
+    expect(route("DELETE", "/api/chat/3")).toEqual({ kind: "house" });
   });
 
   it("POST /api/archive is the archive's; any other method on it is the house's", () => {

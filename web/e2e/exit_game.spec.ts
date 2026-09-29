@@ -70,9 +70,11 @@
 //
 // **What it leaves on the account**: what any live spec's abandon leaves —
 // the game's save under the bucket's `test/` root (all three people are
-// `.test` identities) and the table's 90-day marker (`worker/RUNBOOK.md`) — and TWO
-// posts in the REAL house chat, one each from x and y, which real people see
-// in the lobby until newer messages trim them.
+// `.test` identities) and the table's 90-day marker (`worker/RUNBOOK.md`) — and,
+// since M6.5c2 cycle D, no post in the REAL house chat: x and y each delete
+// the line they said there before the run ends, and what real people see in
+// the lobby is two "message removed" rows until newer messages trim them. A
+// run that fails before its last phase leaves its lines, as it always did.
 
 import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
@@ -608,6 +610,26 @@ test("two people and a watcher play a paced game across four hibernations, and i
   const gone = Date.now();
   await expect(x.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await expect(listed(x), "the lobby no longer lists the abandoned table").toHaveCount(0, { timeout: 30_000 });
+
+  // **The two lobby lines, taken down** (M6.5c2 cycle D, R-D4): each person
+  // deletes the one line they said in the REAL house chat, so the run leaves no
+  // post behind. The house is nobody's to moderate, so each takes their own;
+  // the row stays, as "message removed", and the words leave every lobby —
+  // y's reading of x's line is the one that crosses a socket to say so.
+  const unsayInLobby = async (p: Page, text: string) => {
+    const fold = lobbyChat(p).getByRole("button", { name: "show" });
+    if (await fold.count()) await fold.click();
+    const row = lobbyChat(p).getByRole("listitem").filter({ hasText: text });
+    await row.getByRole("button", { name: "Delete this message" }).click();
+    await expect(row, "the words leave this lobby").toHaveCount(0, { timeout: 15_000 });
+  };
+  await expect(y.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  await unsayInLobby(x, lineX);
+  await expect(
+    lobbyChat(y).getByRole("listitem").filter({ hasText: lineX }),
+    "y's lobby no longer shows x's line",
+  ).toHaveCount(0, { timeout: 15_000 });
+  await unsayInLobby(y, lineY);
   // eslint-disable-next-line no-console
   console.log(
     `exit phase 3, abandon: ${X} abandoned ${id}; its address answers ${marker.status()} "${sentence}"; ` +
@@ -624,7 +646,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
         .map((c) => `${c.after}: ${(c.pausedMs / 1000).toFixed(1)} s → ${c.move?.ms ?? "untimed"} ms`)
         .join(", ") +
       ` (awake median ${median ?? "n/a"} ms); chat — table x ${said.x} / y ${said.y} (the watcher's panel ` +
-      `${watcherLines}), lobby x 1 / y 1; forgiven — the beacon's CORS error x ${watchX.forgiven}, ` +
+      `${watcherLines}), lobby x 1 / y 1, both deleted; forgiven — the beacon's CORS error x ${watchX.forgiven}, ` +
       `y ${watchY.forgiven}, w ${watchW.forgiven}; the deal's 409 x ${watchX.dealAnswers}, ` +
       `y ${watchY.dealAnswers}, w ${watchW.dealAnswers}; console — x ${consoleOf(watchX.failures)}, ` +
       `y ${consoleOf(watchY.failures)}, w ${consoleOf(watchW.failures)}; ` +

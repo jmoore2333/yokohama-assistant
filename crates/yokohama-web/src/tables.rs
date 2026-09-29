@@ -33,7 +33,10 @@ use yokohama_core::{
 // `check_shape` under an alias: this module has one of its own, for the TABLE
 // document, and two rules with one name in one file is how the wrong one comes
 // to be called.
-use crate::chat::{check_shape as check_chat_shape, check_text, Author, ChatDoc, Message, MessageView, HOUSE};
+use crate::chat::{
+    check_shape as check_chat_shape, check_text, Author, ChatCounts, ChatDoc, ChatRefusal, Message, MessageView,
+    HOUSE,
+};
 use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, enter, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
@@ -851,7 +854,7 @@ impl Games {
                 // one that still holds when a document was left behind by some
                 // other route, which is the same reason the tombstone set is
                 // cleared a few lines above.
-                self.chat_last.lock().expect("games lock").remove(&doc.id);
+                self.chat_counts.lock().expect("games lock").remove(&doc.id);
                 self.signal.bump(&doc.id);
                 Ok(doc.view(creator))
             }
@@ -980,15 +983,21 @@ impl Games {
     /// The document is written under `at`'s key and its `id` is SET to that
     /// key, so a document this server writes always names the file it is in —
     /// see [`Games::write_chat`] for what keying off the stored `id` did.
-    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<Message, GameError> {
+    ///
+    /// **An append moves the REVISION too** (M6.5c2 cycle D, R-D4): `rev` is
+    /// +1 per append and per delete, so `rev - last` moves exactly when a held
+    /// message was deleted. The counts come back beside the message for the
+    /// caller's cache.
+    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<(Message, ChatCounts), GameError> {
         let (mut doc, version) = self.read_chat(at)?;
         doc.id = at.key().to_string();
-        let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text };
+        let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text, deleted: false };
         doc.last = message.seq;
+        doc.rev += 1;
         doc.messages.push(message.clone());
         doc.trim(self.chat.limits.keep);
         self.write_chat(at, &doc, version)?;
-        Ok(message)
+        Ok((message, doc.counts()))
     }
 
     /// **The one writer** (R-6.4.15 (b)): the text rule, the table's own lock,
@@ -1016,10 +1025,10 @@ impl Games {
         let (table, _) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        let message = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
+        let (message, counts) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
         // `message.seq` IS the document's `last`: the trim drops the oldest and
         // leaves the number alone, which is the whole of R-6.4.9.
-        self.chat_last.lock().expect("games lock").insert(id.to_string(), message.seq);
+        self.chat_counts.lock().expect("games lock").insert(id.to_string(), counts);
         // AFTER the write, never before (the gated cell).
         self.signal.bump_table(id);
         Ok(message)
@@ -1035,12 +1044,79 @@ impl Games {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         // `enter`, poisoned or not: the house's lock guards no data.
         let _serialized = enter(&self.house_lock);
-        let message = self.append_locked(ChatAt::House, author, text)?;
+        let (message, _) = self.append_locked(ChatAt::House, author, text)?;
         self.signal.bump_house_chat();
         Ok(message)
     }
 
-    /// The retained messages numbered above `after`, and `last`.
+    /// The delete itself, with the caller's lock ALREADY HELD: read, tombstone,
+    /// write — [`Games::append_locked`]'s shape for [`ChatDoc::delete`]
+    /// (M6.5c2 cycle D, R-D4).
+    ///
+    /// Answers the counts to cache when the document CHANGED, and `None` when
+    /// it did not — a second delete of a tombstone — so the caller writes
+    /// nothing and bumps nothing for a request that changed nothing. A refusal
+    /// is [`ChatRefusal`]'s sentence, verbatim: `NotFound` a 404 and
+    /// `NotYours` a 403.
+    fn delete_message_locked(
+        &self,
+        at: ChatAt<'_>,
+        seq: u64,
+        user: &User,
+        creator: Option<&str>,
+    ) -> Result<Option<ChatCounts>, GameError> {
+        let (mut doc, version) = self.read_chat(at)?;
+        doc.id = at.key().to_string();
+        let before = doc.rev;
+        doc.delete(seq, user, creator).map_err(|refusal| match refusal {
+            ChatRefusal::NotFound(_) => GameError::NotFound(refusal.to_string()),
+            ChatRefusal::NotYours => GameError::Forbidden(refusal.to_string()),
+        })?;
+        if doc.rev == before {
+            return Ok(None);
+        }
+        self.write_chat(at, &doc, version)?;
+        Ok(Some(doc.counts()))
+    }
+
+    /// **The table's delete** (M6.5c2 cycle D, R-D4): the table's own lock,
+    /// the read, the tombstone, the compare-and-swap, THEN the bump — the
+    /// appender's order and for the appender's reason, pinned by
+    /// `a_chat_delete_bump_precedes_no_write`. The CREATOR is the stored
+    /// table's `created_by`, read under the same lock.
+    ///
+    /// The caller has ADMITTED the user (`api::chat_delete`, as `chat_post`
+    /// admits a poster), so a stranger never reaches the document.
+    pub fn delete_chat(&self, id: &str, seq: u64, user: &User) -> Result<(), GameError> {
+        let lock = self.lock_for(id);
+        let _serialized = enter(&lock);
+        let (table, _) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        let at = ChatAt::Table { id, players: table.players };
+        let Some(counts) = self.delete_message_locked(at, seq, user, Some(&table.created_by))? else {
+            return Ok(());
+        };
+        self.chat_counts.lock().expect("games lock").insert(id.to_string(), counts);
+        // AFTER the write, never before (the gated cell).
+        self.signal.bump_table(id);
+        Ok(())
+    }
+
+    /// **The house's delete** (M6.5c2 cycle D, R-D4): under the house's own
+    /// lock, the author alone — the house has no creator — and then the
+    /// house's REVISION bump, never its chat counter: a delete adds no message.
+    pub fn delete_house_chat(&self, seq: u64, user: &User) -> Result<(), GameError> {
+        // `enter`, poisoned or not: the house's lock guards no data.
+        let _serialized = enter(&self.house_lock);
+        if self.delete_message_locked(ChatAt::House, seq, user, None)?.is_some() {
+            self.signal.bump_house_chat_rev();
+        }
+        Ok(())
+    }
+
+    /// The retained messages numbered above `after`, and the document's `last`
+    /// and `rev` ([`ChatCounts`]; the revision since M6.5c2 cycle D, R-D4).
     ///
     /// `last` is the document's and not the page's, so a client that asks from
     /// a cursor the trim has passed is told what the newest number is rather
@@ -1061,17 +1137,17 @@ impl Games {
         table: &TableDoc,
         reader: &User,
         after: u64,
-    ) -> Result<(Vec<MessageView>, u64), GameError> {
+    ) -> Result<(Vec<MessageView>, ChatCounts), GameError> {
         let (mut doc, _) = self.read_chat(ChatAt::Table { id, players: table.players })?;
         doc.messages.retain(|m| m.seq > after);
-        Ok((doc.page_for(reader), doc.last))
+        Ok((doc.page_for(reader), doc.counts()))
     }
 
     /// The house's page, built for `reader` as [`Games::chat_page`]'s is.
-    pub fn house_page(&self, reader: &User, after: u64) -> Result<(Vec<MessageView>, u64), GameError> {
+    pub fn house_page(&self, reader: &User, after: u64) -> Result<(Vec<MessageView>, ChatCounts), GameError> {
         let (mut doc, _) = self.read_chat(ChatAt::House)?;
         doc.messages.retain(|m| m.seq > after);
-        Ok((doc.page_for(reader), doc.last))
+        Ok((doc.page_for(reader), doc.counts()))
     }
 
     /// The count a signal frame carries (R-plan-5), from the cache or from one
@@ -1094,23 +1170,33 @@ impl Games {
     /// between it and this insert, and a plain `insert` would put the older
     /// number back.
     ///
-    /// **Exactly TWO things fill the entry, and keeping what is there is never
-    /// the older answer under either** (re-review of the fix wave): an append,
-    /// which writes its own number with a plain `insert` after the document is
-    /// written and so knows a number no read of this kind can have missed; and
+    /// **Exactly THREE things fill the entry, and keeping what is there is
+    /// never the older answer under any** (re-review of the fix wave; the
+    /// delete since M6.5c2 cycle D): an append and a delete, each of which
+    /// writes its own counts with a plain `insert` after the document is
+    /// written and under the table's lock — so they land in the order the
+    /// writes did, and know numbers no read of this kind can have missed; and
     /// a cold seed like this one, which reads the document — so two cold seeds
-    /// racing each other carry the same number and it does not matter which
+    /// racing each other carry the same numbers and it does not matter which
     /// wins. Pinned, with the window held open by a gate, by
     /// `a_cold_count_read_never_overwrites_a_newer_one_from_an_append`.
     pub fn chat_last(&self, id: &str) -> u64 {
-        if let Some(n) = self.chat_last.lock().expect("games lock").get(id) {
+        self.chat_counts(id).last
+    }
+
+    /// [`Games::chat_last`]'s reading with the document's revision beside it
+    /// (M6.5c2 cycle D, R-D4) — the pair `Events` carries as `chat` and
+    /// `chat_rev`, cached and seeded exactly as that doc says.
+    pub fn chat_counts(&self, id: &str) -> ChatCounts {
+        if let Some(n) = self.chat_counts.lock().expect("games lock").get(id) {
             return *n;
         }
         // The player count is not known here and the seat bound is a WRITE-side
         // and route-side check: passing `None` would refuse every seat author
         // this server itself wrote. So the document is parsed without the shape
-        // rule and only its `last` is read — and a document that will not parse
-        // reads 0 here while every route that SERVES it says so out loud.
+        // rule and only its `last` and `rev` are read — and a document that
+        // will not parse reads 0 here while every route that SERVES it says so
+        // out loud.
         //
         // **That 0 is CACHED like any other** (re-review of the fix wave,
         // out-of-scope note), so an unparseable document makes this table
@@ -1123,11 +1209,11 @@ impl Games {
         // `a_chat_document_that_will_not_parse_refuses_the_page_and_reads_zero`
         // pins the 0; it does not pin the caching.
         let n = match self.store.read(Doc::Chat, id) {
-            Ok(Some((json, _))) => serde_json::from_str::<ChatDoc>(&json).map(|d| d.last).unwrap_or(0),
-            Ok(None) => 0,
-            Err(_) => return 0,
+            Ok(Some((json, _))) => serde_json::from_str::<ChatDoc>(&json).map(|d| d.counts()).unwrap_or_default(),
+            Ok(None) => ChatCounts::default(),
+            Err(_) => return ChatCounts::default(),
         };
-        *self.chat_last.lock().expect("games lock").entry(id.to_string()).or_insert(n)
+        *self.chat_counts.lock().expect("games lock").entry(id.to_string()).or_insert(n)
     }
 
     /// The table as a seated caller may read it, REPAIRED first if it needs it.
@@ -1861,7 +1947,7 @@ impl Games {
         // The store's own `delete` took the chat document with the record and
         // the table; the COUNT is this process's cache and goes here, or a name
         // reopened later numbers from above messages nobody can read.
-        self.chat_last.lock().expect("games lock").remove(id);
+        self.chat_counts.lock().expect("games lock").remove(id);
         // **`end`, not `bump`**: there is no state left for a woken subscriber
         // to read, so every stream on this table has to close rather than
         // fetch a 404. The house is bumped inside `end`, so a lobby drops the
@@ -4575,7 +4661,7 @@ mod tests {
     /// seat every cell here creates its table as.
     fn page_of(games: &Games, id: &str, after: u64) -> Result<(Vec<MessageView>, u64), GameError> {
         let (table, _) = games.read_table(id)?.expect("a table to page");
-        games.chat_page(id, &table, &who("red@t.test"), after)
+        games.chat_page(id, &table, &who("red@t.test"), after).map(|(page, counts)| (page, counts.last))
     }
 
     fn red_seat() -> Author {
@@ -4595,11 +4681,12 @@ mod tests {
         let games = games();
         let red = who("red@t.test");
         let id = games.create(&two_people("normal", CORPUS_SEED), &red).expect("a table").id;
-        let message = |author: Author| Message { seq: 1, created_at: 1, author, text: "hi".into() };
+        let message = |author: Author| Message { seq: 1, created_at: 1, author, text: "hi".into(), deleted: false };
         let stored = ChatDoc {
             schema: crate::chat::CHAT_SCHEMA,
             id: id.clone(),
             last: 1,
+            rev: 1,
             messages: vec![message(Author::Seat { seat: 0, user: " RED@T.test ".into(), name: Some("  Red ".into()) })],
         };
         let json = serde_json::to_string(&stored).expect("a chat document");
@@ -4636,6 +4723,11 @@ mod tests {
         let (page, last) = page_of(&games, &id, 0).expect("a page");
         assert_eq!((page.len(), last, page[0].seq), (1, 1, 1));
         assert_eq!(games.chat_last(&id), 1);
+        assert_eq!(
+            games.chat_counts(&id),
+            ChatCounts { last: 1, rev: 1 },
+            "an append moves the number AND the revision (R-D4)",
+        );
         let (delta, _) = page_of(&games, &id, 1).expect("a page");
         assert!(delta.is_empty(), "after=last is empty");
     }
@@ -4861,8 +4953,8 @@ mod tests {
         );
         assert!(!house.has_changed().unwrap(), "a refused append bumps nothing");
         assert_eq!(house.borrow().chat, 1, "and leaves the counter where it was");
-        let (page, last) = games.house_page(&who("g@t.test"), 0).expect("a page");
-        assert_eq!((page.len(), last), (1, 1), "and wrote nothing");
+        let (page, counts) = games.house_page(&who("g@t.test"), 0).expect("a page");
+        assert_eq!((page.len(), counts.last), (1, 1), "and wrote nothing");
     }
 
     /// **A delete removes the chat document and forgets the count.**
@@ -4971,6 +5063,174 @@ mod tests {
         assert!(rx.has_changed().unwrap(), "and wakes once it lands");
     }
 
+    // ---------------------------------------------------------------------
+    // M6.5c2 cycle D — the delete (R-D4, Review Focus 2)
+    // ---------------------------------------------------------------------
+
+    fn blue_seat() -> Author {
+        Author::Seat { seat: 1, user: "blue@t.test".into(), name: Some("Blue".into()) }
+    }
+
+    /// The stored chat document's version, so a cell can say "nothing was
+    /// written" by what the store holds rather than by a page that would read
+    /// the same either way.
+    fn chat_version(games: &Games, id: &str) -> Version {
+        games.store().read(Doc::Chat, id).expect("a store").expect("a chat document").1
+    }
+
+    /// **A delete by the author, and by the table's creator, writes the
+    /// tombstone and then bumps the TABLE** (R-D4) — and not the house, for
+    /// the append's reason (R-6.4.7). The count moves not at all and the
+    /// revision once per delete: the catchers for "a delete bumps `last`" and
+    /// "a delete leaves `rev` unchanged" through the appender's own cache.
+    #[test]
+    fn a_chat_delete_by_the_author_or_the_creator_writes_then_bumps_the_table() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let red = who("red@t.test");
+        let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
+        games.chat_append(&id, red_seat(), "mine").expect("red's");
+        games.chat_append(&id, blue_seat(), "theirs").expect("blue's");
+        assert_eq!(games.chat_counts(&id), ChatCounts { last: 2, rev: 2 }, "premise");
+        let mut rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
+        rx.borrow_and_update();
+
+        games.delete_chat(&id, 1, &red).expect("the author deletes her own");
+        assert!(rx.has_changed().unwrap(), "the table woke");
+        assert!(!house.has_changed().unwrap(), "the house did not");
+        assert_eq!(games.chat_counts(&id), ChatCounts { last: 2, rev: 3 });
+        rx.borrow_and_update();
+        games.delete_chat(&id, 2, &red).expect("the creator deletes blue's");
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(games.chat_counts(&id), ChatCounts { last: 2, rev: 4 });
+
+        let (page, last) = page_of(&games, &id, 0).expect("a page");
+        assert_eq!(last, 2, "the cursor holds");
+        assert_eq!(page.iter().map(|m| (m.seq, m.deleted, m.text.as_str())).collect::<Vec<_>>(), [(1, true, ""), (2, true, "")]);
+        forget_chat_count(&games, &id);
+        assert_eq!(games.chat_counts(&id), ChatCounts { last: 2, rev: 4 }, "and the DOCUMENT says so, not just the cache");
+    }
+
+    /// **A refused delete and an idempotent one write nothing and announce
+    /// nothing** (R-D4, Review Focus 2) — blue holds a seat and did not create
+    /// the table, so red's message is not blue's to delete; a number nobody was
+    /// given is not found; and red's second delete of her own message changes
+    /// nothing, so it signals nothing either.
+    #[test]
+    fn a_refused_or_repeated_chat_delete_writes_nothing_and_bumps_nothing() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let red = who("red@t.test");
+        let blue = who("blue@t.test");
+        let id = games.create(&two_people("guarded", CORPUS_SEED), &red).expect("a table").id;
+        games.chat_append(&id, red_seat(), "mine").expect("red's");
+        let mut rx = signals.subscribe(&id);
+        rx.borrow_and_update();
+        let version = chat_version(&games, &id);
+
+        match games.delete_chat(&id, 1, &blue) {
+            Err(GameError::Forbidden(m)) => {
+                assert_eq!(m, "only the message's author or the table's creator may delete it")
+            }
+            other => panic!("a seat that neither wrote it nor created the table: {other:?}"),
+        }
+        match games.delete_chat(&id, 9, &red) {
+            Err(GameError::NotFound(m)) => assert_eq!(m, "no message 9 in this chat"),
+            other => panic!("a number nobody was given: {other:?}"),
+        }
+        assert_eq!(chat_version(&games, &id), version, "neither refusal wrote");
+        assert!(!rx.has_changed().unwrap(), "and neither bumped");
+
+        games.delete_chat(&id, 1, &red).expect("the author");
+        rx.borrow_and_update();
+        let version = chat_version(&games, &id);
+        let counts = games.chat_counts(&id);
+        games.delete_chat(&id, 1, &red).expect("again, idempotent");
+        assert_eq!(chat_version(&games, &id), version, "the second wrote nothing");
+        assert_eq!(games.chat_counts(&id), counts, "and moved nothing");
+        assert!(!rx.has_changed().unwrap(), "and announced nothing");
+    }
+
+    /// **A delete's bump precedes no write** — [`a_chat_bump_precedes_no_write`]
+    /// for the tombstone (R-D4): the delete's write is parked inside the store
+    /// and the receiver read QUIET while it sits there. A bump ahead of it
+    /// sends every browser at the table to re-read a page that still shows the
+    /// message, and the delete that then lands is announced to nobody.
+    #[test]
+    fn a_chat_delete_bump_precedes_no_write() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (at_tx, at_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let store = Arc::new(ChatGate {
+            inner: MemStore::default(),
+            at_write: Mutex::new(at_tx),
+            go: Mutex::new(go_rx),
+        });
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
+        let red = who("red@t.test");
+        let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
+        // The append's own write parks too: let it through.
+        let appender = {
+            let (games, id) = (Arc::clone(&games), id.clone());
+            std::thread::spawn(move || games.chat_append(&id, red_seat(), "soon gone"))
+        };
+        at_rx.recv_timeout(Duration::from_secs(10)).expect("the append reaches its write");
+        go_tx.send(()).expect("the parked append is listening");
+        appender.join().expect("the thread").expect("the append");
+
+        let mut rx = signals.subscribe(&id);
+        rx.borrow_and_update();
+        let deleter = {
+            let (games, id, red) = (Arc::clone(&games), id.clone(), red.clone());
+            std::thread::spawn(move || games.delete_chat(&id, 1, &red))
+        };
+        at_rx.recv_timeout(Duration::from_secs(10)).expect("the delete reaches its write");
+        assert!(!rx.has_changed().unwrap(), "the tombstone is parked and the receiver is QUIET");
+        go_tx.send(()).expect("the parked write is listening");
+        deleter.join().expect("the thread").expect("the delete");
+        assert!(rx.has_changed().unwrap(), "and wakes once it lands");
+    }
+
+    /// **The house: the author alone, and a delete moves the REVISION and
+    /// nothing else** (R-D4). The house has no creator, so blue may not
+    /// delete red's post whoever blue is; red may, and the house channel's
+    /// `chat` does not move — a delete adds no message — while `rev` does, so
+    /// every lobby wakes. The same ordering holds as the append's: under the
+    /// house's lock, the write, then the bump.
+    #[test]
+    fn a_house_delete_is_the_authors_alone_and_moves_the_revision() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let red = who("red@t.test");
+        let blue = who("blue@t.test");
+        let author = Author::Watcher { user: "red@t.test".into(), name: Some("Red".into()) };
+        let m = games.house_append(author, "anyone?").expect("a house post");
+        let mut house = signals.subscribe_house();
+        let before = *house.borrow_and_update();
+        assert_eq!((before.chat, before.rev), (1, 1), "premise: the post moved both");
+
+        match games.delete_house_chat(m.seq, &blue) {
+            Err(GameError::Forbidden(said)) => {
+                assert_eq!(said, "only the message's author or the table's creator may delete it")
+            }
+            other => panic!("the house has no creator, so only the author: {other:?}"),
+        }
+        assert!(!house.has_changed().unwrap(), "a refusal wakes no lobby");
+
+        games.delete_house_chat(m.seq, &red).expect("the author");
+        assert!(house.has_changed().unwrap(), "every lobby wakes");
+        let h = *house.borrow_and_update();
+        assert_eq!((h.seq, h.chat, h.rev), (before.seq, before.chat, before.rev + 1), "the revision and nothing else");
+        let (page, counts) = games.house_page(&blue, 0).expect("the house");
+        assert_eq!(
+            counts,
+            ChatCounts { last: m.seq, rev: 2 },
+            "the cursor holds, and the page's revision counts one post and one delete",
+        );
+        assert!(page[0].deleted && page[0].text.is_empty(), "a tombstone in red's row: {page:?}");
+    }
+
     /// Drop this process's remembered count for one table, so the next
     /// `chat_last` takes the MISS path a fresh process would take.
     ///
@@ -4979,7 +5239,7 @@ mod tests {
     /// arranges (`create` and `delete` clear it, and both also clear the
     /// document).
     fn forget_chat_count(games: &Games, id: &str) {
-        games.chat_last.lock().expect("games lock").remove(id);
+        games.chat_counts.lock().expect("games lock").remove(id);
     }
 
     /// A [`MemStore`] that PARKS the FIRST `Doc::Chat` read and nothing else,

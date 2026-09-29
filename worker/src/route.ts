@@ -52,6 +52,19 @@ export function routableName(name: string): boolean {
   return name !== "" && !LONE_SURROGATE.test(name) && new TextEncoder().encode(name).length <= TABLE_NAME_MAX_BYTES;
 }
 
+/**
+ * Whether a request a table object receives is the ABANDON — `DELETE
+ * /api/games/{name}` and nothing below it (M6.5c2 cycle D, R-D4). The table
+ * object runs the abandon WHOLE under `blockConcurrencyWhile`, with its save
+ * uploaded between two dispatches (spec §2.4 step 1, §2.6); every other
+ * request, a chat message's `DELETE /api/games/{name}/chat/{seq}` among them,
+ * is the ordinary request path. Until the chat's delete there was no other
+ * DELETE under a table, and the object read the method alone.
+ */
+export function abandons(method: string, pathname: string): boolean {
+  return method === "DELETE" && pathname.startsWith(GAMES) && !pathname.slice(GAMES.length).includes("/");
+}
+
 /** Spec §2.3's table: where `method` on `pathname` goes. */
 export function route(method: string, pathname: string): Target {
   const read = method === "GET" || method === "HEAD";

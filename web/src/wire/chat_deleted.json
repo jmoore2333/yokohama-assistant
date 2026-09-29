@@ -1,0 +1,41 @@
+{
+  "last": 3,
+  "messages": [
+    {
+      "author": {
+        "kind": "seat",
+        "name": "Red",
+        "seat": 0,
+        "you": true
+      },
+      "created_at": 1789000000,
+      "deleted": true,
+      "seq": 1,
+      "text": ""
+    },
+    {
+      "author": {
+        "kind": "seat",
+        "name": "Blue",
+        "seat": 1,
+        "you": false
+      },
+      "created_at": 1789000000,
+      "deleted": false,
+      "seq": 2,
+      "text": "you too"
+    },
+    {
+      "author": {
+        "kind": "watcher",
+        "name": "Green",
+        "you": false
+      },
+      "created_at": 1789000000,
+      "deleted": false,
+      "seq": 3,
+      "text": "watching from the rail"
+    }
+  ],
+  "rev": 4
+}

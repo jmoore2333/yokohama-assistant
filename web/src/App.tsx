@@ -400,6 +400,10 @@ export function App() {
    *  the panel as its `count`: above what the panel holds it is a fetch when
    *  open and a badge when folded, at or below it is nothing at all. */
   const [chatCount, setChatCount] = useState(0);
+  /** The table's chat revision off the same frame (M6.5c2 cycle D, R-D4): the
+   *  panel's `rev`, which moving further than the count is a delete. Reset
+   *  with the count on a switch. */
+  const [chatRev, setChatRev] = useState(0);
   stateNow.current = state;
   /** The table `open` is CURRENTLY fetching, or `null`.
    *
@@ -503,6 +507,7 @@ export function App() {
       // delta for it. The new game's first frame puts the real number back
       // milliseconds later; this is what the screen says in between.
       setChatCount(0);
+      setChatRev(0);
       if (opening && s && s.events > 0) {
         // The busy window is opened by hand here, because this run has no
         // request of its own to ride inside. It is what the browser harness
@@ -998,6 +1003,7 @@ export function App() {
       // message arriving while this browser posts is exactly the case the
       // parking is for.
       setChatCount(e.chat);
+      setChatRev(e.chat_rev);
       // **The handler guards its own re-entrancy, and that is reachable only
       // now that the stream stays open** (ruling R-9.1). The server writes a
       // frame per move and a room can move twice while one `GET …/{id}` is in
@@ -2198,6 +2204,8 @@ export function App() {
             key={state.id}
             scope={{ kind: "table", id: state.id }}
             count={chatCount}
+            rev={chatRev}
+            canModerate={table?.mine === true}
             colors={colors}
             sendName={spectating}
           />

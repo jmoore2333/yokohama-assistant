@@ -202,6 +202,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("POST", "/api/games/{id}/unlock"),
         ("GET", "/api/games/{id}/chat"),
         ("POST", "/api/games/{id}/chat"),
+        ("DELETE", "/api/games/{id}/chat/{seq}"),
         ("POST", "/api/games/{id}/input"),
         ("GET", "/api/games/{id}/ports"),
         ("GET", "/api/games/{id}/labs"),
@@ -209,6 +210,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("GET", "/api/games/{id}/log"),
         ("GET", "/api/chat"),
         ("POST", "/api/chat"),
+        ("DELETE", "/api/chat/{seq}"),
         ("POST", "/api/archive"),
         ("GET", "/api/games/{id}/at"),
         ("GET", "/api/games/{id}/at/{k}"),
@@ -973,6 +975,12 @@ pub struct ChatPage {
     /// messages, and no author's address (M6.5c2 cycle D, R-6.5c2.35).
     pub messages: Vec<chat::MessageView>,
     pub last: u64,
+    /// The document's REVISION (M6.5c2 cycle D, R-D4), beside `last` for the
+    /// same reason `last` is the document's: a reader holding `rev - last`
+    /// from its previous page sees it move exactly when a message it may
+    /// already hold was deleted — at every host, including the two whose
+    /// signal is a wake-up with no numbers (the open table and the lobby).
+    pub rev: u64,
 }
 
 /// `GET /api/games/{id}/chat?after=N` — admitted exactly as a read is.
@@ -1001,8 +1009,8 @@ pub fn chat_read(
     // chat is bounded by its seat count, and reading the document again for
     // that one number was a second read per page.
     let (table, _) = admitted(games, id, user)?;
-    let (messages, last) = games.chat_page(id, &table, user, q.after.unwrap_or(0))?;
-    Ok(ChatPage { messages, last })
+    let (messages, counts) = games.chat_page(id, &table, user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
 }
 
 /// `POST /api/games/{id}/chat` — the one write a watcher may make (R-6.4.11).
@@ -1085,8 +1093,8 @@ pub fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
 /// `GET /api/chat?after=N` — the house. Any signed-in caller.
 pub fn house_chat_read(games: &Games, user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
     lobby_chat_on(games)?;
-    let (messages, last) = games.house_page(user, q.after.unwrap_or(0))?;
-    Ok(ChatPage { messages, last })
+    let (messages, counts) = games.house_page(user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
 }
 
 /// `POST /api/chat` — the house. Every author is a `Watcher`: the house has
@@ -1107,6 +1115,36 @@ pub fn house_chat_post(
     let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
     let message = games.house_append(author, &text)?;
     Ok(message.view_for(user))
+}
+
+/// `DELETE /api/games/{id}/chat/{seq}` (M6.5c2 cycle D, R-D4) — a message
+/// taken down by its AUTHOR or by the table's CREATOR, and by nobody else.
+///
+/// **Admitted exactly as [`chat_post`] is**, by the same [`admitted`]: a seat
+/// holder at every status, a watcher once the table admits them, the lock's
+/// sentence to a caller who has not knocked — so the one write a spectator
+/// may make and its undoing are behind the same door. Then the standing,
+/// which is [`chat::ChatDoc::delete`]'s: `only the message's author or the
+/// table's creator may delete it` (403) for anyone else, and `no message N in
+/// this chat` (404) for a number the document does not hold.
+///
+/// **The answer is an empty 204**, and a second delete of the same message by
+/// someone entitled is the same 204 — idempotent, writing and signalling
+/// nothing. The message stays as a TOMBSTONE (`text: ""`, `deleted: true`), so
+/// its number is never reused and every cursor still means what it meant; the
+/// table's `Events.chat_rev` moves and `Events.chat` does not.
+pub fn chat_delete(games: &Games, user: &User, id: &str, seq: u64) -> Result<(), ApiError> {
+    admitted(games, id, user)?;
+    Ok(games.delete_chat(id, seq, user)?)
+}
+
+/// `DELETE /api/chat/{seq}` (M6.5c2 cycle D, R-D4) — the house, where nobody
+/// is a creator, so only the message's AUTHOR may take it down. The switch
+/// first, as the read and the post have it; any signed-in caller is asked.
+/// The house frame's `rev` moves and its `chat` does not.
+pub fn house_chat_delete(games: &Games, user: &User, seq: u64) -> Result<(), ApiError> {
+    lobby_chat_on(games)?;
+    Ok(games.delete_house_chat(seq, user)?)
 }
 
 pub fn keep(
@@ -1693,8 +1731,8 @@ pub fn log(
     Ok(yokohama_cli::screen_model::build_log(total, described))
 }
 
-/// How much of the game a poll gets: the SIGNAL, in five fields (room plan
-/// R-P9, spec §6; the fifth is M6.4's).
+/// How much of the game a poll gets: the SIGNAL, in six fields (room plan
+/// R-P9, spec §6; the fifth is M6.4's and the sixth M6.5c2 cycle D's).
 ///
 /// **A few bytes, and no frame is built.** This is the endpoint the client asks
 /// every three seconds while it is somebody else's turn, and the whole point of
@@ -1728,6 +1766,9 @@ pub struct Events {
     /// does not walk it backwards and a client comparing it against its own
     /// cursor cannot be told to fetch a room that has not spoken.
     pub chat: u64,
+    /// The table's chat REVISION (M6.5c2 cycle D, R-D4): `chat` is a count for
+    /// the text, this a revision for the shape.
+    pub chat_rev: u64,
 }
 
 /// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
@@ -1792,7 +1833,7 @@ pub fn check_wait(wait: Option<u64>) -> Result<(), ApiError> {
 /// stream's own cell asserts the first frame equals an `events` read BY VALUE,
 /// which is the property this function makes true by construction rather than
 /// by agreement between two bodies.
-pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64) -> Events {
+pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: chat::ChatCounts) -> Events {
     let s = repl.session.state();
     let over = repl.session.is_over();
     Events {
@@ -1806,7 +1847,8 @@ pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: 
         // A PARAMETER rather than a read, because this function holds a `Repl`
         // and the count lives nowhere near one: a chat message is not an event
         // and must never move the number a client re-fetches a board on.
-        chat,
+        chat: chat.last,
+        chat_rev: chat.rev,
     }
 }
 
@@ -1845,9 +1887,19 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
     // does reach it — one read and, on a miss, a cache seed — and is then
     // refused by `admitted` below. Nothing of it crosses the wire: the 403
     // carries no count.
-    let chat = games.chat_last(id);
+    let chat = games.chat_counts(id);
+    // The two arms with no session answer the same two numbers `events_of`
+    // does for a live one.
+    let unplayed = |status| Events {
+        events: 0,
+        to_move: None,
+        status,
+        your_turn: false,
+        chat: chat.last,
+        chat_rev: chat.rev,
+    };
     if table.status == crate::table::TableStatus::Open {
-        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
+        return Ok(unplayed("open"));
     }
     // **The table read above IS the admission's** (M6.5c2 cycle D, row 129):
     // `admitted` would read and settle it a second time, once per poll, per
@@ -1858,12 +1910,8 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
         // Unreachable behind the return above, and written rather than
         // collapsed into the fall-through: a status this function answers by
         // name is a status a reader can find.
-        crate::table::TableStatus::Open => {
-            Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat })
-        }
-        crate::table::TableStatus::Dealing => {
-            Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
-        }
+        crate::table::TableStatus::Open => Ok(unplayed("open")),
+        crate::table::TableStatus::Dealing => Ok(unplayed("dealing")),
         crate::table::TableStatus::Playing => {
             // `live_handle`, not `handle`: the table is in hand, and a cold
             // handle's rebuild through `handle` would settle it once more.
@@ -2062,6 +2110,33 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     Ok(json)
 }
 
+/// The largest body `POST /api/archive` reads (M6.5c2 cycle D, straw poll row
+/// 81): 1 MiB. Over it the route answers 413 BEFORE it parses anything
+/// (`check_archive_size`, the route's own check).
+///
+/// **A route's own bound, under both hosts' body limits** — the NAS adapter's
+/// 2 MiB and the Worker's `BODY_LIMIT`, which bound every route alike. This
+/// route is the one whose body an untrusted replay reads whole, so it gets a
+/// bound of its own and a sentence of its own. A finished two-person record is
+/// about 54 KB (`tests/fixtures/browser-played-2p.json`), so the room is wide.
+pub const ARCHIVE_BODY_LIMIT: usize = 1 << 20;
+
+/// The archive route's size check: over [`ARCHIVE_BODY_LIMIT`] is a 413 that
+/// names the bound, answered after the caller and before the body is parsed —
+/// pinned first in
+/// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`.
+fn check_archive_size(body: &[u8]) -> Result<(), ApiError> {
+    if body.len() > ARCHIVE_BODY_LIMIT {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "the record is larger than 1 MiB".to_string(),
+            table_status: None,
+            foreign_bot: None,
+        });
+    }
+    Ok(())
+}
+
 /// What a browser sends to the archive (M6.5b, R-6.5b.6): the record and the
 /// local table document as TWO STRINGS, parsed HERE and never by the client.
 ///
@@ -2253,6 +2328,10 @@ fn answer(
                 "/api/games/{id}/chat" => {
                     chat_post(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(201, &v))
                 }
+                "/api/games/{id}/chat/{seq}" => {
+                    let seq = parse_path_u64(1, b[1])?;
+                    chat_delete(games, u, b[0], seq).map(|()| ApiResponse { status: 204, body: String::new() })
+                }
                 "/api/games/{id}/input" => {
                     input(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
@@ -2273,10 +2352,18 @@ fn answer(
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
+                "/api/chat/{seq}" => {
+                    let seq = parse_path_u64(0, b[0])?;
+                    house_chat_delete(games, u, seq).map(|()| ApiResponse { status: 204, body: String::new() })
+                }
                 // 201 for a pair that landed, 200 for a retry that found its own
                 // bytes already there — the client acts on either (spec §2.4).
-                "/api/archive" => archive_post(games, u, &parse_json(req.content_type, req.body)?)
-                    .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v)),
+                // The body's SIZE first, before the parse (straw poll row 81).
+                "/api/archive" => {
+                    check_archive_size(req.body)?;
+                    archive_post(games, u, &parse_json(req.content_type, req.body)?)
+                        .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v))
+                }
                 "/api/games/{id}/at" => {
                     run(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
@@ -2310,6 +2397,19 @@ fn answer(
 /// as a `u64` and names that — the pin caught the plan's `usize` (R-plan-3).
 pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiError> {
     raw.parse::<usize>().map_err(|_| {
+        ApiError::bad_request(format!(
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+        ))
+    })
+}
+
+/// A chat message's number off the path (M6.5c2 cycle D, R-D4), refused in
+/// [`parse_path_usize`]'s words — axum's own for a `Path<(String, u64)>`
+/// segment that is not a number. A `u64` and not a `usize`, so a number is the
+/// same number on a 32-bit host: the browser's module and the Worker's are
+/// `wasm32`, where `usize` stops at four billion and a stored `seq` does not.
+pub(crate) fn parse_path_u64(index: usize, raw: &str) -> Result<u64, ApiError> {
+    raw.parse::<u64>().map_err(|_| {
         ApiError::bad_request(format!(
             "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
         ))
@@ -2533,8 +2633,14 @@ mod tests {
     };
 
     fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
-        let user = User::parse("local@browser").expect("an address");
         let body = serde_json::json!({ "record": record, "table": table }).to_string();
+        post_archive_bytes(games, body.as_bytes())
+    }
+
+    /// [`post_archive`] with the body as given, for the rows about the body
+    /// itself rather than the pair inside it.
+    fn post_archive_bytes(games: &Games, body: &[u8]) -> (u16, serde_json::Value) {
+        let user = User::parse("local@browser").expect("an address");
         let res = dispatch(
             games,
             &LOCAL_HOST,
@@ -2544,7 +2650,7 @@ mod tests {
                 path: "/api/archive",
                 query: "",
                 content_type: Some("application/json"),
-                body: body.as_bytes(),
+                body,
             },
         );
         let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
@@ -2804,15 +2910,38 @@ mod tests {
         assert_eq!(status, 200, "{v}");
         assert_eq!(v["identical"], true);
 
+        // **The body's size, FIRST and before any parse** (M6.5c2 cycle D,
+        // straw poll row 81) — the catcher for "the archive cap after the
+        // parse". One byte over the cap, and not JSON either, to an archive
+        // that is OFF: the 413 is answered before the body parse would say 400
+        // and before the switch would say 404. At the cap exactly, the same
+        // non-JSON body reaches the parse — so the bound is the cap and not one
+        // below it.
+        let over = vec![b'x'; ARCHIVE_BODY_LIMIT + 1];
+        let (status, v) = post_archive_bytes(&off, &over);
+        assert_eq!((status, v["error"].as_str()), (413, Some("the record is larger than 1 MiB")), "{v}");
+        let (status, v) = post_archive_bytes(&on, &over[..ARCHIVE_BODY_LIMIT]);
+        assert_eq!(status, 400, "at the cap the body is read, and refused for what it is: {v}");
+
         // The nine checks, in order, each named by the sentence it answers.
         let rev_wrong = keyed(PLAYED_RECORD, "semantics_rev", 6.into());
         let no_digest = without(PLAYED_RECORD, "terminal_digest");
         let no_replay = replay_broken(PLAYED_RECORD);
         let bad_players = keyed(PLAYED_TABLE, "players", 3.into());
         let bad_seat = keyed(PLAYED_TABLE, "start_seat", 1.into());
+        let unsafe_id = keyed(PLAYED_TABLE, "id", "not/a/safe/id".into());
 
         // **The adjacent-pair probes.** Each row carries the defects of TWO
         // neighbouring checks and expects the earlier one's sentence.
+        //
+        // **The TABLE's four checks run BEFORE the replay since M6.5c2 cycle D**
+        // (straw poll row 81): the replay rebuilds the game's setup from the
+        // record's own configuration, and it is the table's checks that bound
+        // `players`, `colors` and `start_seat` against it — so an untrusted
+        // record now reaches setup only once a table agrees with it. The
+        // catcher for "the table checks after the replay" is the digest row's
+        // partner and the id row's: each carries a record that would not
+        // replay, and expects a TABLE sentence.
         let probes: [(&Games, String, String, &str); 8] = [
             // archive-off  <  the record parses
             (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
@@ -2826,24 +2955,24 @@ mod tests {
             // the rev agrees  <  a terminal digest is present
             (&on, without(&rev_wrong, "terminal_digest"), PLAYED_TABLE.to_string(),
              "this record is at semantics rev 6; this server archives rev 7"),
-            // a terminal digest is present  <  the record replays
-            (&on, replay_broken(&no_digest), PLAYED_TABLE.to_string(),
+            // a terminal digest is present  <  the table parses
+            (&on, no_digest.clone(), "not json at all".to_string(),
              "the record carries no terminal digest"),
-            // the record replays  <  the table parses
-            (&on, no_replay.clone(), "not json at all".to_string(), "the record does not replay"),
             // the table parses  <  the table's shape
             (
                 &on,
-                PLAYED_RECORD.to_string(),
+                no_replay.clone(),
                 keyed(&bad_players, "archived_at", "not a number".into()),
                 "the table document does not parse",
             ),
             // the table's shape  <  the table agrees with the record
-            (&on, PLAYED_RECORD.to_string(), bad_players.clone(),
+            (&on, no_replay.clone(), bad_players.clone(),
              "the table document is malformed"),
             // the table agrees  <  the table's id is a safe name
-            (&on, PLAYED_RECORD.to_string(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
+            (&on, no_replay.clone(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
              "the table document does not agree with the record"),
+            // the table's id is a safe name  <  the record replays
+            (&on, no_replay.clone(), unsafe_id.clone(), "the table's id is not a safe name"),
         ];
         let mut sentences = std::collections::BTreeSet::new();
         for (games, record, table, expect) in probes {
@@ -2857,9 +2986,12 @@ mod tests {
         assert_eq!(sentences.len(), 8, "eight checks, eight different sentences");
 
         // The ninth, on its own — nothing follows it to probe against.
-        let (status, v) = post_archive(&on, PLAYED_RECORD, &keyed(PLAYED_TABLE, "id", "not/a/safe/id".into()));
+        let (status, v) = post_archive(&on, &no_replay, PLAYED_TABLE);
         assert_eq!(status, 400, "{v}");
-        assert_eq!(v["error"], "the table's id is not a safe name");
+        assert!(
+            v["error"].as_str().expect("a sentence").starts_with("the record does not replay"),
+            "{v}",
+        );
 
         // A record with NO rev is a different sentence from one that disagrees:
         // the engine's own, carried verbatim.
@@ -2871,6 +3003,193 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // M6.5c2 cycle D: the chat's delete, through `dispatch` (R-D4)
+    // -----------------------------------------------------------------------
+
+    /// The only sentence a delete is refused with for want of standing.
+    const NOT_YOURS: &str = "only the message's author or the table's creator may delete it";
+
+    /// A playing THREE-person table, created by red: red, blue and green each
+    /// keep through the route helper, so the third seat — neither the creator
+    /// nor, below, the author — is a person the table admits.
+    fn three_people_playing(games: &Games, id: &str) {
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerColor;
+        let mut req = crate::games::test_support::req_seeded(id, crate::games::test_support::CORPUS_SEED);
+        req.players = 3;
+        req.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        req.seats = ["red@t.test", "blue@t.test", "green@t.test"]
+            .iter()
+            .map(|u| SeatSpec { user: Some((*u).to_string()), bot: false, open: false })
+            .collect();
+        crate::games::test_support::playing(games, &req, &["red@t.test", "blue@t.test", "green@t.test"]);
+    }
+
+    /// **A message is deleted by its author or the table's creator, and by
+    /// NOBODY else** (M6.5c2 cycle D, R-D4; Review Focus 2) — the catcher for
+    /// "a third seat may delete".
+    ///
+    /// Three callers who must be refused: green, a third SEAT who neither wrote
+    /// blue's message nor created the table; grey, a WATCHER, on a seat's
+    /// message; and blue, a seat, on the CREATOR's message. Two who may: blue
+    /// on her own, and red — the creator — on a watcher's. The watcher's own
+    /// second delete is the idempotent 204. Every refusal is the one sentence,
+    /// and the page afterwards shows exactly the two tombstones.
+    #[test]
+    fn a_chat_message_is_deleted_by_its_author_or_the_tables_creator_and_nobody_else() {
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        three_people_playing(&games, "three");
+        let chat = "/api/games/three/chat";
+        let post = |who: &str, body: &str| ask(&games, who, "POST", chat, "", body);
+        assert_eq!(post("blue@t.test", r#"{"text":"blue's"}"#).1["seq"], 1);
+        assert_eq!(post("grey@t.test", r#"{"text":"grey's","name":"Grey"}"#).1["seq"], 2, "a watcher posts");
+        assert_eq!(post("red@t.test", r#"{"text":"red's"}"#).1["seq"], 3);
+        let delete = |who: &str, seq: &str| ask(&games, who, "DELETE", &format!("{chat}/{seq}"), "", "");
+
+        for (who, seq, what) in [
+            ("green@t.test", "1", "a third seat, on another seat's message"),
+            ("grey@t.test", "1", "a watcher, on a seat's message"),
+            ("blue@t.test", "3", "a seat, on the creator's message"),
+        ] {
+            let (status, v) = delete(who, seq);
+            assert_eq!((status, v["error"].as_str()), (403, Some(NOT_YOURS)), "{what}: {v}");
+        }
+        assert_eq!(delete("blue@t.test", "1"), (204, serde_json::Value::Null), "the author, an empty 204");
+        assert_eq!(delete("red@t.test", "2"), (204, serde_json::Value::Null), "the creator, on a watcher's message");
+        assert_eq!(delete("grey@t.test", "2"), (204, serde_json::Value::Null), "the watcher's own, again: idempotent");
+
+        let (status, page) = ask(&games, "green@t.test", "GET", chat, "", "");
+        assert_eq!(status, 200, "{page}");
+        let shape: Vec<(u64, bool, String)> = page["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|m| (m["seq"].as_u64().expect("a seq"), m["deleted"] == true, m["text"].as_str().expect("text").to_string()))
+            .collect();
+        assert_eq!(
+            shape,
+            [(1, true, String::new()), (2, true, String::new()), (3, false, "red's".to_string())],
+            "the two deleted, and only those: {page}",
+        );
+        assert_eq!(page["last"], 3, "no number moved");
+        // **The page carries the document's REVISION** (R-D4): three posts and
+        // two deletes — the watcher's repeat changed nothing — so a reader
+        // holding `rev - last` from an earlier page sees it move by two.
+        assert_eq!(page["rev"], 5, "{page}");
+    }
+
+    /// **The delete is admitted exactly as the post is, and its own answers
+    /// follow** (R-D4): a stranger at an open table, at a dealing one and at a
+    /// LOCKED playing one reads `admitted`'s own sentence — the seat one, the
+    /// seat one, and the lock's — before anything about the message; then, for
+    /// a caller admitted, a number nobody was given is a 404, and a segment
+    /// that is no number is axum's own 400 for a `u64` path segment.
+    #[test]
+    fn a_chat_delete_is_admitted_as_a_post_is() {
+        use crate::games::test_support::{playing, req_seeded, two_people, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let red = User::parse("red@t.test").expect("an address");
+        let mut open = req_seeded("opent", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealt", CORPUS_SEED), &red).expect("a dealing table");
+        let mut locked = two_people("lockt", CORPUS_SEED);
+        locked.password = Some("sesame".to_string());
+        playing(&games, &locked, &["red@t.test", "blue@t.test"]);
+        for id in ["opent", "dealt", "lockt"] {
+            let (status, v) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/chat"), "", r#"{"text":"hi"}"#);
+            assert_eq!(status, 201, "{id}: {v}");
+        }
+
+        for (id, sentence) in [
+            ("opent", "you are not seated at this table"),
+            ("dealt", "you are not seated at this table"),
+            ("lockt", "this table is locked — unlock it first"),
+        ] {
+            let (status, v) = ask(&games, "green@t.test", "DELETE", &format!("/api/games/{id}/chat/1"), "", "");
+            assert_eq!((status, v["error"].as_str()), (403, Some(sentence)), "a stranger at {id}: {v}");
+        }
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/dealt/chat/9", "", "");
+        assert_eq!((status, v["error"].as_str()), (404, Some("no message 9 in this chat")), "{v}");
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/dealt/chat/one", "", "");
+        assert_eq!(
+            (status, v["error"].as_str()),
+            (400, Some("Invalid URL: Cannot parse value at index 1 with value `one` to a `u64`")),
+            "{v}",
+        );
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/nothing/chat/1", "", "");
+        assert_eq!(status, 404, "no table, no message: {v}");
+    }
+
+    /// **The house's delete: the author alone, and the switch before
+    /// anything** (R-D4). The house has no creator, so blue may not take down
+    /// red's post; red may. With the lobby chat off the route is the switch's
+    /// 404, as the read and the post are.
+    #[test]
+    fn a_house_message_is_deleted_by_its_author_alone() {
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let (status, m) = ask(&games, "red@t.test", "POST", "/api/chat", "", r#"{"text":"anyone?","name":"Red"}"#);
+        assert_eq!(status, 201, "{m}");
+        let (status, v) = ask(&games, "blue@t.test", "DELETE", "/api/chat/1", "", "");
+        assert_eq!((status, v["error"].as_str()), (403, Some(NOT_YOURS)), "{v}");
+        assert_eq!(ask(&games, "red@t.test", "DELETE", "/api/chat/1", "", ""), (204, serde_json::Value::Null));
+        let (_, page) = ask(&games, "blue@t.test", "GET", "/api/chat", "", "");
+        assert_eq!(
+            (page["messages"][0]["deleted"].as_bool(), page["last"].as_u64(), page["rev"].as_u64()),
+            (Some(true), Some(1), Some(2)),
+            "a tombstone, the number held, the revision moved: {page}",
+        );
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/chat/x", "", "");
+        assert_eq!(
+            (status, v["error"].as_str()),
+            (400, Some("Invalid URL: Cannot parse value at index 0 with value `x` to a `u64`")),
+            "{v}",
+        );
+
+        let off = Games::with_parts(
+            std::sync::Arc::new(yokohama_core::Rules::standard()),
+            std::sync::Arc::new(crate::store::MemStore::default()),
+            crate::chat::ChatConfig { lobby: false, ..crate::chat::ChatConfig::default() },
+            std::sync::Arc::new(crate::signal::NoSignal),
+            std::sync::Arc::new(|| 1_789_000_000u64),
+            std::sync::Arc::new(crate::archive::NoArchive),
+            crate::games::RunHost::Server,
+        );
+        let (status, v) = ask(&off, "red@t.test", "DELETE", "/api/chat/1", "", "");
+        assert_eq!((status, v["error"].as_str()), (404, Some("the lobby chat is off")), "{v}");
+    }
+
+    /// **`Events.chat_rev` moves on a delete while `chat` does not** (R-D4;
+    /// Review Focus 2's "the client learns of the deletion at the next frame")
+    /// — at an open table, where there is no session, and at a playing one,
+    /// through `events_of`. `chat` is a count for the text and a delete adds
+    /// no text; `chat_rev` is the revision for the shape, and the tombstone
+    /// changed it.
+    #[test]
+    fn events_carries_chat_rev_which_a_delete_moves_and_chat_does_not() {
+        use crate::games::test_support::{playing, req_seeded, two_people, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let red = User::parse("red@t.test").expect("an address");
+        let mut open = req_seeded("opent", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        for id in ["opent", "playt"] {
+            let (status, v) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/chat"), "", r#"{"text":"hi"}"#);
+            assert_eq!(status, 201, "{v}");
+            let e = events_at(&games, id, &red).unwrap_or_else(|e| panic!("a reading: {}", e.message));
+            assert_eq!((e.chat, e.chat_rev), (1, 1), "{id}: one append moves both");
+            assert_eq!(ask(&games, "red@t.test", "DELETE", &format!("/api/games/{id}/chat/1"), "", "").0, 204);
+            let e = events_at(&games, id, &red).unwrap_or_else(|e| panic!("a reading: {}", e.message));
+            assert_eq!((e.chat, e.chat_rev), (1, 2), "{id}: the delete moves the revision alone");
+            let wire = serde_json::to_value(&e).expect("an Events serializes");
+            assert_eq!((wire["chat"].as_u64(), wire["chat_rev"].as_u64()), (Some(1), Some(2)), "{wire}");
+        }
     }
 
     #[test]
@@ -2895,6 +3214,7 @@ mod tests {
             ("POST", "/api/games/{id}/unlock"),
             ("GET", "/api/games/{id}/chat"),
             ("POST", "/api/games/{id}/chat"),
+            ("DELETE", "/api/games/{id}/chat/{seq}"),
             ("POST", "/api/games/{id}/input"),
             ("GET", "/api/games/{id}/ports"),
             ("GET", "/api/games/{id}/labs"),
@@ -2902,6 +3222,7 @@ mod tests {
             ("GET", "/api/games/{id}/log"),
             ("GET", "/api/chat"),
             ("POST", "/api/chat"),
+            ("DELETE", "/api/chat/{seq}"),
             ("POST", "/api/archive"),
             ("GET", "/api/games/{id}/at"),
             ("GET", "/api/games/{id}/at/{k}"),

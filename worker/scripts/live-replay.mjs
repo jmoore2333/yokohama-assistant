@@ -20,8 +20,8 @@
 //    never an operator (R-6.5c.16). A force leaves no marker, and a force on an
 //    object holding nothing is 204 writing nothing. Anything but three 204s
 //    and the run does not start.
-// 2. **The house chat's `last`**, read as the walk's own house-chat reader:
-//    the base its two payloads are taken back by (spec §9.3).
+// 2. **The house chat's `last` and `rev`**, read as the walk's own house-chat
+//    reader: the base its payloads are taken back by (spec §9.3).
 // 3. **Every row** of `walk.json`, each `walk-host.json` row after the walk
 //    row its `after` names, then `archive-walk.json`, with the credential and
 //    `X-Yokohama-Claimed-User: <who>` — a row with no `who` sends none.
@@ -31,6 +31,10 @@
 //    exported pure functions below) and `HOST_FIELDS`, each COUNTED when it is
 //    spent; a host field that reads as the axum host's is refused, because an
 //    exemption that differs nowhere is a hole a later host could hide behind.
+//    **The walk's house post is DELETED by the run that made it** (M6.5c2
+//    cycle D, R-D4): the delete row is sent carried forward to the number
+//    that run's post was really given (`houseDeleteRow`, counted like the
+//    rest), so every run answers 204 and no run leaves a post behind.
 // 5. **The force again** once the replay has begun, however it ended; then the
 //    report: rows run, named rows compared, the exemptions spent, and every
 //    mismatch. Exit 1 on a mismatch, a refused force, or a run that stopped.
@@ -195,19 +199,51 @@ export function filterLobby(name, committed, got, ids) {
  * message ABOVE the base moves `last` and already failed the run, so the
  * verdict is unchanged — and that message is now KEPT, so the page's compare
  * fails beside it.
+ *
+ * **The page's `rev` is taken back by `baseRev`** (M6.5c2 cycle D, R-D4) — the
+ * revision read at the run's start beside `last` — for `last`'s reason: every
+ * message and every delete anybody ever made on the shared house chat is in
+ * it. A delete by another person during a run moves it, and that run fails.
  */
-export function normalizeHouseChat(name, got, base) {
+export function normalizeHouseChat(name, got, base, baseRev) {
   if (!HOUSE_CHAT.has(name)) throw new Error(`${name} is not a house chat payload`);
   if (name === "house_chat_post") {
     if (typeof got?.seq !== "number") throw new Error(`${name}: the reply's seq is not a number`);
     return { ...got, seq: got.seq - base };
   }
   if (typeof got?.last !== "number") throw new Error(`${name}: the reply's last is not a number`);
+  if (typeof got.rev !== "number") throw new Error(`${name}: the reply's rev is not a number`);
   if (!Array.isArray(got.messages)) throw new Error(`${name}: the reply carries no messages list`);
   const messages = got.messages
     .filter((m) => typeof m?.seq === "number" && m.seq > base)
     .map((m) => ({ ...m, seq: m.seq - base }));
-  return { ...got, last: got.last - base, messages };
+  return { ...got, last: got.last - base, rev: got.rev - baseRev, messages };
+}
+
+/**
+ * The walk's house DELETE row as a live run sends it (M6.5c2 cycle D, R-D4):
+ * `DELETE /api/chat/{n}` with `n` carried forward by `shift` — the number this
+ * run's own house post was given, less the committed one — so the run takes
+ * down exactly the post it made. Any other row is answered unchanged.
+ *
+ * **Carried by the post's own number and not by the base**, though the two
+ * agree on a quiet house: a person who posts between the base read and the
+ * run's post moves the run's post one further, and a delete carried by the
+ * base would then name THEIR message — a 403, since the replay did not write
+ * it, and the run's own post left behind. The run fails in that case anyway
+ * (`last` moves); this keeps it from leaving a post as it does.
+ *
+ * **The once-rule does not arise here** (the plan's question): each run
+ * deletes the post it made itself, so the first run and every later one
+ * answer the committed 204 — never a 404 for a message an earlier run took.
+ * `shift` is `undefined` until this run's post has been answered; a delete row
+ * met before it is refused, since it would name a number nobody gave.
+ */
+export function houseDeleteRow(row, shift) {
+  const m = row.method === "DELETE" ? /^\/api\/chat\/(\d+)$/.exec(row.path) : null;
+  if (m === null) return row;
+  if (typeof shift !== "number") throw new Error(`${row.path}: the run's own house post was not answered, so the delete names no number of its own`);
+  return { ...row, path: `/api/chat/${Number(m[1]) + shift}` };
 }
 
 /**
@@ -466,11 +502,11 @@ function judge(fixture, reply, context) {
     }
     if (HOUSE_CHAT.has(fixture)) {
       const listed = Array.isArray(got?.messages) ? got.messages.length : 0;
-      got = normalizeHouseChat(fixture, got, context.base);
+      got = normalizeHouseChat(fixture, got, context.base, context.baseRev);
       spent.push(
         fixture === "house_chat_post"
           ? `normalizeHouseChat ${fixture}: seq taken back by ${context.base}`
-          : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}; ${count(listed - got.messages.length, "earlier message")} dropped`,
+          : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}, rev by ${context.baseRev}; ${count(listed - got.messages.length, "earlier message")} dropped`,
       );
     }
   } catch (e) {
@@ -536,18 +572,29 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
 
   try {
     const baseReply = await send(reader, credential, fetcher);
-    const last = baseReply.status === 200 ? parsed(baseReply)?.last : undefined;
-    if (typeof last === "number") {
+    const basePage = baseReply.status === 200 ? parsed(baseReply) : undefined;
+    const last = basePage?.last;
+    const baseRev = basePage?.rev;
+    if (typeof last === "number" && typeof baseRev === "number") {
       result.base = last;
-      log(`the house chat's base: last ${last}, read as ${reader.who}`);
+      log(`the house chat's base: last ${last}, rev ${baseRev}, read as ${reader.who}`);
     } else {
       // No base, no rows: the `finally` forces the ids again, and the report
       // follows it, as on every other road out.
       result.stopped = `the house chat's base could not be read: ${baseReply.status}${said(baseReply)}`;
     }
-    const context = { corpus, ids, base: last };
+    // `houseShift`: set once the run's own house post is answered.
+    const context = { corpus, ids, base: last, baseRev, houseShift: undefined };
 
-    for (const { script, index, row } of result.stopped === null ? rows : []) {
+    for (const { script, index, row: scripted } of result.stopped === null ? rows : []) {
+      let row = scripted;
+      try {
+        row = houseDeleteRow(scripted, context.houseShift);
+      } catch (e) {
+        result.stopped = `${script} row ${index}: ${errorText(e)}`;
+        break;
+      }
+      if (row !== scripted) result.spent.push(`houseDeleteRow ${row.fixture}: ${scripted.path} sent as ${row.path}`);
       const label = `${script} row ${index}: ${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;
       let reply;
       try {
@@ -594,6 +641,11 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
         result.stopped = label;
         differs(label, null, { path: "status", reason: `committed ${row.status} · got ${reply.status}${said(reply)}` });
         break;
+      }
+      // The run's own house post: the number the delete row is carried to.
+      if (row.fixture === "house_chat_post") {
+        const seq = parsed(reply)?.seq;
+        if (typeof seq === "number") context.houseShift = seq - JSON.parse(corpus.house_chat_post).seq;
       }
       if (row.fixture === null) continue;
 

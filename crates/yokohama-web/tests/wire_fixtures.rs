@@ -1235,6 +1235,33 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     let house_chat = api.get_as(OTHER, "/api/chat").await;
     assert_eq!(house_chat["last"], 1, "{house_chat}");
 
+    // **The deletes** (M6.5c2 cycle D, R-D4), after every page above is taken,
+    // so the pages keep showing what was said. Red takes her own table
+    // message down — an empty 204, which the walk records as `null`, the
+    // reading of an empty body every replay makes; blue, a seat who neither
+    // wrote it nor created the table, is refused on the same message, now a
+    // tombstone — the author is kept, so the answer is the one a stranger
+    // gets before the delete too; red reads the page again, which is the
+    // corpus's one TOMBSTONE — `text: ""`, `deleted: true`, the author and
+    // the number kept, the revision one past the count — the shape a client
+    // renders "message removed" from, pinned against what the server emits;
+    // and red takes her house post down. `events` is taken later in the walk,
+    // so it carries the same revision one past its count.
+    let (status, chat_delete) = api.call_as(Some(WALKER), "DELETE", "/api/games/wire/chat/1", None).await;
+    assert_eq!((status, &chat_delete), (StatusCode::NO_CONTENT, &Value::Null), "{chat_delete}");
+    let (status, chat_delete_403) = api.call_as(Some(OTHER), "DELETE", "/api/games/wire/chat/1", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{chat_delete_403}");
+    assert_eq!(chat_delete_403["error"], "only the message's author or the table's creator may delete it");
+    let chat_deleted = api.get("/api/games/wire/chat").await;
+    assert_eq!(
+        (&chat_deleted["messages"][0]["deleted"], &chat_deleted["messages"][0]["text"]),
+        (&json!(true), &json!("")),
+        "message 1 is a tombstone: {chat_deleted}",
+    );
+    assert_eq!((&chat_deleted["last"], &chat_deleted["rev"]), (&json!(3), &json!(4)), "{chat_deleted}");
+    let (status, house_chat_delete) = api.call_as(Some(WALKER), "DELETE", "/api/chat/1", None).await;
+    assert_eq!((status, &house_chat_delete), (StatusCode::NO_CONTENT, &Value::Null), "{house_chat_delete}");
+
     for (name, v) in [
         ("chat", chat),
         ("chat_after", chat_after),
@@ -1245,6 +1272,10 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         ("chat_403_locked", chat_403_locked),
         ("house_chat", house_chat),
         ("house_chat_post", house_chat_post),
+        ("chat_delete", chat_delete),
+        ("chat_delete_403", chat_delete_403),
+        ("chat_deleted", chat_deleted),
+        ("house_chat_delete", house_chat_delete),
     ] {
         out.push((name.to_string(), v));
     }
@@ -3697,11 +3728,12 @@ async fn the_dispatcher_answers_what_the_router_answers() {
 /// would have been counted as a message's.
 ///
 /// **Its anti-vacuity is the count.** A sweep that found no stamps at all would
-/// pass exactly as loudly, so the number of clocks read is asserted — EIGHT,
+/// pass exactly as loudly, so the number of clocks read is asserted — ELEVEN,
 /// which is the page's three, the one message a cursor leaves, the two posts'
-/// own replies and the house's pair. A regeneration that emptied the chat
-/// corpus fails here rather than going quiet, and so does one that stopped
-/// serving a message's author its own page.
+/// own replies, the house's pair, and (M6.5c2 cycle D) the page read again
+/// after the delete, whose TOMBSTONE keeps its clock. A regeneration that
+/// emptied the chat corpus fails here rather than going quiet, and so does one
+/// that stopped serving a message's author its own page.
 #[test]
 fn every_chat_message_carries_the_frozen_clock() {
     assert!(
@@ -3719,6 +3751,7 @@ fn every_chat_message_carries_the_frozen_clock() {
         ("chat_post_watcher", false),
         ("house_chat", true),
         ("house_chat_post", false),
+        ("chat_deleted", true),
     ] {
         let path = dir.join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -3746,7 +3779,7 @@ fn every_chat_message_carries_the_frozen_clock() {
         }
     }
 
-    assert_eq!(found.len(), 8, "one clock per committed message: {found:?}");
+    assert_eq!(found.len(), 11, "one clock per committed message: {found:?}");
     for seen in &found {
         assert_eq!(
             *seen, FROZEN_CREATED_AT,

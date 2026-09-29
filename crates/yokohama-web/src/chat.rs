@@ -18,6 +18,14 @@
 //! the configured cap (served as stored) and a document longer than the
 //! configured keep (trimmed on its next append), so lowering either number on
 //! a running volume cannot take a table out.
+//!
+//! **A message can be DELETED since M6.5c2 cycle D (R-D4), and a delete leaves
+//! a TOMBSTONE** — the message's number, clock and author, its text emptied
+//! and `deleted` set ([`ChatDoc::delete`]) — so `last` and every cursor a
+//! client holds mean what they meant, and a number is still never reused.
+//! [`ChatDoc::rev`] is the document's REVISION: it moves on every append and
+//! every delete, where `last` moves on an append alone, so a reader that
+//! compares the two can tell that a message it already holds has changed.
 
 use serde::{Deserialize, Serialize};
 
@@ -52,9 +60,53 @@ pub struct ChatDoc {
     pub id: String,
     /// The newest number ever assigned — NOT `messages.len()`, and not the
     /// newest retained: a trim drops messages and leaves this alone, so a
-    /// client's `after` cursor stays valid across it.
+    /// client's `after` cursor stays valid across it. A delete leaves it alone
+    /// too: a tombstone keeps its number.
     pub last: u64,
+    /// The document's REVISION (M6.5c2 cycle D, R-D4): +1 per append AND per
+    /// delete, never by a trim. `last` counts the messages a reader has not
+    /// fetched; this counts every change to what it may already hold, so
+    /// `rev - last` moves exactly when a held message was deleted.
+    ///
+    /// `#[serde(default)]`: a document written before the delete reads as
+    /// revision 0 and moves from there — it is compared for CHANGE and never
+    /// for its value, so the starting point does not matter.
+    #[serde(default)]
+    pub rev: u64,
     pub messages: Vec<Message>,
+}
+
+/// The two numbers a signal carries about one chat document (M6.5c2 cycle D,
+/// R-D4): [`ChatDoc::last`], a count for the text, and [`ChatDoc::rev`], a
+/// revision for the shape. `Events.chat` and `Events.chat_rev` are these two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChatCounts {
+    pub last: u64,
+    pub rev: u64,
+}
+
+/// Why a delete was refused (M6.5c2 cycle D, R-D4), each worded by
+/// [`std::fmt::Display`] for the route to carry verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRefusal {
+    /// The document holds no message numbered this — one never assigned, or
+    /// one the trim has already dropped. A 404: there is nothing here to
+    /// delete, and a tombstone is something.
+    NotFound(u64),
+    /// The caller is neither the message's author nor the table's creator. A
+    /// 403, and asked BEFORE whether the message is already a tombstone: the
+    /// tombstone keeps its author, so the answer to a stranger is the same
+    /// before and after the author deleted it.
+    NotYours,
+}
+
+impl std::fmt::Display for ChatRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound(seq) => write!(f, "no message {seq} in this chat"),
+            Self::NotYours => f.write_str("only the message's author or the table's creator may delete it"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,7 +117,15 @@ pub struct Message {
     /// would churn fixtures on every regeneration.
     pub created_at: u64,
     pub author: Author,
+    /// The empty string once [`Message::deleted`] is set, and never otherwise
+    /// ([`check_shape`]).
     pub text: String,
+    /// A TOMBSTONE (M6.5c2 cycle D, R-D4): the message was deleted by its
+    /// author or the table's creator, and its number, clock and author stay.
+    /// `#[serde(default)]`, so a document written before the delete reads as
+    /// it did.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// Who said it, as STORED — the address in `user` is the key `you` is read
@@ -125,7 +185,12 @@ pub struct MessageView {
     /// Unix seconds — the same key [`Message::created_at`] is named for.
     pub created_at: u64,
     pub author: AuthorView,
+    /// Empty on a tombstone.
     pub text: String,
+    /// The message was deleted ([`Message::deleted`]): drawn as a removed
+    /// message in its author's row, never skipped, so the numbers a reader
+    /// holds stay contiguous with what the room said.
+    pub deleted: bool,
 }
 
 impl Message {
@@ -139,7 +204,13 @@ impl Message {
             Author::Watcher { user, name } => AuthorView::Watcher { name: name.clone(), you: you(user) },
             Author::Bot { seat, name } => AuthorView::Bot { seat: *seat, name: name.clone() },
         };
-        MessageView { seq: self.seq, created_at: self.created_at, author, text: self.text.clone() }
+        MessageView {
+            seq: self.seq,
+            created_at: self.created_at,
+            author,
+            text: self.text.clone(),
+            deleted: self.deleted,
+        }
     }
 }
 
@@ -284,7 +355,47 @@ impl ChatConfig {
 
 impl ChatDoc {
     pub fn empty(id: &str) -> Self {
-        Self { schema: CHAT_SCHEMA, id: id.to_string(), last: 0, messages: Vec::new() }
+        Self { schema: CHAT_SCHEMA, id: id.to_string(), last: 0, rev: 0, messages: Vec::new() }
+    }
+
+    /// The two numbers a signal carries about this document — see
+    /// [`ChatCounts`].
+    pub fn counts(&self) -> ChatCounts {
+        ChatCounts { last: self.last, rev: self.rev }
+    }
+
+    /// Delete message `seq` as `by` (M6.5c2 cycle D, R-D4): the message
+    /// becomes a TOMBSTONE — its text emptied, `deleted` set, its number,
+    /// clock and author kept — and [`ChatDoc::rev`] moves; `last` does not.
+    ///
+    /// `creator` is the table's STORED `created_by`, or `None` at the house,
+    /// which nobody created: there only the author may delete.
+    ///
+    /// **The order is the rule.** A number the document does not hold is
+    /// [`ChatRefusal::NotFound`] — never assigned, or trimmed, and a trimmed
+    /// message took its author with it, so nothing could decide a 403 for it.
+    /// Then the caller's standing: the author (a seat's or a watcher's stored
+    /// address, normalized on read as `by` is), or the creator; a bot's
+    /// message has no author who can ask. Only THEN whether it is already a
+    /// tombstone — so a second delete by someone entitled is an idempotent
+    /// `Ok` that moves nothing, and a stranger is refused alike before and
+    /// after.
+    pub fn delete(&mut self, seq: u64, by: &User, creator: Option<&str>) -> Result<(), ChatRefusal> {
+        let message = self.messages.iter_mut().find(|m| m.seq == seq).ok_or(ChatRefusal::NotFound(seq))?;
+        let author = match &message.author {
+            Author::Seat { user, .. } | Author::Watcher { user, .. } => Some(user.as_str()),
+            Author::Bot { .. } => None,
+        };
+        if author != Some(by.as_str()) && creator != Some(by.as_str()) {
+            return Err(ChatRefusal::NotYours);
+        }
+        if message.deleted {
+            return Ok(());
+        }
+        message.deleted = true;
+        message.text.clear();
+        self.rev += 1;
+        Ok(())
     }
 
     /// Drop the OLDEST until `keep` remain; `last` is untouched, so a number is
@@ -352,11 +463,19 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
             ));
         }
         prev = m.seq;
+        // A TOMBSTONE carries no text and nothing else does (M6.5c2 cycle D,
+        // R-D4): a deleted message that still said something would serve the
+        // words its author took down.
+        //
         // BLANK as well as empty (M6.5c2 cycle D, row 130): the appender
         // trims, so no text this server wrote is only whitespace, and one a
         // hand-edited or restored document carries is refused as the route
         // refuses it — by the same trim.
-        if m.text.trim().is_empty() || m.text.chars().any(char::is_control) {
+        if m.deleted {
+            if !m.text.is_empty() {
+                return Err(format!("message {i} is deleted and still carries text"));
+            }
+        } else if m.text.trim().is_empty() || m.text.chars().any(char::is_control) {
             return Err(format!("message {i}'s text is empty, blank or carries a control character"));
         }
         // The clock, bounded here because the client renders it: see
@@ -439,12 +558,15 @@ mod tests {
             created_at: 1,
             author: Author::Seat { seat: s, user: "red@t.test".into(), name: None },
             text: text.into(),
+            deleted: false,
         }
     }
 
+    /// A document as the appender would have left it: `last` the newest
+    /// number, and `rev` beside it — one revision per append.
     fn doc(msgs: Vec<Message>) -> ChatDoc {
         let last = msgs.last().map_or(0, |m| m.seq);
-        ChatDoc { schema: CHAT_SCHEMA, id: "t".into(), last, messages: msgs }
+        ChatDoc { schema: CHAT_SCHEMA, id: "t".into(), last, rev: last, messages: msgs }
     }
 
     #[test]
@@ -472,6 +594,7 @@ mod tests {
             created_at: 1,
             author: Author::Bot { seat: 7, name: None },
             text: "x".into(),
+            deleted: false,
         }]);
         assert!(check_shape(&bot, Some(2)).is_err(), "a bot author is bounded too");
     }
@@ -484,6 +607,7 @@ mod tests {
             created_at: 1,
             author: Author::Watcher { user: "g@t.test".into(), name: Some("G".into()) },
             text: "hi".into(),
+            deleted: false,
         };
         assert!(check_shape(&doc(vec![w]), None).is_ok());
     }
@@ -605,7 +729,8 @@ mod tests {
     #[test]
     fn a_page_marks_you_on_the_readers_own_messages_and_carries_no_user() {
         use serde_json::{json, Value};
-        let authored = |seq: u64, author: Author| Message { seq, created_at: 1, author, text: "hi".into() };
+        let authored =
+            |seq: u64, author: Author| Message { seq, created_at: 1, author, text: "hi".into(), deleted: false };
         let d = doc(vec![
             authored(1, Author::Seat { seat: 0, user: "red@wire.test".into(), name: Some("Red".into()) }),
             authored(2, Author::Seat { seat: 1, user: "blue@wire.test".into(), name: None }),
@@ -747,5 +872,148 @@ mod tests {
         assert!(e.starts_with(KEEP_VAR), "named by the variable: {e}");
         assert_eq!(ChatConfig::value_of(KEEP_VAR, Err(std::env::VarError::NotPresent)), Ok(None), "unset");
         assert_eq!(ChatConfig::value_of(KEEP_VAR, Ok("20".into())), Ok(Some("20".to_string())));
+    }
+
+    // -----------------------------------------------------------------------
+    // M6.5c2 cycle D — the delete (R-D4)
+    // -----------------------------------------------------------------------
+
+    fn red() -> User {
+        User::parse("red@t.test").expect("an email")
+    }
+
+    fn blue() -> User {
+        User::parse("blue@t.test").expect("an email")
+    }
+
+    /// **A delete by the author leaves a TOMBSTONE and moves `rev`, never
+    /// `last`** (R-D4) — the catcher for "a delete bumps `last`" and "a delete
+    /// leaves `rev` unchanged".
+    ///
+    /// The tombstone keeps the message's number, clock and author, so a cursor
+    /// a client holds still means what it meant and the row can still say who
+    /// posted; its text is the empty string, never absent. The page is read by
+    /// SOMEONE ELSE, so the wire shape asserted is the one every other reader
+    /// is handed.
+    #[test]
+    fn a_delete_by_the_author_leaves_a_tombstone_and_moves_rev_not_last() {
+        let mut d = doc(vec![seat(1, 0, "a"), seat(2, 0, "b")]);
+        assert_eq!(d.counts(), ChatCounts { last: 2, rev: 2 }, "premise: two appends");
+        d.delete(1, &red(), None).expect("the author may delete their own message");
+        assert_eq!(d.counts(), ChatCounts { last: 2, rev: 3 }, "a delete assigns no number and moves the revision");
+        let m = &d.messages[0];
+        assert_eq!((m.seq, m.created_at, m.text.as_str(), m.deleted), (1, 1, "", true));
+        assert_eq!(m.author, seat(1, 0, "a").author, "the tombstone still names who posted");
+        assert!(!d.messages[1].deleted, "and only the message asked for");
+        assert_eq!(check_shape(&d, Some(2)), Ok(()), "a tombstone is a message the shape rule reads");
+        let page = serde_json::to_value(d.page_for(&blue())).expect("a page");
+        assert_eq!(
+            page[0],
+            serde_json::json!({
+                "seq": 1, "created_at": 1, "text": "", "deleted": true,
+                "author": { "kind": "seat", "seat": 0, "name": null, "you": false },
+            }),
+        );
+        assert_eq!(page[1]["deleted"], false, "every message carries the field");
+    }
+
+    /// **Only the author or the table's creator may delete** (R-D4, Review
+    /// Focus 2) — the catcher for "a third seat may delete", at the document.
+    ///
+    /// Blue is neither: refused with no creator (the house), and refused where
+    /// the creator is somebody else. Blue as the table's CREATOR may. A bot's
+    /// message has no author who can ask, so only the creator may take it
+    /// down. Every refusal changes nothing.
+    #[test]
+    fn only_the_author_or_the_tables_creator_may_delete() {
+        let mut d = doc(vec![seat(1, 0, "a")]);
+        assert_eq!(d.delete(1, &blue(), None), Err(ChatRefusal::NotYours), "no creator: the author alone");
+        assert_eq!(
+            d.delete(1, &blue(), Some("green@t.test")),
+            Err(ChatRefusal::NotYours),
+            "a creator who is somebody else",
+        );
+        assert_eq!((d.rev, d.messages[0].deleted, d.messages[0].text.as_str()), (1, false, "a"), "refused, untouched");
+        d.delete(1, &blue(), Some("blue@t.test")).expect("the table's creator may delete any message");
+        assert!(d.messages[0].deleted);
+
+        let bot = Message {
+            seq: 1,
+            created_at: 1,
+            author: Author::Bot { seat: 1, name: None },
+            text: "gg".into(),
+            deleted: false,
+        };
+        let mut b = doc(vec![bot]);
+        assert_eq!(b.delete(1, &red(), None), Err(ChatRefusal::NotYours), "a bot's message has no author to ask");
+        b.delete(1, &red(), Some("red@t.test")).expect("the creator may take it down");
+        assert_eq!(
+            ChatRefusal::NotYours.to_string(),
+            "only the message's author or the table's creator may delete it",
+        );
+    }
+
+    /// **A second delete is idempotent, and a stranger is refused at a
+    /// tombstone too** (R-D4). The author asked twice changes the document
+    /// once — `rev` does not move again, so the caller writes and signals
+    /// nothing the second time — and because the tombstone keeps its author,
+    /// the refusal is asked FIRST: a stranger cannot learn that a message was
+    /// already deleted by being answered differently.
+    #[test]
+    fn a_second_delete_is_idempotent_and_a_strangers_is_still_refused() {
+        let mut d = doc(vec![seat(1, 0, "a")]);
+        d.delete(1, &red(), None).expect("the first");
+        let after_one = d.counts();
+        d.delete(1, &red(), None).expect("the second is no refusal");
+        assert_eq!(d.counts(), after_one, "and moves nothing");
+        assert_eq!(d.delete(1, &blue(), None), Err(ChatRefusal::NotYours));
+    }
+
+    /// **A number the document does not hold is not found** (R-D4): one never
+    /// assigned, one the trim has dropped, and zero. A 404 rather than a quiet
+    /// 204, because nothing was there to delete — and the trimmed message's
+    /// author is gone with it, so its answer could not be a 403 either.
+    #[test]
+    fn a_number_the_document_does_not_hold_is_not_found() {
+        let mut d = doc((1..=3).map(|i| seat(i, 0, "m")).collect());
+        d.trim(Some(2));
+        assert_eq!(d.delete(1, &red(), None), Err(ChatRefusal::NotFound(1)), "trimmed");
+        assert_eq!(d.delete(4, &red(), None), Err(ChatRefusal::NotFound(4)), "never assigned");
+        assert_eq!(d.delete(0, &red(), None), Err(ChatRefusal::NotFound(0)), "no message is numbered 0");
+        assert_eq!(d.counts(), ChatCounts { last: 3, rev: 3 }, "and nothing moved");
+        assert_eq!(ChatRefusal::NotFound(4).to_string(), "no message 4 in this chat");
+    }
+
+    /// **The shape rule reads a tombstone and nothing that only half is one**
+    /// (R-D4): a deleted message carries no text, and a live one still needs
+    /// some — the whitespace rule above is unchanged for it.
+    #[test]
+    fn a_tombstone_carries_no_text_and_a_live_message_still_needs_some() {
+        let mut d = doc(vec![seat(1, 0, "a")]);
+        d.messages[0].deleted = true;
+        let e = check_shape(&d, Some(2)).expect_err("a tombstone that still carries text");
+        assert!(e.starts_with("message 0"), "{e}");
+        d.messages[0].text = String::new();
+        assert_eq!(check_shape(&d, Some(2)), Ok(()), "a tombstone");
+        d.messages[0].deleted = false;
+        assert!(check_shape(&d, Some(2)).is_err(), "an empty live message");
+    }
+
+    /// **A document written before the delete reads as it did** (R-D4):
+    /// neither `rev` nor `deleted` is required on read, both default, and the
+    /// shape rule takes the result.
+    #[test]
+    fn a_document_written_before_the_delete_reads_as_before() {
+        let old: ChatDoc = serde_json::from_value(serde_json::json!({
+            "schema": 1, "id": "t", "last": 2,
+            "messages": [{
+                "seq": 2, "created_at": 1, "text": "hi",
+                "author": { "kind": "watcher", "user": "g@t.test", "name": null },
+            }],
+        }))
+        .expect("an older document parses");
+        assert_eq!(old.counts(), ChatCounts { last: 2, rev: 0 });
+        assert!(!old.messages[0].deleted);
+        assert_eq!(check_shape(&old, None), Ok(()));
     }
 }

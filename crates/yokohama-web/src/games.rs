@@ -25,7 +25,7 @@ use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
 use crate::archive::{Archive, NoArchive};
-use crate::chat::{ChatConfig, ChatLimits};
+use crate::chat::{ChatConfig, ChatCounts, ChatLimits};
 use crate::log::{Log, NoLog};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
@@ -326,9 +326,10 @@ pub struct Games {
     /// them apart, and that is the point: what a write site owes is the CALL,
     /// and what becomes of it is the transport's.
     pub(crate) signal: Arc<dyn Signal>,
-    /// The newest chat number per table this process has seen (M6.4, R-plan-5):
-    /// seeded from the document on a miss, advanced by every append, dropped by
-    /// a delete and by a create.
+    /// The newest chat number and revision per table this process has seen
+    /// (M6.4, R-plan-5; the revision since M6.5c2 cycle D, R-D4): seeded from
+    /// the document on a miss, advanced by every append and every message
+    /// deleted, dropped by a table's delete and by a create.
     ///
     /// It exists so the count a signal frame carries costs no document parse
     /// per bump per connection — a stream's per-bump closure reads it, and with
@@ -338,7 +339,7 @@ pub struct Games {
     /// **Per PROCESS.** A second process's appends are invisible here until the
     /// store is a database (M6.5); the DOCUMENT is always the authority and
     /// every page is served from it.
-    pub(crate) chat_last: Mutex<HashMap<GameId, u64>>,
+    pub(crate) chat_counts: Mutex<HashMap<GameId, ChatCounts>>,
     /// Serializes the house's appends against each other.
     ///
     /// Its own mutex because the house is not a table: it has no `lock_for`
@@ -464,7 +465,7 @@ impl Games {
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
             signal,
-            chat_last: Mutex::new(HashMap::new()),
+            chat_counts: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
             chat,
             clock,
@@ -1179,21 +1180,23 @@ mod tests {
     ///
     /// The walk drives one write of every kind that bumps and REQUIRES each to
     /// answer `Ok`: `create`, the finalize's `flip_to_playing` and `persist`
-    /// reach `bump`, `keep` and `chat_append` reach `bump_table`,
-    /// `house_append` reaches `bump_house_chat`, and `delete` reaches `end` —
-    /// **all four trait methods, on the implementation that does nothing**.
+    /// reach `bump`, `keep`, `chat_append` and `delete_chat` reach
+    /// `bump_table`, `house_append` reaches `bump_house_chat`,
+    /// `delete_house_chat` reaches `bump_house_chat_rev` (M6.5c2 cycle D), and
+    /// `delete` reaches `end` — **all five trait methods, on the implementation
+    /// that does nothing**.
     ///
     /// **What it adds over the cells beside it.** Many cells in this binary
     /// build with `games()` and so cross some of these sites under `NoSignal`
     /// on their way to asserting something else; a bump site that had kept a
     /// `Signals`-shaped assumption would break one of them and be reported as
     /// whatever that cell was about. This one exists for the crossing itself.
-    /// It is the only `NoSignal` cell that drives all four methods THROUGH
-    /// this type's write sites — measured, the nearest other reaches three
+    /// It is the only `NoSignal` cell that drives every method THROUGH this
+    /// type's write sites — measured at M6.5a, the nearest other reached three
     /// (`a_delete_removes_the_chat_and_its_count`, which sends no house
     /// message) — so a failure here names the signal rather than a symptom.
-    /// Mutation-proven: each of `NoSignal`'s four bodies was made to panic in
-    /// turn, and this cell failed on all four.
+    /// Mutation-proven at M6.5a: each of `NoSignal`'s then four bodies was
+    /// made to panic in turn, and this cell failed on all four.
     ///
     /// It is not a claim about what a bump DOES: under `NoSignal` there is
     /// nothing to observe, which is the point.
@@ -1228,6 +1231,10 @@ mod tests {
         games
             .house_append(Author::Watcher { user: "red@t.test".into(), name: None }, "hi all")
             .expect("a house message");
+        // `delete_chat` — `bump_table`; `delete_house_chat` —
+        // `bump_house_chat_rev` (M6.5c2 cycle D, R-D4).
+        games.delete_chat(&id, 1, &red).expect("red deletes her table message");
+        games.delete_house_chat(1, &red).expect("and her house message");
 
         // `delete` — `end`, the one method the others cannot reach.
         games.delete(&id, &red).expect("the creator's delete");

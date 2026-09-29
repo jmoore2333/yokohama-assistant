@@ -202,6 +202,10 @@ import chat403Locked from "./chat_403_locked.json";
 import houseChat from "./house_chat.json";
 import houseChatPost from "./house_chat_post.json";
 import houseChatOff404 from "./house_chat_off_404.json";
+import chatDelete from "./chat_delete.json";
+import chatDelete403 from "./chat_delete_403.json";
+import chatDeleted from "./chat_deleted.json";
+import houseChatDelete from "./house_chat_delete.json";
 
 /** The declared type, widened exactly as importing it from JSON would widen it.
  *
@@ -353,6 +357,11 @@ const _chat400SeatedName: Widen<ApiErrorBody> = chat400SeatedName;
 const _chat403NotSeated: Widen<ApiErrorBody> = chat403NotSeated;
 const _chat403Locked: Widen<ApiErrorBody> = chat403Locked;
 const _houseChatOff404: Widen<ApiErrorBody> = houseChatOff404;
+// M6.5c2 cycle D (R-D4): the delete's refusal, and the page with a tombstone —
+// the one payload whose `deleted` reads true. The two 204s are `null` and are
+// pinned by value in `contract.test.ts`.
+const _chatDelete403: Widen<ApiErrorBody> = chatDelete403;
+const _chatDeleted: Widen<ChatPage> = chatDeleted;
 // ---- M6.5c2: the bot's label ------------------------------------------------
 //
 // `bot` is `TableBot | null` and `null` in every walk payload, so the table
@@ -550,6 +559,7 @@ void [
   _terminal, _terminalStanding,
   _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
   _chat400Long, _chat400SeatedName, _chat403NotSeated, _chat403Locked, _houseChatOff404,
+  _chatDelete403, _chatDeleted,
   _tableBot, _tableBotBot, _seatBots, _productionBot,
   _foreignBot409, _tableForeign, _tableForeignBot, _whyForeign, _whyForeignRefusal,
 ];
@@ -660,7 +670,7 @@ const GAMES_LIST = ["games", "next"] as const;
 // foreign-bot 409 (M6.5c2) carries `foreign_bot`: the only four refusals that
 // do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
-const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn", "chat", "chat_rev"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
@@ -697,8 +707,8 @@ const INDEX_CARD = ["face", "location", "selection"] as const;
 // either arm. `bot` has no list because it has no fixture; the cell fails loudly
 // on an author kind it has no list for, which is what makes that absence
 // visible rather than silent.
-const CHAT_PAGE = ["messages", "last"] as const;
-const CHAT_MESSAGE = ["seq", "created_at", "author", "text"] as const;
+const CHAT_PAGE = ["messages", "last", "rev"] as const;
+const CHAT_MESSAGE = ["seq", "created_at", "author", "text", "deleted"] as const;
 // No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
 // and a `you`, and the address stays in the server's document.
 const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
@@ -946,6 +956,16 @@ export const wire = {
   chat403NotSeated: as<ApiErrorBody>(chat403NotSeated),
   chat403Locked: as<ApiErrorBody>(chat403Locked),
   houseChatOff404: as<ApiErrorBody>(houseChatOff404),
+  // ---- M6.5c2 cycle D: the delete (R-D4) --------------------------------
+  /** An empty 204, which every host reads as `null`: the corpus's word that a
+   *  delete answers with nothing. */
+  chatDelete: chatDelete as null,
+  chatDelete403: as<ApiErrorBody>(chatDelete403),
+  /** The page read again after the delete: the corpus's one TOMBSTONE, at
+   *  `seq` 1 — `text: ""`, `deleted: true`, its author kept — and `rev` one
+   *  past `last`. */
+  chatDeleted: as<ChatPage>(chatDeleted),
+  houseChatDelete: houseChatDelete as null,
   // ---- M6.5c2: the bot's label -------------------------------------------
   tableBot: as<TableView>(tableBot),
   productionBot: as<ProductionBot>(productionBot),

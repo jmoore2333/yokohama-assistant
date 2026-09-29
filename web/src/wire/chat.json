@@ -9,6 +9,7 @@
         "you": true
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 1,
       "text": "good luck"
     },
@@ -20,6 +21,7 @@
         "you": false
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 2,
       "text": "you too"
     },
@@ -30,8 +32,10 @@
         "you": false
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 3,
       "text": "watching from the rail"
     }
-  ]
+  ],
+  "rev": 3
 }

@@ -70,9 +70,10 @@ interface Incoming {
  *   is 405 with an empty body, and a `GET` that is not an upgrade the table's
  *   426 (the orchestrator's ruling I-48).
  * - Every applied copy or removal, and every reply carrying
- *   `bump_house_chat`, sends every lobby socket ONE frame,
- *   `frame("house", house_frame(seq, chat))` — `chat` being the house chat's
- *   `last` — after its batch.
+ *   `bump_house_chat` or `bump_house_chat_rev` (a house message deleted,
+ *   M6.5c2 cycle D), sends every lobby socket ONE frame,
+ *   `frame("house", house_frame(seq, chat, rev))` — `chat` being the house
+ *   chat's `last` and `rev` its revision — after its batch.
  * - **The operator's listing** (spec §2.9), `GET /api/admin/tables` with
  *   `X-Yokohama-Operator` — which only the Worker's gate sets — is answered
  *   from the `copies` table alone (`listing`), before any module is built,
@@ -259,7 +260,7 @@ export class House extends DurableObject<Env> {
       instance.drop();
       throw e;
     }
-    if (reply.bumps.some((b) => "bump_house_chat" in b)) this.frameLobby(instance, house);
+    if (reply.bumps.some((b) => "bump_house_chat" in b || "bump_house_chat_rev" in b)) this.frameLobby(instance, house);
     return respond(reply.status, reply.body);
   }
 
@@ -417,7 +418,8 @@ export class House extends DurableObject<Env> {
    */
   private frameLobby(instance: Instance, house: string | undefined): void {
     try {
-      const done = instance.guarded((mod) => mod.house_frame(this.seq, lastOf(house)));
+      const { last, rev } = countsOf(house);
+      const done = instance.guarded((mod) => mod.house_frame(this.seq, last, rev));
       if ("trapped" in done) {
         log("trap", { id: HOUSE, call: "house_frame", error: done.trapped });
         return;
@@ -445,17 +447,19 @@ export class House extends DurableObject<Env> {
   }
 }
 
-/** The house chat's `last` — the newest message number ever given — out of
- *  its document (spec §2.5); `0` with no document. That document is the
+/** The house chat's `last` — the newest message number ever given — and its
+ *  `rev` — its revision, which a delete moves too (M6.5c2 cycle D) — out of
+ *  its document (spec §2.5); `0` for each with no document, and for a `rev`
+ *  a document written before the delete does not carry. That document is the
  *  house CHAT, not a table's copy: it carries no seed, and no bot descriptor
  *  (a bot author is a seat and a name), so not the `weights` above 2^53 a
  *  copy may carry since M6.5c2, which a parse rounds. It may be parsed because
- *  nothing here reads more than `last` and no parsed document is written
- *  back. */
-function lastOf(house: string | undefined): number {
-  if (house === undefined) return 0;
-  const last = (JSON.parse(house) as { last?: unknown }).last;
-  return typeof last === "number" ? last : 0;
+ *  nothing here reads more than these two numbers and no parsed document is
+ *  written back. */
+function countsOf(house: string | undefined): { last: number; rev: number } {
+  if (house === undefined) return { last: 0, rev: 0 };
+  const { last, rev } = JSON.parse(house) as { last?: unknown; rev?: unknown };
+  return { last: typeof last === "number" ? last : 0, rev: typeof rev === "number" ? rev : 0 };
 }
 
 /**

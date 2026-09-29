@@ -483,8 +483,8 @@ pub fn expire(id: &str) -> Reply {
 /// and drops a fraction, the cost that ruling accepted — and the `u32` then
 /// widens to the layer's `u64` without loss.
 #[wasm_bindgen]
-pub fn house_frame(seq: u32, chat: u32) -> String {
-    house_frame_inner(u64::from(seq), u64::from(chat))
+pub fn house_frame(seq: u32, chat: u32, rev: u32) -> String {
+    house_frame_inner(u64::from(seq), u64::from(chat), u64::from(rev))
 }
 
 /// Which of spec §2.4's picker rules a call into the layer answers to (R1's
@@ -970,6 +970,15 @@ mod tests {
         assert_eq!((r.status, tagged(&r).as_str()), (201, r#"[{"bump_table":"b"}]"#), "a table chat post");
         let r = call("red@t.test", "POST", "/api/chat", Some(r#"{"name":"Red","text":"anyone?"}"#));
         assert_eq!((r.status, tagged(&r).as_str()), (201, r#"[{"bump_house_chat":null}]"#), "a house chat post");
+        // M6.5c2 cycle D (R-D4): a message's delete bumps what its post did —
+        // the table's channel, or the house's REVISION (never its chat count) —
+        // and a refused one bumps nothing.
+        let r = call("blue@t.test", "DELETE", "/api/games/b/chat/1", None);
+        assert_eq!((r.status, tagged(&r).as_str()), (403, "[]"), "a seat that neither wrote it nor created the table");
+        let r = call("red@t.test", "DELETE", "/api/games/b/chat/1", None);
+        assert_eq!((r.status, tagged(&r).as_str()), (204, r#"[{"bump_table":"b"}]"#), "a table message deleted");
+        let r = call("red@t.test", "DELETE", "/api/chat/1", None);
+        assert_eq!((r.status, tagged(&r).as_str()), (204, r#"[{"bump_house_chat_rev":null}]"#), "a house message deleted");
         let r = call("red@t.test", "DELETE", "/api/games/b", None);
         assert_eq!((r.status, tagged(&r).as_str()), (204, r#"[{"end":"b"}]"#), "the creator's delete");
     }
@@ -1260,7 +1269,7 @@ mod tests {
         );
         let e = events_inner("t", Some("red@t.test"), "wait=25");
         assert_eq!(e.status, 200, "25 is allowed, and answered at once: {}", e.body);
-        assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0}"#);
+        assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0,"chat_rev":0}"#);
     }
 
     /// The error body this host writes itself (`host_refusal`, `events`) is

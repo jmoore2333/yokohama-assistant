@@ -161,12 +161,22 @@ pub struct RestoreRow {
 ///
 /// The checks are `archive_post`'s own, in `archive_post`'s own order and its
 /// own words — a `semantics_rev` present and equal to this build's, a terminal
-/// digest present, `replay_strict` clean, the table document parsing, passing
-/// [`tables::check_shape`](crate::tables) and AGREEING with the record, and the
+/// digest present, the table document parsing, passing
+/// [`tables::check_shape`](crate::tables) and AGREEING with the record, the
 /// document's id being `is_safe_id`'s, because there it becomes a path
-/// component. The ORDER is pinned through the real route by
+/// component, and LAST `replay_strict` clean. The ORDER is pinned through the
+/// real route by
 /// `api::tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
 /// which was written and run BEFORE these checks moved here.
+///
+/// **The table's four checks run BEFORE the replay since M6.5c2 cycle D**
+/// (straw poll row 81). A replay rebuilds the game's setup from the record's
+/// own configuration — its player count, colours and start seat, which the
+/// engine bounds by `debug_assert!` alone — and the table's `agrees_with` is
+/// what holds those against a document this layer has shape-checked. So an
+/// untrusted record reaches setup only beside a table that agrees with it.
+/// (The one replay above the table's checks is the unknown-provenance arm's,
+/// which the engine refuses at its provenance check, before any setup.)
 ///
 /// **It builds a [`Rules`](yokohama_core::Rules) for the caller that has none.**
 /// `AppState`'s own doc states this crate's discipline — "`Rules::standard()` is
@@ -226,9 +236,6 @@ pub(crate) fn check_pair_with(
     if rec.terminal_digest.is_none() {
         return Err("the record carries no terminal digest".to_string());
     }
-    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
-        format!("the record does not replay: at event {}, {}", e.event_index, e.message)
-    })?;
     let doc: crate::table::TableDoc = serde_json::from_str(table)
         .map_err(|e| format!("the table document does not parse: {e}"))?;
     crate::tables::check_shape(&doc)
@@ -238,6 +245,10 @@ pub(crate) fn check_pair_with(
     if !crate::store::is_safe_id(&doc.id) {
         return Err("the table's id is not a safe name".to_string());
     }
+    // LAST, behind a table that agrees with the record (the doc above).
+    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
+        format!("the record does not replay: at event {}, {}", e.event_index, e.message)
+    })?;
     Ok(PairFacts {
         players: doc.players,
         events: rec.events.len(),
@@ -469,6 +480,35 @@ mod tests {
         assert_ne!(mangled, table, "the mutation must actually change the fixture");
         assert!(check_pair(&record, &mangled).is_err(), "a table that does not agree with its record");
         assert!(!crate::api::archive_would_accept(&record, &mangled));
+    }
+
+    /// **The table is checked BEFORE the record is replayed** (M6.5c2 cycle D,
+    /// straw poll row 81) — the catcher for "the table checks after the
+    /// replay", on the function both callers share.
+    ///
+    /// A replay rebuilds the game's setup from the record's OWN configuration,
+    /// which nothing else here bounds — the engine checks its player count by
+    /// `debug_assert!` alone — and it is the table's checks that hold
+    /// `players`, `colors` and `start_seat` against it. So a pair whose record
+    /// would fail LATER, in its replay, and whose table disagrees about the
+    /// player count is refused on the TABLE: the replay is never reached. The
+    /// premise line shows the record really does fail its replay beside a
+    /// table that agrees.
+    #[test]
+    fn the_table_is_checked_before_the_record_is_replayed() {
+        let (record, table) = committed_browser_played_pair();
+        let mut v: serde_json::Value = serde_json::from_str(&record).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        assert!(events.len() > 1, "anti-vacuity: a one-event record cannot be re-ordered");
+        events[0] = events[1].clone();
+        let broken = v.to_string();
+        let said = check_pair(&broken, &table).expect_err("premise: this record does not replay");
+        assert!(said.starts_with("the record does not replay"), "{said}");
+
+        let wrong = table.replace("\"players\": 2", "\"players\": 3");
+        assert_ne!(wrong, table, "the mutation must actually change the fixture");
+        let said = check_pair(&broken, &wrong).expect_err("refused");
+        assert!(said.starts_with("the table document"), "the table's sentence, not the replay's: {said}");
     }
 
     /// R-6.5b2.12: REJECTED and UNPLAYABLE are different answers. Refusing a

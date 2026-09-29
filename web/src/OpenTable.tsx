@@ -356,7 +356,7 @@ export function OpenTable({
             invite, in the MAIN column (the spec-gap answer, not mock 08's
             rail). */}
         {seated && (
-          <Chat scope={{ kind: "table", id: game }} tick={tick} colors={colors} sendName={false} />
+          <Chat scope={{ kind: "table", id: game }} tick={tick} canModerate={table.mine} colors={colors} sendName={false} />
         )}
 
         <div className="open-table-controls">

@@ -8,6 +8,7 @@ import {
   filterLobby,
   firstSendAccepts,
   freezeClock,
+  houseDeleteRow,
   loadCorpus,
   loadScripts,
   normalizeHouseChat,
@@ -35,6 +36,9 @@ const IDS = ["wire2", "wire", "wire4"];
 const CLOCK = 1_790_300_000;
 /** The house chat's `last` when a run starts. */
 const BASE = 4321;
+/** The house chat's `rev` when a run starts (M6.5c2 cycle D): unlike `last`,
+ *  and it must be, so a revision taken back by the wrong base fails. */
+const BASE_REV = 9876;
 
 describe("freezeClock", () => {
   // `wire_fixtures.rs`'s `freeze_clock`, which the committed files were cut
@@ -109,7 +113,7 @@ describe("normalizeHouseChat", () => {
   it("takes the post's seq back by the base: base + 1 reads 1", () => {
     const post = committed("house_chat_post");
     expect(post.seq, "the premise").toBe(1);
-    expect(normalizeHouseChat("house_chat_post", { ...post, seq: BASE + 1 }, BASE)).toEqual(post);
+    expect(normalizeHouseChat("house_chat_post", { ...post, seq: BASE + 1 }, BASE, BASE_REV)).toEqual(post);
   });
   // **The anti-vacuity partner of the foreign case below** (the orchestrator's
   // seq-only ruling): this run's OWN message above the base is kept, an older
@@ -118,11 +122,24 @@ describe("normalizeHouseChat", () => {
   it("takes the page's last and every seq back, drops an earlier run's message, keeps its own, and holds", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
-    const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE - 3 }, { ...ours, seq: BASE + 1 }] };
-    const normalized = normalizeHouseChat("house_chat", got, BASE);
+    const got = { last: BASE + 1, rev: BASE_REV + 1, messages: [{ ...ours, seq: BASE - 3 }, { ...ours, seq: BASE + 1 }] };
+    const normalized = normalizeHouseChat("house_chat", got, BASE, BASE_REV);
     expect(normalized.messages, "only this run's own message, at seq 1").toEqual(page.messages);
-    expect(normalized.last).toBe(1);
+    expect([normalized.last, normalized.rev], "last by the base, rev by the base revision").toEqual([1, 1]);
     expect(normalized, "the run holds").toEqual(page);
+  });
+  // M6.5c2 cycle D (R-D4): the revision counts every message and every delete
+  // anybody made on the shared house chat, so it is taken back by the
+  // revision read at the start — never by `last`'s base, which the house
+  // chat's deletes leave behind it. A delete by someone else during the run
+  // moves it, and the run differs. Mutant: `rev` taken back by `base`.
+  it("takes the page's rev back by the base revision, and a delete by someone else during the run differs", () => {
+    const page = committed("house_chat");
+    const ours = { ...page.messages[0], seq: BASE + 1 };
+    expect(normalizeHouseChat("house_chat", { last: BASE + 1, rev: BASE_REV + 1, messages: [ours] }, BASE, BASE_REV)).toEqual(page);
+    const theirs = normalizeHouseChat("house_chat", { last: BASE + 1, rev: BASE_REV + 2, messages: [ours] }, BASE, BASE_REV);
+    expect(theirs.rev, "another person's delete moved it").toBe(2);
+    expect(theirs).not.toEqual(page);
   });
   // **A message after the base that is not this run's is KEPT, and the run
   // differs twice** (M6.5c2 cycle D, R-6.5c2.35). The filter used to drop it by
@@ -135,28 +152,56 @@ describe("normalizeHouseChat", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
     const theirs = { ...ours, author: { ...ours.author, name: "Someone Else" }, seq: BASE + 2 };
-    const normalized = normalizeHouseChat("house_chat", { last: BASE + 2, messages: [{ ...ours, seq: BASE + 1 }, theirs] }, BASE);
+    const normalized = normalizeHouseChat(
+      "house_chat",
+      { last: BASE + 2, rev: BASE_REV + 2, messages: [{ ...ours, seq: BASE + 1 }, theirs] },
+      BASE,
+      BASE_REV,
+    );
     expect(normalized.last, "last is not the committed page's").toBe(2);
     expect(normalized.last).not.toBe(page.last);
     expect(normalized.messages).toHaveLength(2);
     expect(normalized.messages).not.toEqual(page.messages);
   });
   // On a SECOND run the base IS the first run's own post — `seq > base` is
-  // what drops it.
-  it("drops the replay's own message AT the base: the previous run's post", () => {
+  // what drops it. Since M6.5c2 cycle D that post is a TOMBSTONE: the first
+  // run deleted it before it ended.
+  it("drops the replay's own message AT the base: the previous run's post, deleted", () => {
     const page = committed("house_chat");
     const ours = page.messages[0];
-    const got = { last: BASE + 1, messages: [{ ...ours, seq: BASE }, { ...ours, seq: BASE + 1 }] };
-    expect(normalizeHouseChat("house_chat", got, BASE)).toEqual(page);
+    const previous = { ...ours, seq: BASE, text: "", deleted: true };
+    const got = { last: BASE + 1, rev: BASE_REV + 1, messages: [previous, { ...ours, seq: BASE + 1 }] };
+    expect(normalizeHouseChat("house_chat", got, BASE, BASE_REV)).toEqual(page);
   });
-  it("refuses a name that is not the house chat, and a seq or last that is not a number", () => {
-    expect(() => normalizeHouseChat("chat", committed("chat"), BASE)).toThrow("chat is not a house chat payload");
-    expect(() => normalizeHouseChat("house_chat_post", committed("error"), BASE)).toThrow(
+  it("refuses a name that is not the house chat, and a seq, last or rev that is not a number", () => {
+    expect(() => normalizeHouseChat("chat", committed("chat"), BASE, BASE_REV)).toThrow("chat is not a house chat payload");
+    expect(() => normalizeHouseChat("house_chat_post", committed("error"), BASE, BASE_REV)).toThrow(
       "house_chat_post: the reply's seq is not a number",
     );
-    expect(() => normalizeHouseChat("house_chat", committed("error"), BASE)).toThrow(
+    expect(() => normalizeHouseChat("house_chat", committed("error"), BASE, BASE_REV)).toThrow(
       "house_chat: the reply's last is not a number",
     );
+    expect(() => normalizeHouseChat("house_chat", { last: BASE, messages: [] }, BASE, BASE_REV)).toThrow(
+      "house_chat: the reply's rev is not a number",
+    );
+  });
+});
+
+// M6.5c2 cycle D (R-D4): the walk's house post is deleted by the run that made
+// it, by the number that run's post was really given. Mutants: the path left
+// as the walk has it (the first run's delete names a stranger's message, or
+// nothing); the shift ignored; a row that is not the house delete rewritten.
+describe("houseDeleteRow", () => {
+  const house = SCRIPTS.walk.find((row) => row.fixture === "house_chat_delete");
+  it("carries the house delete to the run's own post, and leaves every other row alone", () => {
+    expect(house, "premise: the walk deletes its house post").toBeDefined();
+    expect(house.path, "premise: the corpus's post was the house's first").toBe("/api/chat/1");
+    expect(houseDeleteRow(house, BASE)).toEqual({ ...house, path: `/api/chat/${BASE + 1}` });
+    expect(houseDeleteRow(house, 0), "a shift of nothing").toEqual(house);
+    for (const row of SCRIPTS.walk.filter((r) => r !== house)) expect(houseDeleteRow(row, BASE)).toBe(row);
+  });
+  it("refuses the delete before the run's post has been answered", () => {
+    expect(() => houseDeleteRow(house, undefined)).toThrow("the run's own house post was not answered");
   });
 });
 
@@ -303,7 +348,11 @@ function liveBody(fixture) {
   if (fixture === "house_chat_post") return { ...body, seq: body.seq + BASE };
   if (fixture === "house_chat") {
     const earlier = { ...body.messages[0], seq: BASE - 1 };
-    return { last: body.last + BASE, messages: [earlier, ...body.messages.map((m) => ({ ...m, seq: m.seq + BASE }))] };
+    return {
+      last: body.last + BASE,
+      rev: body.rev + BASE_REV,
+      messages: [earlier, ...body.messages.map((m) => ({ ...m, seq: m.seq + BASE }))],
+    };
   }
   if (fixture === "archive_post_abandoned") return { ...body, identical: true };
   return body;
@@ -320,7 +369,7 @@ const json = (status, body) =>
 function fakeHost({ forceStatus = 204, edit = () => {} } = {}) {
   const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
   const houseChat = committed("house_chat");
-  const plan = [() => json(200, { ...houseChat, last: BASE, messages: [] })];
+  const plan = [() => json(200, { ...houseChat, last: BASE, rev: BASE_REV, messages: [] })];
   for (const { row } of rows) {
     const status = row.fixture === "archive_post_abandoned" ? 200 : row.status;
     plan.push(() => json(status, row.fixture === null ? {} : liveBody(row.fixture)));
@@ -382,12 +431,17 @@ describe("replay", () => {
         "firstSendAccepts archive_post_abandoned",
         "normalizeHouseChat house_chat",
         "normalizeHouseChat house_chat_post",
+        "houseDeleteRow house_chat_delete",
       ].sort(),
     );
+    // The run's own post is the one it deletes (R-D4): the fake's post was
+    // given the committed number plus the base.
+    const deleted = host.requests.filter((r) => r.method === "DELETE" && r.url.startsWith(`${ORIGIN}/api/chat/`));
+    expect(deleted.map((r) => r.url)).toEqual([`${ORIGIN}/api/chat/${BASE + 1}`]);
     expect(result.forcedBefore.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
     expect(result.forcedAfter.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
     expect(text).toContain("live-replay: HOLDS");
-    expect(text).toContain("the house chat's base: last 4321, read as blue@wire.test");
+    expect(text).toContain("the house chat's base: last 4321, rev 9876, read as blue@wire.test");
   });
 
   it("sends the credential to the Worker's origin alone, the forces bare, and a claimed header only for a row's who", async () => {

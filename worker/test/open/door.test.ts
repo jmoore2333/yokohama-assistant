@@ -134,9 +134,16 @@ function yokohamaHeaders(req: Request): Record<string, string> {
 /** The layer's own answer to no caller at this door: a fresh module in this
  *  project's configuration, asked `identity` with none. */
 function noCaller(): string {
+  return identityOf(undefined).body;
+}
+
+/** A fresh module in this project's configuration, asked `identity` for
+ *  `claim`: the layer's own status and body for that caller. */
+function identityOf(claim: string | undefined): { status: number; body: string } {
   const mod = createModule(compiled);
   mod.init(configModule.moduleConfig(env, null));
-  return readReply(mod.identity(undefined)).body;
+  const { status, body } = readReply(mod.identity(claim));
+  return { status, body };
 }
 
 describe("the open door (M6.5c2, spec §2.1)", () => {
@@ -272,6 +279,28 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     const force = await reaching(() => through("/api/admin/tables/some-table/expire?force", { method: "POST", claim: "boss@t.test" }));
     expect([force.result.status, force.result.text]).toEqual([404, '{"error":"no such endpoint: /api/admin/tables/some-table/expire"}']);
     expect([force.house.length, force.table.length], "the house alone, never the table the path names").toEqual([1, 0]);
+  });
+
+  // M6.5c2 cycle D, straw poll row 8 (R-C10 fixed): a claim a header can
+  // carry and the key grammar refuses — `..`, or a name too long for it —
+  // names an Archive object whose `init` refuses it as that object's caller.
+  // That was the object's 500; the NAS refuses the same request with the
+  // identity 401, and now so does the Worker, in the layer's own body — the
+  // one its `identity` writes for that caller, which this cell asks a fresh
+  // module for. The anti-vacuity half: a claim the grammar takes files its
+  // save (the cell below does), so the 401 is about the claim. Mutant: the
+  // object's init refusal answered 500 again (`callerRefused` never asked).
+  it("a claim the key grammar refuses is the layer's 401 at the archive, as on the NAS", async () => {
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    // `..`, and 40 letters: over the key grammar's 32 and under the 254 bytes
+    // past which the Worker hands the house the request instead.
+    for (const claim of ["..", "x".repeat(40)]) {
+      const layer = identityOf(claim);
+      expect(layer.status, `premise: the layer refuses ${JSON.stringify(claim.slice(0, 8))} as a caller`).toBe(401);
+      const res = await reaching(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
+      expect([res.result.status, res.result.text], claim.slice(0, 8)).toEqual([401, layer.body]);
+      expect([res.archive.length, res.house.length], "the claim's own archive object answered it").toEqual([1, 0]);
+    }
   });
 
   // Review R2.2-m4: a plain name ending in `.test` is legal under the key

@@ -1,7 +1,7 @@
 // The chat panel (M6.4 spec §6.1): one component, told where it is and when to
 // look, owning its list, its fetch and its post. Every payload is the corpus's.
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Chat, when } from "./Chat";
@@ -25,7 +25,7 @@ const chatStub = (extra?: (c: ApiCall) => Reply | undefined) =>
       if (after === 0) return wire.chat;
       if (after < wire.chat.last)
         return { ...wire.chat, messages: wire.chat.messages.filter((m) => m.seq > after) };
-      return { messages: [], last: wire.chat.last };
+      return { messages: [], last: wire.chat.last, rev: wire.chat.rev };
     }
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
@@ -36,7 +36,7 @@ const open = () => localStorage.setItem(OPEN_KEY, JSON.stringify(["wire"]));
  *  nothing. **Derived, never hand-authored** — the `gamesNamed` idiom — and it
  *  is what makes a post's own `seq` 1 land ABOVE what the panel holds, which
  *  the corpus's three-message page does not. */
-const emptyRoom: ChatPage = { ...wire.chat, messages: [], last: 0 };
+const emptyRoom: ChatPage = { ...wire.chat, messages: [], last: 0, rev: 0 };
 
 /** Let the panel's fetch chain finish — including the re-check a trigger that
  *  arrived mid-flight defers (ruling R-pre-4).
@@ -222,6 +222,7 @@ describe("the chat panel", () => {
     answer = {
       messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }],
       last: wire.chat.last + 1,
+      rev: wire.chat.rev + 1,
     };
     rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
     expect(await screen.findByLabelText("1 new")).toBeInTheDocument();
@@ -453,7 +454,11 @@ describe("the chat panel", () => {
     // Now the reader scrolls back up, and the next message does not yank them
     // down. The fourth is the corpus's own first, renumbered above the page.
     top = 0;
-    answer = { messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }], last: wire.chat.last + 1 };
+    answer = {
+      messages: [{ ...wire.chat.messages[0]!, seq: wire.chat.last + 1 }],
+      last: wire.chat.last + 1,
+      rev: wire.chat.rev + 1,
+    };
     rerender(<Chat scope={TABLE} tick={2} colors={colors} sendName={false} />);
     await waitFor(() =>
       expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length + 1),
@@ -547,5 +552,213 @@ describe("the chat panel", () => {
       "tabindex",
       "-1",
     );
+    expect(screen.getByRole("button", { name: "Delete this message", hidden: true })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
+});
+
+// ---- M6.5c2 cycle D: the delete (R-D4; Review Focus 2) ---------------------
+
+/** The table's page as the server answers it: `start` (by default
+ *  `chat.json`) until `set` or `deleted()` — `chat_deleted.json` — replaces
+ *  it, each answering a cursor with its own delta, as the server does. */
+function roomStub(start: ChatPage = wire.chat) {
+  let page: ChatPage = start;
+  const stub = chatStub((call) => {
+    if (call.method === "DELETE") return new Response(wire.chatDelete, { status: 204 });
+    if (call.method !== "GET") return undefined;
+    const after = Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0);
+    return { ...page, messages: page.messages.filter((m) => m.seq > after) };
+  });
+  return {
+    stub,
+    set: (next: ChatPage) => {
+      page = next;
+    },
+    deleted: () => {
+      page = wire.chatDeleted;
+    },
+    reads: () => stub.matching("GET", "/chat").map((c) => new URL(c.path, "http://x").searchParams.get("after") ?? "0"),
+  };
+}
+
+describe("the chat panel's delete", () => {
+  /** **A tombstone is drawn as "message removed" in its author's row**,
+   *  read off `chat_deleted.json` — the server's own tombstone, `text: ""` —
+   *  and it carries no Delete control of its own. */
+  it("draws a tombstone as 'message removed' under its author, with no control", async () => {
+    open();
+    chatStub((call) => (call.method === "GET" ? wire.chatDeleted : undefined));
+    render(<Chat scope={TABLE} count={wire.chatDeleted.last} colors={colors} sendName={false} />);
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(wire.chatDeleted.messages.length);
+    const gone = wire.chatDeleted.messages[0]!;
+    expect(gone.deleted, "premise: the corpus's first message is the tombstone").toBe(true);
+    if (gone.author.kind !== "seat") throw new Error("premise: red's seat wrote it");
+    expect(rows[0]!).toHaveTextContent("message removed");
+    expect(rows[0]!).toHaveTextContent(gone.author.name!);
+    expect(rows[0]!.querySelector(".chat-who.seat-" + colors[gone.author.seat]!.toLowerCase())).not.toBeNull();
+    expect(rows[0]!.querySelector("button"), "a tombstone cannot be deleted again").toBeNull();
+    expect(rows[1]!).toHaveTextContent(wire.chatDeleted.messages[1]!.text);
+    expect(rows[1]!).not.toHaveTextContent("message removed");
+  });
+
+  /** **The control is on the reader's OWN messages, and at a table the reader
+   *  created on every message** (R-D4) — the server's rule, drawn: red holds
+   *  message 1 (`you: true`); blue's and the watcher's are red's to take down
+   *  only as the table's creator. */
+  it("offers Delete on the reader's own messages, and on every message at a table they created", async () => {
+    open();
+    chatStub();
+    const { unmount } = render(<Chat scope={TABLE} count={wire.chat.last} colors={colors} sendName={false} />);
+    let rows = await screen.findAllByRole("listitem");
+    const own = wire.chat.messages.map((m) => m.author.kind !== "bot" && m.author.you);
+    expect(own, "premise: red's own message, and two that are not").toEqual([true, false, false]);
+    expect(rows.map((r) => r.querySelector("button") !== null)).toEqual(own);
+    unmount();
+    render(<Chat scope={TABLE} count={wire.chat.last} canModerate colors={colors} sendName={false} />);
+    rows = await screen.findAllByRole("listitem");
+    expect(rows.map((r) => r.querySelector("button") !== null)).toEqual([true, true, true]);
+  });
+
+  /** **Delete asks the server, and the SIGNAL shows the result** (R-D4;
+   *  Review Focus 2). The 204 changes nothing on screen by itself; the table's
+   *  next frame carries `chat_rev` one past its count (`events.json`), and the
+   *  panel re-reads what it holds — so the row every OTHER reader holding the
+   *  message sees change is the row this one sees change too, by the same
+   *  road. */
+  it("sends the delete and draws the tombstone when the frame's chat_rev moves", async () => {
+    open();
+    const room = roomStub();
+    const { rerender } = render(
+      <Chat scope={TABLE} count={wire.chat.last} rev={wire.chat.rev} colors={colors} sendName={false} />,
+    );
+    await screen.findAllByRole("listitem");
+    await userEvent.click(within(screen.getAllByRole("listitem")[0]!).getByRole("button", { name: "Delete this message" }));
+    await waitFor(() => expect(room.stub.matching("DELETE", "/api/games/wire/chat/1")).toHaveLength(1));
+    await settle();
+    expect(screen.getAllByRole("listitem")[0]!, "the reply alone changes nothing").toHaveTextContent(wire.chat.messages[0]!.text);
+    room.deleted();
+    rerender(
+      <Chat scope={TABLE} count={wire.events.chat} rev={wire.events.chat_rev} colors={colors} sendName={false} />,
+    );
+    await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
+    expect(room.reads().at(-1), "the page it holds, re-read from the start").toBe("0");
+  });
+
+  /** **A moved `rev` re-reads the page; an append does not** (the
+   *  orchestrator's ruling, Q1) — on a COUNT host. `chat.json`'s numbers are
+   *  the panel's to start from; an append is the count and the revision moving
+   *  together (`chat_after.json`'s message, one delta read and no re-read), and
+   *  a delete is the revision moving alone (`events.json`, whose `chat_rev` is
+   *  one past its `chat`: one re-read from 0, `chat_deleted.json`). Folded,
+   *  the re-read waits for the unfold, as the count rule's read does. */
+  it("re-reads on a moved revision and not on an append, and waits while folded", async () => {
+    open();
+    // Two held — `chat.json` as it read before its third message — so that
+    // message, `chat_after.json`'s, arrives as an append.
+    const room = roomStub({ ...wire.chat, messages: wire.chat.messages.slice(0, 2), last: 2, rev: 2 });
+    const { rerender } = render(<Chat scope={TABLE} count={2} rev={2} colors={colors} sendName={false} />);
+    await settle();
+    expect(room.reads(), "the mount").toEqual(["0"]);
+    room.set(wire.chat);
+    rerender(<Chat scope={TABLE} count={wire.chatAfter.last} rev={wire.chatAfter.rev} colors={colors} sendName={false} />);
+    await settle();
+    expect(room.reads(), "an append: one delta, no re-read").toEqual(["0", "2"]);
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+
+    room.deleted();
+    await userEvent.click(screen.getByRole("button", { name: "hide" }));
+    rerender(<Chat scope={TABLE} count={wire.events.chat} rev={wire.events.chat_rev} colors={colors} sendName={false} />);
+    await settle();
+    expect(room.reads(), "folded: the re-read waits").toEqual(["0", "2"]);
+    await userEvent.click(screen.getByRole("button", { name: "show" }));
+    await waitFor(() => expect(room.reads()).toEqual(["0", "2", "0"]));
+    await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
+  });
+
+  /** **A WAKE host learns of a delete from the page's own `rev`** (Q1): the
+   *  open table and the lobby drop their frames and pass a tick, so the delta
+   *  read is the panel's only news — and when its `rev - last` has moved, the
+   *  panel re-reads what it holds. An append on a tick re-reads nothing. */
+  it("re-reads on a tick whose delta shows the revision moved, and not on an append", async () => {
+    open();
+    const room = roomStub();
+    const { rerender } = render(<Chat scope={TABLE} tick={0} colors={colors} sendName={false} />);
+    await settle();
+    rerender(<Chat scope={TABLE} tick={1} colors={colors} sendName={false} />);
+    await settle();
+    expect(room.reads(), "a tick with nothing new: the delta alone").toEqual(["0", "3"]);
+    room.deleted();
+    rerender(<Chat scope={TABLE} tick={2} colors={colors} sendName={false} />);
+    await waitFor(() => expect(room.reads()).toEqual(["0", "3", "3", "0"]));
+    await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
+  });
+
+  /** **A re-read keeps the reader's own post that landed while it was out**
+   *  (M6.5c2 cycle D). The re-read is held open; the reader posts meanwhile
+   *  and the 201 is drawn; then the re-read lands with the page as the server
+   *  built it BEFORE the post (`chat_deleted.json`, `last` 3). Replacing the
+   *  list with that page alone would drop the post for good — the cursor has
+   *  already passed its number, so no count would fetch it again. The post is
+   *  `chat_post.json` renumbered past the page, the room's next number. */
+  it("keeps its own post through a re-read that was out when the post landed", async () => {
+    open();
+    const reread = gate<Reply>();
+    let first = true;
+    const posted = { ...wire.chatPost, seq: wire.chatDeleted.last + 1 };
+    const stub = chatStub((call) => {
+      if (call.method === "POST") return posted;
+      if (call.method !== "GET") return undefined;
+      if (first) {
+        first = false;
+        return wire.chat;
+      }
+      return reread.promise;
+    });
+    const { rerender } = render(
+      <Chat scope={TABLE} count={wire.chat.last} rev={wire.chat.rev} colors={colors} sendName={false} />,
+    );
+    await settle();
+    rerender(<Chat scope={TABLE} count={wire.events.chat} rev={wire.events.chat_rev} colors={colors} sendName={false} />);
+    await waitFor(() => expect(stub.matching("GET", "/chat")).toHaveLength(2));
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Say something" }), "still here{Enter}");
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(wire.chat.messages.length + 1));
+    reread.resolve(wire.chatDeleted);
+    await waitFor(() => expect(screen.getAllByRole("listitem")[0]!).toHaveTextContent("message removed"));
+    const rows = screen.getAllByRole("listitem");
+    expect(rows, "the page's three and the post").toHaveLength(wire.chatDeleted.messages.length + 1);
+    expect(rows.at(-1)!).toHaveTextContent(posted.text);
+  });
+
+  /** **A refused delete says why and changes nothing** — the server's own
+   *  sentence (`chat_delete_403.json`), and the control usable again. */
+  it("draws the server's refusal and keeps the message", async () => {
+    open();
+    chatStub((call) => (call.method === "DELETE" ? { status: 403, body: wire.chatDelete403 } : undefined));
+    render(<Chat scope={TABLE} count={wire.chat.last} canModerate colors={colors} sendName={false} />);
+    const rows = await screen.findAllByRole("listitem");
+    await userEvent.click(within(rows[1]!).getByRole("button", { name: "Delete this message" }));
+    expect(await screen.findByText(wire.chatDelete403.error)).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
+    expect(within(screen.getAllByRole("listitem")[1]!).getByRole("button", { name: "Delete this message" })).toBeEnabled();
+  });
+
+  /** **At the house the delete is the house's route** — the author's own
+   *  post, from `house_chat_post.json`'s seq. */
+  it("sends a house message's delete to the house", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stub = stubApi((call) => {
+      if (call.method === "DELETE") return new Response(wire.houseChatDelete, { status: 204 });
+      if (call.method === "GET") return { ...wire.houseChat, messages: [{ ...wire.houseChat.messages[0]!, author: wire.houseChatPost.author }] };
+      return undefined;
+    });
+    render(<Chat scope={{ kind: "house" }} tick={0} sendName heading="h3" />);
+    const [row] = await screen.findAllByRole("listitem");
+    await userEvent.click(within(row!).getByRole("button", { name: "Delete this message" }));
+    await waitFor(() => expect(stub.matching("DELETE", `/api/chat/${wire.houseChatPost.seq}`)).toHaveLength(1));
   });
 });

@@ -128,6 +128,8 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["chat_403_not_seated", wire.chat403NotSeated, KEYS.apiError],
     ["chat_403_locked", wire.chat403Locked, KEYS.apiError],
     ["house_chat_off_404", wire.houseChatOff404, KEYS.apiError],
+    // M6.5c2 cycle D (R-D4): the delete's one refusal.
+    ["chat_delete_403", wire.chatDelete403, KEYS.apiError],
     // M6.5b's five archive refusals, each one root key, here for the same
     // reason M6.4's five are: the sentences are asserted below, and this is
     // what would see a key the server grew on one of them.
@@ -196,7 +198,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
   // keeps `bot`, which is declared and has no fixture, from arriving unnoticed.
   it("ChatPage, ChatMessage and each author by its kind", () => {
     const byKind = { seat: KEYS.chatAuthorSeat, watcher: KEYS.chatAuthorWatcher } as const;
-    for (const page of [wire.chat, wire.chatAfter, wire.houseChat]) {
+    for (const page of [wire.chat, wire.chatAfter, wire.houseChat, wire.chatDeleted]) {
       expect(keys(page)).toEqual(listed(KEYS.chatPage));
       for (const m of page.messages) {
         expect(keys(m)).toEqual(listed(KEYS.chatMessage));
@@ -213,6 +215,29 @@ describe("the payload roots carry exactly the fields the client declares", () =>
       expect(keys(m.author)).toEqual(listed(byKind[m.author.kind as keyof typeof byKind]));
       expect(m.author.kind !== "bot" && m.author.you, "a post's reply is the poster's own").toBe(true);
     }
+  });
+
+  // **A delete answers with nothing** (M6.5c2 cycle D, R-D4): an empty 204,
+  // which the walk records — and every host reads — as `null`, at a table and
+  // at the house alike. A body here would be a second statement of the
+  // tombstone the next page read carries.
+  it("a delete's answer is empty, at a table and at the house", () => {
+    expect([wire.chatDelete, wire.houseChatDelete]).toEqual([null, null]);
+    expect(wire.chatDelete403.error).toBe("only the message's author or the table's creator may delete it");
+  });
+
+  // **The tombstone, as the server emits it** (M6.5c2 cycle D, R-D4): the one
+  // committed message whose `deleted` reads true — so the key set above is
+  // checked against a tombstone too — with its text the empty string (never
+  // null), its author and number kept, and the page's `rev` one past its
+  // `last`, where every page before the delete held them equal.
+  it("the page after the delete carries one tombstone, and a revision one past its count", () => {
+    const [gone, ...kept] = wire.chatDeleted.messages;
+    expect(gone).toMatchObject({ seq: 1, text: "", deleted: true, author: wire.chat.messages[0]!.author });
+    expect(kept.every((m) => !m.deleted)).toBe(true);
+    expect(wire.chatDeleted.rev - wire.chatDeleted.last).toBe(1);
+    expect(wire.chat.rev - wire.chat.last, "before the delete").toBe(0);
+    expect(wire.events.chat_rev - wire.events.chat, "the signal says the same").toBe(1);
   });
 
   // **Every HUMAN seat in the corpus carries exactly four keys, and no

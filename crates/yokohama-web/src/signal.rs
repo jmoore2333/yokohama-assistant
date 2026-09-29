@@ -1,5 +1,6 @@
-//! **The change signal, as a trait (M6.5a, R-6.5a.8): the layer's eight bump
-//! sites call four methods over `&str`.** [`Signals`] — tokio `watch` channels,
+//! **The change signal, as a trait (M6.5a, R-6.5a.8): the layer's bump sites
+//! call five methods over `&str`** (four until M6.5c2 cycle D added the house's
+//! revision bump, R-D4). [`Signals`] — tokio `watch` channels,
 //! everything below the `use` lines — implements them for the axum host, and
 //! [`NoSignal`] is the unconditional no-op a host with nothing to wake passes.
 //! Subscribing is a transport concern and stays on `Signals`: a stream is the
@@ -23,6 +24,13 @@
 //! for the writes a lobby listing reads and `chat` for a house message. One
 //! channel because a lobby holds one connection; two numbers so that a frame
 //! SAYS which of the two moved — which is a capability and not yet a saving.
+//! **A third since M6.5c2 cycle D** (R-D4): `rev`, the house chat's revision,
+//! which a message moves with `chat` and a DELETE moves alone. **It is carried
+//! for the contract, and no client reads it yet**: the lobby is a `"wake"`
+//! consumer that drops the frame, and its chat panel learns of a delete from
+//! the `rev` on the house chat PAGE its next read returns. What the frame's
+//! `rev` does today is wake every lobby on a delete, which `chat` alone would
+//! not.
 //! At HEAD the lobby is a `"wake"` consumer and drops the frame, so a house
 //! message costs every visible lobby its three listing reads (recorded in the
 //! M6.4 close as a LEAVE item); the second counter is what a `"value"` consumer
@@ -30,7 +38,7 @@
 
 /// What a write site calls when something it wrote has changed.
 ///
-/// Four methods over `&str` and nothing else: this trait knows no game, no
+/// Five methods over `&str` and nothing else: this trait knows no game, no
 /// table and no seat, and returns nothing, so it is object-safe and a layer
 /// holds one as `Arc<dyn Signal>`. **A bump follows its write and never
 /// precedes it** — the contract is the caller's, and it is why every call sits
@@ -43,6 +51,9 @@ pub trait Signal: Send + Sync {
     /// The house's CHAT counter only — a house message wakes every lobby and
     /// moves no table listing (M6.4, R-6.4.7).
     fn bump_house_chat(&self);
+    /// The house's chat REVISION only — a house message DELETED (M6.5c2 cycle
+    /// D, R-D4), which adds no message and so must not move `chat`.
+    fn bump_house_chat_rev(&self);
     /// The terminal bump: the table is gone and every stream on it ends.
     fn end(&self, id: &str);
 }
@@ -58,16 +69,18 @@ impl Signal for NoSignal {
     fn bump(&self, _id: &str) {}
     fn bump_table(&self, _id: &str) {}
     fn bump_house_chat(&self) {}
+    fn bump_house_chat_rev(&self) {}
     fn end(&self, _id: &str) {}
 }
 
-/// The house frame's DATA: the two counters as `{"seq":…,"chat":…}`, `seq`
-/// first (M6.4, R-6.4.7). `pub` and outside `server` since M6.5c2 (spec §2.6's
-/// restatements): `house_stream` writes it as each `house` event's data, and the
-/// Worker module's lobby socket writes the same bytes by calling this, not a
-/// copy pinned to this crate's source text.
-pub fn house_frame(seq: u64, chat: u64) -> String {
-    format!("{{\"seq\":{seq},\"chat\":{chat}}}")
+/// The house frame's DATA: the three counters as `{"seq":…,"chat":…,"rev":…}`,
+/// in that order (M6.4, R-6.4.7; `rev` since M6.5c2 cycle D, R-D4). `pub` and
+/// outside `server` since M6.5c2 (spec §2.6's restatements): `house_stream`
+/// writes it as each `house` event's data, and the Worker module's lobby socket
+/// writes the same bytes by calling this, not a copy pinned to this crate's
+/// source text. No client reads `rev` off the frame yet — see the module doc.
+pub fn house_frame(seq: u64, chat: u64, rev: u64) -> String {
+    format!("{{\"seq\":{seq},\"chat\":{chat},\"rev\":{rev}}}")
 }
 
 #[cfg(feature = "server")]
@@ -87,11 +100,14 @@ pub struct Bump {
     pub end: bool,
 }
 
-/// The house frame's two counters (M6.4, R-6.4.7).
+/// The house frame's three counters (M6.4, R-6.4.7; `rev` since M6.5c2 cycle
+/// D, R-D4).
 ///
 /// `seq` moves on every write a lobby LISTING reads — a create, a join, a
 /// finalize, a move, a delete — and `chat` moves on a house message and on
-/// nothing else. The two are separate so that a consumer CAN tell them apart
+/// nothing else. `rev` moves on a house message AND on a house message
+/// deleted, so a frame whose `rev` moved further than its `chat` says that a
+/// message a reader holds has changed. They are separate so that a consumer CAN tell them apart
 /// and refetch only the half that moved. **No consumer does today**: the lobby
 /// reads this channel in `"wake"` mode and refetches all three listings on any
 /// frame, chat included, which is the M6.4 close's own LEAVE item. Read this as
@@ -101,6 +117,7 @@ pub struct Bump {
 pub struct House {
     pub seq: u64,
     pub chat: u64,
+    pub rev: u64,
 }
 
 #[derive(Default)]
@@ -139,7 +156,7 @@ impl Signals {
     }
 }
 
-/// The four bumps, over the channels above.
+/// The five bumps, over the channels above.
 ///
 /// They are the trait's since M6.5a rather than inherent, so a layer holding
 /// `Arc<dyn Signal>` reaches exactly these; `subscribe`, `subscribe_house` and
@@ -158,7 +175,14 @@ impl Signal for Signals {
     }
 
     fn bump_house_chat(&self) {
-        self.house_sender().send_modify(|h| h.chat += 1);
+        self.house_sender().send_modify(|h| {
+            h.chat += 1;
+            h.rev += 1;
+        });
+    }
+
+    fn bump_house_chat_rev(&self) {
+        self.house_sender().send_modify(|h| h.rev += 1);
     }
 
     /// The terminal bump, then the sender is REMOVED so every stream on the
@@ -225,10 +249,27 @@ mod tests {
         s.bump_house_chat();
         assert!(house.has_changed().unwrap());
         let h = *house.borrow_and_update();
-        assert_eq!((h.seq, h.chat), (0, 1));
+        assert_eq!((h.seq, h.chat, h.rev), (0, 1, 1), "a message is a revision too (R-D4)");
         s.bump("t");
         let h = *house.borrow_and_update();
-        assert_eq!((h.seq, h.chat), (1, 1), "a table bump leaves the chat counter");
+        assert_eq!((h.seq, h.chat, h.rev), (1, 1, 1), "a table bump leaves both chat counters");
+    }
+
+    /// **A house DELETE moves the revision and nothing else** (M6.5c2 cycle D,
+    /// R-D4): it adds no message, so `chat` stays, and it changes no listing,
+    /// so `seq` stays — but a lobby must still wake, and the frame must SAY
+    /// that what it holds changed. The catcher for "a delete bumps `last`" on
+    /// the NAS's house channel.
+    #[test]
+    fn a_house_delete_bump_moves_rev_alone() {
+        let s = Signals::default();
+        let mut house = s.subscribe_house();
+        s.bump_house_chat();
+        house.borrow_and_update();
+        s.bump_house_chat_rev();
+        assert!(house.has_changed().unwrap(), "a lobby wakes on a delete");
+        let h = *house.borrow_and_update();
+        assert_eq!((h.seq, h.chat, h.rev), (0, 1, 2));
     }
 
     #[test]
@@ -251,9 +292,9 @@ mod tests {
     /// **The signal of a host with nothing to wake answers every call** (M6.5a,
     /// R-6.5a.8).
     ///
-    /// [`NoSignal`] is what a layer built without the server half holds, so the
-    /// eight bump sites call it on every write path there is. The cell walks
-    /// all four methods and then the same four through the trait object the
+    /// [`NoSignal`] is what a layer built without the server half holds, so
+    /// every bump site calls it on every write path there is. The cell walks
+    /// all five methods and then one through the trait object the
     /// layer actually stores, because a `dyn Signal` is the shape that has to
     /// compile: a trait taking `&str` and returning nothing is object-safe, and
     /// a method that later grew a generic would fail HERE rather than at the
@@ -264,6 +305,7 @@ mod tests {
         s.bump("a");
         s.bump_table("a");
         s.bump_house_chat();
+        s.bump_house_chat_rev();
         s.end("a");
         // The trait object shape the layer holds.
         let boxed: std::sync::Arc<dyn Signal> = std::sync::Arc::new(NoSignal);
@@ -290,13 +332,17 @@ mod tests {
         assert!(rx.borrow().end);
     }
 
-    /// **The house frame's data, exported** (M6.5c2, spec §2.6's restatements):
-    /// `{"seq":…,"chat":…}`, in that order, whole `u64`s — `house_stream`'s
-    /// frame, and the Worker module's lobby-socket frame once it imports this.
+    /// **The house frame's data, exported** (M6.5c2, spec §2.6's restatements;
+    /// `rev` since cycle D, R-D4): `{"seq":…,"chat":…,"rev":…}`, in that order,
+    /// whole `u64`s — `house_stream`'s frame, and the Worker module's
+    /// lobby-socket frame, which imports this.
     #[test]
-    fn the_house_frame_is_seq_then_chat() {
-        assert_eq!(house_frame(3, 7), r#"{"seq":3,"chat":7}"#);
-        assert_eq!(house_frame(0, 0), r#"{"seq":0,"chat":0}"#);
-        assert_eq!(house_frame(u64::MAX, 1), format!("{{\"seq\":{},\"chat\":1}}", u64::MAX));
+    fn the_house_frame_is_seq_then_chat_then_rev() {
+        assert_eq!(house_frame(3, 7, 8), r#"{"seq":3,"chat":7,"rev":8}"#);
+        assert_eq!(house_frame(0, 0, 0), r#"{"seq":0,"chat":0,"rev":0}"#);
+        assert_eq!(
+            house_frame(u64::MAX, 1, u64::MAX),
+            format!("{{\"seq\":{},\"chat\":1,\"rev\":{}}}", u64::MAX, u64::MAX),
+        );
     }
 }

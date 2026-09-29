@@ -21,6 +21,7 @@ import {
   type Site,
 } from "./r2";
 import { errorBody, log, respond } from "./respond";
+import { abandons } from "./route";
 import { advances, cmpGen, copyDigest, HOUSE_NAME, nextRetry, type Ack, type Generation, type Slot } from "./slot";
 import {
   clearDocs,
@@ -217,8 +218,10 @@ export class Table extends DurableObject<Env> {
     // An abandon runs WHOLE under `blockConcurrencyWhile` (spec §2.4 step 1,
     // §2.6): its save is uploaded between its two dispatches, and nothing else
     // may reach this object in between. A delete that owes no save completes
-    // in its first dispatch, under it all the same.
-    if (incoming.method === "DELETE") return this.ctx.blockConcurrencyWhile(() => this.abandon(incoming));
+    // in its first dispatch, under it all the same. **The table's own path
+    // only** (M6.5c2 cycle D, R-D4): a chat message's DELETE is an ordinary
+    // request (`abandons`).
+    if (abandons(incoming.method, incoming.path)) return this.ctx.blockConcurrencyWhile(() => this.abandon(incoming));
     return this.answer(incoming);
   }
 
@@ -772,7 +775,7 @@ export class Table extends DurableObject<Env> {
 
   /**
    * The request path (spec §2.4; the plan's Task 9, steps 3 to 7, and Task
-   * 10) for every request but a DELETE (`abandon`), in one synchronous turn:
+   * 10) for every request but the table's own DELETE (`abandon`), in one synchronous turn:
    * the poison check, the wake, the call, the ONE batch, the frames, and the
    * reply — or, for a `…/stream` upgrade, the admission (`admit`). A plan the
    * call deferred is game over's, and so is one the wake's `restore_picker`
@@ -818,7 +821,8 @@ export class Table extends DurableObject<Env> {
   }
 
   /**
-   * **The abandon** — every DELETE (spec §2.4 step 1, §2.6) — run WHOLE under
+   * **The abandon** — the table's own DELETE (spec §2.4 step 1, §2.6;
+   * `abandons`: since M6.5c2 cycle D a chat message's DELETE is not one) — run WHOLE under
    * `blockConcurrencyWhile` (`fetch`), which delivers no other event to this
    * object until it returns, so the module and the rows it answers from are
    * this request's across the upload's await: the wake; the receipt loop of

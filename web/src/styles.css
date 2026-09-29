@@ -1448,7 +1448,12 @@ ol.account .mover { font-weight: 700; }
 .chat .messages { margin-top: 0.3rem; display: flex; flex-direction: column; max-height: 16rem; container-type: inline-size; }
 .chat .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
 .chat-lines { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; max-height: 12rem; overflow: auto; scrollbar-width: thin; }
-.chat-lines li { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.chat-lines li { display: grid; grid-template-columns: auto auto 1fr auto; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+/* M6.5c2 cycle D (R-D4): the Delete control sits last on the row, the fold's
+ * quiet size, and a TOMBSTONE's words are the faint italic of a note rather
+ * than a line somebody said. A row without the control leaves its track empty. */
+.chat-lines .chat-delete { font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+.chat-lines .chat-text.removed { color: var(--fg-faint); font-style: italic; }
 .chat-lines time { color: var(--fg-faint); font-family: var(--mono); font-size: 10px; }
 .chat-who { white-space: nowrap; }
 .chat-who .meta { color: var(--fg-faint); }
@@ -1473,8 +1478,9 @@ ol.account .mover { font-weight: 700; }
  * and the lobby's panels are ~800px, so they keep the one-row layout they have
  * today, at every viewport above the phone. */
 @container (max-width: 34rem) {
-  .chat-lines li { grid-template-columns: auto 1fr; }
-  .chat-lines li .chat-text { grid-column: 1 / -1; }
+  .chat-lines li { grid-template-columns: auto 1fr auto; }
+  .chat-lines li .chat-text { grid-column: 1 / -1; grid-row: 2; }
+  .chat-lines li .chat-delete { grid-column: 3; grid-row: 1; }
 }
 /* **The refusal reads as one.** `.error` is a single class and it sits inside
  * a `.messages` box, where `.messages div` (`:706`) is the more specific rule

@@ -9,14 +9,14 @@ import { readReply, type Bump } from "../src/module";
 import { ensureTables, upsertDoc } from "../src/storage";
 import { Table } from "../src/table";
 import { OWED_PUMP_JSON, OWED_PUMP_TABLE_JSON } from "./fixtures.gen";
-import { BLUE, CREATE_BODY, RED, call, logsDuring, seedPlaying, sqlOf, tableStub, type Play } from "./helpers";
+import { BLUE, CREATE_BODY, RED, call, logsDuring, seedPlaying, settle, sqlOf, tableStub, type Play } from "./helpers";
 
 /** A signed-in caller seated at no table in this file. */
 const GREEN = "green@t.test";
 
 /** What `GET …/events` answers, and so what a `signal` frame carries. It holds
  *  no seed, so a cell may parse it. */
-type Events = { events: number; to_move: number | null; status: string; your_turn: boolean; chat: number };
+type Events = { events: number; to_move: number | null; status: string; your_turn: boolean; chat: number; chat_rev: number };
 
 /** A `signal` frame's reading, parsed. */
 function dataOf(message: string | undefined): Events {
@@ -406,6 +406,75 @@ describe("the table's sockets (spec §2.4)", () => {
       expect(tab.messages).toEqual([firsts[n], END_DELETED]);
     }
   });
+
+  // M6.5c2 cycle D (R-D4; Review Focus 2, the objects' half): a chat message's
+  // DELETE is an ORDINARY request — never the abandon, though it is a DELETE
+  // under the table's path — answered 403 for a seat that neither wrote it nor
+  // created the table, and 204 for its author, whose reply frames every socket
+  // ONCE with `chat_rev` moved and `chat` not. The refusal frames nothing: the
+  // author's delete is the positive control whose frame arrives next (ruling
+  // R-10). Evicted and read again, the tombstone is STORED.
+  //
+  // **Which path it took is read off a spy on the prototype's `abandon`**
+  // (pool fact 1), because the answers alone cannot tell: the abandon's own
+  // dispatch reaches the layer too, which answers a chat delete correctly
+  // there — measured, this cell's answers held on a shell that sent every
+  // DELETE to the abandon — only under `blockConcurrencyWhile`, beside an
+  // `events` reading and the house copy's facts a delete of a TABLE needs.
+  // The table's own DELETE at the end is the anti-vacuity half: the spy sees
+  // that one. Mutants: every DELETE the abandon (`abandons` reading the method
+  // alone); the tombstone kept in the module and never committed; `chat`
+  // moved by the delete.
+  it("a chat message's delete is a request, not the abandon: 403 for another seat, 204 for its author, one frame", async () => {
+    const id = "unsaid";
+    const stub = await seedPlaying(id);
+    await chat(stub, RED, id, "oops");
+    const red = await openTab(stub, RED, id);
+    const blue = await openTab(stub, BLUE, id);
+    const [redFirst] = await red.until(1);
+    const [blueFirst] = await blue.until(1);
+    expect([dataOf(redFirst).chat, dataOf(redFirst).chat_rev], "premise: one message, one revision").toEqual([1, 1]);
+    const abandon = vi.spyOn(Table.prototype as unknown as { abandon(incoming: unknown): Promise<Response> }, "abandon");
+    try {
+      await deleteAMessage(stub, id, red, blue, redFirst, blueFirst);
+      expect(abandon, "a chat message's delete never runs the abandon").not.toHaveBeenCalled();
+      expect((await call(stub, RED, "DELETE", `/api/games/${id}`)).status, "the table's own delete").toBe(204);
+      expect(abandon, "and the table's own DELETE does").toHaveBeenCalledTimes(1);
+    } finally {
+      abandon.mockRestore();
+      // The delete's push to the house rides `waitUntil` after its reply.
+      await settle(stub);
+    }
+  });
+
+  /** `a chat message's delete is a request, not the abandon`'s body, with the
+   *  two sockets it reads. */
+  async function deleteAMessage(
+    stub: DurableObjectStub<Table>,
+    id: string,
+    red: Tab,
+    blue: Tab,
+    redFirst: string | undefined,
+    blueFirst: string | undefined,
+  ): Promise<void> {
+    const refused = await framed(() => call(stub, BLUE, "DELETE", `/api/games/${id}/chat/1`));
+    expect([refused.result.status, await refused.result.text(), refused.bumps.flat()]).toEqual([
+      403,
+      '{"error":"only the message\'s author or the table\'s creator may delete it"}',
+      [],
+    ]);
+    const deleted = await framed(() => call(stub, RED, "DELETE", `/api/games/${id}/chat/1`));
+    expect([deleted.result.status, await deleted.result.text(), deleted.bumps.flat()]).toEqual([204, "", [{ bump_table: id }]]);
+    const after = { red: await eventsText(stub, RED, id), blue: await eventsText(stub, BLUE, id) };
+    expect([dataOf(frame("signal", after.red)).chat, dataOf(frame("signal", after.red)).chat_rev]).toEqual([1, 2]);
+    expect(await red.until(2)).toEqual([redFirst, frame("signal", after.red)]);
+    expect(await blue.until(2)).toEqual([blueFirst, frame("signal", after.blue)]);
+
+    await evictDurableObject(stub);
+    const page = await call(stub, BLUE, "GET", `/api/games/${id}/chat`);
+    const read = (await page.json()) as { messages: { seq: number; text: string; deleted: boolean }[]; last: number };
+    expect([read.last, read.messages.map((m) => [m.seq, m.text, m.deleted])]).toEqual([1, [[1, "", true]]]);
+  }
 
   // The orchestrator's ruling (Task 9's review, escalation 2): a request's
   // frames are computed over ALL the bumps its commit carried — the wake's

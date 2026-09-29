@@ -116,6 +116,9 @@ export function Dealing({
    *  panel's `count` (spec §6.2). The table exists before the game does, and so
    *  do the people waiting at it. */
   const [chatCount, setChatCount] = useState(0);
+  /** The table's chat revision off the same frame (M6.5c2 cycle D, R-D4): the
+   *  panel's `rev`, which moving further than the count is a delete. */
+  const [chatRev, setChatRev] = useState(0);
 
   // The same guard, and the same reasoning, as `App`'s `inFlight`: React
   // batches, so two clicks in the same tick both read a `busy` STATE of false
@@ -211,6 +214,7 @@ export function Dealing({
       // The table's newest message number, off the frame this screen already
       // reads for its own hand-over (spec §6.2) — the panel's `count`.
       setChatCount(e.chat);
+      setChatRev(e.chat_rev);
       if (e.status !== "dealing") void start();
     },
     // **A table that is GONE stops being polled, and says so**, which the deal
@@ -373,7 +377,14 @@ export function Dealing({
             screen learned it from the release's headed live review (I-1), which
             found a panel here accepting messages from `local@browser`. */}
         {!isLocal(game) && (
-          <Chat scope={{ kind: "table", id: game }} count={chatCount} colors={colors} sendName={false} />
+          <Chat
+            scope={{ kind: "table", id: game }}
+            count={chatCount}
+            rev={chatRev}
+            canModerate={table.mine}
+            colors={colors}
+            sendName={false}
+          />
         )}
       </aside>
       <div className="deck">

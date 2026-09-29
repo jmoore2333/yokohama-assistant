@@ -738,7 +738,7 @@ async fn house_stream(
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event("house")
-                .data(signal::house_frame(h.seq, h.chat)),
+                .data(signal::house_frame(h.seq, h.chat, h.rev)),
         )
     });
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
@@ -925,7 +925,7 @@ mod tests {
     use super::*;
     use crate::api::NOT_SEATED;
     use yokohama_core::SEMANTICS_REV;
-    // The four bumps are the trait's since M6.5a (R-6.5a.8); the cells that
+    // The bumps are the trait's since M6.5a (R-6.5a.8); the cells that
     // drive one by hand need it in scope.
     use crate::signal::Signal;
     use crate::store::Doc;
@@ -1549,10 +1549,24 @@ mod tests {
         assert_eq!(sentences.len(), 5, "five different sentences");
 
         // Spec §6.1's own sixth: a seed altered the way a `JSON.parse` round
-        // trip alters one deals a different game, and the replay says so.
+        // trip alters one deals a different game. **The TABLE says so first
+        // since M6.5c2 cycle D** (straw poll row 81: its checks run before the
+        // replay), because it carries the seed the record was dealt from; with
+        // the table altered to match, the REPLAY still does — the claim this
+        // row was written for, which the table's check now stands in front of
+        // rather than replacing.
+        let altered = with_seed_altered(&record_text);
+        let (status, v) = post_as(&app, WHO, "/api/archive", body(&altered, &table_text)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("the table document does not agree with the record: seed"),
+            "{v}"
+        );
         let (status, v) =
-            post_as(&app, WHO, "/api/archive", body(&with_seed_altered(&record_text), &table_text))
-                .await;
+            post_as(&app, WHO, "/api/archive", body(&altered, &with_seed_altered(&table_text))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
         assert!(
             v["error"].as_str().unwrap().starts_with("the record does not replay"),
@@ -2734,10 +2748,11 @@ mod tests {
         assert!(got["next"].is_null(), "{got}");
     }
 
-    /// **The signal answers in four fields at every status, and fences its
-    /// query** (room plan R-P9, spec §6).
+    /// **The signal answers in six fields at every status, and fences its
+    /// query** (room plan R-P9, spec §6; `chat` since M6.4, `chat_rev` since
+    /// M6.5c2 cycle D).
     ///
-    /// One cell over the whole endpoint, because the four fields are ONE
+    /// One cell over the whole endpoint, because the fields are ONE
     /// answer and a poll acts on the combination: a reply with `status` right
     /// and `your_turn` wrong leaves a player watching a board it was their turn
     /// to move on.
@@ -2772,18 +2787,24 @@ mod tests {
     /// `deny_unknown_fields` through `QueryArgs` doing its job on this new
     /// struct rather than an assumption that it was wired up.
     #[tokio::test]
-    async fn events_answers_in_five_fields_at_every_status_and_fences_its_query() {
+    async fn events_answers_in_six_fields_at_every_status_and_fences_its_query() {
         let state = Arc::new(AppState::in_memory());
         let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig", "id": "sig",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }] });
         post_as(&state, "red@wire.test", "/api/games", body).await;
         let (status, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
         assert_eq!(status, StatusCode::OK, "{e}");
-        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": null, "status": "dealing", "your_turn": false, "chat": 0 }));
+        assert_eq!(
+            e,
+            serde_json::json!({ "events": 0, "to_move": null, "status": "dealing", "your_turn": false, "chat": 0, "chat_rev": 0 }),
+        );
         post_as(&state, "red@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 0, "card": 1 })).await;
         post_as(&state, "blue@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 1, "card": 1 })).await;
         let (_, e) = get_as(&state, "red@wire.test", "/api/games/sig/events?after=0").await;
-        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": 0, "status": "playing", "your_turn": true, "chat": 0 }));
+        assert_eq!(
+            e,
+            serde_json::json!({ "events": 0, "to_move": 0, "status": "playing", "your_turn": true, "chat": 0, "chat_rev": 0 }),
+        );
         let (_, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
         assert_eq!(e["your_turn"], false);
         let (status, err) = get_as(&state, "blue@wire.test", "/api/games/sig/events?afer=0").await;
@@ -2799,7 +2820,7 @@ mod tests {
         }
         // **M6.3 turned this line over** (R-3.5): a signed-in caller with no
         // seat, at an UNLOCKED playing table, is admitted as a watcher and
-        // reads the same four fields — never as the one to move. The 403 this
+        // reads the same fields — never as the one to move. The 403 this
         // line used to assert is now the LOCKED table's, and lives in the
         // whole-table admission cell with the rest of §3.5.
         let (status, watched) =
@@ -6437,7 +6458,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{e}");
         assert_eq!(
             e,
-            serde_json::json!({ "events": 0, "to_move": null, "status": "open", "your_turn": false, "chat": 0 }),
+            serde_json::json!({ "events": 0, "to_move": null, "status": "open", "your_turn": false, "chat": 0, "chat_rev": 0 }),
         );
     }
 
@@ -7018,7 +7039,7 @@ mod tests {
             "{got}",
         );
         let grey = identity::User::parse("grey@wire.test").expect("an email");
-        assert_eq!(on.games.house_page(&grey, 0).expect("a page").1, 0, "and nothing was appended");
+        assert_eq!(on.games.house_page(&grey, 0).expect("a page").1.last, 0, "and nothing was appended");
 
         let off = Arc::new(AppState::in_memory_with_chat(chat::ChatConfig {
             lobby: false,
@@ -7174,6 +7195,23 @@ mod tests {
         assert_eq!(frames_after_chat.len(), 1, "one message, one frame: {frames_after_chat:?}");
         assert_eq!(frames_after_chat[0]["chat"], 1);
         assert_eq!(frames_after_chat[0]["seq"], 0);
+        assert_eq!(frames_after_chat[0]["rev"], 1, "a message is a revision too (R-D4)");
+
+        // **A DELETE is one frame that moves `rev` and nothing else** (M6.5c2
+        // cycle D, R-D4): it adds no message, so `chat` stays where it was —
+        // the catcher, on the NAS's own wire, for "a delete bumps `last`" —
+        // and it changes no listing, so `seq` does too. The lobby still wakes.
+        let frames_after_delete = house_frames_after(&state, || async {
+            let (status, gone) = delete_as(&state, "grey@wire.test", "/api/chat/1").await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{gone}");
+        })
+        .await;
+        assert_eq!(frames_after_delete.len(), 1, "one delete, one frame: {frames_after_delete:?}");
+        assert_eq!(
+            frames_after_delete[0],
+            serde_json::json!({ "seq": 0, "chat": 1, "rev": 2 }),
+            "the revision alone moved",
+        );
     }
 
     /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles

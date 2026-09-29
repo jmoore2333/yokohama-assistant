@@ -1033,4 +1033,16 @@ export const api = {
    *  client that believed it was setting a name hears about it. */
   postChat: (scope: ChatScope, body: ChatPost) =>
     call<ChatMessage>("POST", chatPath(scope), body),
+
+  /** Take message `seq` at table `game` down (M6.5c2 cycle D, R-D4): an empty
+   *  204 for its AUTHOR or the table's CREATOR — and again for a second delete,
+   *  which changes nothing — and a 403 for anyone else. The message stays as a
+   *  tombstone (`text: ""`, `deleted: true`), so its number is never reused;
+   *  the table's `Events.chat_rev` moves and `Events.chat` does not. */
+  deleteChat: (game: string, seq: number) =>
+    call<null>("DELETE", `/api/games/${id(game)}/chat/${seq}`),
+
+  /** Take the reader's own house message `seq` down (M6.5c2 cycle D, R-D4):
+   *  the house has no creator, so its author alone may. */
+  deleteHouseChat: (seq: number) => call<null>("DELETE", `/api/chat/${seq}`),
 };

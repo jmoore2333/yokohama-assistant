@@ -324,7 +324,8 @@ function objectFor(
       // platform would give it none. Under `open` a claim is held only to what
       // a header can carry (spec §2.1), so a claim the key grammar refuses —
       // `..`, a name of 40 letters — still names an object, whose `init`
-      // refuses it: that object's 500, naming the grammar's refusal.
+      // refuses it: that object answers the layer's own 401 for the caller,
+      // as the NAS does (M6.5c2 cycle D, row 8; `Archive.callerRefused`).
       const who = callerName(identity);
       if (who === undefined || new TextEncoder().encode(who).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + who));
