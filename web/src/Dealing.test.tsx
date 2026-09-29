@@ -435,7 +435,7 @@ describe("the dealing screen", () => {
   // the life of the game. The server writes the name onto a seat that has none,
   // so a keep can never rename somebody.
   it("posts the name this browser remembers with the keep", async () => {
-    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ada Bell");
     const stub = stubApi((call) => {
       if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
       return dealThen(wire.deal, wire.dealWaiting)(call);
@@ -447,7 +447,7 @@ describe("the dealing screen", () => {
     expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
       seat: wire.deal.seat,
       card: 1,
-      name: "Jeremy",
+      name: "Ada Bell",
     });
   });
 

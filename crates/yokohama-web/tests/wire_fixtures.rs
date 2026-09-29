@@ -2892,12 +2892,25 @@ async fn no_committed_payload_carries_the_setup_seed() {
 /// [`CONSTRUCTED_WITH_AN_AT`]'s, each by name and reason — and an entry nothing
 /// needs any more is refused too, so the list cannot outlive its reason.
 ///
+/// **What it proves**: over every WALKED row, no string holding an `@` but the
+/// reader's own address, or an `invited` at `seats[i]` in a table whose `mine`
+/// is `true`; and over every construction, none but the allowlist's.
+///
+/// **What it trusts**: the payload's own `mine`. A `mine` wrongly `true` for
+/// every reader carries its `invited` past this pin — measured, that mutant
+/// leaves it green. Two cells hold `mine` honest instead:
+/// `table::tests::the_view_names_no_address_but_the_readers_own`, which reads
+/// `mine` and `invited` for three readers of one table, and
+/// [`the_stored_table_document_carries_every_seats_address`]'s
+/// `(own, invited) == (0, 0)` over the invited seat's own view.
+///
 /// **Anti-vacuity, two halves.** Here: the walker finds a reader's own address
 /// in the corpus (`/api/me` alone guarantees one), so it is looking at strings
 /// that exist. In [`the_stored_table_document_carries_every_seats_address`]:
 /// the addresses the corpus must not carry ARE written down, in the documents
-/// the store holds, and the rule is shown refusing the creator's view handed to
-/// another reader.
+/// the store holds, and the rule is shown refusing the two leak shapes it
+/// exists for — an `invited` in a view whose `mine` is false, and another
+/// person's address planted outside `invited`.
 #[tokio::test]
 async fn no_payload_carries_an_address_that_is_not_the_readers_own() {
     let Corpus { payloads, readers, .. } = corpus().await;

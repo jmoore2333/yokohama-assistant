@@ -473,11 +473,10 @@ describe("the lobby", () => {
     // is one you sit at, listed under Your tables alone (`notMine`). The
     // control still follows the SECTION and not `mine` ALONE, so no other list
     // can ever draw it. The corpus's open listing was read by a caller who did
-    // not open the table (`mine: false`), so ONE field is moved on its rows —
-    // `mine`, to the reading their creator gets with no seat there (the
-    // Worker's seatless creator; the corpus has none) — which puts the same
-    // table, `mine: true`, in both sections: the one case that tells a section
-    // rule from a `mine` rule. And the control sits in its own cell under the
+    // not open the table (`mine: false`), so ONE field is moved on its rows,
+    // `mine`, which is all the section-versus-`mine` question reads — which
+    // puts the same table, `mine: true`, in both sections: the one case that
+    // tells a section rule from a `mine` rule. And the control sits in its own cell under the
     // action (`.row-abandon`), never in the action's.
     it("draws the control in Your tables and not in Open tables", async () => {
       const opened = { ...wire.gamesOpen, games: wire.gamesOpen.games.map((g) => ({ ...g, mine: true })) };

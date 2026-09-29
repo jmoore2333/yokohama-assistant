@@ -103,8 +103,8 @@ pub enum Author {
 /// used to carry its poster's `user` to every reader — the house's to anyone
 /// signed in — so a room was a roster of addresses. `you` is the one fact a
 /// reader needs about an author's identity: whether it is them. A poster
-/// with no name is drawn from the seat's colour, or as "someone" for a
-/// watcher, by the client.
+/// with no name is drawn as `you`, or as its seat number in the seat's
+/// colour, or as "someone" for a watcher, by the client.
 ///
 /// Tagged with the document's arm names, so an arm added to [`Author`] is
 /// added here in the same words.

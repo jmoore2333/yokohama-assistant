@@ -5802,11 +5802,11 @@ mod tests {
             &state,
             "red@wire.test",
             "/api/games/named/keep",
-            serde_json::json!({ "seat": 0, "card": 1, "name": "Jeremy" }),
+            serde_json::json!({ "seat": 0, "card": 1, "name": "Ada Bell" }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{kept}");
-        assert_eq!(kept["seats"][0]["name"], serde_json::json!("Jeremy"), "{kept}");
+        assert_eq!(kept["seats"][0]["name"], serde_json::json!("Ada Bell"), "{kept}");
     }
 
     // ---------------------------------------------------------------------
