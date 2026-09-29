@@ -406,7 +406,7 @@ export function checkSubstitution(built: string, release: Precache): string | nu
   if (!body.includes(JSON.stringify(release.cacheName))) {
     return `the built worker does not name the release ${release.cacheName}`;
   }
-  const digests = body.match(/digest: "/g)?.length ?? 0;
+  const digests = body.match(/digest:\s*"/g)?.length ?? 0;
   if (digests !== release.entries.length) {
     return `the built worker carries ${digests} digests, not this release's ${release.entries.length}`;
   }

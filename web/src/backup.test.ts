@@ -758,8 +758,12 @@ describe("the record's run block through every save path", () => {
     expect(RUN).toContain('"agent_seed": 10851594032870736878');
     expect(RUN).toContain('"weights": 6957643967275421640');
     expect(String(Number("10851594032870736878"))).not.toBe("10851594032870736878");
-    // So a parse and a re-serialize on ANY path would change the bytes.
-    expect(JSON.stringify(JSON.parse(RECORD_TEXT), null, 2)).not.toBe(RECORD_TEXT);
+    // So a parse and a re-serialize on ANY path would change the bytes. Read
+    // on the `run` slice ALONE: the whole record's top-level `seed` is also
+    // past 2^53, so a comparison over the whole text would stay true with the
+    // run block's own numbers made safe.
+    const again = JSON.stringify(JSON.parse(`{${RUN}}`), null, 2);
+    expect(again, "the run block, parsed and re-written, is no longer its bytes").not.toContain(RUN);
   });
 
   it("survives this browser's database byte for byte", async () => {

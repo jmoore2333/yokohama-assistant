@@ -214,6 +214,25 @@ async function playUntilAnswerable(page: Page, game: { id: string }, pick: () =>
   throw new Error("forty moves and the screen never offered an option row");
 }
 
+/**
+ * **Until the refusal SHOWS, and not one click**: a click is not a move (see
+ * `playUntilCommitted`). An option row that opens a sub-picker changes no
+ * document, writes nothing and is refused nothing, so a lone click can leave
+ * the quota cell waiting for a warning that never comes. Twelve tries, then
+ * the warning must be on screen.
+ */
+async function actUntilUnsaved(page: Page, game: { id: string }, pick: () => number) {
+  const unsaved = page.locator(".deck .warn", { hasText: "APPLIED BUT NOT SAVED" });
+  for (let i = 0; i < 12 && (await unsaved.count()) === 0; i += 1) {
+    const screen = await readScreen(page);
+    if (screen.over) throw new Error("the game ended before a move was refused");
+    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
+    await readScreen(page);
+  }
+  await expect(unsaved).toBeVisible();
+  return unsaved;
+}
+
 test("a whole game against the bot plays in the browser with no /api/ request while it is played", async ({
   page,
 }) => {
@@ -504,13 +523,9 @@ test("a quota failure is APPLIED BUT NOT SAVED, and the game stays exportable", 
     };
   });
 
-  const screen = await readScreen(page);
-  expect(screen.options, "the cell needs a move to make").toBeGreaterThan(0);
-  await page.locator("button.option:not([disabled])").first().click();
-
   // The server's own sentence, on the applied reply — the move HAPPENED and
   // was not kept, which is one rule and one wording across both hosts.
-  await expect(page.locator(".deck .warn")).toContainText("APPLIED BUT NOT SAVED");
+  await actUntilUnsaved(page, game, pick);
   expect(
     await storedEvents(page, game.id),
     "and the store really did keep nothing new",
@@ -588,18 +603,7 @@ test("a store that will not even be READ still exports the move it refused, and 
       return orig.apply(this, args);
     };
   });
-  // **Until the refusal SHOWS, and not one click**: a click is not a move (see
-  // `playUntilCommitted`). An option row that opens a sub-picker changes no
-  // document, writes nothing and is refused nothing — measured, one run in
-  // twenty of this cell's first draft did exactly that.
-  const unsaved = page.locator(".deck .warn", { hasText: "APPLIED BUT NOT SAVED" });
-  for (let i = 0; i < 12 && (await unsaved.count()) === 0; i += 1) {
-    const screen = await readScreen(page);
-    if (screen.over) throw new Error("the game ended before a move was refused");
-    if ((await act(page, screen, pick)) === null) throw await deadEnd(page, game, i);
-    await readScreen(page);
-  }
-  await expect(unsaved).toBeVisible();
+  await actUntilUnsaved(page, game, pick);
   expect(await storedEvents(page, game.id), "the store kept nothing new").toBe(committed);
 
   // **And now every transaction the Worker asks for is refused** — the shape a
@@ -1183,4 +1187,84 @@ test("without Web Locks, a tab whose game was opened elsewhere exports the new o
   expect(backed.table, "with B's committed table").toBe(stored.table);
   expect(watchA.failures).toEqual([]);
   expect(watchB.failures).toEqual([]);
+});
+
+// **A game played against a bot this build does not run, seeded and READ**
+// (M6.5c2 cycle D, straw poll row 34). jsdom holds the foreign screen and the
+// completed Remove (`App.test.tsx`, `OnThisDevice.test.tsx`) but no browser ever
+// drew either: the pair is made here by playing a real local game and moving ONE
+// fact in what IndexedDB kept — the bot's controller, in the record's `run` and
+// in the table's mirror, both by text so the two u64s in them are never parsed —
+// and the module then reads a save it can no longer continue.
+//
+// **What this does NOT reach, and says so.** The four identity states of the
+// door (A, an expired Access, and B, a door that named nobody, need a server
+// that answers as Access does, which the `open` door cannot) and the
+// single-player build (`VITE_MULTIPLAYER=false` builds a different client) stay
+// unobservable in this harness, jsdom-only.
+test("a game dealt a bot this build does not run: the door lists it under Will not open here, its screen is the server's sentence, and Remove completes", async ({
+  page,
+}) => {
+  const watch = watchForBreakage(page);
+  const game = await startGame(page, { local: true });
+  const pick = rng(0x464f_5245); // "FORE"
+  await playSome(page, game, pick, 6);
+  const { record, table } = await storedPair(page, game.id);
+  expect(record, "the pair to move is stored").not.toBeNull();
+  expect(table).not.toBeNull();
+  const FROM = '"controller": "v4-step9-draft1"';
+  expect(record!, "the record names the shipped bot").toContain(FROM);
+  expect(table!, "and so does the table's mirror").toContain(FROM);
+  const moved = (text: string) => text.split(FROM).join('"controller": "v2-padded"');
+
+  // Off the app first, so the local host that holds the game in memory is gone
+  // before its store is written under it.
+  await page.goto("about:blank");
+  await page.goto("/");
+  await page.evaluate(
+    ({ id, texts }) =>
+      new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open("yokohama-local");
+        open.onerror = () => reject(new Error("IndexedDB would not open"));
+        open.onsuccess = () => {
+          const t = open.result.transaction("docs", "readwrite");
+          const s = t.objectStore("docs");
+          s.put({ doc: "record", id, text: texts.record });
+          s.put({ doc: "table", id, text: texts.table });
+          t.oncomplete = () => resolve();
+          t.onerror = () => reject(t.error ?? new Error("the write failed"));
+        };
+      }),
+    { id: game.id, texts: { record: moved(record!), table: moved(table!) } },
+  );
+  await page.goto("about:blank");
+  await page.goto("/");
+
+  // ---- The door: listed under "Will not open here", not among the playable.
+  const will = page.locator(".unplayable");
+  await expect(will.getByRole("heading", { name: "Will not open here" })).toBeVisible();
+  await expect(will.locator("li")).toHaveCount(1);
+  await expect(will.locator("li")).toContainText(game.id);
+  await expect(will.locator("li")).toContainText("played against V2");
+  await expect(
+    page.locator(".on-this-device").getByRole("link", { name: game.id, exact: true }),
+    "and it is not also a row that opens",
+  ).toHaveCount(0);
+
+  // ---- Its screen: the server's own sentence, Abandon, the way back; no game.
+  await page.goto(`/#/t/${game.id}`);
+  await expect(
+    page.getByText("This game was played against V2. This server now runs V4 and can't continue it."),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: `abandon ${game.id}` })).toBeVisible();
+  await expect(page.locator(".decision .options"), "no move can be made on it").toHaveCount(0);
+
+  // ---- Remove, completed from the door: two clicks, and the row is gone.
+  await page.goto("/#/");
+  await will.getByRole("button", { name: `remove ${game.id}` }).click();
+  await will.getByRole("button", { name: `confirm removing ${game.id}` }).click();
+  await expect(page.locator(".unplayable"), "the block goes with its only row").toHaveCount(0);
+  await expect(page.getByText("no game on this device yet")).toBeVisible();
+  expect(await storedEvents(page, game.id), "and the store keeps nothing of it").toBe(-1);
+  expect(watch.failures).toEqual([]);
 });

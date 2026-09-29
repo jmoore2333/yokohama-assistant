@@ -586,6 +586,65 @@ describe("the abandon control on a local game", () => {
     }
   });
 
+  // **The two catches of the refusal path** (M6.5c2 cycle D; the straw poll's
+  // row 25): "back it up to a file" and "abandon without saving" each end in a
+  // `catch` that hands the error to the screen's own line, and until now both
+  // were only ever walked on their happy paths.
+  it("says why on the screen when the backup file cannot be made, and stays ready to try again", async () => {
+    const caught = catchDownload();
+    try {
+      const { steps, onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+      stubApi(() => {
+        throw new TypeError("Failed to fetch");
+      });
+      await confirm(user);
+      await screen.findByText(CANNOT_ASK);
+      // The store will not be read for this game: the backup is the thing that fails.
+      stubWorker({
+        pair: () => ({ unreadable: "the store would not open" }),
+        call: (req) => {
+          if (req.method === "DELETE") steps.push("delete");
+          return undefined;
+        },
+      });
+      await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+      expect(onError.mock.calls[0]![0], "the failure's own sentence, as the screen's line").toBe(
+        `there is no game named ${LOCAL} on this device`,
+      );
+      // Nothing was written to disk and nothing deleted.
+      expect(caught.clicks).toHaveLength(0);
+      expect(steps).toEqual([]);
+      expect(onDone).not.toHaveBeenCalled();
+      // And the guard was released: the control answers a second click.
+      await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+    } finally {
+      caught.restore();
+    }
+  });
+
+  it("says why on the screen when abandoning without saving is refused, and keeps the game", async () => {
+    const { onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+    await screen.findByText(CANNOT_ASK);
+    // The local host refuses the delete in its own words.
+    stubWorker({
+      pair: () => ({ record: RECORD, table: TABLE }),
+      call: (req) => (req.method === "DELETE" ? { status: 500, body: wire.error } : undefined),
+    });
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0]![0]).toBe(wire.error.error);
+    expect(onDone).not.toHaveBeenCalled();
+    // The guard was released: a second try reaches the host again.
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+  });
+
   it("deletes on the third deliberate click when the player abandons without saving", async () => {
     const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
     stubApi(() => {

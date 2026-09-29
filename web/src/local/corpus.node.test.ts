@@ -286,6 +286,15 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
       // that the module's value and the committed value are NOT equal; a field
       // that agrees does not belong on the list.
       for (const field of HOST_FIELDS[row.fixture!] ?? []) {
+        // **Present, THEN different** (R-C20, the pool's presence rule stated
+        // for this host): `expect(undefined).not.toEqual(x)` passes, so a
+        // field the module stopped sending would be exempted unread. The rule
+        // here is "present and differs", not the pool's "sent as a string",
+        // because `multiplayer` is a boolean.
+        expect(
+          got,
+          `${row.fixture}.${field} is exempted as host-parameterised, so the module must SEND it`,
+        ).toHaveProperty(field);
         expect(
           got[field],
           `${row.fixture}.${field} is exempted as host-parameterised, but both hosts agree on it — take it off HOST_FIELDS`,

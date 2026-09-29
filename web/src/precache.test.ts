@@ -290,6 +290,14 @@ describe("the substitution check", () => {
     expect(checkSubstitution(built, release)).toBeNull();
   });
 
+  // The count is by the SHAPE `digest:` then a string, whatever spacing the
+  // bundler writes, so a minifier that drops the space still counts each one.
+  it("counts digests whatever spacing the bundler writes between the key and the string", () => {
+    const tight = built.replace(/digest: "/g, 'digest:"');
+    expect(tight).not.toContain('digest: "');
+    expect(checkSubstitution(tight, release)).toBeNull();
+  });
+
   // **The defect itself**, and the anti-vacuity half is what makes it a
   // finding: the text the check now refuses is one the OLD check accepted,
   // because both of its needles are still in it.

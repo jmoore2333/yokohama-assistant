@@ -8,9 +8,22 @@
 
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { hashOf, parseRoute, useRoute } from "./route";
+import { channelOf, hashOf, parseRoute, useRoute } from "./route";
 
 describe("the hash routes", () => {
+  it("names each route's channel: the door and a local game are local, everything else the server's", () => {
+    expect(channelOf({ kind: "door" })).toBe("local");
+    expect(channelOf({ kind: "new", local: true })).toBe("local");
+    expect(channelOf({ kind: "new" })).toBe("multiplayer");
+    expect(channelOf({ kind: "table", id: "local-abc" })).toBe("local");
+    expect(channelOf({ kind: "table", id: "sim-0123" })).toBe("multiplayer");
+    // The bare fall-through: the lobby is the one route that reaches it.
+    expect(channelOf({ kind: "lobby" })).toBe("multiplayer");
+    // And the channel follows the parsed hash, not a hand-built route.
+    expect(channelOf(parseRoute("#/new/local"))).toBe("local");
+    expect(channelOf(parseRoute("#/lobby"))).toBe("multiplayer");
+  });
+
   it("parses the routes and reads anything else as the door", () => {
     expect(parseRoute("")).toEqual({ kind: "door" });
     expect(parseRoute("#/")).toEqual({ kind: "door" });

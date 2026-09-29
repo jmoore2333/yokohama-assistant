@@ -5006,6 +5006,30 @@ describe("the option words", () => {
     });
     expect(askedLocally()).toHaveLength(0);
   });
+
+  // **The partner past the bound** (M6.5b2 close, minor): the cell above waits
+  // 20 ms of real time, which a fallback armed at five seconds would also
+  // survive. This one moves the clock past the bound with the server having
+  // answered, so a fallback that fired on the timer alone, ignoring the answer,
+  // would ask the module for the words here and fail.
+  it("still leaves the Worker's words alone once the five-second bound has passed on an answered read", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    let asked = 0;
+    pastTheDoor(() => {
+      asked += 1;
+      return wire.labels;
+    });
+    render(<App />);
+    await until(() => screen.queryByRole("heading", { name: "Lobby" }) !== null, "the lobby");
+    await flush();
+    expect(asked, "the server WAS asked, and answered").toBeGreaterThan(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await flush();
+    expect(askedLocally()).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

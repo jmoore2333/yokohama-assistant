@@ -430,6 +430,45 @@ describe("the chat panel", () => {
     expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
   });
 
+  /** **The same gap with the post's OWN frame landing while the post is still
+   *  out** (the live tunnel's order; Task 11's re-review). The count is parked
+   *  while a post is in flight, so no later frame moves it and the gap must be
+   *  read by the 201's own arrival — the immediate re-read in `send`. Held at
+   *  the reply with a gate, and the frame delivered before it opens. */
+  it("still reads the gap its post's number shows when the post's own frame landed while the post was out", async () => {
+    open();
+    let held = 1;
+    const page = (after: number): ChatPage => ({
+      ...wire.chat,
+      messages: wire.chat.messages.filter((m) => m.seq > after && m.seq <= held),
+      last: held,
+      rev: held,
+    });
+    const posted = gate<Reply>();
+    const stub = stubApi((call) => {
+      if (call.method === "POST") return posted.promise;
+      if (call.method === "GET" && call.path.includes("/chat"))
+        return page(Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0));
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const { rerender } = render(<Chat scope={TABLE} count={1} colors={colors} sendName={false} />);
+    await settle();
+    expect(stub.matching("GET", "/chat"), "the mount read").toHaveLength(1);
+    held = 2; // message 2 lands; its frame is lost
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Say something" }), "good luck{Enter}");
+    await settle();
+    held = 3; // the post is written
+    // The post's own frame reaches this browser BEFORE the 201 (the live order).
+    rerender(<Chat scope={TABLE} count={3} colors={colors} sendName={false} />);
+    await settle();
+    posted.resolve({ status: 201, body: { ...wire.chatPost, seq: 3 } });
+    await settle();
+    const rows = screen.getAllByRole("listitem");
+    expect(rows, "message 2 and the own post are drawn").toHaveLength(3);
+    expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
+  });
+
   it("sends the browser's name for a watcher and at the house", async () => {
     open();
     localStorage.setItem(OPEN_KEY, JSON.stringify(["wire", "house"]));

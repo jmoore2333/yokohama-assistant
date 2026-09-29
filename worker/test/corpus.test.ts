@@ -44,9 +44,9 @@ type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agree
  * on a value this host SENT" comment): the same rule over the same fields,
  * stated once in each of the two WORKER replays (ruling R-C3), each naming the
  * other. The browser host's node replay (`web/src/local/corpus.node.test.ts`)
- * is not a third statement of it: it still spends an exemption on
- * `not.toEqual` alone, which an absent field passes — a debt recorded
- * forward, left this cycle (Task 7's review, M-5; ruling R-C20).
+ * is the THIRD statement of it: it asserts the field is present
+ * (`toHaveProperty`) and then that it differs, "present and differs" rather
+ * than "sent as a string", because `multiplayer` is a boolean (R-C20).
  */
 function hostFields(fixture: string, committed: unknown, got: unknown): HostFieldVerdict[] {
   const sent = (typeof got === "object" && got !== null ? got : {}) as Record<string, unknown>;

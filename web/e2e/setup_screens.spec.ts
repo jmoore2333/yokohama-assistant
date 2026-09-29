@@ -22,7 +22,7 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { DESKTOP, look, noSidewaysScroll, PHONE, signIn, WALKER, watchForBreakage } from "./harness";
+import { DESKTOP, look, noSidewaysScroll, PHONE, signIn, startGame, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -289,8 +289,13 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         // action button of every creator row sat 16px above the line (Task 5
         // review, I-1). The creator's small Abandon hangs under the action and
         // is not on the line.
-        const lines = await page.locator(".lobby li.lobby-row").evaluateAll((rows) =>
-          rows.map((li) => {
+        // **Only the rows THIS cell opened**: the run's server is shared, so a
+        // sibling spec's table listed beside these is not this cell's to
+        // measure, and its layout must not fail this cell.
+        const OURS = ["Width check", "Against the bot", "Someone else's"];
+        const lines = await page.locator(".lobby li.lobby-row").evaluateAll((all, ours) => {
+          const rows = all.filter((li) => ours.includes(li.querySelector("a.row-link")?.textContent ?? ""));
+          return rows.map((li) => {
             const mid = (e: Element) => {
               const r = e.getBoundingClientRect();
               return Math.round(r.top + r.height / 2);
@@ -306,7 +311,10 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
               middles,
               spread: Math.max(...middles) - Math.min(...middles),
             };
-          }),
+          });
+        }, OURS);
+        expect(lines.map((l) => l.name).sort(), "the sweep read exactly the rows this cell opened").toEqual(
+          [...OURS].sort(),
         );
         // eslint-disable-next-line no-console
         console.log(`lobby rows at 1440 (title, chips..., action middles): ${JSON.stringify(lines)}`);
@@ -394,6 +402,119 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
     // The run's server is scratch, but a later spec's lobby should not list
     // this cell's tables.
     for (const [id, who] of opened) await request.delete(`/api/games/${id}`, { headers: as(who) });
+  }
+  expect(watch.failures).toEqual([]);
+});
+
+/** Every visible button, link and file field under `scope`, by name and
+ *  rendered height: the lobby sweep's reading, for the two screens that sweep
+ *  does not reach. A control with no box (a shut fold's rows) is one nobody can
+ *  press, and is left out rather than read as zero. */
+async function controlsUnder(page: Page, scope: string): Promise<{ name: string; height: number }[]> {
+  return page.locator(scope).evaluateAll((scopes) =>
+    scopes.flatMap((root) =>
+      [...root.querySelectorAll("button, a, .restore-field")]
+        .filter((e) => e.getClientRects().length > 0)
+        .map((e) => ({
+          name: e.getAttribute("aria-label") ?? (e.textContent ?? "").trim(),
+          // A device row's name is the ONE link, and its box covers the whole
+          // row (`styles.css`): what a thumb presses is the row, so that is
+          // the height read for it.
+          height: (e.matches("a.device-name") ? e.closest("li")! : e).getBoundingClientRect().height,
+        })),
+    ),
+  );
+}
+
+// **The 44px rule on the two screens the lobby's sweep does not reach** (M6.5c2
+// cycle C, polish 2; the cycle's close left "the one-off log witnesses it"): the
+// OPEN TABLE (Copy link, Abandon, the chat's show and send, a joiner's seat)
+// and the DEVICE CARD on the door (its rows, Back up, Restore). jsdom loads no
+// stylesheet, so a px rule can be held by nothing but a browser.
+test("the open table and the device card at 390: every control a thumb presses is 44px tall", async ({
+  page,
+  request,
+}) => {
+  const watch = watchForBreakage(page);
+  const OTHER = "someone@e2e.test";
+  const res = await request.post("/api/games", {
+    headers: { "x-yokohama-claimed-user": WALKER },
+    data: {
+      players: 2,
+      colors: ["Red", "Blue"],
+      start_seat: 0,
+      seats: [{ user: WALKER }, { open: true }],
+      name: "Thumb check",
+    },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const id = String(((await res.json()) as { id: string }).id);
+  try {
+    // The name step is signed through at desktop width, where the corner shows
+    // the identity `signIn` waits for; the phone is the reading that follows.
+    const asAt390 = async (who: string) => {
+      await page.setViewportSize(DESKTOP);
+      // A different person in the same browser: forget the claimed name and
+      // load the page afresh, since a hash-only navigation reloads nothing.
+      await page.goto("/");
+      await page.evaluate(() => localStorage.removeItem("yokohama.claimed_user"));
+      await page.goto("about:blank");
+      await signIn(page, who, `/#/t/${id}`);
+      await page.setViewportSize(PHONE);
+    };
+
+    // ---- The open table, as the creator (Copy link, Abandon, the chat).
+    await asAt390(WALKER);
+    await expect(page.locator(".open-table").getByRole("heading", { name: "Thumb check" })).toBeVisible();
+    const show = page.locator(".open-table > .chat").getByRole("button", { name: "show" });
+    if (await show.count()) await show.click();
+    await expect(page.locator(".open-table > .chat").getByRole("button", { name: "send" })).toBeVisible();
+    const creator = await controlsUnder(page, ".open-table");
+    // eslint-disable-next-line no-console
+    console.log(`open table (creator) controls at 390 (name, height): ${JSON.stringify(creator)}`);
+    // Anti-vacuity: the sweep saw the kinds the rules name.
+    const seen = creator.map((c) => c.name);
+    expect(seen.some((n) => /^Copy link/.test(n)), `the sweep read Copy link: ${seen}`).toBe(true);
+    expect(seen, "the sweep read the chat's send").toContain("send");
+    expect(seen.some((n) => /abandon/i.test(n)), `the sweep read Abandon: ${seen}`).toBe(true);
+    const shortCreator = creator.filter((c) => c.height < 44);
+    expect(shortCreator, `open-table controls under 44px at 390: ${JSON.stringify(shortCreator)}`).toEqual([]);
+    await noSidewaysScroll(page, "the open table at 390px");
+
+    // ---- The same table as a joiner: the seat's own button.
+    await asAt390(OTHER);
+    await expect(page.locator(".open-table").getByRole("button", { name: /^Join as/ })).toBeVisible();
+    const joiner = await controlsUnder(page, ".open-table");
+    expect(
+      joiner.some((c) => /^Join as/.test(c.name)),
+      `the sweep read the joiner's button: ${JSON.stringify(joiner)}`,
+    ).toBe(true);
+    const shortJoiner = joiner.filter((c) => c.height < 44);
+    expect(shortJoiner, `joiner controls under 44px at 390: ${JSON.stringify(shortJoiner)}`).toEqual([]);
+
+    // ---- The device card, with a game on it so its rows and foot are drawn.
+    await page.goto("/");
+    const game = await startGame(page, { local: true, signedOut: true });
+    await page.goto("/");
+    await expect(page.locator(".on-this-device").getByRole("link", { name: game.id, exact: true })).toBeVisible();
+    const device = await controlsUnder(page, ".on-this-device");
+    // eslint-disable-next-line no-console
+    console.log(`device card controls at 390 (name, height): ${JSON.stringify(device)}`);
+    const names = device.map((c) => c.name);
+    expect(names, "the sweep read the game's row").toContain(game.id);
+    expect(names.some((n) => /^Back up/.test(n)), `the sweep read Back up: ${names}`).toBe(true);
+    expect(names.some((n) => /restore/i.test(n)), `the sweep read the restore field: ${names}`).toBe(true);
+    // **The game's ROW is read and logged, and not held to 44px.** Its link's
+    // box covers the row (`styles.css`, `.device-row`), and the row draws ~33px
+    // at 390: no rule of cycle C's polish 2 names it (the list covers the
+    // card's buttons and its foot), so asserting 44 here would pin a claim the
+    // stylesheet never made. It is a finding for the owner (Task 14 report),
+    // and this exemption is the one place it is written down in code.
+    const shortDevice = device.filter((c) => c.height < 44 && c.name !== game.id);
+    expect(shortDevice, `device-card controls under 44px at 390: ${JSON.stringify(shortDevice)}`).toEqual([]);
+    await noSidewaysScroll(page, "the device card at 390px");
+  } finally {
+    await request.delete(`/api/games/${id}`, { headers: { "x-yokohama-claimed-user": WALKER } });
   }
   expect(watch.failures).toEqual([]);
 });
