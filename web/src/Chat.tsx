@@ -382,12 +382,28 @@ export function Chat({ scope, count, rev, canModerate = false, colors, sendName,
     inFlight.current = true;
     setSending(true);
     setError(null);
+    /** The 201's number showed messages this panel never read (below). */
+    let gap = false;
     try {
       const name = sendName ? displayName()?.trim() : undefined;
       const m = await api.postChat(scopeRef.current, { text, ...(name ? { name } : {}) });
       if (mine !== generation.current) return;
+      // **A GAP CHECK on the 201's number** (the Task 11 re-review's
+      // lost-message finding). Numbers are contiguous — a trim drops the
+      // oldest end and never reuses one, and a delete keeps its tombstone — so
+      // a post numbered past `last + 1` says the messages between were never
+      // read: their frame was lost (a socket's reconnect probe reads the
+      // lobby's listings, which carry no chat count; neither a stream
+      // reconnect nor a tab's return brings a house frame). Taking the 201
+      // would move the cursor past them for good — the post's own frame then
+      // counts nothing new — so the cursor stays where it is and the page is
+      // READ instead, from 0 (the revision rule's re-read), which draws the
+      // missed messages and this post in order. **The cursor never advances
+      // past an unread message**: a re-read that fails leaves it here, and
+      // the next count asks again from it.
+      if (m.seq > last.current + 1) gap = true;
       // A post moves `rev` and `last` together, so the held shape stands.
-      take({ messages: [m], last: m.seq });
+      else take({ messages: [m], last: m.seq });
       setDraft("");
     } catch (e) {
       if (mine !== generation.current) return;
@@ -395,12 +411,16 @@ export function Chat({ scope, count, rev, canModerate = false, colors, sendName,
     } finally {
       inFlight.current = false;
       setSending(false);
-      // The parked count, re-asked against the cursor the 201 has just moved —
-      // so an own post asks for nothing and a message that arrived from
-      // somebody else while this one was out is still fetched. **Only when no
-      // read is out**: a count parked behind a READ is that read's tail's to
-      // consume, and clearing it here would drop the re-ask.
-      if (wanted.current === "count" && !reading.current) {
+      if (gap) {
+        // Behind a read already out it is parked as `rev`, which outranks
+        // whatever else is owed, and that read's tail asks it.
+        void read("rev");
+      } else if (wanted.current === "count" && !reading.current) {
+        // The parked count, re-asked against the cursor the 201 has just
+        // moved — so an own post asks for nothing and a message that arrived
+        // from somebody else while this one was out is still fetched. **Only
+        // when no read is out**: a count parked behind a READ is that read's
+        // tail's to consume, and clearing it here would drop the re-ask.
         wanted.current = null;
         if (countWants()) void read("count");
       }

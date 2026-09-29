@@ -232,13 +232,19 @@ export function Lobby({
    *  what it holds, and not on the house wake every table's move sends — nor
    *  for its own post, whose 201 has already moved the cursor. **`null` until
    *  the first frame**: the house stream says nothing on connect, so a panel
-   *  holds its mount read alone until the house next moves. **What the tick
-   *  did that this does not, stated**: on the socket arm, the one probe after
-   *  a close this client did not make re-reads the listings, which carry no
-   *  chat count — the tick turned that re-read into a chat read too, and now
-   *  the panel catches up at the next house frame. **The cost that is left,
-   *  stated** (spec §6.2, §11): a house message is one more house wake, and
-   *  every visible lobby refetches its three listings on it. */
+   *  holds its mount read alone until the house next moves. **A message
+   *  whose frame this browser never got** — sent while the socket was down
+   *  (its one reconnect probe re-reads the listings, which carry no chat
+   *  count; the tick used to turn that into a chat read too), or while the
+   *  stream was reconnecting or the tab was hidden (the house says nothing on
+   *  connect, on either host) — **is read at the next house frame**, whatever
+   *  moved: every house frame carries the house chat's count. Until then it
+   *  waits, for as long as the house is quiet. And if the next thing is the
+   *  reader's OWN post, its 201's number shows the gap and the panel reads
+   *  the page rather than stepping past it (`Chat`'s gap check; the Task 11
+   *  re-review). **The cost that is left, stated** (spec §6.2, §11): a house
+   *  message is one more house wake, and every visible lobby refetches its
+   *  three listings on it. */
   const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);
   /** The row whose link was just copied, for the two seconds its button says
    *  so. */

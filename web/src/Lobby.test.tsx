@@ -7,11 +7,13 @@
 // that stubbed the open list would be handed the `mine` reply and pass while
 // asserting the wrong thing.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
-import { setLobbyChat } from "./api";
+import { setLobbyChat, setSignalKind } from "./api";
+import { BACKOFF_MS } from "./signal";
+import { FakeSocket } from "./test/fakeSocket";
 import { OPEN_KEY } from "./chatFold";
 import { fakeStream, flush, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -799,6 +801,78 @@ describe("the lobby's chat", () => {
       expect(stub.matching("GET", "/api/chat"), "one read for the one message").toHaveLength(2);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // **A house message its socket's reconnect missed is read once the reader's
+  // own post shows the gap** (the Task 11 re-review's lost-message finding;
+  // the production path of `Chat.test.tsx`'s "reads the messages its own
+  // post's number shows it missed"). On the socket arm, a close this client did
+  // not make is followed by ONE probe, and the lobby's probe reads the
+  // listings, which carry no chat count; the house says nothing on connect. So
+  // a house message that landed while the socket was down reaches this browser
+  // as no frame at all. The reader's next post is numbered two past what the
+  // panel holds, and taking that 201 alone moved the cursor past the missed
+  // message for good. The pages are built from the corpus as the cells above
+  // build theirs: `house_chat.json`'s message renumbered to 2 (the missed one)
+  // and `house_chat_post.json` renumbered to 3 (the post), served up to what
+  // the server holds; the frame on the new socket in the layer's pinned shape.
+  it("reads a house message its socket's reconnect missed once the reader's own post shows the gap", async () => {
+    setLobbyChat(true);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.useFakeTimers();
+    try {
+      const missed = { ...wire.houseChat.messages[0]!, seq: wire.houseChat.last + 1 };
+      const post = { ...wire.houseChatPost, seq: wire.houseChat.last + 2 };
+      const all = [...wire.houseChat.messages, missed, post];
+      let held = wire.houseChat.last;
+      const { stub } = show((call) => {
+        if (call.method === "POST" && call.path === "/api/chat") {
+          held = post.seq;
+          return { status: 201, body: post };
+        }
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) {
+          const after = Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0);
+          return { ...wire.houseChat, messages: all.filter((m) => m.seq > after && m.seq <= held), last: held, rev: held };
+        }
+        return undefined;
+      });
+      const panel = () => document.querySelector<HTMLElement>("section.lobby-chat")!;
+      await until(() => FakeSocket.made.length === 1, "the house socket was opened");
+      act(() => FakeSocket.made[0]!.accept());
+      await until(() => stub.matching("GET", "/api/chat").length === 1, "the mount read");
+
+      // The missed message lands while the socket is down: no frame for it.
+      held = missed.seq;
+      const listed = stub.calls.filter((c) => isGamesList(c, "mine")).length;
+      act(() => FakeSocket.made[0]!.drop());
+      await until(() => stub.calls.filter((c) => isGamesList(c, "mine")).length > listed, "the probe read the listings");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "the probe read no chat").toHaveLength(1);
+
+      // The reader posts, and the 201 is numbered two past what the panel holds.
+      const box = within(panel()).getByRole("textbox", { name: "Say something" });
+      fireEvent.change(box, { target: { value: post.text } });
+      fireEvent.submit(box.closest("form")!);
+      await until(() => stub.matching("POST", "/api/chat").length === 1, "the post went out");
+      await flush();
+
+      // The socket comes back, and the post's own house frame counts it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+      });
+      await until(() => FakeSocket.made.length === 2, "the house socket reopened");
+      act(() => FakeSocket.made[1]!.accept());
+      act(() => FakeSocket.made[1]!.frame("house", { seq: 2, chat: post.seq, rev: post.seq }));
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "the missed message is drawn").toHaveLength(all.length);
+    } finally {
+      vi.useRealTimers();
+      setSignalKind("sse");
+      vi.unstubAllGlobals();
     }
   });
 

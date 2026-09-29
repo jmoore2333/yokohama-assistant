@@ -383,6 +383,53 @@ describe("the chat panel", () => {
     await waitFor(() => expect(pending, "the next trigger is read").toHaveLength(1));
   });
 
+  /** **The 201's number can prove a message was missed — and the panel reads
+   *  it** (the Task 11 re-review's lost-message finding; catcher: "the 201's
+   *  seq gap ignored"). Message numbers are contiguous: a trim drops the
+   *  oldest end and never reuses a number, and a delete keeps its tombstone.
+   *  So a post answered with `seq` above `last + 1` says the messages between
+   *  were never read — their frame was lost: a socket's reconnect probe reads
+   *  the lobby's listings and no chat count, and neither a stream reconnect
+   *  nor a tab's return brings a house frame at all. Taking the 201 alone
+   *  moved the cursor past them, the post's own frame then counted nothing
+   *  new, and they were never drawn. This is the re-reviewer's probe: the
+   *  corpus's three messages served up to what the server holds, and the 201
+   *  `chat_post.json` renumbered to the third. */
+  it("reads the messages its own post's number shows it missed, and draws them", async () => {
+    open();
+    let held = 1;
+    const page = (after: number): ChatPage => ({
+      ...wire.chat,
+      messages: wire.chat.messages.filter((m) => m.seq > after && m.seq <= held),
+      last: held,
+      rev: held,
+    });
+    const stub = chatStub((call) => {
+      if (call.method === "POST") {
+        held = 3;
+        return { status: 201, body: { ...wire.chatPost, seq: 3 } };
+      }
+      if (call.method === "GET" && call.path.includes("/chat"))
+        return page(Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0));
+      return undefined;
+    });
+    const { rerender } = render(<Chat scope={TABLE} count={1} colors={colors} sendName={false} />);
+    await settle();
+    expect(stub.matching("GET", "/chat"), "the mount read").toHaveLength(1);
+    // Message 2 lands on the server, and its frame is lost: the count stays.
+    held = 2;
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "Say something" }), "good luck{Enter}");
+    await settle();
+    // The own post's frame counts the post.
+    rerender(<Chat scope={TABLE} count={3} colors={colors} sendName={false} />);
+    await settle();
+    expect(stub.matching("GET", "/chat").length, "the gap was read").toBeGreaterThan(1);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows, "message 2 is drawn").toHaveLength(3);
+    expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
+  });
+
   it("sends the browser's name for a watcher and at the house", async () => {
     open();
     localStorage.setItem(OPEN_KEY, JSON.stringify(["wire", "house"]));
