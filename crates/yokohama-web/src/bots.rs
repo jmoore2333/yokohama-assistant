@@ -166,6 +166,53 @@ pub(crate) fn bga_human_seats(record: &GameRecord) -> Vec<u8> {
         .collect()
 }
 
+/// Where `doc` and `record` disagree about WHICH SEATS ARE BOTS, the lowest
+/// such seat in a sentence; `None` when they agree (M6.5c2 cycle D, the review
+/// of Task 4).
+///
+/// A table's `Bot` seats and the record's [`recorded`] seats are one set in
+/// every pair this layer writes: `finalize` stamps the run seats from the
+/// table's own seats (`BotSeats::seat_provenance`, a person's as
+/// `CONTROLLER_HUMAN`), and has since the first table document. A pair that
+/// disagrees was made by hand, and it cannot be played: a table `Bot` seat
+/// whose record names a person is a seat the `Repl` resumes as a human while
+/// no person holds it at the table, so nothing ever moves it — the shape a
+/// `bga-human` record beside the committed pair's table has. Three sentences:
+///
+/// - a table `Bot` the record names a person for: "seat N is a person in the
+///   record (controller) but a bot at the table";
+/// - a table `Bot` the record names no controller for — no run provenance, or
+///   a run that stops short: "seat N is a bot at the table but the record
+///   names no controller for it";
+/// - a recorded bot the table seats otherwise: "seat N is a bot in the record
+///   (label) but a person at the table" (or "an open seat", or "not a seat").
+pub(crate) fn seat_disagreement(doc: &TableDoc, record: &GameRecord) -> Option<String> {
+    let bots: BTreeMap<u8, BotDescriptor> = recorded(record).into_iter().collect();
+    let run_seats = record.run.as_ref().map_or(&[][..], |run| run.seats.as_slice());
+    let span = doc.seats.len().max(run_seats.len()).min(usize::from(u8::MAX) + 1);
+    (0..span).find_map(|i| {
+        let seat = u8::try_from(i).ok()?;
+        let at_table = doc.seats.get(i);
+        match (matches!(at_table, Some(SeatDoc::Bot)), bots.get(&seat)) {
+            (true, Some(_)) | (false, None) => None,
+            (true, None) => Some(match run_seats.get(i) {
+                Some(s) => format!("seat {i} is a person in the record ({}) but a bot at the table", s.controller),
+                None => format!("seat {i} is a bot at the table but the record names no controller for it"),
+            }),
+            (false, Some(d)) => Some(format!(
+                "seat {i} is a bot in the record ({}) but {} at the table",
+                label(d),
+                match at_table {
+                    Some(SeatDoc::Human { .. }) => "a person",
+                    Some(SeatDoc::Open) => "an open seat",
+                    // `Bot` is the first arm's; listed so the match has no `_`.
+                    Some(SeatDoc::Bot) | None => "not a seat",
+                },
+            )),
+        }
+    })
+}
+
 /// `TableView.bot` for `doc` (spec §2.4, "Where the lobby gets it").
 ///
 /// - no bot seat: `None`;
@@ -418,28 +465,49 @@ mod tests {
     /// one: an unfinished game refused as "played against bga-human", a
     /// finished one refused its undo, and a bot badge on a person.
     ///
-    /// Over the committed pair with seat 1 re-seated as `bga-human`: no bot in
-    /// `recorded`, `foreign`, `ClientState.bots` or the Players panel's facts —
-    /// and the CLI's "resumes as a HUMAN seat" line, asserted as a PREMISE on
-    /// the resident `Repl` so the cell cannot pass by the CLI going quiet, is
-    /// masked from the payload's `warnings` (the WHOLE array). The mask is
-    /// precise: the same line naming seat 0, which the record gives a typed
-    /// `human`, stays.
+    /// Over a CONSISTENT pair — the committed game with seat 1 re-seated as
+    /// `bga-human` in the record and seated as a person, `Ada Bell`, at the
+    /// table ([`crate::games::test_support::bga_human_pair`]) — loaded into a
+    /// store and rebuilt through [`crate::games::Games::handle`], the path
+    /// every route takes:
+    ///
+    /// - no bot in `recorded`, `foreign`, `ClientState.bots`, the Players
+    ///   panel's facts or the table's `bot`;
+    /// - the CLI's "resumes as a HUMAN seat" line, asserted as a PREMISE on the
+    ///   resident `Repl` so the cell cannot pass by the CLI going quiet, masked
+    ///   from the payload's `warnings` (the WHOLE array) — and precisely: the
+    ///   same line naming seat 0, which the record gives a typed `human`, stays;
+    /// - unfinished, the game OPENS rather than refusing, with seat 1 to move
+    ///   and seat 1's holder the one whose turn it is — a person can move it.
+    ///
+    /// The INCONSISTENT pair — the same record beside a table that seats a bot
+    /// there — is `api.rs`'s
+    /// `a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409`.
     #[test]
     fn a_bga_human_seat_is_a_person_not_a_foreign_bot() {
         use crate::client::{facts_for, without_foreign_conversion, ClientState, Viewer};
-        use crate::games::test_support::{foreign_pair, PLAYED_ID};
+        use crate::games::test_support::{
+            bga_human_pair, games, who, BGA_SEAT_HOLDER, BOT_TO_MOVE_AT, PLAYED_ID,
+        };
+        use crate::store::Doc;
         use yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
-        use yokohama_cli::repl::Repl;
-        use yokohama_cli::session::Session;
-        use yokohama_core::{PlayerId, Rules};
+        use yokohama_core::PlayerId;
 
-        let (record, _) = foreign_pair(CONTROLLER_BGA_HUMAN, None);
-        let record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let holding = |cut: Option<usize>| {
+            let (record, table) = bga_human_pair(cut);
+            let games = games();
+            games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+            let record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+            (games, record)
+        };
+
+        let (games, record) = holding(None);
         assert_eq!(recorded(&record), Vec::new(), "a person, not a bot");
         assert_eq!(foreign(&record), Vec::new(), "and so not a foreign one");
-
-        let repl = Repl::new(Session::from_record(record.clone(), Rules::standard()).expect("it loads"));
+        let handle = games.handle(PLAYED_ID).expect("a consistent pair opens");
+        let repl = handle.lock().unwrap();
+        assert!(repl.session.is_over(), "premise: finished");
         let said = format!("warning: seat 1 was played by controller \"{CONTROLLER_BGA_HUMAN}\"");
         assert!(
             repl.session.load_warnings.iter().any(|w| w.starts_with(&said) && w.contains("resumes as a HUMAN seat")),
@@ -451,11 +519,23 @@ mod tests {
         assert_eq!(state.warnings, Vec::<String>::new(), "the conversion line masked, and nothing else shown");
         let facts = facts_for(&repl, Viewer::Seat(PlayerId::new(0)));
         assert_eq!(facts.iter().map(|f| f.is_bot).collect::<Vec<_>>(), [false, false], "no badge on a person");
+        let Ok(table) = crate::api::get_table(&games, &who("local@browser"), PLAYED_ID) else {
+            panic!("the table reads")
+        };
+        assert_eq!(table.bot, None, "the lobby row names no bot either");
 
         let seat_0 = format!(
             "warning: seat 0 was played by controller \"{CONTROLLER_BGA_HUMAN}\", which this build does not know \
              how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
         );
         assert_eq!(without_foreign_conversion(vec![seat_0.clone()], &record), vec![seat_0], "seat 0 is a typed human");
+
+        let (games, _) = holding(Some(BOT_TO_MOVE_AT));
+        let handle = games.handle(PLAYED_ID).expect("unfinished, a consistent pair opens");
+        let repl = handle.lock().unwrap();
+        assert!(!repl.session.is_over(), "premise: unfinished");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(1), "premise: seat 1 to move");
+        let ada = ClientState::of(PLAYED_ID, &repl, Viewer::Seat(PlayerId::new(1)), Vec::new());
+        assert!(ada.your_turn, "seat 1's holder, {BGA_SEAT_HOLDER}, is the one to move it");
     }
 }

@@ -535,16 +535,19 @@ impl Games {
             // which of the two it is looking at.
             Some((doc, _)) if doc.status == TableStatus::Open => Err(GameError::Open),
             Some((doc, _)) if doc.status == TableStatus::Dealing => Err(GameError::Dealing),
-            Some(_) => self.live_handle(id),
+            Some((doc, _)) => self.live_handle(id, &doc),
         }
     }
 
     /// The handle alone: resident, or rebuilt from the RECORD.
     ///
-    /// Deliberately does not consult the table document — [`Games::handle`] has
-    /// already done that, and `settle`'s repair arm calls this to read the turn
-    /// off a game whose table is mid-flip.
-    pub(crate) fn live_handle(&self, id: &str) -> Result<Arc<Mutex<Repl>>, GameError> {
+    /// Deliberately READS no table document — [`Games::handle`] has already
+    /// done that, and `settle`'s repair arm calls this to read the turn off a
+    /// game whose table is mid-flip. Each of its three callers ([`Games::handle`],
+    /// `settle_locked`, `finalize`'s conflict arm) hands in the `table` it read,
+    /// for the ONE thing a rebuild asks of it: whether the two documents agree
+    /// about which seats are bots ([`crate::bots::seat_disagreement`]).
+    pub(crate) fn live_handle(&self, id: &str, table: &TableDoc) -> Result<Arc<Mutex<Repl>>, GameError> {
         if let Some(h) = self.live.lock().expect("games lock").get(id) {
             return Ok(Arc::clone(h));
         }
@@ -560,6 +563,28 @@ impl Games {
         self.written.lock().expect("games lock").insert(id.to_string(), version);
         let record: GameRecord =
             serde_json::from_str(&json).map_err(|e| GameError::Server(e.to_string()))?;
+        // **A pair whose table and record disagree about which seats are bots
+        // is refused before anything is replayed** (M6.5c2 cycle D, the review
+        // of Task 4), on every host, for every rebuild, finished or not — a
+        // 409 naming the lowest such seat, in `check_pair`'s words for a pair
+        // that does not agree. Every pair this layer writes agrees
+        // (`finalize` stamps the run seats from the table's own seats, and has
+        // since the first table document), so only a hand-made pair reaches
+        // it. The measured shape: a record naming seat 1 `bga-human` beside a
+        // table that seats a bot there opened at seat 1's turn and nothing ever
+        // moved it — the CLI resumes the seat as a human, so no bot runs, and
+        // the acting-seat fence refuses the only person at the table.
+        //
+        // HERE rather than in `TableDoc::agrees_with`, which reads only a pair
+        // ARRIVING through `check_pair` (the archive route, a restore): a pair
+        // already in a store — a NAS directory, a Worker object, a browser's
+        // database — is read by this function and nothing else. Abandon never
+        // rebuilds, so such a pair can still be deleted.
+        if let Some(why) = crate::bots::seat_disagreement(table, &record) {
+            return Err(GameError::Conflict(format!(
+                "the table document does not agree with the record: {why}"
+            )));
+        }
         // **The foreign-bot rule's one site** (M6.5c2, R-6.5c2.10), on every
         // host, for every rebuild. The descriptors are compared off the parsed
         // record; "not over" is a fact about the replayed state, so it is read
@@ -2901,6 +2926,13 @@ pub(crate) mod test_support {
     /// the session's run provenance and `Session` is not `Clone`, which is why
     /// the table's own handle cannot simply be told to play itself; `persist`
     /// compares record identity by SEED, so this one persists in its place.
+    ///
+    /// **Its RECORD then names the two people the table seats** (M6.5c2 cycle
+    /// D, the review of Task 4): a rebuild refuses a pair whose record and
+    /// table disagree about which seats are bots (`bots::seat_disagreement`),
+    /// and this pair is two people at the table. The re-stamp comes AFTER
+    /// `Repl::new`, which reads the bots once, so the pump still drives both
+    /// seats while every persist writes a record the table agrees with.
     fn both_seats_as_bots(games: &Games, id: &str) -> Repl {
         use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
         use yokohama_cli::session::Session;
@@ -2924,7 +2956,9 @@ pub(crate) mod test_support {
         let bots =
             BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], CORPUS_SEED);
         session.set_run_seats(bots.seat_provenance());
-        Repl::new(session)
+        let mut repl = Repl::new(session);
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], CORPUS_SEED).seat_provenance());
+        repl
     }
 
     /// A [`MemStore`] that COUNTS its writes.
@@ -3034,6 +3068,31 @@ pub(crate) mod test_support {
         let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
         table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
         (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+    }
+
+    /// The seat-1 person of a `bga-human` pair: `Ada Bell`, who holds seat 1
+    /// in [`bga_human_pair`]'s table.
+    pub(crate) const BGA_SEAT_HOLDER: &str = "ada@t.test";
+
+    /// The committed pair as a game whose seat 1 a PERSON played on BGA, and
+    /// CONSISTENT (M6.5c2 cycle D, the review of Task 4): the record names seat
+    /// 1 `bga-human` ([`foreign_pair`]'s re-seat), and the table seats a person
+    /// there — [`BGA_SEAT_HOLDER`], keeping the card the record says seat 1
+    /// kept — with no bot on the mirror, as a persist would write it. `cut` as
+    /// [`foreign_pair`]'s. Answers `(record, table)` as JSON.
+    pub(crate) fn bga_human_pair(cut: Option<usize>) -> (String, String) {
+        use yokohama_core::{GameRecord, StartingOrderChoice};
+        let (record, table) = foreign_pair(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, cut);
+        let parsed: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+        let StartingOrderChoice::Keep(kept) = parsed.choices[1] else { panic!("premise: seat 1 kept a card") };
+        table.seats[1] = crate::table::SeatDoc::Human {
+            user: BGA_SEAT_HOLDER.to_string(),
+            name: Some("Ada Bell".to_string()),
+        };
+        table.keeps[1] = Some(kept + 1);
+        table.turn.as_mut().expect("a mirror").bot = None;
+        (record, serde_json::to_string(&table).expect("a table"))
     }
 
     /// The record `id` is stored as, as bytes.

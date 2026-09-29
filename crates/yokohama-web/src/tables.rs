@@ -1221,7 +1221,7 @@ impl Games {
             return Ok(Some((doc, version)));
         }
         if self.store.read(Doc::Record, id).map_err(GameError::Server)?.is_some() {
-            let handle = self.live_handle(id)?;
+            let handle = self.live_handle(id, &doc)?;
             let turn = mirror_of(&handle.lock().expect("a game"));
             return self.flip_to_playing(id, turn).map(Some);
         }
@@ -1272,7 +1272,7 @@ impl Games {
             // session built above is dropped unstarted and the STORED game is
             // the game — the same rule `create` follows when a name is taken.
             Err(WriteError::Conflict { .. }) => {
-                let handle = self.live_handle(&id)?;
+                let handle = self.live_handle(&id, &doc)?;
                 let turn = mirror_of(&handle.lock().expect("a game"));
                 turn
             }

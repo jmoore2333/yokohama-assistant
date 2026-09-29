@@ -1176,7 +1176,7 @@ mod tests {
     /// and `a_finished_same_name_re_point_shows_no_drift_warning` hold that it
     /// matches the CLI at all.
     #[test]
-    fn only_the_engine_version_drift_line_is_dropped() {
+    fn only_the_engine_version_line_and_a_foreign_seats_records_lines_are_dropped() {
         let home: yokohama_core::GameRecord =
             serde_json::from_str(crate::games::test_support::PLAYED_RECORD).expect("the pair's record");
         assert!(crate::bots::foreign(&home).is_empty(), "premise: no foreign seat");

@@ -2549,6 +2549,72 @@ mod tests {
         assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
     }
 
+    /// **A pair whose table and record disagree about which seats are bots is
+    /// refused, in one 409 naming the seat** (M6.5c2 cycle D, the review of
+    /// Task 4), at `Games::live_handle` — the one place every host rebuilds a
+    /// stored game — and so on every route that reads one.
+    ///
+    /// Row 1 is the shape the review measured: a record naming seat 1
+    /// `bga-human` beside the committed table, which seats a BOT there. Before
+    /// the guard it opened at seat 1's turn and nothing ever moved it — the CLI
+    /// resumes seat 1 as a human, so no bot runs, and the acting-seat fence
+    /// refuses the only person at the table. Unfinished and finished alike, and
+    /// Abandon, which never rebuilds, still deletes it. Row 2 is the other
+    /// direction (a recorded bot at a table's human seat); row 3 a record with
+    /// no run provenance beside a bot seat, which no build of this layer writes
+    /// (`finalize` has stamped the run seats since the first table document).
+    #[test]
+    fn a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409() {
+        use crate::games::test_support::{BOT_TO_MOVE_AT, PLAYED_RECORD, PLAYED_TABLE};
+        let holding = |record: &str, table: &str| -> Games {
+            let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+            games.load_document(crate::store::Doc::Record, PLAYED_ID, record).unwrap();
+            games.load_document(crate::store::Doc::Table, PLAYED_ID, table).unwrap();
+            games
+        };
+        let refusal = |why: &str| {
+            serde_json::json!({ "error": format!("the table document does not agree with the record: {why}") })
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+
+        // Row 1: `bga-human` in the record, a bot at the table.
+        let row_1 = refusal("seat 1 is a person in the record (bga-human) but a bot at the table");
+        let unfinished = holding_foreign(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, Some(BOT_TO_MOVE_AT));
+        for (method, route, query, body) in [
+            ("GET", "", "", ""),
+            ("POST", "/input", "", r#"{"line":"1"}"#),
+            ("GET", "/why", "", ""),
+            ("GET", "/suggest", "", ""),
+        ] {
+            let (status, v) = ask(&unfinished, "local@browser", method, &format!("{base}{route}"), query, body);
+            assert_eq!((status, &v), (409, &row_1), "unfinished: {method} {base}{route}");
+        }
+        let finished = holding_foreign(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, None);
+        assert_eq!(ask(&finished, "local@browser", "GET", &base, "", ""), (409, row_1.clone()), "finished too");
+        let (status, v) = ask(&unfinished, "local@browser", "DELETE", &base, "", "");
+        assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+
+        // Row 2: the record's bot at a table's human seat.
+        let mut table: crate::table::TableDoc = serde_json::from_str(PLAYED_TABLE).unwrap();
+        table.seats[1] = crate::table::SeatDoc::Human { user: "ada@t.test".to_string(), name: None };
+        table.keeps[1] = Some(1);
+        let games = holding(PLAYED_RECORD, &serde_json::to_string(&table).unwrap());
+        let runs = crate::bots::label(&crate::bots::production());
+        assert_eq!(
+            ask(&games, "local@browser", "GET", &base, "", ""),
+            (409, refusal(&format!("seat 1 is a bot in the record ({runs}) but a person at the table"))),
+        );
+
+        // Row 3: no run provenance beside the table's bot seat.
+        let mut record: yokohama_core::GameRecord = serde_json::from_str(PLAYED_RECORD).unwrap();
+        record.run = None;
+        let games = holding(&serde_json::to_string(&record).unwrap(), PLAYED_TABLE);
+        assert_eq!(
+            ask(&games, "local@browser", "GET", &base, "", ""),
+            (409, refusal("seat 1 is a bot at the table but the record names no controller for it")),
+        );
+    }
+
     /// **A finished game against a foreign bot opens, scores and downloads —
     /// and the four places the CLI's seat conversion would show are masked**
     /// (M6.5c2, R-6.5c2.10; review R2-M1). `v2-padded` is a named identity

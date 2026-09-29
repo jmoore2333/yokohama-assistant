@@ -3097,9 +3097,12 @@ mod tests {
     /// **Built by pumping both seats as bots in process and installing the
     /// record** — the shape the lockdown cells use — because driving a 2P human
     /// table to a winner over the route costs a whole game. The table document
-    /// still describes two PEOPLE, which is what the cells are about; only the
-    /// record's own run provenance says bot, and no route reads it for these
-    /// claims.
+    /// describes two PEOPLE, which is what the cells are about, and the
+    /// installed record says so too: its run seats are re-stamped as the two
+    /// people once the pump has finished (M6.5c2 cycle D, the review of Task
+    /// 4), because a rebuild refuses a pair whose record and table disagree
+    /// about which seats are bots — which is what this record, left saying
+    /// bot, used to be.
     async fn a_finished_two_person_game(
         name: &'static str,
     ) -> (Arc<AppState>, &'static str, &'static str) {
@@ -3136,6 +3139,7 @@ mod tests {
             repl.pump_bots();
         }
         assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], ENDED_SEED).seat_provenance());
         let finished = repl.session.to_record_json().expect("a record");
         let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
         store
@@ -3608,7 +3612,9 @@ mod tests {
     ///
     /// [`a_finished_two_person_game`]'s mechanism, lifted so several tables in
     /// ONE cell can be finished: a 2P game driven to a winner over the route
-    /// costs a whole game, and this cell needs two finished tables.
+    /// costs a whole game, and this cell needs two finished tables. Its run
+    /// seats are re-stamped as two people after the pump, for that function's
+    /// reason: the tables it is installed under seat two people.
     fn a_finished_record() -> String {
         use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
         use yokohama_cli::session::Session;
@@ -3637,6 +3643,7 @@ mod tests {
             repl.pump_bots();
         }
         assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], ENDED_SEED).seat_provenance());
         repl.session.to_record_json().expect("a record")
     }
 
