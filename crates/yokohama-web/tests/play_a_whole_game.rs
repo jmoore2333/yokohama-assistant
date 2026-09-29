@@ -61,6 +61,43 @@ impl Rng {
 struct Api {
     state: Arc<AppState>,
     router: axum::Router,
+    /// Every `POST …/input` this `Api` was asked, by anyone — the independent
+    /// count the two-identities arm's coverage is asserted against.
+    input_posts: std::cell::Cell<usize>,
+}
+
+/// **The acting-seat fence's witness, one probe per line the mover posts**
+/// (M6.5c2 cycle D, Review Focus 4, review I1): the OTHER identity posts the
+/// very line first, and reads a 403 that names the acting seat by its word (a
+/// name, else a colour), carries no address, and leaves the event count where
+/// it was. Held by every path that posts a line for the mover — the choice, a
+/// placement picker's area lines, and the stuck picker's `cancel` — because a
+/// fence that loosened on only one line shape (a picker's `A05`) would pass a
+/// probe that ran before the choose path alone.
+struct Fence<'a> {
+    other: &'a str,
+    seat: u64,
+    probes: std::cell::Cell<usize>,
+}
+
+impl Fence<'_> {
+    async fn probe(&self, api: &Api, line: &str) {
+        let (_, before) = api.call_as(self.other, "GET", "/api/games/two/events", None).await;
+        let (status, refused) = api
+            .call_as(self.other, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{} posted {line:?} out of turn and was not refused: {refused}", self.other);
+        let said = refused["error"].as_str().unwrap_or_default();
+        let named = said
+            .strip_prefix(&format!("it is seat {}'s turn (", self.seat))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("the refusal must name seat {} by the seat's word: {refused}", self.seat));
+        assert!(!named.is_empty(), "the seat's word is a name or a colour, never empty: {refused}");
+        assert!(!said.contains('@'), "the refusal carries no address: {refused}");
+        let (_, after) = api.call_as(self.other, "GET", "/api/games/two/events", None).await;
+        assert_eq!(before["events"], after["events"], "a refused move applied nothing: {before} -> {after}");
+        self.probes.set(self.probes.get() + 1);
+    }
 }
 
 impl Api {
@@ -69,7 +106,7 @@ impl Api {
     }
 
     fn over(state: Arc<AppState>) -> Self {
-        Self { router: app(Arc::clone(&state)), state }
+        Self { router: app(Arc::clone(&state)), state, input_posts: std::cell::Cell::new(0) }
     }
 
     /// The same store behind a FRESH server — every handle gone, as a
@@ -91,6 +128,9 @@ impl Api {
     /// built for the caller — so which identity a request carries is not a
     /// formality here but the whole subject of the second arm.
     async fn call_as(&self, who: &str, method: &str, uri: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
+        if method == "POST" && uri.ends_with("/input") {
+            self.input_posts.set(self.input_posts.get() + 1);
+        }
         let req = Request::builder()
             .method(method)
             .uri(uri)
@@ -202,6 +242,7 @@ async fn probe_a_placement(
     at: &Value,
     rng: &mut Rng,
     placed_before: &mut Option<u64>,
+    fence: Option<&Fence<'_>>,
 ) -> Option<Value> {
     let already = at["prompt"]["selected"].as_array().map_or(0, Vec::len);
     let want = at["prompt"]["max_areas"].as_u64().unwrap_or(0).min(2) as usize;
@@ -223,6 +264,9 @@ async fn probe_a_placement(
         occupied.into_iter().chain(*placed_before).chain((0..24).map(|i| (i + offset) % 24)).collect();
     let uri = format!("/api/games/{id}/input");
     for area in order {
+        if let Some(fence) = fence {
+            fence.probe(api, &format!("A{area:02}")).await;
+        }
         let (status, probe) =
             api.call_as(who, "POST", &uri, Some(serde_json::json!({ "line": format!("A{area:02}") }))).await;
         let grew = probe["prompt"]["kind"] == "place_a"
@@ -354,7 +398,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         }
         if state["prompt"]["kind"] == "place_a" {
             // Bound first, so no borrow of `state` outlives the probe.
-            let probed = probe_a_placement(&api, "red@wire.test", "gate", &state, &mut rng, &mut placed_before).await;
+            let probed = probe_a_placement(&api, "red@wire.test", "gate", &state, &mut rng, &mut placed_before, None).await;
             if let Some(next) = probed {
                 selections += 1;
                 state = next;
@@ -774,7 +818,10 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             );
         }
 
+        let fence = Fence { other: watcher, seat, probes: std::cell::Cell::new(0) };
         if stuck.again(&mine["prompt"]) {
+            fence.probe(&api, "cancel").await;
+            probes_refused += fence.probes.get();
             let (status, next) = api
                 .call_as(mover, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": "cancel" })))
                 .await;
@@ -786,8 +833,9 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
 
         // **The placement probe** — [`probe_a_placement`].
         if mine["prompt"]["kind"] == "place_a" {
-            let probed = probe_a_placement(&api, mover, "two", &mine, &mut rng, &mut placed_before).await;
+            let probed = probe_a_placement(&api, mover, "two", &mine, &mut rng, &mut placed_before, Some(&fence)).await;
             if let Some(next) = probed {
+                probes_refused += fence.probes.get();
                 selections += 1;
                 assert_built_for(&next, mover, seat);
                 state = next;
@@ -797,32 +845,19 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             // assistants are gone. Placing none is legal, so fall through.
         }
 
-        let Some(line) = choose(&mine, &mut rng) else { break };
+        let Some(line) = choose(&mine, &mut rng) else {
+            probes_refused += fence.probes.get();
+            break;
+        };
 
-        // **The acting-seat fence, witnessed at EVERY input of a whole game**
-        // (M6.5c2 cycle D, Review Focus 4): the OTHER identity posts the very
-        // line the mover is about to post. It is a 403 that names the seat by
-        // the seat's word (`it is seat {n}'s turn (…)`: a name, else a colour),
-        // carries no address, and leaves the event count where it was. The
-        // catcher for the "non-acting probe answered 200" defect: every other
-        // cell of the fence posts once at a hand-built table, and this one is
-        // the only place a fence that loosened on some phase, picker or turn
-        // deep into a real game would be seen.
-        let (_, before) = api.call_as(watcher, "GET", "/api/games/two/events", None).await;
-        let (status, refused) = api
-            .call_as(watcher, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
-            .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{watcher} posted {line:?} out of turn and was not refused: {refused}");
-        let said = refused["error"].as_str().unwrap_or_default();
-        let named = said
-            .strip_prefix(&format!("it is seat {seat}'s turn ("))
-            .and_then(|rest| rest.strip_suffix(')'))
-            .unwrap_or_else(|| panic!("the refusal must name seat {seat} by the seat's word: {refused}"));
-        assert!(!named.is_empty(), "the seat's word is a name or a colour, never empty: {refused}");
-        assert!(!said.contains('@'), "the refusal carries no address: {refused}");
-        let (_, after) = api.call_as(watcher, "GET", "/api/games/two/events", None).await;
-        assert_eq!(before["events"], after["events"], "a refused move applied nothing: {before} -> {after}");
-        probes_refused += 1;
+        // **The acting-seat fence, witnessed at EVERY line the mover posts**
+        // (Review Focus 4, review I1): the choice here, and above it the
+        // placement picker's area lines and the stuck picker's `cancel` --
+        // [`Fence`]. The catcher for the "non-acting probe answered 200"
+        // defect, and the only place a fence that loosened on some phase,
+        // picker or line shape deep into a real game would be seen.
+        fence.probe(&api, &line).await;
+        probes_refused += fence.probes.get();
 
         let (status, next) = api
             .call_as(mover, "POST", "/api/games/two/input", Some(serde_json::json!({ "line": line })))
@@ -835,8 +870,19 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         state = next;
     }
 
-    // The non-acting probe ran at every input of the loop, not at none of them.
+    // **Coverage by COUNT, against a count the probe does not keep**: the `Api`
+    // counted every `POST …/input` it was asked, the probes' own included, so
+    // the mover's posts are the total less the probes. Every one of them was
+    // preceded by exactly one refused out-of-turn post. No exclusion: the
+    // choice, each placement-picker attempt and each `cancel` are all probed.
+    let total_posts = api.input_posts.get();
     assert!(probes_refused > 0, "the non-acting probe never ran, so the fence was never witnessed");
+    assert_eq!(
+        total_posts,
+        2 * probes_refused,
+        "{probes_refused} out-of-turn probes for {} of the mover's posts: some line went unprobed",
+        total_posts - probes_refused,
+    );
 
     // The probe really did run, rather than falling through to `confirm` every
     // time — without this the paragraph above about a game that never places
