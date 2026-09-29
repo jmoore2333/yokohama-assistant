@@ -62,7 +62,9 @@ export function OnThisDevice({
    *  so beside a module listing nothing the card said "no game on this device
    *  yet" — a false sentence on a device whose games are there and cannot be
    *  reached — and beside a listing it drew every row as playable with no word
-   *  that the rows which say otherwise were never read. The rows it would have
+   *  that the rows which say otherwise were never read. Now the first is this
+   *  line, drawn in that sentence's place, and the second is `Unplayable`'s
+   *  own "could not be read" line, whose read this is. The rows it would have
    *  hidden still fall back to shown: they are the module's, and they open
    *  through it. */
   const [unlisted, setUnlisted] = useState<string | null>(null);
@@ -126,20 +128,22 @@ export function OnThisDevice({
        (`styles.css`). */
     <section className="raised-card door-card on-this-device">
       <h2 className="card-cap">On this device</h2>
-      {fault === null && unlisted !== null && (
-        /* **Beside the rows, and in place of "no game on this device yet"**:
-           what the MODULE lists is still drawn — its rows open through the
-           Worker, not through this read — and this line says the list may be
-           neither whole nor sorted, because the rows that say which games
-           will not open are what could not be read. */
-        <p className="muted local-fault">this device&apos;s games could not be listed &mdash; {unlisted}</p>
-      )}
       {fault !== null ? (
         <p className="muted local-fault">the games on this device could not be read &mdash; {fault}</p>
       ) : games === null ? (
         <p className="muted">loading&hellip;</p>
       ) : games.length === 0 ? (
-        unlisted !== null ? null : (
+        unlisted !== null ? (
+          /* **In place of "no game on this device yet", and only there**
+             (M6.5c2 cycle D, the final review's triage): the module listed
+             nothing, and with this browser's store unread that is not an empty
+             device. Above a list the module DID draw, its rows open through
+             the Worker and are the truth; the read that failed is the one that
+             says which games will not open, and `Unplayable`'s own line says
+             so below — this one there would be false, and a second naming of
+             one failure. */
+          <p className="muted local-fault">this device&apos;s games could not be listed &mdash; {unlisted}</p>
+        ) : (
           <p className="muted">no game on this device yet &mdash; start one with New game.</p>
         )
       ) : playable.length === 0 ? (

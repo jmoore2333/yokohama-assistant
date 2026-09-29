@@ -202,9 +202,10 @@ describe("On this device", () => {
       )!;
       expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
-      // And the read that failed still says so, where it failed.
+      // And the read that failed still says so, where it failed — and only
+      // there: the module listed this game, so no line says the games could
+      // not be listed (the final review's triage; see the cell below).
       expect(within(block as HTMLElement).getByText(/the games that will not open could not be read/)).toBeInTheDocument();
-      expect(screen.getByText(/this device's games could not be listed/)).toBeInTheDocument();
     });
 
     it("keeps a FINISHED game against a foreign bot as an ordinary row: it opens as it always did", async () => {
@@ -291,6 +292,27 @@ describe("On this device", () => {
     const line = await screen.findByText(/this device's games could not be listed/);
     expect(line).toHaveTextContent("the operation is insecure");
     expect(within(section()).queryByText(/no game on this device yet/)).toBeNull();
+  });
+
+  // **Above a listed game, no line says the games could not be listed** (M6.5c2
+  // cycle D, the final review's triage; the Task 12 review's minor 1). The
+  // module listed them: the rows are drawn and open through it, so "this
+  // device's games could not be listed" above them was false, and it named the
+  // one failure a second time beside `Unplayable`'s own line — which is the
+  // true sentence here, because the read that failed is the one that says
+  // which games will not open. The line stands only where "no game on this
+  // device yet" would (the cell above).
+  it("draws a listed game on a store it cannot read, and names the failed read once, where it failed", async () => {
+    stubWorker();
+    vi.spyOn(indexedDB, "open").mockImplementation(() => {
+      throw new DOMException("the operation is insecure", "SecurityError");
+    });
+    render(<OnThisDevice />);
+    expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    const failed = await screen.findByText(/the games that will not open could not be read/);
+    expect(failed).toHaveTextContent("the operation is insecure");
+    expect(within(section()).queryByText(/this device's games could not be listed/)).toBeNull();
+    expect(within(section()).getAllByText(/the operation is insecure/), "one failure, named once").toHaveLength(1);
   });
 
   it("says why when the module faults after the section is drawn", async () => {
