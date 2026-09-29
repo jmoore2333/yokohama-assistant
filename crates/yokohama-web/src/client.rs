@@ -312,19 +312,31 @@ pub fn facts_for(repl: &Repl, viewer: Viewer) -> Vec<SeatFacts> {
 /// seat, so you are now playing it`, which on the web is false: nothing here
 /// converts a bot's seat, and nobody is now playing it.
 ///
+/// **And the same line for a seat a person played on BGA** (M6.5c2 cycle D,
+/// straw poll row 144): the CLI cannot parse `bga-human` as a bot, so it
+/// resumes that seat as a human one and says so — true of a person, and false
+/// on the web in the same way, since nobody here took their seat over. Once
+/// [`crate::bots::recorded`] stopped counting such a seat as a bot it left
+/// [`crate::bots::foreign`], so it is named here from
+/// [`crate::bots::bga_human_seats`] instead.
+///
 /// **By the CLI's own prefix** (`bot.rs`, `BotSeats::from_provenance`'s two
-/// conversion arms), per foreign seat and naming its controller, so no other
+/// conversion arms), per seat and naming its controller, so no other
 /// warning can match. `Session::load_warnings` is a `Vec<String>` and a typed
-/// alternative would need a CLI change, so the cell that pins this asserts the
-/// WHOLE array of a finished foreign game — empty — and fails loudly the day
-/// the CLI's wording moves, rather than passing by matching the prefix itself.
+/// alternative would need a CLI change, so the cells that pin this assert the
+/// WHOLE array of a finished foreign game and of a `bga-human` one — empty —
+/// and fail loudly the day the CLI's wording moves, rather than passing by
+/// matching the prefix itself.
 pub(crate) fn without_foreign_conversion(
     warnings: Vec<String>,
     record: &yokohama_core::GameRecord,
 ) -> Vec<String> {
+    let bga = yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
     let converted: Vec<String> = crate::bots::foreign(record)
         .into_iter()
-        .map(|(seat, d)| format!("warning: seat {seat} was played by controller \"{}\"", d.controller))
+        .map(|(seat, d)| (seat, d.controller))
+        .chain(crate::bots::bga_human_seats(record).into_iter().map(|seat| (seat, bga.to_string())))
+        .map(|(seat, controller)| format!("warning: seat {seat} was played by controller \"{controller}\""))
         .collect();
     warnings.into_iter().filter(|w| !converted.iter().any(|p| w.starts_with(p.as_str()))).collect()
 }
@@ -535,25 +547,52 @@ impl ClientState {
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
-            warnings: without_version_drift(without_foreign_conversion(session.load_warnings.clone(), session.record())),
+            warnings: without_version_drift(
+                without_foreign_conversion(session.load_warnings.clone(), session.record()),
+                session.record(),
+            ),
             events: session.record().events.len(),
             bots: crate::bots::seat_bots(session.record()),
         }
     }
 }
 
-/// The CLI's engine-version drift line, and nothing else, dropped from what the
-/// game screen shows (M6.5c2, spec §2.6, R-6.5c2.19).
+/// The CLI's drift lines that are not news on the web, dropped from what the
+/// game screen shows — TWO masks, and nothing else:
 ///
-/// `engine_version` is provenance only (`GameRecord`'s own doc), and every save
-/// carries it; after a release bump the line would sit on EVERY existing game.
+/// 1. **The engine-version line** (M6.5c2, spec §2.6, R-6.5c2.19).
+///    `engine_version` is provenance only (`GameRecord`'s own doc), and every
+///    save carries it; after a release bump the line would sit on EVERY
+///    existing game.
+/// 2. **Every `warning: seat N records ` line for a seat [`crate::bots::foreign`]
+///    names** (M6.5c2 cycle D, straw poll row 143) — the CLI's identity-drift
+///    lines (`identity_drift_warnings`, a controller version or a knob that
+///    differs from this build's) and its stream-seed line, which share the
+///    prefix. Each tells a CLI player the seat "still plays, under the CURRENT
+///    build" (or "will not reproduce its recorded line"): the CLI's truth, and
+///    false here, where a foreign game reaches this screen only FINISHED — an
+///    unfinished one is the typed 409, "This server now runs … and can't
+///    continue it" — so no build plays that seat again. A same-name re-point
+///    (V4's name at another controller version) is the case that reaches it:
+///    finished, it opened with the line beside the refusals that name its bot
+///    "V4.3". **This reverses R-C18** (spec §10.8), which kept the CLI-worded
+///    warnings apart from §2.6's filter and left this line for cycle D. A seat
+///    that is NOT foreign keeps every line.
+///
 /// The CLI's own frame is unchanged. **A prefix match on the CLI's `format!`**
-/// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>` and
-/// a typed alternative would be a CLI change: the pin that keeps it honest
-/// asserts an EMPTY array (`browser_played_pin.rs`), never "no drift line".
-pub fn without_version_drift(warnings: Vec<String>) -> Vec<String> {
+/// (`Session::from_record`, `bot.rs`), because `load_warnings` is a
+/// `pub Vec<String>` and a typed alternative would be a CLI change: the pins
+/// that keep it honest assert an EMPTY array (`browser_played_pin.rs`,
+/// `a_finished_same_name_re_point_shows_no_drift_warning`), never "no drift
+/// line".
+pub fn without_version_drift(warnings: Vec<String>, record: &yokohama_core::GameRecord) -> Vec<String> {
     const DRIFT: &str = "warning: GameRecord.engine_version=";
-    warnings.into_iter().filter(|w| !w.starts_with(DRIFT)).collect()
+    let seats: Vec<String> =
+        crate::bots::foreign(record).into_iter().map(|(seat, _)| format!("warning: seat {seat} records ")).collect();
+    warnings
+        .into_iter()
+        .filter(|w| !w.starts_with(DRIFT) && !seats.iter().any(|p| w.starts_with(p.as_str())))
+        .collect()
 }
 
 /// One historical position, projected from the record — the M4 replay payload.
@@ -1125,15 +1164,22 @@ mod tests {
     }
 
     /// **Only the engine-version drift line is dropped** (M6.5c2, spec §2.6,
-    /// R-6.5c2.19). The match is a PREFIX on the CLI's own `format!`
-    /// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>`
-    /// and a typed alternative would be a CLI change. So this cell holds the
-    /// filter's PRECISION — every other warning stays, and a line that merely
-    /// quotes the field is kept — while
+    /// R-6.5c2.19) — **and, for a FOREIGN seat alone, its `records` lines**
+    /// (cycle D, straw poll row 143). The match is a PREFIX on the CLI's own
+    /// `format!` (`Session::from_record`, `bot.rs`), because `load_warnings` is
+    /// a `pub Vec<String>` and a typed alternative would be a CLI change. So
+    /// this cell holds the filter's PRECISION — every other warning stays, a
+    /// line that merely quotes the field is kept, and over a record whose
+    /// seat 1 is foreign the same `records` line naming seat 0 (a person)
+    /// stays — while
     /// `browser_played_pin.rs`'s `a_record_from_another_release_opens_with_no_warning_and_keeps_its_version`
-    /// holds that it matches the CLI at all.
+    /// and `a_finished_same_name_re_point_shows_no_drift_warning` hold that it
+    /// matches the CLI at all.
     #[test]
     fn only_the_engine_version_drift_line_is_dropped() {
+        let home: yokohama_core::GameRecord =
+            serde_json::from_str(crate::games::test_support::PLAYED_RECORD).expect("the pair's record");
+        assert!(crate::bots::foreign(&home).is_empty(), "premise: no foreign seat");
         let drift = "warning: GameRecord.engine_version=\"0.5.0\" does not match running engine version \
                      \"0.6.0\" — replaying anyway (v1 does not refuse on a version mismatch)"
             .to_string();
@@ -1143,12 +1189,33 @@ mod tests {
         let seat = "warning: seat 1 was played by controller \"z\", which this build does not know how to run"
             .to_string();
         let quoted = format!("note: {drift}");
+        let records = |n: u8| {
+            format!(
+                "warning: seat {n} records controller \"v2-padded\" at version 1, but this build runs \
+                 version 2 — the seat still plays, under the CURRENT build"
+            )
+        };
         assert_eq!(
-            without_version_drift(vec![drift.clone(), rules.clone(), seat.clone(), quoted.clone()]),
-            vec![rules, seat, quoted],
+            without_version_drift(
+                vec![drift.clone(), rules.clone(), seat.clone(), quoted.clone(), records(1)],
+                &home,
+            ),
+            vec![rules.clone(), seat.clone(), quoted.clone(), records(1)],
+            "no foreign seat: a `records` line stays",
         );
-        assert_eq!(without_version_drift(vec![drift]), Vec::<String>::new());
-        assert_eq!(without_version_drift(Vec::new()), Vec::<String>::new());
+        assert_eq!(without_version_drift(vec![drift.clone()], &home), Vec::<String>::new());
+        assert_eq!(without_version_drift(Vec::new(), &home), Vec::<String>::new());
+
+        let (away, _) = crate::games::test_support::foreign_pair("v2-padded", None);
+        let away: yokohama_core::GameRecord = serde_json::from_str(&away).expect("the pair's record");
+        let knob = "warning: seat 1 records b=8, but this build derives b=4 — the seat still plays, under the \
+                    CURRENT build"
+            .to_string();
+        assert_eq!(
+            without_version_drift(vec![drift, records(1), knob, records(0), rules.clone(), seat.clone()], &away),
+            vec![records(0), rules, seat],
+            "seat 1 is foreign: its version and knob lines go, seat 0's stays",
+        );
     }
 
     /// **Only the FOREIGN seat's conversion line is dropped** (M6.5c2, spec

@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
 use yokohama_cli::bot::PROVISIONAL_DEFAULT_BOT;
 use yokohama_core::{Contestant, GameRecord, NamedIdentity, RolloutPolicy, CONTROLLER_HUMAN};
 
@@ -112,16 +113,21 @@ fn label_of(contestant: Contestant) -> &'static str {
     }
 }
 
-/// Every seat `record` names a non-human controller for, in seat order, with
-/// its descriptor. Empty for an all-human game and for a record with no run
-/// provenance. A seat index past `u8` is skipped: no record this layer writes
-/// has one, and `recorded` is read before `Session::from_record` validates.
+/// Every seat `record` names a BOT for, in seat order, with its descriptor.
+/// Empty for an all-human game and for a record with no run provenance. A seat
+/// index past `u8` is skipped: no record this layer writes has one, and
+/// `recorded` is read before `Session::from_record` validates.
+///
+/// **A bot is any controller but a person's**, and a person is either
+/// controller `is_person` names — a seat typed at a keyboard
+/// (`CONTROLLER_HUMAN`), or one played by a person on BGA and imported
+/// (`yokohama_cli::bga::CONTROLLER_BGA_HUMAN`).
 pub fn recorded(record: &GameRecord) -> Vec<(u8, BotDescriptor)> {
     let Some(run) = &record.run else { return Vec::new() };
     run.seats
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.controller != CONTROLLER_HUMAN)
+        .filter(|(_, s)| !is_person(&s.controller))
         .filter_map(|(i, s)| {
             let seat = u8::try_from(i).ok()?;
             Some((
@@ -129,6 +135,34 @@ pub fn recorded(record: &GameRecord) -> Vec<(u8, BotDescriptor)> {
                 BotDescriptor { controller: s.controller.clone(), version: s.version, params: s.params.clone() },
             ))
         })
+        .collect()
+}
+
+/// Whether a seat's recorded `controller` is a PERSON's: `CONTROLLER_HUMAN`,
+/// a seat typed at this keyboard, or `yokohama_cli::bga::CONTROLLER_BGA_HUMAN`,
+/// a seat a person played on BGA (M6.5c2 cycle D, straw poll row 144).
+///
+/// The importer writes `bga-human` rather than `human` so a reader of the file
+/// can tell an imported game from a typed one, and the CLI resumes such a seat
+/// as a HUMAN one (`bot.rs`'s unparsed arm, "which is how `bga-human` seats
+/// from imported records keep resuming as people"). Counted as a bot here, it
+/// was a FOREIGN bot — a game "played against bga-human" this server "doesn't
+/// run", and a bot badge on a person.
+fn is_person(controller: &str) -> bool {
+    controller == CONTROLLER_HUMAN || controller == CONTROLLER_BGA_HUMAN
+}
+
+/// The seats `record` names [`CONTROLLER_BGA_HUMAN`] for, in seat order: the
+/// people the CLI's resume path warns it "resumes as a HUMAN seat", which
+/// `client::without_foreign_conversion` masks. Skips a seat past `u8` as
+/// [`recorded`] does.
+pub(crate) fn bga_human_seats(record: &GameRecord) -> Vec<u8> {
+    let Some(run) = &record.run else { return Vec::new() };
+    run.seats
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.controller == CONTROLLER_BGA_HUMAN)
+        .filter_map(|(i, _)| u8::try_from(i).ok())
         .collect()
 }
 
@@ -331,9 +365,12 @@ mod tests {
         assert_ne!(pair.0, pair.1, "the pair is distinct");
 
         // Row 4: a knobless pair renders the controller alone, no trailing
-        // space. Two knobless descriptors tie only when an unparseable
-        // controller is spelled like a knobless bot's label — its label is its
-        // own name — so the row is that: "uniform rung" against the uniform rung.
+        // space. Two DIFFERENT knobless descriptors reach this arm — their
+        // labels AND their versions tying — only when one controller is
+        // unparseable and spelled like the other's label (an unparsed
+        // controller's label is its own name); two that differ only in version
+        // tie on their labels but stop at the version arm, row 2's shape. So
+        // the row is that: "uniform rung" against the uniform rung.
         let uniform = descriptor_of(Contestant::Policy(RolloutPolicy::Uniform));
         let spelled = BotDescriptor { controller: "uniform rung".to_string(), ..uniform.clone() };
         assert!(uniform.params.is_empty(), "premise: knobless");
@@ -371,5 +408,54 @@ mod tests {
         record.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 7).seat_provenance());
         assert_eq!(recorded(&record), vec![(1, production())]);
         assert_eq!(seat_bots(&record), vec![SeatBot { seat: 1, label: "V4".into() }]);
+    }
+
+    /// **A seat a person played on BGA is a person here too** (M6.5c2 cycle D,
+    /// straw poll row 144). The importer names such a seat `bga-human`
+    /// (`yokohama_cli::bga::CONTROLLER_BGA_HUMAN`) rather than `human`, so a
+    /// reader of the file can tell an imported game from a typed one, and the
+    /// CLI resumes it as a HUMAN seat. Counted as a bot here it was a FOREIGN
+    /// one: an unfinished game refused as "played against bga-human", a
+    /// finished one refused its undo, and a bot badge on a person.
+    ///
+    /// Over the committed pair with seat 1 re-seated as `bga-human`: no bot in
+    /// `recorded`, `foreign`, `ClientState.bots` or the Players panel's facts —
+    /// and the CLI's "resumes as a HUMAN seat" line, asserted as a PREMISE on
+    /// the resident `Repl` so the cell cannot pass by the CLI going quiet, is
+    /// masked from the payload's `warnings` (the WHOLE array). The mask is
+    /// precise: the same line naming seat 0, which the record gives a typed
+    /// `human`, stays.
+    #[test]
+    fn a_bga_human_seat_is_a_person_not_a_foreign_bot() {
+        use crate::client::{facts_for, without_foreign_conversion, ClientState, Viewer};
+        use crate::games::test_support::{foreign_pair, PLAYED_ID};
+        use yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
+        use yokohama_cli::repl::Repl;
+        use yokohama_cli::session::Session;
+        use yokohama_core::{PlayerId, Rules};
+
+        let (record, _) = foreign_pair(CONTROLLER_BGA_HUMAN, None);
+        let record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        assert_eq!(recorded(&record), Vec::new(), "a person, not a bot");
+        assert_eq!(foreign(&record), Vec::new(), "and so not a foreign one");
+
+        let repl = Repl::new(Session::from_record(record.clone(), Rules::standard()).expect("it loads"));
+        let said = format!("warning: seat 1 was played by controller \"{CONTROLLER_BGA_HUMAN}\"");
+        assert!(
+            repl.session.load_warnings.iter().any(|w| w.starts_with(&said) && w.contains("resumes as a HUMAN seat")),
+            "premise: the CLI says it — {:?}",
+            repl.session.load_warnings,
+        );
+        let state = ClientState::of(PLAYED_ID, &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(state.bots, Vec::new(), "`ClientState.bots` names no bot");
+        assert_eq!(state.warnings, Vec::<String>::new(), "the conversion line masked, and nothing else shown");
+        let facts = facts_for(&repl, Viewer::Seat(PlayerId::new(0)));
+        assert_eq!(facts.iter().map(|f| f.is_bot).collect::<Vec<_>>(), [false, false], "no badge on a person");
+
+        let seat_0 = format!(
+            "warning: seat 0 was played by controller \"{CONTROLLER_BGA_HUMAN}\", which this build does not know \
+             how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
+        );
+        assert_eq!(without_foreign_conversion(vec![seat_0.clone()], &record), vec![seat_0], "seat 0 is a typed human");
     }
 }

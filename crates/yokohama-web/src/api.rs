@@ -232,9 +232,14 @@ fn is_game_route(pattern: &str) -> bool {
     pattern.starts_with("/api/games") || pattern.starts_with("/api/chat")
 }
 
-/// Segment-wise match; `{name}` binds one segment. Returns the bound values in
-/// pattern order. The ids this API accepts are `store::is_safe_id`'s ASCII
-/// set, so a bound segment needs no percent-decoding.
+/// Segment-wise match; `{name}` binds one NON-EMPTY segment. Returns the bound
+/// values in pattern order. The ids this API accepts are `store::is_safe_id`'s
+/// ASCII set, so a bound segment needs no percent-decoding.
+///
+/// **An empty segment binds nothing** (M6.5c2 cycle D, straw poll row 10), as
+/// axum's matchit reads it: `/api/games//table` is no route, a 404. Bound, it
+/// reached `get_table` and came back as the store's "not a usable game name",
+/// a 500 — the server blamed for a path the caller mistyped.
 fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     let mut bound = Vec::new();
     let mut ps = pattern.split('/');
@@ -242,7 +247,7 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     loop {
         match (ps.next(), xs.next()) {
             (None, None) => return Some(bound),
-            (Some(p), Some(x)) if p.starts_with('{') => bound.push(x),
+            (Some(p), Some(x)) if p.starts_with('{') && !x.is_empty() => bound.push(x),
             (Some(p), Some(x)) if p == x => {}
             _ => return None,
         }
@@ -627,10 +632,19 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// person at it) the fence is what guards, exactly as before.
 ///
 /// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
-/// — replay-derived**, which is the CLI's own attribution for exactly this
-/// question (`repl.rs`'s undo unwinds by replay, not by a boundary stack, so it
-/// survives a save and reload). A `GameEvent` carries no seat of its own, and a
-/// second attribution here would be a second thing to keep true.
+/// — replay-derived** ([`trailing_mover`]), which is the CLI's own attribution
+/// for exactly this question (`repl.rs`'s undo unwinds by replay, not by a
+/// boundary stack, so it survives a save and reload). A `RecordedEvent` carries
+/// no seat of its own — nor does the `Move` inside one — and a second
+/// attribution here would be a second thing to keep true.
+///
+/// **A record that will not replay is the SERVER's failure, not a refusal**
+/// (M6.5c2 cycle D, straw poll row 5): [`UndoRefusal::Replay`], a 500 carrying
+/// the replay's own sentence. It used to be folded into the refusal's `String`
+/// and answered 403, which tells a caller the rule turned them away when no
+/// rule was consulted. No sound record reaches that arm — a resident `Repl`
+/// was built by folding the same chain over the whole record — so it is a
+/// server fault by construction, which is exactly what a 500 says.
 ///
 /// What pops is `Session::undo`'s unit — one `Move` with the reveals bound to
 /// it, or a trailing standalone reveal — and never more: admission requires
@@ -640,7 +654,7 @@ pub(crate) fn undo_allowed(
     repl: &yokohama_cli::repl::Repl,
     table: &crate::table::TableDoc,
     viewer: yokohama_core::PlayerId,
-) -> Result<(), String> {
+) -> Result<(), UndoRefusal> {
     // **Nobody undoes a game played against a bot this build does not run**
     // (M6.5c2, R-6.5c2.10; spec §2.4's third mask), on the one-human path and
     // the shared path alike, and so FIRST. Such a game reaches here only
@@ -651,10 +665,10 @@ pub(crate) fn undo_allowed(
     // the refusal's pair (R-C5), so a same-name re-point reads "V4.2", never
     // "V4" on a server that runs V4.
     if let Some((_, played)) = crate::bots::foreign(repl.session.record()).first() {
-        return Err(format!(
+        return Err(UndoRefusal::Refused(format!(
             "undo is not offered on a game played against {}, which this server doesn't run",
             crate::bots::distinguishing_labels(played, &crate::bots::production()).0,
-        ));
+        )));
     }
     if table.distinct_humans() <= 1 {
         return Ok(());
@@ -672,25 +686,59 @@ pub(crate) fn undo_allowed(
     // helper the acting-seat fence reads, so the two cannot drift (R-4.3 with
     // R-5.1). It returns `None` on a live game, which is where R-P6 speaks.
     if let Some(status) = status_refusal(repl) {
-        return Err(status);
+        return Err(UndoRefusal::Refused(status));
     }
-    let record = repl.session.record();
-    let len = record.events.len();
+    let mover = trailing_mover(repl.session.record(), repl.session.rules())?;
+    if mover == viewer && repl.session.state().current_player == viewer {
+        Ok(())
+    } else {
+        Err(UndoRefusal::Refused("undo is not offered once your turn has passed".to_string()))
+    }
+}
+
+/// Why [`undo_allowed`] did not wave an undo through — two different answers,
+/// typed so the caller cannot give them one status.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UndoRefusal {
+    /// The RULE refused this caller: the foreign-bot rule, R-5.2's finished or
+    /// faulted game, "nothing to undo", or R-P6 itself. A 403, in the rule's
+    /// own words, exactly as every one of them has always answered.
+    Refused(String),
+    /// The record would not replay far enough to name who made its last move:
+    /// a 500 carrying the replay's sentence (`ReplayError`'s `Display`, which
+    /// names the event that failed).
+    Replay(String),
+}
+
+/// **The one place the two arms become statuses**: a refusal is
+/// [`GameError::Forbidden`](crate::games::GameError::Forbidden) and a replay
+/// failure [`GameError::Server`](crate::games::GameError::Server), which the
+/// crate root's `From<GameError>` turns into a 403 and a 500.
+impl From<UndoRefusal> for crate::games::GameError {
+    fn from(e: UndoRefusal) -> Self {
+        match e {
+            UndoRefusal::Refused(m) => Self::Forbidden(m),
+            UndoRefusal::Replay(m) => Self::Server(m),
+        }
+    }
+}
+
+/// Who made `record`'s LAST event: the seat to move in the state before it,
+/// replayed under `rules` (see [`undo_allowed`] on why by replay).
+fn trailing_mover(
+    record: &yokohama_core::GameRecord,
+    rules: &Rules,
+) -> Result<yokohama_core::PlayerId, UndoRefusal> {
     // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
     // a game whose first prompt has not been answered yet. `Session::undo`'s
     // own words for the same condition, so the answer reads the same whichever
     // of the two paths reaches it.
-    if len == 0 {
-        return Err("nothing to undo".to_string());
-    }
-    let mover = yokohama_core::state_at(record, len - 1, repl.session.rules())
-        .map_err(|e| e.message)?
-        .current_player;
-    if mover == viewer && repl.session.state().current_player == viewer {
-        Ok(())
-    } else {
-        Err("undo is not offered once your turn has passed".to_string())
-    }
+    let Some(last) = record.events.len().checked_sub(1) else {
+        return Err(UndoRefusal::Refused("nothing to undo".to_string()));
+    };
+    yokohama_core::state_at(record, last, rules)
+        .map(|state| state.current_player)
+        .map_err(|e| UndoRefusal::Replay(e.to_string()))
 }
 
 /// What `GET /api/games` is being asked (§3.3).
@@ -1118,11 +1166,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // pressed; "it is seat 1's turn" answers a question they did not ask. The
     // fence is untouched and still runs, for this line and every other.
     if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, seat).map_err(|message| ApiError {
-            status: StatusCode::FORBIDDEN,
-            message,
-            table_status: None, foreign_bot: None,
-        })?;
+        undo_allowed(&repl, &table, seat).map_err(crate::games::GameError::from)?;
     }
 
     // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
@@ -2732,6 +2776,43 @@ mod tests {
         assert_eq!(names, expected.to_vec());
     }
 
+    /// **An undo over a record that will not replay is the SERVER's failure — a
+    /// 500 carrying the replay's own sentence — and never a 403** (M6.5c2 cycle
+    /// D, straw poll row 5). A 403 tells the caller the RULE refused them, and
+    /// here no rule was consulted: the record could not name who made its last
+    /// move.
+    ///
+    /// **No route reaches this arm, and the cell says why rather than
+    /// pretending otherwise.** A resident `Repl` exists only through
+    /// `Session::from_record` (or a session that applied every event itself),
+    /// which folds the SAME `new_game` → `finalize_setup` → `replay_from` chain
+    /// over the whole record; a prefix of a record that folds, folds. So the
+    /// cell holds the arm at the two places that decide its status: the mover's
+    /// derivation, handed a HAND-BUILT record that will not replay (a 5-Power
+    /// take before any placement — asserted as a premise through `state_at`
+    /// itself), and the one mapping `input` sends [`UndoRefusal`] through.
+    /// The rule's own refusal is read through that mapping too, still a 403.
+    #[test]
+    fn undo_on_a_record_that_will_not_replay_is_a_500_not_a_403() {
+        use yokohama_core::{GameConfig, GameRecord, Move, RecordedEvent, StartingOrderChoice};
+        let rules = Rules::standard();
+        let mut record =
+            GameRecord::new(7, GameConfig::for_player_count(2), vec![StartingOrderChoice::Keep(0); 2], &rules);
+        record.events = vec![RecordedEvent::Move(Move::Take5PowerToken), RecordedEvent::Move(Move::SkipBuilding)];
+        let sentence = yokohama_core::state_at(&record, 1, &rules)
+            .expect_err("premise: the record will not replay")
+            .to_string();
+
+        let refusal = trailing_mover(&record, &rules).expect_err("no mover to name");
+        assert_eq!(refusal, UndoRefusal::Replay(sentence.clone()), "a replay failure, not a refusal");
+        let answer = ApiError::from(crate::games::GameError::from(refusal));
+        assert_eq!((answer.status, answer.message), (StatusCode::INTERNAL_SERVER_ERROR, sentence));
+
+        let rule = "undo is not offered once your turn has passed";
+        let answer = ApiError::from(crate::games::GameError::from(UndoRefusal::Refused(rule.to_string())));
+        assert_eq!((answer.status, answer.message.as_str()), (StatusCode::FORBIDDEN, rule));
+    }
+
     #[test]
     fn the_matcher_binds_segments_and_tells_a_wrong_method_from_no_route() {
         match find("GET", "/api/games/sim-1/at/7", true) {
@@ -2754,5 +2835,11 @@ mod tests {
             _ => panic!("the run route"),
         }
         assert!(matches!(find("GET", "/api/games/sim-1/index", true), Matched::NoRoute), "a short path binds nothing");
+        // An EMPTY segment binds nothing (M6.5c2 cycle D, straw poll row 10):
+        // bound, `/api/games//table` reached `get_table` and answered the
+        // store's "not a usable game name" as a 500, where axum's matchit
+        // answers 404 — so no route, in the middle and at the end alike.
+        assert!(matches!(find("GET", "/api/games//table", true), Matched::NoRoute), "an empty {{id}}");
+        assert!(matches!(find("GET", "/api/games/sim-1/at/", true), Matched::NoRoute), "an empty {{k}}");
     }
 }

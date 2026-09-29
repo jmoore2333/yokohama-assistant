@@ -1276,17 +1276,14 @@ mod tests {
         let label = crate::bots::label(&running);
         let (played, runs) = (format!("{label}.{next}"), format!("{label}.{}", running.version));
         let repointed = |cut: Option<usize>| -> Games {
-            let (record, table) = foreign_pair(&running.controller, cut);
-            let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
-            record.run.as_mut().expect("run provenance").seats[1].version = next;
-            let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
-            table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
-            let foreign = crate::bots::foreign(&record);
+            let (record, table) = same_name_repoint(cut);
+            let foreign = crate::bots::foreign(&serde_json::from_str(&record).expect("the pair's record"));
             assert_eq!(foreign.len(), 1, "premise: the bot seat is foreign");
+            assert_eq!(foreign[0].1.version, next, "premise: at the next version");
             assert_eq!(crate::bots::label(&foreign[0].1), label, "premise: its label ties with production's");
             let games = games();
-            games.load_document(Doc::Record, PLAYED_ID, &serde_json::to_string(&record).unwrap()).unwrap();
-            games.load_document(Doc::Table, PLAYED_ID, &serde_json::to_string(&table).unwrap()).unwrap();
+            games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
             games
         };
         const HOST: crate::api::Host = crate::api::Host {
@@ -1353,6 +1350,47 @@ mod tests {
         let (status, v) = ask(&finished, "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
         assert_eq!(status, 403, "{v}");
         assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run"));
+    }
+
+    /// **A FINISHED same-name re-point opens with no warning at all** (M6.5c2
+    /// cycle D, straw poll row 143 — R-C18's choice reversed). The CLI resumes
+    /// the re-pointed seat under the current build and says so, `warning: seat
+    /// 1 records controller "v4-step9-draft1" at version N, but this build runs
+    /// version M — the seat still plays, under the CURRENT build`; on the web no
+    /// build plays that seat again (unfinished, the game is the 409 "can't
+    /// continue it"), so the line contradicted the refusals beside it. The
+    /// CLI's line is asserted as a PREMISE on the resident `Repl` the route
+    /// reads, so the cell cannot pass by the CLI going quiet; the payload is
+    /// built exactly as `api::get_game` builds it, and its WHOLE array is
+    /// asserted, so a reworded CLI line fails here.
+    #[test]
+    fn a_finished_same_name_re_point_shows_no_drift_warning() {
+        let running = crate::bots::production();
+        let (record, table) = same_name_repoint(None);
+        let games = games();
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let handle = games.handle(PLAYED_ID).expect("a finished re-point opens");
+        let repl = handle.lock().unwrap();
+        assert!(repl.session.is_over(), "premise: finished");
+        let said = format!(
+            "warning: seat 1 records controller \"{}\" at version {}, but this build runs version {}",
+            running.controller,
+            running.version + 1,
+            running.version,
+        );
+        assert!(
+            repl.session.load_warnings.iter().any(|w| w.starts_with(&said)),
+            "premise: the CLI says it — {:?}",
+            repl.session.load_warnings,
+        );
+        let state = crate::client::ClientState::of(
+            PLAYED_ID,
+            &repl,
+            crate::client::Viewer::Seat(PlayerId::new(0)),
+            Vec::new(),
+        );
+        assert_eq!(state.warnings, Vec::<String>::new(), "no drift line, and nothing else");
     }
 
     /// **Every game this layer deals names the host it was played on** (M6.5c2,
@@ -2980,6 +3018,24 @@ pub(crate) mod test_support {
         }
         (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
     }
+
+    /// [`foreign_pair`] re-pointed to THIS build's bot at the NEXT controller
+    /// version (M6.5c2, R-C5's same-name re-point): seat 1 names production's
+    /// controller and knobs, the record's seat and the table mirror's copy
+    /// alike, so the bot is foreign while its label ties with production's.
+    /// `cut` as [`foreign_pair`]'s. Answers `(record, table)` as JSON.
+    pub(crate) fn same_name_repoint(cut: Option<usize>) -> (String, String) {
+        use yokohama_core::GameRecord;
+        let running = crate::bots::production();
+        let next = running.version + 1;
+        let (record, table) = foreign_pair(&running.controller, cut);
+        let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        record.run.as_mut().expect("run provenance").seats[1].version = next;
+        let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+        table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
+        (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+    }
+
     /// The record `id` is stored as, as bytes.
     ///
     /// `expect` twice, and the two are different questions: the store failed,

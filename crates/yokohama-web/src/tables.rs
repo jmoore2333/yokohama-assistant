@@ -574,14 +574,32 @@ fn withhold_until_the_choice(table: &mut HistoricalFrame) {
 }
 
 /// Whose panel the set table draws when the caller has no seat left to choose
-/// for: the LOWEST HUMAN seat.
+/// for — they have kept at every seat they hold and are WAITING on the others:
+/// the caller's own LOWEST seat (M6.5c2 cycle D, straw poll row 6).
+///
+/// It was the table's lowest human seat, so blue (seat 1) waiting on red was
+/// drawn red's seat 0. Nothing leaked — every human hand on this table is
+/// `Unknown` until the game starts — but the waiting screen was somebody
+/// else's table, one keep after it had been the caller's own.
+///
+/// **Never a bot seat**: [`TableDoc::seats_of`] names only the seats this user
+/// holds as a person. **The empty case is unreachable** — [`Games::deal`] reads
+/// the table through [`Games::table`], which refuses a caller with no seat — and
+/// falls back to [`first_human_seat`] rather than panicking, for that
+/// function's reason: this runs in a request handler.
+pub(crate) fn seat_of_waiting(doc: &TableDoc, user: &User) -> PlayerId {
+    doc.seats_of(user).first().copied().unwrap_or_else(|| first_human_seat(&doc.seats))
+}
+
+/// The LOWEST HUMAN seat — [`seat_of_waiting`]'s fallback for a caller holding
+/// no seat, which no route reaches.
 ///
 /// **Never a bot seat, and that is the load-bearing half.** Every human hand is
-/// empty on this table — no seat has chosen, so every human choice is
-/// `Unknown` — which makes the answer cosmetic among humans. A bot seat's is
-/// not empty: its keep is already applied, and a frame built for it would
-/// unmask the one card on the set table that is nobody's business
-/// ([`client::facts_for`] shows the VIEWER's hand and masks the rest).
+/// empty on the set table — no seat has chosen, so every human choice is
+/// `Unknown`. A bot seat's is not empty: its keep is already applied, and a
+/// frame built for it would unmask the one card on the set table that is
+/// nobody's business ([`client::facts_for`] shows the VIEWER's hand and masks
+/// the rest).
 ///
 /// **The `unwrap_or` is the one branch that could name a bot, and it is
 /// unreachable rather than a fallback with meaning**: [`config_of`] refuses a
@@ -727,23 +745,30 @@ impl Games {
             // payloads (see `client.rs`) is undone if the id still spells it.
             None => format!("sim-{:016x}", draw_seed()),
         };
-        // **An unreadable document is OCCUPIED, not absent.** The store's `read`
-        // carries that distinction in its type — `Ok(None)` is `NotFound` and
-        // nothing else — so reading an `Err` as "a file that exists and cannot
-        // be spoken for" is what stops a new game overwriting a real one:
-        // measured with a `chmod 000`, the POST returned 201 and the original
-        // record was gone. BOTH documents are asked about, because either one
-        // present means the name is taken — a table whose finalize failed has no
+        // **An unreadable document REFUSES the name, and not as "absent".** The
+        // store's `read` carries that distinction in its type — `Ok(None)` is
+        // `NotFound` and nothing else — so an `Err` is never read as a free
+        // name: that is what stops a new game overwriting a real one, measured
+        // with a `chmod 000` (the POST returned 201 and the original record was
+        // gone). BOTH documents are asked about, because either one present
+        // means the name is taken — a table whose finalize failed has no
         // record, and a record whose table was hand-deleted is R-P7's legacy
         // game, which this API will not serve but must not overwrite either.
-        let occupied = [Doc::Table, Doc::Record].iter().any(|doc| {
-            match self.store.read(*doc, &id) {
-                Ok(found) => found.is_some(),
-                Err(_) => true,
+        //
+        // **And an `Err` is the STORE's failure, a 500 naming its error**
+        // (M6.5c2 cycle D, straw poll row 7). It was folded into "already
+        // exists", a 400: a sentence that asserts a game nobody could read, and
+        // a status telling the caller to change a request that was right.
+        for doc in [Doc::Table, Doc::Record] {
+            match self.store.read(doc, &id) {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    return Err(GameError::BadRequest(format!("a game named {id:?} already exists")))
+                }
+                Err(e) => {
+                    return Err(GameError::Server(format!("the store could not be read for {id:?}: {e}")))
+                }
             }
-        });
-        if occupied {
-            return Err(GameError::BadRequest(format!("a game named {id:?} already exists")));
         }
 
         self.deleted.lock().expect("games lock").remove(&id);
@@ -1310,15 +1335,15 @@ impl Games {
             .map_err(|e| GameError::Server(format!("the setup did not deal: {e}")))?;
         // The set table is drawn for the seat this caller is choosing FOR, so
         // the frame beside the two cards is that seat's own; once every seat of
-        // theirs has chosen there is no such seat and the lowest human's empty
-        // panel is drawn instead. Neither shows a hand — see [`first_human_seat`].
+        // theirs has chosen there is no such seat and their own lowest seat is
+        // drawn instead ([`seat_of_waiting`]). Neither shows a hand.
         let frame = set_table(
             config,
             doc.seed,
             &doc.seats,
             &pending.deals,
             &self.rules,
-            seat.unwrap_or_else(|| first_human_seat(&doc.seats)),
+            seat.unwrap_or_else(|| seat_of_waiting(&doc, user)),
         )
         .map_err(GameError::Server)?;
         Ok(DealView {
@@ -2086,6 +2111,28 @@ mod tests {
         assert_eq!(ids(d.cards.as_ref().unwrap()), pending.deals[1].to_vec());
     }
 
+    /// **A caller waiting on the others is drawn their OWN seat's set table**
+    /// (M6.5c2 cycle D, straw poll row 6). BLUE (seat 1) keeps while RED has
+    /// not, so blue has no seat left to choose for — and the frame beside
+    /// "waiting" is still blue's, never red's seat 0 for being the lowest human
+    /// seat. No card rides either frame (every human hand is `Unknown` until the
+    /// game starts, and `cards` is null), so what this pins is whose table the
+    /// waiting screen is: the caller's, as it was one keep earlier.
+    #[test]
+    fn the_waiting_callers_set_table_is_drawn_for_their_own_seat() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("waiting", CORPUS_SEED), &red).unwrap().id;
+        let choosing = games.deal(&id, &blue).expect("blue's deal");
+        assert_eq!(choosing.frame.seat, Some(PlayerId::new(1)), "premise: choosing, blue is drawn blue's seat");
+        games.keep(&id, &blue, PlayerId::new(1), 1, None).expect("blue keeps");
+        let waiting = games.deal(&id, &blue).expect("blue waits on red");
+        assert_eq!((waiting.seat, waiting.cards.is_none()), (None, true), "premise: blue has no seat left to choose for");
+        assert_eq!(waiting.frame.seat, Some(PlayerId::new(1)), "the waiting frame is blue's own seat");
+        let red_deal = games.deal(&id, &red).expect("red's deal");
+        assert_eq!(red_deal.frame.seat, Some(PlayerId::new(0)), "and red, still choosing, is drawn red's");
+    }
+
     /// **The set table is never drawn for a BOT seat, before or after the
     /// caller has chosen** (review M1).
     ///
@@ -2103,7 +2150,9 @@ mod tests {
     /// can reach it at a table holding a bot any more: a bot is legal at two
     /// players only (R-P10), so such a table has one human seat and that seat's
     /// keep finalizes it. `preview` used to be that reach, and always chose its
-    /// viewer this way.
+    /// viewer this way. (A caller WAITING on others is drawn their own seat,
+    /// [`seat_of_waiting`], which names no bot by construction; this fallback
+    /// sits behind it for a caller holding no seat, whom `deal` refuses first.)
     ///
     /// The bot's non-empty hand is asserted as a PREMISE: without it a frame
     /// built for seat 1 would show an empty panel and this cell would pass while
@@ -2155,10 +2204,12 @@ mod tests {
         // It used to be reached through `preview`, which always chose its viewer
         // this way. A bot is legal at two players only (R-P10), so a bot table
         // has exactly one human seat and that seat's keep finalizes the table —
-        // which is the refusal just above. `first_human_seat` is still what
-        // `deal` falls back to at a table of two PEOPLE (the branch
-        // `the_deal_serves_the_callers_own_cards_and_never_the_others` walks),
-        // so the claim that it never names a bot is asserted where it lives.
+        // which is the refusal just above. Since cycle D no route reaches it at
+        // a table of two PEOPLE either: a waiting caller is drawn their own seat
+        // (`the_waiting_callers_set_table_is_drawn_for_their_own_seat`), and
+        // `first_human_seat` is only `seat_of_waiting`'s answer for a caller
+        // holding no seat. So the claim that it never names a bot is asserted
+        // where it lives.
         let seats = |first_is_bot: bool| {
             if first_is_bot {
                 vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string(), name: None }]
@@ -3223,7 +3274,14 @@ mod tests {
         }
     }
 
-    /// An existing game whose record cannot be READ is still occupied.
+    /// **An existing game whose record cannot be READ is not a free name — and
+    /// the refusal is the STORE's failure, a 500 naming its error** (M6.5c2
+    /// cycle D, straw poll row 7), never the 400 "already exists": nobody
+    /// knows whether a game is there, so the sentence that says one is would be
+    /// false, and a 400 tells the caller to change a request that was right.
+    /// The refusal itself is what stops a new game overwriting a real one (the
+    /// `chmod 000` measurement), so the store's write PANICS here: no 201, and
+    /// the record untouched.
     #[test]
     fn create_refuses_a_name_whose_record_is_unreadable() {
         struct Unreadable;
@@ -3250,11 +3308,11 @@ mod tests {
             }
         }
         let games = Games::new(Arc::new(Rules::standard()), Arc::new(Unreadable));
-        let err = games
-            .create(&req("taken"), &who("red@t.test"))
-            .expect_err("the name is occupied")
-            .to_string();
-        assert!(err.contains("already exists"), "{err}");
+        let err = games.create(&req("taken"), &who("red@t.test")).expect_err("the name is not free");
+        let sentence = "the store could not be read for \"taken\": permission denied";
+        assert!(matches!(&err, GameError::Server(m) if m == sentence), "{err:?}");
+        let answer = crate::ApiError::from(err);
+        assert_eq!((answer.status.as_u16(), answer.message.as_str()), (500, sentence));
     }
 
     /// **An open seat opens the table; a full one deals at once.**

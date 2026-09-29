@@ -108,7 +108,7 @@ fn is_token(token: &str) -> bool {
 /// Whether `line` is the undo, in either of its two spellings.
 ///
 /// **The undo RULE is not here** — R-P6 needs the table and the record, and
-/// lives in `lib.rs`'s `undo_allowed`. This is only the grammar's answer to
+/// lives in `api.rs`'s `undo_allowed`. This is only the grammar's answer to
 /// "was that an undo", kept beside `HEADS` because that is where the two
 /// words are admitted and where a third would be added.
 ///
