@@ -2290,6 +2290,27 @@ The files' last versions are in history: `git show 87d30a14:deploy/worker/src/in
   refuses `open`: each exits 1 naming the value it was given. `cf-access` reads
   the same on both, so a rollback from the M6.5c2 close's image to
   `0.5.0-m6.5b2.1` keeps its `Env` line as it is. *(Added 2026-09-28, M6.5c2.)*
+- **Across M6.5c2 cycle D, a chat with a DELETED message stops answering on the
+  older binary.** Cycle D deletes a message as a TOMBSTONE — its number, author
+  and clock stay, its `text` becomes `""` and it carries `"deleted": true` — and
+  every chat document it writes carries a revision, `rev`. An image from before
+  it (`0.6.0-m6.5c2` and earlier) does NOT show the tombstone as an empty
+  message: it ignores the two new keys (neither `ChatDoc` nor `Message` is
+  `deny_unknown_fields`), then refuses the whole document on its shape rule,
+  where an empty text is malformed. At that table — or at the house, for the
+  lobby's chat — every chat read AND post answers 500 with `"<id>"'s chat
+  document is malformed: message N's text is empty or carries a control
+  character`. Nothing else goes: the game, its events (whose chat count is read
+  without the shape rule), the table and the lobby's listing all answer, and the
+  stored document is left as it was. **It does not heal on the older binary**:
+  the trim that would drop the tombstone runs only on an append, and the append
+  reads the document first. The chat is down there until the newer image is
+  back, which reads the document whole, or the document is edited by hand. A
+  chat with no deleted message reads and appends as before, except that the
+  older binary's append rewrites it without `rev`; rolled forward, its revision
+  reads 0 and moves from there (`#[serde(default)]`). Measured on the layer at
+  `014433df` over documents the cycle D layer wrote. *(Added 2026-09-29, M6.5c2
+  cycle D.)*
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.

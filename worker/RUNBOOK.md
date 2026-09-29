@@ -580,6 +580,21 @@ expires in 2031 (spec §0.5).
   key, which the older module's strict read of the row does not know, so it reads the row as no
   list and clears it, re-feeding nothing: the player's next click is a 409. Nothing is applied
   and nothing else is lost.
+- **A rollback to a version from before M6.5c2 cycle D (the twenty-third deployment, `36038818`,
+  or earlier) stops the chat wherever a message has been deleted.** Cycle D deletes a message as a
+  TOMBSTONE — `"text": ""` and `"deleted": true`, its number, author and clock kept — and gives
+  every chat document a revision, `rev`. The older module ignores both keys and then refuses the
+  whole document on its shape rule, where an empty text is malformed; it never shows the tombstone
+  as an empty message. So a `Table` object whose chat holds a tombstone answers every chat read and
+  post 500 with the layer's `"<id>"'s chat document is malformed: message N's text is empty or
+  carries a control character`, and the `House` object does the same for the lobby's chat; the
+  game, its events and the lobby's listing answer. It does not heal on the older version — the trim
+  that would drop the tombstone runs only on an append, and the append reads the document first —
+  so the chat stays down until the roll forward, which reads the document whole. A chat with no
+  deleted message is unaffected, except that the older module's append rewrites it without `rev`,
+  which reads as 0 after the roll forward. The answer was measured on the layer at `014433df`
+  (`deploy/RUNBOOK.md` §5); the module runs that layer, and no Worker version was rolled back to
+  see it. *(Added 2026-09-29, M6.5c2 cycle D.)*
 
 ## 7. The live tiers and the quota guard
 
