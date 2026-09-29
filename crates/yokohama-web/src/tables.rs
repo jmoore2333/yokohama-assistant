@@ -1150,6 +1150,18 @@ impl Games {
         Ok((doc.page_for(reader), doc.counts()))
     }
 
+    /// The house chat document's `last` and `rev` ([`ChatCounts`]), read as
+    /// [`Games::house_page`] reads them — what the NAS SEEDS its house frame's
+    /// counters from when it starts (M6.5c2 cycle D, the final review's C1;
+    /// `AppState::with_store_chat_and_archive`).
+    ///
+    /// An absent document is an empty one, `0` and `0`, as every read of it
+    /// is. A document that cannot be read or will not parse is the refusal
+    /// every house route answers with.
+    pub fn house_counts(&self) -> Result<ChatCounts, GameError> {
+        self.read_chat(ChatAt::House).map(|(doc, _)| doc.counts())
+    }
+
     /// The count a signal frame carries (R-plan-5), from the cache or from one
     /// read of the document.
     ///

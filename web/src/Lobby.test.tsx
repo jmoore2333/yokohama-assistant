@@ -804,6 +804,57 @@ describe("the lobby's chat", () => {
     }
   });
 
+  // **A restarted server's first frame is read** (M6.5c2 cycle D, the final
+  // review's C1; the reviewer's probe, kept). The rule this panel reads by — a
+  // frame's `chat` above the `last` of the page it holds — trusts the frame's
+  // numbers to be the house chat DOCUMENT's. On the Worker they are read off
+  // the document. On the NAS they were a count the process kept from 0, so
+  // after a restart the first message over a room at 57 framed `chat: 1`, and
+  // the panel read nothing, by its own rule: a count below what it holds is
+  // not news. The NAS now seeds its counters from the document when it starts
+  // (the lib cell `after_a_restart_the_house_frame_counts_on_from_the_document`),
+  // so the same message frames `chat: 58` beside the restarted process's `seq`
+  // of 0. Both frames are pushed here, the old one first: it reads nothing,
+  // and the seeded one reads the message. The page is `house_chat.json`
+  // renumbered, as the cells above build theirs, served above the `after` the
+  // panel asks from.
+  it("reads the house message a restarted server's first frame counts, and nothing for a count below what it holds", async () => {
+    setLobbyChat(true);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stream = fakeStream();
+    const held = { ...wire.houseChat.messages[0]!, seq: 57 };
+    const next = { ...wire.houseChat.messages[0]!, seq: 58 };
+    let page: ChatPage = { ...wire.houseChat, messages: [held], last: 57, rev: 57 };
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) {
+          const after = Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0);
+          return { ...page, messages: page.messages.filter((m) => m.seq > after) };
+        }
+        return undefined;
+      });
+      const panel = () => document.querySelector<HTMLElement>("section.lobby-chat")!;
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => stub.matching("GET", "/api/chat").length === 1, "the mount read");
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "premise: the room at 57").toHaveLength(1);
+      page = { ...page, messages: [held, next], last: 58, rev: 58 };
+      // The frame a restarted NAS sent before the seed: a count from 0.
+      stream.push("house", { seq: 0, chat: 1, rev: 1 });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "a count below what the panel holds is not news").toHaveLength(1);
+      // The frame it sends now: the document's numbers.
+      stream.push("house", { seq: 0, chat: 58, rev: 58 });
+      await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "the 58th message is drawn").toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // **A house message its socket's reconnect missed is read once the reader's
   // own post shows the gap** (the Task 11 re-review's lost-message finding;
   // the production path of `Chat.test.tsx`'s "reads the messages its own

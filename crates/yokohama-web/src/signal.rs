@@ -150,6 +150,25 @@ impl Signals {
         self.house_sender().subscribe()
     }
 
+    /// Start the house's `chat` and `rev` at the stored house chat document's
+    /// `last` and `rev` (M6.5c2 cycle D, the final review's C1), and `seq` at 0
+    /// — it is the frame's own sequence and names nothing stored.
+    ///
+    /// **Called ONCE, by `AppState::with_store_chat_and_archive`, before the
+    /// state serves anything**: it REPLACES the two counters rather than adding
+    /// to them, so a call after the first bump would put an older number back.
+    /// After it the pair stays the document's with no further read, because
+    /// the NAS is one process and the only writer: [`Signal::bump_house_chat`]
+    /// adds one exactly where an append moves `last` and `rev`, and
+    /// [`Signal::bump_house_chat_rev`] exactly where a delete moves `rev` — a
+    /// trim moves neither.
+    pub(crate) fn seed_house(&self, counts: crate::chat::ChatCounts) {
+        self.house_sender().send_modify(|h| {
+            h.chat = counts.last;
+            h.rev = counts.rev;
+        });
+    }
+
     #[cfg(test)]
     pub fn senders(&self) -> usize {
         self.tables.lock().expect("signals lock").len()

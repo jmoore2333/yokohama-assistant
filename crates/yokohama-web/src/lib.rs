@@ -469,17 +469,30 @@ impl AppState {
     ) -> Self {
         let rules = Arc::new(Rules::standard());
         let signals = Arc::new(signal::Signals::default());
+        let games = Games::with_parts(
+            rules,
+            store,
+            chat,
+            signals.clone(),
+            Arc::new(table::now_unix),
+            archive,
+            games::RunHost::Server,
+        )
+        .with_log(Arc::new(log::StderrLog));
+        // **The house frame's counters start where the house chat document is**
+        // (M6.5c2 cycle D, the final review's C1): a lobby's chat panel reads
+        // when the frame's `chat` passes the `last` of the page it holds, so a
+        // process that counted from 0 over a document at N told no lobby of a
+        // message until it had taken N + 1. A document that cannot be read
+        // seeds nothing: every house route refuses it out loud, and no message
+        // can be appended to it, so there is no count to be wrong about — until
+        // an operator repairs the file under a running process, which a
+        // restart then seeds.
+        if let Ok(counts) = games.house_counts() {
+            signals.seed_house(counts);
+        }
         Self {
-            games: Games::with_parts(
-                rules,
-                store,
-                chat,
-                signals.clone(),
-                Arc::new(table::now_unix),
-                archive,
-                games::RunHost::Server,
-            )
-            .with_log(Arc::new(log::StderrLog)),
+            games,
             identity,
             heartbeat: HEARTBEAT,
             signals,
@@ -7343,6 +7356,64 @@ mod tests {
             serde_json::json!({ "seq": 0, "chat": 1, "rev": 2 }),
             "the revision alone moved",
         );
+    }
+
+    /// **After a restart the house frame counts on from the DOCUMENT** (M6.5c2
+    /// cycle D, the final review's C1): its `chat` and `rev` are the stored
+    /// house chat document's `last` and `rev`, so a lobby's chat panel — a
+    /// COUNT host since row 130, which reads when the frame's `chat` passes the
+    /// `last` of the page it holds — learns of the first message a restarted
+    /// process takes.
+    ///
+    /// The restart is a SECOND state over the same store: its signals are new
+    /// and the document is not. Before the seed its first frame read
+    /// `{"chat":1,"rev":1}` over a document at 4 and 5, and a panel holding
+    /// `last = 3` read nothing until the fourth message this process took. The
+    /// frame is compared with the page `GET /api/chat` answers after it, number
+    /// for number, which is the whole of the claim — and a delete's frame
+    /// likewise, because the panel's revision rule reads a frame only once its
+    /// `chat` is at least the `last` it holds.
+    #[tokio::test]
+    async fn after_a_restart_the_house_frame_counts_on_from_the_document() {
+        let store: Arc<dyn Store> = Arc::new(MemStore::default());
+        let first = Arc::new(AppState::with_store(Arc::clone(&store), identity::IdentityMode::Open));
+        for text in ["one", "two", "three"] {
+            let (status, m) = post_as(&first, "grey@wire.test", "/api/chat", serde_json::json!({ "text": text })).await;
+            assert_eq!(status, StatusCode::CREATED, "{m}");
+        }
+        let (status, gone) = delete_as(&first, "grey@wire.test", "/api/chat/2").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{gone}");
+        let (_, page) = get_as(&first, "grey@wire.test", "/api/chat").await;
+        assert_eq!((page["last"].as_u64(), page["rev"].as_u64()), (Some(3), Some(4)), "premise: {page}");
+        drop(first);
+
+        let restarted = Arc::new(AppState::with_store(Arc::clone(&store), identity::IdentityMode::Open));
+        let frames = house_frames_after(&restarted, || async {
+            let (status, m) = post_as(&restarted, "grey@wire.test", "/api/chat", serde_json::json!({ "text": "four" })).await;
+            assert_eq!(status, StatusCode::CREATED, "{m}");
+        })
+        .await;
+        assert_eq!(frames.len(), 1, "one message, one frame: {frames:?}");
+        let (_, page) = get_as(&restarted, "grey@wire.test", "/api/chat").await;
+        assert_eq!(
+            frames[0],
+            serde_json::json!({ "seq": 0, "chat": page["last"], "rev": page["rev"] }),
+            "the frame's numbers are the document's: {page}",
+        );
+        assert_eq!(frames[0]["chat"], 4, "counted on from the stored 3, not from 0");
+
+        let frames = house_frames_after(&restarted, || async {
+            let (status, gone) = delete_as(&restarted, "grey@wire.test", "/api/chat/4").await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{gone}");
+        })
+        .await;
+        let (_, page) = get_as(&restarted, "grey@wire.test", "/api/chat").await;
+        assert_eq!(
+            frames,
+            vec![serde_json::json!({ "seq": 0, "chat": page["last"], "rev": page["rev"] })],
+            "a delete's frame is the document's revision too: {page}",
+        );
+        assert_eq!(frames[0]["rev"], 6);
     }
 
     /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles
