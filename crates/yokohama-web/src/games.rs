@@ -18,7 +18,7 @@
 //! (`Games::settle`) rather than left to a human.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
@@ -100,6 +100,30 @@ pub const OPEN_SENTENCE: &str = "this table is still open";
 /// The sentence a table-phase route answers with once the game has started.
 /// Beside it rides `"status": "playing"`.
 pub const PLAYING_SENTENCE: &str = "this table is playing";
+
+/// What a request answers, as a 500, when the game's lock is poisoned
+/// ([`Games::lock_game`], M6.5c2 cycle D, R-D8).
+pub const POISONED_SENTENCE: &str = "the game's handle was poisoned; the next request rebuilds it";
+
+/// Enter one of this layer's `Mutex<()>` locks, poisoned or not (M6.5c2 cycle
+/// D, row 128): a table's own ([`Games::lock_for`]), the id space's
+/// ([`Games::table_lock`]) and the house's ([`Games::house_lock`]).
+///
+/// **Sound because none of them guards any DATA.** Each is a turnstile for
+/// the writers of documents that live in the STORE, and whoever enters re-reads
+/// what it writes, under the lock, and writes it back by version. A writer that
+/// panicked inside left nothing half-made in memory for the next one to find: a
+/// write it never finished is the store's to refuse, and a crash between two
+/// writes is `settle`'s to repair, exactly as after a process that died there.
+/// `expect` on a poisoned turnstile, by contrast, turned one panic into a table
+/// nobody could join, keep, chat at, unlock or delete — and at the id space,
+/// into a process that could open no table at all — until it restarted.
+///
+/// The game's own `Mutex<Repl>` is the one lock this does NOT fit: it guards
+/// a `Repl`, and a poisoned one is evicted instead ([`Games::lock_game`]).
+pub(crate) fn enter(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// The facts the list mirrors off a live session (R-plan-3).
 ///
@@ -254,6 +278,10 @@ pub struct Games {
     /// A dedicated lock rather than holding `live`: `live` is taken by every
     /// `handle`, and blocking ordinary reads for the length of a game setup to
     /// serialize an operation a user performs by hand is the wrong trade.
+    ///
+    /// **It guards no data** — a turnstile for `create`'s check-then-write,
+    /// whose documents live in the store — so it is entered through [`enter`],
+    /// poisoned or not (M6.5c2 cycle D, row 128).
     pub(crate) table_lock: Mutex<()>,
     /// One lock PER TABLE (M6.2, R-2.9), created on first use and kept.
     ///
@@ -267,9 +295,16 @@ pub struct Games {
     ///
     /// The outer mutex is held only long enough to hand back the `Arc`, never
     /// across the table's own lock, so the two can never be taken in two orders.
-    /// The map is not pruned: an entry is a pointer and a mutex, and a delete
-    /// that removed one would drop it while a blocked writer was about to take
-    /// it and hand the next writer a DIFFERENT lock for the same table.
+    ///
+    /// **A delete prunes its table's entry, and only an UNSHARED one** (M6.5c2
+    /// cycle D, row 128; [`Games::prune_lock`]). The map used to grow by one
+    /// entry per table ever written and never shrink, by design, because a
+    /// delete that removed an entry while a blocked writer held a clone of it
+    /// would hand the NEXT writer a different lock for the same table. That
+    /// hazard is exactly the entry whose `Arc` someone else holds, so the prune
+    /// takes an entry only when the map's reference is the last one — read
+    /// under this mutex, the only place a clone is made — and leaves any other
+    /// to the writer holding it.
     pub(crate) locks: Mutex<HashMap<GameId, Arc<Mutex<()>>>>,
     /// Ids deleted since this process started, so a request that was already
     /// holding a handle cannot write the record back after `DELETE` removed it.
@@ -311,6 +346,10 @@ pub struct Games {
     /// enter. Two people talking in the lobby are otherwise a lost message —
     /// both read `last`, both write `last + 1`, and the compare-and-swap saves
     /// only whichever of them the store sees second.
+    ///
+    /// **It guards no data** — a turnstile for the house document's
+    /// read-then-write, and the document lives in the store — so it is entered
+    /// through [`enter`], poisoned or not (M6.5c2 cycle D, row 128).
     pub(crate) house_lock: Mutex<()>,
     /// The lobby switch and the retention numbers (R-6.4.6, R-6.4.8), from the
     /// launch variables — on the layer rather than on the host's state since
@@ -511,12 +550,69 @@ impl Games {
     /// is the id space and not one document.
     ///
     /// The entry is created on first use, so a table nobody has written costs
-    /// nothing, and it is never removed — see [`Games::locks`] for why a delete
-    /// that pruned the map would hand two writers two different locks for one
-    /// table.
+    /// nothing, and a DELETE prunes it once nobody else holds it — see
+    /// [`Games::locks`] for why only then ([`Games::prune_lock`]).
+    ///
+    /// Taken through [`enter`], never `expect`: the mutex guards no data.
     pub(crate) fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().expect("games lock");
         Arc::clone(locks.entry(id.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))))
+    }
+
+    /// Drop `id`'s entry from [`Games::locks`] if the map's is the ONLY
+    /// reference to it (M6.5c2 cycle D, row 128) — `delete` calls it after it
+    /// has let go of its own.
+    ///
+    /// Every clone of an entry is made by [`Games::lock_for`] under the map's
+    /// own mutex, and this reads the count under that same mutex, so a count of
+    /// one cannot become two while the entry is being removed. A count above
+    /// one is a writer that took the lock before the delete finished — blocked
+    /// on it, or about to be — and the entry stays, so that writer and the next
+    /// one serialize on the SAME lock.
+    pub(crate) fn prune_lock(&self, id: &str) {
+        let mut locks = self.locks.lock().expect("games lock");
+        if locks.get(id).is_some_and(|lock| Arc::strong_count(lock) == 1) {
+            locks.remove(id);
+        }
+    }
+
+    /// **Take a game's own lock — the ONE way this layer does** (M6.5c2 cycle
+    /// D, R-D8). Every site that locks a live `Repl` goes through here, and a
+    /// new one must: a bare `expect` on this mutex is the defect it replaced.
+    ///
+    /// A request that panics while it holds the guard POISONS the mutex, part
+    /// way through a step, a pump or a persist, with no telling what the `Repl`
+    /// now holds. `expect` then panicked on every later request for the game,
+    /// so one panic was one dead table until the process restarted. The handle
+    /// is a cache and never the record (this module's first paragraph), so a
+    /// poisoned one gets what a refused write gets (`Games::conflict`): it is
+    /// EVICTED. This request answers [`POISONED_SENTENCE`] as a 500 — it asked
+    /// for a game this process can no longer vouch for — and the next one
+    /// rebuilds through `Session::from_record`, from what the store holds. A
+    /// move the panicking request applied and never persisted goes with the
+    /// handle: it was never saved, which is all "persist after every applied
+    /// move" promises.
+    ///
+    /// **Only THIS mutex is evicted**, never a newer handle for the same id: a
+    /// request that rebuilt the game after the first eviction put a different
+    /// `Arc` in `live`, and a late holder of the poisoned one must not drop it.
+    /// The address is the identity, as the `Arc` is not in hand here.
+    ///
+    /// A method rather than a free function because the eviction is `live`'s.
+    /// The poisoned guard is dropped before `live` is taken, so this holds no
+    /// two locks at once.
+    pub fn lock_game<'a>(&self, lock: &'a Mutex<Repl>, id: &str) -> Result<MutexGuard<'a, Repl>, GameError> {
+        match lock.lock() {
+            Ok(repl) => Ok(repl),
+            Err(poisoned) => {
+                drop(poisoned);
+                let mut live = self.live.lock().expect("games lock");
+                if live.get(id).is_some_and(|h| std::ptr::eq(Arc::as_ptr(h), lock)) {
+                    live.remove(id);
+                }
+                Err(GameError::Server(POISONED_SENTENCE.to_string()))
+            }
+        }
     }
 
     /// The live handle for `id`, rebuilt from the store if it is not resident.
@@ -906,12 +1002,17 @@ impl Games {
 
     /// The game-over stamp, after a landed put or a same-game conflict.
     ///
-    /// The stamp is what keeps this game to ONE archive copy: the next abandon
-    /// puts under `abandoned/`, a DIFFERENT path, so a put that landed without
-    /// its stamp would be archived a second time there rather than refused
-    /// (`archive::paths` is per reason). Retried once on a version conflict — an
-    /// `unlock` or a `join` writing the document in the same instant is the only
-    /// other writer left at game over — and every other outcome is a line,
+    /// The stamp is what keeps this game to one archive copy WITHOUT help. An
+    /// unstamped game is put again at its next abandon: under `over/` when the
+    /// table's mirror says over (R-6.5b.13), where the copy that landed here
+    /// answers `Identical` and nothing is added — but under `abandoned/`, a
+    /// DIFFERENT path (`archive::paths` is per reason), when the mirror is stale
+    /// as well. So a lost stamp is a second copy only beside a stale mirror
+    /// (M6.5c2 cycle D, row 11; `Games::delete` names that residual).
+    ///
+    /// Retried once on a version conflict — an `unlock` or a `join` writing the
+    /// document in the same instant is the only other writer left at game over
+    /// — and every other outcome is a line,
     /// because a landed copy with no stamp is the case an operator most needs to
     /// hear.
     fn stamp_over(&self, id: &str, doc: TableDoc, version: Version) {
@@ -957,7 +1058,7 @@ impl Games {
     /// deferred, and no such put can exist before there is a record.
     pub fn archive_over_retry(&self, id: &str) -> Result<(), GameError> {
         let handle = self.handle(id)?;
-        let repl = handle.lock().expect("a game");
+        let repl = self.lock_game(&handle, id)?;
         let Some((record_json, _)) = self.store.read(Doc::Record, id).map_err(GameError::Server)? else {
             return Err(GameError::NotFound(format!("no game named {id:?}")));
         };
@@ -2354,12 +2455,14 @@ mod tests {
         let archive = RecordingArchive::recording();
         let running = games().with_archive(archive.clone());
         one_move_in(&running, "mid");
-        // NO eviction here (re-review N3): `both_seats_as_bots` writes BOT
-        // provenance for BOTH seats, so a rebuild's `bring_alive` would pump up
-        // to 200 bot moves. Measured at this seed: `one_move_in` stops at the
-        // 200-move cap, the rebuild's one pump plays the remaining 157 to game
-        // over (357 events), and the rebuild's own persist archives the game.
-        // Evict only a game that is ALREADY over.
+        // No eviction here, and none is needed: `both_seats_as_bots` stamps
+        // both seats as PEOPLE on every record it persists (M6.5c2 cycle D, the
+        // review of Task 4), so a rebuild reads the seats human/human and pumps
+        // nothing — the re-review measured 200 events before a rebuild and 200
+        // after. Before that re-stamp the record named both seats bots, and a
+        // rebuild's `bring_alive` played the remaining 157 moves to game over
+        // (357 events) and archived the game from its own persist (re-review
+        // N3), which is why this half evicted nothing then.
         running.archive_over_retry("mid").expect("an unfinished game is not an error");
         assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 
@@ -2655,6 +2758,77 @@ mod tests {
         assert_eq!(clock.set(None), Some(1_789_000_500));
         assert_eq!(clock.now(|| 7), 7);
         assert_eq!((clock.tick(), clock.tick(), clock.tick()), (1, 2, 3));
+    }
+
+    /// **A poisoned game lock evicts the handle, and the game rebuilds from the
+    /// store** (M6.5c2 cycle D, R-D8) — the catcher for a lock site that went
+    /// back to `expect`.
+    ///
+    /// A request that panics while it holds a game's `Repl` poisons that mutex.
+    /// `expect` on it then panicked on EVERY later request for the game, so one
+    /// panic was one dead table until the process restarted. The handle is a
+    /// cache and never the record: the next request drops it and answers the
+    /// sentence, and the one after that rebuilds through `Session::from_record`.
+    ///
+    /// Driven through a ROUTE, inside `catch_unwind`, so that a panic on the
+    /// poisoned lock is this cell's failure rather than the test binary's — and
+    /// so the assertions after it run in a process the poison did not take out.
+    #[test]
+    fn a_poisoned_game_lock_evicts_the_handle_and_the_next_request_rebuilds_it() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let games = games();
+        let handle = playing(&games, &two_people("poisoned", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let red = who("red@t.test");
+        let stored = handle.lock().unwrap().session.record().events.len();
+        let died = catch_unwind(AssertUnwindSafe(|| {
+            let _repl = handle.lock().unwrap();
+            panic!("a request died holding the game");
+        }));
+        assert!(died.is_err() && handle.is_poisoned(), "premise: the game's lock is poisoned");
+
+        let first = catch_unwind(AssertUnwindSafe(|| crate::api::get_game(&games, &red, "poisoned")))
+            .unwrap_or_else(|_| panic!("the route PANICKED on the poisoned lock: one panic is one dead table"));
+        let Err(refused) = first else { panic!("the poisoned handle is not served") };
+        assert_eq!(
+            (refused.status.as_u16(), refused.message.as_str()),
+            (500, "the game's handle was poisoned; the next request rebuilds it"),
+        );
+        assert!(!games.live.lock().unwrap().contains_key("poisoned"), "the poisoned handle is EVICTED");
+
+        if let Err(e) = crate::api::get_game(&games, &red, "poisoned") {
+            panic!("the next request rebuilds from the store, not {} {}", e.status, e.message);
+        }
+        let rebuilt = games.handle("poisoned").expect("resident again");
+        assert!(!Arc::ptr_eq(&rebuilt, &handle), "a new handle, not the poisoned one");
+        let rebuilt = rebuilt.lock().expect("the rebuilt handle is not poisoned");
+        assert_eq!(rebuilt.session.record().events.len(), stored, "rebuilt from what the store holds");
+    }
+
+    /// **A deleted table's lock is pruned, and a lock another writer holds is
+    /// not** (M6.5c2 cycle D, row 128) — the map grew by one entry per table
+    /// ever written and shrank never.
+    ///
+    /// The second half is the reason the map USED to be left alone, kept true:
+    /// an entry some writer still holds a clone of is a writer blocked on it,
+    /// and dropping it would hand the next writer a DIFFERENT lock for the same
+    /// table. So the prune takes only an entry whose `Arc` nobody shares.
+    #[test]
+    fn a_deleted_tables_lock_is_pruned() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("pruned", CORPUS_SEED), &red).expect("a table").id;
+        drop(games.lock_for(&id));
+        assert!(games.locks.lock().unwrap().contains_key(&id), "premise: the table has a lock entry");
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(!games.locks.lock().unwrap().contains_key(&id), "a deleted table's lock is pruned");
+
+        let id = games.create(&two_people("held", CORPUS_SEED), &red).expect("a table").id;
+        let held = games.lock_for(&id);
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(
+            Arc::ptr_eq(&games.lock_for(&id), &held),
+            "a lock another writer holds is kept, so the next writer takes the same one",
+        );
     }
 }
 
@@ -2968,15 +3142,24 @@ pub(crate) mod test_support {
     /// `MemStore` does. A cell that asks "how many writes did this take" cannot
     /// read the answer off the stored document — both a one-write and a
     /// two-write implementation leave the same bytes.
+    ///
+    /// It counts the TABLE document's reads too (M6.5c2 cycle D, Task 5): "how
+    /// many times did this route read the table" has the same property — two
+    /// reads and one serve the same document.
     #[derive(Default)]
     pub(crate) struct CountingStore {
         inner: MemStore,
         writes: std::sync::atomic::AtomicUsize,
+        table_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl CountingStore {
         pub(crate) fn writes(&self) -> usize {
             self.writes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        /// How many `Doc::Table` reads this store has answered.
+        pub(crate) fn table_reads(&self) -> usize {
+            self.table_reads.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -2989,6 +3172,9 @@ pub(crate) mod test_support {
             doc: Doc,
             id: &str,
         ) -> Result<Option<(String, crate::store::Version)>, String> {
+            if doc == Doc::Table {
+                self.table_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             self.inner.read(doc, id)
         }
         fn write_if_version(

@@ -557,7 +557,8 @@ impl AppState {
 ///
 /// **NOT seated, since M6.3 — and the seat it resolves is resolved for one
 /// reason only: `your_turn`.** The admission is [`events_at`]'s, which is
-/// `table_for_anyone` and then [`admitted`]: any signed-in caller is answered
+/// `table_for_anyone` and then [`api::admitted_with`] over that ONE read (M6.5c2
+/// cycle D, row 129) — [`admitted`]'s rule: any signed-in caller is answered
 /// at an OPEN table (ruling R-4.3, the one row where the two part company),
 /// and at a playing or finished one a caller who holds no seat is answered as
 /// a `Spectator` once the table admits them. `Games::table` is not on this
@@ -623,8 +624,19 @@ async fn events(
 /// replay would be a second, silent cursor this server does not honour, and
 /// writing one would invite a client to rely on it.
 ///
-/// **No await holds a game lock.** The per-frame closure is synchronous: it
-/// locks, builds the object, and drops the guard before the frame is yielded.
+/// **No await holds a game lock, and no frame's reading runs on the
+/// executor** (M6.5c2 cycle D, row 129). A reading is store I/O and a game-lock
+/// take — the table read, a chat count, the lock — and a synchronous closure
+/// ran it on a runtime worker, once per bump per open connection, where a slow
+/// disk or a contended lock stalled every other task on that worker with it.
+/// Each frame's reading is now handed to the blocking pool (`spawn_blocking`)
+/// and awaited. **What that costs**: one pool hand-off per frame — a clone of
+/// the state's `Arc`, the id and the caller, a thread wake and a join — and
+/// frames that queue in the pool when more readings are in flight than it has
+/// threads (tokio's default cap is 512), where they used to queue on the
+/// executor. Frames stay in order: `then` awaits each before it takes the next
+/// bump. The on-connect reading above the subscribe is left where it is, as
+/// every other route's is — one per connection, not one per bump.
 ///
 /// On the table's `end` the stream writes one `end` frame and CLOSES, and the
 /// close is the CHANNEL's rather than this closure's: `Signals::end` drops the
@@ -655,31 +667,38 @@ async fn stream(
     api::events_at(&state.games, &id, &user)?;
     let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
-    let frames = tokio_stream::wrappers::WatchStream::new(rx).map(move |bump| {
-        if bump.end {
-            return Ok::<_, std::convert::Infallible>(
-                Event::default().event("end").data(r#"{"reason":"deleted"}"#),
-            );
-        }
-        match api::events_at(&state.games, &id, &user) {
-            Ok(e) => Ok(Event::default()
-                .event("signal")
-                .json_data(e)
-                .expect("`Events` is five scalars and serializes")),
-            // **A REFUSAL ends the stream; a failure does not** (final review
-            // M-5). A 403 or a 404 is an answer about this table — the join
-            // that filled the open seats without this caller, the delete that
-            // raced the on-connect frame — and it is not going to be different
-            // next time, so the client is told and navigates away. A store
-            // that stopped answering is neither: writing `gone` for it would
-            // send every watcher and every non-acting player to the lobby over
-            // a transient disk error. So that arm writes a COMMENT — which the
-            // client's parser drops exactly as it drops a heartbeat — and the
-            // connection stays open for the next bump to retry.
-            Err(e) if e.status == StatusCode::FORBIDDEN || e.status == StatusCode::NOT_FOUND => {
-                Ok(Event::default().event("end").data(r#"{"reason":"gone"}"#))
+    let frames = tokio_stream::wrappers::WatchStream::new(rx).then(move |bump| {
+        let (state, id, user) = (Arc::clone(&state), id.clone(), user.clone());
+        async move {
+            if bump.end {
+                return Ok::<_, std::convert::Infallible>(
+                    Event::default().event("end").data(r#"{"reason":"deleted"}"#),
+                );
             }
-            Err(_) => Ok(Event::default().comment("the reading failed; the next bump retries")),
+            let reading = tokio::task::spawn_blocking(move || api::events_at(&state.games, &id, &user)).await;
+            Ok(match reading {
+                Ok(Ok(e)) => Event::default()
+                    .event("signal")
+                    .json_data(e)
+                    .expect("`Events` is five scalars and serializes"),
+                // **A REFUSAL ends the stream; a failure does not** (final
+                // review M-5). A 403 or a 404 is an answer about this table —
+                // the join that filled the open seats without this caller, the
+                // delete that raced the on-connect frame — and it is not going
+                // to be different next time, so the client is told and
+                // navigates away. A store that stopped answering is neither:
+                // writing `gone` for it would send every watcher and every
+                // non-acting player to the lobby over a transient disk error.
+                // So that arm writes a COMMENT — which the client's parser
+                // drops exactly as it drops a heartbeat — and the connection
+                // stays open for the next bump to retry.
+                Ok(Err(e)) if e.status == StatusCode::FORBIDDEN || e.status == StatusCode::NOT_FOUND => {
+                    Event::default().event("end").data(r#"{"reason":"gone"}"#)
+                }
+                // A reading that PANICKED in the pool is the same: a failure,
+                // not an answer about the table.
+                Ok(Err(_)) | Err(_) => Event::default().comment("the reading failed; the next bump retries"),
+            })
         }
     });
     Ok(Sse::new(frames).keep_alive(KeepAlive::new().interval(heartbeat)))
@@ -3395,12 +3414,15 @@ mod tests {
     /// in progress for ANYONE, so nobody's turn is incomplete, and one player
     /// reopening a game the other has watched end is what R-P6 exists to stop.
     ///
-    /// **Measured before the rule, on this fixture**: the acting holder's
-    /// `undo` returned 200 and the record went from 357 events to 200 — there,
-    /// because the fixture's seats are bot-provenanced, by unwinding a "bot run"
-    /// and re-pumping into a `BOT HALT`; at a human-seated table by popping the
-    /// caller's own trailing move. Both are a finished shared game changing
-    /// under a player who had already seen it end.
+    /// **Measured before the rule, on this fixture as it then stood**: the
+    /// acting holder's `undo` returned 200 and the record went from 357 events
+    /// to 200, by unwinding a "bot run" and re-pumping into a `BOT HALT` — the
+    /// fixture's record then named both seats bots. Since M6.5c2 cycle D (the
+    /// review of Task 4) it names both seats PEOPLE, so its rebuild reads the
+    /// seats human/human and pumps nothing, and an undo there without the rule
+    /// is the human-seated shape: the caller's own trailing move popped. Both
+    /// are a finished shared game changing under a player who had already seen
+    /// it end.
     ///
     /// The sentence is the game's own status, not R-P6's: `status_refusal` is
     /// single-sourced with the acting-seat fence, so the two cannot drift. And
@@ -5441,11 +5463,13 @@ mod tests {
     /// `Vec` index — while `state_at` accepts `k` across `0..=len`. So the top
     /// of the record is a position with no event to name, and any handler that
     /// reaches for a description there panics. This crate installs no
-    /// `CatchPanicLayer`, and a panic under the per-game mutex poisons it —
-    /// after which every later request for that game hits
-    /// `handle.lock().expect("a game")` and panics AGAIN. In production that is
-    /// a dropped connection, not a JSON error; an earlier draft of this comment
-    /// said "a 500", which no code path here produces.
+    /// `CatchPanicLayer`, so the panicking request itself is a dropped
+    /// connection, not a JSON error — and its panic poisons the per-game mutex.
+    /// Since M6.5c2 cycle D (R-D8) the NEXT request for that game meets the
+    /// poison in `Games::lock_game`, which evicts the handle and answers a 500,
+    /// and the one after rebuilds from the store; before it, every later
+    /// request panicked again on `expect` and the game was dead until a
+    /// restart.
     ///
     /// Under `oneshot` the first panic unwinds into the test body, so this cell
     /// goes red on the panic itself rather than on its follow-up assertions.

@@ -3375,6 +3375,12 @@ async fn the_dispatcher_answers_what_the_router_answers() {
 /// is a property of a NAME, so nothing about the type can hold it: this reads
 /// the files.
 ///
+/// **It reads the MESSAGES' stamps, by name, and nothing else** (M6.5c2 cycle
+/// D, row 130): a page's `messages[].created_at` and a post reply's own
+/// `created_at`. The walk it replaced collected a `created_at` from anywhere in
+/// the file, so a clock carried by some other object on one of these payloads
+/// would have been counted as a message's.
+///
 /// **Its anti-vacuity is the count.** A sweep that found no stamps at all would
 /// pass exactly as loudly, so the number of clocks read is asserted — EIGHT,
 /// which is the page's three, the one message a cursor leaves, the two posts'
@@ -3388,29 +3394,17 @@ fn every_chat_message_carries_the_frozen_clock() {
         "regeneration run — re-run WITHOUT UPDATE_WIRE_FIXTURES to check the corpus",
     );
 
-    fn stamps(v: &Value, found: &mut Vec<u64>) {
-        match v {
-            Value::Object(map) => {
-                for (k, item) in map {
-                    if k == "created_at" {
-                        found.push(item.as_u64().unwrap_or_else(|| {
-                            panic!("a message's clock is a unix timestamp: {item}")
-                        }));
-                    } else {
-                        stamps(item, found);
-                    }
-                }
-            }
-            Value::Array(items) => items.iter().for_each(|i| stamps(i, found)),
-            _ => {}
-        }
-    }
-
     let dir = wire_dir();
     let mut found: Vec<u64> = Vec::new();
-    for name in
-        ["chat", "chat_after", "chat_post", "chat_post_watcher", "house_chat", "house_chat_post"]
-    {
+    // Each file, and whether it is a PAGE (`{messages, last}`) or one message.
+    for (name, page) in [
+        ("chat", true),
+        ("chat_after", true),
+        ("chat_post", false),
+        ("chat_post_watcher", false),
+        ("house_chat", true),
+        ("house_chat_post", false),
+    ] {
         let path = dir.join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
@@ -3419,13 +3413,22 @@ fn every_chat_message_carries_the_frozen_clock() {
                 path.display()
             )
         });
-        let before = found.len();
-        stamps(&serde_json::from_str::<Value>(&text).expect("a committed fixture is JSON"), &mut found);
-        assert!(
-            found.len() > before,
-            "{name}.json carries no `created_at` at all — a message whose stamp is spelled \
-             something else is a wall clock inside a committed golden",
-        );
+        let v: Value = serde_json::from_str(&text).expect("a committed fixture is JSON");
+        let messages: Vec<&Value> = if page {
+            v["messages"].as_array().unwrap_or_else(|| panic!("{name}.json is a page with no `messages`")).iter().collect()
+        } else {
+            vec![&v]
+        };
+        assert!(!messages.is_empty(), "{name}.json carries no message");
+        for m in messages {
+            let stamp = m.get("created_at").and_then(Value::as_u64).unwrap_or_else(|| {
+                panic!(
+                    "{name}.json: a message with no `created_at` — a stamp spelled something else is a \
+                     wall clock inside a committed golden: {m}"
+                )
+            });
+            found.push(stamp);
+        }
     }
 
     assert_eq!(found.len(), 8, "one clock per committed message: {found:?}");

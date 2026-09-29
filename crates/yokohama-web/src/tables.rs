@@ -35,7 +35,7 @@ use yokohama_core::{
 // to be called.
 use crate::chat::{check_shape as check_chat_shape, check_text, Author, ChatDoc, Message, HOUSE};
 use crate::client::{HistoricalFrame, Viewer};
-use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
+use crate::games::{bring_alive, enter, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
 use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror};
@@ -463,6 +463,46 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     Ok(())
 }
 
+/// Which chat document a read or a write means (M6.4, R-6.4.7) — a table's, or
+/// the house's.
+///
+/// **The house rule lives HERE and nowhere else** (M6.5c2 cycle D, row 130):
+/// the house is [`Doc::House`] at [`HOUSE`] with no seat bound, and a table is
+/// [`Doc::Chat`] at its own id, bounded by its player count. That was an
+/// `(id, players)` pair whose `None` meant the house — so the house branch
+/// carried an `id` nothing read, and "no player count means the house" was
+/// stated once in the read and again in the write.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChatAt<'a> {
+    /// The table `id`'s chat, whose authors hold seats below `players`.
+    Table { id: &'a str, players: u8 },
+    /// The lobby's one chat document, where nobody holds a seat.
+    House,
+}
+
+impl<'a> ChatAt<'a> {
+    fn doc(self) -> Doc {
+        match self {
+            Self::Table { .. } => Doc::Chat,
+            Self::House => Doc::House,
+        }
+    }
+
+    fn key(self) -> &'a str {
+        match self {
+            Self::Table { id, .. } => id,
+            Self::House => HOUSE,
+        }
+    }
+
+    fn players(self) -> Option<u8> {
+        match self {
+            Self::Table { players, .. } => Some(players),
+            Self::House => None,
+        }
+    }
+}
+
 /// The display-name rule, applied on WRITE (create, join, keep) and on READ
 /// ([`check_shape`]), so a document this server wrote is never one it refuses.
 ///
@@ -729,7 +769,8 @@ impl Games {
         // on to write a DIFFERENT game (the seed is drawn per request), so the
         // loser's document landed on disk and the client told 201 was silently
         // switched onto the other table.
-        let _serialized = self.table_lock.lock().expect("games lock");
+        // `enter`, poisoned or not: the id space's lock guards no data.
+        let _serialized = enter(&self.table_lock);
         let (config, seats) = config_of(req, creator).map_err(GameError::BadRequest)?;
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
@@ -855,8 +896,7 @@ impl Games {
     // M6.4 — the chat (spec §2.4, R-6.4.7, R-6.4.8, R-6.4.9, R-6.4.15)
     // -----------------------------------------------------------------------
 
-    /// The stored chat document, parsed AND shape-checked — the table's at
-    /// `id` when `players` is given, the house's when it is not.
+    /// The stored chat document at `at`, parsed, shape-checked and NORMALIZED.
     ///
     /// **An absent document is an EMPTY one and never a refusal**, unlike
     /// [`Games::read_table`]: a table nobody has spoken at has no chat file,
@@ -869,23 +909,23 @@ impl Games {
     /// for a file that is sitting right there is how the next append overwrites
     /// it and numbers from 1 again.
     ///
-    /// `players` is the seat bound the shape rule applies, so the caller's own
-    /// table document is what decides it — see [`crate::chat::check_shape`].
-    pub(crate) fn read_chat(
-        &self,
-        id: &str,
-        players: Option<u8>,
-    ) -> Result<(ChatDoc, Option<Version>), GameError> {
-        let doc = if players.is_some() { Doc::Chat } else { Doc::House };
-        let key = if players.is_some() { id } else { HOUSE };
-        let Some((json, version)) = self.store.read(doc, key).map_err(GameError::Server)? else {
+    /// The seat bound the shape rule applies is `at`'s: a table's player
+    /// count, which the caller's own table document decides, or none at the
+    /// house — see [`crate::chat::check_shape`].
+    ///
+    /// **Normalized** (M6.5c2 cycle D, row 130): the shape rule parses every
+    /// author's address and name, and what it parsed is what is served — see
+    /// [`crate::chat::normalized`].
+    pub(crate) fn read_chat(&self, at: ChatAt<'_>) -> Result<(ChatDoc, Option<Version>), GameError> {
+        let key = at.key();
+        let Some((json, version)) = self.store.read(at.doc(), key).map_err(GameError::Server)? else {
             return Ok((ChatDoc::empty(key), None));
         };
         let parsed: ChatDoc = serde_json::from_str(&json)
             .map_err(|e| GameError::Server(format!("{key:?}'s chat document does not parse: {e}")))?;
-        check_chat_shape(&parsed, players)
+        check_chat_shape(&parsed, at.players())
             .map_err(|why| GameError::Server(format!("{key:?}'s chat document is malformed: {why}")))?;
-        Ok((parsed, Some(version)))
+        Ok((crate::chat::normalized(parsed), Some(version)))
     }
 
     /// The compare-and-swap, with the shape rule applied ON THE WAY OUT.
@@ -896,25 +936,19 @@ impl Games {
     /// the table's own lock. Checking here makes a bad message a refusal to the
     /// caller who sent it instead.
     ///
-    /// **`key` is a PARAMETER and the document's own `id` is not consulted**,
+    /// **The key is `at`'s and the document's own `id` is not consulted**,
     /// which is the whole of the fence: `id` is read out of a file, and the
     /// shape rule does not bound it (it has no expected key to bound it
     /// against). Keyed off the document, an append at one table that met a
     /// document claiming to be another wrote its messages — and its version —
     /// to the other table's file. Pinned by
     /// `an_append_writes_at_the_key_it_read_and_not_at_the_documents_own_id`.
-    fn write_chat(
-        &self,
-        key: &str,
-        doc: &ChatDoc,
-        players: Option<u8>,
-        expected: Option<Version>,
-    ) -> Result<Version, GameError> {
-        check_chat_shape(doc, players).map_err(GameError::Server)?;
-        let kind = if players.is_some() { Doc::Chat } else { Doc::House };
+    fn write_chat(&self, at: ChatAt<'_>, doc: &ChatDoc, expected: Option<Version>) -> Result<Version, GameError> {
+        check_chat_shape(doc, at.players()).map_err(GameError::Server)?;
+        let key = at.key();
         let json = serde_json::to_string_pretty(doc)
             .map_err(|e| GameError::Server(format!("the chat document does not serialize: {e}")))?;
-        match self.store.write_if_version(kind, key, &json, expected) {
+        match self.store.write_if_version(at.doc(), key, &json, expected) {
             Ok(v) => Ok(v),
             Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
                 "{key:?}'s chat changed while this message was in flight"
@@ -931,8 +965,8 @@ impl Games {
     /// alone — was written out twice, once per appender, and an invariant
     /// stated twice is an invariant that can be half-changed. The two public
     /// appenders differ in three things and only three: which lock they hold,
-    /// the seat bound they pass (a table's player count, or `None` at the
-    /// house), and which channel they bump afterwards.
+    /// which document they name ([`ChatAt`]), and which channel they bump
+    /// afterwards.
     ///
     /// **The text has already been checked** by the caller, deliberately before
     /// the APPEND takes the table's lock, so a message that will be refused
@@ -943,23 +977,17 @@ impl Games {
     /// which takes that table's lock to finish the deal — the same correction
     /// `lib::chat_post`'s own doc carries.)
     ///
-    /// The document is written under `key` and its `id` is SET to `key`, so a
-    /// document this server writes always names the file it is in — see
-    /// [`Games::write_chat`] for what keying off the stored `id` did.
-    fn append_locked(
-        &self,
-        key: &str,
-        players: Option<u8>,
-        author: Author,
-        text: String,
-    ) -> Result<Message, GameError> {
-        let (mut doc, version) = self.read_chat(key, players)?;
-        doc.id = key.to_string();
+    /// The document is written under `at`'s key and its `id` is SET to that
+    /// key, so a document this server writes always names the file it is in —
+    /// see [`Games::write_chat`] for what keying off the stored `id` did.
+    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<Message, GameError> {
+        let (mut doc, version) = self.read_chat(at)?;
+        doc.id = at.key().to_string();
         let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text };
         doc.last = message.seq;
         doc.messages.push(message.clone());
         doc.trim(self.chat.limits.keep);
-        self.write_chat(key, &doc, players, version)?;
+        self.write_chat(at, &doc, version)?;
         Ok(message)
     }
 
@@ -984,11 +1012,11 @@ impl Games {
     ) -> Result<Message, GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         let lock = self.lock_for(id);
-        let _serialized = lock.lock().expect("table lock");
+        let _serialized = enter(&lock);
         let (table, _) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        let message = self.append_locked(id, Some(table.players), author, text)?;
+        let message = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
         // `message.seq` IS the document's `last`: the trim drops the oldest and
         // leaves the number alone, which is the whole of R-6.4.9.
         self.chat_last.lock().expect("games lock").insert(id.to_string(), message.seq);
@@ -1000,13 +1028,14 @@ impl Games {
     /// The same for the house, under the house's own lock and bumping the
     /// house's CHAT counter (R-6.4.7).
     ///
-    /// `None` for the player count is what makes a seat author a refusal here:
-    /// the house has no seats, and the shape rule says so rather than this
-    /// function restating it.
+    /// The house (`ChatAt::House`) has no player count, which is what makes a
+    /// seat author a refusal here: the house has no seats, and the shape rule
+    /// says so rather than this function restating it.
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
-        let _serialized = self.house_lock.lock().expect("house lock");
-        let message = self.append_locked(HOUSE, None, author, text)?;
+        // `enter`, poisoned or not: the house's lock guards no data.
+        let _serialized = enter(&self.house_lock);
+        let message = self.append_locked(ChatAt::House, author, text)?;
         self.signal.bump_house_chat();
         Ok(message)
     }
@@ -1016,16 +1045,19 @@ impl Games {
     /// `last` is the document's and not the page's, so a client that asks from
     /// a cursor the trim has passed is told what the newest number is rather
     /// than being left to infer it from an empty page.
-    pub fn chat_page(&self, id: &str, after: u64) -> Result<(Vec<Message>, u64), GameError> {
-        let (table, _) = self
-            .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
-        let (doc, _) = self.read_chat(id, Some(table.players))?;
+    ///
+    /// **`table` is the caller's, read by its admission** (M6.5c2 cycle D, row
+    /// 130): the chat's seat bound is the table's player count, and reading
+    /// the document a second time for that number was a second read per page.
+    /// The KEY is `id` and never `table.id`, for `Games::write_chat`'s reason:
+    /// a document's own `id` is read out of a file.
+    pub fn chat_page(&self, id: &str, table: &TableDoc, after: u64) -> Result<(Vec<Message>, u64), GameError> {
+        let (doc, _) = self.read_chat(ChatAt::Table { id, players: table.players })?;
         Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
     }
 
     pub fn house_page(&self, after: u64) -> Result<(Vec<Message>, u64), GameError> {
-        let (doc, _) = self.read_chat(HOUSE, None)?;
+        let (doc, _) = self.read_chat(ChatAt::House)?;
         Ok((doc.messages.into_iter().filter(|m| m.seq > after).collect(), doc.last))
     }
 
@@ -1161,7 +1193,7 @@ impl Games {
     /// in this very reply.
     pub fn unlock(&self, id: &str, user: &User, password: &str) -> Result<TableView, GameError> {
         let lock = self.lock_for(id);
-        let _serialized = lock.lock().expect("table lock");
+        let _serialized = enter(&lock);
         let (mut doc, version) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
@@ -1205,7 +1237,7 @@ impl Games {
         let Some((doc, version)) = self.read_table(id)? else { return Ok(None) };
         if doc.status == TableStatus::Dealing && doc.all_humans_kept() {
             let lock = self.lock_for(id);
-            let _serialized = lock.lock().expect("table lock");
+            let _serialized = enter(&lock);
             return self.settle_locked(id);
         }
         Ok(Some((doc, version)))
@@ -1222,7 +1254,7 @@ impl Games {
         }
         if self.store.read(Doc::Record, id).map_err(GameError::Server)?.is_some() {
             let handle = self.live_handle(id, &doc)?;
-            let turn = mirror_of(&handle.lock().expect("a game"));
+            let turn = mirror_of(&*self.lock_game(&handle, id)?);
             return self.flip_to_playing(id, turn).map(Some);
         }
         self.finalize(doc).map(Some)
@@ -1273,7 +1305,7 @@ impl Games {
             // the game — the same rule `create` follows when a name is taken.
             Err(WriteError::Conflict { .. }) => {
                 let handle = self.live_handle(&id, &doc)?;
-                let turn = mirror_of(&handle.lock().expect("a game"));
+                let turn = mirror_of(&*self.lock_game(&handle, &id)?);
                 turn
             }
             Err(WriteError::Io(e)) => return Err(GameError::Server(e)),
@@ -1390,7 +1422,7 @@ impl Games {
         password: Option<&str>,
     ) -> Result<TableView, GameError> {
         let lock = self.lock_for(id);
-        let _serialized = lock.lock().expect("table lock");
+        let _serialized = enter(&lock);
         let (mut doc, version) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
@@ -1475,7 +1507,7 @@ impl Games {
         name: Option<&str>,
     ) -> Result<TableView, GameError> {
         let lock = self.lock_for(id);
-        let _serialized = lock.lock().expect("table lock");
+        let _serialized = enter(&lock);
         // Settled first, so a table left mid-finalize by a crash is repaired by
         // the same call that would otherwise refuse a keep it has already taken.
         let (mut doc, version) = self
@@ -1697,9 +1729,34 @@ impl Games {
     /// caller reads the same sentences — and NOT settling is the right answer
     /// besides, since finalizing a table on the way to deleting it only writes
     /// the record this function then has to remove.
+    ///
+    /// **One window is by design** (M6.5c2 cycle D, row 128). The tombstone goes
+    /// down BEFORE the unlink (the order is argued inline below), so a
+    /// `persist` landing between the two — a move at this table while its
+    /// delete is in flight — is refused, "…was deleted while this move was in
+    /// flight", and evicts its handle. If the unlink then FAILS, the tombstone
+    /// is lifted and the table is still there: one move refused out loud, never
+    /// one lost in silence. Its reply says `APPLIED BUT NOT SAVED`, and the
+    /// next request rebuilds from the record the failed unlink left in place.
+    ///
+    /// **A deleted table's lock entry is pruned on the way out** (M6.5c2 cycle
+    /// D, row 128) — after this call has let go of its own clone, and only when
+    /// no other writer holds one (`Games::prune_lock`).
     pub fn delete(&self, id: &str, user: &User) -> Result<(), GameError> {
         let lock = self.lock_for(id);
-        let _serialized = lock.lock().expect("table lock");
+        let deleted = {
+            let _serialized = enter(&lock);
+            self.delete_locked(id, user)
+        };
+        drop(lock);
+        if deleted.is_ok() {
+            self.prune_lock(id);
+        }
+        deleted
+    }
+
+    /// [`Games::delete`]'s body, with this table's own lock held by the caller.
+    fn delete_locked(&self, id: &str, user: &User) -> Result<(), GameError> {
         let (doc, _) = self
             .read_table(id)?
             .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
@@ -1733,9 +1790,17 @@ impl Games {
                 if events > 0 {
                     // R-6.5b.13: the leaf follows the MIRROR's truth. `turn` is a
                     // cache `mirror_turn` may leave one move stale when its write
-                    // conflicts, so in exactly that race the leaf can still lie;
-                    // `Games::handle(id).is_over` would not, at the cost of a
-                    // rebuild and a replay under this lock, and was declined.
+                    // FAILS OR CONFLICTS — it swallows both — so in exactly that
+                    // case the leaf can still lie; `Games::handle(id).is_over`
+                    // would not, at the cost of a rebuild and a replay under this
+                    // lock, and was declined. A lie costs a SECOND COPY only when
+                    // the game-over stamp was lost as well (M6.5c2 cycle D, row
+                    // 11): a stamped game is not put here at all, and an
+                    // unstamped one whose mirror says over lands under `over/`,
+                    // where its landed copy answers `Identical`
+                    // (`a_landed_put_whose_stamp_failed_then_abandoned_lands_once_under_over`).
+                    // So the residual is a stale mirror AND a lost stamp at once:
+                    // named, not closed.
                     let why = if doc.turn.as_ref().is_some_and(|t| t.over) {
                         crate::archive::Why::Over
                     } else {
@@ -2684,9 +2749,9 @@ mod tests {
     /// under `over/`, because the MIRROR says over — a game finished before the
     /// archive was switched on, or one whose game-over put failed. **The
     /// residual, named:** `turn` is a cache `mirror_turn` may leave one move
-    /// stale when its write conflicts, so in exactly that race the leaf can
-    /// still lie; `Games::handle(id).is_over` would not, at the cost of a
-    /// rebuild and a replay under the table lock, and was declined. The cell
+    /// stale when its write fails or conflicts, so in exactly that case the
+    /// leaf can still lie; `Games::handle(id).is_over` would not, at the cost of
+    /// a rebuild and a replay under the table lock, and was declined. The cell
     /// claims what is true: the leaf follows the mirror.
     #[test]
     fn a_finished_unstamped_game_deleted_lands_under_over() {
@@ -2707,6 +2772,78 @@ mod tests {
             "a finished game is archived as OVER at its delete, not as abandoned"
         );
         assert_eq!(puts[0].id, "late");
+    }
+
+    /// **Row 11's residual, as the positive it is** (M6.5c2 cycle D;
+    /// R-6.5b.13): a game-over put that LANDED and whose stamp was LOST is
+    /// archived ONCE at the next abandon. The table's mirror says over, so the
+    /// abandon puts under `over/`, where the landed copy answers `Identical`
+    /// and the delete goes ahead. What would put a second copy under
+    /// `abandoned/` is a lost stamp AND a stale mirror together — the residual
+    /// `delete`'s doc names and does not close.
+    ///
+    /// Over a real [`crate::archive::DirArchive`], because `Identical` is the
+    /// directory's own answer to the same bytes, and a double that recorded the
+    /// second put would say nothing about whether it lands.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_landed_put_whose_stamp_failed_then_abandoned_lands_once_under_over() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        /// A store whose table writes CARRYING A STAMP fail while armed — the
+        /// stamp's own write, and nothing else.
+        struct StampRefusing {
+            inner: MemStore,
+            armed: AtomicBool,
+        }
+        impl Store for StampRefusing {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, crate::store::Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<crate::store::Version>,
+            ) -> Result<crate::store::Version, WriteError> {
+                let stamped = doc == Doc::Table && !json.contains("\"archived_at\": null");
+                if stamped && self.armed.load(Ordering::SeqCst) {
+                    return Err(WriteError::Io("the stamp's write failed".to_string()));
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("yokohama_row11_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Arc::new(StampRefusing { inner: MemStore::default(), armed: AtomicBool::new(true) });
+        let log = RecordingLog::recording();
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>)
+            .with_archive(Arc::new(crate::archive::DirArchive::new(&dir)))
+            .with_log(log.clone());
+        play_to_the_end(&games, "late");
+        let (over, table) = crate::archive::paths(yokohama_core::SEMANTICS_REV, "", crate::archive::Why::Over, "late").unwrap();
+        let (abandoned, _) =
+            crate::archive::paths(yokohama_core::SEMANTICS_REV, "", crate::archive::Why::Abandoned, "late").unwrap();
+        let stored = games.store().read(Doc::Record, "late").unwrap().expect("the record").0;
+        assert_eq!(std::fs::read_to_string(dir.join(&over)).unwrap(), stored, "premise: the game-over put landed");
+        assert_eq!(log.events(), [crate::log::OVER_UNSTAMPED], "premise: its stamp was lost, and said");
+        let (doc, _) = games.read_table("late").unwrap().unwrap();
+        assert_eq!(doc.archived_at, None, "premise: nothing stamped it");
+        assert!(doc.turn.as_ref().is_some_and(|t| t.over), "premise: the mirror says over");
+
+        store.armed.store(false, Ordering::SeqCst);
+        games.delete("late", &who("red@t.test")).expect("the creator's delete, over a copy already landed");
+        assert_eq!(std::fs::read_to_string(dir.join(&over)).unwrap(), stored, "ONE copy, under over/");
+        assert!(dir.join(&table).is_file(), "with its table");
+        assert!(!dir.join(&abandoned).exists(), "and none under abandoned/");
+        assert!(games.read_table("late").unwrap().is_none(), "the table is gone");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Nothing to save, nothing put: an open table, a dealing table, a playing
@@ -4391,8 +4528,39 @@ mod tests {
     // M6.4 — the append (spec §2.4, §4, R-6.4.7, R-6.4.8, R-6.4.9)
     // ---------------------------------------------------------------------
 
+    /// A table's chat page the way `api::chat_read` asks for one: the table
+    /// read first, then passed in (M6.5c2 cycle D, row 130).
+    fn page_of(games: &Games, id: &str, after: u64) -> Result<(Vec<Message>, u64), GameError> {
+        let (table, _) = games.read_table(id)?.expect("a table to page");
+        games.chat_page(id, &table, after)
+    }
+
     fn red_seat() -> Author {
         Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) }
+    }
+
+    /// **A stored author is served in the form the shape rule reads it in**
+    /// (M6.5c2 cycle D, row 130). The rule parses the address (trimmed and
+    /// lowercased, `User::parse`) and the name (trimmed, `check_name`) and
+    /// threw both results away, so a document written by hand or brought back
+    /// by a restore served `" RED@T.test "` beside a seat whose key is
+    /// `red@t.test` — two people, to a client comparing them.
+    #[test]
+    fn a_stored_author_is_served_in_its_normal_form() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("normal", CORPUS_SEED), &red).expect("a table").id;
+        let message = |author: Author| Message { seq: 1, created_at: 1, author, text: "hi".into() };
+        let stored = ChatDoc {
+            schema: crate::chat::CHAT_SCHEMA,
+            id: id.clone(),
+            last: 1,
+            messages: vec![message(Author::Seat { seat: 0, user: " RED@T.test ".into(), name: Some("  Red ".into()) })],
+        };
+        let json = serde_json::to_string(&stored).expect("a chat document");
+        games.store().write_if_version(Doc::Chat, &id, &json, None).expect("stored");
+        let (page, _) = page_of(&games, &id, 0).expect("served");
+        assert_eq!(page, [message(Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) })]);
     }
 
     /// **An append lands, numbers from 1, and bumps the TABLE after its write**
@@ -4417,10 +4585,10 @@ mod tests {
         assert_eq!((m.seq, m.text.as_str()), (1, "hello"));
         assert!(rx.has_changed().unwrap(), "the table woke");
         assert!(!house.has_changed().unwrap(), "the house did not (R-6.4.7)");
-        let (page, last) = games.chat_page(&id, 0).expect("a page");
+        let (page, last) = page_of(&games, &id, 0).expect("a page");
         assert_eq!((page.len(), last, page[0].seq), (1, 1, 1));
         assert_eq!(games.chat_last(&id), 1);
-        let (delta, _) = games.chat_page(&id, 1).expect("a page");
+        let (delta, _) = page_of(&games, &id, 1).expect("a page");
         assert!(delta.is_empty(), "after=last is empty");
     }
 
@@ -4480,7 +4648,7 @@ mod tests {
             (lying.to_string().as_str(), bs_version),
             "B's chat is untouched — the same bytes at the same version",
         );
-        let (page, last) = games.chat_page(&a, 0).expect("a page");
+        let (page, last) = page_of(&games, &a, 0).expect("a page");
         assert_eq!(
             (page.len(), last, page[0].seq),
             (1, 5, 5),
@@ -4534,7 +4702,7 @@ mod tests {
         for i in 1..=5 {
             games.chat_append(&id, red_seat(), &format!("m{i}")).expect("an append");
         }
-        let (page, last) = games.chat_page(&id, 0).expect("a page");
+        let (page, last) = page_of(&games, &id, 0).expect("a page");
         assert_eq!(page.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![3, 4, 5]);
         assert_eq!(last, 5);
         assert_eq!(games.chat_last(&id), 5);
@@ -4542,6 +4710,12 @@ mod tests {
 
     /// **`all` keeps everything** (R-6.4.8) — the launch variable's other end,
     /// so the trim is a configured number and not a constant wearing one.
+    ///
+    /// **N is the DEFAULT keep plus one, and that is its only job** (M6.5c2
+    /// cycle D, row 130): an `all` that fell back to the default would trim at
+    /// the default, so one message past it is the first count that can tell
+    /// the two apart. Derived rather than written (it was a bare 600), so the
+    /// cell follows the default if the default moves.
     #[test]
     fn keep_all_trims_nothing() {
         let games = Games::with_limits(
@@ -4551,10 +4725,11 @@ mod tests {
         );
         let red = who("red@t.test");
         let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
-        for i in 1..=600 {
+        let n = ChatLimits::default().keep.expect("the default keeps a number") + 1;
+        for i in 1..=n {
             games.chat_append(&id, red_seat(), &format!("m{i}")).expect("an append");
         }
-        assert_eq!(games.chat_page(&id, 0).expect("a page").0.len(), 600);
+        assert_eq!(page_of(&games, &id, 0).expect("a page").0.len(), n);
     }
 
     /// **A document longer than the keep is read whole and trimmed on the next
@@ -4582,9 +4757,9 @@ mod tests {
             store as Arc<dyn Store>,
             ChatLimits { keep: Some(4), text: 500 },
         );
-        assert_eq!(narrow.chat_page(&id, 0).expect("served, not refused").0.len(), 10);
+        assert_eq!(page_of(&narrow, &id, 0).expect("served, not refused").0.len(), 10);
         narrow.chat_append(&id, red_seat(), "m11").expect("an append");
-        let (page, _) = narrow.chat_page(&id, 0).expect("a page");
+        let (page, _) = page_of(&narrow, &id, 0).expect("a page");
         assert_eq!(page.iter().map(|m| m.seq).collect::<Vec<_>>(), vec![8, 9, 10, 11]);
     }
 
@@ -4665,7 +4840,7 @@ mod tests {
 
         games.create(&two_people(&id, CORPUS_SEED), &red).expect("the name is free again");
         assert_eq!(games.chat_last(&id), 0, "a reopened name starts at nothing");
-        assert!(games.chat_page(&id, 0).expect("a page").0.is_empty());
+        assert!(page_of(&games, &id, 0).expect("a page").0.is_empty());
     }
 
     /// A [`MemStore`] that PARKS every chat write and nothing else.
@@ -4948,7 +5123,7 @@ mod tests {
             .expect("the planted half-written document");
         forget_chat_count(&games, &id);
 
-        let e = games.chat_page(&id, 0).expect_err("a page over a broken document");
+        let e = page_of(&games, &id, 0).expect_err("a page over a broken document");
         assert!(
             matches!(&e, GameError::Server(why) if why.contains("does not parse")),
             "{e:?}",

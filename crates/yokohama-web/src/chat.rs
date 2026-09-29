@@ -129,7 +129,11 @@ pub const TEXT_VAR: &str = "YOKOHAMA_WEB_CHAT_TEXT";
 /// be a server whose operator believes a number that is not in force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatConfig {
+    /// Whether the house chat is on ([`LOBBY_VAR`], default on). Off, its two
+    /// routes answer 404 and `/api/health` says so, so a client draws no panel.
     pub lobby: bool,
+    /// The retention numbers every chat document is kept to ([`KEEP_VAR`],
+    /// [`TEXT_VAR`]).
     pub limits: ChatLimits,
 }
 
@@ -145,10 +149,24 @@ impl ChatConfig {
     /// environment builds a [`ChatConfig`] itself and never asks.
     pub fn from_env() -> Result<Self, String> {
         Self::from_env_values(
-            std::env::var(LOBBY_VAR).ok().as_deref(),
-            std::env::var(KEEP_VAR).ok().as_deref(),
-            std::env::var(TEXT_VAR).ok().as_deref(),
+            Self::value_of(LOBBY_VAR, std::env::var(LOBBY_VAR))?.as_deref(),
+            Self::value_of(KEEP_VAR, std::env::var(KEEP_VAR))?.as_deref(),
+            Self::value_of(TEXT_VAR, std::env::var(TEXT_VAR))?.as_deref(),
         )
+    }
+
+    /// One variable's read: unset is `None`, and a value that is not UTF-8 is
+    /// REFUSED by the variable's name (M6.5c2 cycle D, row 130).
+    ///
+    /// It was `.ok()`, which folded the second case into the first: an
+    /// operator who set a stray byte ran the default and was never told —
+    /// the one outcome refusing a bad value by name exists to prevent.
+    fn value_of(name: &str, read: Result<String, std::env::VarError>) -> Result<Option<String>, String> {
+        match read {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(raw)) => Err(format!("{name} is not UTF-8 — got {raw:?}")),
+        }
     }
 }
 // ---- end server ----
@@ -167,9 +185,13 @@ impl ChatConfig {
         keep: Option<&str>,
         text: Option<&str>,
     ) -> Result<Self, String> {
-        let lobby = match lobby.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            None | Some("on") => true,
-            Some("off") => false,
+        // Compared case-insensitively and quoted AS TYPED (M6.5c2 cycle D, row
+        // 130), trimmed, as the two numbers below are: an operator who wrote
+        // `Maybe` is shown `Maybe`, not a lowercased copy they never typed.
+        let lobby = match lobby.map(str::trim) {
+            None => true,
+            Some(s) if s.eq_ignore_ascii_case("on") => true,
+            Some(s) if s.eq_ignore_ascii_case("off") => false,
             Some(other) => return Err(format!("{LOBBY_VAR} must be on or off — got {other:?}")),
         };
         // **The absent arms take their values from `ChatLimits::default()` and
@@ -219,6 +241,10 @@ impl ChatDoc {
 
     /// Drop the OLDEST until `keep` remain; `last` is untouched, so a number is
     /// never reused and a cursor taken before the trim still means what it did.
+    ///
+    /// **Total over every `keep`, zero included** (M6.5c2 cycle D, row 130):
+    /// the launch variables refuse `0`, but [`ChatLimits`] is a public type a
+    /// host builds for itself, and `Some(0)` keeps nothing and panics nowhere.
     pub fn trim(&mut self, keep: Option<usize>) {
         if let Some(k) = keep {
             if self.messages.len() > k {
@@ -269,8 +295,12 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
             ));
         }
         prev = m.seq;
-        if m.text.is_empty() || m.text.chars().any(char::is_control) {
-            return Err(format!("message {i}'s text is empty or carries a control character"));
+        // BLANK as well as empty (M6.5c2 cycle D, row 130): the appender
+        // trims, so no text this server wrote is only whitespace, and one a
+        // hand-edited or restored document carries is refused as the route
+        // refuses it — by the same trim.
+        if m.text.trim().is_empty() || m.text.chars().any(char::is_control) {
+            return Err(format!("message {i}'s text is empty, blank or carries a control character"));
         }
         // The clock, bounded here because the client renders it: see
         // [`MAX_CREATED_AT`].
@@ -309,6 +339,37 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
         return Err(format!("last {} is behind the newest message {prev}", doc.last));
     }
     Ok(())
+}
+
+/// `doc` with every author in the form [`check_shape`] parses it into — the
+/// address as `User::parse` keys it (trimmed, lowercased) and the name as
+/// `check_name` stores it (trimmed) — for a document that has PASSED the shape
+/// rule (M6.5c2 cycle D, row 130).
+///
+/// The rule used to parse both and throw the results away, so a document
+/// written by hand or brought back by a restore served `" RED@T.test "` beside
+/// a seat keyed `red@t.test`. Normalizing on read changes nothing this server
+/// wrote — every writer stores these forms already — and refuses nothing the
+/// rule admits: a value that did not parse was refused by the rule first, and
+/// is left as it is here rather than unwrapped.
+pub fn normalized(mut doc: ChatDoc) -> ChatDoc {
+    for m in &mut doc.messages {
+        let (user, name) = match &mut m.author {
+            Author::Seat { user, name, .. } | Author::Watcher { user, name } => (Some(user), name),
+            Author::Bot { name, .. } => (None, name),
+        };
+        if let Some(user) = user {
+            if let Ok(key) = User::parse(user) {
+                *user = key.as_str().to_string();
+            }
+        }
+        if let Some(n) = name {
+            if let Ok(stored) = check_name(n) {
+                *n = stored;
+            }
+        }
+    }
+    doc
 }
 
 #[cfg(test)]
@@ -519,5 +580,76 @@ mod tests {
             let e = ChatConfig::from_env_values(None, None, Some(bad)).unwrap_err();
             assert!(e.contains(TEXT_VAR), "{bad:?}: {e}");
         }
+    }
+
+    /// **Whitespace is no text — at the route, and in a stored document**
+    /// (M6.5c2 cycle D, row 130) — the catcher for either rule letting a blank
+    /// message through.
+    ///
+    /// The route's rule trims and refuses what is left empty, in its own
+    /// sentence, which is unchanged (the route half is also pinned through the
+    /// router by `lib.rs`'s chat-order cell). The SHAPE rule, which reads every
+    /// stored document, refused an empty text and a control character but took
+    /// a text of nothing but spaces: unreachable through the appender, which
+    /// trims, and exactly what a hand-edited or restored document can carry.
+    /// Three blanks, two of them spaces the trim knows and a byte-wise test for
+    /// the ASCII space does not.
+    #[test]
+    fn a_whitespace_only_text_is_refused_by_the_route_and_by_the_shape_rule() {
+        let limits = ChatLimits::default();
+        for blank in ["   ", "\u{a0}", "\u{3000} \u{2003}"] {
+            assert_eq!(check_text(blank, &limits), Err("a message needs some words".to_string()), "{blank:?}");
+            let stored = doc(vec![seat(1, 0, blank)]);
+            let refused = check_shape(&stored, Some(2)).expect_err("a blank stored text is refused");
+            assert!(refused.starts_with("message 0's text is"), "{blank:?}: {refused}");
+        }
+        assert_eq!(check_shape(&doc(vec![seat(1, 0, " a ")]), Some(2)), Ok(()), "text with spaces around it is text");
+    }
+
+    /// **A keep of zero keeps nothing and panics nowhere** (M6.5c2 cycle D, row
+    /// 130). The launch variables refuse `0`, but [`ChatLimits`] is a public
+    /// type a host builds for itself, so the trim has to be total over it: an
+    /// empty document and a full one both come out empty, and the number is
+    /// still never reused.
+    #[test]
+    fn trim_to_zero_keeps_nothing_and_panics_nowhere() {
+        let mut full = doc(vec![seat(1, 0, "a"), seat(2, 1, "b")]);
+        full.trim(Some(0));
+        assert!(full.messages.is_empty(), "nothing kept");
+        assert_eq!(full.last, 2, "and the number is not reused");
+        let mut empty = ChatDoc::empty("t");
+        empty.trim(Some(0));
+        assert!(empty.messages.is_empty());
+        assert_eq!(check_shape(&full, Some(2)), Ok(()), "a trimmed-to-nothing document still reads");
+    }
+
+    /// **The lobby switch's refusal quotes the value AS TYPED** (M6.5c2 cycle D,
+    /// row 130), as the two numbers' refusals do: an operator who wrote
+    /// `Maybe` is shown `Maybe`, not a lowercased copy they never typed. The
+    /// value is trimmed, as theirs is, and `ON`/`Off` still read.
+    #[test]
+    fn the_lobby_refusal_quotes_the_value_as_typed() {
+        let e = ChatConfig::from_env_values(Some(" Maybe "), None, None).unwrap_err();
+        assert_eq!(e, format!("{LOBBY_VAR} must be on or off — got \"Maybe\""));
+        assert!(ChatConfig::from_env_values(Some("ON"), None, None).unwrap().lobby);
+        assert!(!ChatConfig::from_env_values(Some("Off"), None, None).unwrap().lobby);
+    }
+
+    /// **A value that is not UTF-8 is refused by the variable's name** (M6.5c2
+    /// cycle D, row 130), never folded into "unset". It was read with
+    /// `.ok()`, which turned `YOKOHAMA_WEB_CHAT_KEEP=<a stray byte>` into the
+    /// default of 500 — a server whose operator set a number and runs another,
+    /// the one outcome the refuse-by-name rule exists to prevent. Unset stays
+    /// the default; a UTF-8 value is handed on as it is.
+    #[cfg(all(feature = "server", unix))]
+    #[test]
+    fn a_non_utf8_value_is_refused_by_the_variables_name() {
+        use std::os::unix::ffi::OsStringExt;
+        let stray = std::ffi::OsString::from_vec(vec![b'5', 0xff]);
+        let e = ChatConfig::value_of(KEEP_VAR, Err(std::env::VarError::NotUnicode(stray)))
+            .expect_err("a value that is not UTF-8 is refused");
+        assert!(e.starts_with(KEEP_VAR), "named by the variable: {e}");
+        assert_eq!(ChatConfig::value_of(KEEP_VAR, Err(std::env::VarError::NotPresent)), Ok(None), "unset");
+        assert_eq!(ChatConfig::value_of(KEEP_VAR, Ok("20".into())), Ok(Some("20".to_string())));
     }
 }

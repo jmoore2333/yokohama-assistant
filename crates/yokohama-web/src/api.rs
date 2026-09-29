@@ -495,18 +495,49 @@ pub fn labels(games: &Games) -> Labels {
 /// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
 /// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
 /// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
+///
+/// **The seat it answers was read under ITS OWN lock take** and is stale the
+/// moment that take ends: a route that takes the game's lock again to ACT
+/// reads the seat again under that take ([`input`], M6.5c2 cycle D, row 129).
+///
+/// The read and the admission are two steps since M6.5c2 cycle D: this is
+/// [`admitted_with`] over one [`Games::table_for_anyone`] read, for a route
+/// that has no table in hand.
 pub fn admitted(
     games: &Games,
     id: &str,
     user: &identity::User,
 ) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
-    use crate::table::TableStatus as S;
     let table = games.table_for_anyone(id, user)?;
+    admitted_with(games, &table, id, user)
+}
+
+/// [`admitted`]'s rule over a table the CALLER has already read (M6.5c2 cycle
+/// D, row 129) — so a route that needs the document before it knows whether to
+/// admit (`events_at`, which answers an open table itself) reads it ONCE.
+///
+/// `table` must be what [`Games::table_for_anyone`] answered for this `id` and
+/// `user`: that read is the first half of the admission (a stranger at a deal
+/// is refused there), and this function is the second. It answers the table
+/// back beside the viewer, so a call site reads as `admitted`'s does.
+///
+/// **It reads no table document, the handle's cold rebuild included**: the
+/// seat holder's arm reaches the handle through `Games::live_handle`, which
+/// takes the table in hand rather than settling it again — the read
+/// [`Games::handle`] would make.
+pub fn admitted_with(
+    games: &Games,
+    table: &crate::table::TableDoc,
+    id: &str,
+    user: &identity::User,
+) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
+    use crate::table::TableStatus as S;
+    let table = table.clone();
     if !table.seats_of(user).is_empty() {
         let seat = match table.status {
             S::Playing => {
-                let handle = games.handle(id)?;
-                let repl = handle.lock().expect("a game");
+                let handle = games.live_handle(id, &table)?;
+                let repl = games.lock_game(&handle, id)?;
                 client::viewer_seat(&table, user, repl.session.state())
                     .expect("a seat holder has a viewer seat")
             }
@@ -955,8 +986,11 @@ pub fn chat_read(
     id: &str,
     q: &ChatQuery,
 ) -> Result<ChatPage, ApiError> {
-    admitted(games, id, user)?;
-    let (messages, last) = games.chat_page(id, q.after.unwrap_or(0))?;
+    // The admission's table is the page's too (M6.5c2 cycle D, row 130): the
+    // chat is bounded by its seat count, and reading the document again for
+    // that one number was a second read per page.
+    let (table, _) = admitted(games, id, user)?;
+    let (messages, last) = games.chat_page(id, &table, q.after.unwrap_or(0))?;
     Ok(ChatPage { messages, last })
 }
 
@@ -978,7 +1012,7 @@ pub fn chat_post(
 ) -> Result<chat::Message, ApiError> {
     let (table, viewer) = admitted(games, id, user)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
-    let author = author_of(&table, viewer, user, req.name.as_deref())?;
+    let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
     let message = games.chat_append(id, author, &text)?;
     Ok(message)
 }
@@ -990,8 +1024,13 @@ pub fn chat_post(
 /// at a seat the table has already settled that claim. A seated caller who
 /// sends one is refused rather than quietly overridden, because a client that
 /// believed it was setting a name and was answered 201 would go on sending it.
+///
+/// **It takes the SEATS, not the table** (M6.5c2 cycle D, row 130), so the
+/// house — which has none — asks it too, as a [`client::Viewer::Spectator`]
+/// over `&[]`: the watcher's rule (the name checked, the key the caller's) is
+/// written once, here, and not restated in [`house_chat_post`].
 fn author_of(
-    table: &crate::table::TableDoc,
+    seats: &[crate::table::SeatDoc],
     viewer: client::Viewer,
     user: &identity::User,
     name: Option<&str>,
@@ -1001,7 +1040,7 @@ fn author_of(
             if name.is_some() {
                 return Err(ApiError::bad_request("a seated caller is named by their seat"));
             }
-            let stored = match table.seats.get(usize::from(seat.0)) {
+            let stored = match seats.get(usize::from(seat.0)) {
                 Some(crate::table::SeatDoc::Human { name, .. }) => name.clone(),
                 _ => None,
             };
@@ -1048,8 +1087,7 @@ pub fn house_chat_post(
 ) -> Result<chat::Message, ApiError> {
     lobby_chat_on(games)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
-    let name = req.name.as_deref().map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
-    let author = chat::Author::Watcher { user: user.as_str().to_string(), name };
+    let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
     let message = games.house_append(author, &text)?;
     Ok(message)
 }
@@ -1076,7 +1114,7 @@ pub fn get_game(games: &Games, user: &User, id: &str) -> Result<ClientState, Api
     // seat's is (M6.3, R-3.7).
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     Ok(ClientState::of(id, &repl, viewer, Vec::new()))
 }
 
@@ -1140,15 +1178,28 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // of those are about a SEAT, and this caller has none: R-P6 would read the
     // trailing event's mover against a seat that does not exist.
     spectators_write_nothing(viewer)?;
-    // The seat the rules below compare against. Total by the refusal one line
-    // up, and written as a `match` rather than an `unwrap` so a third `Viewer`
-    // variant is a compile error here instead of a panic in production.
-    let seat = match viewer {
-        client::Viewer::Seat(s) => s,
-        client::Viewer::Spectator => return Err(spectators_write_nothing(viewer).unwrap_err()),
-    };
     let handle = games.handle(id)?;
-    let mut repl = handle.lock().expect("a game");
+    let mut repl = games.lock_game(&handle, id)?;
+    // **The seat the rules below compare against is read AGAIN, under THIS
+    // take** (M6.5c2 cycle D, row 129). `admitted` read one under its own take
+    // and let that go, and a move landing in between — this person's other
+    // tab, a double click — moves the turn from one of their seats to the
+    // other: the fence then compared the NEW acting seat against the OLD one
+    // and told the holder of both "it is seat 1's turn". It never admitted
+    // anybody wrongly; it refused the one person it should have let through.
+    // Pinned, with the gap held open, by
+    // `a_hot_seat_creator_is_never_told_it_is_not_their_turn_between_two_lock_takes`.
+    //
+    // `None` is unreachable — a caller admitted as a seat holds one, and
+    // `viewer_seat` answers for everyone who does — and is refused rather than
+    // unwrapped, so nothing under the game's lock can panic here.
+    let seat = client::viewer_seat(&table, user, repl.session.state()).ok_or_else(|| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: NOT_SEATED.to_string(),
+        table_status: None,
+        foreign_bot: None,
+    })?;
+    let viewer = client::Viewer::Seat(seat);
 
     // **An undo reaches back into your own turn and no further** (R-P6).
     //
@@ -1372,7 +1423,7 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
     // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
     // verbatim rather than a subset of it.
     let read = {
-        let repl = handle.lock().expect("a game");
+        let repl = games.lock_game(&handle, id)?;
         let refuse = if repl.session.record().lockdown.is_some() {
             Some(R::Locked)
         } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
@@ -1445,7 +1496,7 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
     let (mode, record, bots) = {
-        let repl = handle.lock().expect("a game");
+        let repl = games.lock_game(&handle, id)?;
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
         // the rule the three route families follow. M2 already settled that a
         // read-only GET serves a locked session — `ports`/`labs`/`areas`/`log`
@@ -1543,7 +1594,7 @@ pub fn card_index(
     // there is no hand here that is this reader's.
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let me = match viewer {
         client::Viewer::Seat(s) => Some(s),
         client::Viewer::Spectator => None,
@@ -1576,7 +1627,7 @@ pub struct IndexQuery {
 pub fn result(games: &Games, user: &User, id: &str) -> Result<outcome::Outcome, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     if !repl.session.is_over() {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
@@ -1617,7 +1668,7 @@ pub fn log(
 ) -> Result<yokohama_cli::screen_model::LogPanel, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     let first = q.tail.map_or(0, |n| total.saturating_sub(n));
     let described: Vec<(usize, String)> =
@@ -1781,7 +1832,11 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
     if table.status == crate::table::TableStatus::Open {
         return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
     }
-    let (table, viewer) = admitted(games, id, user)?;
+    // **The table read above IS the admission's** (M6.5c2 cycle D, row 129):
+    // `admitted` would read and settle it a second time, once per poll, per
+    // NAS stream frame per connection, and per Worker reading, where a read is
+    // a row. Pinned by `events_at_reads_the_table_once`.
+    let (table, viewer) = admitted_with(games, &table, id, user)?;
     match table.status {
         // Unreachable behind the return above, and written rather than
         // collapsed into the fall-through: a status this function answers by
@@ -1793,8 +1848,10 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
             Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
         }
         crate::table::TableStatus::Playing => {
-            let handle = games.handle(id)?;
-            let repl = handle.lock().expect("a game");
+            // `live_handle`, not `handle`: the table is in hand, and a cold
+            // handle's rebuild through `handle` would settle it once more.
+            let handle = games.live_handle(id, &table)?;
+            let repl = games.lock_game(&handle, id)?;
             Ok(events_of(&repl, viewer, chat))
         }
     }
@@ -1839,7 +1896,7 @@ pub struct RunFrames {
 pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFrames, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if q.to > q.from && q.to - q.from > RUN_CAP {
         return Err(ApiError::bad_request(format!(
@@ -1909,7 +1966,7 @@ pub fn at_k(
 ) -> Result<client::HistoricalFrame, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if k > total {
         return Err(ApiError::not_found(format!(
@@ -1950,7 +2007,7 @@ pub fn surface<T>(
 ) -> Result<T, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     Ok(build(repl.session.state(), repl.session.rules()))
 }
 
@@ -1972,7 +2029,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         });
     }
     let handle = games.handle(id)?;
-    let over = handle.lock().expect("a game").session.is_over();
+    let over = games.lock_game(&handle, id)?.session.is_over();
     if !over {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
@@ -2907,5 +2964,142 @@ mod tests {
         // answers 404 — so no route, in the middle and at the end alike.
         assert!(matches!(find("GET", "/api/games//table", true), Matched::NoRoute), "an empty {{id}}");
         assert!(matches!(find("GET", "/api/games/sim-1/at/", true), Matched::NoRoute), "an empty {{k}}");
+    }
+
+    /// **`events` reads the table document ONCE per call** (M6.5c2 cycle D, row
+    /// 129) — at every status, for a seat holder and for a watcher, with the
+    /// handle resident and with it cold.
+    ///
+    /// It read it twice: once itself, to answer an open table, and again inside
+    /// `admitted`. That is every poll, every NAS stream frame per connection
+    /// per bump, and every Worker reading, where a read is a row — and a COLD
+    /// handle added a third, since `Games::handle` settles the table again
+    /// before it rebuilds. The count is the store's, so a route that read the
+    /// same document twice and served it once cannot pass.
+    #[test]
+    fn events_at_reads_the_table_once() {
+        use std::sync::Arc;
+        use crate::games::test_support::*;
+        use crate::store::Store;
+        use crate::tables::SeatSpec;
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (red, green) = (who("red@t.test"), who("green@t.test"));
+        let reads = |id: &str, user: &User| {
+            let before = store.table_reads();
+            events_at(&games, id, user).unwrap_or_else(|e| panic!("{id}: {}", e.message));
+            store.table_reads() - before
+        };
+
+        let mut open = two_people("open", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealing", CORPUS_SEED), &red).expect("a dealing table");
+        playing(&games, &two_people("playing", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+
+        assert_eq!(reads("open", &red), 1, "open");
+        assert_eq!(reads("dealing", &red), 1, "dealing");
+        assert_eq!(reads("playing", &red), 1, "playing, the handle resident");
+        assert_eq!(reads("playing", &green), 1, "playing, a watcher");
+        games.evict_for_test("playing");
+        assert_eq!(reads("playing", &red), 1, "playing, the handle cold");
+        games.evict_for_test("playing");
+        assert_eq!(reads("playing", &green), 1, "playing, a watcher, the handle cold");
+    }
+
+    /// **A hot seat's holder is never told it is not their turn** (M6.5c2 cycle
+    /// D, row 129) — the catcher for an acting-seat fence that compares against
+    /// the seat `admitted` read under its OWN lock take.
+    ///
+    /// `input` takes the game's lock twice: once inside the admission, to learn
+    /// which of the caller's seats they act as, and again to act. A move landing
+    /// between the two — the same person's other tab, or a double click —
+    /// moved the turn from seat 0 to seat 1, and the fence then told the person
+    /// holding BOTH seats "it is seat 1's turn" about their own seat. It never
+    /// admitted anybody wrongly; it refused the one person it should have let
+    /// through.
+    ///
+    /// **The gap is held open on the `live` map's lock, not on the store**:
+    /// with the handle resident nothing between the two takes reaches the store,
+    /// and the second take's `Games::handle` is the one step that passes through
+    /// that map. So the cell holds the game's lock (the request waits at its
+    /// first take), takes the map's lock, lets the first take through, waits
+    /// for the request to drop its handle (the first take is over), plays seat
+    /// 0's whole turn in the gap, and only then lets the second take through.
+    ///
+    /// **Nothing can panic while the cell holds either lock**: every wait is
+    /// bounded and answers a bool, the gap's moves report rather than `expect`,
+    /// and every assertion runs after both guards are gone and the request has
+    /// been joined — so a failure releases `live` and the game's lock unpoisoned
+    /// and never leaves the request thread waiting on either.
+    #[test]
+    fn a_hot_seat_creator_is_never_told_it_is_not_their_turn_between_two_lock_takes() {
+        use std::sync::Arc;
+        use crate::games::test_support::*;
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerId;
+        /// Spin until `done`, for at most 20 s; whether it came true.
+        fn waited(done: impl Fn() -> bool) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !done() {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+        let games = games();
+        let red = who("red@t.test");
+        let mut hot = two_people("hot", CORPUS_SEED);
+        hot.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        let handle = playing(&games, &hot, &["red@t.test"]);
+        assert_eq!(handle.lock().unwrap().session.state().current_player, PlayerId::new(0), "premise: seat 0 opens");
+        let resident = Arc::strong_count(&handle);
+        let req = Input { line: "1".to_string(), expect: None };
+
+        let (took_the_handle, first_take_over, gap, answer) = std::thread::scope(|scope| {
+            let game = handle.lock().unwrap();
+            let request = scope.spawn(|| input(&games, &red, "hot", &req));
+            let took_the_handle = waited(|| Arc::strong_count(&handle) > resident);
+            let live = games.live.lock().unwrap();
+            drop(game);
+            let first_take_over = took_the_handle && waited(|| Arc::strong_count(&handle) == resident);
+            // Seat 0's whole turn, played in the gap — reported, never unwrapped.
+            let gap: Result<PlayerId, String> = if !first_take_over {
+                Err("the gap never opened".to_string())
+            } else {
+                match handle.lock() {
+                    Err(_) => Err("the game's lock was poisoned".to_string()),
+                    Ok(mut repl) => {
+                        let mut played = Ok(());
+                        for _ in 0..200 {
+                            if repl.session.state().current_player != PlayerId::new(0) {
+                                break;
+                            }
+                            let Some(mv) = repl.session.legal().first().cloned() else {
+                                played = Err("seat 0 had no legal move".to_string());
+                                break;
+                            };
+                            if let Err(e) = repl.session.apply(mv, Vec::new()) {
+                                played = Err(format!("a legal move did not apply: {e:?}"));
+                                break;
+                            }
+                        }
+                        played.map(|()| repl.session.state().current_player)
+                    }
+                }
+            };
+            drop(live);
+            (took_the_handle, first_take_over, gap, request.join())
+        });
+        assert!(took_the_handle, "timed out: the request never took the handle");
+        assert!(first_take_over, "timed out: the request's first take never ended");
+        assert_eq!(gap, Ok(PlayerId::new(1)), "premise: the gap moved the turn to seat 1");
+        match answer {
+            Err(_) => panic!("the request panicked"),
+            Ok(Err(e)) => panic!("the hot seat's holder was refused between two lock takes: {} {}", e.status, e.message),
+            Ok(Ok(_)) => {}
+        }
     }
 }

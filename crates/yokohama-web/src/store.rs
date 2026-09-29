@@ -168,14 +168,41 @@ const RESERVED_ID_SUFFIXES: [&str; 2] = [".table", ".chat"];
 /// reasoning) as `yokohama_bridge::capture::safe_table_id`, which guards the
 /// one other place in this repo where an outside string becomes a filename.
 ///
-/// The one SUBTRACTION from that allowlist is `RESERVED_ID_SUFFIXES` — read
-/// it for why a name may not end in `.table` or `.chat`.
+/// The SUBTRACTIONS from that allowlist are two: `RESERVED_ID_SUFFIXES` —
+/// read it for why a name may not end in `.table` or `.chat` — and the house
+/// document's stored name, refused by name (`is_the_house`).
 pub fn is_safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
         && !spells_another_document(id)
+        && !is_the_house(id)
+}
+
+/// The name the house document is STORED under: an underscore, then
+/// [`crate::chat::HOUSE`] — `_house`, so `FsStore` writes `_house.chat.json`.
+///
+/// **The underscore is the reservation**: no id [`is_safe_id`] admits starts
+/// with one, so no game's document can reach the house's file, and the plain
+/// id `house` stays an ordinary game name. Spelled HERE once, for the path and
+/// for the check below (M6.5c2 cycle D, row 130).
+fn house_stem() -> String {
+    format!("_{}", crate::chat::HOUSE)
+}
+
+/// Whether `id` is the house's stored name, [`house_stem`], in any case — a
+/// NAMED check, not the first-character rule's accident (M6.5c2 cycle D, row
+/// 130).
+///
+/// Today the first-character rule refuses `_house` already, so this refuses
+/// nothing new. What it pins is the TIE between the two: the check reads the
+/// stem the path is built from, so an edit that dropped the underscore — or
+/// renamed the house to a word with none — still leaves the house's stored
+/// name refused as a game id, and a game can never be given the house's file.
+/// Case-insensitive, as the suffixes are read, because APFS and NTFS fold case.
+fn is_the_house(id: &str) -> bool {
+    id.eq_ignore_ascii_case(&house_stem())
 }
 
 /// Whether `id` would spell another game's table or chat document.
@@ -229,8 +256,11 @@ impl FsStore {
         if doc == Doc::House {
             // The leading underscore is the whole of the reservation: no id
             // `is_safe_id` admits may start with one, so no game can reach this
-            // file and it needs no suffix of its own.
-            return Ok(self.dir.join(format!("_{id}{}", doc.suffix())));
+            // file and it needs no suffix of its own. The stem is `house_stem`'s,
+            // the one spelling `is_safe_id` also refuses BY NAME, so the file
+            // and the check cannot come apart (M6.5c2 cycle D, row 130).
+            // `check_house_id` above has already pinned `id` to the house's.
+            return Ok(self.dir.join(format!("{}{}", house_stem(), doc.suffix())));
         }
         if !is_safe_id(id) {
             return Err(format!("{id:?} is not a usable game name"));
@@ -736,6 +766,35 @@ mod tests {
         for good in ["chat", "chatter", "my.chatty", "a.b"] {
             assert!(is_safe_id(good), "{good:?} is an ordinary name");
         }
+    }
+
+    /// **The house's stored name is refused by a NAMED check, tied to the
+    /// file it names** (M6.5c2 cycle D, row 130).
+    ///
+    /// The underscore is the reservation — the first-character rule already
+    /// refuses `_house` — and the check pins it by name: `house_stem` is the
+    /// one spelling both the check and `FsStore`'s house path read, so an edit
+    /// that dropped the underscore would leave the house's stored name still
+    /// refused as a game id rather than free for a game to overwrite. The
+    /// plain `house` stays an ordinary game id (a game so named must stay
+    /// readable), and the house cell above is the other half: the house
+    /// document written, listed and read on both stores.
+    #[test]
+    fn the_house_name_is_reserved_by_a_named_check() {
+        assert_eq!(house_stem(), format!("_{}", crate::chat::HOUSE), "an underscore, then the house's id");
+        for spelled in [house_stem(), house_stem().to_ascii_uppercase()] {
+            assert!(is_the_house(&spelled) && !is_safe_id(&spelled), "{spelled:?} is the house's, never a game's");
+        }
+        for good in [crate::chat::HOUSE, "House", "houses", "house2", "my-house"] {
+            assert!(!is_the_house(good) && is_safe_id(good), "{good:?} is an ordinary game id");
+        }
+        let dir = std::env::temp_dir().join(format!("yokohama_house_stem_{}", std::process::id()));
+        let path = FsStore::new(&dir).path(Doc::House, crate::chat::HOUSE).expect("the house's path");
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(format!("{}{}", house_stem(), Doc::House.suffix()).as_str()),
+            "the file IS the stem the check refuses",
+        );
     }
 
     /// Two writers of identical bytes agree, and different bytes do not.
