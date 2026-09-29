@@ -49,8 +49,10 @@
 // (`includeUncontrolled`); and a timeout worded "took too long".
 //
 // **Made here and pinned by NO cell:** that the other lanes are AWAITED
-// (`Promise.allSettled(lanes)`) before the delete — dropping the await leaves
-// every cell green, because the aborted lanes settle before the delete anyway.
+// (`Promise.allSettled(lanes)`) before the delete. Dropping the await leaves
+// every cell green, but not because the lanes have settled by then: an aborted
+// lane can still settle after the delete, and the cells' fake cache storage
+// unmaps the name on delete, so a late write goes unseen there.
 
 /// <reference lib="webworker" />
 
