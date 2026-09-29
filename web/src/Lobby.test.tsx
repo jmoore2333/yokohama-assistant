@@ -16,7 +16,7 @@ import { OPEN_KEY } from "./chatFold";
 import { fakeStream, flush, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
-import type { TableView } from "./types";
+import type { ChatPage, TableView } from "./types";
 
 /** All three scopes, from the corpus's own listings.
  *
@@ -763,16 +763,27 @@ describe("the lobby's chat", () => {
   // per wake and asked for a delta on every one — every move of every game on
   // the server — and made a second read at mount off the lobby's own opening
   // read. It reads its delta now only when `chat` passes what it holds, and
-  // the mount read is the only read until then.
+  // the mount read is the only read until then. The panel is OPEN, because a
+  // folded count host reads nothing whatever the count says.
+  //
+  // **Where the house frames come from**: no corpus fixture carries one — a
+  // frame is a stream's, not a route's payload — so each is built in the shape
+  // the layer pins (`signal.rs`'s `house_frame`, `{"seq":…,"chat":…,"rev":…}`,
+  // the same on the Worker) from the corpus's own numbers: `house_chat.json`'s
+  // `last` and `rev`, and one past each for the message that moves them. The
+  // page behind that message is `house_chat.json` with its first message
+  // renumbered to it.
   it("reads the lobby chat once at mount, not on a table's move, and again when the house chat moves", async () => {
     setLobbyChat(true);
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
     const stream = fakeStream();
+    const next = { ...wire.houseChat.messages[0]!, seq: wire.houseChat.last + 1 };
+    let page: ChatPage = wire.houseChat;
     vi.useFakeTimers();
     try {
       const { stub } = show((call) => {
         if (call.path.endsWith("/api/stream")) return stream.reply(call);
-        if (call.method === "GET" && call.path.startsWith("/api/chat")) return wire.houseChat;
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) return page;
         return undefined;
       });
       await until(() => stream.opens() > 0, "the house stream is open");
@@ -783,8 +794,11 @@ describe("the lobby's chat", () => {
       stream.push("house", { seq: 1, chat: wire.houseChat.last, rev: wire.houseChat.rev });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "a table's move asks the chat nothing").toHaveLength(1);
-      stream.push("house", { seq: 2, chat: wire.houseChat.last + 1, rev: wire.houseChat.rev + 1 });
+      page = { ...wire.houseChat, messages: [...wire.houseChat.messages, next], last: next.seq, rev: wire.houseChat.rev + 1 };
+      stream.push("house", { seq: 2, chat: next.seq, rev: wire.houseChat.rev + 1 });
       await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "one read for the one message").toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }
@@ -792,7 +806,9 @@ describe("the lobby's chat", () => {
 
   // **And nothing for its own post** (row 130): the 201 has already moved the
   // cursor to the message the house frame then counts. The room starts empty
-  // (the resting `show` answer), so the post's number lands above it.
+  // (the resting `show` answer), so the post's number lands above it. The
+  // frame is built as the cell above builds its own, from
+  // `house_chat_post.json`'s number.
   it("asks the lobby chat nothing for its own post", async () => {
     setLobbyChat(true);
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));

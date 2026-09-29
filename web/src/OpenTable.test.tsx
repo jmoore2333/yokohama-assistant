@@ -13,16 +13,17 @@
 // one derived table is `fourWithTwoOpen`, and it moves only the SIZE: its own
 // doc says why.
 
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_ANSWER } from "./Abandon";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
+import { OPEN_KEY } from "./chatFold";
 import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import { endSentence } from "./signal";
-import type { TableView } from "./types";
+import type { ChatPage, TableView } from "./types";
 
 /** The table this caller SITS at, still filling its seats — `wire2`, the
  *  lobby's second row, committed exactly in that shape: `status: "open"`,
@@ -759,22 +760,27 @@ describe("the open table's chat", () => {
   // **One chat read at mount** (M6.5c2 cycle D, row 130). The panel was handed
   // a tick per wake, and the stream's ON-CONNECT frame is a wake — so every
   // visit read the chat twice before anything was said. The panel reads the
-  // frame's own `chat`/`chat_rev` now (`peek`), and a connection's first frame
-  // that carries the number the mount read already holds asks for nothing. The
-  // frame is the corpus's open-table `Events`; the page, the empty room with
-  // the same `rev`, so neither the count nor the revision says anything moved.
+  // frame's own `chat`/`chat_rev` now (`peek`) and is a count host: the
+  // connection's resync frame reads the chat only when one of the two has
+  // moved past what the mount read holds. **The panel is OPEN** — a folded
+  // count host reads nothing whatever the count says, so a folded panel could
+  // not tell "nothing moved" from "folded". The frame is the corpus's
+  // open-table `Events`; the page, the empty room with the same two numbers.
   // **The frame is written AFTER the panel's mount read**, the order a network
   // gives it (the stream opens behind the transport's health read): written at
   // connect in a stubbed tick, it lands before the panel exists and the cell
-  // would witness nothing.
+  // would witness nothing. The partner: a frame whose count HAS moved (the
+  // corpus's own playing reading, `events.json`'s two counters, over the
+  // corpus's page) is read once.
   it("reads the chat once at mount, and not again for the connection's own first frame", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["wire2"]));
     vi.useFakeTimers();
     const stream = fakeStream();
+    let page: ChatPage = { ...wire.chat, messages: [], last: wire.eventsOpen.chat, rev: wire.eventsOpen.chat_rev };
     const { stub } = showSeated((call) => {
       if (call.path.endsWith("/table")) return seated();
       if (call.path.endsWith("/stream")) return stream.reply(call);
-      if (call.method === "GET" && call.path.includes("/chat"))
-        return { ...wire.chat, messages: [], last: wire.eventsOpen.chat, rev: wire.eventsOpen.chat_rev };
+      if (call.method === "GET" && call.path.includes("/chat")) return page;
       return undefined;
     });
     await until(() => stream.opens() > 0, "the table's stream was opened");
@@ -782,6 +788,42 @@ describe("the open table's chat", () => {
     stream.push("signal", wire.eventsOpen);
     await until(() => stub.matching("GET", "/table").length >= 2, "the frame's table read");
     await flush();
-    expect(stub.matching("GET", "/chat")).toHaveLength(1);
+    expect(stub.matching("GET", "/chat"), "the resync frame moved nothing").toHaveLength(1);
+
+    page = wire.chat;
+    stream.push("signal", { ...wire.eventsOpen, chat: wire.chat.last, chat_rev: wire.chat.rev });
+    await until(() => stub.matching("GET", "/chat").length === 2, "a moved count is read");
+    await flush();
+    expect(stub.matching("GET", "/chat")).toHaveLength(2);
+  });
+
+  // **And nothing for its own post** (row 130): the 201 has already moved the
+  // cursor to the message the frame then counts. The room starts empty, the
+  // post is `chat_post.json`, and the frame the post causes is the corpus's
+  // open-table `Events` with its two counters moved to the post's number.
+  it("asks the chat nothing for its own post", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["wire2"]));
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    const { stub } = showSeated((call) => {
+      if (call.path.endsWith("/table")) return seated();
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      if (call.method === "POST" && call.path.endsWith("/chat")) return { status: 201, body: wire.chatPost };
+      if (call.method === "GET" && call.path.includes("/chat")) return { ...wire.chat, messages: [], last: 0, rev: 0 };
+      return undefined;
+    });
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    await until(() => screen.queryByRole("textbox", { name: "Say something" }) !== null, "the chat's input");
+    const box = screen.getByRole("textbox", { name: "Say something" });
+    fireEvent.change(box, { target: { value: wire.chatPost.text } });
+    fireEvent.submit(box.closest("form")!);
+    await until(() => stub.matching("POST", "/chat").length === 1, "the post went out");
+    await flush();
+    expect(stub.matching("GET", "/chat"), "the mount read").toHaveLength(1);
+    stream.push("signal", { ...wire.eventsOpen, chat: wire.chatPost.seq, chat_rev: wire.chatPost.seq });
+    await until(() => stub.matching("GET", "/table").length >= 2, "the frame's table read");
+    await flush();
+    expect(stub.matching("GET", "/chat"), "the frame counts the post the 201 drew").toHaveLength(1);
+    expect(screen.getByText(wire.chatPost.text)).toBeInTheDocument();
   });
 });

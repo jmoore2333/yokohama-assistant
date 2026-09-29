@@ -28,7 +28,9 @@
 // wake-up and `GET …/table` is the answer. The stream's ON-CONNECT frame is
 // therefore a read of the table at connect, which is one request and buys the
 // reconnect its compare. The frame's own chat counters go to the chat panel
-// (`peek`), which is a count host here.
+// (`peek`), which is a count host here: **the connect-time resync frame reads
+// the chat only if `chat` or `chat_rev` has moved** past what the panel holds
+// (M6.5c2 cycle D, row 130).
 //
 // **Leaving this screen is a re-OPEN, not a jump to the dealing screen.** The
 // three ways a table stops being open — the signal, the join's own reply, and a
@@ -94,9 +96,10 @@ export function OpenTable({
    *  (`Source.peek`; M6.5c2 cycle D, row 130) — the panel's `count` and `rev`.
    *  The frame is an `Events` and still only a wake for the table read, but
    *  its `chat`/`chat_rev` are the table's own, so the panel is a COUNT host
-   *  here as it is on the deal and the game: the connection's first frame asks
-   *  nothing when the mount read already holds its number, and an own post's
-   *  frame asks nothing once its 201 has moved the cursor. */
+   *  here as it is on the deal and the game: the connection's resync frame
+   *  reads the chat only if `chat` or `chat_rev` moved past what the mount
+   *  read holds, and an own post's frame asks nothing once its 201 has moved
+   *  the cursor. */
   const [chat, setChat] = useState<{ count: number; rev: number } | null>(null);
   // The guard against a SECOND join going out while the first is in flight —
   // a ref and not the state, for the reason `App`'s own `inFlight` is one:
