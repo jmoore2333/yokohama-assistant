@@ -1914,8 +1914,10 @@ impl Games {
                     // says over: a stale one, or a true one after an undo past
                     // game over at a one-person table, where the CLI's undo
                     // applies — no lie there, but the first ending's copy already
-                    // sits under `over/` (measured by Task 5's review). Named,
-                    // not closed.
+                    // sits under `over/` (measured in M6.5c2 cycle D and recorded
+                    // in its close,
+                    // `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`).
+                    // Named, not closed.
                     let why = if doc.turn.as_ref().is_some_and(|t| t.over) {
                         crate::archive::Why::Over
                     } else {
@@ -2908,8 +2910,9 @@ mod tests {
     /// and the delete goes ahead. What would put a second copy under
     /// `abandoned/` is a lost stamp AND a mirror that no longer says over — a
     /// stale one, or a true one after an undo past game over at a one-person
-    /// table (measured by Task 5's review) — the residual `delete`'s doc names
-    /// and does not close.
+    /// table (measured in M6.5c2 cycle D and recorded in its close,
+    /// `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`) — the residual
+    /// `delete`'s doc names and does not close.
     ///
     /// Over a real [`crate::archive::DirArchive`], because `Identical` is the
     /// directory's own answer to the same bytes, and a double that recorded the

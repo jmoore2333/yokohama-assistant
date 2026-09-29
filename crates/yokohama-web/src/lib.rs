@@ -685,7 +685,7 @@ async fn stream(
                 Ok(Ok(e)) => Event::default()
                     .event("signal")
                     .json_data(e)
-                    .expect("`Events` is five scalars and serializes"),
+                    .expect("`Events` is six scalars and serializes"),
                 // **A REFUSAL ends the stream; a failure does not** (final
                 // review M-5). A 403 or a 404 is an answer about this table —
                 // the join that filled the open seats without this caller, the
@@ -2471,9 +2471,13 @@ mod tests {
     }
 
     /// **Every route that needs a session refuses a signed-in stranger at an
-    /// open, a dealing and a LOCKED playing table, with exactly two exceptions
-    /// — `join` at open, and `table` everywhere it is asked here** (R-1.5 with
-    /// R-2.7 and M6.3's R-3.13).
+    /// open, a dealing and a LOCKED playing table, with the exceptions the loop
+    /// names and asserts elsewhere — `join` at open and `table` everywhere it
+    /// is asked here (steps 2 and the last, below), the signal (`events` and
+    /// `stream`) at open (just below the loop), and `unlock` at every status,
+    /// whose own ladder the admission grid asks by hand at all three**
+    /// (R-1.5 with R-2.7 and M6.3's R-3.13; `stream` and `unlock` joined the
+    /// list with `session_routes()` in M6.5c2 cycle D).
     ///
     /// **M6.3 changed the playing column, and the change is the cycle**
     /// (R-3.5): a stranger at an UNLOCKED playing table is now admitted as a
@@ -4112,6 +4116,21 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{got}");
         assert_eq!(got["status"], "open", "nothing to watch yet: {got}");
+        // **And at DEALING** (M6.5c2 cycle D, the final review's triage): the
+        // stranger sweep skips `unlock` at every status, so this row is the one
+        // place a stranger's knock at a dealing table is asked. Nobody watches a deal, so it is the open table's
+        // answer — a 409 naming the status, before any password is read — and
+        // never the table's view.
+        let (status, got) = post_as(
+            &state,
+            green,
+            "/api/games/dealt/unlock",
+            serde_json::json!({ "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{got}");
+        assert_eq!(got["status"], "dealing", "nothing to watch while it deals: {got}");
+        assert!(got.get("seats").is_none(), "no table view: {got}");
     }
 
     /// **A watcher writes nothing, and is refused BEFORE the handle is
@@ -7343,8 +7362,15 @@ mod tests {
 
         // **A DELETE is one frame that moves `rev` and nothing else** (M6.5c2
         // cycle D, R-D4): it adds no message, so `chat` stays where it was —
-        // the catcher, on the NAS's own wire, for "a delete bumps `last`" —
-        // and it changes no listing, so `seq` does too. The lobby still wakes.
+        // the catcher, on the NAS's own wire, for a house delete that moves
+        // the house's CHAT counter — and it changes no listing, so `seq` does
+        // too. The lobby still wakes. It does NOT catch a delete that moves
+        // the DOCUMENT's `last` (the mutation battery's row 18): these
+        // counters are seeded from the document once, when the process
+        // starts, and moved by the bump sites after, never re-read. `chat.rs`'s
+        // cells, the walk and
+        // `after_a_restart_the_house_frame_counts_on_from_the_document` (whose
+        // page premise reads `last` after a delete) catch that one.
         let frames_after_delete = house_frames_after(&state, || async {
             let (status, gone) = delete_as(&state, "grey@wire.test", "/api/chat/1").await;
             assert_eq!(status, StatusCode::NO_CONTENT, "{gone}");

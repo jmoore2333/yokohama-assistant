@@ -60,10 +60,18 @@ export function moduleFigures(input) {
   while (at < b.length) {
     const id = b[at++];
     const size = u32();
-    // `end` is never checked against the module's length. A truncated section
-    // other than the memory section, or a data segment cut short, ends the walk
-    // silently and figures are still printed (`segments 0`, or a `dataBytes`
-    // larger than the bytes present): a limit of this reading script, recorded.
+    // `end` is never checked against the module's length, so a truncated module
+    // is never refused AS truncated: a limit of this reading script, recorded.
+    // Two cuts end the walk SILENTLY and figures are still printed — a section
+    // after the memory section cut short (`segments 0` when the cut came before
+    // the data section), and the last data segment's bytes cut short (a
+    // `dataBytes` larger than the bytes present). Every other cut throws, but
+    // under another name, by the read that runs off the end: a section before
+    // the memory section as "the module declares no memory"; the memory section
+    // itself, a section header, or a data section cut before or inside a later
+    // segment's header as a LEB128 number running past the end; a cut inside
+    // an active segment's offset as that offset not being a single constant (a
+    // `TypeError` when the cut falls before its opcode).
     const end = at + size;
     if (id === 5) {
       if (u32() !== 1) throw new Error("the module declares more than one memory");

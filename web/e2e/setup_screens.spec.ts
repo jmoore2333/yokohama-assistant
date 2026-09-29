@@ -508,8 +508,10 @@ test("the open table and the device card at 390: every control a thumb presses i
     // box covers the row (`styles.css`, `.device-row`), and the row draws ~33px
     // at 390: no rule of cycle C's polish 2 names it (the list covers the
     // card's buttons and its foot), so asserting 44 here would pin a claim the
-    // stylesheet never made. It is a finding for the owner (Task 14 report),
-    // and this exemption is the one place it is written down in code.
+    // stylesheet never made. The exemption stands for cycle D by ruling, and the
+    // row is on cycle E's owner's-eye polish list (the cycle D close,
+    // `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`); this exemption is
+    // the one place it is written down in code.
     const shortDevice = device.filter((c) => c.height < 44 && c.name !== game.id);
     expect(shortDevice, `device-card controls under 44px at 390: ${JSON.stringify(shortDevice)}`).toEqual([]);
     await noSidewaysScroll(page, "the device card at 390px");

@@ -295,7 +295,7 @@ describe("On this device", () => {
   });
 
   // **Above a listed game, no line says the games could not be listed** (M6.5c2
-  // cycle D, the final review's triage; the Task 12 review's minor 1). The
+  // cycle D, the final review's triage). The
   // module listed them: the rows are drawn and open through it, so "this
   // device's games could not be listed" above them was false, and it named the
   // one failure a second time beside `Unplayable`'s own line — which is the

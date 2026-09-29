@@ -289,8 +289,9 @@ mod tests {
     /// **A house DELETE moves the revision and nothing else** (M6.5c2 cycle D,
     /// R-D4): it adds no message, so `chat` stays, and it changes no listing,
     /// so `seq` stays — but a lobby must still wake, and the frame must SAY
-    /// that what it holds changed. The catcher for "a delete bumps `last`" on
-    /// the NAS's house channel.
+    /// that what it holds changed. The catcher for a revision bump that moves
+    /// `chat` too; a delete that moves the DOCUMENT's `last` is not this
+    /// channel's to see (see `the_house_frame_carries_seq_and_chat_independently`).
     #[test]
     fn a_house_delete_bump_moves_rev_alone() {
         let s = Signals::default();

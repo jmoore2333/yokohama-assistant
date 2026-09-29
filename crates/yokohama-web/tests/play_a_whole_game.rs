@@ -316,12 +316,18 @@ fn bot_stream_seed(api: Api, id: &str) -> (Api, u64) {
 /// export of `18f270fa` on the orchestrator's MacBook Air, 2026-09-29
 /// 05:17:31Z to 05:24:11Z. 500 started, 500 finished, none failed, and 500
 /// distinct bot seeds. Inputs: min 95, median 453, max 1,503, with 4 games over
-/// 1,000 and none over 2,500. Turns: min 13, median 71, max 255. The cap
-/// stays at the next thousand above three times that maximum, so a regression
-/// fails in minutes where the old 20,000 cost half an hour (M6.3 close §6.3:
-/// 1,813 s). It replaces the M6.5c2 cycle A reading of 50 runs (min 136,
-/// median 386, max 1,212, base `605c3ddd`). Every run's bot seed is in the
-/// ledger's `task-10-gate-500.txt`.
+/// 1,000 and none over 2,500. Turns: min 13, median 71, max 255. It replaces
+/// the M6.5c2 cycle A reading of 50 runs (min 136, median 386, max 1,212, base
+/// `605c3ddd`). Every run's bot seed is in the ledger's `task-10-gate-500.txt`.
+///
+/// **The sizing rule MOVED with this reading, and the headroom fell.** Cycle A
+/// set the cap at the next thousand above FOUR times its maximum (1,212 gave
+/// 5,000). Under that rule 1,503 would ask 7,000. R-D9 moves the cap only if
+/// the maximum says so, and the orchestrator kept 5,000 — which is the next
+/// thousand above THREE times this maximum, the rule that stands now. So the
+/// cap is about 3.3 times the observed maximum where it was about 4.1 times,
+/// and a regression still fails in minutes where the old 20,000 cost half an
+/// hour (M6.3 close §6.3: 1,813 s).
 const VS_BOT_CAP: usize = 5_000;
 
 #[tokio::test]

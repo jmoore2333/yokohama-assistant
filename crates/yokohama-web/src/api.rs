@@ -321,7 +321,8 @@ pub struct Health {
     /// stream (`"sse"`, the NAS) or as a socket (`"ws"`, the Worker), and it
     /// cannot tell from a successful call to anything else. Its one plain
     /// `…/events` read is the socket's probe; since M6.5c2 cycle D (R-D5) no
-    /// client holds a request, and a `wait` is accepted and ignored.
+    /// client holds a request, and a `wait` is accepted and ignored up to
+    /// [`MAX_WAIT_SECONDS`] — above it, still a 400.
     pub signal: &'static str,
     /// Which archive this deployment writes finished and abandoned games to
     /// (M6.5a, R-6.5a.13): `"off"`, `"dir"`, or M6.5c's `"r2"`. The client's
@@ -3372,8 +3373,9 @@ mod tests {
     /// cycle D, straw poll row 31): the move applied, the store answered
     /// `Conflict` at the swap, and the 200 carries `APPLIED BUT NOT SAVED`
     /// instead of a refusal the server did not make. Its games.rs partner
-    /// asserts the eviction; this asserts the sentence on the wire. The catcher
-    /// for battery row 25.
+    /// asserts the eviction; this asserts the sentence on the wire, and is not
+    /// a catcher for a conflict that keeps the handle (the battery's row 25):
+    /// the sentence is the same either way.
     #[test]
     fn a_move_whose_write_conflicted_is_answered_applied_but_not_saved() {
         use crate::games::test_support::{conflicting_games, req, who};

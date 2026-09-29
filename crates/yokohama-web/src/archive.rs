@@ -102,9 +102,10 @@ impl std::fmt::Display for PutError {
 /// ahead. A second copy under `abandoned/` needs the stamp lost AND a mirror
 /// that no longer says over, at once: a STALE mirror (its own write failed or
 /// lost a race), or an undo past game over at a one-person table, where the
-/// CLI's undo applies and the mirror then truly reads not over (measured by
-/// Task 5's review). That residual is `Games::delete`'s to state, and it
-/// does. What it does NOT prevent: the same
+/// CLI's undo applies and the mirror then truly reads not over (measured in
+/// M6.5c2 cycle D and recorded in its close,
+/// `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`). That residual is
+/// `Games::delete`'s to state, and it does. What it does NOT prevent: the same
 /// save sent by two different callers lands twice, under two prefixes (spec
 /// §2.4 — the training side dedups by digest).
 pub trait Archive: Send + Sync {

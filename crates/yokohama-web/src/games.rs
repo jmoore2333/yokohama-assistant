@@ -914,9 +914,11 @@ impl Games {
         // distinction `conflict`'s doc draws and `WriteError` now carries in
         // its type.
         //
-        // **`a_conflict_at_the_swap_evicts_the_handle_and_the_reply_says_it_is_not_saved`
+        // **`a_conflict_at_the_swap_evicts_the_handle_and_names_the_change`
         // DRIVES THIS ARM** through a store double that answers `Conflict` on a
-        // record write. Within one process the guards above have already read
+        // record write, and `api.rs`'s
+        // `a_move_whose_write_conflicted_is_answered_applied_but_not_saved`
+        // reads the reply. Within one process the guards above have already read
         // the store under the same `written` lock, so a real conflict here
         // still needs a SECOND PROCESS writing between that read and this
         // write; the double stands in for that process, which proves what the
@@ -1013,7 +1015,8 @@ impl Games {
     /// DIFFERENT path (`archive::paths` is per reason), when the mirror no
     /// longer says over. So a lost stamp is a second copy only beside a STALE
     /// mirror, or after an undo past game over at a one-person table, where the
-    /// CLI's undo applies (M6.5c2 cycle D, row 11, and Task 5's review;
+    /// CLI's undo applies (M6.5c2 cycle D, row 11, measured as its close
+    /// records, `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`;
     /// `Games::delete` names that residual).
     ///
     /// Retried once on a version conflict — an `unlock` or a `join` writing the
@@ -2270,13 +2273,15 @@ mod tests {
 
     /// **The swap's CONFLICT arm, driven** (M6.5c2 cycle D, straw poll row 31):
     /// a store that answers `Conflict` at the record write — the second process
-    /// the arm exists for — makes `persist` refuse, name the change, bump
-    /// nothing and EVICT the handle, so the next request replays the store
-    /// rather than go on answering from a `Repl` whose line diverged. The
-    /// catcher for battery row 25. The Io arm (`a_write_the_store_refuses_bumps_nothing`)
-    /// evicts nothing; the last assertion here is what tells the two apart.
+    /// the arm exists for — makes `persist` refuse, name the change and EVICT
+    /// the handle, so the next request replays the store rather than go on
+    /// answering from a `Repl` whose line diverged. The catcher for battery row
+    /// 25. The Io arm (`a_write_the_store_refuses_bumps_nothing`) evicts
+    /// nothing; the last assertion here is what tells the two apart. The reply
+    /// a player reads is `api.rs`'s
+    /// `a_move_whose_write_conflicted_is_answered_applied_but_not_saved`.
     #[test]
-    fn a_conflict_at_the_swap_evicts_the_handle_and_the_reply_says_it_is_not_saved() {
+    fn a_conflict_at_the_swap_evicts_the_handle_and_names_the_change() {
         use std::sync::atomic::Ordering;
         let (games, store) = conflicting_games();
         let id = "cswap".to_string();
@@ -2853,8 +2858,8 @@ mod tests {
     }
 
     /// **A poisoned table lock is ENTERED, not panicked on** (M6.5c2 cycle D,
-    /// R-D8's second half, row 128; Task 5's review) — the catcher for `enter`
-    /// gone back to `expect`.
+    /// R-D8's second half, straw poll row 128) — the catcher for `enter` gone
+    /// back to `expect`.
     ///
     /// A `Mutex<()>` guards no data, so a writer that died inside one leaves
     /// nothing for the next to distrust. `expect` made that one panic a table
