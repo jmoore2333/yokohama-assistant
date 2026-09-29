@@ -53,10 +53,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, ensureArchiveFact } from "./api";
+import { openDbBounded } from "./backup";
 import { localPair } from "./local/client";
 import {
   deleteOutboxRow,
-  openDb,
   putOutboxRow,
   readOutbox,
   readOutboxRow,
@@ -202,11 +202,16 @@ const announceLanded = (id: string, path: string): void => {
  * **A browser with no usable store answers `fallback`** (rule 7): a private
  * window, a blocked site, a browser with no IndexedDB at all has no outbox
  * rather than an unhandled rejection on a screen that is otherwise fine.
+ *
+ * **And so does a store another tab is HOLDING** (M6.5c2 cycle D, straw poll
+ * row 12): the open goes through `backup.ts`'s `openDbBounded`, because a plain
+ * open waits for as long as an M6.5b-era tab holds the old version, and the
+ * fallback never arrived.
  */
 async function withStore<T>(f: (db: IDBDatabase) => Promise<T>, fallback: T): Promise<T> {
   let db: IDBDatabase;
   try {
-    db = await openDb();
+    db = await openDbBounded();
   } catch {
     return fallback;
   }
