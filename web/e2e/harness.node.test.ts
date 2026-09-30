@@ -532,7 +532,7 @@ describe("awaitCreate and abandonOpened — a live table is taken away whether o
     };
     const made = await reasonOf((f) => f.land(201, { id: "sim-00000000000000aa" }));
     expect(made).toEqual({ reason: null, thrown: "named sim-00000000000000aa" });
-    // Access's answer when WARP's device login has expired (CLAUDE.md).
+    // Access's answer when WARP's device login has expired (`docs/web-lane.md` §10; `worker/RUNBOOK.md` §7).
     const moved = await reasonOf((f) => f.land(302, null));
     expect(moved.reason).toBe("it answered 302, not 201");
     expect(moved.thrown).toBe("no table id came back from the create: it answered 302, not 201");

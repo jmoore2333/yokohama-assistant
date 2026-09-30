@@ -185,7 +185,7 @@ export interface End {
  * holds a stream or a socket and asks only when a frame says to (the file's
  * note); on the stream arm it arms no timer while connected, and the socket
  * arm's one timer is its keep-alive (`ws.ts`). The name stayed because every
- * consumer, its cells and `CLAUDE.md` say it, and a rename would move all of
+ * consumer, its cells and `docs/web-lane.md` say it, and a rename would move all of
  * them for no change in behaviour.
  *
  * `active` is the caller's "there is something to wait for": a screen holding
