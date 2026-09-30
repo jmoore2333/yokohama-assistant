@@ -1,7 +1,7 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
 // wrangler deploy`, and `npm run deploy:open` the same over `--config
-// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 then judge THAT file, and 5 and
-// 6 hold it to production's blocks), so nothing ships unless all nine hold. Every check that
+// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10 then judge THAT file, and 5 and
+// 6 hold it to production's blocks), so nothing ships unless all ten hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -74,6 +74,15 @@
 //    assembled from an earlier `web/dist` passes; the bytes are compared, not
 //    the release names alone, because the name digests the precache list and
 //    a change to `web/src/sw.ts` alone keeps it.
+// 10. The deployed configuration does not turn on Workers Cache (M6.5c2 cycle
+//    F, R-F3, R-FP13; spec §2.1): a `cache` block whose `enabled` is not
+//    `false` — at the top level, in any environment, or under ANY named
+//    export, an environment's included — is refused. With it on, "requests
+//    served from the Worker's cache are billed at the same per-request rate as
+//    requests that invoke the Worker. This includes requests to static
+//    assets" (Workers pricing, footnote 4), and the door stops being free. The
+//    block is an opt-in, so no block is off; read as values, so a comment is
+//    prose.
 //
 // Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
@@ -293,6 +302,29 @@ function siblingDrift(name, production, sibling, differs, failures) {
   }
 }
 
+/** Check 10, over the deployed configuration: every place a `cache` block
+ *  can sit — the top level, each environment, and each named export of
+ *  either — refused unless its `enabled` is `false`. The parenthesis names
+ *  where, so two blocks are two sentences. */
+function cacheBlock(name, value, failures) {
+  const places = [["", value]];
+  for (const [envName, env] of Object.entries(objectOf(value.env) ?? {})) {
+    if (objectOf(env)) places.push([`env.${envName}.`, env]);
+  }
+  for (const [prefix, at] of [...places]) {
+    for (const [exportName, exported] of Object.entries(objectOf(at.exports) ?? {})) {
+      if (objectOf(exported)) places.push([`${prefix}exports.${exportName}.`, exported]);
+    }
+  }
+  for (const [prefix, at] of places) {
+    if (!Object.hasOwn(at, "cache") || objectOf(at.cache)?.enabled === false) continue;
+    failures.push(
+      `${name} enables Workers Cache (${prefix}cache.enabled is not false) — with it on, static-asset requests are ` +
+        "billed at the Worker request rate (Workers pricing, footnote 4); remove the block",
+    );
+  }
+}
+
 /** Check 3, over the deployed configuration: the door, and its rules. */
 function doorRules(name, value, failures) {
   const door = doorOf(value);
@@ -436,7 +468,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   return failures;
 }
 
-/** All nine checks over the worker package at `root`, inside the repository
+/** All ten checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
 export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
@@ -458,9 +490,11 @@ export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_F
     );
   }
 
-  // Checks 3–5 report a configuration that does not parse; check 2 only needs
-  // to know where the tree is, and says nothing more when it cannot.
-  const directory = readConfig(root, config, [])?.value.assets?.directory;
+  // Checks 3–5 report a configuration that does not parse; checks 2 and 10
+  // only need its values, and say nothing more when they cannot be read.
+  const judged = readConfig(root, config, [])?.value;
+  if (judged) cacheBlock(config, judged, failures);
+  const directory = judged?.assets?.directory;
   if (typeof directory === "string" && directory !== "") {
     const shown = posix.normalize(directory);
     const tree = join(root, directory);
@@ -520,6 +554,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
       "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door; " +
-      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars",
+      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
+      "no Workers Cache",
   );
 }

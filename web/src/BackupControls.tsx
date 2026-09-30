@@ -37,6 +37,7 @@ import {
   type RestoreReport,
   type UnplayableGame,
 } from "./backup";
+import { setApplyBusy } from "./swRegister";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
 
@@ -187,6 +188,11 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
   const take = async (file: File) => {
     if (busy.current) return;
     busy.current = true;
+    // **The door's own apply waits for this** (M6.5c2 cycle F, R-FP14): the
+    // door takes a waiting release by itself, and a reload in the middle of a
+    // restore would lose its report. Released in the `finally`, whatever the
+    // restore did.
+    setApplyBusy(true);
     setError(null);
     setReport(null);
     try {
@@ -203,6 +209,7 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
       // unchanged value.
       if (input.current) input.current.value = "";
       busy.current = false;
+      setApplyBusy(false);
     }
   };
 

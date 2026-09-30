@@ -9,14 +9,16 @@
 // mounts rather than when the module loads, which is the same tick in practice.
 //
 // **The update policy's page half is here, and it is three rules** (spec §2.3):
-// `skipWaiting` is posted only on the player's click; the clicking tab waits
+// `skipWaiting` is posted only when THIS tab asks — the player's click, or,
+// since M6.5c2 cycle F, the door asking by itself (`useDoorAutoApply`, below);
+// the asking tab waits
 // until the new worker is in charge before it reloads, rather than reloading
 // straight after posting and racing activation — on `controllerchange` where
 // the old worker controlled it, and on the new worker's `activated` where
 // nothing did, since `skipWaiting` hands over CONTROLLED tabs and an
 // uncontrolled one is not promised a `controllerchange` (Chromium sends it one
 // too; the branch choice is what differs, PR #37 F3, E2); and an
-// update this tab did not ask for — another tab clicked, and `skipWaiting` is
+// update this tab did not ask for — another tab asked, and `skipWaiting` is
 // registration-wide — reloads nothing. The worker's half is `sw.ts`: no
 // `clients.claim()`; `activate` retains the previous generation; and the
 // fetch handler SERVES out of that generation a path this release does not
@@ -25,12 +27,32 @@
 // could: `skipWaiting()` hands every tab the old worker controlled to the new
 // one whatever this page does, so the tab that reloads nothing is in front of
 // the NEW worker, still asking for the OLD release's hashed files.
+//
+// **Cycle F adds three things on this side and none on the worker's** (R-F3,
+// R-FP14; spec §2.1; `sw.ts`, `swRoute.ts` and `swInstall.ts` are untouched).
+// An open page asks the registration again when it comes back into view and
+// every `RECHECK_MS`, so a release reaches a tab that stays open. The DOOR
+// applies a waiting release itself, once in a page's life and never while a
+// restore or a send holds it (`useDoorAutoApply`, `setApplyBusy`); the lobby
+// and a game keep the one passive line (`UpdateLine.tsx`), whose click is the
+// only switch there. And a tab handed to the new worker by ANOTHER tab's
+// apply — a game open beside the door — is `staleTab`: it reloads nothing,
+// plays on out of the retained generation, and draws the same line, whose
+// click is a plain reload. Without that state its line would vanish with the
+// waiting worker, and nothing would tell the player the tab is behind.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 /** Where the generator writes the worker, and the one path `assets.rs` answers
  *  `Cache-Control: no-store`. */
 export const SW_URL = "/sw.js";
+
+/** How often an open page asks whether a new release is out (M6.5c2 cycle F,
+ *  R-F3; spec §2.1): fifteen minutes, the owner's "15 minute is good". The
+ *  page also asks each time it comes back into view. Each ask is one fetch of
+ *  `/sw.js`, a static asset the Worker serves free (Workers pricing, footnote
+ *  3), and the browser's own check on every navigation is unchanged. */
+export const RECHECK_MS = 15 * 60 * 1000;
 
 /** What the door reports about the release.
  *
@@ -47,9 +69,17 @@ export interface ReadinessStatus {
   readonly reason: string | null;
   /** A new release is installed and waiting behind the running one. */
   readonly updateWaiting: boolean;
+  /** Another tab's apply handed THIS tab to the new worker (M6.5c2 cycle F,
+   *  R-FP14): it heard a `controllerchange` it did not ask for, so it runs the
+   *  old bundle in front of the new release, with nothing waiting any more.
+   *  It says so with the same line as `updateWaiting`, and its click is a
+   *  plain `reload` — there is nothing left to take. */
+  readonly staleTab: boolean;
   /** Take it: post `skipWaiting`, and reload THIS tab once the new worker is in
    *  charge — whether or not the old one controlled it. */
   readonly applyUpdate: () => void;
+  /** Reload this tab: the stale line's click. */
+  readonly reload: () => void;
   /** Try the install again after a failure. */
   readonly retry: () => void;
 }
@@ -185,6 +215,7 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
   const [readiness, setReadiness] = useState<Readiness>("none");
   const [reason, setReason] = useState<string | null>(null);
   const [updateWaiting, setUpdateWaiting] = useState(false);
+  const [staleTab, setStaleTab] = useState(false);
 
   const hostRef = useRef(host);
   const registration = useRef<RegistrationLike | null>(null);
@@ -247,6 +278,14 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
         // controlled — and in no tab it did not, which is why an uncontrolled
         // tab that clicked listens for `activated` instead.
         if (live && asked.current === "controllerchange") swHost.reload();
+        // **And a tab that asked for NOTHING is now stale** (M6.5c2 cycle F,
+        // R-FP14): another tab's apply — the door's own, since cycle F — handed
+        // it to the new worker while it runs the old bundle, and with the
+        // waiting worker gone `updateWaiting` no longer says so. It keeps
+        // playing out of the retained generation and draws the line; nothing
+        // reloads it but its own click. An uncontrolled tab that clicked
+        // (`"activated"`) is waiting for its own reload, and is not stale.
+        if (live && asked.current === null) setStaleTab(true);
       }),
     );
 
@@ -275,6 +314,31 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       undo.push(() => worker.removeEventListener("statechange", onState));
     };
     lent.current = { adopt: adoptRegistration, settle, reloadWhenActivated };
+
+    // **The re-check** (M6.5c2 cycle F, R-F3; spec §2.1): the registration is
+    // asked again when the page comes back into view and every `RECHECK_MS`
+    // while it is open, so a release — a reworded blurb is one — reaches a tab
+    // that stays open all afternoon. Wired ONCE here and not in
+    // `adoptRegistration`, which a retry runs a second time: each ask reads
+    // whichever registration is stored now, and there is none to ask before
+    // the first `register()` resolves. A new worker it finds arrives by
+    // `updatefound`, like any other. **A refused ask changes nothing**:
+    // offline, or a registration the platform no longer takes, says nothing
+    // about the release this page runs, so the door keeps what it said and no
+    // rejection escapes. The page's visibility is read off `document` itself,
+    // which jsdom has — the seam above exists for what it lacks.
+    const recheck = () => {
+      const current = registration.current;
+      if (!live || !current) return;
+      current.update().then(undefined, () => undefined);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") recheck();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    undo.push(() => document.removeEventListener("visibilitychange", onVisibility));
+    const timer = setInterval(recheck, RECHECK_MS);
+    undo.push(() => clearInterval(timer));
 
     setReadiness("installing");
     void swHost
@@ -376,5 +440,76 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       .catch(said);
   }, []);
 
-  return { readiness, reason, updateWaiting, applyUpdate, retry };
+  const reload = useCallback(() => hostRef.current.reload(), []);
+
+  return { readiness, reason, updateWaiting, staleTab, applyUpdate, reload, retry };
+}
+
+// ---- the door applies a ready release itself (M6.5c2 cycle F) -------------
+
+/** Whether this page has applied a release by itself — the MODULE's, so the
+ *  rule is once per page life and not once per mount: a memory held in the
+ *  hook would start again with any remount of the component that calls it. */
+let autoApplied = false;
+/** How many restores and sends are in flight. A count behind a boolean
+ *  setter, so two at once are two holds and the first to finish does not
+ *  release the other's. */
+let busyHolds = 0;
+/** Every mounted `useDoorAutoApply`'s wake, so a released hold is acted on at
+ *  once rather than at the next render or a poll. */
+const busyWakes = new Set<() => void>();
+
+/**
+ * Hold or release the door's own apply (M6.5c2 cycle F, R-FP14; spec §2.1).
+ *
+ * `true` when a restore or a send starts, `false` in its `finally`: a reload
+ * in the middle of one would lose its report. Holds count, so every `true`
+ * is paired with its own `false`.
+ */
+export function setApplyBusy(busy: boolean): void {
+  busyHolds = busy ? busyHolds + 1 : Math.max(0, busyHolds - 1);
+  for (const wake of [...busyWakes]) wake();
+}
+
+/** Whether a restore or a send is in flight. */
+export function applyBusy(): boolean {
+  return busyHolds > 0;
+}
+
+/**
+ * **The door applies a ready release itself** (M6.5c2 cycle F, R-F3; spec
+ * §2.1): no click, because the door is the screen between games and reloading
+ * it costs nobody a move. It calls `applyUpdate` — the click's own path, so
+ * the two "it has taken charge" events and the one-tab rule are the click's —
+ *
+ * - only while `isDoor`: the lobby and a game keep the passive line, and the
+ *   click is the only switch there;
+ * - only with `updateWaiting`, which needs a waiting worker AND a running one
+ *   (`readinessOf`), so never on a first install — and never for a tab that is
+ *   merely `staleTab`, which has nothing left to take;
+ * - at most once in the page's life;
+ * - never while `applyBusy()`, and at once when the last hold is released.
+ */
+export function useDoorAutoApply(isDoor: boolean, status: ReadinessStatus): void {
+  const [woken, wake] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    busyWakes.add(wake);
+    return () => {
+      busyWakes.delete(wake);
+    };
+  }, []);
+  const { updateWaiting, applyUpdate } = status;
+  useEffect(() => {
+    if (!isDoor || !updateWaiting || autoApplied || applyBusy()) return;
+    autoApplied = true;
+    applyUpdate();
+  }, [isDoor, updateWaiting, applyUpdate, woken]);
+}
+
+/** A fresh page life for the cells: the once-flag cleared and every hold
+ *  released. Both are the module's, so a cell that set either would leak it
+ *  into the next. */
+export function resetDoorAutoApplyForTests(): void {
+  autoApplied = false;
+  busyHolds = 0;
 }

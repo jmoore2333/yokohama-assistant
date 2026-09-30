@@ -38,6 +38,14 @@
 // precache fetches (measured before either cell was written): the refusal is
 // one request, and every other byte is the real server's.
 //
+// **Cycle F's cell is the door taking a release by itself** (M6.5c2 cycle F,
+// R-F3, Review Focus 1; spec §2.1): a plain reload of the door lands release
+// 2 with no click, and a game open in a second tab of the same context keeps
+// playing with the line until its own click reloads it into the same game.
+// Since the door applies by itself, cell 3 and the uncontrolled-tab cell take
+// their offer OFF the door (on a local game), and cell 7's door tab takes its
+// update by itself rather than by a click.
+//
 // **Cells 3 and 7 MUTATE `web/dist` in place**, put it back in a `finally`, and
 // CHECK the restoration there too — the files' own bytes and the restored
 // worker's cache name, read back from disk. `dist` is what the walk's server
@@ -471,15 +479,25 @@ test("the update: a second release waits, nothing switches until the click, and 
     expect(await controlled(page), "a player's open tab is served by the worker").toBe(true);
     expect(await markOnScreen(page), "release 1 is the build's own manifest").toBeNull();
 
+    // **Off the door, since M6.5c2 cycle F** (R-F3): the DOOR takes a waiting
+    // release by itself now, so "nothing switches until the click" is a claim
+    // about every OTHER screen — and a game is the one it matters on. The game
+    // is started in this same document (the door's New game is a hash
+    // navigation), so the page is still the controlled one the reload made.
+    // The door's own apply is the next cell's.
+    await startGame(page, { local: true, signedOut: true });
+    expect(await controlled(page), "the game is played in the controlled tab").toBe(true);
+
     // ---- release 2 -------------------------------------------------------
     const two = shipRelease(2);
     expect(two, "a changed file is a different release").not.toBe(one);
     await checkForUpdate(page);
     await expect(page.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
 
-    // **Nothing has switched.** The offer is on screen and the controlling
-    // worker is still release 1's, so the file this page reads is still the one
-    // it cached — which is the claim spec §2.3 makes about an open tab.
+    // **Nothing has switched.** The offer is on screen — in the game's banner —
+    // and the controlling worker is still release 1's, so the file this page
+    // reads is still the one it cached — which is the claim spec §2.3 makes
+    // about an open tab, and cycle F's about every screen but the door.
     expect(
       await markOnScreen(page),
       "the running page still reads its OWN release while the new one waits",
@@ -631,6 +649,152 @@ test("the update: a second release waits, nothing switches until the click, and 
   if (failure) throw failure;
 });
 
+test("the door takes a release by itself: a plain reload lands it with no click, and a game open in a second tab keeps playing with the line until its own click", async ({
+  page: door,
+  context,
+}) => {
+  // **M6.5c2 cycle F, R-F3 and Review Focus 1** (spec §2.1). Two claims, one
+  // browser, two tabs of one context — which is one registration, so one
+  // `skipWaiting` reaches both.
+  //
+  // **The door takes the release by itself.** A returning visitor's door is
+  // served release 1 by release 1's worker while release 2 installs behind it;
+  // the navigation's own update check finds release 2, and the door applies it
+  // once it is whole — no click — reloading onto release 2 with release 1's
+  // generation retained. The navigation here is a PLAIN reload, so the ask is
+  // the browser's own, not the cell's.
+  //
+  // **A game open in the second tab keeps playing.** The door's apply hands
+  // every tab release 1's worker controlled to release 2's, the game tab
+  // included, and that tab reloads nothing: it plays on from the bundle it
+  // has, and says so with the line — its `updateWaiting` is gone with the
+  // waiting worker, and `staleTab` is what keeps the line up. Its click reloads
+  // it into the SAME game under release 2, at the move it was on.
+  const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
+  const firstName = cacheNameOf(was.worker.toString("utf8"));
+  const watchDoor = watchForFaults(door);
+  let failure: unknown = null;
+  try {
+    await door.goto("/");
+    const one = await installed(door);
+    expect(one, "the release on disk is the release in the cache").toBe(firstName);
+    // The reload puts the door in front of release 1's worker (cell 3 says why
+    // it has to be controlled before an update can wait).
+    await door.reload();
+    expect(await controlled(door), "the door is served by release 1's worker").toBe(true);
+
+    // ---- the game tab, at release 1 ----------------------------------------
+    const tab = await context.newPage();
+    const watchTab = watchForFaults(tab);
+    await tab.goto("/");
+    expect(await controlled(tab), "the game tab loads in front of release 1's worker").toBe(true);
+    const game = await startGame(tab, { local: true, signedOut: true });
+    const pick = rng(0x5354_414c); // "STAL"
+    await playSome(tab, game, pick, 6);
+    await playUntilAnswerable(tab, game, pick);
+    const before = await storedEvents(tab, game.id);
+    expect(before, "the game tab holds a played game").toBeGreaterThan(0);
+    // A property only THIS document carries: a reload of the tab would lose it.
+    await tab.evaluate(() => {
+      (window as unknown as { __still?: boolean }).__still = true;
+    });
+
+    // ---- release 2, and a PLAIN reload of the door ------------------------
+    const two = shipRelease(2);
+    expect(two, "a changed file is a different release").not.toBe(one);
+    await door.reload();
+    // The reload above is served by release 1's worker, and its navigation's
+    // update check starts release 2's install. The wait for the door's OWN
+    // reload is armed first; the document the plain reload loaded carries a
+    // mark, which that reload replaces.
+    const selfReload = door.waitForEvent("load", { timeout: INSTALL_WAIT_MS });
+    await door.evaluate(() => {
+      (window as unknown as { __plain?: boolean }).__plain = true;
+    });
+    await selfReload;
+    expect(
+      await door.evaluate(() => (window as unknown as { __plain?: boolean }).__plain ?? null),
+      "the door reloaded ITSELF: the plain reload's document is gone",
+    ).toBeNull();
+    await expect(door.getByText("Ready to play offline")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    expect(await markOnScreen(door), "the door is served release 2, with no click").toBe(2);
+    await expect(door.getByText("A new version is ready.")).toHaveCount(0);
+    await expect
+      .poll(() => releaseCaches(door), { timeout: 30_000 })
+      .toEqual([one, two].sort());
+
+    // ---- the game tab: handed over, not reloaded, and saying so ------------
+    //
+    // Handed over first, read off the platform: a fetch through its controller
+    // answers release 2's manifest.
+    await expect
+      .poll(() => markOnScreen(tab), { timeout: 30_000 })
+      .toBe(2);
+    expect(
+      await tab.evaluate(() => (window as unknown as { __still?: boolean }).__still === true),
+      "the game tab was NOT reloaded",
+    ).toBe(true);
+    // **The line stays** — which is `staleTab`'s whole job: the waiting worker
+    // is gone, so `updateWaiting` alone would have taken it down. Read again
+    // after the moves below, when every event the handover sent has landed.
+    await expect(
+      tab.locator("header.banner").getByText("A new version is ready."),
+      "the game tab's banner carries the line",
+    ).toBeVisible({ timeout: 30_000 });
+    // It keeps playing on the bundle it has.
+    const played = await playUntilCommitted(tab, game, pick, before);
+    expect(played, "a move committed after the handover").toBeGreaterThan(before);
+    await playUntilAnswerable(tab, game, pick);
+    const left = await storedEvents(tab, game.id);
+    const chain = await chainOf(tab);
+    await expect(tab.locator("header.banner").getByText("A new version is ready.")).toBeVisible();
+
+    // Its click reloads it — into the SAME game, at the same move, under
+    // release 2.
+    await Promise.all([
+      tab.waitForEvent("load"),
+      tab.locator("header.banner").getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    expect(tab.url(), "the same game's address").toMatch(new RegExp(`#/t/${game.id}$`));
+    await expect(tab.locator(".decision .chain").first()).toBeVisible({ timeout: 30_000 });
+    expect(await chainOf(tab), "the reloaded game is at the move it was left on").toBe(chain);
+    expect(await storedEvents(tab, game.id), "and nothing committed was lost").toBe(left);
+    expect(await markOnScreen(tab), "under release 2").toBe(2);
+    expect(
+      await tab.evaluate(() => (window as unknown as { __still?: boolean }).__still ?? null),
+      "a new document",
+    ).toBeNull();
+    await expect(tab.getByText("A new version is ready.")).toHaveCount(0);
+    const after = await playUntilCommitted(tab, game, pick, left);
+    expect(after, "and the game goes on under release 2").toBeGreaterThan(left);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `DOOR APPLY: ${one} -> ${two} with no click; the game tab ${game.id} was handed over at ` +
+        `event ${before}, played on to ${left} before its click, and to ${after} after it`,
+    );
+    expect(watchDoor.failures).toEqual([]);
+    expect(watchTab.failures).toEqual([]);
+  } catch (e) {
+    failure = e;
+  } finally {
+    // Cell 3's restoration, and checked in the same place for the same reason.
+    fs.writeFileSync(MARKED, was.marked);
+    fs.writeFileSync(SW, was.worker);
+    const back = cacheNameOf(fs.readFileSync(SW, "utf8"));
+    const same = fs.readFileSync(MARKED).equals(was.marked);
+    if (back !== firstName || !same) {
+      throw new Error(
+        `dist was NOT restored: sw.js names ${back} (expected ${firstName}), ` +
+          `manifest.webmanifest ${same ? "is" : "is NOT"} its original bytes. ` +
+          `Rebuild with \`npm run build:client\` before trusting any later spec.` +
+          (failure ? ` The cell itself had already failed: ${String(failure)}` : ""),
+      );
+    }
+  }
+  if (failure) throw failure;
+});
+
 test("the update offered to a tab NO worker controls: its click reloads it once the new worker has activated, and the tab beside it is not reloaded", async ({
   page: u,
   context,
@@ -666,9 +830,16 @@ test("the update offered to a tab NO worker controls: its click reloads it once 
     const one = await installed(u);
     expect(one, "the release on disk is the release in the cache").toBe(firstName);
     expect(await controlled(u), "the install visit is served by no worker (nothing claims)").toBe(false);
+    // **Both tabs OFF the door, since M6.5c2 cycle F** (R-F3): a door takes a
+    // waiting release by itself, so a door tab would never wait for the click
+    // this cell is about, and a bystander on the door would take it too. U
+    // starts a game in its own document — a hash navigation — so it is still
+    // the uncontrolled install visit, and its line is the game banner's.
+    await startGame(u, { local: true, signedOut: true });
+    expect(await controlled(u), "U's game is still in the uncontrolled install visit").toBe(false);
 
     const c = await context.newPage();
-    await c.goto("/");
+    await c.goto("/#/new/local");
     expect(await controlled(c), "C loads in front of release 1's worker, as any returning tab does").toBe(true);
     // A property only THIS document carries: a reload of C would lose it.
     await c.evaluate(() => {
@@ -832,19 +1003,19 @@ test("the tab that did not click: handed to release 2's worker still running rel
     expect((await fetch(`${BASE_URL}${newPath}`)).status, "and release 2's is on it").toBe(200);
 
     // ---- A takes the update ------------------------------------------------
+    //
+    // **By itself, since M6.5c2 cycle F** (R-F3): A is on the DOOR, and the
+    // door applies a waiting release with no click — which is the same
+    // `applyUpdate` the click took, so everything below about B is unchanged.
+    // The wait is A's own LOAD, armed before the ask (cell 3 measured why a
+    // poll is the wrong wait); the ask resolves as release 2's install starts,
+    // long before the reload that install ends in.
     /** Every local host A starts from here on. */
     const aStarted: string[] = [];
     a.on("worker", (w) => aStarted.push(new URL(w.url()).pathname));
+    const aReloaded = a.waitForEvent("load", { timeout: INSTALL_WAIT_MS });
     await checkForUpdate(a);
-    await expect(a.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
-    expect(await releaseCaches(a), "release 2 is cached whole, beside release 1").toEqual(
-      [one, two].sort(),
-    );
-    // The LOAD event and not a poll — cell 3 measured why.
-    await Promise.all([
-      a.waitForEvent("load"),
-      a.getByRole("button", { name: "Reload to use it" }).click(),
-    ]);
+    await aReloaded;
     // **A is on release 2, read off the bundle it RUNS**: its door starts the
     // local host from the new name, which only release 2's bundle knows.
     await expect.poll(() => aStarted.includes(newPath), { timeout: 30_000 }).toBe(true);

@@ -27,7 +27,7 @@ import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { resetInstallForTests } from "./install";
 import { requestPersistence, resetPersistenceRequestForTests } from "./storage";
 import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
-import type { ReadinessStatus } from "./swRegister";
+import { applyBusy, resetDoorAutoApplyForTests, type ReadinessStatus } from "./swRegister";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
 
@@ -617,7 +617,9 @@ describe("the device foot's readiness line", () => {
     readiness: "none",
     reason: null,
     updateWaiting: false,
+    staleTab: false,
     applyUpdate: vi.fn(),
+    reload: vi.fn(),
     retry: vi.fn(),
     ...over,
   });
@@ -775,5 +777,39 @@ describe("the games waiting to reach the archive", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
     );
+  });
+
+  // **The send holds the door's own apply while it is in flight** (M6.5c2
+  // cycle F, R-FP14; spec §2.1): the door takes a waiting release by itself,
+  // and a reload in the middle of a send would lose the row's answer. Read
+  // from INSIDE the post, and after it.
+  it("holds the door's own apply while the button's send is in flight, and releases it after", async () => {
+    const during: boolean[] = [];
+    stubWorker({ pair: () => ({ record: '{"seed":1,"events":[]}', table: "{}" }) });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") {
+        during.push(applyBusy());
+        return wire.archivePost;
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    try {
+      await enqueue(LOCAL, "offline");
+      render(<OnThisDevice />);
+      const box = await waiting();
+      expect(applyBusy(), "nothing is held before the click").toBe(false);
+      await userEvent.setup().click(
+        within(box).getByRole("button", { name: `send ${LOCAL} to the archive now` }),
+      );
+      await waitFor(() => expect(during).toHaveLength(1));
+      expect(during, "held while the post was in flight").toEqual([true]);
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
+      );
+      await waitFor(() => expect(applyBusy(), "released once the send settled").toBe(false));
+    } finally {
+      resetDoorAutoApplyForTests();
+    }
   });
 });

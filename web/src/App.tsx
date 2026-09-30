@@ -21,7 +21,8 @@ import { IdentityCorner, LobbyBand } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import { projectLink } from "./buildValues";
-import { useReadiness } from "./swRegister";
+import { useDoorAutoApply, useReadiness } from "./swRegister";
+import { UpdateLine } from "./UpdateLine";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
@@ -189,6 +190,12 @@ export function App() {
   // browser walk has flagged, `useReadiness` registers nothing and answers
   // `"none"` — so this costs every existing cell one render and nothing else.
   const readiness = useReadiness();
+  // **The DOOR takes a waiting release by itself** (M6.5c2 cycle F, R-F3; spec
+  // §2.1): it is the screen between games, so a reload there costs nobody a
+  // move. Once in the page's life, never while a restore or a send holds it,
+  // and never off the door — the lobby and a game draw the line
+  // (`UpdateLine`), and the click is the only switch there.
+  useDoorAutoApply(route.kind === "door", readiness);
   // **Every 401 on this API routes here, and no screen has to remember to
   // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
   // refusal is thrown — so it reaches the door whatever the caller then does
@@ -1629,6 +1636,7 @@ export function App() {
       serverUp={serverUp}
       onReached={() => setServerUp(true)}
       onRetry={retry}
+      readiness={readiness}
     />
   );
 
@@ -2326,6 +2334,16 @@ export function App() {
             onError={setError}
           />
         ) : null}
+        {/* **A new release, offered and never taken by itself** (M6.5c2 cycle
+            F, R-F3, R-FP9): a game is where a reload would cost a move, so the
+            line is passive here and its click is the only switch. It is also
+            what a game tab shows when ANOTHER tab's apply handed it to the new
+            worker (`staleTab`): the game plays on out of the retained
+            generation, and the click reloads it into the same game. Last in
+            the banner, and drawn only while there is something to say, so the
+            one-row banner the gates measure is unchanged the rest of the
+            time. */}
+        <UpdateLine status={readiness} />
       </header>
 
       {/* **What the poll can say for itself, and `live` says nothing** — on the

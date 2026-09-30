@@ -9,12 +9,18 @@
 // because those two are where the policy actually lives.
 
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyBusy,
   readinessOf,
+  RECHECK_MS,
+  resetDoorAutoApplyForTests,
   serviceWorkerWanted,
+  setApplyBusy,
   SW_URL,
+  useDoorAutoApply,
   useReadiness,
+  type ReadinessStatus,
   type RegistrationLike,
   type SwHost,
   type WorkerLike,
@@ -767,5 +773,264 @@ describe("a retry after the registration itself was refused", () => {
     expect(waiting.listening).toBe(0);
     applyUpdate();
     expect(waiting.posted).toEqual([]);
+  });
+});
+
+// ---- the re-check (F, R-F3; spec §2.1) ------------------------------------
+//
+// **An open page asks again whether a release is out**: when it comes back
+// into view, and every fifteen minutes while it is open. Each ask is one fetch
+// of `/sw.js` — a static asset, served free — so a wording change reaches a
+// tab that stays open all afternoon without a single Worker invocation. The
+// browser's own check on every navigation stays; these are the two it does
+// not make.
+
+/** Say the page's visibility changed, the way a browser does: the state
+ *  first, then the event. jsdom HAS `document.visibilityState` (it reads
+ *  "visible"), so the hook reads the real document and a cell only moves it. */
+function turnPage(state: "visible" | "hidden"): void {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+describe("the re-check", () => {
+  afterEach(() => {
+    // Back to jsdom's own getter on the prototype.
+    delete (document as { visibilityState?: unknown }).visibilityState;
+    vi.useRealTimers();
+  });
+
+  /** A returning player's page: release 1 running, nothing waiting. */
+  const running = () => {
+    const registration = new FakeRegistration();
+    registration.active = new FakeWorker("activated");
+    return registration;
+  };
+
+  it("asks for the worker again when the page comes back into view, and not when it goes out of it", async () => {
+    const registration = running();
+    let resolve: (registration: RegistrationLike) => void = () => undefined;
+    const { host } = fakeHost(registration);
+    host.register = vi.fn<SwHost["register"]>(
+      () =>
+        new Promise<RegistrationLike>((settle) => {
+          resolve = settle;
+        }),
+    );
+    renderHook(() => useReadiness(host));
+    // Before the registration has resolved there is nothing to ask.
+    act(() => turnPage("visible"));
+    expect(registration.updates, "no registration yet, so no ask").toBe(0);
+    await act(async () => {
+      resolve(registration);
+    });
+
+    act(() => turnPage("hidden"));
+    expect(registration.updates, "going out of view asks nothing").toBe(0);
+    act(() => turnPage("visible"));
+    expect(registration.updates, "coming back into view asks once").toBe(1);
+  });
+
+  it("asks every fifteen minutes while the page is open, and never after it has gone", async () => {
+    vi.useFakeTimers();
+    const registration = running();
+    const { host } = fakeHost(registration);
+    const { unmount } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(RECHECK_MS).toBe(15 * 60 * 1000);
+
+    act(() => vi.advanceTimersByTime(RECHECK_MS - 1));
+    expect(registration.updates, "not before the interval").toBe(0);
+    act(() => vi.advanceTimersByTime(1));
+    expect(registration.updates, "at the interval").toBe(1);
+    act(() => vi.advanceTimersByTime(RECHECK_MS));
+    expect(registration.updates, "and at twice it").toBe(2);
+
+    unmount();
+    act(() => vi.advanceTimersByTime(3 * RECHECK_MS));
+    expect(registration.updates, "a page that has gone asks nothing").toBe(2);
+  });
+
+  // **A re-check that fails says nothing about the release this page runs.**
+  // Offline, a server that did not answer, a registration the platform no
+  // longer accepts: the door that read "Ready to play offline" still does, and
+  // no rejection escapes to the page.
+  it("leaves the door as it was, and throws nothing, when the ask is refused", async () => {
+    const registration = running();
+    let asked = 0;
+    registration.update = async () => {
+      asked += 1;
+      throw new Error("NetworkError: the script could not be fetched");
+    };
+    const { host } = fakeHost(registration);
+    const { result } = renderHook(() => useReadiness(host));
+    await act(async () => undefined);
+    expect(result.current.readiness).toBe("ready");
+
+    const escaped: unknown[] = [];
+    const onEscape = (reason: unknown) => escaped.push(reason);
+    process.on("unhandledRejection", onEscape);
+    try {
+      act(() => turnPage("visible"));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    } finally {
+      process.off("unhandledRejection", onEscape);
+    }
+    expect(asked, "the premise: the ask was made, and refused").toBe(1);
+    expect(escaped, "no rejection escaped").toEqual([]);
+    expect(result.current.readiness).toBe("ready");
+    expect(result.current.reason).toBeNull();
+    expect(result.current.updateWaiting).toBe(false);
+  });
+});
+
+// ---- the door applies a ready release itself (F, R-F3, R-FP14) -------------
+//
+// **The DOOR takes a waiting release without a click; nothing else does.** The
+// door is the screen between games, so reloading it costs nobody a move; the
+// lobby and a game keep the one passive line, and the click is the only switch
+// there. The door calls `applyUpdate` — the click's own path — at most once in
+// a page's life, never on a first install (the offer needs a waiting worker
+// AND a running one), and never while a restore or a send is in flight.
+
+/** A status the hook would report, with the two controls as spies. */
+const statusOf = (over: Partial<ReadinessStatus> = {}): ReadinessStatus => ({
+  readiness: "ready",
+  reason: null,
+  updateWaiting: true,
+  staleTab: false,
+  applyUpdate: vi.fn(),
+  reload: vi.fn(),
+  retry: vi.fn(),
+  ...over,
+});
+
+describe("the door's own apply", () => {
+  // Both are the MODULE's — one page, one life — so each cell starts a fresh one.
+  beforeEach(() => resetDoorAutoApplyForTests());
+  afterEach(() => resetDoorAutoApplyForTests());
+
+  const mount = (isDoor: boolean, status: ReadinessStatus) =>
+    renderHook((props: { isDoor: boolean; status: ReadinessStatus }) => useDoorAutoApply(props.isDoor, props.status), {
+      initialProps: { isDoor, status },
+    });
+
+  it("applies a waiting release once, and not again on a re-render or a remount", () => {
+    const status = statusOf();
+    const { rerender, unmount } = mount(true, status);
+    expect(status.applyUpdate).toHaveBeenCalledTimes(1);
+    rerender({ isDoor: true, status: { ...status } });
+    expect(status.applyUpdate, "a re-render does not apply again").toHaveBeenCalledTimes(1);
+    // **Once per PAGE life, not per mount**: a memory held in the hook would
+    // start again with a remount of the component that calls it, and apply
+    // again.
+    unmount();
+    mount(true, status);
+    expect(status.applyUpdate, "a remount does not apply again").toHaveBeenCalledTimes(1);
+  });
+
+  it("never applies off the door, and applies when the page arrives at it", () => {
+    const status = statusOf();
+    const { rerender } = mount(false, status);
+    expect(status.applyUpdate, "a lobby or a game applies nothing").not.toHaveBeenCalled();
+    rerender({ isDoor: false, status: { ...status } });
+    expect(status.applyUpdate).not.toHaveBeenCalled();
+    rerender({ isDoor: true, status });
+    expect(status.applyUpdate, "the door, reached with a release waiting").toHaveBeenCalledTimes(1);
+  });
+
+  it("applies nothing when no release is waiting", () => {
+    const status = statusOf({ updateWaiting: false });
+    const { rerender } = mount(true, status);
+    rerender({ isDoor: true, status: { ...status } });
+    expect(status.applyUpdate).not.toHaveBeenCalled();
+    // A tab another tab's apply handed over is STALE, not waiting: its line is
+    // a plain reload, and the door does not take it by itself.
+    mount(true, statusOf({ updateWaiting: false, staleTab: true }));
+    expect(status.applyUpdate).not.toHaveBeenCalled();
+  });
+
+  // **A restore or a send in flight holds the apply** (R-FP14; spec §2.1, the
+  // review's F-28): a reload in the middle of one would lose its report. The
+  // hold is released by the control's own `finally`, and the apply follows at
+  // once, with no poll. Two holds at once are two: the first to finish does
+  // not release the other's.
+  it("waits while a restore or a send is in flight, and applies when the last one finishes", () => {
+    const status = statusOf();
+    act(() => setApplyBusy(true));
+    act(() => setApplyBusy(true));
+    expect(applyBusy()).toBe(true);
+    mount(true, status);
+    expect(status.applyUpdate, "held while busy").not.toHaveBeenCalled();
+    act(() => setApplyBusy(false));
+    expect(applyBusy(), "one of two holds released").toBe(true);
+    expect(status.applyUpdate, "still held by the other").not.toHaveBeenCalled();
+    act(() => setApplyBusy(false));
+    expect(applyBusy()).toBe(false);
+    expect(status.applyUpdate, "applied as the last hold is released").toHaveBeenCalledTimes(1);
+  });
+});
+
+// **Two tabs of one browser, one registration** (Review Focus 1; R-FP14; spec
+// §2.1, the review's F-7). `skipWaiting` is registration-wide, so the door's
+// apply hands EVERY tab the old worker controlled to the new one — a game tab
+// included, which goes on running the old bundle out of the retained
+// generation. That tab's `updateWaiting` falls to false with the waiting
+// worker gone, so without a state of its own it would lose its line and have
+// no way to learn it is behind. It hears a `controllerchange` it did not ask
+// for: it reloads NOTHING, and draws the same line, whose click reloads it.
+describe("two tabs of one browser when the door applies", () => {
+  beforeEach(() => resetDoorAutoApplyForTests());
+  afterEach(() => resetDoorAutoApplyForTests());
+
+  it("reloads the door once, and leaves the game tab playing with its line until its own click", async () => {
+    const registration = new FakeRegistration();
+    const next = new FakeWorker("installed");
+    registration.active = new FakeWorker("activated");
+    registration.waiting = next;
+    const door = fakeHost(registration);
+    const game = fakeHost(registration);
+    const doorTab = renderHook(() => {
+      const status = useReadiness(door.host);
+      useDoorAutoApply(true, status);
+      return status;
+    });
+    const gameTab = renderHook(() => {
+      const status = useReadiness(game.host);
+      useDoorAutoApply(false, status);
+      return status;
+    });
+    await act(async () => undefined);
+
+    // The door took it, with no click, once; the game tab asked for nothing.
+    expect(next.posted, "the door posted skip-waiting by itself, once").toEqual([{ yokohama: "skip-waiting" }]);
+    expect(gameTab.result.current.updateWaiting, "the game tab saw the same release waiting").toBe(true);
+    expect(gameTab.result.current.staleTab).toBe(false);
+
+    // The platform: the new worker activates, and EVERY controlled tab is
+    // handed to it — both tabs hear `controllerchange`.
+    act(() => {
+      registration.waiting = null;
+      registration.active = next;
+      next.become("activating");
+    });
+    act(() => {
+      door.controllerChange();
+      game.controllerChange();
+    });
+    act(() => next.become("activated"));
+
+    expect(door.host.reloads.length, "the door reloads itself, once").toBe(1);
+    expect(game.host.reloads, "the game tab reloads nothing by itself").toEqual([]);
+    expect(gameTab.result.current.updateWaiting, "nothing waits any more").toBe(false);
+    expect(gameTab.result.current.staleTab, "so the game tab is stale, and says so").toBe(true);
+    expect(doorTab.result.current.staleTab, "the tab that asked is not stale").toBe(false);
+
+    // Its click reloads it, and nothing else does.
+    act(() => gameTab.result.current.reload());
+    expect(game.host.reloads.length).toBe(1);
+    expect(door.host.reloads.length, "and the door is not reloaded again").toBe(1);
   });
 });

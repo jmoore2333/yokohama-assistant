@@ -673,6 +673,53 @@ describe("the deploy guard", () => {
       naming(/^wrangler\.extra\.jsonc's assets\.not_found_handling must be "none"/, /^wrangler\.extra\.jsonc's durable_objects differs from wrangler\.jsonc's/),
     );
   });
+  // Check 10 (M6.5c2 cycle F, R-F3, R-FP13; spec §2.1): with Workers Cache on,
+  // "requests served from the Worker's cache are billed at the same
+  // per-request rate as requests that invoke the Worker. This includes
+  // requests to static assets" (Workers pricing, footnote 4) — the door would
+  // stop being free. The block is an opt-in, so no block is off; a block is
+  // refused unless its `enabled` is `false`, wherever a configuration can
+  // carry one: the top level, every environment, and EVERY named export, an
+  // environment's included. Read as values, so a comment is prose. Mutants:
+  // the check missing; the top level alone read; the exports walk stopping at
+  // the first name; `enabled: false` refused.
+  it("refuses Workers Cache at the top level, in any environment and under any export, and passes it off", () => {
+    const why =
+      " — with it on, static-asset requests are billed at the Worker request rate (Workers pricing, footnote 4); remove the block";
+    const refused = (where) => `wrangler.jsonc enables Workers Cache (${where}cache.enabled is not false)${why}`;
+    const at = (block) => ({ "wrangler.jsonc": PRODUCTION.replace('"main"', `${block},\n  "main"`) });
+
+    expect(deployGuard(worker(at('"cache": { "enabled": true }')))).toEqual([refused("")]);
+    expect(deployGuard(worker(at('"cache": {}'))), "a block with no enabled is not off").toEqual([refused("")]);
+    expect(deployGuard(worker(at('"env": { "staging": { "cache": { "enabled": true } } }')))).toEqual([
+      refused("env.staging."),
+    ]);
+    expect(
+      deployGuard(
+        worker(at('"exports": { "default": { "cache": { "enabled": false } }, "Table": { "cache": { "enabled": true } } }')),
+      ),
+      "any export, not only the first",
+    ).toEqual([refused("exports.Table.")]);
+    expect(
+      deployGuard(worker(at('"env": { "staging": { "exports": { "House": { "cache": { "enabled": "yes" } } } } }'))),
+    ).toEqual([refused("env.staging.exports.House.")]);
+
+    // Off, in every place: passes. And no block at all is the committed shape.
+    expect(deployGuard(worker(at('"cache": { "enabled": false }')))).toEqual([]);
+    expect(
+      deployGuard(
+        worker(at('"env": { "staging": { "cache": { "enabled": false } } }, "exports": { "Table": { "cache": { "enabled": false } } }')),
+      ),
+    ).toEqual([]);
+    const commented = PRODUCTION.replace("// production", '// production — never "cache": { "enabled": true }');
+    expect(deployGuard(worker({ "wrangler.jsonc": commented })), "a comment is prose").toEqual([]);
+
+    // The file the deploy ships is the one judged.
+    const open = OPEN.replace('"main"', '"cache": { "enabled": true },\n  "main"');
+    expect(deployGuard(worker({ "wrangler.open.jsonc": open }), undefined, "wrangler.open.jsonc")).toEqual(
+      naming(/^wrangler\.open\.jsonc enables Workers Cache \(cache\.enabled is not false\)/),
+    );
+  });
   // The CLI takes exactly `--config wrangler<name>.jsonc`; anything else is
   // refused, so the guard cannot judge one file while a deploy ships another.
   it("reads --config from the command line and refuses any other argument", () => {

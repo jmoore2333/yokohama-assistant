@@ -2218,6 +2218,12 @@ a.primary-link {
 .lobby-actions .link-word {
   margin-left: auto; font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; color: var(--warn);
 }
+/* **The update line off the door** (M6.5c2 cycle F, R-FP9): one quiet sentence
+ * in the lobby's actions and at the end of a game's banner, drawn only while a
+ * release waits or the tab is behind. A paragraph, so it drops its margins to
+ * sit in either flex row; the door's copy sits in the device foot, whose own
+ * rules above already place it. */
+.lobby-actions .update-line, .banner .update-line { margin: 0; font-size: 12px; }
 /* A state is a card, centred where the lists would be. Its title is an `h3`
    (the band's last crumb is the page's `h2`), so it carries the card title's
    look here: the shared block styles `.raised-card h2` only. */
@@ -2675,7 +2681,7 @@ details.fold #seed { max-width: 23rem; }
    * the line-height these controls inherit (the body's 1.5). Without it that
    * Safari drew them with no padding at all. */
   .quiet-link, .lobby-actions .to-door, .band-corner .to-door,
-  .door-foot .linkish, .install-offer .install-dismiss, .offline-state .linkish,
+  .door-foot .linkish, .install-offer .install-dismiss, .offline-state .linkish, .update-line .linkish,
   .device-foot button.back-up-all, .device-foot .restore-field {
     display: inline-block; min-height: 44px;
     padding-block: max(0px, calc((44px - 1.5em) / 2));
@@ -2685,7 +2691,7 @@ details.fold #seed { max-width: 23rem; }
    * negative margins give the padding back, leaving a margin box one line tall,
    * so no gap opens above the line it ends — which a 44px inline box did,
    * measured at 390px. */
-  .offline-state .linkish {
+  .offline-state .linkish, .update-line .linkish {
     margin-block: min(0px, calc((1.5em - 44px) / 2));
     margin-block: min(0px, calc((1lh - 44px) / 2));
   }

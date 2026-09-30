@@ -219,7 +219,9 @@ describe("the door's readiness line", () => {
     readiness: "none",
     reason: null,
     updateWaiting: false,
+    staleTab: false,
     applyUpdate: vi.fn(),
+    reload: vi.fn(),
     retry: vi.fn(),
     ...over,
   });
@@ -282,9 +284,14 @@ describe("the door's readiness line", () => {
     expect(screen.queryByText(/play offline/i)).toBeNull();
   });
 
-  // **The switch is the CLICK and only the click** (spec §2.3): the offer is
-  // one quiet line, and nothing happens until a player presses it.
-  it("offers the update and switches only when it is pressed", async () => {
+  // **The door's LINE switches only when it is pressed** (spec §2.3): the offer
+  // is one quiet line, and this component does nothing until a player presses
+  // it. **The App takes the release by itself on the door** since M6.5c2 cycle
+  // F (R-F3; `useDoorAutoApply`, `swRegister.test.ts`'s "the door's own
+  // apply"), so what a player sees on a live door is that line for a moment
+  // and then a reload; the line stays the switch wherever the App's apply is
+  // held, and it is the only one off the door.
+  it("the door's release line switches only when it is pressed, and the App applies by itself", async () => {
     const applyUpdate = vi.fn();
     render(
       <FrontDoor multiplayer readiness={status({ readiness: "ready", updateWaiting: true, applyUpdate })} />,
