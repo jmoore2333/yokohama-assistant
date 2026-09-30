@@ -39,7 +39,8 @@ The checks, each exiting 1 with a message that names the first line that fails:
   5. every moved line that is unique and non-blank in the source appears exactly once as a whole
      line across the plan's files, new text included, so a moved line also left behind is caught;
   6. the live file with its new lines taken out is the source with the moved ranges taken out, byte
-     for byte: no other line of the live file changed.
+     for byte: no other line of the live file changed. Check 4 already proves this, given checks 2
+     and 3, so check 6 can never be the one that fails; it states the brief's words as an assertion.
 On success it prints the check line `N lines moved, byte-identical; M lines kept; I lines inserted`.
 I counts the live file's new lines, so `wc -l` before = (the live file's lines after - I) + N.
 """
@@ -54,6 +55,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LIVE = "guidingpath.md"
@@ -67,7 +69,7 @@ MAPS: dict[str, dict] = {
         "files": {
             "guidingpath.md": [
                 {"lines": [1, 17]}, {"new": 2}, {"lines": [18, 20]}, {"new": 14}, {"lines": [37, 38]},
-                {"lines": [63, 64]}, {"new": 24}, {"lines": [137, 141]}, {"new": 9}, {"lines": [142, 143]},
+                {"lines": [63, 64]}, {"new": 27}, {"lines": [137, 141]}, {"new": 9}, {"lines": [142, 143]},
                 {"lines": [232, 232]},
             ],
             "guidingpath-archive-phase3.md": [
@@ -268,7 +270,8 @@ def check(src: list[bytes], plan: dict, written: dict[str, bytes]) -> str:
                 "a moved line appears exactly once"
             )
 
-    # Check 6: the live file without its new lines is the source without its moved lines.
+    # Check 6: the live file without its new lines is the source without its moved lines. Checks 2-4
+    # already imply it, so it never fails first; it asserts the brief's words ("no other line changed").
     live_got = split_lines(written[LIVE])
     remainder = [line for k, line in enumerate(live_got) if k not in live_new]
     expected = [src[i - 1] for i in range(1, len(src) + 1) if i not in moved_lines]
@@ -379,8 +382,9 @@ def main(argv: list[str]) -> int:
 
 
 # ----------------------------------------------------------------------------------------------
-# The self-test. The two cases the brief names run the CLI itself against the tree; the rest run
-# the core on a synthetic source, so a check that passes vacuously is caught by its own case.
+# The self-test. The two cases the brief names run the CLI itself against the tree, and the
+# non-identity dry run runs it in a directory of its own; the rest run the core on a synthetic
+# source, so a check that passes vacuously is caught by its own case.
 # ----------------------------------------------------------------------------------------------
 
 SYNTH = b"".join(b"line %d\n" % i for i in range(1, 11))  # ten distinct lines
@@ -426,6 +430,36 @@ def st_overlapping_map_exits_1() -> None:
     assert code == 1, f"exit {code}: {out}"
     assert "source line 4 is placed twice" in out, out
     assert _tree_snapshot(ROOT) == before, "a refused plan wrote a file"
+
+
+def st_non_identity_dry_run_writes_nothing() -> None:
+    # The empty map is the identity, so it cannot see --dry-run ignored: this plan would change files.
+    # It runs in a directory of its own, so a broken --dry-run never reaches the tree.
+    d = pathlib.Path(tempfile.mkdtemp(prefix="guidingpath-relocate-selftest-"))
+    (d / LIVE).write_bytes(SYNTH)
+    before = _tree_snapshot(d)
+    plan = {"files": {"x-archive.md": [{"text": "# x\n"}, {"lines": [1, 3]}]}}
+    code, out = _run(["write", "--plan-json", json.dumps(plan), "--root", str(d), "--dry-run"])
+    assert code == 0, f"exit {code}: {out}"
+    assert "3 lines moved, byte-identical; 7 lines kept" in out, out
+    after = _tree_snapshot(d)
+    assert after == before, f"--dry-run wrote into {d} (left in place for a look): {sorted(after)}"
+    (d / LIVE).unlink()
+    d.rmdir()
+
+
+def st_range_past_the_end_is_a_named_refusal() -> None:
+    src = split_lines(SYNTH)
+    plan = {"files": {"a.md": [{"lines": [9, 11]}]}}
+    _expect_fail(lambda: assemble(src, plan), "range [9, 11] is not inside the source's lines 1..10")
+
+
+def st_changed_new_text_is_refused() -> None:
+    src = split_lines(SYNTH)
+    plan = _round_trip_plan()
+    files = assemble(src, plan)
+    files["arch-1.md"] = files["arch-1.md"].replace(b"mid\n", b"mud\n")
+    _expect_fail(lambda: check(src, plan, files), "arch-1.md:5: expected the plan's new line 1")
 
 
 def _round_trip_plan() -> dict:
@@ -497,6 +531,9 @@ def st_opaque_new_lines_check_like_text() -> None:
 SELF_TESTS = [
     st_empty_map_dry_run_changes_nothing,
     st_overlapping_map_exits_1,
+    st_non_identity_dry_run_writes_nothing,
+    st_range_past_the_end_is_a_named_refusal,
+    st_changed_new_text_is_refused,
     st_round_trip_counts_and_arithmetic,
     st_gap_is_refused,
     st_live_out_of_order_is_refused,
