@@ -4,7 +4,8 @@
 // Runs after `vite build` as the third stage of `npm run build:client`. It is
 // the THIN half — the arithmetic, the budget and every refusal live in
 // `src/precache.ts`, which is pure and has cells; this walks the real tree,
-// reads the real bytes, and writes `dist/sw.js`.
+// reads the real bytes, and writes `dist/sw.js` — and `dist/shell.bin`, the
+// byte copy of `dist/index.html` the worker installs the shell from.
 //
 // **The inventory is the finished `dist` tree plus the art, and Vite's manifest
 // is not consulted at all** (spec §2.3, measured): a build with
@@ -29,7 +30,7 @@
 
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,14 +82,30 @@ const {
   checkSubstitution,
   RELEASE_MODULE_CEILING,
   DEBUG_MODULE_CEILING,
+  SHELL_PATH,
+  SHELL_SOURCE,
 } = await loadPure();
+
+// **The shell, as a file the edge does not rewrite** (R-6.5c2.41; spec
+// §10.11). The zone's JavaScript Detections inject a per-request script into
+// every HTML answer, so the worker's install never fetches `index.html`: it
+// fetches this byte copy, which `buildPrecache` lists at `SHELL_PATH` with
+// `index.html`'s digest. Written BEFORE the walk and the digests, and only
+// where there is an `index.html` to copy — without one, `buildPrecache`
+// refuses the release by name.
+const shellFile = SHELL_PATH.slice(1);
+if (existsSync(join(dist, SHELL_SOURCE))) copyFileSync(join(dist, SHELL_SOURCE), join(dist, shellFile));
 
 // **`sw.js` is never precached by itself.** `vite.config.ts` sets
 // `emptyOutDir: true`, so a previous build's copy is already gone; this is the
 // belt to that brace, and it is the one entry whose presence in the list would
 // be a release that could never update — the worker would serve its own stale
 // bytes to the update check.
-const distFiles = walk(dist).filter((f) => f !== "sw.js");
+//
+// **Nor is the shell's copy walked**: `index.html` is listed AS `SHELL_PATH`,
+// so a walk that kept `shell.bin` would name it twice — and `offline.spec.ts`
+// re-runs this script over its own output, where the copy is already there.
+const distFiles = walk(dist).filter((f) => f !== "sw.js" && f !== shellFile);
 const artManifest = JSON.parse(readFileSync(join(artDir, "manifest.json"), "utf8"));
 
 /** Bytes for a URL path: `/art/...` is the server's art directory, everything

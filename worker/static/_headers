@@ -1,7 +1,9 @@
-# worker/static/_headers — the axum host's cache policy (assets.rs:106-108, art.rs:125), restated
+# worker/static/_headers — the axum host's cache policy (assets.rs's cache_control, art.rs:125), restated
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 /sw.js
+  Cache-Control: no-store
+/shell.bin
   Cache-Control: no-store
 /art/*
   Cache-Control: public, max-age=3600

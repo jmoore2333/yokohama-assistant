@@ -15,13 +15,19 @@
 // where the module exists, which is locally and in CI's `web-server` job.
 //
 // It writes into a temporary directory and removes it, so a run leaves
-// `web/dist` and the working tree exactly as it found them.
+// `web/dist` and the working tree exactly as it found them. The GENERATOR runs
+// there too (`scripts/precache.mjs` under `YOKOHAMA_WEB_DIST_DIR`), so the
+// list read back is the one a release really prints into `sw.js` — read by the
+// ONE reader the Worker's assembly and deploy readings use — and not only the
+// pure half's answer.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { readPrecacheList } from "../../worker/scripts/precache-list.mjs";
 import { buildPrecache } from "./precache";
 
 const web = process.cwd();
@@ -105,7 +111,7 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     expect(paths.some((p) => p.endsWith(".wasm"))).toBe(true);
     expect(paths.some((p) => /worker-.*\.js$/.test(p))).toBe(true);
     expect(paths.some((p) => p.endsWith(".css"))).toBe(true);
-    expect(paths).toContain("/index.html");
+    expect(paths).toContain("/shell.bin");
     expect(paths).toContain("/manifest.webmanifest");
 
     // The icons the manifest names, because a release that installed the
@@ -144,5 +150,33 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     expect(entries.length).toBeLessThan(200);
     // Nothing from the SOURCE tree: a build's output has no `.ts` in it.
     expect(paths.filter((p) => p.endsWith(".ts") || p.endsWith(".tsx"))).toEqual([]);
+
+    // **R-6.5c2.41: the list the GENERATOR prints, read back** (spec §10.11).
+    // The edge injects a per-request script into every HTML answer, so the
+    // release lists no HTML: the shell is `/shell.bin`, a byte copy of
+    // `index.html` the generator writes beside it, typed as the default arm.
+    execFileSync(process.execPath, [join(web, "scripts", "precache.mjs")], {
+      cwd: web,
+      env: { ...process.env, YOKOHAMA_WEB_DIST_DIR: built },
+      stdio: "pipe",
+    });
+    const listed = readPrecacheList(readFileSync(join(built, "sw.js"), "utf8"), "built");
+    // The generator's own walk agrees with this cell's, entry for entry.
+    expect(listed).toEqual(entries);
+    const shell = listed.find((e) => e.path === "/shell.bin");
+    expect(shell, "the built sw.js lists the shell as /shell.bin").toBeDefined();
+    expect(shell!.type).toBe("application/octet-stream");
+    expect(listed.map((e) => e.path), "the built sw.js lists no /index.html").not.toContain("/index.html");
+    expect(
+      listed.filter((e) => e.type.startsWith("text/html")).map((e) => e.path),
+      "the built sw.js lists no HTML, which the edge would rewrite",
+    ).toEqual([]);
+    const index = readFileSync(join(built, "index.html"));
+    expect(readFileSync(join(built, "shell.bin")).equals(index), "shell.bin is index.html, byte for byte").toBe(true);
+    expect(shell!.digest).toBe(createHash("sha256").update(index).digest("hex"));
+    // `/shell.bin` REPLACES `/index.html` in the list rather than joining it:
+    // every file the build emitted, the art manifest and its pictures — one
+    // entry each, and no more.
+    expect(listed.length).toBe(distFiles.length + 1 + 131);
   }, 180_000);
 });

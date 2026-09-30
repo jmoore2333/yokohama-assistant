@@ -42,9 +42,11 @@ const CACHE_NAME = "yokohama-release-driventest01";
 const META_PATH = "/__release__";
 
 /** The three-entry release this worker is built with, and the bodies a server
- *  would answer with. */
+ *  would answer with. The shell is `/shell.bin`, `index.html`'s bytes under a
+ *  non-HTML name, typed as both hosts serve it (R-6.5c2.41): the release lists
+ *  no HTML, and no `/index.html`. */
 const BODIES: Record<string, { body: string; type: string }> = {
-  "/index.html": { body: "<!doctype html><title>Yokohama</title>", type: "text/html; charset=utf-8" },
+  "/shell.bin": { body: "<!doctype html><title>Yokohama</title>", type: "application/octet-stream" },
   "/assets/app-abc.js": { body: "console.log('app')", type: "text/javascript; charset=utf-8" },
   "/art/orders/O01.webp": { body: "RIFF....WEBP", type: "image/webp" },
 };
@@ -293,7 +295,7 @@ describe("the worker's install", () => {
     expect([...cache.entries.keys()].sort()).toEqual(
       [...ENTRIES.map((e) => e.path), META_PATH].sort(),
     );
-    expect(await (await cache.match("/index.html"))!.text()).toBe(BODIES["/index.html"]!.body);
+    expect(await (await cache.match("/shell.bin"))!.text()).toBe(BODIES["/shell.bin"]!.body);
   });
 
   // **spec §6.5: "the install's all-or-nothing turned into best-effort".** One
@@ -326,7 +328,7 @@ describe("the worker's install", () => {
   it("aborts the entries still in flight when one fails", async () => {
     const worker = await boot(
       (path) =>
-        path === "/index.html"
+        path === "/shell.bin"
           ? { status: 500, body: "down", type: "text/plain" }
           : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type },
       "/art/orders/O01.webp",
@@ -439,7 +441,7 @@ describe("the worker's install: its clocks and its small decisions", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const worker = await boot(
       (path) =>
-        path === "/index.html"
+        path === "/shell.bin"
           ? { status: 500, body: "down", type: "text/plain" }
           : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type },
       "/art/orders/O01.webp",
@@ -620,7 +622,7 @@ describe("the worker's activate", () => {
     );
     const running = await worker.caches.open(CACHE_NAME);
     await running.put(META_PATH, new Response(JSON.stringify({ createdAt: 5, activatedAt: 7 })));
-    await running.put("/index.html", new Response(BODIES["/index.html"]!.body));
+    await running.put("/shell.bin", new Response(BODIES["/shell.bin"]!.body));
     await expect(worker.install()).rejects.toThrow(/answered 404/);
     expect(await worker.caches.keys(), "the generation the running worker serves is still there").toContain(
       CACHE_NAME,
@@ -671,13 +673,39 @@ describe("the worker's fetch", () => {
     expect(worker.asked.length, "and stays served from it").toBe(installed + 1);
   });
 
-  it("answers a precached path from the cache and a navigation with the shell", async () => {
+  it("answers a precached path from the cache", async () => {
     const worker = await boot();
     await worker.install();
     expect(await (await worker.request("https://yokohama.test/assets/app-abc.js", "cors"))!.text())
       .toBe(BODIES["/assets/app-abc.js"]!.body);
-    expect(await (await worker.request("https://yokohama.test/t/anything", "navigate"))!.text())
-      .toBe(BODIES["/index.html"]!.body);
+  });
+
+  // **R-6.5c2.41** (spec §10.11): the shell is precached from `/shell.bin`,
+  // which the edge does not rewrite and both hosts serve as
+  // `application/octet-stream` — so the NAVIGATION's HTML type is the
+  // worker's own, set over the cached bytes, and the network is not asked. The
+  // catcher for the navigation served with the cached entry's own type: the
+  // `/shell.bin` read below is that type, and a browser handed it would
+  // download the page rather than render it.
+  it("answers a navigation from /shell.bin's bytes with the HTML type it sets itself", async () => {
+    // The premise: the release this worker is built with lists the shell as
+    // `/shell.bin`, typed as the hosts serve it, and lists no `/index.html`.
+    expect(ENTRIES.find((e) => e.path === "/shell.bin")?.type).toBe("application/octet-stream");
+    expect(ENTRIES.map((e) => e.path)).not.toContain("/index.html");
+    const worker = await boot();
+    await worker.install();
+    const installed = worker.asked.length;
+    const page = (await worker.request("https://yokohama.test/t/anything", "navigate"))!;
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await page.text()).toBe(BODIES["/shell.bin"]!.body);
+    expect(worker.asked.length, "the navigation asked the network nothing").toBe(installed);
+    // Anti-vacuity: the cached entry keeps the SERVER's type, so the HTML type
+    // above can only be the worker's.
+    const stored = (await worker.request("https://yokohama.test/shell.bin", "cors"))!;
+    expect(stored.headers.get("content-type")).toBe("application/octet-stream");
+    expect(await stored.text()).toBe(BODIES["/shell.bin"]!.body);
+    expect(worker.asked.length, "and neither did the stored entry's read").toBe(installed);
   });
 
   // Not intercepted AT ALL: no `respondWith`, so the browser makes exactly the
@@ -696,11 +724,11 @@ describe("the worker's fetch", () => {
     // review, false sentence 7). It is asked of a path the release DOES carry,
     // so the only thing that can be answering `null` is the verb —
     // `sw.ts`'s own first line — and not the route.
-    expect(await worker.request("https://yokohama.test/index.html", "cors", "POST")).toBeNull();
+    expect(await worker.request("https://yokohama.test/shell.bin", "cors", "POST")).toBeNull();
     // Its anti-vacuity partner: the same path, as a GET, is served.
     expect(
-      await (await worker.request("https://yokohama.test/index.html", "cors"))!.text(),
-    ).toBe(BODIES["/index.html"]!.body);
+      await (await worker.request("https://yokohama.test/shell.bin", "cors"))!.text(),
+    ).toBe(BODIES["/shell.bin"]!.body);
   });
 
   // **Cloudflare's `/cdn-cgi/` is left to the browser** (PR #37, R-F6). Access's
@@ -719,7 +747,7 @@ describe("the worker's fetch", () => {
     expect(worker.asked.length, "and the worker fetched neither itself").toBe(before);
     // Anti-vacuity: a navigation one character away IS answered with the shell.
     expect(await (await worker.request("https://yokohama.test/cdn-cgiX", "navigate"))!.text()).toBe(
-      BODIES["/index.html"]!.body,
+      BODIES["/shell.bin"]!.body,
     );
   });
 
@@ -868,15 +896,23 @@ describe("the worker's fetch, for a path its own release does not list", () => {
 
   // **(e) A navigation is still THIS release's shell**, whatever an older
   // generation holds under the same name: the retained lookup is for a path
-  // this release does not list, and `/index.html` is listed.
+  // this release does not list, and `/shell.bin` is listed. The previous
+  // generation holds both shells a release has been listed under — a release
+  // before R-6.5c2.41 listed `/index.html`.
   it("answers a navigation with this release's shell, not the retained one", async () => {
-    const worker = await beside({ "/index.html": "<!doctype html><title>the previous release</title>" });
-    const shell = BODIES["/index.html"]!.body;
+    const previous = "<!doctype html><title>the previous release</title>";
+    const worker = await beside({ "/shell.bin": previous, "/index.html": previous });
+    const shell = BODIES["/shell.bin"]!.body;
     expect(await (await worker.request("https://yokohama.test/t/anything", "navigate"))!.text()).toBe(
       shell,
     );
-    expect(await (await worker.request("https://yokohama.test/index.html", "cors"))!.text()).toBe(
+    expect(await (await worker.request("https://yokohama.test/shell.bin", "cors"))!.text()).toBe(
       shell,
+    );
+    // And a non-navigation GET of `/index.html` is a path this release does not
+    // list, so it is R-F2's like any other: the retained generation's copy.
+    expect(await (await worker.request("https://yokohama.test/index.html", "cors"))!.text()).toBe(
+      previous,
     );
   });
 

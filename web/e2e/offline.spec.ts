@@ -169,7 +169,7 @@ async function installed(page: Page): Promise<string> {
   // about whichever name sorted highest.
   expect(names, "a fresh profile holds exactly one release generation").toHaveLength(1);
   const release = names[0]!;
-  expect(await cacheHas(page, release, "/index.html"), "the shell is in the cache").toBe(true);
+  expect(await cacheHas(page, release, "/shell.bin"), "the shell is in the cache").toBe(true);
   expect(
     await cacheHas(page, release, "/art/manifest.json"),
     "and so is the art, which is what makes this a whole release rather than a shell",
@@ -608,8 +608,9 @@ test("the update: a second release waits, nothing switches until the click, and 
     // gitignored (`.gitignore:50`), so it is clean whether the build was put
     // back or not. The evidence is these two reads of the files themselves.
     //
-    // `scripts/precache.mjs` writes only `dist/sw.js`, so these two files are
-    // the whole footprint of what this cell changes.
+    // `scripts/precache.mjs` writes `dist/sw.js` and `dist/shell.bin`, and the
+    // second is a byte copy of `dist/index.html`, which no cell changes — so
+    // these two files are the whole footprint of what this cell changes.
     fs.writeFileSync(MARKED, was.marked);
     fs.writeFileSync(SW, was.worker);
     const back = cacheNameOf(fs.readFileSync(SW, "utf8"));

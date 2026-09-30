@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { SHELL_PATH } from "../../web/src/precache.ts";
 import {
   answerShape,
   checkEntry,
@@ -9,7 +11,6 @@ import {
   cutAtQuery,
   cutUrlsIn,
   deployedRelease,
-  edgeInjections,
   essence,
   get,
   locationOf,
@@ -21,16 +22,17 @@ import {
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const enc = (text) => new TextEncoder().encode(text);
 
-const INDEX = "<!doctype html><html><body><div id=root></div></body></html>";
+/** The shell's bytes: `index.html`'s, listed as `/shell.bin` (R-6.5c2.41). */
+const SHELL = "<!doctype html><html><body><div id=root></div></body></html>";
 const D1 = "a".repeat(64);
 const D2 = "b".repeat(64);
 
 describe("precacheList", () => {
   // The list as `web/scripts/precache.mjs` prints it into `sw.js`.
   it("reads every entry's path, digest and type", () => {
-    const sw = `var define_PRECACHE_default = [{ path: "/index.html", digest: "${D1}", type: "text/html" }, { path: "/art/x.webp", digest: "${D2}", type: "image/webp" }];\nclients.matchAll({ type: "window" });`;
+    const sw = `var define_PRECACHE_default = [{ path: "/shell.bin", digest: "${D1}", type: "application/octet-stream" }, { path: "/art/x.webp", digest: "${D2}", type: "image/webp" }];\nclients.matchAll({ type: "window" });`;
     expect(precacheList(sw)).toEqual([
-      { path: "/index.html", digest: D1, type: "text/html" },
+      { path: "/shell.bin", digest: D1, type: "application/octet-stream" },
       { path: "/art/x.webp", digest: D2, type: "image/webp" },
     ]);
   });
@@ -38,7 +40,7 @@ describe("precacheList", () => {
   // read as a shorter list.
   it("refuses a worker with no entry, or a digest it could not pair", () => {
     expect(() => precacheList("self.addEventListener('install', () => {});")).toThrow(/no precache entries/);
-    const drifted = `[{ path: "/index.html", digest: "${D1}", type: "text/html" }, { path: "/a", digest: "${D2}", kind: "x" }]`;
+    const drifted = `[{ path: "/shell.bin", digest: "${D1}", type: "application/octet-stream" }, { path: "/a", digest: "${D2}", kind: "x" }]`;
     expect(() => precacheList(drifted)).toThrow(/2 digests but read 1 entries/);
   });
 });
@@ -74,28 +76,9 @@ describe("parseHeaderFile", () => {
   });
 });
 
-// Spec §0.3 row 8: the zone's JavaScript detections inject a script into HTML
-// that a plain fetch reads, and Web Analytics may inject its beacon. The
-// reading names each, and says whether the body is the release's once they
-// are cut away — never a silent pass, never a false alarm.
-describe("edgeInjections", () => {
-  it("cuts the challenge-platform and beacon scripts, naming each", () => {
-    const injected = INDEX.replace(
-      "</body>",
-      '<script>(function(){var s=document.createElement("script");s.src="/cdn-cgi/challenge-platform/scripts/jsd/main.js";})();</script>' +
-        '<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon="{}"></script></body>',
-    );
-    expect(edgeInjections(injected)).toEqual({ text: INDEX, found: ["challenge-platform", "cloudflareinsights"] });
-  });
-  it("leaves a page's own scripts alone", () => {
-    const own = INDEX.replace("</body>", '<script type="module" src="/assets/index.js"></script></body>');
-    expect(edgeInjections(own)).toEqual({ text: own, found: [] });
-  });
-});
-
 describe("checkEntry", () => {
-  const entry = { path: "/index.html", digest: sha256(enc(INDEX)), type: "text/html" };
-  const answer = (overrides = {}) => ({ status: 200, contentType: "text/html; charset=utf-8", body: enc(INDEX), ...overrides });
+  const entry = { path: "/shell.bin", digest: sha256(enc(SHELL)), type: "application/octet-stream" };
+  const answer = (overrides = {}) => ({ status: 200, contentType: "application/octet-stream", body: enc(SHELL), ...overrides });
 
   it("passes a 200 of the listed type whose body hashes to the listed digest", () => {
     expect(checkEntry(entry, answer())).toEqual({ ok: true, reasons: [] });
@@ -103,23 +86,20 @@ describe("checkEntry", () => {
   it("names a wrong status, a wrong type and a wrong body", () => {
     expect(checkEntry(entry, answer({ status: 307, contentType: null, body: enc("") }))).toEqual({
       ok: false,
-      reasons: ["answered 307", "answered no content type, not text/html", `its body is ${sha256(enc(""))}`],
+      reasons: ["answered 307", "answered no content type, not application/octet-stream", `its body is ${sha256(enc(""))}`],
     });
   });
-  // The edge's rewrite of HTML is named for what it is, and the verdict is the
-  // release's bytes once the injections are cut: `ok` stays false, so the
-  // reading never counts it byte-exact.
-  it("names an HTML body the edge rewrote, and whether the release is underneath", () => {
-    const injected = INDEX.replace("</body>", '<script>/cdn-cgi/challenge-platform/x</script></body>');
-    expect(checkEntry(entry, answer({ body: enc(injected) }))).toEqual({
+  // **R-6.5c2.41: every entry is byte-exact or WRONG.** The release lists no
+  // HTML, so nothing it lists is a body the zone's edge injects its script
+  // into, and the reading keeps no allowance for one: an HTML body carrying the
+  // edge's script over the release's bytes is a wrong answer like any other —
+  // even under an entry typed `text/html`, which no release lists any more.
+  it("counts a body the edge injected into as wrong, with no allowance", () => {
+    const html = { path: "/page.html", digest: sha256(enc(SHELL)), type: "text/html" };
+    const injected = SHELL.replace("</body>", '<script>/cdn-cgi/challenge-platform/x</script></body>');
+    expect(checkEntry(html, answer({ contentType: "text/html; charset=utf-8", body: enc(injected) }))).toEqual({
       ok: false,
       reasons: [`its body is ${sha256(enc(injected))}`],
-      edge: { found: ["challenge-platform"], releaseUnderneath: true },
-    });
-    const other = "<!doctype html><p>not the release</p>" + '<script>/cdn-cgi/challenge-platform/x</script>';
-    expect(checkEntry(entry, answer({ body: enc(other) })).edge).toEqual({
-      found: ["challenge-platform"],
-      releaseUnderneath: false,
     });
   });
 });
@@ -340,6 +320,32 @@ describe("deployedRelease — an answer that is not the release is named by its 
     expect(said).toBe("/sw.js answered 302 — a redirect (its location is not printed: Access's carries a token)");
     expect(said).not.toContain("DUMMY-TOKEN-1234");
     expect(answerShape(204, null, 0)).toBe("a typeless body of 0 B");
+  });
+});
+
+// **The `install` reading reads what the release and the door really say**
+// (R-6.5c2.41; STRUCTURAL, over the script's own text, because the reading runs
+// inside a live browser no cell drives). It digests the cached shell at the
+// path the release lists it under — `/index.html` is listed by no release now,
+// so a reading that looked there could never HOLD — and it waits for the
+// door's own sentence, which carries no period (`OnThisDevice.tsx`, M6.5c2):
+// a reading that wanted one could never HOLD either.
+describe("the install reading", () => {
+  const script = readFileSync(fileURLToPath(new URL("./read-deploy.mjs", import.meta.url)), "utf8");
+  /** Every string literal the script passes where `pattern` finds one. */
+  const literals = (pattern) => [...script.matchAll(pattern)].map((m) => JSON.parse(m[1]));
+
+  it("waits for the sentence the door draws when the release is ready", () => {
+    const door = readFileSync(fileURLToPath(new URL("../../web/src/OnThisDevice.tsx", import.meta.url)), "utf8");
+    const drawn = [...door.matchAll(/<p className="muted ready">([^<{]*)<\/p>/g)].map((m) => m[1]);
+    expect(drawn, "OnThisDevice draws one ready paragraph").toHaveLength(1);
+    expect(literals(/innerText\.includes\(("[^"\\]*")\)/g)).toEqual(drawn);
+  });
+
+  it("digests the cached shell at the path the release lists it under", () => {
+    expect(SHELL_PATH).toBe("/shell.bin");
+    expect(literals(/cache\.match\(("[^"\\]*")\)/g)).toEqual([SHELL_PATH]);
+    expect(literals(/e\.path === ("[^"\\]*")/g)).toEqual([SHELL_PATH]);
   });
 });
 

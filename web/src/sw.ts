@@ -9,6 +9,21 @@
 // comparison of this file and a heuristically cached copy delays every update
 // by however long the browser chose to keep it.
 //
+// **The shell is installed from `/shell.bin`, never from `/index.html`**
+// (2026-09-29, R-6.5c2.41; spec §10.11). The zone's JavaScript Detections
+// inject a per-request `<script>` into every HTML answer at the edge, so the
+// install's digest of `/index.html` failed for every browser whose
+// `cf_clearance` had gone stale — every browser a release controls, since its
+// navigations never reach the edge as HTML again — and each was pinned to its
+// last release. `/shell.bin` is `index.html`'s bytes under a name the edge does
+// not rewrite; the stored entry keeps the server's `application/octet-stream`,
+// and `shellResponse` gives a navigation the HTML type itself. Both hosts serve
+// it `no-store`, as they serve this file: `.bin` is on Cloudflare's default
+// cached-extension list, and `cache: "reload"` below goes past the browser's
+// cache, not the edge's — a bare `/shell.bin` would be the previous release's
+// for two hours after a deploy, and every install in that window would fail
+// its digest.
+//
 // **Where the decisions live.** The routing rule is `swRoute.ts`; the install's
 // verification, the sweep's retention rule and which retained generations a
 // fetch may read are `swInstall.ts`; both are pure and tested in the component
@@ -36,6 +51,8 @@
 //   without opening the cache — so it never brings an evicted generation back;
 // - the release's own cache: a failed open is not remembered, and a request it
 //   cannot answer falls through to the network;
+// - a navigation answered from `/shell.bin`'s cached bytes with the HTML type
+//   set here, asking the network nothing (R-6.5c2.41);
 // - R-F2's order for a path this release does not list: a retained generation
 //   before the network, one `try` per generation, nothing written;
 // - `fromRetained` never serves the stamp (`META_PATH`).
@@ -56,7 +73,7 @@
 
 /// <reference lib="webworker" />
 
-import { CACHE_PREFIX, META_PATH, type PrecacheEntry } from "./precache";
+import { CACHE_PREFIX, META_PATH, SHELL_PATH, type PrecacheEntry } from "./precache";
 import {
   checkDigest,
   checkHead,
@@ -360,8 +377,12 @@ self.addEventListener("fetch", (event) => {
   // **`network` IS answered** (PR #37 F2, R-F2): from a retained generation
   // that holds the path, else from the network. It used to be left alone like
   // `bypass`, and that is what stranded the tab that did not click.
+  //
+  // **A navigation is answered from `/shell.bin` as HTML** (R-6.5c2.41): the
+  // stored entry is typed as the server served it, `application/octet-stream`,
+  // which a browser would download rather than render.
   if (route === "cache") event.respondWith(fromCache(url.pathname, request));
-  else if (route === "navigate") event.respondWith(fromCache("/index.html", request));
+  else if (route === "navigate") event.respondWith(fromCache(SHELL_PATH, request, (hit) => shellResponse(hit.body)));
   else if (route === "network") event.respondWith(fromRetained(url.pathname, request));
 });
 
@@ -371,15 +392,30 @@ self.addEventListener("fetch", (event) => {
  *  never deletes the running generation — so the fall-through is for the case
  *  the platform can still produce: storage pressure evicting a whole cache
  *  between two requests. Answering from the network there is a slow page; not
- *  answering is a broken one. */
-async function fromCache(path: string, request: Request): Promise<Response> {
+ *  answering is a broken one.
+ *
+ *  `answer` turns a hit into the response: the stored one as it is, except for
+ *  a navigation, whose answer is [`shellResponse`]. A navigation that misses
+ *  goes to the network as itself, and the host answers it with the page. */
+async function fromCache(
+  path: string,
+  request: Request,
+  answer: (hit: Response) => Response = (hit) => hit,
+): Promise<Response> {
   try {
     const hit = await (await releaseCache()).match(path);
-    if (hit) return hit;
+    if (hit) return answer(hit);
   } catch {
     // fall through
   }
   return fetch(request);
+}
+
+/** The shell's cached bytes as the page a navigation asked for: a 200 with the
+ *  HTML type the hosts serve `/index.html` with, set HERE — the stored entry
+ *  carries `/shell.bin`'s `application/octet-stream` (R-6.5c2.41). */
+function shellResponse(body: BodyInit | null): Response {
+  return new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 /** A path this release does not list: from a RETAINED generation of ours that
