@@ -35,7 +35,7 @@
 //
 //   - every helper module in this directory — every `.ts` that is not a spec
 //     or a test, since a live spec may import any of them;
-//   - every spec a live run can play: `LIVE_SPECS`, `EXIT_SPEC` and `README_SHOTS_SPEC`, the lists
+//   - every spec a live run can play: `LIVE_SPECS`, `EXIT_SPEC`, `README_SHOTS_SPEC` and `STATE1_GAME_SPEC`, the lists
 //     `playwright.config.ts` matches a live run by.
 //
 // A local-only spec is not read: it never holds the cookie (`it_explains` asks

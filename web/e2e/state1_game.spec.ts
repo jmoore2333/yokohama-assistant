@@ -9,9 +9,14 @@
 //
 // A opens "Window game" (Blue seat open, no password); B opens the link and
 // joins as Blue; both keep a card; the pages then play until EACH player has
-// applied ten moves, counted by the newest `data-event` row (the record's own
-// event index) on the acting page before and after each click, so a picker
-// step that applies nothing counts for nothing. A then abandons the table from the lobby row.
+// applied ten moves, counted by ONE high-water mark of the newest `data-event`
+// row (the record's own event index) shared by both pages: a reply that adds
+// no event (a picker opening) clears a page's account, and a per-page baseline
+// would then credit that page with the game's whole history. The mark is the
+// game's event count, printed for `tally-report --moves`. A then abandons the
+// table from the lobby row, and the row is asserted GONE. The tally carries the
+// setup and the teardown as fixed overhead, so a per-move figure is an upper
+// bound on the play itself.
 //
 // **Opt-in**, collected only under `YOKOHAMA_WEB_STATE1_GAME=1`
 // (`playwright.config.ts`), on whichever target the run names:
@@ -22,7 +27,10 @@
 // `YOKOHAMA_WEB_TALLY` writes the request tally for both pages
 // (`scripts/tally-report.mjs`); `YOKOHAMA_WEB_STATE1_OUT` names a file that
 // receives the table id, one line, so the orchestrator can count the game
-// through the query API. It makes no `request.*` call at all.
+// through the query API. The walk makes no `request.*` call; its `afterEach`
+// tries A's lobby row first (a plain context sends no claimed header, so the
+// DELETE `abandonOpened` sends is anonymous under the open door) and falls back
+// to `abandonOpened` only if the row did not go.
 //
 // It is a live spec for `live.node.test.ts`'s rules: the create is armed
 // through `awaitCreate`, and the table is abandoned in `afterEach` if the walk
@@ -32,7 +40,7 @@ import { writeFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { act, capReached, deadEnd, readScreen, rng, signIn, tally } from "./harness";
-import { abandonOpened, awaitCreate, createdTable, type Opening } from "./live";
+import { LIVE, abandonOpened, awaitCreate, createdTable, type Opening } from "./live";
 import { hasMove } from "./shared_table";
 import { expect, newContextWithoutWorker, test } from "./sw";
 
@@ -51,8 +59,33 @@ let opened: Opening | null = null;
 test.afterEach(async () => {
   const table = opened;
   opened = null;
+  if (table !== null && LIVE) {
+    const id = await table.id;
+    try {
+      if (id !== null) {
+        await abandonRow(table.page, id);
+        return;
+      }
+    } catch {
+      // the row did not go: the helper's DELETE is the fallback
+    }
+  }
   await abandonOpened(table);
 });
+
+/** A's lobby row for table `id`, found by the id in its link. */
+const rowOf = (page: Page, id: string) =>
+  page.locator("li.lobby-row", { has: page.locator(`a.row-link[href$="#/t/${id}"]`) });
+
+/** Abandon `id` from A's lobby row (a playing table's screen has no Abandon)
+ *  and require the row to be gone. */
+async function abandonRow(page: Page, id: string): Promise<void> {
+  await page.goto("/#/lobby");
+  const row = rowOf(page, id);
+  await row.getByRole("button", { name: new RegExp(`^abandon( and save)? ${TABLE}$`) }).click();
+  await row.getByRole("button", { name: new RegExp(`^confirm abandon( and save)? ${TABLE}$`) }).click();
+  await expect(row, "the abandoned table's row is gone from A's lobby").toHaveCount(0, { timeout: 30_000 });
+}
 
 /** The number of events the page's account shows: the newest row's index + 1. */
 async function shown(page: Page): Promise<number> {
@@ -87,7 +120,6 @@ test("a plain two-person game through the open door: ten applied moves each, the
 
   // ---- B opens the link and joins as Blue ----------------------------------
   await signIn(b, NAME_B, `/#/t/${id}`);
-  await b.goto(`/#/t/${id}`);
   await expect(b.getByRole("heading", { name: TABLE, exact: true, level: 3 })).toBeVisible();
   await b.getByRole("button", { name: "Join as Blue" }).click();
 
@@ -103,6 +135,8 @@ test("a plain two-person game through the open door: ten applied moves each, the
   // ---- play until each has applied EACH moves ------------------------------
   const pick = rng(0x5354_4531); // "STE1"
   const applied = { a: 0, b: 0 };
+  /** The game's event count: the highest `data-event` + 1 either page has shown. */
+  let seen = 0;
   const done = () => applied.a >= EACH && applied.b >= EACH;
   let iterations = 0;
   let idle = 0;
@@ -114,7 +148,6 @@ test("a plain two-person game through the open door: ten applied moves each, the
       const screen = await readScreen(pages[who]);
       if (screen.over) throw new Error(`the game ended before each player applied ${EACH} moves (a ${applied.a}, b ${applied.b})`);
       if (!hasMove(screen)) continue;
-      const before = await shown(pages[who]);
       let acted: Awaited<ReturnType<typeof act>> = null;
       try {
         acted = await act(pages[who], screen, pick);
@@ -126,7 +159,10 @@ test("a plain two-person game through the open door: ten applied moves each, the
       if (acted === null && hasMove(await readScreen(pages[who]))) throw await deadEnd(pages[who], { id }, iterations);
       await readScreen(pages[who]); // settles: waits out the request in flight
       const after = await shown(pages[who]);
-      if (after > before) applied[who] += after - before;
+      if (after > seen) {
+        applied[who] += after - seen;
+        seen = after;
+      }
       first = who;
       moved = true;
       break;
@@ -142,15 +178,12 @@ test("a plain two-person game through the open door: ten applied moves each, the
   }
 
   // ---- A abandons, from the lobby's row (a playing table's screen has none) -
-  await a.goto("/#/lobby");
-  await a.getByRole("button", { name: new RegExp(`^abandon( and save)? ${TABLE}$`) }).click();
-  await a.getByRole("button", { name: new RegExp(`^confirm abandon( and save)? ${TABLE}$`) }).click();
-  await expect(a).toHaveURL(/#\/lobby$/);
+  await abandonRow(a, id);
   opened = null;
 
   // eslint-disable-next-line no-console
   console.log(
-    `state1_game: table ${id} (${link || "no link read"}); applied moves a ${applied.a}, b ${applied.b}; ` +
+    `state1_game: table ${id} (${link || "no link read"}); applied moves a ${applied.a}, b ${applied.b}; ${seen} events in the game (tally-report --moves ${seen}); ` +
       `${iterations} loop iterations; ${Math.round((Date.now() - started) / 1000)}s`,
   );
   expect(applied.a).toBeGreaterThanOrEqual(EACH);

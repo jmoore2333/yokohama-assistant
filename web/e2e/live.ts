@@ -87,9 +87,9 @@ export const README_SHOTS_SPEC = "readme_shots.spec.ts";
 export const README_SHOTS = process.env.YOKOHAMA_WEB_README_SHOTS === "1";
 
 /** The open door's plain two-person game (cycle E Task 10.K; the straw-poll
- *  row 114): an opt-in spec that plays twenty applied moves between two PLAIN
- *  contexts — no credential, no claimed header, each named at the client's own
- *  name step — and abandons the table. Collected only under [`STATE1_GAME`],
+ *  row 114): an opt-in spec that plays until each of two PLAIN
+ *  contexts has applied ten moves — no credential, no claimed header, each named at
+ *  the client's own name step — and abandons the table. Collected only under [`STATE1_GAME`],
  *  like the README's generator; it runs on whichever target the run names, and
  *  is a live spec for `live.node.test.ts`'s rules. */
 export const STATE1_GAME_SPEC = "state1_game.spec.ts";
