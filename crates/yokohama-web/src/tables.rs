@@ -3041,9 +3041,14 @@ mod tests {
     /// reads the MIRROR's bit, which `persist` stamps, so `has_events` is the
     /// record's here — the mirror is fresh at every one of these tables.
     ///
-    /// The dealing table is the catcher for a `saves` that reads true where
-    /// nothing is playing; the moveless playing table is the one for the
-    /// `has_events` conjunct; the archive-off table's put count is a COUNT (an
+    /// **The `Playing` conjunct is NOT caught here**: a dealing table reached
+    /// through the route holds no event, so its `saves` reads false with that
+    /// conjunct dropped. Its catcher is `table.rs`'s
+    /// `a_mirror_without_has_events_reads_false_and_the_view_saves_only_where_the_rule_says`,
+    /// which sets the bit on a dealing document ("only a playing table is
+    /// saved"). Here the moveless playing table catches a `saves` that drops
+    /// the `has_events` conjunct, and the dealing table one that drops it and
+    /// the status together; the archive-off table's put count is a COUNT (an
     /// archive that records and says `off`), not a premise.
     #[test]
     fn the_view_saves_exactly_where_the_delete_files_a_save() {

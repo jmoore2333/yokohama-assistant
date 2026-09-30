@@ -12,8 +12,10 @@
 // `routes()` table (`health`, `me`, `labels`, `chat`, `games`, `archive`,
 // `art`). The layer's file is read from its `routes()` table only: its test
 // module names paths (`/api/nope`) that are not routes.
-// `access-paths.test.mjs` holds the printed list equal to what the regex
-// finds, so a prefix added to any file fails until the list names it.
+// `access-paths.test.mjs` holds the printed list to the nine destinations
+// written out by hand, so a prefix added to any file fails there until that
+// list names it; a second cell holds the filtering (`health` out, `/enter` in,
+// sorted, host-prefixed) over what the regex finds.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
