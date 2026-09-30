@@ -6,13 +6,13 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** `<the day>`, M6.5c2 cycle E "the finish", closed: E's code is on `web-room-m6.5c2e`, both hosts run E's release `0.6.0`, and the public door was vetted in two states on 2026-09-30 and reverted the same hour. The merge of the stack and the `v0.6.0` tag wait on your word (Track 3). The web lane's operating detail lives in [`web-lane.md`](web-lane.md); this board keeps the tracks.
+**Updated:** 2026-09-30, M6.5c2 cycle E "the finish": Tasks 1–14 done on `web-room-m6.5c2e` (the code head `c39da5a1`); both hosts run E's release `0.6.0` (`worker/RUNBOOK.md` §19, `deploy/RUNBOOK.md` §3.19), and the public door was vetted in two states on 2026-09-30 and reverted the same hour. The close (the plan's Task 16) is next, then the merge of the stack and the `v0.6.0` tag on your word (Track 3). The web lane's operating detail lives in [`web-lane.md`](web-lane.md); this board keeps the tracks.
 
 **History, by record.** This board keeps no running history; each session's account is its record of record:
-- `<the day>` — cycle E "the finish" closed (the record: E's close, named at the top of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
+- `<the day>` — cycle E "the finish" closes (the record: E's close, which goes in the last row of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
 - 2026-09-29 — cycle D "the code" closed and live ([close](plans/2026-09-29-web-frontend-m6.5c2d-close.md)); cycle E planned (spec §10.11 in [the spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md), [the plan](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
 - 2026-09-28 — cycle C "the hosts and the close" closed and live ([close](plans/2026-09-28-web-frontend-m6.5c2c-close.md)); cycle D planned ([plan](plans/2026-09-28-web-frontend-m6.5c2d-plan.md)).
-- 2026-09-27 — cycle A "the layer" closed; cycle B "the screens" followed the same week ([B's handover](plans/2026-09-27-web-frontend-m6.5c2b-handover.md) restates what A shipped, [C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) what B shipped).
+- 2026-09-27 — cycle A "the layer" closed ([B's handover](plans/2026-09-27-web-frontend-m6.5c2b-handover.md) restates what it shipped). 2026-09-28 — cycle B "the screens" closed ([C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) restates what it shipped).
 - 2026-09-26 — M6.5c "the objects" closed ([close](plans/2026-09-26-web-frontend-m6.5c-close.md)); M6.5c2 specified ([spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md)).
 - 2026-09-23 — M6.5c specified and planned ([spec](plans/2026-09-22-web-frontend-m6.5c-objects-spec.md), [plan](plans/2026-09-23-web-frontend-m6.5c-plan.md)).
 - 2026-09-22 — M6.5b2 closed ([close](plans/2026-09-22-web-frontend-m6.5b2-close.md)), and the PR #37 fix wave was live as `0.5.0-m6.5b2.1` ([record](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md) §5).
@@ -117,11 +117,11 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 
 ## Track 3 — The web client: M6.5c2 cycle E "the finish", the lane's last cycle
 
-**State:** E's code is on `web-room-m6.5c2e` (E's PR, opened at the close), on top of a stack of pull requests, #31 against master through #42, none merged. Both hosts run E's release `0.6.0` behind the hostname-wide Access application: the Worker at `yokohama.moore.nyc` (`worker/RUNBOOK.md` §19) and the NAS at `yokohama-nas.moore.nyc` (`deploy/RUNBOOK.md` §3.19). The public door was vetted in two states on 2026-09-30 and reverted the same hour. What the lane is and how it runs (the hosts, the suites, the testing strategy, what a save file says, the release-version rule, the public door's preconditions, how to pull a game) is [`web-lane.md`](web-lane.md); its records are §11.
+**State:** E's code is on `web-room-m6.5c2e` (E's PR, to be opened at the close), on top of a stack of pull requests, #31 against master through #42, none merged. Both hosts run E's release `0.6.0` behind the hostname-wide Access application: the Worker at `yokohama.moore.nyc` (`worker/RUNBOOK.md` §19) and the NAS at `yokohama-nas.moore.nyc` (`deploy/RUNBOOK.md` §3.19). The public door was vetted in two states on 2026-09-30 and reverted the same hour. What the lane is and how it runs (the hosts, the suites, the testing strategy, what a save file says, the release-version rule, the public door's preconditions, how to pull a game, §10) is [`web-lane.md`](web-lane.md); its records are §11.
 
 **What wants YOU, shortest first.**
 1. **The merge and the tag**: the stack #31 → E's PR in order with merge commits, and the `v0.6.0` tag on master, on your word (R-6.5c2.37). CI stays disabled on GitHub through the merge.
-2. **The handset's optional ten minutes**: the phones' owner's-eye readings (the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard), listed in [`web-lane.md`](web-lane.md) §3's phones row.
+2. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 3. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
 After the merge the project refocuses on the computer player (Track 1).
@@ -140,7 +140,7 @@ After the merge the project refocuses on the computer player (Track 1).
 8. D10's NAS sidecar sync — no row says it was done.
 9. The web lane's V5 notes (a sighted Keep; per-good requirement weights) — bot-behaviour changes
    owing their own pre-registration when a cycle takes them up.
-10. **M6.2 ruling #13** — the creator's Abandon on the lobby's Your-games rows: APPROVED at M6.3 and struck from the outstanding list (no action).
+10. **M6.2 ruling #13** — the creator's Abandon on the lobby's Your-games rows: DONE, approved at M6.3; nothing outstanding.
 11. **The refinish rule** — RULED (R-6.5c2.11) and LIVE since cycle C (2026-09-28): a same-game conflict stamps, every other conflict is final.
 12. **The `test/` prefix's lifecycle** — RULED (R-6.5c2.12) and SET at cycle C's close (2026-09-28): the R2 rule `expire-test-after-30-days` on `test/`.
 
@@ -148,7 +148,7 @@ After the merge the project refocuses on the computer player (Track 1).
 
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle E's plan [`plans/2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md) and E's close (named at the top of `web-lane.md` §11, written at the close); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
+- Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle E's plan [`plans/2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md) and E's close (the last row of `web-lane.md` §11, written at the close); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
 - Bridge (BGA capture → import): `docs/bridge-setup.md`; ledger
   `docs/plans/2026-08-08-phase3.5b-execution-ledger.md`.
 - Everything: `CLAUDE.md`, then `guidingpath.md`'s Current state and the decision log's tail.
