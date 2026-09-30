@@ -115,10 +115,8 @@ export function Abandon({
    *
    *  **The bit is the table's as this caller was handed it**, so a host whose
    *  table was read before the first move hands the live fact in (App's game
-   *  screen does). A local game whose stored mirror predates the bit reads
-   *  `false` until its next move and says "Abandon" while it still sends:
-   *  the control promises less than it does, the direction this label already
-   *  chooses when nothing is known. */
+   *  screen does). The send follows the same bit (ruling T5-b; `abandon`
+   *  below), so the label and the act cannot disagree. */
   const saves = isLocal(table.id)
     ? local && archiveDisposition(archive) === "send" && table.status === "playing" && table.has_events
     : table.saves;
@@ -189,12 +187,21 @@ export function Abandon({
    *
    * **A SERVER table asks nothing**: the server archives it inside its own
    * delete, so there is no decision here to be wrong about.
+   *
+   * **Nor does a local game with no event in it** (cycle E, ruling T5-b): the
+   * layer's own delete saves nothing from a moveless playing table, and the
+   * label above already said "Abandon", on the same bit. Nothing to save is
+   * nothing to ask about — no forced read, no refusal face, no send. **The
+   * cost, ruled**: a game stored before the bit existed reads `false` until
+   * its next write, so one that can no longer move (the foreign-bot screen)
+   * is deleted without a copy, as its label says; "Save game file" beside it
+   * keeps the bytes.
    */
   const abandon = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      if (local) {
+      if (local && table.has_events) {
         const disposition = archiveDisposition(await ensureArchiveFact({ force: true }));
         if (disposition === "ask") {
           setChoices(true);

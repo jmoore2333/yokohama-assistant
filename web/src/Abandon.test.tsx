@@ -19,6 +19,7 @@ import { resetLocalHostForTests } from "./local/client";
 import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
+import type { TableView } from "./types";
 import { wire } from "./wire/contract";
 
 /** What this browser was last TOLD about the deployment (M6.5b2).
@@ -259,7 +260,6 @@ describe("the abandon control on a local game", () => {
    *  permitted edit. Every label cell below reads the ARCHIVE fact through it, where a
    *  game with no moves would read "Abandon" whatever the fact said. */
   const localTable = { ...wire.tableForeign, id: LOCAL };
-  const playedLocal = localTable;
   /** The same device's game dealt a moment ago: no events, so nothing to save. */
   const movelessLocal = { ...wire.table, id: LOCAL, name: null };
 
@@ -281,11 +281,11 @@ describe("the abandon control on a local game", () => {
   function local(
     archive: "off" | "dir" | null,
     onArchive: () => Reply | Promise<Reply>,
-    opts: { remember?: boolean } = {},
+    opts: { remember?: boolean; table?: TableView } = {},
   ) {
     const steps: string[] = [];
     if (archive !== null && opts.remember !== false) serverSays(archive);
-    stubWorker({
+    const worker = stubWorker({
       pair: () => ({ record: RECORD, table: TABLE }),
       call: (req) => {
         if (req.method === "DELETE") steps.push("delete");
@@ -306,23 +306,27 @@ describe("the abandon control on a local game", () => {
     });
     const onDone = vi.fn();
     const onError = vi.fn();
-    render(<Abandon table={localTable} local onDone={onDone} onError={onError} />);
-    return { steps, stub, onDone, onError, user: userEvent.setup() };
+    const table = opts.table ?? localTable;
+    render(<Abandon table={table} local onDone={onDone} onError={onError} />);
+    const face = faceOf(table, archive !== null && opts.remember !== false ? archive : null);
+    return { steps, stub, worker, face, onDone, onError, user: userEvent.setup() };
   }
 
-  /** A face's name with or without "and save" (ruling 4a-1): the words are
-   *  the LABEL's — "and save" wherever the archive is remembered on — and the
-   *  label is not what the cells that click through it are about. */
-  const either = (face: string) => new RegExp(`^${face}(?: and save)? ${LOCAL}$`);
-  /** Both clicks. */
-  const confirm = async (user: ReturnType<typeof userEvent.setup>) => {
-    await user.click(screen.getByRole("button", { name: either("abandon") }));
-    await user.click(screen.getByRole("button", { name: either("confirm abandon") }));
+  /** The words the local rule predicts for `table` (R-E5, ruling 4a-1), read
+   *  off the corpus's own fields: "abandon and save" only for a PLAYING game
+   *  with an event where this browser remembers the archive on, "abandon"
+   *  otherwise — nothing remembered included. Each name below is exact. */
+  const faceOf = (table: TableView, remembered: "off" | "dir" | null) =>
+    remembered === "dir" && table.status === "playing" && table.has_events ? "abandon and save" : "abandon";
+  /** Both clicks, by the exact names `face` gives the two buttons. */
+  const confirm = async (user: ReturnType<typeof userEvent.setup>, face: string) => {
+    await user.click(screen.getByRole("button", { name: `${face} ${LOCAL}` }));
+    await user.click(screen.getByRole("button", { name: `confirm ${face} ${LOCAL}` }));
   };
 
   it("sends the pair to the archive BEFORE the local delete", async () => {
-    const { steps, stub, onDone, user } = local("dir", () => wire.archivePostAbandoned);
-    await confirm(user);
+    const { steps, stub, onDone, user, face } = local("dir", () => wire.archivePostAbandoned);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(steps).toEqual(["health", "archive", "delete"]);
     // Both documents as the store holds them, one snapshot, neither parsed.
@@ -335,12 +339,36 @@ describe("the abandon control on a local game", () => {
   // **"Already archived" PROCEEDS** (spec §4). A 200 `identical` means an
   // earlier send landed and only the delete failed; refusing here would leave
   // a game that can never be abandoned.
+  // **Ruling T5-b (fix round 1): a moveless local game is deleted without a
+  // send**, as the layer deletes a moveless playing table without a save, and
+  // on the same bit its label reads. Nothing to save is nothing to ask about:
+  // no forced health read, no read of the pair, no send — the delete alone,
+  // even where the server keeps an archive.
+  it("deletes a local game with no events without asking the server or sending it, where the archive is on", async () => {
+    expect(movelessLocal.has_events, "the premise: a game with no moves").toBe(false);
+    const { steps, stub, worker, onDone, user, face } = local(
+      "dir",
+      () => {
+        throw new Error("the archive must not be asked");
+      },
+      { table: movelessLocal },
+    );
+    expect(archiveAnswer(), "the premise: the disposition is send").toBe("dir");
+    expect(face, "and the label promises no save, on the bit the send reads").toBe("abandon");
+    await confirm(user, face);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["delete"]);
+    expect(stub.calls, "the server was asked nothing").toEqual([]);
+    const kinds = worker.instances.flatMap((w) => w.posted.map((p) => p.kind));
+    expect(kinds, "no read of the pair to send").not.toContain("pair");
+  });
+
   it("proceeds to the delete when the server answers identical", async () => {
-    const { steps, onDone, user } = local("dir", () => ({
+    const { steps, onDone, user, face } = local("dir", () => ({
       status: 200,
       body: wire.archivePostIdentical,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(steps).toEqual(["health", "archive", "delete"]);
   });
@@ -348,24 +376,24 @@ describe("the abandon control on a local game", () => {
   // **A 409 is a DIFFERENT record under this id, and it is not proof that this
   // one landed** — so the game is KEPT. An earlier draft deleted on it.
   it("keeps the game on a 409, and says what the server said", async () => {
-    const { steps, onDone, onError, user } = local("dir", () => ({
+    const { steps, onDone, onError, user, face } = local("dir", () => ({
       status: 409,
       body: wire.archive409,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
     // Still asking, so the player can try again beside the sentence.
-    expect(screen.getByRole("button", { name: either("confirm abandon") })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `confirm ${face} ${LOCAL}` })).toBeInTheDocument();
   });
 
   it("keeps the game when the record is refused, in the server's own words", async () => {
-    const { steps, onDone, onError, user } = local("dir", () => ({
+    const { steps, onDone, onError, user, face } = local("dir", () => ({
       status: 400,
       body: wire.archive400Replay,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive400Replay.error));
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
@@ -380,16 +408,16 @@ describe("the abandon control on a local game", () => {
   // own screen had no way to be rid of it. The third deliberate click the `ask`
   // face already offers is offered here too, and it sends nothing.
   it("offers Abandon without saving after a refused send, and deletes on it without sending again", async () => {
-    const { steps, onDone, onError, user } = local("dir", () => ({
+    const { steps, onDone, onError, user, face } = local("dir", () => ({
       status: 409,
       body: wire.archive409,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
     // The first answer, unchanged: kept, and still asking.
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: either("confirm abandon") })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `confirm ${face} ${LOCAL}` })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
@@ -399,10 +427,10 @@ describe("the abandon control on a local game", () => {
   // **The archive unreachable** (R-6.5b.7): the client's own sentence, because
   // there is no server sentence to carry — and the game stays.
   it("keeps the game when the archive cannot be reached", async () => {
-    const { steps, onDone, onError, user } = local("dir", () => {
+    const { steps, onDone, onError, user, face } = local("dir", () => {
       throw new TypeError("Failed to fetch");
     });
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() =>
       expect(onError).toHaveBeenCalledWith("the archive could not be reached — the game was kept"),
     );
@@ -420,11 +448,11 @@ describe("the abandon control on a local game", () => {
   // so its label went on promising a save the server cannot make. The game is
   // KEPT, as on every refusal: the next confirm asks the server again.
   it("remembers the archive OFF when the send meets the route's 404, and keeps the game", async () => {
-    const { steps, onDone, onError, user } = local("dir", () => ({
+    const { steps, onDone, onError, user, face } = local("dir", () => ({
       status: 404,
       body: { error: "this server keeps no archive" },
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith("this server keeps no archive"));
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
@@ -443,11 +471,11 @@ describe("the abandon control on a local game", () => {
   // 404 leaves the fact alone however loudly its sentence names the archive:
   // the corpus's 409 reads "archived".
   it("remembers the archive OFF on a 404 whatever its sentence says", async () => {
-    const { onDone, onError, user } = local("dir", () => ({
+    const { onDone, onError, user, face } = local("dir", () => ({
       status: 404,
       body: wire.houseChatOff404,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.houseChatOff404.error));
     expect(wire.houseChatOff404.error, "the premise: a sentence that names no archive").not.toMatch(/archive/i);
     expect(archiveAnswer()).toBe("off");
@@ -455,11 +483,11 @@ describe("the abandon control on a local game", () => {
   });
 
   it("leaves the archive fact alone on a refusal that is not a 404, whatever its sentence names", async () => {
-    const { onDone, onError, user } = local("dir", () => ({
+    const { onDone, onError, user, face } = local("dir", () => ({
       status: 409,
       body: wire.archive409,
     }));
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
     expect(wire.archive409.error, "the premise: a sentence that names the archive").toMatch(/archive/i);
     expect(archiveAnswer()).toBe("dir");
@@ -468,11 +496,11 @@ describe("the abandon control on a local game", () => {
 
   // No archive on this server: nothing to send, and the delete is local only.
   it("deletes without sending anything when the server keeps no archive", async () => {
-    const { steps, onDone, user } = local("off", () => {
+    const { steps, onDone, user, face } = local("off", () => {
       throw new Error("the archive must not be asked");
     });
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(steps).toEqual(["health", "delete"]);
   });
@@ -491,7 +519,7 @@ describe("the abandon control on a local game", () => {
     const onDone = vi.fn();
     render(<Abandon table={localTable} onDone={onDone} onError={() => {}} />);
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
-    await confirm(userEvent.setup());
+    await confirm(userEvent.setup(), "abandon");
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(stub.calls).toEqual([]);
   });
@@ -500,7 +528,7 @@ describe("the abandon control on a local game", () => {
     serverSays("dir");
     stubWorker();
     stubApi(() => null);
-    render(<Abandon table={playedLocal} local onDone={() => {}} onError={() => {}} />);
+    render(<Abandon table={localTable} local onDone={() => {}} onError={() => {}} />);
     expect(screen.getByRole("button", { name: `abandon and save ${LOCAL}` })).toHaveTextContent(
       /^Abandon and save$/,
     );
@@ -524,7 +552,7 @@ describe("the abandon control on a local game", () => {
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
     cleanup();
     serverSays("off");
-    render(<Abandon table={playedLocal} local onDone={() => {}} onError={() => {}} />);
+    render(<Abandon table={localTable} local onDone={() => {}} onError={() => {}} />);
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
   });
 
@@ -538,7 +566,7 @@ describe("the abandon control on a local game", () => {
 
   it("REFUSES when it cannot learn whether there is an archive, and offers two named choices", async () => {
     // Nothing remembered (the `beforeEach` reset) and nothing answering.
-    const { steps, stub, onDone, onError, user } = local("dir", () => wire.archivePost, {
+    const { steps, stub, onDone, onError, user, face } = local("dir", () => wire.archivePost, {
       remember: false,
     });
     // The premise: the label promises nothing, because nothing is known.
@@ -548,7 +576,7 @@ describe("the abandon control on a local game", () => {
     stubApi(() => {
       throw new TypeError("Failed to fetch");
     });
-    await confirm(user);
+    await confirm(user, face);
 
     await screen.findByText(CANNOT_ASK);
     expect(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` })).toBeInTheDocument();
@@ -563,10 +591,10 @@ describe("the abandon control on a local game", () => {
   });
 
   it("still deletes where the deployment is KNOWN to keep no archive", async () => {
-    const { steps, onDone, user } = local("off", () => {
+    const { steps, onDone, user, face } = local("off", () => {
       throw new Error("the archive must not be asked");
     });
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     // Correct, and not the bug: the server SAID it keeps none.
     expect(steps).toEqual(["health", "delete"]);
@@ -576,10 +604,10 @@ describe("the abandon control on a local game", () => {
   // reading the module's `"off"` default would delete without sending — and the
   // server, asked, says it keeps an archive.
   it("sends first on a FIRST visit, where nothing was remembered and the server keeps one", async () => {
-    const { steps, onDone, user } = local("dir", () => wire.archivePostAbandoned, {
+    const { steps, onDone, user, face } = local("dir", () => wire.archivePostAbandoned, {
       remember: false,
     });
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(steps).toEqual(["health", "archive", "delete"]);
   });
@@ -590,12 +618,12 @@ describe("the abandon control on a local game", () => {
   it("asks again at the click even when the remembered answer is minutes old", async () => {
     // What this browser was told LAST TIME, before the control is drawn.
     serverSays("off");
-    const { steps, onDone, user } = local("dir", () => wire.archivePostAbandoned, {
+    const { steps, onDone, user, face } = local("dir", () => wire.archivePostAbandoned, {
       remember: false,
     });
     // The premise: what is remembered says there is nowhere to send it.
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
-    await confirm(user);
+    await confirm(user, face);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(steps).toEqual(["health", "archive", "delete"]);
   });
@@ -603,11 +631,11 @@ describe("the abandon control on a local game", () => {
   it("writes the game to a file on the first choice, and deletes nothing", async () => {
     const caught = catchDownload();
     try {
-      const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+      const { steps, onDone, user, face } = local("dir", () => wire.archivePost, { remember: false });
       stubApi(() => {
         throw new TypeError("Failed to fetch");
       });
-      await confirm(user);
+      await confirm(user, face);
       await screen.findByText(CANNOT_ASK);
 
       await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
@@ -643,11 +671,11 @@ describe("the abandon control on a local game", () => {
   it("says why on the screen when the backup file cannot be made, and stays ready to try again", async () => {
     const caught = catchDownload();
     try {
-      const { steps, onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+      const { steps, onDone, onError, user, face } = local("dir", () => wire.archivePost, { remember: false });
       stubApi(() => {
         throw new TypeError("Failed to fetch");
       });
-      await confirm(user);
+      await confirm(user, face);
       await screen.findByText(CANNOT_ASK);
       // The store will not be read for this game: the backup is the thing that fails.
       stubWorker({
@@ -675,11 +703,11 @@ describe("the abandon control on a local game", () => {
   });
 
   it("says why on the screen when abandoning without saving is refused, and keeps the game", async () => {
-    const { onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+    const { onDone, onError, user, face } = local("dir", () => wire.archivePost, { remember: false });
     stubApi(() => {
       throw new TypeError("Failed to fetch");
     });
-    await confirm(user);
+    await confirm(user, face);
     await screen.findByText(CANNOT_ASK);
     // The local host refuses the delete in its own words.
     stubWorker({
@@ -696,11 +724,11 @@ describe("the abandon control on a local game", () => {
   });
 
   it("deletes on the third deliberate click when the player abandons without saving", async () => {
-    const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+    const { steps, onDone, user, face } = local("dir", () => wire.archivePost, { remember: false });
     stubApi(() => {
       throw new TypeError("Failed to fetch");
     });
-    await confirm(user);
+    await confirm(user, face);
     await screen.findByText(CANNOT_ASK);
     await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
@@ -709,11 +737,11 @@ describe("the abandon control on a local game", () => {
   });
 
   it("puts the control back when the refusal is cancelled", async () => {
-    const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+    const { steps, onDone, user, face } = local("dir", () => wire.archivePost, { remember: false });
     stubApi(() => {
       throw new TypeError("Failed to fetch");
     });
-    await confirm(user);
+    await confirm(user, face);
     await screen.findByText(CANNOT_ASK);
     await user.click(screen.getByRole("button", { name: `cancel abandoning ${LOCAL}` }));
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toBeInTheDocument();

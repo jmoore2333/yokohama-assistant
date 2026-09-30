@@ -3033,11 +3033,13 @@ mod tests {
     /// **R-E5 (cycle E): `TableView.saves` is the delete's own rule, asked of
     /// the view** (ruling P-3). Six tables, each read through the ROUTE
     /// (`api::get_table`, so the archive switch the route hands the view is
-    /// what is read) and then deleted by its creator: the view's `saves`, the
+    /// what is read) and through the creator's `mine` LISTING (`Games::list`,
+    /// which builds the lobby row's view in a call of its own), and then
+    /// deleted by its creator: the view's `saves`, the listing row's, the
     /// rule over whether the RECORD holds an event (what `delete_locked`
-    /// reads) and the delete's own put count agree on every one. The view reads the MIRROR's
-    /// bit, which `persist` stamps, so `has_events` is the record's here — the
-    /// mirror is fresh at every one of these tables.
+    /// reads) and the delete's own put count agree on every one. The view
+    /// reads the MIRROR's bit, which `persist` stamps, so `has_events` is the
+    /// record's here — the mirror is fresh at every one of these tables.
     ///
     /// The dealing table is the catcher for a `saves` that reads true where
     /// nothing is playing; the moveless playing table is the one for the
@@ -3080,6 +3082,14 @@ mod tests {
                 .map_or(0, |(json, _)| serde_json::from_str::<GameRecord>(&json).unwrap().events.len());
             assert_eq!(view.has_events, record_events > 0, "{id}: the mirror's bit is the record's");
             assert_eq!(view.saves, saves, "{id}: the view");
+            // **The LOBBY's row, too** (fix round 1, Important 1): the listing
+            // builds its views in its own call, and the lobby row's Abandon is
+            // what ruling 4a-1 words. Every listing file in the corpus comes
+            // from an `Api` that keeps no archive, so this is the one place a
+            // listing that dropped the host's switch is seen.
+            let (rows, _) = games.list(&red, Scope::Mine, LIST_LIMIT_MAX, None).expect("the creator's listing");
+            let row = rows.iter().find(|t| t.id == id).unwrap_or_else(|| panic!("{id}: listed under mine"));
+            assert_eq!((row.has_events, row.saves), (view.has_events, saves), "{id}: the lobby row");
             let (doc, _) = games.read_table(id).unwrap().unwrap();
             assert_eq!(saves_on_abandon(&doc, record_events > 0, games.archive_on()), saves, "{id}: the rule");
             let before = archive.puts.lock().unwrap().len();

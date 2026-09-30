@@ -65,6 +65,16 @@ import type { GamesList, TableView } from "./types";
 type Scope = "mine" | "open" | "playing";
 const SCOPES: readonly Scope[] = ["mine", "open", "playing"];
 
+/** Each scope's "more", by name (cycle E, fix round 1): three buttons read
+ *  "more" on one screen, and the playing scope's sits under no heading of its
+ *  own, so the NAME says which list it extends. The visible word stays
+ *  "more", which each name contains. */
+const MORE_NAME: Record<Scope, string> = {
+  mine: "More of your tables",
+  open: "More open tables",
+  playing: "More tables being played",
+};
+
 /** One reading of the three listings: each scope's answer or its refusal,
  *  apart (dossier row 4). */
 type Reading = Record<Scope, PromiseSettledResult<GamesList>>;
@@ -508,7 +518,12 @@ export function Lobby({
     const cursor = nextCursor(scope);
     return (
       cursor && (
-        <button type="button" className="ghost more" onClick={() => void page(scope, cursor)}>
+        <button
+          type="button"
+          className="ghost more"
+          aria-label={MORE_NAME[scope]}
+          onClick={() => void page(scope, cursor)}
+        >
           more
         </button>
       )
