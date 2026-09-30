@@ -19,7 +19,7 @@ import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { IdentityCorner, LobbyBand } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
-import { projectLink } from "./projectLink";
+import { projectLink } from "./buildValues";
 import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";

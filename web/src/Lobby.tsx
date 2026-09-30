@@ -53,6 +53,7 @@ import { api, ApiError, lobbyChat } from "./api";
 import { LobbyBand } from "./Band";
 import { Chat } from "./Chat";
 import { Padlock, PasswordTag, SeatChip } from "./Chips";
+import { projectLink } from "./buildValues";
 import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
@@ -325,6 +326,8 @@ export function Lobby({
     };
   }, [take, me]);
 
+  /** The repository link, from the build (R-6.5c2.40). */
+  const project = projectLink();
   const link = usePolled<Reading>(
     {
       key: "lobby",
@@ -519,6 +522,11 @@ export function Lobby({
                 New table
               </button>
               {toDevice}
+              {project && (
+                <a className="quiet-link" href={project.href} target="_blank" rel="noopener">
+                  {project.text}
+                </a>
+              )}
               {link !== "live" && (
                 <span className="meta link-word" role="status">
                   {link}&hellip;

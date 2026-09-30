@@ -24,7 +24,7 @@ import { defineConfig } from "vitest/config";
 //   browser — which drive `e2e/`'s helpers through fakes, with no browser.
 //   `vitest.config.ts` never sees `e2e/`: its `include` is `src`.
 // - And every `scripts/**/*.node.test.ts` (M6.5c2): a build script's own
-//   cells, beside the script — `project-url.mjs`, which `vite.config.ts` calls.
+//   cells, beside the script — `build-values.mjs`, which `vite.config.ts` calls.
 //
 // It does NOT merge `vite.config.ts`, unlike its sibling: there is no React
 // plugin, no alias and no browser resolution in play, and merging the build

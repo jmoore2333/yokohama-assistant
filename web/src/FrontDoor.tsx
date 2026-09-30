@@ -27,7 +27,7 @@ import { BoardMark } from "./BoardMark";
 import { VersionTag } from "./Chips";
 import { Help } from "./Help";
 import { OnThisDevice } from "./OnThisDevice";
-import type { ProjectLink } from "./projectLink";
+import { siteBlurb, type ProjectLink } from "./buildValues";
 import { Refusal } from "./Refusal";
 import { navigate } from "./route";
 import type { ReadinessStatus } from "./swRegister";
@@ -76,6 +76,8 @@ export function FrontDoor({
    *  removed element falls to the document's body — the top of the page. */
   const helpToggle = useRef<HTMLButtonElement | null>(null);
   const ids = useId();
+  /** The words under the title, from the build (R-6.5c2.40). */
+  const blurb = siteBlurb();
   // The heading a player lands on when the help opens — focus, and never
   // `scrollIntoView` (ruling R-F11: it scrolls every scrollable ancestor).
   useEffect(() => {
@@ -90,6 +92,7 @@ export function FrontDoor({
         <div className="door-hero-in">
           <div className="door-title">
             <h1>Yokohama</h1>
+            {blurb && <p className="blurb">{blurb}</p>}
             {link && (
               <a className="project-link" href={link.href} target="_blank" rel="noopener noreferrer">
                 {link.text}

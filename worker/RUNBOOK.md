@@ -95,6 +95,10 @@ Prerequisites: the pinned toolchain with its `wasm32-unknown-unknown` target, `w
 
 ```sh
 cd web && npm run build          # the RELEASE browser module, and web/dist
+# the door's three build values are read here, when they are set (checked by
+# web/scripts/build-values.mjs; a bad value fails the build naming it):
+#   YOKOHAMA_PROJECT_URL=https://...  YOKOHAMA_SITE_BLURB="..."  YOKOHAMA_SITE_NOTICE="..."
+#   (at most 200, 400 and 200 characters; unset or empty draws nothing)
 cd ../worker && npm run build    # build:module → build:assets → smoke:release
 ```
 

@@ -341,6 +341,14 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
 proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells are
 `test/open/`), where the shell runs in workerd with real sockets.
 
+**Both doors show the same three build values**, read by `cd web && npm run build` when they are set
+(R-6.5c2.40; `web/scripts/build-values.mjs` checks them and a bad one fails the build naming it):
+`YOKOHAMA_PROJECT_URL` (a link to the repository, on the first screen and the lobby; at most 200
+characters), `YOKOHAMA_SITE_BLURB` (a paragraph under the first screen's title; at most 400) and
+`YOKOHAMA_SITE_NOTICE` (one line at the foot of every screen; at most 200). Unset or empty draws
+nothing. They are baked into the release, not read at run time, because the release is precached under
+a digest of its own bytes.
+
 ---
 
 ## 2. What a Durable Object is, and what serverless means here

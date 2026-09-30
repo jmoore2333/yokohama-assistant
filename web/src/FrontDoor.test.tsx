@@ -17,7 +17,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
-import { linkFor } from "./projectLink";
+import * as values from "./buildValues";
+import { linkFor } from "./buildValues";
 import type { ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
 import { stubWorker } from "./test/fakeWorker";
@@ -125,6 +126,23 @@ describe("the front door", () => {
     expect(link).toHaveAttribute("href", "https://github.com/you/yokohama-assistant");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  // **The blurb** (R-6.5c2.40): the build's words sit between the title and the
+  // link, and are absent where the build set none.
+  it("draws the blurb between the title and the link, and none where the build set none", () => {
+    const spy = vi.spyOn(values, "siteBlurb").mockReturnValue("First sentence. Second sentence.");
+    const { unmount, container } = render(
+      <FrontDoor multiplayer link={linkFor("https://github.com/you/yokohama-assistant")} />,
+    );
+    const blurb = container.querySelector("p.blurb");
+    expect(blurb?.textContent).toBe("First sentence. Second sentence.");
+    expect(container.querySelector("h1 + .blurb")).toBe(blurb);
+    expect(blurb?.nextElementSibling).toHaveClass("project-link");
+    unmount();
+    spy.mockReturnValue(null);
+    const again = render(<FrontDoor multiplayer />);
+    expect(again.container.querySelector(".blurb")).toBeNull();
   });
 
   // **"How to play" opens the help in place, WITHOUT its screenshots**: they

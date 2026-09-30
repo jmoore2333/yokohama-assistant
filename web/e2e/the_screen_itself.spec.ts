@@ -295,11 +295,23 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   await page.setViewportSize({ width: 1024, height: 844 });
   await settle();
   const bottomOfPage = await page.evaluate(() => document.body.scrollHeight);
+  // **The footer's notice ends the page (R-6.5c2.40)**: the deck sticks to
+  // `.app`'s bottom edge, and the one-line footer sits below `.app`, so at the
+  // very end of the page the deck rests exactly one footer above the viewport's
+  // bottom; at every other scroll it is against the edge. 0 where the build set
+  // no notice.
+  const footerH = await page.evaluate(
+    () => document.querySelector("footer.site-notice")?.getBoundingClientRect().height ?? 0,
+  );
   for (const y of [0, 400, bottomOfPage]) {
     await page.evaluate((to) => window.scrollTo(0, to), y);
     await settle();
     const r = await readDeck();
-    expect(Math.abs(r.bottom - r.innerHeight), `the deck is not against the bottom edge at scrollY ${y}`).toBeLessThanOrEqual(1);
+    const rests = y === bottomOfPage ? footerH : 0;
+    expect(
+      Math.abs(r.bottom - (r.innerHeight - rests)),
+      `the deck is not against the bottom edge (less the footer's ${rests}px) at scrollY ${y}`,
+    ).toBeLessThanOrEqual(1);
     expect(r.top, `the deck runs off the top of the viewport at scrollY ${y}`).toBeGreaterThanOrEqual(0);
     // The same floor Arm 1 takes, and Arm 2 needs it for a second reason: a deck
     // whose every control is outside `.options.scrolls`'s clip reads `[]` here,

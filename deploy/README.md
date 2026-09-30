@@ -116,23 +116,30 @@ cached took 230 s, and `docker images` read the image's content as 42.4 MB (151.
 a reading of 2026-09-28 (M6.5c2).
 `deploy/Dockerfile.dockerignore` decides what the build sees.
 
-**The project link** is a build argument, `YOKOHAMA_PROJECT_URL`:
+**The three build values** are build arguments. Each is optional, and each is checked by the build:
 
 ```bash
 docker build --platform linux/amd64 -f deploy/Dockerfile \
-  --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama -t yokohama-web:0.6.0 .
+  --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama \
+  --build-arg YOKOHAMA_SITE_BLURB="A few words under the title." \
+  --build-arg YOKOHAMA_SITE_NOTICE="Not affiliated with Asmodee" \
+  -t yokohama-web:0.6.0 .
 ```
 
-It draws a link under the title on the first screen:
-- **Omit the argument, or leave it empty, for no link.**
-- The value must be an absolute `https://` or `http://` URL with a host, holding no whitespace or control
-  character, of at most 200 characters. A value the build refuses stops the build with a message naming
-  `YOKOHAMA_PROJECT_URL`.
+| Argument | Maximum | What it draws |
+|---|---|---|
+| `YOKOHAMA_PROJECT_URL` | 200 characters | A link under the title on the first screen, and a quiet link among the lobby's actions. An absolute `https://` or `http://` URL with a host, holding no whitespace or control character. |
+| `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
+| `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 
-**Why the link is fixed at build time and not at run time:** the whole release is precached for offline
+- **Omit an argument, or leave it empty, for none of that value.**
+- The blurb and the notice must hold words and no control character (a line break is one). A value the build
+  refuses stops the build with a message naming the variable.
+
+**Why the three are fixed at build time and not at run time:** the whole release is precached for offline
 play under a name that is a digest of its own bytes, and every browser checks each file against that
 digest when it installs. A server that rewrote `index.html` at start-up would fail that check in every
-browser. So the link is baked into the release, and changing it is a rebuild.
+browser. So each value is baked into the release, and changing one is a rebuild.
 
 ## 4. Run it
 

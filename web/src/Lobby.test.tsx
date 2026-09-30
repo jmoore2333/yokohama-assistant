@@ -11,6 +11,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
+import * as values from "./buildValues";
 import { setLobbyChat, setSignalKind } from "./api";
 import { BACKOFF_MS } from "./signal";
 import { FakeSocket } from "./test/fakeSocket";
@@ -245,6 +246,25 @@ describe("the lobby", () => {
     show((call) => (isGamesList(call) ? { ...wire.games, games: [] } : undefined));
     expect(await screen.findByText(/none yet/)).toBeInTheDocument();
     expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
+  });
+
+  // **The repository link** (R-6.5c2.40): a quiet link among the actions where
+  // the build names one, in a new tab, and absent where it does not.
+  it("draws the project link among the actions only where the build names one", async () => {
+    vi.spyOn(values, "projectLink").mockReturnValue(values.linkFor("https://github.com/you/yokohama-assistant"));
+    show();
+    await screen.findByRole("heading", { name: "Your tables" });
+    const link = document.querySelector(".lobby-actions a.quiet-link");
+    expect(link).not.toBeNull();
+    expect(link).toHaveAttribute("href", "https://github.com/you/yokohama-assistant");
+    expect(link?.textContent).toContain("github.com/you/yokohama-assistant");
+    expect(link).toHaveAttribute("rel", "noopener");
+    expect(link).toHaveAttribute("target", "_blank");
+    cleanup();
+    vi.spyOn(values, "projectLink").mockReturnValue(null);
+    show();
+    await screen.findByRole("heading", { name: "Your tables" });
+    expect(document.querySelector("a.quiet-link")).toBeNull();
   });
 
   // **The row is a LINK, and the hash is what it sets** (spec §5.1, R-14).

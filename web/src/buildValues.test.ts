@@ -7,9 +7,9 @@
 // the first cell red on a developer's machine. `unstubGlobals` puts it back.
 
 import { describe, expect, it, vi } from "vitest";
-import { linkFor, projectLink } from "./projectLink";
+import { linkFor, projectLink, siteBlurb, siteNotice } from "./buildValues";
 
-describe("the project link", () => {
+describe("the build values", () => {
   it("is nothing when the build names none", () => {
     vi.stubGlobal("__YOKOHAMA_PROJECT_URL__", null);
     expect(projectLink()).toBeNull();
@@ -26,5 +26,16 @@ describe("the project link", () => {
       href: "http://lan.example/yokohama",
       text: "lan.example/yokohama",
     });
+  });
+
+  it("reads the blurb and the notice from their globals, and none as null", () => {
+    vi.stubGlobal("__YOKOHAMA_SITE_BLURB__", "Two sentences. Right here.");
+    vi.stubGlobal("__YOKOHAMA_SITE_NOTICE__", "Not affiliated with Asmodee");
+    expect(siteBlurb()).toBe("Two sentences. Right here.");
+    expect(siteNotice()).toBe("Not affiliated with Asmodee");
+    vi.stubGlobal("__YOKOHAMA_SITE_BLURB__", null);
+    vi.stubGlobal("__YOKOHAMA_SITE_NOTICE__", null);
+    expect(siteBlurb()).toBeNull();
+    expect(siteNotice()).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { Footer } from "./Footer";
 import { captureInstallPrompt } from "./install";
 import "./styles.css";
 
@@ -16,5 +17,6 @@ if (!root) throw new Error("index.html must carry a #root element");
 createRoot(root).render(
   <StrictMode>
     <App />
+    <Footer />
   </StrictMode>,
 );

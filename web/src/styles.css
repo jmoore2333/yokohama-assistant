@@ -225,7 +225,16 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   .side { flex: 1 1 auto; }
 }
 
+/* The footer's notice (R-6.5c2.40): one text line at the foot of every screen,
+   mounted after `.app` (`main.tsx`), whose height the wide game screen takes off. */
+:root { --notice-h: 1.75rem; }
+.site-notice {
+  padding: .4rem 16px; font-size: .78rem; line-height: 1.3; color: var(--fg-dim);
+  text-align: center;
+}
+
 @media (min-width: 1201px) {
+  .has-notice .app { height: calc(100vh - var(--notice-h)); }
   .app {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--side);
@@ -1963,6 +1972,9 @@ a.primary-link {
   overflow-wrap: anywhere;
 }
 .project-link:hover { color: var(--fg); }
+.blurb { max-width: 60ch; color: var(--fg-dim); margin: .25rem 0 .5rem; font-size: .95rem; }
+.quiet-link { font-size: .8rem; color: var(--fg-dim); text-decoration: underline dotted; }
+.quiet-link:hover { color: var(--fg); }
 /* The mock sets the board 34px inside the cards' right edge. */
 .door-hero .board-mark { flex: 0 1 360px; margin-right: 2.125rem; }
 .door-main { position: relative; max-width: 86rem; margin: -2.75rem auto 0; padding: 0 3.5rem 2rem; }
