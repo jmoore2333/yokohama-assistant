@@ -5,7 +5,8 @@
 // tidiness** (R-6.5b2.7): a single-player visitor is meant to cost zero Worker
 // invocations. Everything it draws comes from the BUILD or from this browser:
 // whether the friends card is drawn (`VITE_MULTIPLAYER`), the project link
-// (`YOKOHAMA_PROJECT_URL`, `projectLink.ts`), the bot's version (the committed
+// and the blurb under the title (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`,
+// `buildValues.ts`), the bot's version (the committed
 // contract file `wire/production_bot.json`, which `wire_fixtures` refuses when
 // it is stale), and the games in this browser (the local host's own listing).
 // The runtime switch (`YOKOHAMA_WEB_MULTIPLAYER`) is what ENFORCES; this only

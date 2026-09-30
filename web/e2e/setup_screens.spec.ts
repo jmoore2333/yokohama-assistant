@@ -22,7 +22,7 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { DESKTOP, look, noSidewaysScroll, PHONE, signIn, startGame, WALKER, watchForBreakage } from "./harness";
+import { DESKTOP, look, noSidewaysScroll, noticeIsDrawn, PHONE, signIn, startGame, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -66,6 +66,7 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
     await expect(cards).toHaveCount(3);
     await expect(page.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
     await noSidewaysScroll(page, `the door at ${size.width}px`);
+    await noticeIsDrawn(page, `the door at ${size.width}px`);
     expect(await images(page), `the door draws no <img> at ${size.width}px`).toBe(0);
 
     const boxes = await cards.evaluateAll((els) =>
@@ -109,13 +110,22 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
     await expect(page.locator(".door-hero").getByRole("heading", { level: 1, name: "Yokohama" })).toBeVisible();
-    const { text, board } = await page.evaluate(async () => {
+    // The blurb is DRAWN (anti-vacuity: a dist built without it would pass
+    // this loop over a title that never had company), and its own text is
+    // measured against the board as the title's is.
+    await expect(page.locator(".door-hero .blurb"), `at ${width}px the blurb is drawn`).toBeVisible();
+    const { text, board, blurb } = await page.evaluate(async () => {
       await document.fonts.ready;
       const range = document.createRange();
       range.selectNodeContents(document.querySelector(".door-hero h1")!);
       const box = (r: DOMRect) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
       return {
         text: box(range.getBoundingClientRect()),
+        blurb: (() => {
+          const r = document.createRange();
+          r.selectNodeContents(document.querySelector(".door-hero .blurb")!);
+          return box(r.getBoundingClientRect());
+        })(),
         board: box(document.querySelector(".door-hero .board-mark")!.getBoundingClientRect()),
       };
     });
@@ -126,6 +136,11 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
     const clear =
       text.right <= board.left || text.left >= board.right || text.bottom <= board.top || text.top >= board.bottom;
     expect(clear, `at ${width}px the title's text ${JSON.stringify(text)} meets the board ${JSON.stringify(board)}`).toBe(
+      true,
+    );
+    const blurbClear =
+      blurb.right <= board.left || blurb.left >= board.right || blurb.bottom <= board.top || blurb.top >= board.bottom;
+    expect(blurbClear, `at ${width}px the blurb ${JSON.stringify(blurb)} meets the board ${JSON.stringify(board)}`).toBe(
       true,
     );
     if (width === 861) {

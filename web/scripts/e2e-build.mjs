@@ -21,4 +21,5 @@ for (const [name, value] of Object.entries(DEFAULTS)) {
   if (!env[name]) env[name] = value;
 }
 const run = spawnSync("npm", ["run", "build:client"], { env, stdio: "inherit" });
+if (run.error) console.error(`e2e-build: could not run npm: ${run.error.message}`);
 process.exit(run.status ?? 1);

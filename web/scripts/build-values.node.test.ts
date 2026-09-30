@@ -14,8 +14,9 @@ import {
 } from "./build-values.mjs";
 
 describe("checkProjectUrl", () => {
-  // Unset draws no link, and so does EMPTY: a Docker `ARG` nobody passed
-  // reaches the build as an empty string, and that is a deployment that set
+  // Unset draws no link, and so does EMPTY: an `ARG` given no
+  // `--build-arg` is absent from `RUN`'s environment (unset), and
+  // `--build-arg X=` is the empty string; each is a deployment that set
   // nothing, not a bad value.
   it("reads unset and empty as no link", () => {
     expect(checkProjectUrl(undefined)).toBeNull();
@@ -64,6 +65,9 @@ describe("checkText", () => {
       "YOKOHAMA_SITE_BLURB holds a control character",
     );
     expect(() => checkText("YOKOHAMA_SITE_BLURB", "bell\u0007", 400)).toThrow(/holds a control character/);
+    // Invisible format characters count: a zero-width space and a bidi override.
+    expect(() => checkText("YOKOHAMA_SITE_BLURB", "a\u200Bb", 400)).toThrow(/holds a control character/);
+    expect(() => checkText("YOKOHAMA_SITE_BLURB", "a\u202Eb", 400)).toThrow(/holds a control character/);
   });
 
   it("refuses one character over the cap, naming the variable and the cap", () => {

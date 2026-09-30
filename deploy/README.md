@@ -133,7 +133,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 
 - **Omit an argument, or leave it empty, for none of that value.**
-- The blurb and the notice must hold words and no control character (a line break is one). A value the build
+- The blurb and the notice must hold words and no control character (a line break, a zero-width character or a bidirectional control all count). A value the build
   refuses stops the build with a message naming the variable.
 
 **Why the three are fixed at build time and not at run time:** the whole release is precached for offline

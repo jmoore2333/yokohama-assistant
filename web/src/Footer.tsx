@@ -7,12 +7,14 @@
 // the footer's height off `.app` (`--notice-h`), and the table's fit rule
 // follows. Where the build set no notice nothing is drawn and nothing is marked.
 
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 import { siteNotice } from "./buildValues";
 
 export function Footer() {
   const notice = siteNotice();
-  useEffect(() => {
+  // A layout effect: the mark lands before the first paint, so no frame is
+  // drawn with `.app` at the full viewport height.
+  useLayoutEffect(() => {
     if (notice === null) return;
     const root = document.documentElement;
     root.classList.add("has-notice");

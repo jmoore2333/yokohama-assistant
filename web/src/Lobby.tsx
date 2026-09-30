@@ -525,6 +525,7 @@ export function Lobby({
               {project && (
                 <a className="quiet-link" href={project.href} target="_blank" rel="noopener">
                   {project.text}
+                  <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               )}
               {link !== "live" && (

@@ -12,7 +12,7 @@ import { type Page } from "@playwright/test";
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { FLOOR_REM, tileWidthFor } from "../src/fit";
-import { act, blame, deadEnd, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, noticeIsDrawn, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -300,6 +300,7 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   // very end of the page the deck rests exactly one footer above the viewport's
   // bottom; at every other scroll it is against the edge. 0 where the build set
   // no notice.
+  await noticeIsDrawn(page, "the game screen at 1024px");
   const footerH = await page.evaluate(
     () => document.querySelector("footer.site-notice")?.getBoundingClientRect().height ?? 0,
   );

@@ -109,6 +109,10 @@ jobs:
           set -euo pipefail
           docker run --rm --entrypoint sh yokohama-web:ci-link -c \
             'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'
+          docker run --rm --entrypoint sh yokohama-web:ci-link -c \
+            'grep -l "A blurb for the CI build" /srv/web/dist/assets/*.js'
+          docker run --rm --entrypoint sh yokohama-web:ci-link -c \
+            'grep -l "A notice for the CI build" /srv/web/dist/assets/*.js'
           set +e
           docker run --rm --entrypoint sh yokohama-web:ci -c \
             'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'

@@ -1,4 +1,4 @@
-// The door's project link as the CLIENT reads it (M6.5c2, spec §2.3).
+// The door's three build values (the link, the blurb, the notice) as the CLIENT reads them (M6.5c2, spec §2.3).
 //
 // **The define is stubbed in every cell, and that is measured, not caution**:
 // under vitest 4.1.11 a Vite `define` is a runtime GLOBAL rather than a static

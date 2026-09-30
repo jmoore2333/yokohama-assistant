@@ -882,6 +882,25 @@ export async function noSidewaysScroll(page: Page, what: string): Promise<void> 
   ).toBeLessThanOrEqual(0);
 }
 
+/** The footer's notice is DRAWN, in one line: visible, and exactly `--notice-h`
+ *  tall (a probe element takes the variable's own computed height). The e2e build
+ *  sets the notice (`scripts/e2e-build.mjs`); without this, a dist built without
+ *  it would pass every layout cell over a footer that is not there (R-6.5c2.40). */
+export async function noticeIsDrawn(page: Page, what: string): Promise<void> {
+  const footer = page.locator("footer.site-notice");
+  await expect(footer, `${what}: the footer's notice is drawn`).toBeVisible();
+  const { box, want } = await page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:absolute;visibility:hidden;height:var(--notice-h)";
+    document.body.append(probe);
+    const want = probe.getBoundingClientRect().height;
+    probe.remove();
+    return { box: document.querySelector("footer.site-notice")!.getBoundingClientRect().height, want };
+  });
+  expect(want, `${what}: --notice-h has a height`).toBeGreaterThan(0);
+  expect(Math.abs(box - want), `${what}: the footer is ${box}px, one line is ${want}px`).toBeLessThanOrEqual(0.5);
+}
+
 /** A picture for the headed look, under this run's own output directory. */
 export async function look(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });

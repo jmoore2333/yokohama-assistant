@@ -58,7 +58,7 @@ export const BUILD_VALUES = {
 export function checkText(name, raw, max) {
   if (raw === undefined || raw === "") return null;
   if (raw.trim() === "") throw new Error(`${name} holds no words: ${JSON.stringify(raw)}`);
-  if (/[\u0000-\u001f\u007f-\u009f]/u.test(raw)) {
+  if (/[\p{Cc}\p{Zl}\p{Zp}\p{Cf}]/u.test(raw)) {
     throw new Error(`${name} holds a control character: ${JSON.stringify(raw)}`);
   }
   if (raw.length > max) throw new Error(`${name} is longer than ${max} characters`);
