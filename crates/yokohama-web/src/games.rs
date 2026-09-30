@@ -1450,6 +1450,8 @@ mod tests {
             signal_kind: "none",
             serves_games: true,
             multiplayer_offered: false,
+            table_ttl_days: None,
+            open_table_ttl_days: None,
         };
         let ask = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, serde_json::Value) {
             let user = who("local@browser");

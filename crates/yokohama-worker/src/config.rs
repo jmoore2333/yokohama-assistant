@@ -2,14 +2,16 @@
 //! the Worker's variables, parsed and refused HERE — so a bad VALUE is refused
 //! at `init` naming its variable, the Worker's form of the NAS refusing to
 //! start. A configuration of the wrong SHAPE names no variable: JSON that is
-//! not an OBJECT is refused in this crate's own sentence, which names the six
-//! keys ([`parse`]); text that is not JSON, an object with a key it does not
-//! have or MISSING the door, and a value of the wrong JSON type, such as
+//! not an OBJECT is refused in this crate's own sentence, which names the
+//! eight keys ([`parse`]); text that is not JSON, an object with a key it does
+//! not have or MISSING the door, and a value of the wrong JSON type, such as
 //! `{"chat_keep": 500}` for the string `"500"`, in serde's words. The shell
-//! always builds the object, with every value a string or `null`
+//! always builds the object, with every value a string or `null` but the two
+//! TTLs, which are the shell's own reading and so NUMBERS or `null`
 //! (`worker/src/config.ts`'s `moduleConfig`, whose `shellConfig` refuses a
 //! variable that is not a string, and a door that is not named, first: the
-//! orchestrator's ruling E3; M6.5c2, spec §2.1), so no deployment reaches those.
+//! orchestrator's ruling E3; M6.5c2, spec §2.1; R-6.5c2.42), so no deployment
+//! reaches those.
 
 use serde::Deserialize;
 use yokohama_web::chat::ChatConfig;
@@ -22,7 +24,7 @@ pub(crate) const IDENTITY_VAR: &str = "YOKOHAMA_WEB_IDENTITY";
 /// The archive switch's variable (spec §3.1): `r2` or `off`.
 pub(crate) const ARCHIVE_VAR: &str = "YOKOHAMA_WEB_ARCHIVE";
 
-/// The six keys the shell sends, and no others: an unknown key is a
+/// The eight keys the shell sends, and no others: an unknown key is a
 /// misspelling in the shell, refused rather than ignored, and a missing
 /// `identity` is refused too — the door has no default. Read ONLY from the
 /// object form ([`parse`]).
@@ -41,6 +43,11 @@ struct InitConfig {
     lobby_chat: Option<String>,
     chat_keep: Option<String>,
     chat_text: Option<String>,
+    // The two TTLs in whole days (R-6.5c2.42), as the shell's own readers
+    // decided them — `null` while no table expires — for `/api/health` to
+    // report ([`Ttls`]).
+    table_ttl_days: Option<u64>,
+    open_table_ttl_days: Option<u64>,
 }
 
 /// What `init` builds the layer with.
@@ -48,6 +55,19 @@ pub(crate) struct Config {
     pub(crate) door: Door,
     pub(crate) chat: ChatConfig,
     pub(crate) archive: Switch,
+    pub(crate) ttls: Ttls,
+}
+
+/// The Worker's two table TTLs in whole days (R-6.5c2.42), which the host
+/// reports on `/api/health` and nothing in this module applies: a table's
+/// expiry is the shell's alarm. `table` is `YOKOHAMA_WEB_TABLE_TTL_DAYS` — how
+/// long an idle table stands — and `open_table` is
+/// `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, how long one still waiting for players
+/// does; both `None` while no table expires.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Ttls {
+    pub(crate) table: Option<u64>,
+    pub(crate) open_table: Option<u64>,
 }
 
 /// Which door this Worker has (M6.5c2, spec §2.1; R-6.5c2.5), fixed at `init`
@@ -124,8 +144,9 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     let value: serde_json::Value = serde_json::from_str(config)
         .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
     if !value.is_object() {
-        return Err("the module's init configuration is the object of its six keys — \
-                    identity, archive, caller, lobby_chat, chat_keep and chat_text"
+        return Err("the module's init configuration is the object of its eight keys — \
+                    identity, archive, caller, lobby_chat, chat_keep, chat_text, \
+                    table_ttl_days and open_table_ttl_days"
             .to_string());
     }
     let c: InitConfig = serde_json::from_value(value)
@@ -142,7 +163,8 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     };
     let chat =
         ChatConfig::from_env_values(c.lobby_chat.as_deref(), c.chat_keep.as_deref(), c.chat_text.as_deref())?;
-    Ok(Config { door, chat, archive })
+    let ttls = Ttls { table: c.table_ttl_days, open_table: c.open_table_ttl_days };
+    Ok(Config { door, chat, archive, ttls })
 }
 
 /// The archive caller as the layer normalizes an address.

@@ -1,12 +1,23 @@
 import type { Exports, Reply } from "../../gen/factory.js";
 import { UNCONFIRMED } from "../admin";
 import type { ShellConfig } from "../config";
-import { expiryDeadline, gameOf, keptOf, markerSentence, ttlDaysOf, type Ending, type Reason } from "../marker";
+import {
+  expiryDays,
+  expiryDeadline,
+  expiryReason,
+  gameOf,
+  keptOf,
+  markerSentence,
+  openTtlDaysOf,
+  ttlDaysOf,
+  type Ending,
+  type Reason,
+} from "../marker";
 import { pinnedTo, readReply, type Bump, type Instance, type Replied } from "../module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan, type Site } from "../r2";
 import { errorBody, log, respond } from "../respond";
 import { nextRetry } from "../slot";
-import { clearDocs, clearMetaBut, deleteMeta, getMeta, hasDoc, hasTables, setMeta } from "../storage";
+import { clearDocs, clearMetaBut, deleteMeta, getMeta, hasDoc, hasTables, readDocs, setMeta } from "../storage";
 import type { Called, Committed, Incoming, Pinned, TableParts } from "../table";
 import { archiveOwedOf, owing } from "./archiving";
 import { differs, lastActive, slotState } from "./delivery";
@@ -241,7 +252,8 @@ export function withLifecycle<T extends TableParts>(Base: T) {
 
     /**
      * **An expiry** (spec §2.4 step 1; R-6.5c.15) — the alarm's, once the TTL
-     * has run out (`expiry`), and an operator's plain expire (`operate`) — as
+     * has run out or a table has waited out the waiting-table TTL (`expiry`,
+     * R-6.5c2.42), and an operator's plain expire (`operate`) — as
      * the table's creator's own abandon: the receipt loop (`deleting`) over the
      * module's host-local `expire(id)`, which dispatches the layer's
      * `DELETE /api/games/{id}` as the stored table's `created_by`, so the
@@ -263,13 +275,14 @@ export function withLifecycle<T extends TableParts>(Base: T) {
       try {
         const woken = this.wake(id, instance, config, traps);
         if (woken instanceof Response) return answered(woken);
+        const alarmed = reason.reason === "expired" || reason.reason === "waited";
         const deleted = await this.deleting(id, instance, config, {
-          site: reason.reason === "expired" ? "expiry" : "operator",
+          site: alarmed ? "expiry" : "operator",
           reason,
           viewer: (copy) => copy?.createdBy,
           call: "expire",
           f: (m) => m.expire(id),
-          ...(reason.reason === "expired" ? { attempt: expiryFailedOf(this.ctx.storage.sql) } : {}),
+          ...(alarmed ? { attempt: expiryFailedOf(this.ctx.storage.sql) } : {}),
         });
         if (deleted instanceof Response) {
           if (woken.clearTraps) this.batch(clearLoadTraps);
@@ -291,8 +304,8 @@ export function withLifecycle<T extends TableParts>(Base: T) {
     }
 
     /**
-     * The alarm's expiry (spec §2.4 "Expiry"; R-6.5c.15), after its
-     * deliveries. With a TTL (`ttlDaysOf`) and a document stored, from the
+     * The alarm's expiry (spec §2.4 "Expiry"; R-6.5c.15; R-6.5c2.42), after
+     * its deliveries. With a TTL (`ttlDaysOf`) and a document stored, from the
      * table's last activity — the newest `written_at` of its record, table and
      * chat, RE-READ at every run, because the expiry deadline only moves later
      * and nothing re-arms the alarm for a write that makes nothing due:
@@ -300,12 +313,22 @@ export function withLifecycle<T extends TableParts>(Base: T) {
      * - a table `held` or poisoned never expires on its own (spec §2.4; the
      *   operator's force is its path): past its TTL it is named in the log,
      *   `expiry-blocked`, and no expiry deadline is armed for it;
-     * - before `last activity + TTL` — an alarm armed for other work, or at a
-     *   deadline a later activity has since moved — the alarm is re-armed to
-     *   the table's next deadline (`nextDue`), and a count of failed expiries
-     *   that later activity has made stale is dropped;
-     * - otherwise the table expires (`expire`) under `blockConcurrencyWhile`,
-     *   and an expiry that did not end it is settled (`unexpired`) before the
+     * - before the deadline the alarm is ARMED at — `last activity` plus the
+     *   shorter of the two TTLs (`expiryDays`), since no batch can read the
+     *   table's status — an alarm armed for other work, or at a deadline a
+     *   later activity has since moved, is re-armed to the table's next
+     *   deadline (`nextDue`), and a count of failed expiries that later
+     *   activity has made stale is dropped;
+     * - past it, the table's STATUS decides (the plan's R-E8): read off its
+     *   house copy (`waiting`, through `factsOf`, `copyFacts`'s parse), a
+     *   table still waiting for players — `open` — is closed as one that
+     *   `waited` once the waiting-table TTL is past, and any table `expired`
+     *   once the TTL is (`expiryReason`); a table that is neither is
+     *   re-armed with the TTL itself as its expiry's deadline (`nextDue`,
+     *   `waiting` read `false`), so the alarm does not fire again at a
+     *   deadline it has already decided;
+     * - a table to end expires (`expire`) under `blockConcurrencyWhile`, and
+     *   an expiry that did not end it is settled (`unexpired`) before the
      *   block ends. The delete's side channels — its removal's push, an owed
      *   save's upload — follow the block as a request's follow its reply
      *   (`waitUntil`, `finish`), and the alarm armed in the delete's batch
@@ -318,24 +341,48 @@ export function withLifecycle<T extends TableParts>(Base: T) {
       const ttl = ttlDaysOf(config);
       const activity = lastActive(sql);
       if (ttl === null || activity === null) return;
-      const deadline = expiryDeadline(activity, ttl);
+      const openTtl = openTtlDaysOf(config);
       const blocked = getMeta(sql, "held") !== undefined ? "held" : poisoned(sql) ? "poisoned" : undefined;
       if (blocked !== undefined) {
-        if (Date.now() >= deadline) log("expiry-blocked", { id, why: blocked });
+        if (Date.now() >= expiryDeadline(activity, ttl)) log("expiry-blocked", { id, why: blocked });
         return;
       }
-      if (Date.now() < deadline) {
+      if (Date.now() < expiryDeadline(activity, expiryDays(ttl, openTtl, undefined))) {
         if (expiryFailedOf(sql) > 0) this.batch((sql) => deleteMeta(sql, "expiry_failed"));
         this.arm(this.nextDue(sql));
         return;
       }
+      const waiting = this.waiting(id);
+      const reason = expiryReason(Date.now(), activity, ttl, openTtl, waiting);
+      if (reason === undefined) {
+        this.arm(this.nextDue(sql, waiting));
+        return;
+      }
       const done = await this.ctx.blockConcurrencyWhile(async () => {
-        const expired = await this.expire(id, { reason: "expired", ttl_days: ttl });
+        const expired = await this.expire(id, reason);
         if (expired.done?.marker === undefined) this.unexpired(id, expired);
         return expired.done;
       });
       if (done?.pushing) this.ctx.waitUntil(this.deliverSlot());
       if (done?.archiving) this.ctx.waitUntil(this.deliverArchive({ fromRequest: false }));
+    }
+
+    /**
+     * Whether the table still WAITS for players (R-6.5c2.42): its status
+     * `open`, as its house copy says it — read by `factsOf`, the parse
+     * `copyFacts` makes and the strings rule's one sanctioned parse — the copy
+     * made from the STORED table document on a module of its own (`copyOf`),
+     * so this object's module — its wake, and whatever a wake owes — is
+     * untouched and nothing is written. A copy that cannot be made — no table
+     * document, a refusal, a trap — reads as not waiting, so the TTL itself
+     * decides: the alarm's `recopy`, which ran first, made a copy from the
+     * stored document too and logged any failure.
+     */
+    private waiting(id: string): boolean {
+      const table = readDocs(this.ctx.storage.sql).get("table");
+      if (table === undefined) return false;
+      const made = this.copyOf(id, table);
+      return "copy" in made && made.copy !== undefined && factsOf(made.copy).status === "open";
     }
 
     /**
@@ -514,26 +561,24 @@ export function poisoned(sql: SqlStorage): boolean {
 }
 
 /** What a table's HOUSE COPY says that a delete through the layer reads
- *  (`copyFacts`). */
+ *  (`copyFacts`), and the alarm's expiry (`waiting`). */
 interface CopyFacts {
   /** The table's creator — `created_by` — whom an expiry reads it as. */
   createdBy: string | undefined;
   /** The table's save was made: `archived_at` is set (the orchestrator's
    *  ruling I-71). */
   stamped: boolean;
+  /** The table's `status` — `open`, `dealing` or `playing` — which decides
+   *  whether it still waits for players (R-6.5c2.42). */
+  status: string | undefined;
 }
 
 /**
  * What the table `mod` holds under `id` says of itself on its HOUSE COPY — the
- * table document through spec §2.5's scrub — which is parsed here, where the
- * table document itself never is (the plan's strings rule; the orchestrator's
- * rulings I-64 and I-71): its creator, whom an expiry reads the table as, and
- * whether its save was made. A copy carries no seed, and since M6.5c2 may
- * carry a bot descriptor whose `weights` is above 2^53, which this parse
- * rounds; it may be parsed because nothing here reads `params` and no parsed
- * copy is written back. `undefined` when no table is stored, or the module refuses the copy,
- * as it refuses a stored document that does not parse or that `check_shape`
- * rejects. A trap is the caller's: it runs under their `guarded`.
+ * table document through spec §2.5's scrub (`factsOf`). `undefined` when no
+ * table is stored, or the module refuses the copy, as it refuses a stored
+ * document that does not parse or that `check_shape` rejects. A trap is the
+ * caller's: it runs under their `guarded`.
  */
 function copyFacts(mod: Exports, id: string): CopyFacts | undefined {
   let copy: string | undefined;
@@ -543,10 +588,25 @@ function copyFacts(mod: Exports, id: string): CopyFacts | undefined {
     if (typeof e === "string") return undefined;
     throw e;
   }
-  if (copy === undefined) return undefined;
-  const parsed = JSON.parse(copy) as { created_by?: unknown; archived_at?: unknown };
+  return copy === undefined ? undefined : factsOf(copy);
+}
+
+/**
+ * A HOUSE COPY's facts — the copy `house_copy` made, off this object's module
+ * (`copyFacts`) or off a module of its own (`copyOf`, for `waiting`) — which
+ * the table object parses HERE and nowhere else, where the table document
+ * itself is never parsed (the plan's strings rule; the orchestrator's rulings
+ * I-64 and I-71; R-6.5c2.42): its creator, whom an expiry reads the table as;
+ * whether its save was made; and its status. A copy carries no seed, and
+ * since M6.5c2 may carry a bot descriptor whose `weights` is above 2^53, which
+ * this parse rounds; it may be parsed because nothing here reads `params` and
+ * no parsed copy is written back.
+ */
+function factsOf(copy: string): CopyFacts {
+  const parsed = JSON.parse(copy) as { created_by?: unknown; archived_at?: unknown; status?: unknown };
   return {
     createdBy: typeof parsed.created_by === "string" ? parsed.created_by : undefined,
     stamped: typeof parsed.archived_at === "number",
+    status: typeof parsed.status === "string" ? parsed.status : undefined,
   };
 }

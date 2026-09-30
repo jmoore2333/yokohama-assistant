@@ -68,6 +68,25 @@ describe("YOKOHAMA_WEB_TABLE_TTL_DAYS (R-6.5c.15)", () => {
   });
 });
 
+// R-6.5c2.42: a table still WAITING for players expires after these days,
+// default 7, refused as the first TTL is. With no first TTL it is inert — no
+// table expires — which the module's configuration says (below). Mutants: no
+// default; a default other than 7; the refusal naming the first TTL.
+describe("YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS (R-6.5c2.42)", () => {
+  it("is 7 when absent", () => {
+    expect(accepted(env()).openTtlDays).toBe(7);
+  });
+  it("is a whole number of days", () => {
+    expect(accepted(env({ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: "3" })).openTtlDays).toBe(3);
+    expect(accepted(env({ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: " 14 " })).openTtlDays).toBe(14);
+  });
+  it.each(["0", "-1", "2.5", "seven", "", "1e3"])("refuses %j, naming the variable", (value) => {
+    expect(refused(env({ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: value }))).toBe(
+      `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — got ${JSON.stringify(value)}`,
+    );
+  });
+});
+
 describe("YOKOHAMA_WEB_ADMINS (spec §2.9)", () => {
   it("is null when absent: the operator routes stay the layer's 404", () => {
     expect(accepted(env()).admins).toBeNull();
@@ -222,6 +241,7 @@ describe("what the open door refuses beside it (M6.5c2, spec §2.1)", () => {
 describe("a variable that is not a string", () => {
   it.each<[string, unknown, string]>([
     ["YOKOHAMA_WEB_TABLE_TTL_DAYS", 90, "the number 90"],
+    ["YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", 7, "the number 7"],
     ["YOKOHAMA_DEV_DOOR", true, "the boolean true"],
     ["YOKOHAMA_WEB_CHAT_KEEP", 500, "the number 500"],
     ["ACCESS_AUD", null, "null"],
@@ -245,6 +265,17 @@ describe("which of two refusals is named", () => {
       'YOKOHAMA_WEB_ARCHIVE must be r2 or off — got "s3"',
     );
   });
+  // R-6.5c2.42: the waiting-table TTL follows the TTL and comes before the
+  // operator list, in ShellConfig's order. Mutants: either pair read the other
+  // way round.
+  it("the TTL before the waiting-table TTL, and that before the operator list", () => {
+    expect(refused(env({ YOKOHAMA_WEB_TABLE_TTL_DAYS: "0", YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: "0" }))).toBe(
+      'YOKOHAMA_WEB_TABLE_TTL_DAYS must be a whole number of days above zero — got "0"',
+    );
+    expect(refused(env({ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: "0", YOKOHAMA_WEB_ADMINS: "" }))).toBe(
+      'YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — got "0"',
+    );
+  });
   // M6.5c2: the door is ShellConfig's FIRST field. Mutant: the door read after
   // the archive switch.
   it("the door before the archive switch", () => {
@@ -266,13 +297,29 @@ describe("the module's init configuration (the plan's names table)", () => {
       true,
     );
     expect(moduleConfig(e, "Red@T.test")).toBe(
-      '{"identity":"worker","archive":"r2","caller":"Red@T.test","lobby_chat":" Off ","chat_keep":" All ","chat_text":" 250 "}',
+      '{"identity":"worker","archive":"r2","caller":"Red@T.test","lobby_chat":" Off ","chat_keep":" All ","chat_text":" 250 ",' +
+        '"table_ttl_days":null,"open_table_ttl_days":null}',
     );
   });
-  it("is off with no caller and no chat variable set", () => {
+  it("is off with no caller, no chat variable and no TTL set", () => {
     expect(moduleConfig(env(), null)).toBe(
-      '{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}',
+      '{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null,' +
+        '"table_ttl_days":null,"open_table_ttl_days":null}',
     );
+  });
+  // R-6.5c2.42: the two TTLs as the shell read them, for `/api/health` to
+  // report — the waiting-table TTL at its default — and BOTH null with no
+  // first TTL, where the second is inert: no table expires, so none expires
+  // for waiting. Mutants: the second reported while inert; its default not
+  // carried; the TTLs sent raw.
+  it("carries the two TTLs as the shell read them, and neither while no table expires", () => {
+    const ttls = (vars: Record<string, unknown>) => {
+      const c = JSON.parse(moduleConfig(env(vars), null)) as Record<string, unknown>;
+      return [c.table_ttl_days, c.open_table_ttl_days];
+    };
+    expect(ttls({ YOKOHAMA_WEB_TABLE_TTL_DAYS: " 90 " })).toEqual([90, 7]);
+    expect(ttls({ YOKOHAMA_WEB_TABLE_TTL_DAYS: "30", YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: "3" })).toEqual([30, 3]);
+    expect(ttls({ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: "3" }), "inert without the first").toEqual([null, null]);
   });
   // The door is carried as the shell read it. Mutant: the raw value sent.
   it("carries the door as the shell read it: trimmed", () => {

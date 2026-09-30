@@ -334,7 +334,7 @@ function unfreeze(value) {
  *  exactly where the Worker is entitled to differ (spec §5.3's live half). */
 function liveBody(fixture) {
   const body = unfreeze(committed(fixture));
-  if (fixture === "health") return { ...body, identity: "cf-access", signal: "ws", archive: "r2" };
+  if (fixture === "health") return { ...body, identity: "cf-access", signal: "ws", archive: "r2", table_ttl_days: 90, open_table_ttl_days: 7 };
   if (fixture === "me" || fixture === "me_signed_out") return { ...body, mode: "cf-access" };
   if (fixture.startsWith("games")) {
     // Somebody else's table, older than the replay's, and a cursor that runs
@@ -417,7 +417,9 @@ describe("replay", () => {
       [
         "HOST_FIELDS health.archive",
         "HOST_FIELDS health.identity",
+        "HOST_FIELDS health.open_table_ttl_days",
         "HOST_FIELDS health.signal",
+        "HOST_FIELDS health.table_ttl_days",
         "HOST_FIELDS me.mode",
         "HOST_FIELDS me_signed_out.mode",
         "filterLobby games",
@@ -647,8 +649,30 @@ describe("replay", () => {
     const { result } = await run(host);
     expect(result.holds).toBe(false);
     expect(result.mismatches.map((m) => `${m.fixture} ${m.path} ${m.reason}`)).toEqual([
-      "health archive exempted, but this host sent no string for it",
+      "health archive exempted, but this host sent no string or number for it",
     ]);
     expect(result.spent.filter((s) => s.startsWith("HOST_FIELDS health.archive"))).toEqual([]);
+  });
+
+  // The two TTLs (R-6.5c2.42) are the exempted fields a host sends as NUMBERS,
+  // and `null` is what the corpus's host sends for them: a Worker that sent
+  // `null` too has sent no value that differs, so the exemption is not spent.
+  // Mutant: the rule's type test read as "anything but a string is refused"
+  // (the TTLs refused whatever the Worker sent), or as "anything present"
+  // (`null` spent).
+  it("refuses a TTL the Worker sent as null, and spends the other it sent as a number", async () => {
+    const host = fakeHost({
+      edit: (plan, rows) => {
+        plan[planIndex(rows, "walk.json", 28)] = () => json(200, { ...liveBody("health"), table_ttl_days: null });
+      },
+    });
+    const { result } = await run(host);
+    expect(result.holds).toBe(false);
+    expect(result.mismatches.map((m) => `${m.fixture} ${m.path} ${m.reason}`)).toEqual([
+      "health table_ttl_days exempted, but this host sent no string or number for it",
+    ]);
+    expect(result.spent.filter((s) => s.startsWith("HOST_FIELDS health.") && s.includes("ttl_days"))).toEqual([
+      "HOST_FIELDS health.open_table_ttl_days: null → 7",
+    ]);
   });
 });

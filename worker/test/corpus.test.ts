@@ -25,15 +25,16 @@ import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
 // else, as the committed pages do.
 
 /** What one exempted field of a named reply came to: `spent` when this host
- *  sent it as a string that differs from the committed one; `no-string` when
- *  it sent no string for it, absent or of another type; `agrees` when both
- *  hosts sent the same value. */
-type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agrees" };
+ *  sent it as a string or a number that differs from the committed one;
+ *  `unsent` when it sent neither for it — absent, `null`, or of another type;
+ *  `agrees` when both hosts sent the same value. */
+type HostFieldVerdict = { field: string; verdict: "spent" | "unsent" | "agrees" };
 
 /**
  * Every exempted field of `fixture`'s reply, judged by the PRESENCE rule (R3's
- * L-5): an exemption is spent only on a field this host SENT, as a string,
- * that differs from the committed one. A field this host dropped is no
+ * L-5): an exemption is spent only on a field this host SENT, as a string or
+ * a number — a number since the two TTLs (R-6.5c2.42) — that differs from the
+ * committed one. A field this host dropped is no
  * difference between two hosts, and an exemption spent on it — or on a field
  * both hosts agree on — is a hole a later host could hide behind (M6.5b's
  * battery): `expect(undefined).not.toEqual(…)` passes, which is how the old
@@ -53,7 +54,7 @@ function hostFields(fixture: string, committed: unknown, got: unknown): HostFiel
   const cut = (typeof committed === "object" && committed !== null ? committed : {}) as Record<string, unknown>;
   return (HOST_FIELDS[fixture] ?? []).map((field) => {
     const value = sent[field];
-    if (typeof value !== "string") return { field, verdict: "no-string" };
+    if (typeof value !== "string" && typeof value !== "number") return { field, verdict: "unsent" };
     return { field, verdict: value === cut[field] ? "agrees" : "spent" };
   });
 }
@@ -119,24 +120,39 @@ const THIRD_COLUMN = [
 describe("hostFields — the presence rule, verdict by verdict (R3's L-5)", () => {
   // Task 7's review, M-6: the replay below only ever meets `spent`, so each
   // other verdict is pinned here, over the function alone — no object is
-  // touched. Mutant: `typeof value !== "string"` read as `value === undefined`
-  // (a number sent for a field would then be spent), or `agrees` folded into
-  // `spent`.
-  it("spends an exemption only on a string this host sent that differs, and takes out only the exempted fields", () => {
-    const committed = { identity: "open", signal: "sse", archive: "off", multiplayer: true };
-    expect(hostFields("health", committed, { identity: "cf-access", signal: "ws", archive: "r2" })).toEqual([
+  // touched. A number is SENT since the two TTLs (R-6.5c2.42); `null`, a
+  // boolean and an absent field are not. Mutants: the type test read as
+  // `value === undefined` (a `null` or a boolean sent for a field would then
+  // be spent); a number left unsent (the TTLs could never be spent); `agrees`
+  // folded into `spent`.
+  it("spends an exemption only on a string or a number this host sent that differs, and takes out only the exempted fields", () => {
+    const committed = { identity: "open", signal: "sse", archive: "off", multiplayer: true, table_ttl_days: null, open_table_ttl_days: null };
+    const sent = { identity: "cf-access", signal: "ws", archive: "r2", table_ttl_days: 90, open_table_ttl_days: 7 };
+    expect(hostFields("health", committed, sent)).toEqual([
       { field: "identity", verdict: "spent" },
       { field: "signal", verdict: "spent" },
       { field: "archive", verdict: "spent" },
+      { field: "table_ttl_days", verdict: "spent" },
+      { field: "open_table_ttl_days", verdict: "spent" },
     ]);
-    expect(hostFields("health", committed, { signal: 7, archive: "off" }), "absent, a number, and agreeing").toEqual([
-      { field: "identity", verdict: "no-string" },
-      { field: "signal", verdict: "no-string" },
+    expect(
+      hostFields("health", committed, { signal: true, archive: "off", table_ttl_days: null, open_table_ttl_days: 7 }),
+      "absent, a boolean, agreeing, null, and a number",
+    ).toEqual([
+      { field: "identity", verdict: "unsent" },
+      { field: "signal", verdict: "unsent" },
       { field: "archive", verdict: "agrees" },
+      { field: "table_ttl_days", verdict: "unsent" },
+      { field: "open_table_ttl_days", verdict: "spent" },
     ]);
-    expect(hostFields("me", { mode: "open" }, null), "a body that is no object sends no field").toEqual([{ field: "mode", verdict: "no-string" }]);
+    expect(hostFields("health", { open_table_ttl_days: 7 }, { open_table_ttl_days: 7 })[4], "a number both hosts sent").toEqual({
+      field: "open_table_ttl_days",
+      verdict: "agrees",
+    });
+    expect(hostFields("me", { mode: "open" }, null), "a body that is no object sends no field").toEqual([{ field: "mode", verdict: "unsent" }]);
     expect(hostFields("games", committed, {}), "a fixture with nothing exempted").toEqual([]);
     expect(withoutHostFields("health", committed)).toEqual({ multiplayer: true });
+    expect(withoutHostFields("health", sent)).toEqual({});
     expect(withoutHostFields("games", committed)).toEqual(committed);
     expect(withoutHostFields("health", null)).toBeNull();
   });
@@ -160,12 +176,13 @@ describe("the objects serve the corpus (spec §5.3)", () => {
         if (text === undefined) throw new Error(`${row.fixture} is named by the walk and not committed`);
         const committed: unknown = JSON.parse(text);
         const got: unknown = reply.text ? JSON.parse(reply.text) : null;
-        // An exempted field must be SENT by this host, as a string, and differ
-        // from the committed one (`hostFields`, the live replay's rule's twin;
-        // R3's L-5): an exemption spent on a field this host dropped, or on
-        // one both hosts agree on, is a hole a later host could hide behind.
+        // An exempted field must be SENT by this host, as a string or a
+        // number, and differ from the committed one (`hostFields`, the live
+        // replay's rule's twin; R3's L-5): an exemption spent on a field this
+        // host dropped, or on one both hosts agree on, is a hole a later host
+        // could hide behind.
         for (const { field, verdict } of hostFields(row.fixture, committed, got)) {
-          expect(verdict, `${row.fixture}.${field} is exempted: this host must send it as a string, and differ`).toBe("spent");
+          expect(verdict, `${row.fixture}.${field} is exempted: this host must send it as a string or a number, and differ`).toBe("spent");
         }
         expect(withoutHostFields(row.fixture, got), `${row.fixture} (${label})`).toEqual(withoutHostFields(row.fixture, committed));
       },

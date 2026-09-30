@@ -100,17 +100,18 @@ export function judge(fixture, reply, context) {
     got = freezeClock(got);
     for (const field of HOST_FIELDS[fixture] ?? []) {
       if (!isObject(got)) break;
-      // An exemption is spent only on a value this host SENT, as a string,
-      // that differs from the committed one: a field it dropped is a
-      // mismatch, never `"off" → (absent)`. The rule's twin is the pool's,
+      // An exemption is spent only on a value this host SENT, as a string or
+      // a number (a number since the two TTLs, R-6.5c2.42), that differs from
+      // the committed one: a field it dropped is a mismatch, never
+      // `"off" → (absent)`. The rule's twin is the pool's,
       // `worker/test/corpus.test.ts`'s `hostFields` — the same rule over the
       // same fields, stated once in each of the two WORKER replays (R3's L-5;
       // ruling R-C3). The browser host's node replay
       // (`web/src/local/corpus.node.test.ts`) still spends an exemption on
       // `not.toEqual` alone, which an absent field passes: a recorded debt
       // (ruling R-C20 of `docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md`).
-      if (typeof got[field] !== "string") {
-        diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
+      if (typeof got[field] !== "string" && typeof got[field] !== "number") {
+        diffs.push({ path: field, reason: "exempted, but this host sent no string or number for it", committed: committed[field], got: got[field] });
       } else if (isDeepStrictEqual(got[field], committed[field])) {
         diffs.push({ path: field, reason: "exempted, but both hosts agree on it", committed: committed[field], got: got[field] });
       } else {

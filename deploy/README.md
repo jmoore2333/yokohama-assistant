@@ -174,7 +174,9 @@ docker run -d --name yokohama-web \
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
 
 A bad value stops the server at start-up, naming the variable. `/api/health` reports the door, the
-transport, the archive and the chat limits, so a client sizes itself from the server's rules.
+transport, the archive and the chat limits, so a client sizes itself from the server's rules. No
+table expires on this server: it reads no TTL, and `/api/health` reports `table_ttl_days` and
+`open_table_ttl_days` as `null` (the Worker's two TTLs are its own, `worker/RUNBOOK.md` §3).
 
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and

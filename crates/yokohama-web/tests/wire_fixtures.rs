@@ -426,6 +426,9 @@ impl Api {
             // would be compared against a router serving a different table.
             serves_games: self.state.multiplayer.0,
             multiplayer_offered: self.state.multiplayer.0,
+            // The axum host's own: it keeps no TTL (R-6.5c2.42).
+            table_ttl_days: None,
+            open_table_ttl_days: None,
         };
         let out = yokohama_web::api::dispatch(
             &self.state.games,

@@ -517,6 +517,12 @@ export interface Health {
    *  serves every game route, because a local game is played through them, and
    *  there is nobody else at the table. */
   multiplayer: boolean;
+  /** How many days an idle table stands before it expires, and how many a
+   *  table still waiting for players does (M6.5c2 cycle E, R-6.5c2.42): the
+   *  Worker's two TTLs. `null` where no table expires — the NAS keeps no TTL,
+   *  and the browser host has no tables to expire. */
+  table_ttl_days: number | null;
+  open_table_ttl_days: number | null;
 }
 
 /** Who the server thinks you are, and which header it reads to decide.

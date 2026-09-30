@@ -89,6 +89,11 @@ fn door() -> config::Door {
     DOOR.lock().expect("the host's door").expect("init() before a caller is resolved")
 }
 
+/// The two table TTLs `init` was given (R-6.5c2.42), which the host reports
+/// and nothing here applies: a table's expiry is the shell's alarm. Set with
+/// the door, once `config::parse` has accepted the whole.
+static TTLS: Mutex<config::Ttls> = Mutex::new(config::Ttls { table: None, open_table: None });
+
 /// The log the one `Games` holds — the SAME `Arc`, so what the layer logs
 /// during a call is drained into that call's reply (M6.5c2).
 pub(crate) static LOG: Mutex<Option<Arc<ShellLog>>> = Mutex::new(None);
@@ -139,26 +144,37 @@ pub fn set_clock(seconds: Option<f64>) -> Option<f64> {
 /// R-6.5c.3 has the Worker forward its verdict to the objects as
 /// `X-Yokohama-User`; `open` under `open` ([`config::Door::wire_name`]).
 /// `"ws"`: a table's changes reach a browser over a WebSocket (spec §2.7).
-/// Multiplayer is both served and offered.
+/// Multiplayer is both served and offered. The two TTLs are the ones `init`
+/// was given (R-6.5c2.42).
 fn host() -> Host {
-    Host { identity_name: door().wire_name(), signal_kind: "ws", serves_games: true, multiplayer_offered: true }
+    let ttls = *TTLS.lock().expect("the host's TTLs");
+    Host {
+        identity_name: door().wire_name(),
+        signal_kind: "ws",
+        serves_games: true,
+        multiplayer_offered: true,
+        table_ttl_days: ttls.table,
+        open_table_ttl_days: ttls.open_table,
+    }
 }
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the door (M6.5c2), the `Games`, its store, its signal, its archive and
-/// its log together, an empty `picker::PICKERS`, and `receipt::RECEIPTS`: under
-/// `r2` a new receipt archive with no receipt and no pending plan, under `off`
-/// none. A refused configuration changes nothing — the door included, which is
+/// one — the door (M6.5c2) and the two TTLs the host reports (R-6.5c2.42), the
+/// `Games`, its store, its signal, its archive and its log together, an empty
+/// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
+/// with no receipt and no pending plan, under `off` none. A refused
+/// configuration changes nothing — the door and the TTLs included, which are
 /// stored only once `config::parse` has accepted the whole. A bad VALUE's
 /// refusal names its variable (spec §2.2); a configuration of the wrong shape
 /// names none — JSON that is not an object is refused in this crate's own
-/// sentence, which names the six keys, and an unknown or missing key or a
+/// sentence, which names the eight keys, and an unknown or missing key or a
 /// value of the wrong JSON type in serde's words (`config.rs`) — and the shell
 /// never builds one. The clock is not reset: [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
-    let config::Config { door, chat, archive } = config::parse(config)?;
+    let config::Config { door, chat, archive, ttls } = config::parse(config)?;
     // The door before the `Games` is built: the layer is built for it.
     *DOOR.lock().expect("the host's door") = Some(door);
+    *TTLS.lock().expect("the host's TTLs") = ttls;
     let store = Arc::new(MemStore::default());
     let signal = Arc::new(RecordingSignal::default());
     // The SAME `Arc` the layer holds, kept so a receipt reaches the archive the
@@ -729,6 +745,29 @@ mod tests {
         }
     }
 
+    /// **The two TTLs `init` was given, on `/api/health`** (R-6.5c2.42): the
+    /// numbers the shell read, reported as they came, and `null` for each
+    /// while no table expires — asked by `get`, since indexing a `Value` by a
+    /// missing key also reads null. The next `init` replaces them. Mutants:
+    /// either TTL not carried to the host; the two swapped; a later `init`'s
+    /// TTLs not read.
+    #[test]
+    fn health_reports_the_two_ttls_init_was_given() {
+        let _s = serial();
+        let ttl = |body: &str, key: &str| -> Option<serde_json::Value> {
+            serde_json::from_str::<serde_json::Value>(body).unwrap().get(key).cloned()
+        };
+        let with = r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null,"table_ttl_days":90,"open_table_ttl_days":7}"#;
+        init_inner(with).unwrap();
+        let body = dispatch_inner(Some("red@wire.test"), "GET", "/api/health", "", None, b"").body;
+        assert_eq!(ttl(&body, "table_ttl_days"), Some(serde_json::json!(90)), "{body}");
+        assert_eq!(ttl(&body, "open_table_ttl_days"), Some(serde_json::json!(7)), "{body}");
+        init_inner(&config("off")).unwrap();
+        let body = dispatch_inner(Some("red@wire.test"), "GET", "/api/health", "", None, b"").body;
+        assert_eq!(ttl(&body, "table_ttl_days"), Some(serde_json::Value::Null), "{body}");
+        assert_eq!(ttl(&body, "open_table_ttl_days"), Some(serde_json::Value::Null), "{body}");
+    }
+
     /// **The open door** (M6.5c2, spec §2.1; R-6.5c2.5): `init`'s `identity`
     /// fixes the mode a caller is resolved under, and the door's name on the
     /// wire. Under `open` a claimed NAME is a caller, keyed by the layer's own
@@ -846,7 +885,7 @@ mod tests {
             let err = init_inner(array).unwrap_err();
             assert_eq!(
                 err,
-                "the module's init configuration is the object of its six keys — identity, archive, caller, lobby_chat, chat_keep and chat_text",
+                "the module's init configuration is the object of its eight keys — identity, archive, caller, lobby_chat, chat_keep, chat_text, table_ttl_days and open_table_ttl_days",
                 "{array}"
             );
         }

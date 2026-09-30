@@ -40,14 +40,20 @@ import {
 // Time moves by BACKDATING the stored times — every document's `written_at`,
 // the marker's `at` — through `runInDurableObject`, then running the alarm:
 // workerd's clock cannot be moved (spec §5.2). The pool runs with
-// `YOKOHAMA_WEB_TABLE_TTL_DAYS` at production's 90 (`wrangler.test.jsonc`; the
-// orchestrator's ruling I-34), and the module's clock frozen at
-// 1_789_000_000. Storage and the house are per FILE (pool fact 5): every cell
+// `YOKOHAMA_WEB_TABLE_TTL_DAYS` at production's 90 and
+// `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` at production's 7 (`wrangler.test.jsonc`;
+// the orchestrator's ruling I-34; R-6.5c2.42), and the module's clock frozen
+// at 1_789_000_000. Storage and the house are per FILE (pool fact 5): every cell
 // uses ids of its own. Every patch is restored in a `finally`, and a cell that
 // holds a push releases it there too.
 
 /** `wrangler.test.jsonc`'s TTL, in milliseconds. */
 const TTL = 90 * DAY_MS;
+/** `wrangler.test.jsonc`'s waiting-table TTL, in milliseconds (R-6.5c2.42):
+ *  the SHORTER of the two, so it is where every table's alarm is armed —
+ *  from SQL alone, which cannot read whether a table still waits for players
+ *  (the strings rule) — and the alarm decides by the table's status. */
+const OPEN_TTL = 7 * DAY_MS;
 /** An operator's address, as the Worker's gate would forward it. */
 const BOSS = "boss@t.test";
 
@@ -62,11 +68,13 @@ function utcDate(at: number): string {
   return `${d.getUTCFullYear()}-${two(d.getUTCMonth() + 1)}-${two(d.getUTCDate())}`;
 }
 
-/** Spec §2.4 step 5's three heads and three tails, as LITERALS. */
+/** Spec §2.4 step 5's heads — and R-6.5c2.42's fourth, a table that waited
+ *  for players — and three tails, as LITERALS. */
 const HEAD = {
   abandoned: (day: string) => `this table was abandoned on ${day}`,
   expired: (day: string) => `this table expired on ${day} after 90 days without activity`,
   operator: (day: string) => `this table was removed by an operator on ${day}`,
+  waited: (day: string) => `this table waited 7 days for players and was closed on ${day}`,
 } as const;
 const TAIL = {
   archive: " — its game is in the archive",
@@ -118,8 +126,9 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
   // Battery 30. The table's last activity is moved back past the TTL, then a
   // chat post UPDATES the chat row — a write that makes nothing due, so it
   // leaves the alarm where the last acknowledgement put it (spec §2.4's third
-  // rule). The alarm fires BEFORE the new last activity + TTL: it must
-  // re-read the activity and re-arm to it. Mutants: `written_at` not advanced
+  // rule). The alarm fires BEFORE the new last activity plus the deadline it
+  // is armed at — 7 days, the shorter TTL (R-6.5c2.42) — so it must re-read
+  // the activity and re-arm to it. Mutants: `written_at` not advanced
   // by a write (the premise fails, and the table would expire); an alarm that
   // expires without re-reading the activity; an early alarm that re-arms
   // nothing.
@@ -130,9 +139,9 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
     await settle(stub);
     // Which write was the last activity when the last acknowledgement ran
     // depends on when its push landed, so the premise is that the alarm is
-    // one of the table's writes plus the TTL — an expiry deadline.
+    // one of the table's writes plus the shorter TTL — an expiry deadline.
     const deadlines = (await sqlOf(stub, "SELECT written_at FROM docs WHERE kind IN ('record', 'table', 'chat')")).map(
-      (r) => Number(r.written_at) + TTL,
+      (r) => Number(r.written_at) + OPEN_TTL,
     );
     expect(deadlines, "premise: the last acknowledgement armed an expiry deadline").toContain(await alarmOf(stub));
     await backdate(stub, idle());
@@ -144,21 +153,21 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
     expect([result, lines], "the alarm ran, and ended nothing").toEqual([true, []]);
     expect(await markerOf(stub)).toBeUndefined();
     expect(await docKinds(stub)).toEqual(["chat", "record", "table"]);
-    expect(await alarmOf(stub), "re-armed to the new last activity + TTL").toBe(activity + TTL);
+    expect(await alarmOf(stub), "re-armed to the new last activity + the shorter TTL").toBe(activity + OPEN_TTL);
     expect((await call(stub, RED, "GET", `/api/games/${id}`)).status).toBe(200);
   });
 
   // Spec §2.4's second rule, on its own: the success that discharges a
   // delivery re-arms the alarm to the next deadline — for a table with
-  // nothing else due, its expiry. Mutant: the acknowledgement deletes the
-  // alarm, and an idle table never expires.
+  // nothing else due, its expiry, at the shorter TTL (R-6.5c2.42). Mutant: the
+  // acknowledgement deletes the alarm, and an idle table never expires.
   it("the acknowledgement of a table's copy re-arms the alarm to its expiry deadline", async () => {
     const id = "ex-armed";
     const stub = tableStub(id);
     expect((await call(stub, RED, "POST", "/api/games", CREATE_BODY, id)).status).toBe(201);
     await settle(stub);
     const [table] = await sqlOf(stub, "SELECT written_at FROM docs WHERE kind = 'table'");
-    expect(await alarmOf(stub)).toBe(Number(table?.written_at) + TTL);
+    expect(await alarmOf(stub)).toBe(Number(table?.written_at) + OPEN_TTL);
   });
 
   // Battery 29. An idle table expires as its CREATOR's own abandon: the
@@ -442,6 +451,86 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
   });
 });
 
+describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8)", () => {
+  // Review Focus 2. A table's alarm is ARMED from SQL alone, which cannot read
+  // its status (the strings rule), at the SHORTER deadline — its last activity
+  // plus 7 days — and DECIDED at the alarm by the status its house copy reads
+  // (`copyFacts`, the one sanctioned parse). Three tables:
+  //
+  // - one still WAITING for players (`open`): armed at 7 days; advanced 7 days
+  //   and run, it is gone, its marker the waited head, and `expired` logged
+  //   with the reason;
+  // - one PLAYING (dealt, and a move made): armed at 7 days all the same, and
+  //   at that alarm NOT expired — re-armed to its last activity plus 90 days;
+  // - one created `open` and FILLED on day 6: it survives day 7 and day 13
+  //   (its own 7 days, now `dealing`, re-armed to day 96), and expires on day
+  //   96 under the 90-day TTL.
+  //
+  // Mutants: the alarm armed at the TTL (the waiting table's premise, 90 days
+  // out); the status ignored — every table expired at its 7 days (the playing
+  // table ends), or none (the waiting table stands); the playing table re-armed
+  // at the 7 days already past, where it would fire again at once; `dealing`
+  // read as waiting (the filled table ends on day 13); the waited marker's
+  // reason, its days, or its head wrong.
+  it("a table still waiting for players expires at 7 days; a playing or filled one is re-armed to its 90 (Review Focus 2)", async () => {
+    const waiting = "wt-open";
+    const open = tableStub(waiting);
+    expect((await call(open, RED, "POST", "/api/games", CREATE_BODY, waiting)).status).toBe(201);
+    await settle(open);
+    expect(await alarmOf(open), "armed at the shorter deadline: the last activity plus 7 days").toBe(
+      (await lastActivity(open)) + OPEN_TTL,
+    );
+    await backdate(open, Date.now() - OPEN_TTL - 60_000);
+    const gone = await alarmRun(open);
+    expect(gone.result).toBe(true);
+    expect(ends(gone.lines), "expired, and logged with the reason").toEqual([{ event: "expired", id: waiting, reason: "waited", kept: "nothing" }]);
+    const marker = await markerOf(open);
+    expect(marker).toEqual({ at: expect.any(Number), reason: "waited", ttl_days: 7, kept: "nothing" });
+    expect(await docKinds(open), "every document removed").toEqual([]);
+    expect(await sentenceAt(open, waiting, RED)).toBe(HEAD.waited(utcDate(marker!.at as number)) + TAIL.nothing);
+
+    const playing = "wt-playing";
+    const dealt = await seedPlaying(playing);
+    expect(await alarmOf(dealt), "armed from SQL at 7 days, whatever the status").toBe((await lastActivity(dealt)) + OPEN_TTL);
+    await backdate(dealt, Date.now() - OPEN_TTL - 60_000);
+    const kept = await alarmRun(dealt);
+    expect([kept.result, ends(kept.lines)], "the alarm ran, and ended nothing").toEqual([true, []]);
+    expect(await markerOf(dealt)).toBeUndefined();
+    expect(await docKinds(dealt)).toEqual(["record", "table"]);
+    expect(await alarmOf(dealt), "re-armed to the last activity plus 90 days").toBe((await lastActivity(dealt)) + TTL);
+    expect((await call(dealt, RED, "GET", `/api/games/${playing}`)).status, "the table still answers").toBe(200);
+
+    const late = "wt-filled";
+    const filled = tableStub(late);
+    expect((await call(filled, RED, "POST", "/api/games", CREATE_BODY, late)).status).toBe(201);
+    await settle(filled);
+    // Created on day 0; it is day 6, and blue fills the open seat.
+    await backdate(filled, Date.now() - 6 * DAY_MS);
+    expect((await call(filled, BLUE, "POST", `/api/games/${late}/join`, '{"seat":1}')).status, "filled on day 6").toBe(200);
+    await settle(filled);
+    const survives = async (day: number, backTo: number) => {
+      await backdate(filled, backTo);
+      const run = await alarmRun(filled);
+      expect([run.result, ends(run.lines)], `day ${day}: the alarm ran, and ended nothing`).toEqual([true, []]);
+      expect(await markerOf(filled), `day ${day}`).toBeUndefined();
+      expect((await call(filled, RED, "GET", `/api/games/${late}/table`)).status, `day ${day}: the table still answers`).toBe(200);
+    };
+    // Day 7: a day after the join, before its own 7 days.
+    await survives(7, Date.now() - DAY_MS - 60_000);
+    expect(await alarmOf(filled), "day 7: re-armed to the join plus 7 days").toBe((await lastActivity(filled)) + OPEN_TTL);
+    // Day 13: the join's 7 days are past, and the table is dealing, not waiting.
+    await survives(13, Date.now() - OPEN_TTL - 60_000);
+    expect(await alarmOf(filled), "day 13: re-armed to the join plus 90 days, day 96").toBe((await lastActivity(filled)) + TTL);
+    // Day 96: the join's 90 days are past.
+    await backdate(filled, Date.now() - TTL - 60_000);
+    const ended = await alarmRun(filled);
+    expect(ends(ended.lines), "day 96: expired under the 90-day TTL").toEqual([{ event: "expired", id: late, reason: "expired", kept: "nothing" }]);
+    const closed = await markerOf(filled);
+    expect(closed).toEqual({ at: expect.any(Number), reason: "expired", ttl_days: 90, kept: "nothing" });
+    expect(await sentenceAt(filled, late, RED)).toBe(HEAD.expired(utcDate(closed!.at as number)) + TAIL.nothing);
+  });
+});
+
 describe("the marker (spec §2.4 steps 5–6)", () => {
   // Battery 31. From the delete's own batch, every request is the marker's 404
   // with its sentence — a read, `…/events`, a move, and an upgrade, which is
@@ -613,7 +702,10 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
   // stamped game read as `off` once the switch is off (the stamp consulted
   // after the switch); a table with no move read as a game; the switch
   // ignored; a head under the wrong reason; `ttl_days` missing from an
-  // expired marker.
+  // expired marker. **The alarm's `open` arrangement ends as `waited`** (R-6.5c2.42):
+  // a table still waiting for players, idle past both TTLs, is closed as one
+  // that waited 7 days — its status decides, whatever else is past. Mutant: the
+  // TTL asked before the status (`expired` here).
   it.each(
     (["abandoned", "expired", "operator"] as const).flatMap((head) =>
       (["saved", "stamped", "stamped-off", "open", "dealing", "no-move", "off"] as const).map((arranged) => [head, arranged] as const),
@@ -629,9 +721,11 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
     } finally {
       off?.restore();
     }
+    const reason = head === "expired" && arranged === "open" ? "waited" : head;
+    const days = reason === "expired" ? { ttl_days: 90 } : reason === "waited" ? { ttl_days: 7 } : {};
     const marker = await markerOf(stub);
-    expect(marker).toEqual({ at: expect.any(Number), reason: head, ...(head === "expired" ? { ttl_days: 90 } : {}), kept: KEPT[arranged] });
-    expect(await sentenceAt(stub, id, creator)).toBe(HEAD[head](utcDate(marker!.at as number)) + TAIL[KEPT[arranged]]);
+    expect(marker).toEqual({ at: expect.any(Number), reason, ...days, kept: KEPT[arranged] });
+    expect(await sentenceAt(stub, id, creator)).toBe(HEAD[reason](utcDate(marker!.at as number)) + TAIL[KEPT[arranged]]);
     const abandonedKey = `${creator === LOCAL ? "" : "test/"}rev7/abandoned/${id}.json`;
     expect((await bucketText(abandonedKey)) !== null, "this ending made a save exactly when it had a game to save").toBe(arranged === "saved");
     if (arranged === "stamped" || arranged === "stamped-off") {

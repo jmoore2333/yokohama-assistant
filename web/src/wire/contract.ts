@@ -656,7 +656,7 @@ const LABELS = [
 ] as const;
 const HEALTH = [
   "server_version", "semantics_rev", "rules_hash", "identity", "signal", "archive",
-  "lobby_chat", "chat_keep", "chat_text", "multiplayer",
+  "lobby_chat", "chat_keep", "chat_text", "multiplayer", "table_ttl_days", "open_table_ttl_days",
 ] as const;
 const ME = ["mode", "user"] as const;
 const TABLE = [

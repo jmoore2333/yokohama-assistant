@@ -51,8 +51,14 @@ const LOCAL_USER: &str = "local@browser";
 /// `why` answered under another host's facts would not be the same call —
 /// `serves_games` above all, since with it false there would be no `why` route
 /// to drive (M6.5b2).
-const HOST: Host =
-    Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
+const HOST: Host = Host {
+    identity_name: "local",
+    signal_kind: "none",
+    serves_games: true,
+    multiplayer_offered: false,
+    table_ttl_days: None,
+    open_table_ttl_days: None,
+};
 
 /// The layer over a `MemStore` with the browser host's own parts, holding the
 /// committed pair.

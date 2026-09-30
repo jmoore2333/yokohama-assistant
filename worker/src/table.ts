@@ -6,7 +6,7 @@ import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { CLAIMED_USER_HEADER } from "./identity";
-import { expiryDeadline, markerEnd, ttlDaysOf, type Ending, type Marker } from "./marker";
+import { expiryDays, expiryDeadline, markerEnd, openTtlDaysOf, ttlDaysOf, type Ending, type Marker } from "./marker";
 import { Instance, readReply, type Bump, type Replied } from "./module";
 import { errorBody, log, respond } from "./respond";
 import { abandons } from "./route";
@@ -239,8 +239,10 @@ export abstract class TableBase extends DurableObject<Env> {
    *    push an abort cut off — and, beside it, an owed save
    *    (`deliverArchive`): a game over whose upload failed, or was cut off.
    *    With the archive `off`, the owed save is kept and logged;
-   * 3. expires the table once its last activity is a TTL old, or re-reads
-   *    that activity and re-arms to the table's next deadline (`expiry`).
+   * 3. expires the table once its last activity is a TTL old — or, while it
+   *    still waits for players, the waiting-table TTL old (R-6.5c2.42), which
+   *    its status decides here — or re-reads that activity and re-arms to the
+   *    table's next deadline (`expiry`).
    *
    * The batches the first two write re-arm the alarm — a new slot's, a failed
    * push's, an acknowledgement's, a failed upload's, a settled save's — to the
@@ -748,7 +750,9 @@ export abstract class TableBase extends DurableObject<Env> {
    *   whose batch changes the table document (such as a create, a join, a
    *   keep, an unlock, the turn passing or game over; not a delete, whose
    *   slot is the REMOVAL) and an alarm run that finds a table document
-   *   (`recopy`). A move that leaves the table document alone makes none.
+   *   (`recopy`) — and, at an alarm past the deadline an expiry is armed at,
+   *   once more for the table's status (`waiting`, R-6.5c2.42). A move that
+   *   leaves the table document alone makes none.
    * - **What it holds**: the compiled module is the isolate's, shared, so
    *   the instance adds its own linear memory — its starting size is the
    *   release module's reading in the root `Cargo.toml`'s `release-wasm`
@@ -767,7 +771,7 @@ export abstract class TableBase extends DurableObject<Env> {
    * the house stores it under the slot's `id`, this same name, and removes it
    * by that key, while its listing reads each row's id from the DOCUMENT.
    */
-  private copyOf(id: string, table: string): { copy: string | undefined } | { refused: string } | { trapped: string } {
+  protected copyOf(id: string, table: string): { copy: string | undefined } | { refused: string } | { trapped: string } {
     const scratch = new Instance(moduleConfig(this.env, null));
     try {
       const done = scratch.guarded((mod) => {
@@ -825,46 +829,53 @@ export abstract class TableBase extends DurableObject<Env> {
   /**
    * What spec §2.4's one alarm waits for besides a delivery's retry: a
    * standing marker's end (`markerEnd`), or else the table's expiry
-   * (`expiryDue`) — `undefined` when neither is due.
+   * (`expiryDue`, `waiting` as it reads it) — `undefined` when neither is
+   * due.
    */
-  protected deadlines(sql: SqlStorage): number | undefined {
+  protected deadlines(sql: SqlStorage, waiting?: boolean): number | undefined {
     const marker = markerOf(sql);
-    return marker === undefined ? this.expiryDue(sql) : markerEnd(marker);
+    return marker === undefined ? this.expiryDue(sql, waiting) : markerEnd(marker);
   }
 
   /**
-   * When the table expires (spec §2.4 "Expiry"): its last activity plus the
-   * TTL — or, while its expiries keep failing, the retry after them on the
-   * backoff (`nextRetry`), if that is later. `undefined` when no expiry is
-   * due: no TTL; nothing stored, or a marker standing; or a table `held` or
-   * poisoned, which never expires on its own (spec §2.4).
+   * When the table expires (spec §2.4 "Expiry"; R-6.5c2.42): its last
+   * activity plus the days `expiryDays` gives — the SHORTER of the two TTLs
+   * from SQL alone, since no batch can read whether the table still waits for
+   * players (the strings rule), and the TTL itself once the alarm has read
+   * its status and passes `waiting` as `false` (`expiry`) — or, while its
+   * expiries keep failing, the retry after them on the backoff (`nextRetry`),
+   * if that is later. `undefined` when no expiry is due: no TTL, whatever the
+   * waiting-table TTL reads; nothing stored, or a marker standing; or a table
+   * `held` or poisoned, which never expires on its own (spec §2.4).
    */
-  private expiryDue(sql: SqlStorage): number | undefined {
+  private expiryDue(sql: SqlStorage, waiting?: boolean): number | undefined {
     if (!hasTables(sql) || "error" in this.config) return undefined;
     const ttl = ttlDaysOf(this.config);
     if (ttl === null || getMeta(sql, "marker") !== undefined || getMeta(sql, "held") !== undefined || poisoned(sql)) return undefined;
     const activity = lastActive(sql);
     if (activity === null) return undefined;
-    const deadline = expiryDeadline(activity, ttl);
+    const deadline = expiryDeadline(activity, expiryDays(ttl, openTtlDaysOf(this.config), waiting));
     const failed = expiryFailedOf(sql);
     return failed > 0 ? Math.max(deadline, Date.now() + nextRetry(failed - 1)) : deadline;
   }
 
   /** What is still due once an owed save is discharged — a slot still
    *  waiting, or a copy still owed, each at its rung from now; the table's
-   *  expiry, or a marker's end (`deadlines`) — as the alarm's next deadline,
-   *  or `null` when nothing is (spec §2.4: "the success that discharges it
-   *  re-arms it to the next deadline"). */
-  protected dueBesidesArchive(sql: SqlStorage): number | null {
+   *  expiry, or a marker's end (`deadlines`, `waiting` as it reads it) — as
+   *  the alarm's next deadline, or `null` when nothing is (spec §2.4: "the
+   *  success that discharges it re-arms it to the next deadline"). */
+  protected dueBesidesArchive(sql: SqlStorage, waiting?: boolean): number | null {
     const slot = slotState(sql).slot;
-    const waiting = slot === undefined ? null : Date.now() + nextRetry(Math.max(slot.attempt - 1, 0));
-    return earliest(earliest(waiting, copyRetryDue(copyOwedOf(sql)) ?? undefined), this.deadlines(sql)) ?? null;
+    const pushing = slot === undefined ? null : Date.now() + nextRetry(Math.max(slot.attempt - 1, 0));
+    return earliest(earliest(pushing, copyRetryDue(copyOwedOf(sql)) ?? undefined), this.deadlines(sql, waiting)) ?? null;
   }
 
   /** Everything that is due, an owed save's retry among them: the alarm's
-   *  next deadline, or `null` when nothing is. */
-  protected nextDue(sql: SqlStorage): number | null {
-    return earliest(this.dueBesidesArchive(sql), this.archiveRung(sql)) ?? null;
+   *  next deadline, or `null` when nothing is. `waiting` is the table's status
+   *  as the alarm read it — `false` re-arms the expiry at the TTL itself
+   *  (`expiry`, R-6.5c2.42) — and every other caller leaves it unread. */
+  protected nextDue(sql: SqlStorage, waiting?: boolean): number | null {
+    return earliest(this.dueBesidesArchive(sql, waiting), this.archiveRung(sql)) ?? null;
   }
 
   /** One module call pinned to P-2's reading, answered as plain data with

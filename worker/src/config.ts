@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { isAddress } from "./identity";
+import { openTtlDaysOf, ttlDaysOf } from "./marker";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
  *  frozen reading, or a reading that ticks one second per use. */
@@ -16,6 +17,10 @@ export interface ShellConfig {
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
+  /** How many days a table still WAITING for players — its status `open` —
+   *  stands without activity (R-6.5c2.42); 7 when the variable is absent.
+   *  Inert while `ttlDays` is `null`: then no table expires. */
+  openTtlDays: number;
   /** `null`: the operator routes are the layer's 404 (spec §2.9). Always
    *  `null` under `open`, where a list is refused (`openDoorRefusals`). */
   admins: string[] | null;
@@ -43,6 +48,7 @@ const ROWS: { readonly [K in Variable]: true } = {
   YOKOHAMA_DEV_DOOR: true,
   YOKOHAMA_WEB_ARCHIVE: true,
   YOKOHAMA_WEB_TABLE_TTL_DAYS: true,
+  YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: true,
   YOKOHAMA_WEB_ADMINS: true,
   YOKOHAMA_WEB_COUNT_WAKES: true,
   YOKOHAMA_WEB_LOBBY_CHAT: true,
@@ -122,15 +128,30 @@ function archive(env: Env): "r2" | "off" {
   return "r2";
 }
 
-/** Whole days above zero, absent = no table ever expires (R-6.5c.15). */
-function ttlDays(raw: string | null): number | null {
-  if (raw === null) return null;
+/** A waiting table's TTL when its variable is absent (R-6.5c2.42). */
+const OPEN_TTL_DAYS = 7;
+
+/** `raw`, trimmed, as whole days above zero — or the refusal naming `name`.
+ *  The two TTLs' one rule. */
+function wholeDays(name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", raw: string): number {
   const value = raw.trim();
   const days = Number(value);
   if (!/^\d+$/.test(value) || days === 0 || !Number.isSafeInteger(days)) {
-    refuse(`YOKOHAMA_WEB_TABLE_TTL_DAYS must be a whole number of days above zero — got ${JSON.stringify(value)}`);
+    refuse(`${name} must be a whole number of days above zero — got ${JSON.stringify(value)}`);
   }
   return days;
+}
+
+/** Whole days above zero, absent = no table ever expires (R-6.5c.15). */
+function ttlDays(raw: string | null): number | null {
+  return raw === null ? null : wholeDays("YOKOHAMA_WEB_TABLE_TTL_DAYS", raw);
+}
+
+/** Whole days above zero, absent = 7 (R-6.5c2.42), refused as the first TTL
+ *  is. Read whether or not the first is set, so a bad value is refused
+ *  before it could ever be in force. */
+function openTtlDays(raw: string | null): number {
+  return raw === null ? OPEN_TTL_DAYS : wholeDays("YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", raw);
 }
 
 /**
@@ -235,6 +256,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
       door: door(text(env, "YOKOHAMA_WEB_IDENTITY")),
       archive: archive(env),
       ttlDays: ttlDays(text(env, "YOKOHAMA_WEB_TABLE_TTL_DAYS")),
+      openTtlDays: openTtlDays(text(env, "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS")),
       admins: admins(text(env, "YOKOHAMA_WEB_ADMINS")),
       countWakes: onOff("YOKOHAMA_WEB_COUNT_WAKES", text(env, "YOKOHAMA_WEB_COUNT_WAKES")),
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
@@ -252,8 +274,11 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
  * The module's `init` configuration (the plan's names table): the door as
  * exactly `worker` or `open` (M6.5c2, spec §2.1), the archive
  * switch as exactly `off` or `r2`, `caller` verbatim (the module normalizes
- * it, under `r2`, as the layer normalizes an address), and the three chat
- * variables RAW, for the module to parse with the layer's own function.
+ * it, under `r2`, as the layer normalizes an address), the three chat
+ * variables RAW, for the module to parse with the layer's own function — and
+ * the two TTLs as NUMBERS, the shell's own reading through its readers
+ * (`ttlDaysOf`, `openTtlDaysOf`), for `/api/health` to report (R-6.5c2.42):
+ * both `null` while no table expires, the second being inert then.
  *
  * It throws `shellConfig`'s refusal rather than build a configuration the
  * shell refuses: the module cannot see a binding, and would parse a number
@@ -262,6 +287,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
 export function moduleConfig(env: Env, caller: string | null): string {
   const c = shellConfig(env);
   if ("error" in c) throw new Error(c.error);
+  const ttl = ttlDaysOf(c);
   return JSON.stringify({
     identity: c.door,
     archive: c.archive,
@@ -269,5 +295,7 @@ export function moduleConfig(env: Env, caller: string | null): string {
     lobby_chat: text(env, "YOKOHAMA_WEB_LOBBY_CHAT"),
     chat_keep: text(env, "YOKOHAMA_WEB_CHAT_KEEP"),
     chat_text: text(env, "YOKOHAMA_WEB_CHAT_TEXT"),
+    table_ttl_days: ttl,
+    open_table_ttl_days: ttl === null ? null : openTtlDaysOf(c),
   });
 }

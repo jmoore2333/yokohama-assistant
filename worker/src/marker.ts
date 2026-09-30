@@ -1,10 +1,11 @@
 /**
- * **The marker, and the TTL** (spec §2.4 "Delete, expiry and the MARKER";
- * R-6.5c.8, R-6.5c.15): what a table object keeps for 90 days after the layer
- * deleted its table — how it ended, when, and what became of its game — the
- * sentence it answers every request with meanwhile, and the deadline an idle
- * table expires at. Pure — no Workers API — so its cells run in node
- * (`marker.unit.test.ts`); `table.ts` applies it.
+ * **The marker, and the TTLs** (spec §2.4 "Delete, expiry and the MARKER";
+ * R-6.5c.8, R-6.5c.15, R-6.5c2.42): what a table object keeps for 90 days
+ * after the layer deleted its table — how it ended, when, and what became of
+ * its game — the sentence it answers every request with meanwhile, and the
+ * deadlines an idle table expires at: the TTL, and the shorter one a table
+ * still waiting for players has. Pure — no Workers API — so its cells run in
+ * node (`marker.unit.test.ts`); `table.ts` applies it.
  */
 import type { ShellConfig } from "./config";
 
@@ -20,9 +21,10 @@ export const MARKER_DAYS = 90;
 export type Kept = "archive" | "nothing" | "off";
 
 /** How a table ended through the layer: its creator's Abandon, its expiry
- *  after `ttl_days` without activity, or an operator's plain expire. Only an
- *  expiry's sentence names its days, so only its marker keeps them. */
-export type Reason = { reason: "abandoned" | "operator" } | { reason: "expired"; ttl_days: number };
+ *  after `ttl_days` without activity, its closing after `ttl_days` still
+ *  WAITING for players (R-6.5c2.42), or an operator's plain expire. Only the
+ *  alarm's two sentences name their days, so only their markers keep them. */
+export type Reason = { reason: "abandoned" | "operator" } | { reason: "expired" | "waited"; ttl_days: number };
 
 /** How a table ended, and what was kept: a marker without its time. */
 export type Ending = Reason & { kept: Kept };
@@ -43,7 +45,8 @@ const TAILS: Record<Kept, string> = {
  * The sentence every request meets while `m` stands (spec §2.4 step 5; §4
  * lists it as host-written): a HEAD naming how the table ended and the UTC
  * date of `at`, written `YYYY-MM-DD`, then a TAIL saying what was kept. One
- * day of TTL is "1 day".
+ * day of TTL is "1 day". A table that waited for players (R-6.5c2.42) had no
+ * game, so its tail is `nothing`'s.
  */
 export function markerSentence(m: Marker): string {
   const day = new Date(m.at).toISOString().slice(0, 10);
@@ -57,8 +60,15 @@ function head(m: Marker, day: string): string {
     case "operator":
       return `this table was removed by an operator on ${day}`;
     case "expired":
-      return `this table expired on ${day} after ${m.ttl_days === 1 ? "1 day" : `${m.ttl_days} days`} without activity`;
+      return `this table expired on ${day} after ${days(m.ttl_days)} without activity`;
+    case "waited":
+      return `this table waited ${days(m.ttl_days)} for players and was closed on ${day}`;
   }
+}
+
+/** `n` days, in words: one day is "1 day". */
+function days(n: number): string {
+  return n === 1 ? "1 day" : `${n} days`;
 }
 
 /** When `m` stops standing (spec §2.4 step 6): 90 days after its `at`. The
@@ -76,10 +86,46 @@ export function ttlDaysOf(config: ShellConfig): number | null {
   return config.ttlDays;
 }
 
+/**
+ * The waiting-table TTL, in whole days (R-6.5c2.42): how long a table still
+ * waiting for players stands without activity. Its ONE reader, beside the
+ * TTL's and for the same reason. Inert while `ttlDaysOf` reads `null`: every
+ * reader of it asks that first.
+ */
+export function openTtlDaysOf(config: ShellConfig): number {
+  return config.openTtlDays;
+}
+
 /** When a table whose last activity was `lastActive` expires: `ttlDays` whole
  *  days after it. */
 export function expiryDeadline(lastActive: number, ttlDays: number): number {
   return lastActive + ttlDays * DAY_MS;
+}
+
+/**
+ * The days after its last activity at which a table's expiry is DUE
+ * (R-6.5c2.42; the plan's R-E8). The alarm is armed from SQL alone, which
+ * cannot read a table's status (the strings rule), so while `waiting` is
+ * unread — `undefined`, as it is at every batch — or read `true`, it is the
+ * SHORTER of the two TTLs; once the alarm has read the status and found the
+ * table not waiting, it is the TTL itself.
+ */
+export function expiryDays(ttlDays: number, openTtlDays: number, waiting: boolean | undefined): number {
+  return waiting === false ? ttlDays : Math.min(ttlDays, openTtlDays);
+}
+
+/**
+ * How the alarm ends a table at `now` (R-6.5c2.42; the plan's R-E8), its
+ * status read — `waiting` when it is `open`, a seat still unfilled — or
+ * `undefined` while it stands: a table still waiting for players is closed as
+ * one that `waited` once its last activity is `openTtlDays` old, whatever else
+ * is past; any table `expired` once it is `ttlDays` old — a waiting one too,
+ * where the TTL is the shorter.
+ */
+export function expiryReason(now: number, lastActive: number, ttlDays: number, openTtlDays: number, waiting: boolean): Reason | undefined {
+  if (waiting && now >= expiryDeadline(lastActive, openTtlDays)) return { reason: "waited", ttl_days: openTtlDays };
+  if (now >= expiryDeadline(lastActive, ttlDays)) return { reason: "expired", ttl_days: ttlDays };
+  return undefined;
 }
 
 /**

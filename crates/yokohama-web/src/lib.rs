@@ -818,11 +818,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // On THIS host the two multiplayer facts are one answer: an axum deployment
     // that offers no multiplayer serves no game route either, because nothing
     // plays here locally (spec §3.1 — the browser host is where they differ).
+    // The NAS keeps no TTL (R-6.5c2.2): no table here expires, and
+    // `/api/health` says so (R-6.5c2.42).
     let host = api::Host {
         identity_name: state.identity.name(),
         signal_kind: SIGNAL_KIND,
         serves_games: state.multiplayer.0,
         multiplayer_offered: state.multiplayer.0,
+        table_ttl_days: None,
+        open_table_ttl_days: None,
     };
     let out = api::dispatch(&state.games, &host, identity, &request);
     let mut response = Response::new(axum::body::Body::from(out.body.clone()));
@@ -1246,6 +1250,8 @@ mod tests {
                 signal_kind: SIGNAL_KIND,
                 serves_games: true,
                 multiplayer_offered: true,
+                table_ttl_days: None,
+                open_table_ttl_days: None,
             };
             let out = api::dispatch(
                 &state.games,
@@ -6706,6 +6712,22 @@ mod tests {
         assert_eq!(v["lobby_chat"], false);
         assert_eq!(v["chat_keep"], serde_json::Value::Null, "`all` is null on the wire");
         assert_eq!(v["chat_text"], 140);
+    }
+
+    /// **`/api/health` reports no table TTL on this host** (M6.5c2 cycle E,
+    /// R-6.5c2.42; R-6.5c2.2). The Worker expires an idle table, and a table
+    /// still waiting for players sooner, and reports both TTLs so a client can
+    /// say so; the NAS keeps no TTL, and says THAT — both keys present and
+    /// `null`, never absent, because a client reading an absent key cannot
+    /// tell "no TTL" from "a server too old to say". The keys are asked by
+    /// `get`, since indexing a `Value` by a missing key also reads null.
+    /// Mutants: either key dropped; a number reported where nothing expires.
+    #[tokio::test]
+    async fn health_reports_no_table_ttl_on_the_nas() {
+        let (status, v) = get_json("/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v.get("table_ttl_days"), Some(&serde_json::Value::Null), "{v}");
+        assert_eq!(v.get("open_table_ttl_days"), Some(&serde_json::Value::Null), "{v}");
     }
 
     /// **`?wait` is accepted and answered at once** (M6.5c2 cycle D, R-D5).

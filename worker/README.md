@@ -1325,7 +1325,8 @@ caller (§1.5), narrowed to one secret, and it never grants an operator's rights
 4. The slot's push, or the alarm, delivers the removal to the house.
 5. **For 90 days the marker answers EVERY request 404** with a sentence made of a head and a tail.
    The heads are `this table was abandoned on <date>`, `this table expired on <date> after 90 days
-   without activity` and `this table was removed by an operator on <date>`, the date in UTC. The
+   without activity`, `this table waited 7 days for players and was closed on <date>` (R-6.5c2.42)
+   and `this table was removed by an operator on <date>`, the date in UTC. The
    tails come from `kept`: `— its game is in the archive`, `— no move had been made, so there was
    nothing to keep`, and `— this server keeps no archive, so its game was not kept`. It is a 404
    rather than a 410 because the client already ends a source on a 404 and shows the server's
@@ -1343,6 +1344,15 @@ expires. A table's last activity is the newest `written_at` of its record, table
 alarm finds `last activity + TTL` has passed, the table expires as its creator: saved first while
 the archive is on, then deleted, behind its marker. Finished games expire on the same clock, their
 save made at game over. Open and dealing tables expire with nothing to save.
+
+**A table still waiting for players** (M6.5c2 cycle E, R-6.5c2.42) — its status `open` — is closed
+sooner, after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
+`this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
+so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
+by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
+scratch module. An `open` table is closed; any other is re-armed to its last activity plus the TTL.
+`/api/health` reports both, `table_ttl_days` and `open_table_ttl_days`, `null` while no table
+expires.
 
 - A save that fails leaves the table in place, and the alarm retries it on the backoff, logged
   `expiry-failed`. So no game with moves is lost to expiry while the archive is on.
@@ -1599,7 +1609,8 @@ list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its ab
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
 `ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `on` for the live tiers;
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
-`YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90`; the NAS's three chat variables keep the NAS's defaults;
+`YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
+chat variables keep the NAS's defaults;
 `YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
 two files. A bad value answers the API's requests 500, naming the variable, and leaves the static
 release alone; RUNBOOK §3 lists the few answers that come before the configuration is read, and the
