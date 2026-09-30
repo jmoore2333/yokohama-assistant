@@ -1368,6 +1368,51 @@ describe("the turn playback", () => {
     expect(portCards(), "and the strip is still the run's").toEqual(runPort);
   });
 
+  // **A game shown again draws its boards from its own reads** (Task 7
+  // re-review 2, Minor). The frame a run left is held per game, and the render
+  // refuses another game's — so what `show`'s let-go guards is the SAME game
+  // put on screen again: leave it with a run landed at 43, and while this
+  // browser is in the lobby another branch reaches 43. Back at the table, a
+  // frame still held would pass for the live one and ask nothing.
+  it("asks each board once for a game shown again, and draws the server's port, not a frame held from before", async () => {
+    const { before, replied, at, log } = botReply();
+    let served: typeof before = before;
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${before.id}`)) return served;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    await waitFor(() => expect(boards()).toEqual([1, 1]));
+    const servedPort = portCards();
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
+    await user.click(within(document.querySelector<HTMLElement>(".turn-account")!).getByRole("button", { name: "skip" }));
+    await waitFor(() => expect(document.querySelector(".decision.walking")).toBeNull());
+    expect(boards(), "the run carried both boards").toEqual([1, 1]);
+    expect(portCards(), "premise: the run's port is not the served one").not.toEqual(servedPort);
+    // To the lobby, and another branch reaches 43 meanwhile.
+    act(() => {
+      window.location.hash = "#/lobby";
+    });
+    await screen.findByRole("heading", { name: "Lobby" });
+    served = replied;
+    act(() => {
+      window.location.hash = `#/t/${before.id}`;
+    });
+    await screen.findByText(/end triggers:/);
+    await waitFor(() => expect(boards()).toEqual([2, 2]));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(boards(), "the game shown again asks each board once").toEqual([2, 2]);
+    expect(portCards(), "and draws the server's port").toEqual(servedPort);
+  });
+
   // **The gap, held open.** A stub answers at once, so the new state and its
   // run land in ONE render and the cell above cannot see the gap between them
   // — the one `landed`'s mark exists for (measured: with the mark removed, the
@@ -3273,18 +3318,25 @@ describe("the opponent's turn arrives by the signal", () => {
     }
   });
 
-  // **An undone branch's frame is never taken for the live board** (Task 7
-  // review, Important 1; re-review 1). The run a move lands leaves its last
-  // frame held, and a frame is taken as live when its index is the count on
-  // screen. An undo takes the count back, and a DIFFERENT move can bring it to
-  // the same number again — by a run, or by `send`'s refusal re-read, which
-  // moves the count with no run. So the held frame is let go on both: when a
-  // run BEGINS (`landed`), and when the re-read reads another count. Three
-  // cells walk the three ways back up: this one (the regrowth's run FAILS),
-  // the one after it (the regrowth's run is held, then lands — what the gap
-  // draws), and, in "the turn playback", the refused move's re-read. The
-  // positions here are this describe's `at`; the served port is `ports.json`
-  // and the run's is `at_k.json`'s, which hold different cards.
+  // **An undone branch's frame is not taken for the live board** (Task 7
+  // review, Important 1; re-reviews 1 and 2). The run a move lands leaves its
+  // last frame held, and a frame is taken as live when its index is the count
+  // on screen. An undo takes the count back, and a DIFFERENT move can bring it
+  // to the same number again: by a run, by `send`'s refusal re-read, or by
+  // `arrive`'s re-read of an undo's own signal served after the other branch
+  // moved on — the last two moving the count with no run. So the held frame
+  // is let go on all three: when a run BEGINS (`landed`), when the refusal's
+  // re-read reads a count other than the post's, and in `arrive`'s shrink
+  // arm; and `show` lets go of it when a game is put on screen. Five cells
+  // walk those roads: this one (the regrowth's run FAILS); the one after it
+  // (the run is held, then lands — what the gap draws); the undo's signal
+  // re-read at the undone count (the one after that); and, in "the turn
+  // playback", the refused move's re-read and a game shown again. What no road
+  // here can see is a branch that changed at the SAME count without this
+  // screen ever reading another: the count is the position's key (ruling
+  // T7-a), as it is for the whole state in `arrive`. The positions here are
+  // this describe's `at`; the served port is `ports.json` and the run's is
+  // `at_k.json`'s, which hold different cards.
   it("asks each board once when a regrowth's run fails, and draws the server's port, not an undone branch's", async () => {
     let events = wire.watching.events;
     let runFails = false;
@@ -3417,6 +3469,76 @@ describe("the opponent's turn arrives by the signal", () => {
       await settle();
       expect(boards(), "the landing asks for no board").toEqual([2, 2]);
       expect(portCards(), "the landing draws the run's port").toEqual(runPort);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **An undo's signal, re-read after the undone count came back** (Task 7
+  // re-review 2). `arrive` picks its arm by the SIGNAL's count — here a shrink
+  // — but the state it sets is the RE-READ's, and the re-read may be served
+  // after the other player has moved on down another branch: it reads the
+  // very count the undone branch's run ended on. The realistic road is a
+  // watching phone whose socket stalls and then delivers the undo's frame and
+  // the replayed move's in one burst; the second frame is then the count on
+  // screen and is skipped. Unless the shrink arm lets go of the held frame,
+  // the strip draws the undone branch's port, nothing is asked, and it stays.
+  // The positions are this describe's `at`; the served port is `ports.json`.
+  it("asks each board once when an undo's signal is re-read at the undone branch's count, and keeps the server's port", async () => {
+    let signalEvents = wire.watching.events;
+    let serverEvents = wire.watching.events;
+    const signal = (): Events => ({ ...wire.events, events: signalEvents, to_move: wire.watching.to_move });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events: serverEvents };
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, serverEvents)) };
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const portCards = () =>
+      [...document.querySelectorAll(".table-sec.ports [data-card]")].map((e) => e.getAttribute("data-card"));
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+      stream.push("signal", signal());
+      await settle();
+      const served = portCards();
+      // One branch to +2, and its run lands.
+      signalEvents = serverEvents = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => positionsWalked(stub).length === 3, "the run was fetched");
+      await settle();
+      expect(boards(), "the run carried both boards").toEqual([1, 1]);
+      expect(portCards(), "premise: the run's port is not the served one").not.toEqual(served);
+      // The undo's signal, but its read is served after another branch reached
+      // +2 again.
+      signalEvents = wire.watching.events;
+      serverEvents = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 3, "the game was re-read");
+      await until(() => boards()[0] === 2, "the port was asked for");
+      await settle();
+      await settle();
+      expect(boards(), "the re-read's count asks each board once").toEqual([2, 2]);
+      expect(portCards(), "and the strip is the server's port, not the undone branch's").toEqual(served);
+      // The other branch's own signal: the count on screen, skipped — and the
+      // board stays the server's.
+      signalEvents = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await settle();
+      await settle();
+      expect(reloads(), "a signal at the count on screen reads nothing").toHaveLength(3);
+      expect(boards()).toEqual([2, 2]);
+      expect(portCards(), "the server's port stays").toEqual(served);
     } finally {
       vi.useRealTimers();
     }

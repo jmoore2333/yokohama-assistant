@@ -362,11 +362,17 @@ export function App() {
    *  count on screen**, and that is kept on every path that moves the count:
    *  a run BEGINNING lets go of it (`landed`), so a run that then fails holds
    *  none; `send`'s refusal re-read lets go of it when the count it read is
-   *  another (a refused or lost post after an undo can read the count an
-   *  undone branch's run ended on); a SHRINK — `landed`'s and `arrive`'s — may
-   *  keep it, since its index is then above the count and every way back up
-   *  passes one of those two; the hot-seat re-read reads the reply's own count,
-   *  whose run it is; and `show` clears it. */
+   *  not the one the post started from (a refused or lost post after an undo
+   *  can read the count an undone branch's run ended on); `arrive`'s shrink
+   *  arm lets go of it, because that arm is chosen by the SIGNAL's count and
+   *  its re-read may read any count, the frame's own included; `landed`'s
+   *  shrink arm keeps it — at the SAME count (a picker step's reply) it is
+   *  still this count's, and below it its index is above the count, and every
+   *  way back up passes one of the lets-go above; the hot-seat re-read reads
+   *  the reply's own count, whose run it is; and `show` clears it. **What no
+   *  path can see** is a branch that changed at the same count without this
+   *  screen ever reading another: the count is the position's key (ruling
+   *  T7-a), as it is for the whole state in `arrive`. */
   const [liveFrame, setLiveFrame] = useState<{ game: string; frame: HistoricalFrame } | null>(null);
   /** **The count a run is being fetched for, while it is** (R-E9). Set by
    *  `landed` BEFORE its first `await` — so it lands in the same render as the
@@ -1230,6 +1236,13 @@ export function App() {
               setRun(null);
               setWalk(null);
               setFresh(false);
+              // **The held frame goes too** (Task 7 re-review 2): this arm is
+              // chosen by the SIGNAL's count, but the state above is the
+              // RE-READ's, and the re-read may read ANY count — an undo's
+              // signal read after another branch moved on reads the count the
+              // undone branch's run ended on, whose frame would pass for the
+              // live one. With none held, the sections ask each board once.
+              setLiveFrame(null);
             }
           } catch (err) {
             if (gameId.current === game)
@@ -1355,8 +1368,12 @@ export function App() {
             // re-review, Important 1's second path): after an undo, a refused
             // or lost post can read the count an undone branch's run ended
             // on, and the frame that run left would pass for the live one.
-            // Let go of it, and the sections ask each board once; a refusal at
-            // an unchanged count keeps the frame, which is still this count's.
+            // Let go of it, and the sections ask each board once. The guard
+            // compares with the count the POST started from: a stale click's
+            // refusal re-reads that count and keeps the frame, which is still
+            // its own; the one road where the screen had already moved — a
+            // hot-seat re-read that failed after its reply landed — lets go of
+            // a valid frame and costs one read per board, the board right.
             if (fresh.events !== state.events) setLiveFrame(null);
           }
         } catch {
