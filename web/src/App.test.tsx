@@ -3176,6 +3176,75 @@ describe("the opponent's turn arrives by the signal", () => {
     }
   });
 
+  // **An undone branch's frame is never the live board** (Task 7 review,
+  // Important 1). The run a move lands leaves its last frame held, and a frame
+  // is taken as live when its index is the count on screen. An undo takes the
+  // count back and a DIFFERENT move can bring it to the same number again — so
+  // if that move's run fails, the frame the undone branch left reads as this
+  // count's, the strip draws a port that is not on the table, and nothing is
+  // asked. `landed` lets go of the held frame when a run begins; this cell
+  // walks that sequence: a run lands at +2, an undo, a regrowth to +2 whose run
+  // fails. The positions are this describe's `at`; the served port is
+  // `ports.json` and the run's is `at_k.json`'s, which hold different cards.
+  it("asks each board once when a regrowth's run fails, and draws the server's port, not an undone branch's", async () => {
+    let events = wire.watching.events;
+    let runFails = false;
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events };
+      const ks = runRange(call.path);
+      if (ks)
+        return runFails
+          ? { status: 500, body: { error: "the positions could not be read" } }
+          : { frames: ks.map((k) => at(k, events)) };
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const portCards = () =>
+      [...document.querySelectorAll(".table-sec.ports [data-card]")].map((e) => e.getAttribute("data-card"));
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+      stream.push("signal", signal());
+      await settle();
+      const served = portCards();
+      // One branch: the count grows by two, and its run lands.
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => positionsWalked(stub).length === 3, "the run was fetched");
+      await settle();
+      expect(boards()).toEqual([1, 1]);
+      expect(portCards(), "premise: the run's port is not the served one").not.toEqual(served);
+      // The undo: the count goes back, and the server's port is asked for.
+      events = wire.watching.events;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 3, "the game was re-read");
+      await until(() => boards()[0] === 2, "the port was asked for");
+      await settle();
+      expect(portCards(), "premise: the shrink drew the server's port").toEqual(served);
+      // Another branch to the SAME count, and its run fails.
+      runFails = true;
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 4, "the game was re-read again");
+      await settle();
+      await settle();
+      expect(boards(), "a failed run asks each board once").toEqual([3, 3]);
+      expect(portCards(), "and the strip is the server's port, not the undone branch's").toEqual(served);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // **A WATCHER's run walks too, and this is the cell for spec §9.5 mutation
   // 10** (spec §5.2). A spectator holds no seat: `wire.spectator` carries
   // `seat: null`, so the arrival's viewer is absent and every step of every run

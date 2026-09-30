@@ -356,7 +356,8 @@ export function App() {
    *  same two builders `…/ports` and `…/labs` answer with — so the sections
    *  draw them from here and ask neither route after a move. Held apart from
    *  `run`, which the screen clears for its own reasons: a cleared account is
-   *  not a board that moved. */
+   *  not a board that moved. Let go when the next run BEGINS, so a frame is
+   *  only ever the newest run's (see `landed`). */
   const [liveFrame, setLiveFrame] = useState<{ game: string; frame: HistoricalFrame } | null>(null);
   /** **The count a run is being fetched for, while it is** (R-E9). Set by
    *  `landed` BEFORE its first `await` — so it lands in the same render as the
@@ -514,6 +515,12 @@ export function App() {
       // run has replaced it.
       const mark = { game, events: next };
       setRunFor(mark);
+      // **And the held frame let go** (Task 7 review, Important 1): after an
+      // undo, a DIFFERENT move can bring the count back to the number an
+      // undone branch's run ended on, and if this run then fails, that frame
+      // would pass for the live one — a port that is not on the table, and no
+      // read. With no frame held, a failed run asks each board once.
+      setLiveFrame(null);
       try {
         const r = await fetchRun(game, prev, next);
         // The same rule the reply itself is judged by: a run for a game the
