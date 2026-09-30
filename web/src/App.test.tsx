@@ -1368,6 +1368,81 @@ describe("the turn playback", () => {
     expect(portCards(), "and the strip is still the run's").toEqual(runPort);
   });
 
+  // **The same count again, by REPLY, while its run is out** (cycle E, Task 9;
+  // the mutation battery's findings 1 and 2). This browser's own undo comes
+  // back as a reply, so it goes through `landed`'s shrink arm, which keeps the
+  // frame the undone branch's run left: its index, 43, is above the count, so
+  // nothing takes it for live. A DIFFERENT move's reply then brings the count
+  // back to 43, and while that move's run is out the held frame's index is the
+  // count again. On this road only `landed`'s let-go at a run's START keeps
+  // the gap from drawing the undone branch's port with no board asked for:
+  // `arrive`'s shrink arm, which the signal cells reach, is not on it, and a
+  // let-go made only when a run FAILS leaves the frame held while the run is
+  // merely slow. Measured on an export: with the run-start let-go removed, and
+  // with it moved into a catch on the run's fetch, this cell goes red and
+  // every other cell in this file and `TableSections.test.tsx` stays green.
+  // The payloads are this describe's `botReply()`; the regrowth's run is held
+  // by a gate, and the call log is the witness that nothing was asked in the
+  // gap.
+  it("draws the undo's port while a regrowth's run is out after an undo by reply, and asks for no board", async () => {
+    const { before, replied, at, log } = botReply();
+    let posts = 0;
+    let runs = 0;
+    const held = gate<unknown>();
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) {
+        posts += 1;
+        // The move to 43, the undo back to 40, and another move to 43.
+        return posts === 2 ? before : replied;
+      }
+      const ks = runRange(call.path);
+      if (ks) {
+        runs += 1;
+        const frames = { frames: ks.map((k) => at(k)) };
+        return runs === 1 ? frames : held.promise.then(() => frames);
+      }
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const turn = async () =>
+      act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    const user = userEvent.setup();
+    const skipTheWalk = async () => {
+      await user.click(within(document.querySelector<HTMLElement>(".turn-account")!).getByRole("button", { name: "skip" }));
+      await waitFor(() => expect(document.querySelector(".decision.walking")).toBeNull());
+    };
+    await waitFor(() => expect(boards()).toEqual([1, 1]));
+    // The move: a run 40 → 43 lands, and its last frame is held.
+    await user.click(firstRow());
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
+    await skipTheWalk();
+    const undonePort = portCards();
+    expect(undonePort, "premise: the strip draws the run's live frame").toEqual(cardsOf(wire.atK.ports));
+    // The undo, by reply: the count is 40 again, and each board is asked once.
+    await user.click(firstRow());
+    await waitFor(() => expect(boards()).toEqual([2, 2]));
+    await turn();
+    const servedPort = portCards();
+    expect(servedPort, "premise: the undo drew the server's port, not the undone branch's").toEqual(cardsOf(wire.ports));
+    expect(servedPort, "premise: the two ports hold different cards").not.toEqual(undonePort);
+    // Another move, by reply, to the SAME count, its run HELD.
+    await user.click(firstRow());
+    await waitFor(() => expect(runs).toBe(2));
+    await turn();
+    await turn();
+    expect(portCards(), "the gap draws the undo's port, not the undone branch's").toEqual(servedPort);
+    expect(boards(), "and asks for no board").toEqual([2, 2]);
+    // The landing: the run's own live frame, and still no board asked for.
+    held.resolve(undefined);
+    await waitFor(() => expect(document.querySelector(".decision.walking")).not.toBeNull());
+    await skipTheWalk();
+    expect(portCards(), "the landing draws the run's live frame").toEqual(cardsOf(wire.atK.ports));
+    expect(boards(), "the landing asks for no board").toEqual([2, 2]);
+  });
+
   // **A game shown again draws its boards from its own reads** (Task 7
   // re-review 2, Minor). The frame a run left is held per game, and the render
   // refuses another game's — so what `show`'s let-go guards is the SAME game
@@ -3327,16 +3402,21 @@ describe("the opponent's turn arrives by the signal", () => {
   // moved on — the last two moving the count with no run. So the held frame
   // is let go on all three: when a run BEGINS (`landed`), when the refusal's
   // re-read reads a count other than the post's, and in `arrive`'s shrink
-  // arm; and `show` lets go of it when a game is put on screen. Five cells
-  // walk those roads: this one (the regrowth's run FAILS); the one after it
-  // (the run is held, then lands — what the gap draws); the undo's signal
-  // re-read at the undone count (the one after that); and, in "the turn
-  // playback", the refused move's re-read and a game shown again. What no road
-  // here can see is a branch that changed at the SAME count without this
-  // screen ever reading another: the count is the position's key (ruling
-  // T7-a), as it is for the whole state in `arrive`. The positions here are
-  // this describe's `at`; the served port is `ports.json` and the run's is
-  // `at_k.json`'s, which hold different cards.
+  // arm; and `show` lets go of it when a game is put on screen. Each let-go
+  // has its own catcher: `landed`'s is the undo by REPLY in "the turn
+  // playback" (a road where no `arrive` shrink comes first); the
+  // refusal's and `show`'s are "the turn playback"'s refused move's re-read
+  // and its game shown again; and `arrive`'s is the undo's signal re-read at
+  // the undone count (the third cell here). This cell (the regrowth's run
+  // FAILS) and the one after it (the run is held, then lands) walk the SIGNAL
+  // road, where the undo passes `arrive`'s shrink arm before the regrowth
+  // reaches `landed`, so either let-go alone keeps them green: they pin the
+  // two together, and go red only with both removed (measured, cycle E Task
+  // 9's fix wave). What no road here can see is a branch that changed at the
+  // SAME count without this screen ever reading another: the count is the
+  // position's key (ruling T7-a), as it is for the whole state in `arrive`.
+  // The positions here are this describe's `at`; the served port is
+  // `ports.json` and the run's is `at_k.json`'s, which hold different cards.
   it("asks each board once when a regrowth's run fails, and draws the server's port, not an undone branch's", async () => {
     let events = wire.watching.events;
     let runFails = false;
@@ -3401,8 +3481,10 @@ describe("the opponent's turn arrives by the signal", () => {
   // gap the count is 43 again with its run still out: the held frame has been
   // let go, so the strip is the port the undo read (the server's) and no board
   // is asked for; at the landing the strip is the new run's. A let-go made only
-  // when a run FAILS would keep every other cell green and draw the undone
-  // branch's port in this gap — the reviewer's mutant, which this cell reads.
+  // when a run FAILS draws the undone branch's port in this gap only if
+  // `arrive`'s shrink arm has not already let go — on this road it has, so
+  // that mutant, the reviewer's, is read by the undo-by-reply cell in "the
+  // turn playback", and this one goes red only with both let-gos gone.
   it("draws the server's port in a regrowth's gap and the run's at its landing, asking for no board", async () => {
     let events = wire.watching.events;
     let held: ReturnType<typeof gate<unknown>> | null = null;
