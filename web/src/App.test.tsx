@@ -4544,13 +4544,6 @@ describe("a local game", () => {
           call: (req) => {
             if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
               return { status: 409, body: wire.foreignBot409 };
-            // **The foreign game's own table, as this device serves it**
-            // (cycle E, R-E5): the corpus's foreign row re-addressed — a
-            // playing game with moves in it (`has_events`), the fact a local
-            // label reads. The corpus's playing table is one dealt a moment
-            // ago, with none.
-            if (req.path === `/api/games/${LOCAL}/table`)
-              return { status: 200, body: { ...wire.tableForeign, id: LOCAL } };
             if (req.path === `/api/games/${LOCAL}` && req.method === "DELETE") {
               order.push("delete");
               return { status: 204, body: undefined };
@@ -4568,10 +4561,17 @@ describe("a local game", () => {
       },
     );
     await screen.findByText(wire.foreignBot409.error);
-    const abandon = screen.getByRole("button", { name: /^abandon / });
+    // **Ruling T5-c: this screen forces the bit.** The table the fake host
+    // serves here is the corpus's playing table re-addressed, whose mirror
+    // says NO event — the stale case of a game stored before the bit, which
+    // never heals on this screen because nothing can be persisted. It is
+    // still a game worth saving, so it reads "and save" and it is sent.
+    expect(wire.table.has_events, "the premise: the table's own bit says no event").toBe(false);
+    const named = wire.table.name ?? LOCAL;
+    const abandon = screen.getByRole("button", { name: `abandon and save ${named}` });
     expect(abandon).toHaveTextContent("Abandon and save");
     await user.click(abandon);
-    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    await user.click(screen.getByRole("button", { name: `confirm abandon and save ${named}` }));
     await waitFor(() => expect(order).toEqual(["archive", "delete"]));
     // And back to the door, where this browser's games are listed.
     await screen.findByRole("heading", { name: "On this device" });

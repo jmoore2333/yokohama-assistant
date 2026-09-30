@@ -115,8 +115,11 @@ export function Abandon({
    *
    *  **The bit is the table's as this caller was handed it**, so a host whose
    *  table was read before the first move hands the live fact in (App's game
-   *  screen does). The send follows the same bit (ruling T5-b; `abandon`
-   *  below), so the label and the act cannot disagree. */
+   *  screen does), and the foreign-bot screen forces it (ruling T5-c). What
+   *  agrees by construction: a hosted label and the layer's delete, by ONE
+   *  rule; a local label and the local send, by ONE bit (ruling T5-b;
+   *  `abandon` below). What may still differ is the ARCHIVE fact: the label
+   *  reads what this browser remembers, and the click forces a fresh read. */
   const saves = isLocal(table.id)
     ? local && archiveDisposition(archive) === "send" && table.status === "playing" && table.has_events
     : table.saves;
@@ -191,11 +194,11 @@ export function Abandon({
    * **Nor does a local game with no event in it** (cycle E, ruling T5-b): the
    * layer's own delete saves nothing from a moveless playing table, and the
    * label above already said "Abandon", on the same bit. Nothing to save is
-   * nothing to ask about — no forced read, no refusal face, no send. **The
-   * cost, ruled**: a game stored before the bit existed reads `false` until
-   * its next write, so one that can no longer move (the foreign-bot screen)
-   * is deleted without a copy, as its label says; "Save game file" beside it
-   * keeps the bytes.
+   * nothing to ask about — no forced read, no refusal face, no send. A game
+   * stored before the bit existed reads `false` until its next write; ruling
+   * T5-c's cost is that the foreign-bot screen, where that write never comes,
+   * hands this control `true`, so a foreign game dealt a moment ago sends a
+   * zero-move copy.
    */
   const abandon = async () => {
     if (inFlight.current) return;

@@ -1685,9 +1685,19 @@ export function App() {
                     archives it (R-6.5a.11). A local game lands on the door, where
                     the rest of this browser's games are listed; a server game on
                     the lobby. */}
+                {/* **The foreign screen FORCES the bit** (cycle E, ruling T5-c):
+                    it exists for a record this build cannot drive, whose moves
+                    are exactly what makes it worth saving, and its stored
+                    mirror never heals here — the host refuses the game before
+                    anything is persisted — so a game stored before the bit
+                    would read no event for ever and be deleted without a copy.
+                    A foreign game dealt a moment ago then sends a zero-move
+                    copy, which is what every local Abandon did before cycle E.
+                    Not the record's own count: that would be this client's
+                    first parse of a record (`local/client.ts`, `local/db.ts`). */}
                 {abandonable && (
                   <Abandon
-                    table={broken.table}
+                    table={broken.foreign ? { ...broken.table, has_events: true } : broken.table}
                     local={local && broken.foreign}
                     onDone={() => (local ? toDoor() : toLobby())}
                     onError={setError}
