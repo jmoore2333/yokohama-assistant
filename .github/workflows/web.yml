@@ -200,13 +200,13 @@ jobs:
           web = next(p for p in json.load(sys.stdin)["packages"] if p["name"] == "yokohama-web")
           print(" ".join(sorted(t["name"] for t in web["targets"] if "test" in t["kind"])))
           ')"
-          want="browser_played_pin play_a_whole_game wire_fixtures"
+          want="browser_played_pin lane_document play_a_whole_game wire_fixtures"
           if [ "$got" != "$want" ]; then
             echo "::error::crates/yokohama-web's test binaries are [$got]; this job names [$want] — name the new binary in a step"
             exit 1
           fi
           echo "the layer's test binaries, every one named by a step: $got"
-      - run: cargo test -p yokohama-web --lib --test wire_fixtures --test browser_played_pin
+      - run: cargo test -p yokohama-web --lib --test wire_fixtures --test browser_played_pin --test lane_document
       # M6.5b's fix wave: the browser host's own crate. It is host code with
       # seven cells — among them the scan that holds its platform calls to the
       # clock and the console — and nothing in CI ran them: the `build:wasm` step above only
