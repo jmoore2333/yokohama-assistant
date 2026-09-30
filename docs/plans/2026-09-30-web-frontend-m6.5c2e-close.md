@@ -104,6 +104,8 @@ The records of record are `worker/RUNBOOK.md` §19 and `deploy/RUNBOOK.md` §3.1
 
 ## 8. The wrap
 
+**Amended at the close, on the owner's word (2026-09-30, after this document was first committed):** the stack is NOT merged now — *"we'll need a final clean F phase … we will not merge the stack"*. Cycle F follows from `docs/plans/2026-09-30-web-frontend-m6.5c2f-handover.md` (the door's update path unmetered, the self-host's table TTL sweep, the door-unmetered fence, Turnstile as a brainstorm item, E's deferred minors); the merge #31 → #43 → F's PR and the `v0.6.0` tag are F's last step. The lines below stand as the recipe F runs then.
+
 - **E's PR** (`web-room-m6.5c2e` → `web-room-m6.5c2d`) opened at this close with the cycle in one screen (`pr-body.md`); no workflow runs on the push.
 - **On the owner's word (R-6.5c2.37; R-E16):** the merge #31 → #43 bottom-up, one at a time, each PR's base moved to master and its commits read before its merge; then the tag `v0.6.0` and `release.yml` read to green; then `test.yml` and `docker.yml` re-enabled; then one documents commit on master (the memory, the board's Updated line, the README's release line).
 - **The AI lane's re-entry** is the board's Track 1 pointer and `docs/plans/2026-09-11-ai-lane-reentry-handover.md` — the owed game, the two HOLDs (D3 over the sighted leaf; W6's GO/WAIT), every open owner item — with the roadmap's Phases D–F rows in `guidingpath.md` naming what follows V4. No new handover document.

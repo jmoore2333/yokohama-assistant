@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-30, M6.5c2 cycle E "the finish" CLOSED on `web-room-m6.5c2e` (the code head `c39da5a1`; the final reviewed head `3107eb8b`; the record [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), its §7 what the cycle does NOT claim). Both hosts run E's release; the door was vetted in two states and reverted; PR #43 is open against `web-room-m6.5c2d`. **The merge #31 → #43 and the `v0.6.0` tag wait on your word** (Track 3). After them the project refocuses on the computer player (Track 1).
+**Updated:** 2026-09-30, M6.5c2 cycle E "the finish" CLOSED on `web-room-m6.5c2e` (the code head `c39da5a1`; the final reviewed head `3107eb8b`; the record [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), its §7 what the cycle does NOT claim). Both hosts run E's release; the door was vetted in two states and reverted; PR #43 is open against `web-room-m6.5c2d`. **By your word at the close (2026-09-30), the stack is NOT merged now: cycle F "the clean finish" follows, from [its handover](plans/2026-09-30-web-frontend-m6.5c2f-handover.md) — the door's update path unmetered, the self-host's table TTL sweep, Turnstile as a brainstorm item; the merge #31 → #43 → F's PR and the `v0.6.0` tag are F's last step, on your word again** (Track 3). After them the project refocuses on the computer player (Track 1).
 
 **History, by record.** This board keeps no running history; each session's account is its record of record:
 - 2026-09-30 — cycle E "the finish" closed ([close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
@@ -146,6 +146,7 @@ After the merge the project refocuses on the computer player (Track 1).
 
 ## Entry artifacts by lane
 
+- **F's brainstorm, then its spec and plan** — the six items of [the F handover](plans/2026-09-30-web-frontend-m6.5c2f-handover.md) §7 (Turnstile's place and cost; the wording path; the NAS marker; the sweep's first run). The merge and the tag moved to F's end.
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
 - Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle E's plan [`plans/2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md) and E's close (the last row of `web-lane.md` §11, written at the close); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
