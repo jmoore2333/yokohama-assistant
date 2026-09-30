@@ -172,7 +172,8 @@ describe("the Game menu", () => {
   });
 
   // **The way out lives here on the game screen, and the reason is measured.**
-  // The banner is gated at ONE ROW at 1440 and 1280 (`the_screen_itself.spec.ts`),
+  // The banner is gated at ONE ROW at 1440 and 1280 — and 1024 since cycle E —
+  // (`the_screen_itself.spec.ts`),
   // and M6.1's door put a strip and a button in it: 1325px of children and gaps
   // against a 1240px content box at 1280, which broke the line. The FACT ("You
   // are …") is read at a glance and stays in the banner; the CONTROL joins this

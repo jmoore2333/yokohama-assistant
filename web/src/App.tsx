@@ -6,6 +6,7 @@ import {
   ApiError,
   bounded,
   BOUND_MS,
+  displayName,
   isLocal,
   isSignedOut,
   LOCAL_USER,
@@ -1491,13 +1492,20 @@ export function App() {
     (route.kind === "new" && route.local) ||
     (broken !== null && isLocal(broken.id)) ||
     lockId !== null;
+  // **The name the player's seats are labelled with, where this browser keeps
+  // one** (cycle E; the owner's first game read "You are ben" over a seat card
+  // reading "Ben"). A seat card notes the name its seat was TYPED as — what
+  // this browser sent with the create, the join or the keep, `displayName()` —
+  // while this strip read the parsed KEY, which `User::parse` lowercases. The
+  // key stays the answer where there is no name: it is still who you are.
+  const shownAs = displayName()?.trim() || signedIn;
   const whoStrip = (
     <span className="meta who">
       {spectating
         ? "You are spectating"
         : onThisDevice || !signedIn
           ? "On this device"
-          : `You are ${signedIn}`}
+          : `You are ${shownAs}`}
     </span>
   );
   const who = (
@@ -2034,7 +2042,7 @@ export function App() {
           savedFrom={multiplayerOffered() && !isLocal(state.id) ? undefined : "local"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
-            The banner is one row at 1440 and 1280 by a gate that measures it
+            The banner is one row at 1440, 1280 and 1024 by a gate that measures it
             (`the_screen_itself.spec.ts`), and the door's two controls together
             cost 269px of a 1240px content box at 1280 — enough to break the
             line, measured: 1325px of children and gaps against 1240. The strip
@@ -2043,19 +2051,6 @@ export function App() {
             controls live (which game, which other game, back to the form). The
             screens with no Game menu — the form and the deal — keep both. */}
         {whoStrip}
-        {/* **What the poll can say for itself, and `live` says nothing.**
-            A permanent "connected" mark is a thing people stop seeing, and the
-            banner is GATED at one row at 1440 and 1280 with 22px of room
-            measured — so the resting state costs no width at all. The words
-            that do appear are the ones a player would otherwise have to guess
-            at: the board is as old as the tab was hidden ("refreshing"), or
-            this browser cannot reach the server ("connecting" before its first
-            connection, "reconnecting" once one is lost). */}
-        {link !== "live" && (
-          <span className="meta link" role="status">
-            {link}&hellip;
-          </span>
-        )}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px
@@ -2207,6 +2202,26 @@ export function App() {
           <Abandon table={table} local onDone={() => toDoor()} onError={setError} />
         ) : null}
       </header>
+
+      {/* **What the poll can say for itself, and `live` says nothing** — on the
+          line UNDER the banner, never in its row (cycle E, straw poll row 71).
+          A permanent "connected" mark is a thing people stop seeing, so the
+          resting state draws nothing. The words that do appear are the ones a
+          player would otherwise have to guess at: the board is as old as the
+          tab was hidden ("refreshing"), or this browser cannot reach the
+          server ("connecting" before its first connection, "reconnecting" once
+          one is lost). In the banner's row the word was one more child of a
+          row GATED at one line (`the_screen_itself.spec.ts`), and measured at
+          1280 it broke the line: 93px against a 56px one-row box. The strip is
+          mounted whatever the word, so the line it sits on is always there to
+          find; `styles.css` says where it is drawn at each width. */}
+      <div className="link-strip">
+        {link !== "live" && (
+          <span className="meta link" role="status">
+            {link}&hellip;
+          </span>
+        )}
+      </div>
 
       {/* How close the game is to ending, in the CLI's own words. Without it a
           player cannot see the game ending, which is not a polish issue.

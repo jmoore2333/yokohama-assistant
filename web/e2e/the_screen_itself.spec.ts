@@ -12,7 +12,7 @@ import { type Page } from "@playwright/test";
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { FLOOR_REM, tileWidthFor } from "../src/fit";
-import { act, blame, deadEnd, noticeIsDrawn, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, noticeIsDrawn, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -979,15 +979,25 @@ test("a panel really is modal", async ({ page }) => {
 // breaking — `.banner` is `flex-wrap: wrap` too, and at 1280 the nav moved
 // below the title, which is the 101-against-56 reading recorded above. A nav
 // wrapping inside its own box is a different measurement and is not this cell's.
-test("the banner is one row at 1440 and 1280", async ({ page }) => {
+//
+// **And 1024 is ASSERTED since cycle E** (straw poll row 71). Measured at the
+// cycle's head the banner read 101px at 1024 — 1218px of children and gaps
+// against a 984px content box — and 93px at 1280 whenever "reconnecting…"
+// joined the row. Below 1201 the title's tracking, the gaps and the nav's
+// buttons are tighter, and the Game menu's summary (the game's id) is the one
+// child that gives way, ending in an ellipsis rather than breaking the line;
+// the link word left the banner's row for the line under it (a line of its own
+// below 1201px, the end-trigger strip's right-hand end above) — read below.
+test("the banner is one row at 1440, 1280 and 1024", async ({ page }) => {
   const watch = watchForBreakage(page);
 
   // Every width is measured BEFORE anything is asserted, so the record below is
   // printed whole even though the run stops at the first width that wrapped.
   const rows: { width: number; height: number; oneRowBox: number; wrapped: boolean; kids: string }[] = [];
+  let last = "";
   for (const width of [1440, 1280, 1024]) {
     await page.setViewportSize({ width, height: 900 });
-    await startGame(page);
+    last = (await startGame(page)).id;
     const r = await page.evaluate(() => {
       const banner = document.querySelector("header.banner");
       if (!banner) return null;
@@ -1018,12 +1028,48 @@ test("the banner is one row at 1440 and 1280", async ({ page }) => {
   );
   expect(rows.length, "a width was skipped, so the record above is short").toBe(3);
 
-  for (const r of rows.filter((row) => row.width >= 1280)) {
+  for (const r of rows) {
     expect(
       r.wrapped,
       `the banner wrapped at ${r.width}px: ${r.height}px against a one-row box of ${r.oneRowBox}px`,
     ).toBe(false);
   }
+
+  // **And "reconnecting…" leaves the row alone** (cycle E, straw poll row 71):
+  // in the banner's row it broke the line at 1280 (93px against 56). It sits
+  // on the line under the banner now. The stream here answers the table's
+  // current frame and then ENDS without an end frame — a connection made and
+  // lost, which is what the client calls "reconnecting".
+  const events = await page.request.get(`/api/games/${last}/events`, { headers: { "x-yokohama-claimed-user": WALKER } });
+  expect(events.status(), await events.text()).toBe(200);
+  const frame = `event: signal\ndata: ${await events.text()}\n\n`;
+  await page.route(`**/api/games/${last}/stream**`, (route) =>
+    route.fulfill({ status: 200, contentType: "text/event-stream", body: frame }),
+  );
+  await page.reload();
+  await expect(page.getByText(/end triggers:/)).toBeVisible();
+  await expect(page.locator(".link-strip .link")).toHaveText("reconnecting\u2026", { timeout: 20_000 });
+  for (const width of [1024, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const r = await page.evaluate(() => {
+      const banner = document.querySelector("header.banner")!;
+      const cs = getComputedStyle(banner);
+      const box =
+        parseFloat(cs.paddingTop) +
+        parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderTopWidth) +
+        parseFloat(cs.borderBottomWidth) +
+        Math.max(...[...banner.children].map((c) => c.getBoundingClientRect().height));
+      const b = banner.getBoundingClientRect();
+      const word = document.querySelector(".link-strip .link")!.getBoundingClientRect();
+      return { height: Math.round(b.height), oneRowBox: Math.round(box), bottom: b.bottom, wordTop: word.top };
+    });
+    // eslint-disable-next-line no-console
+    console.log(`banner reconnecting at ${width}px: ${JSON.stringify(r)}`);
+    expect(r.height, `the banner wrapped at ${width}px while reconnecting`).toBeLessThanOrEqual(r.oneRowBox + 1);
+    expect(r.wordTop, `the word sits under the banner at ${width}px`).toBeGreaterThanOrEqual(r.bottom - 1);
+  }
+  await page.unroute(`**/api/games/${last}/stream**`);
 
   expect(watch.failures).toEqual([]);
 });

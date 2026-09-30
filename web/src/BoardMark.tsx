@@ -23,14 +23,16 @@ import type { PlayerColor } from "./types";
 export type Trade = "copper" | "silk" | "tea" | "seafood" | "yen" | "vp" | "imports" | "neutral" | "faint";
 
 /** One tile: its row from the top, its place in the row, what it trades, and
- *  how strongly it is tinted: the approved mock's weights, except customs and
- *  the employment agency, re-weighted with the hues this drawing gives them.
+ *  how strongly it is tinted: the approved mock's weights, except the bottom
+ *  three, re-weighted with the hues this drawing gives them.
  *  **The bottom three step apart by lightness** (cycle E, straw poll row 62):
  *  at 0.5 the laboratory's `--fg-faint` and the employment agency's `--fg-dim`
- *  at 0.45 drew one grey (L* 34.4 each, measured on the door at 1280). With
- *  the laboratory at 0.15 and customs at 0.68 they read, measured the same way,
- *  customs L* 54.6 (HSL 45%, in its own gold), the employment agency 34.4
- *  (33%) and the laboratory 20.3 (20%): every pair 12 or more apart on both. */
+ *  at 0.45 drew one grey (L* 34.4 each, measured on the door at 1280). Row 62
+ *  took the laboratory to 0.15, where it read L* 20 on a backdrop of L* 11–17:
+ *  an empty slot, not a tile. So the step is taken from above instead (Task
+ *  4b, ruling 4a-2): the laboratory at 0.35, the employment agency at 0.6 and
+ *  customs at 0.68 read, measured on the door at 1440, L* 28.3, 41.8 and 54.6
+ *  — every pair 12 or more apart, and the laboratory 15 over the backdrop. */
 export interface Tile {
   row: number;
   col: number;
@@ -48,8 +50,8 @@ export const TILES: readonly Tile[] = [
   { row: 1, col: 1, trade: "copper", alpha: 0.65 }, // the copper mine
   { row: 1, col: 2, trade: "yen", alpha: 0.85 }, // the bank
   { row: 2, col: 0, trade: "imports", alpha: 0.68 }, // customs
-  { row: 2, col: 1, trade: "faint", alpha: 0.15 }, // the laboratory
-  { row: 3, col: 0, trade: "neutral", alpha: 0.45 }, // the employment agency
+  { row: 2, col: 1, trade: "faint", alpha: 0.35 }, // the laboratory
+  { row: 3, col: 0, trade: "neutral", alpha: 0.6 }, // the employment agency
 ];
 
 /** The drawing's own units: a tile is 96 by 68, a row 76 below the last and

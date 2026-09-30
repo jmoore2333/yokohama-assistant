@@ -36,7 +36,7 @@ export function useSections(): [SectionKey[], (k: SectionKey) => void] {
 /** **The section toggles, and they are a DISCLOSURE for a measured reason.**
  *  Eleven inline buttons wrapped the banner to a second row below 1280 at M3.5,
  *  and `the_screen_itself.spec.ts`'s banner cell pins its height to one row at
- *  1440 and 1280; five more buttons would wrap it again. The summary carries
+ *  1440, 1280 and 1024; five more buttons would wrap it again. The summary carries
  *  the count, so the state is readable with the menu shut.
  *
  *  **Escape closes it (ruling R-T12a).** An uncontrolled `<details>` ignores

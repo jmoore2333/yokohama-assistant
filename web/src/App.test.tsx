@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
+import { OpenTable } from "./OpenTable";
 import {
   CLAIMED_USER_KEY,
   DISPLAY_NAME_KEY,
@@ -2728,6 +2729,83 @@ describe("the spectator screen", () => {
     expect(screen.getByRole("button", { name: "Suggest" })).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`You are ${wire.me.user}`))).toBeInTheDocument();
     expect(screen.queryByText("You are spectating")).toBeNull();
+  });
+});
+
+// ---- cycle E: the banner's own row, and the name on it (straw poll row 71;
+// the game header's "You are ben" beside the seat card's "Ben") -----------
+describe("the banner's row and the name on it", () => {
+  // **"reconnecting…" is said UNDER the banner** (straw poll row 71). In the
+  // banner's row it was one more child of a row gated at one line, and
+  // measured at 1280 it broke the line: 93px against a 56px one-row box. jsdom
+  // has no layout, so this cell is the STRUCTURE the layout rests on — the
+  // word is no child of the banner, and it sits in the element that follows
+  // the banner (a line of its own below 1201px, the end-trigger strip's line
+  // above) — and `the_screen_itself.spec.ts`'s banner cell is the layout's
+  // own read.
+  it("says reconnecting in an element of its own under the banner, never in the banner's row", async () => {
+    const stream = fakeStream();
+    await renderApp(wire.options, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.options.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+      return undefined;
+    });
+    await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
+    await flushReal();
+    // Anti-vacuity: live says nothing, so the word below is the dropped stream's.
+    expect(screen.queryByText(/connecting/)).toBeNull();
+    stream.close();
+    const word = await screen.findByText("reconnecting\u2026");
+    const banner = document.querySelector("header.banner")!;
+    expect(banner.contains(word), "the word is not in the banner's row").toBe(false);
+    expect(word).toHaveAttribute("role", "status");
+    expect(banner.nextElementSibling, "its line is the one under the banner").toBe(word.closest(".link-strip"));
+    expect(banner.nextElementSibling).not.toBeNull();
+  });
+
+  // **The banner names the player the way their seat card does** (straw poll,
+  // the game header's spelling). A seat card notes the name its seat was TYPED
+  // as — what this browser sent with the create or the join (`displayName()`,
+  // `OpenTable`'s own face) — while the banner read the parsed KEY
+  // (`me.user`), so the owner's first game read "You are ben" over a card
+  // reading "Ben". The key stays the answer where this browser has no name:
+  // the spectator describe's "names the player at a table this caller sits
+  // at" is that half.
+  it("names the player as their seat card does: the name the seat was typed as, not the key", async () => {
+    // The corpus's seated reading of the game (`table.json`): this caller's
+    // seat, and the name the walk sat it down as.
+    const mine = wire.table.seats[wire.table.my_seats[0]!]!;
+    if (mine.kind !== "human" || !mine.name) throw new Error("premise: this caller sits at a named seat");
+    expect(mine.name.toLowerCase(), "premise: the typed name is not the key").not.toBe(wire.me.user);
+    localStorage.setItem(DISPLAY_NAME_KEY, mine.name);
+
+    // The seat card: the lobby's seated open table (`games.json`'s second
+    // row, `OpenTable.test.tsx`'s `seated()`), its own seat named as the walk
+    // named this caller's seat — the one field the cell is about.
+    const open = wire.games.games[1]!;
+    const own = open.my_seats[0]!;
+    const table: TableView = {
+      ...open,
+      seats: open.seats.map((s, i) => (i === own && s.kind === "human" ? { ...s, name: mine.name } : s)),
+    };
+    stubApi((call) => {
+      if (call.path.endsWith("/stream")) return openStream();
+      if (call.method === "GET" && call.path.includes("/chat")) return { ...wire.chat, messages: [], last: 0, rev: 0 };
+      if (call.path.endsWith("/table")) return table;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<OpenTable game={table.id} table={table} onStarted={() => {}} onLeave={() => {}} />);
+    const card = within(screen.getByRole("list", { name: "Seats" })).getAllByRole("listitem")[own]!;
+    const onCard = card.querySelector(".seat-card-note")?.textContent ?? null;
+    expect(onCard, "the seat card notes the typed name").toBe(mine.name);
+    cleanup();
+
+    // The game, as this browser reads it: the banner's name is the card's.
+    await renderApp(wire.options, (call) =>
+      call.method === "GET" && call.path.includes("/chat") ? wire.chat : undefined,
+    );
+    expect(document.querySelector("header.banner .who")).toHaveTextContent(`You are ${onCard}`);
+    expect(screen.queryByText(`You are ${wire.me.user}`)).toBeNull();
   });
 });
 

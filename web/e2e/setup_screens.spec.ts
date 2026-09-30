@@ -538,6 +538,29 @@ test("the open table and the device card at 390: every control a thumb presses i
     // ---- The open table, as the creator (Copy link, Abandon, the chat).
     await asAt390(WALKER);
     await expect(page.locator(".open-table").getByRole("heading", { name: "Thumb check" })).toBeVisible();
+    // **The band on a phone: the product and the pill share a line, and the
+    // path to the page takes the line under both** (cycle E, straw poll row
+    // 60). Two crumbs are the case that broke: "Yokohama / Lobby" beside the
+    // pill and "/ Thumb check" at its foot, measured at 390.
+    const band = await page.evaluate(() => {
+      const box = (e: Element | null) => {
+        const r = e!.getBoundingClientRect();
+        return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) };
+      };
+      return {
+        title: box(document.querySelector(".lobby-band h1")),
+        pill: box(document.querySelector(".lobby-band .identity-pill")),
+        crumbs: [...document.querySelectorAll(".lobby-band .crumb")].map((c) => ({ text: c.textContent, ...box(c) })),
+      };
+    });
+    // eslint-disable-next-line no-console
+    console.log(`the band at 390: ${JSON.stringify(band)}`);
+    expect(band.crumbs.map((c) => c.text), "the sweep read both crumbs").toEqual(["Lobby", "Thumb check"]);
+    expect(band.pill.top < band.title.bottom && band.pill.bottom > band.title.top, "the pill is on the title's line").toBe(true);
+    for (const c of band.crumbs) {
+      expect(c.top, `"${c.text}" is under the pill, never beside it`).toBeGreaterThanOrEqual(band.pill.bottom - 1);
+      expect(c.top, `"${c.text}" is under the title`).toBeGreaterThanOrEqual(band.title.bottom - 1);
+    }
     const show = page.locator(".open-table > .chat").getByRole("button", { name: "show" });
     if (await show.count()) await show.click();
     await expect(page.locator(".open-table > .chat").getByRole("button", { name: "send" })).toBeVisible();
@@ -592,6 +615,62 @@ test("the open table and the device card at 390: every control a thumb presses i
     const shortDevice = device.filter((c) => c.height < 44);
     expect(shortDevice, `device-card controls under 44px at 390: ${JSON.stringify(shortDevice)}`).toEqual([]);
     await noSidewaysScroll(page, "the device card at 390px");
+  } finally {
+    await request.delete(`/api/games/${id}`, { headers: { "x-yokohama-claimed-user": WALKER } });
+  }
+  expect(watch.failures).toEqual([]);
+});
+
+// **The open table's chat, in mock 08's rail from 976px** (cycle E, straw poll
+// row 67). It sat in the main column at every width, under the invite. From
+// 976px a seated caller's page is two columns — the table and the way out on
+// the left, the chat on the right at the lobby rail's width, level with the
+// page's top and ending where the band's corner ends; below it the chat is
+// back under the invite, above the way out, as the page always read.
+test("the open table's chat sits in a rail beside the table from 976px, and under the invite below it", async ({
+  page,
+  request,
+}) => {
+  const watch = watchForBreakage(page);
+  const res = await request.post("/api/games", {
+    headers: { "x-yokohama-claimed-user": WALKER },
+    data: { players: 2, colors: ["Red", "Blue"], start_seat: 0, seats: [{ user: WALKER }, { open: true }], name: "Rail check" },
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  const id = String(((await res.json()) as { id: string }).id);
+  try {
+    await page.setViewportSize(DESKTOP);
+    await signIn(page, WALKER, `/#/t/${id}`);
+    await expect(page.locator(".open-table").getByRole("heading", { name: "Rail check" })).toBeVisible();
+    for (const width of [1440, 976, 975]) {
+      await page.setViewportSize({ width, height: 900 });
+      const r = await page.evaluate(() => {
+        const box = (s: string) => {
+          const b = document.querySelector(s)!.getBoundingClientRect();
+          return { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), bottom: Math.round(b.bottom) };
+        };
+        return {
+          main: box(".open-table-main"),
+          chat: box(".open-table > .chat"),
+          invite: box(".invite"),
+          controls: box(".open-table-controls"),
+          corner: box(".lobby-band .band-corner"),
+        };
+      });
+      // eslint-disable-next-line no-console
+      console.log(`the open table at ${width}px: ${JSON.stringify(r)}`);
+      if (width >= 976) {
+        expect(r.chat.left, `the chat beside the table at ${width}px`).toBeGreaterThanOrEqual(r.main.right);
+        expect(Math.abs(r.chat.top - r.main.top), `level with the page's top at ${width}px`).toBeLessThanOrEqual(2);
+        expect(Math.abs(r.chat.right - r.corner.right), `ending where the corner ends at ${width}px`).toBeLessThanOrEqual(2);
+        expect(r.controls.top, `the way out under the table at ${width}px`).toBeGreaterThanOrEqual(r.invite.bottom);
+        expect(r.controls.right, `and in the table's column at ${width}px`).toBeLessThanOrEqual(r.main.right);
+      } else {
+        expect(r.chat.top, `the chat under the invite at ${width}px`).toBeGreaterThanOrEqual(r.invite.bottom);
+        expect(r.controls.top, `the way out under the chat at ${width}px`).toBeGreaterThanOrEqual(r.chat.bottom);
+      }
+      await noSidewaysScroll(page, `the open table at ${width}px`);
+    }
   } finally {
     await request.delete(`/api/games/${id}`, { headers: { "x-yokohama-claimed-user": WALKER } });
   }

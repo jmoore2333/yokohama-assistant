@@ -607,7 +607,9 @@ describe("the open table, to somebody sitting at it", () => {
     // And not in the upper strip: nothing between the seats and the controls
     // carries it.
     const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const upper = [...document.querySelectorAll(".open-table > .error")].filter(
+    // The join block's strip lives in the table's own part (`.open-table-main`)
+    // since the chat took mock 08's rail (cycle E, row 67).
+    const upper = [...document.querySelectorAll(".open-table-main > .error")].filter(
       (e) => after(document.querySelector("ol.seat-cards")!, e) && after(e, controls),
     );
     expect(upper.map((e) => e.textContent), "the join block's strip does not carry it").toEqual([]);
@@ -761,8 +763,9 @@ describe("the open table's chat", () => {
     const panel = document.querySelector("section.panel.chat")!;
     expect(panel).not.toBeNull();
     expect(panel).toHaveClass("folded");
-    // UNDER the invite, in document order and in the MAIN column — the place
-    // the spec names (not mock 08's side rail).
+    // UNDER the invite, in document order — the place the spec names below
+    // 976px; from 976px the stylesheet puts it in mock 08's rail (cycle E, row
+    // 67), and the cell below is the structure that rests on.
     expect(link.closest(".invite")!.compareDocumentPosition(panel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -774,6 +777,32 @@ describe("the open table's chat", () => {
     expect(screen.queryByText("Chat")).toBeNull();
     expect(document.querySelector("section.panel.chat")).toBeNull();
     expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);
+  });
+
+  // **Three parts, so the chat can take mock 08's rail** (cycle E, straw poll
+  // row 67): the table, the chat and the way out, in that order — the page as
+  // it always read below 976px — with `with-rail` on a seated caller's page for
+  // the stylesheet's two columns from 976px. A stranger has no chat and no
+  // rail. jsdom has no layout; `setup_screens.spec.ts` reads the columns.
+  it("draws a seated caller's page in three parts, the chat between the table and the way out", async () => {
+    showSeated(tableIs(seated()));
+    await screen.findByLabelText("Invite link");
+    const page = document.querySelector(".setup.open-table")!;
+    expect(page).toHaveClass("with-rail");
+    expect([...page.children].map((c) => c.className)).toEqual([
+      "open-table-main",
+      expect.stringMatching(/(^| )chat( |$)/),
+      "open-table-foot",
+    ]);
+    expect(page.querySelector(".open-table-main .invite"), "the invite is the table's").not.toBeNull();
+    expect(page.querySelector(".open-table-foot .open-table-controls"), "the controls are the way out").not.toBeNull();
+    cleanup();
+
+    show(tableIs(wire.tableOpen));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const strangers = document.querySelector(".setup.open-table")!;
+    expect(strangers).not.toHaveClass("with-rail");
+    expect([...strangers.children].map((c) => c.className)).toEqual(["open-table-main", "open-table-foot"]);
   });
 
   // **One chat read at mount** (M6.5c2 cycle D, row 130). The panel was handed

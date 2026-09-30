@@ -53,12 +53,13 @@ export function GameMenu({
   /** The door's sign-out control, built by `App` and merely PLACED here.
    *
    *  **It lives in this menu on the game screen, and beside the strip on the
-   *  two screens that have no menu.** The banner is gated at one row at 1440 and
-   *  1280, and the strip and the button together cost 269px of a 1240px content
-   *  box — enough to break the line, measured. This menu is already this
-   *  screen's session control, so the control goes in it and the FACT ("You are
-   *  …") stays in the banner where it is read at a glance. Absent under the two
-   *  edge doors, where there is nothing stored to clear. */
+   *  two screens that have no menu.** The banner is gated at one row at 1440,
+   *  1280 and (since cycle E) 1024, and the strip and the button together cost
+   *  269px of a 1240px content box — enough to break the line, measured. This
+   *  menu is already this screen's session control, so the control goes in it
+   *  and the FACT ("You are …") stays in the banner where it is read at a
+   *  glance. Absent under the two edge doors, where there is nothing stored to
+   *  clear. */
   signOut?: ReactNode;
 }) {
   const [saved, setSaved] = useState<TableView[] | null>(null);
@@ -131,6 +132,8 @@ export function GameMenu({
     }
   };
   const others = (saved ?? []).filter((t) => t.id !== state.id);
+  /** What the summary says: the mode, the game's id and whether it is saved. */
+  const summaryWords = `${state.mode} \u00b7 ${state.id}${state.frame.title.autosaved ? " \u00b7 saved" : ""}`;
   return (
     <details
       ref={menu}
@@ -139,9 +142,13 @@ export function GameMenu({
         if (e.currentTarget.open) load();
       }}
     >
-      <summary className="ghost meta">
-        {state.mode} &middot; {state.id}
-        {state.frame.title.autosaved ? " · saved" : ""}
+      {/* **The words in a span of their own, and the whole of them its title**
+          (cycle E, straw poll row 71): from 1000px to 1200px this summary is
+          the banner's one child that gives way, ending in an ellipsis rather
+          than breaking the row (`styles.css`, `.banner > .game-menu`), and an ellipsis needs
+          a box of its own to end in. */}
+      <summary className="ghost meta" title={summaryWords}>
+        <span className="game-menu-name">{summaryWords}</span>
       </summary>
       <div>
         <button type="button" className="ghost" onClick={onLobby}>

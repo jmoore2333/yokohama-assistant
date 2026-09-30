@@ -196,14 +196,21 @@ function Players({
             key={p.seat}
           >
             <div className="seat-head">
-              <span className={`seat-name seat-${p.color.toLowerCase()}`}>{p.color}</span>
-              {bot ? (
-                <span className="tag">
-                  the bot <VersionTag label={bot.label} />
-                </span>
-              ) : (
-                p.is_bot && <span className="tag">bot</span>
-              )}
+              {/* **The version is part of the seat's name** (cycle E, straw
+                  poll row 61): "Red V4" says which bot sits there, and as one
+                  more tag in the row it stood against the `¥` chip, gold box
+                  beside gold chip, reading as a second amount. Inside the name
+                  it takes the muted outline (`styles.css`). */}
+              <span className={`seat-name seat-${p.color.toLowerCase()}`}>
+                {p.color}
+                {bot && (
+                  <>
+                    {" "}
+                    <VersionTag label={bot.label} />
+                  </>
+                )}
+              </span>
+              {bot ? <span className="tag">the bot</span> : p.is_bot && <span className="tag">bot</span>}
               <span className="tag">seat {p.seat}</span>
               <span className="chip yen">&#165;{p.money}</span>
               <span className="chip vp">{p.victory_points} VP</span>

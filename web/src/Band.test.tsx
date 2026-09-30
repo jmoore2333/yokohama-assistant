@@ -36,6 +36,24 @@ describe("the band", () => {
     expect(document.querySelector("header.lobby-band")).not.toBeNull();
     expect(document.querySelector("header.banner")).toBeNull();
   });
+
+  // **The path to the page is an element of its own** (cycle E, straw poll row
+  // 60), which is what lets a phone put it on the line under the product's
+  // name and the corner's pill instead of wrapping it beside the pill. The
+  // layout is `styles.css`'s and `setup_screens.spec.ts` reads it at 390; this
+  // is the structure it rests on.
+  it("keeps the path to the page apart from the product's name, every crumb and separator inside it", () => {
+    render(<LobbyBand crumbs={["Lobby", "Thumb check"]} corner={<a href="#/">back</a>} />);
+    const path = document.querySelector(".lobby-band .band-crumbs")!;
+    expect(path, "the path's own element").not.toBeNull();
+    expect(path.contains(screen.getByRole("heading", { level: 1, name: "Yokohama" }))).toBe(false);
+    expect(path.contains(screen.getByRole("heading", { level: 2, name: "Thumb check" }))).toBe(true);
+    const everything = [...document.querySelectorAll(".lobby-band .crumb, .lobby-band .crumb-sep")];
+    expect(everything).toHaveLength(4);
+    expect(everything.filter((e) => !path.contains(e)), "nothing of the path outside it").toEqual([]);
+    // The first thing on the path's line is a separator, which a phone hides.
+    expect(path.firstElementChild).toHaveClass("crumb-sep");
+  });
 });
 
 describe("the identity corner", () => {
