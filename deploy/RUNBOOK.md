@@ -529,7 +529,7 @@ checks left three saves on the volume (`sim-5c3b4e596bb8cf97`,
 `sim-7d949b884ebb2adb`, `sim-fa6b6bb5049a3929`), the owner's to delete. **Six
 tags now sit on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`,
 `0.5.0-m5.5.1`, `0.5.0-m5.5.2` — each a rollback point (§5). The live build is
-`fb92c17`; the milestone's close commit follows it.
+`fb92c17` (a record of 2026-09-05; the live build is §3.19's); the milestone's close commit follows it.
 
 **Addendum, 2026-09-06: the owner's first-run corrections — `yokohama-web:0.5.0-m5.5.3`
 (13:07Z), then `0.5.0-m5.5.4` (13:48Z).** The correction wave
@@ -560,7 +560,7 @@ laboratory and the goals read their line until the pick. **Eight tags now sit
 on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`,
 `0.5.0-m5.5.2`, `0.5.0-m5.5.3`, `0.5.0-m5.5.4` — each a rollback point (§5).
 The checks' own saves were erased the same day at the owner's word; the owner's
-five remain. The live build is `fb6cec7`; the wave's record commit follows it.
+five remain. The live build is `fb6cec7` (a record of 2026-09-05; the live build is §3.19's); the wave's record commit follows it.
 
 ### 3.7 M6.1 is live — the fourth deployment, 2026-09-15 (a record, not a plan)
 

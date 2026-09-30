@@ -6,13 +6,25 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 > [!IMPORTANT]
 > **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
 > builds for Apple Silicon macOS, Ubuntu x86_64, and Windows x86_64 are on the
-> [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
-> **v0.5.0**, cut from the Phase-3.5c V4 close and the first release whose default bot is the
-> sighted evaluator `v4-step9-draft1`; each download also includes an offline copy of the guide.
+> [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases). The release this tree
+> builds is **v0.6.0**, cut from the M6.5c2 close; the newest build is always the one on the Releases
+> page. The default bot has been the sighted evaluator `v4-step9-draft1` since v0.5.0, and each
+> download also includes an offline copy of the guide.
 
 **Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
 vision lives in `docs/plans/2025-12-07-yokohama-assistant-design.md`).
+
+**Contents:**
+[See it running](#see-it-running) ·
+[The browser client](#the-browser-client) ·
+[Hosting](#hosting) ·
+[Status](#status-2026-08-30) ·
+[Workspace crates](#workspace-crates) ·
+[Download and run](#download-and-run) ·
+[Build from source](#build-from-source) ·
+[Data provenance](#data-provenance-cards-boards-tokens) ·
+[Where truth lives](#where-truth-lives)
 
 ## See it running
 
@@ -198,16 +210,63 @@ file locally.
 
 ## The browser client
 
-**Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections), with the M6 "room" cycles since, each live from its own stacked branch: **M6.1
-"identity and seats" (2026-09-15), M6.2 "the lobby" and M6.3 "transport and spectating"
-(2026-09-16), M6.4 "chat" (2026-09-17)**, and the hosting cycles **M6.5a–M6.5c (2026-09-20 to
-2026-09-26)**, which run the client three ways: hosted multiplayer on Cloudflare at
-`yokohama.moore.nyc`, the NAS container at `yokohama-nas.moore.nyc`, and single player entirely
-inside the browser (see [Hosting](#hosting)). The same engine, the same words, and the same
-legal-move gate — served over HTTP and drawn in a browser instead of a terminal. It is a *second
-frontend over one engine*, never a second engine: the server routes, scopes and serializes and
-computes nothing about the game, so the terminal and the browser cannot disagree about a rule.
+The same engine, the same words and the same legal-move gate as the terminal, served over HTTP and
+drawn in a browser. It is a *second frontend over one engine*, never a second engine: the server
+routes, scopes and serializes and computes nothing about the game, so the terminal and the browser
+cannot disagree about a rule. It runs three ways, described under [Hosting](#hosting): hosted
+multiplayer on Cloudflare, the NAS container, and single player entirely inside the browser.
+
+### Getting started
+
+1. **Play at a hosted site.** Open `https://yokohama.moore.nyc` (Cloudflare) or
+   `https://yokohama-nas.moore.nyc` (the NAS) and pass Cloudflare Access's login. The door offers the
+   bot, friends and the games on this device, and "Play with friends" opens the lobby, where a new table
+   seats you, the bot or an open seat.
+2. **Self-host in Docker.** [`deploy/README.md`](deploy/README.md) is the guide: build the image, then run
+   it with `YOKOHAMA_WEB_IDENTITY` set, `cf-access` behind Access or `open` for a home network, and a
+   named volume at `/data`.
+3. **Play the bot with no server.** The door's bot card runs the whole game in the browser, kept in its own
+   storage and playable offline once the release is installed. A local game makes no server call.
+
+The full walkthrough is [`docs/web-lane.md` §14](docs/web-lane.md#14-getting-started).
+
+### What both deployments run
+
+The settings a player notices, as cycle E's release set them; the table of every default is
+[`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
+
+- **The door.** The NAS runs `cf-access`; the Worker runs `worker` with a dev door behind Access.
+- **The archive.** A finished game is filed to a directory on the NAS and to an R2 bucket on the Worker.
+- **The transport.** Server-sent events on the NAS, a WebSocket on the Worker.
+- **Expiry.** None on the NAS. The Worker expires a table idle for 90 days, or 7 days while a seat is
+  still empty.
+- **Chat.** On, keeping 500 messages a room and 500 characters a message, on both.
+- **The three build values.** `YOKOHAMA_PROJECT_URL` (the door's link to this repository),
+  `YOKOHAMA_SITE_NOTICE` ("Not affiliated with Asmodee") and `YOKOHAMA_SITE_BLURB` (the door's
+  paragraph, quoted in the lane document).
+
+### Every variable and the API
+
+Every environment variable is in [`docs/web-lane.md` §12](docs/web-lane.md#12-every-variable), and every
+route is in [`§13`, the API map](docs/web-lane.md#13-the-api-map). They are kept there so this page
+cannot drift from them.
+
+### See it
+
+![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository link, and three cards: You against the bot, Play with friends and On this device; the footer reads Not affiliated with Asmodee](worker/docs/img/door-desktop.png)
+
+*The door, the first screen. It asks the server for nothing.*
+
+![The lobby as Ben sees it: Playing as ben@readme.test in the corner, Your tables empty, one open table Friday game with a password badge and a Take a seat button, and Being played empty](worker/docs/img/lobby-desktop.png)
+
+*The lobby: the tables you sit at, the open tables and the games being played.*
+
+![The same moment of a game as the watcher sees it: the banner reads You are spectating, the side column reads Seat 0 is deciding, and every hand is a count](worker/docs/img/game-desktop-watcher.webp)
+
+*A watcher's game screen. The player's view, the deal and the phone layouts are in
+[`worker/README.md`](worker/README.md#14-what-a-player-sees).*
+
+### How it plays
 
 **Starting a game.** You sign in first — the server reads one identity header, and which header
 it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
@@ -304,9 +363,9 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
   - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached only
     through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
     2026-09-22 under the mode then called `claimed`, from the M6.5c2 close (2026-09-28) it ran
-    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, and since cycle D's close (2026-09-29) it runs
-    `yokohama-web:0.6.0-m6.5c2d`, with server-sent events and a directory archive
-    (`deploy/RUNBOOK.md` §3.17 and §3.18 are those deployments' records).
+    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, and since cycle E's release (2026-09-30) it runs
+    `yokohama-web:0.6.0-m6.5c2e`, with server-sent events and a directory archive
+    (`deploy/RUNBOOK.md` §3.17 to §3.19 are those deployments' records).
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
@@ -328,9 +387,9 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
   - [`worker/RUNBOOK.md`](worker/RUNBOOK.md) is how it is built, deployed and read, and
     [the two doors](worker/README.md#15-the-two-doors-access-or-an-open-door) are its identity choice:
     Access, as this repository deploys it, or an open door.
-  - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md), and the
-    cleanup cycle after it, M6.5c2, starts from
-    [its handover](docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md).
+  - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md). The cleanup
+    cycles after it, M6.5c2's A to E, are recorded in
+    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record).
 - **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in a Web
   Worker, so a game against the bot needs no server.
   - The game is kept in the browser's own storage, and the release installs whole for offline play.
@@ -338,7 +397,7 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
   - On either hostname a local game makes no server call until it ends.
 
 The web lane's operating detail — its suites, its gates and its standing rules — is in
-[`CLAUDE.md`](CLAUDE.md). The Modal path and its edge proxy were retired unused (`deploy/RUNBOOK.md`
+[`docs/web-lane.md`](docs/web-lane.md). The Modal path and its edge proxy were retired unused (`deploy/RUNBOOK.md`
 §4).
 
 What the code already does right:
@@ -354,87 +413,26 @@ What the code already does right:
   `YOKOHAMA_WEB_PORT` (default `8080`); a container needs `0.0.0.0` and that is a deployment's
   decision to make, not a default to inherit.
 
-*The paragraphs below are the room cycles' history. Since M6.5c2 the mode the first of them called
-`claimed` is named `open` (R-6.5c2.3), and the NAS is ruled `cf-access` (R-6.5c2.5), which it has run
-since the M6.5c2 close (2026-09-28).*
+### The room cycles' records
 
-**What M6.1 added, and what it did not:**
+Each cycle's own record is its close. The hosting move is M6.5 of
+[`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md).
+The mode M6.1 called `claimed` has been named `open` since M6.5c2 (R-6.5c2.3), and the NAS is ruled
+`cf-access` (R-6.5c2.5).
 
-- **The API now reads an identity, and scopes every route to it.** `YOKOHAMA_WEB_IDENTITY`
-  selects one of three modes — `open`, `cf-access`, `worker` — and each reads **exactly one
-  header and no other**. There is **no default**: an unset variable exits at start-up, because a
-  server that guesses its own door is a server whose door nobody wrote down. `GET /api/games`
-  lists only the tables where the caller sits; every other game route resolves the caller to a
-  seat first and answers 403 to anyone who holds none.
-- **It does not authenticate anyone.** `open` is the *self-host door* (the `open-door` cargo
-  feature): the name you type is the name you play under, and anyone who can reach the server may
-  use any name. `cf-access` and `worker` both trust an injected header.
-- **Trusting an injected header is not enough on its own.** Cloudflare sends
-  `Cf-Access-Authenticated-User-Email` alongside a signed `Cf-Access-Jwt-Assertion`, and
-  Cloudflare's own guidance is that validating the convenience header alone does not prevent
-  spoofing — the JWT signature has to be verified at the origin. **That verification does not
-  exist in this crate today**, which is why the `worker` mode is the stronger shape: an Access
-  policy attached to a Worker hands the identity to the Worker directly, and the origin trusts
-  only what that Worker sets. Since M6.5c the Cloudflare host is that shape, with the verification
-  added: its Worker checks the assertion's signature before it sets the one header the objects
-  trust ([`worker/README.md`](worker/README.md) §7.6).
-- **So the identity gate is still the proxy, and it still has to be in front of everything.** An
-  origin reachable without going through Access is an origin whose identity header anyone can
-  write.
-
-The Access application in front of the tunnel is the door — the container publishes no port, a
-local run stays on `127.0.0.1` — and what the server adds behind it is *scoping*: a person sees
-their own tables, their own seat's cards, and nobody else's, on every route including the replay.
-**What M6.2 added (2026-09-16):** the first screen is a lobby — the tables you sit at, with whose
-turn it is, and every open table in the house; a table opens with open seats and an optional
-password (a salted SHA-256, never served); its address is a link, `#/t/<id>`, and a person holding
-only that link signs in, types the password if the table asks, takes a seat, and the join that
-fills the last seat deals. `GET /api/games?scope=mine|open` pages with a cursor over table
-documents alone; `POST …/{id}/join` is the one new route; an open table is the only thing a
-non-seated caller can read.
-
-**What M6.3 built and shipped (2026-09-16):** nothing polls. The browser holds one
-connection per visible tab — server-sent events over an in-process channel that every write bumps
-after it lands — and the opponent's move arrives on it and walks across the table; the strip that
-used to count down a three-second tick now says "live", "refreshing" or "reconnecting…" about a
-connection. And a person who is not playing can **watch**: the lobby gains a third section, *Games
-in progress*, a `#/t/<id>` link opens a table with no password straight onto the game, a locked one
-asks for its password once, and then the strip reads "You are watching" — every hand a count, no
-answer bar, no undo and no suggest, with the log, the replay, the boards, the card indexes, *why*
-and the final score all reading as they do for a player whose turn it is not. A watcher can send
-nothing: the write routes refuse before the record is even read. **It is live**, and the
-measurement it was held for was taken through the tunnel: with the server's 25 s heartbeat a
-stream held ten minutes and a move made at minute nine arrived on it in under a second, while the
-same stream with the heartbeat disabled was cut by the edge at 125 s — so server-sent events ship.
-In the three-browser review of the live site a watcher asked the old polling route **zero** times
-and held **one** connection through a 1,471-event game.
-
-**What M6.4 built and shipped (2026-09-17):** people can talk. Two players talk during a game, a
-watcher reads what they said and answers, and the lobby has a chat of its own. A folded **Chat**
-panel sits at the foot of the column on the game screen, on the deal and on an open table you sit
-at, with an unread count in its header and the fold remembered per room; the lobby's fourth section
-is the house. Your line carries your seat's colour, or, if you are watching, your name and a
-"watching" marker — and the name is the one you type beside *You are*, the same string the table
-forms already remember. Nothing new is polled: messages live in their own files beside the record,
-never in it, and arrive as a COUNT on the connection the moves already ride, so the browser fetches
-only the lines it does not hold. The stream is now held through your OWN turn as well, so a line
-reaches you while you are thinking. Three optional variables, each with a default, are reported on
-`/api/health`: `YOKOHAMA_WEB_LOBBY_CHAT` (on), `YOKOHAMA_WEB_CHAT_KEEP` (500 messages a room, or
-`all`) and `YOKOHAMA_WEB_CHAT_TEXT` (500 characters a message). Three headed browsers reviewed it
-on the live site in both layouts and returned **ship with fixes** — one phone-width layout defect
-and four small ones, all fixed and redeployed as `0.5.0-m6.4.1` the same evening.
-
-The hosting move is M6.5 of
-[`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md);
-each cycle's own record is its close —
-[M6.1](docs/plans/2026-09-15-web-frontend-m6.1-close.md),
-[M6.2](docs/plans/2026-09-16-web-frontend-m6.2-close.md),
-[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md),
-[M6.4](docs/plans/2026-09-19-web-frontend-m6.4-close.md),
-[M6.5a](docs/plans/2026-09-20-web-frontend-m6.5a-close.md),
-[M6.5b](docs/plans/2026-09-21-web-frontend-m6.5b-close.md),
-[M6.5b2](docs/plans/2026-09-22-web-frontend-m6.5b2-close.md) and
-[M6.5c](docs/plans/2026-09-26-web-frontend-m6.5c-close.md).
+- [M6.1, identity and seats](docs/plans/2026-09-15-web-frontend-m6.1-close.md)
+- [M6.2, the lobby](docs/plans/2026-09-16-web-frontend-m6.2-close.md)
+- [M6.3, transport and spectating](docs/plans/2026-09-16-web-frontend-m6.3-close.md)
+- [M6.4, chat](docs/plans/2026-09-19-web-frontend-m6.4-close.md)
+- [M6.5a, the seam](docs/plans/2026-09-20-web-frontend-m6.5a-close.md)
+- [M6.5b, single player in the browser](docs/plans/2026-09-21-web-frontend-m6.5b-close.md)
+- [M6.5b2, the front door, installable and offline](docs/plans/2026-09-22-web-frontend-m6.5b2-close.md)
+- [M6.5c, the objects](docs/plans/2026-09-26-web-frontend-m6.5c-close.md)
+- [M6.5c2 cycle C, the hosts and the close](docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md)
+- [M6.5c2 cycle D, the code](docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md)
+- Cycle E, the finish: its close is the last row of
+  [the lane document's list](docs/web-lane.md#11-the-records-of-record). The merge of the cycles'
+  branches and the `v0.6.0` tag are the owner's word and are not claimed here.
 
 ## Status (2026-08-30)
 
@@ -601,8 +599,8 @@ resuming across a semantics bump by design, and rev-6-and-earlier saves no longe
 ## Download and run
 
 Download the archive for your system from
-[GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases) — current release
-**v0.5.0**:
+[GitHub Releases](https://github.com/jmoore2333/yokohama-assistant/releases) — the release this tree
+builds is **v0.6.0**, and the Releases page carries the newest build:
 
 - `macos-apple-silicon` is optimized for Apple Silicon Macs (M1 or newer).
 - `ubuntu-x86_64` is a static binary for 64-bit Ubuntu Linux.
@@ -652,7 +650,7 @@ target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge
 `bridge/tests/*.js` node suites (the BGA bridge's browser half has no cargo coverage and would
 otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
 The web lane's own per-edit commands — the layer, both WebAssembly hosts, the client's npm commands
-and the Worker's — and their counts are in [`CLAUDE.md`](CLAUDE.md)'s Commands section.
+and the Worker's — and their counts are in [`docs/web-lane.md` §2](docs/web-lane.md#2-the-suites-and-the-gates).
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
 close — a sum of per-command times from separate sessions is not a measured total. **Wall
 figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
