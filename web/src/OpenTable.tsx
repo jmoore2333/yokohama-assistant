@@ -454,10 +454,19 @@ function Invite({
             browser that has not been granted it, and in a page served over
             plain HTTP. */}
         <input aria-label="Invite link" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
-        {/* A polite live region, so "Copied" is heard as well as seen. */}
-        <button type="button" className="ghost" aria-live="polite" onClick={() => void copy()}>
-          {copied ? "Copied" : "Copy link"}
-        </button>
+        {/* **"Copied" is said ONCE** (cycle E, straw poll row 68): by the
+            status beside the button, drawn from the first render so its change
+            is announced, and never by the button, whose name stays "Copy link"
+            — it was the live region, and its words were its name. One flex
+            item with the button, so an empty status adds no gap to the row. */}
+        <span className="copy">
+          <button type="button" className="ghost" onClick={() => void copy()}>
+            Copy link
+          </button>
+          <span className="copy-state" role="status">
+            {copied ? "Copied" : ""}
+          </span>
+        </span>
       </div>
       {locked && (
         <p className="note">

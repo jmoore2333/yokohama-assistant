@@ -24,7 +24,13 @@ export type Trade = "copper" | "silk" | "tea" | "seafood" | "yen" | "vp" | "impo
 
 /** One tile: its row from the top, its place in the row, what it trades, and
  *  how strongly it is tinted: the approved mock's weights, except customs and
- *  the employment agency, re-weighted with the hues this drawing gives them. */
+ *  the employment agency, re-weighted with the hues this drawing gives them.
+ *  **The bottom three step apart by lightness** (cycle E, straw poll row 62):
+ *  at 0.5 the laboratory's `--fg-faint` and the employment agency's `--fg-dim`
+ *  at 0.45 drew one grey (L* 34.4 each, measured on the door at 1280). With
+ *  the laboratory at 0.15 and customs at 0.68 they read, measured the same way,
+ *  customs L* 54.6 (HSL 45%, in its own gold), the employment agency 34.4
+ *  (33%) and the laboratory 20.3 (20%): every pair 12 or more apart on both. */
 export interface Tile {
   row: number;
   col: number;
@@ -41,8 +47,8 @@ export const TILES: readonly Tile[] = [
   { row: 1, col: 0, trade: "vp", alpha: 0.6 }, // the port
   { row: 1, col: 1, trade: "copper", alpha: 0.65 }, // the copper mine
   { row: 1, col: 2, trade: "yen", alpha: 0.85 }, // the bank
-  { row: 2, col: 0, trade: "imports", alpha: 0.6 }, // customs
-  { row: 2, col: 1, trade: "faint", alpha: 0.5 }, // the laboratory
+  { row: 2, col: 0, trade: "imports", alpha: 0.68 }, // customs
+  { row: 2, col: 1, trade: "faint", alpha: 0.15 }, // the laboratory
   { row: 3, col: 0, trade: "neutral", alpha: 0.45 }, // the employment agency
 ];
 

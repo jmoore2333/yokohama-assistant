@@ -129,8 +129,8 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   await expect(fold).toHaveCount(1);
   expect(await fold.evaluate((d) => (d as HTMLDetailsElement).open), "Finished is folded by default").toBe(false);
   const summary = fold.locator(":scope > summary");
-  await expect(summary.locator(":scope > h3")).toHaveText("Finished");
-  await expect(summary.locator(":scope > .section-hint")).toHaveText(/^(1 game|([2-9]|[1-9]\d+) games)$/);
+  // The heading names the count (cycle E, straw poll row 63).
+  await expect(summary.locator(":scope > h3")).toHaveText(/^Finished \([1-9]\d*\)$/);
   await expect(
     page.locator(".lobby section.playing-tables").getByRole("link", { name: game.id, exact: true }),
     "a finished game is not listed as being played",

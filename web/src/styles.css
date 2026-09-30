@@ -231,6 +231,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 :root { --notice-h: calc(.8rem + .78rem * 1.3); }
 .has-notice .app { min-height: calc(100vh - var(--notice-h)); }
 .has-notice .lobby { min-height: calc(100vh - var(--notice-h)); }
+/* The door and every band screen too (cycle E; Task 3's review M-9): under
+   short content the footer floated mid-window, ~260px above the foot of a
+   1440x900 door. Each root keeps the window's height less the footer's. */
+.has-notice .front-door, .has-notice .band-screen { min-height: calc(100vh - var(--notice-h)); }
 .site-notice {
   box-sizing: border-box; height: var(--notice-h);
   padding: .4rem 16px; font-size: .78rem; line-height: 1.3; color: var(--fg-dim);
@@ -932,10 +936,15 @@ ol.log li.at .num { color: var(--reachable); }
   background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 0.3rem 0.5rem; font: inherit;
 }
-button.primary {
+/* The filled control's BOX, for the button and for the link drawn in it for a
+   navigation (`a.primary-link`, the door's `/enter`): ONE block (cycle E, straw
+   poll row 58), because the link's own padding drew it ~1.6px taller and
+   narrower than the button beside it. The link's layout stays its own rule. */
+button.primary, a.primary-link {
   background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
-  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; cursor: pointer;
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700;
 }
+button.primary { cursor: pointer; }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 
 .on-this-device .local-fault { color: var(--fg-dim); }
@@ -1818,12 +1827,11 @@ ol.account .mover { font-weight: 700; }
 }
 
 /* The two filled controls: the yen gold one is the bot's and this device's,
-   and a LINK in `button.primary`'s box for a navigation (`/enter`). */
+   and a LINK in `button.primary`'s box for a navigation (`/enter`) — the box is
+   the one block both share (above); this is only how the link lays out. */
 button.primary.yen { background: var(--yen); color: var(--bg); }
 a.primary-link {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
-  background: var(--vp); color: var(--bg); border: 0; border-radius: var(--radius);
-  padding: 0.5rem 1.05rem; font: inherit; font-weight: 700; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; text-decoration: none;
 }
 
 /* The board mark: the door's drawing (`BoardMark.tsx`). One class per trade. */
@@ -1988,7 +1996,9 @@ a.primary-link {
   border: 1px solid var(--line-bright); border-radius: 6px;
 }
 .door-cards { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 18px; }
-.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 61rem; }
+/* Two cards (`VITE_MULTIPLAYER=false`, state E) at mock 06's width, ~868px
+   (cycle E, straw poll row 59; it drew 976px at 61rem). */
+.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 54.25rem; }
 
 /* The device card: this browser's games as rows, the install offer, then a
    foot of ONE line — the release's readiness, Back up, Restore — whose notes
@@ -2231,21 +2241,33 @@ a.primary-link {
 .row-abandon button.ghost:hover { color: var(--fg); border-color: var(--line-bright); }
 .row-abandon button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 .row-abandon .abandon-ask { max-width: 16rem; text-align: right; }
+/* "Copied" (straw poll row 68): the status beside Copy link, which says it
+   once while the button's words and name stay as they were. Empty, it takes no
+   room; said, it stands before the button in the reachable colour. */
+.copy-state { font-size: 11.5px; color: var(--reachable); white-space: nowrap; }
+.row-action .copy-state:not(:empty) { margin-right: 0.6rem; }
 .row-action .row-go .padlock { color: var(--warn); }
 .row-action .stranded { font-size: 11.5px; color: var(--warn); }
 @media (max-width: 860px) {
   .lobby-cols { grid-template-columns: minmax(0, 1fr); }
 }
-/* The phone (mock 11): the title beside the action, the creator's Abandon
-   under the action, the seats wrapping under all of them; the row's action
-   thumb-sized. The rows are spaced by margins, not a row gap, so a row with no
-   Abandon carries no empty track's gap. */
+/* The phone (mock 11): the title, the action and the creator's Abandon on one
+   line, the seats wrapping under all of them; the row's action thumb-sized.
+   **The Abandon is a 44px square at the row's end** (cycle E, straw poll row
+   64): stacked under the action it stood a creator's row ~146px tall. Its
+   confirm step's controls take a line of their own under the seats. The
+   tracks are spaced by margins, not a column gap, so a row with no Abandon
+   carries no empty track's gap and its action keeps the row's edge. */
 @media (max-width: 600px) {
-  .lobby-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0 0.75rem; padding: 0.7rem 0.75rem; }
-  .row-title { grid-column: 1; grid-row: 1 / span 2; }
-  .row-action { grid-column: 2; grid-row: 1; }
-  .row-abandon { grid-column: 2; grid-row: 2; margin-top: 0.3rem; }
-  .row-seats { grid-column: 1 / -1; grid-row: 3; margin-top: 0.5rem; }
+  .lobby-row { grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 0; padding: 0.7rem 0.75rem; }
+  .row-title { grid-column: 1; grid-row: 1; }
+  .row-action { grid-column: 2; grid-row: 1; margin-left: 0.75rem; }
+  .row-abandon { grid-column: 3; grid-row: 1; margin-left: 0.5rem; }
+  .row-seats { grid-column: 1 / -1; grid-row: 2; margin-top: 0.5rem; }
+  .row-abandon:has(> :nth-child(2)) {
+    grid-column: 1 / -1; grid-row: 3; flex-direction: row; flex-wrap: wrap; justify-content: flex-end;
+    align-items: center; margin: 0.5rem 0 0;
+  }
   .row-action .row-go { min-height: 44px; }
 }
 
@@ -2461,6 +2483,9 @@ details.fold #seed { max-width: 23rem; }
 .invite .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .invite .row input { flex: 1 1 14rem; min-width: 0; }
 .invite .row button.ghost { color: var(--fg); border-color: var(--line-bright); }
+/* Copy link and its status, one item of the row (row 68). */
+.invite .copy { display: inline-flex; align-items: center; }
+.invite .copy-state:not(:empty) { margin-left: 0.6rem; }
 .invite .note { color: var(--fg-faint); font-size: 11.5px; margin: 0.55rem 0 0; }
 .open-table .open-table-controls {
   display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem;
@@ -2525,7 +2550,7 @@ details.fold #seed { max-width: 23rem; }
    * difference (`1lh` is its own line), and still INLINE content, so the space
    * after a drawn arrow and one unbroken underline stay as they were — as flex
    * items the two parts were underlined apart. */
-  .quiet-link, .lobby-actions .to-door, .band-corner .to-door, .lobby-row a.row-link,
+  .quiet-link, .lobby-actions .to-door, .band-corner .to-door,
   .door-foot .linkish, .install-offer .install-dismiss, .offline-state .linkish,
   .device-foot button.back-up-all, .device-foot .restore-field {
     display: inline-block; min-height: 44px; padding-block: max(0px, calc((44px - 1lh) / 2));
@@ -2550,12 +2575,24 @@ details.fold #seed { max-width: 23rem; }
   .lobby-chat .chat button.ghost, .open-table > .chat button.ghost {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 0.9rem;
   }
-  /* The row's Abandon keeps its narrow sides: it is the quiet control under
-   * the row's action, and only its height is a thumb's. */
+  /* The row's Abandon keeps its narrow sides: it is the quiet control beside
+   * the row's action, and only its height is a thumb's. Asked for (its one
+   * button, `:only-child`), it is a 44px square with a cross for a face — the
+   * word is its name, `abandon <table>`, which it keeps (row 64). */
   .row-abandon button.ghost {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 0.6rem;
   }
+  .row-abandon > button.ghost:only-child { width: 44px; height: 44px; padding: 0; font-size: 0; }
+  .row-abandon > button.ghost:only-child::before { content: "\2715"; font-size: 15px; line-height: 1; }
   .notice-actions button.primary { min-height: 44px; }
+  /* **A row is its link's hit box** (cycle E, straw poll row 64): the name's
+   * link covers the lobby row, as the device card's does its row, so the whole
+   * row is thumb-sized without its name padding to 44px of its own; the row's
+   * buttons stand above the cover. The device row reaches 44px. */
+  .lobby-row { position: relative; }
+  .lobby-row a.row-link::after { content: ""; position: absolute; inset: 0; }
+  .row-action, .row-abandon { position: relative; z-index: 1; }
+  .device-row { min-height: 44px; align-items: center; }
 }
 
 /* ---- M6.5c2 cycle C: the Finished group (R-6.5c2.22; spec section 2.2 as
@@ -2566,8 +2603,8 @@ details.fold #seed { max-width: 23rem; }
  * marker and its pointer are the idiom's own, the marker a step brighter
  * (below). What this block adds is the
  * summary as a SECTION HEAD, so the group reads as a fourth list that is shut
- * rather than as a widget: the `h3` takes `.lobby-section h3`'s size and the
- * count `.section-hint`'s muted colour, both unrestated. Every rule is scoped
+ * rather than as a widget: the `h3` takes `.lobby-section h3`'s size, unrestated,
+ * and carries the count (below). Every rule is scoped
  * to `.finished-tables`, so the form's Advanced fold and the game screen's
  * folds (buttons, not `details`) are untouched. Its rows are `.lobby-rows`'.
  *
@@ -2590,15 +2627,22 @@ details.fold #seed { max-width: 23rem; }
   margin-inline: -0.5rem; padding-inline: 0.5rem;
 }
 /* The marker is the group's one cue that it opens, and the group is shut by
- * default, so it takes `--fg-dim`, one step above the idiom's `--fg-faint`:
- * in the faint colour a shut group read as a heading with a stray glyph
- * (Task 10's M1; the whole-branch review's m-3). The glyphs, their swap and
- * the size stay the idiom's. */
-.finished-tables > details.fold > summary::before { order: 1; color: var(--fg-dim); }
+ * default, so it takes `--fg-dim`, one step above the idiom's `--fg-faint`
+ * (Task 10's M1; the whole-branch review's m-3) — and since cycle E (straw
+ * poll row 63) drawn large, one glyph turned a quarter when the fold is open:
+ * at the idiom's 12px, after a count in the hint's grey, a shut group still
+ * read at 1x as a heading with a stray glyph (a 4px triangle, measured; at
+ * 24px it is ~9px, a cue the heading's own height). The count is the
+ * heading's own words, "Finished (3)", in its face and a step quieter. */
+.finished-tables > details.fold > summary::before {
+  order: 1; color: var(--fg-dim); content: "\25B8"; display: inline-block; font-size: 24px; line-height: 1;
+}
+.finished-tables > details.fold[open] > summary::before { content: "\25B8"; transform: rotate(90deg); }
+.finished-tables > details.fold > summary > h3 > .count { color: var(--fg-dim); font-weight: 400; }
 /* Pointed at, the count and its marker brighten together, as the rows' quiet
  * Abandon does: a colour, no motion. Only where a pointer can rest (Task 10's
  * M5): after a tap a phone keeps `:hover` until the next touch elsewhere. */
 @media (hover: hover) {
-  .finished-tables > details.fold > summary:hover > .section-hint,
+  .finished-tables > details.fold > summary:hover > h3 > .count,
   .finished-tables > details.fold > summary:hover::before { color: var(--fg); }
 }

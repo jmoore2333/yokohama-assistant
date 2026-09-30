@@ -13,6 +13,7 @@
 // the local host's. The door asks the server nothing, and a cell below says so
 // with `fetch` as the setup file's throwing stub.
 
+import { readFileSync } from "node:fs";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -296,5 +297,59 @@ describe("the door's readiness line", () => {
   it("offers no update when none is waiting", () => {
     render(<FrontDoor multiplayer readiness={status({ readiness: "ready" })} />);
     expect(screen.queryByRole("button", { name: /reload/i })).toBeNull();
+  });
+});
+
+// ---- the door's two filled controls (cycle E, straw poll row 58) -----------
+//
+// `a.primary-link` is a navigation drawn in `button.primary`'s box (the door's
+// "Go to the lobby", the lobby states' "Sign in"), and its own padding drew it
+// ~1.6px taller and narrower than the New game beside it. **ONE declaration
+// block now gives both their box**, and no other top-level rule gives the link
+// a box of its own. Read from the source (jsdom loads no stylesheet), the
+// lane's idiom (`BoardMark.test.tsx`); the widths are the headed look's.
+describe("the door's two filled controls", () => {
+  /** The stylesheet's top-level rules, comments stripped, as selector lists and
+   *  bodies — what is inside an `@media` block is skipped whole. */
+  const topLevelRules = (css: string): { selectors: string[]; body: string }[] => {
+    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules: { selectors: string[]; body: string }[] = [];
+    let depth = 0;
+    let start = 0;
+    let head = "";
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "{") {
+        if (depth === 0) {
+          head = text.slice(start, i).trim();
+          start = i + 1;
+        }
+        depth++;
+      } else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          if (!head.startsWith("@")) {
+            rules.push({ selectors: head.split(",").map((s) => s.trim()), body: text.slice(start, i) });
+          }
+          start = i + 1;
+        }
+      }
+    }
+    return rules;
+  };
+  const BOX = /(^|[;\s])(padding|border|border-radius|background|font|font-weight)\s*:/;
+
+  it("gives a.primary-link and button.primary their box in ONE declaration block", () => {
+    const rules = topLevelRules(readFileSync("src/styles.css", "utf8"));
+    const shared = rules.filter((r) => r.selectors.includes("button.primary") && r.selectors.includes("a.primary-link"));
+    expect(shared, "one block names both").toHaveLength(1);
+    expect(shared[0]!.body).toMatch(/padding\s*:\s*0\.45rem 1\.1rem/);
+    // Anti-vacuity partner: no other top-level rule gives either its own box.
+    const own = rules.filter(
+      (r) =>
+        r !== shared[0] &&
+        (r.selectors.includes("a.primary-link") || r.selectors.includes("button.primary")) &&
+        BOX.test(r.body),
+    );
+    expect(own.map((r) => r.selectors.join(", ")), "no second box for either").toEqual([]);
   });
 });

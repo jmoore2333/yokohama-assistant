@@ -81,6 +81,17 @@ test("the door: three cards side by side at 1440 and one column at 390, no card 
       expect(new Set(boxes.map((b) => b.top)).size, `one row of cards: ${JSON.stringify(boxes)}`).toBe(1);
       expect(boxes.map((b) => b.left)).toEqual([...boxes.map((b) => b.left)].sort((a, b) => a - b));
       expect(board.x, "the board sits right of the title").toBeGreaterThan(heading.x + heading.width);
+      // **The notice sits at the foot of the window** (cycle E; Task 3's review
+      // M-9): under the door's short content at 1440x900 it floated at 609px
+      // with ~260px of empty page below it. The door keeps the window's height
+      // less the footer's, as the lobby does, so the footer ends the window.
+      const foot = await page.evaluate(() => ({
+        bottom: document.querySelector("footer.site-notice")!.getBoundingClientRect().bottom,
+        window: window.innerHeight,
+        page: document.documentElement.scrollHeight,
+      }));
+      expect(Math.abs(foot.bottom - foot.window), `the footer ends the window: ${JSON.stringify(foot)}`).toBeLessThanOrEqual(0.5);
+      expect(foot.page, `and the page is the window: ${JSON.stringify(foot)}`).toBe(foot.window);
     } else {
       expect(new Set(boxes.map((b) => b.left)).size, `one column of cards: ${JSON.stringify(boxes)}`).toBe(1);
       expect(boxes.map((b) => b.top)).toEqual([...boxes.map((b) => b.top)].sort((a, b) => a - b));
@@ -287,6 +298,8 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
       await noSidewaysScroll(page, `the lobby at ${size.width}px`);
       expect(await images(page), `the lobby draws no <img> at ${size.width}px`).toBe(0);
 
+      /** The rows this cell opened, by name (the run's server is shared). */
+      const OURS_AT_390 = ["Width check", "Against the bot", "Someone else's"];
       const lists = (await page.locator(".lobby .lobby-lists").boundingBox())!;
       const rail = (await page.locator(".lobby section.lobby-chat").boundingBox())!;
       const pill = page.locator(".identity-pill");
@@ -318,7 +331,9 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
             const middles = [
               mid(li.querySelector(".row-title")!),
               ...[...li.querySelectorAll(".row-seats .seat-chip")].map(mid),
-              mid(li.querySelector(".row-action > :first-child")!),
+              // The action itself: since cycle E a copy row's first child is
+              // its "Copied" status (row 68), empty and not the action.
+              mid(li.querySelector(".row-action > button, .row-action > .stranded")!),
             ];
             return {
               name: li.querySelector("a.row-link")!.textContent,
@@ -368,7 +383,11 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
                 .filter((e) => e.getClientRects().length > 0)
                 .map((e) => ({
                   name: e.getAttribute("aria-label") ?? (e.textContent ?? "").trim(),
-                  height: e.getBoundingClientRect().height,
+                  // A row's name is its ONE link, and on a phone the link's
+                  // box covers the row (row 64): what a thumb presses is the
+                  // row, so that is the height read for it — and the hit test
+                  // below is what makes this substitution true, not assumed.
+                  height: (e.matches(".lobby-row a.row-link") ? e.closest("li")! : e).getBoundingClientRect().height,
                 })),
             ),
           );
@@ -388,6 +407,44 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
         await pill.click();
         expect(await height(page, "button", "Copy link: Width check"), "a row's action, thumb-sized").toBeGreaterThanOrEqual(44);
         expect(await height(page, "button", "New table"), "New table, thumb-sized").toBeGreaterThanOrEqual(44);
+        // **The row is the hit box on a phone** (cycle E, straw poll row 64):
+        // a creator's row stood ~146px tall at 390 because its name, its action
+        // and its Abandon each padded to 44px, stacked. The name's link now
+        // covers the row, so the row's own corners — clear of its two buttons
+        // — press the name's link, and the creator's Abandon is a 44px square
+        // at the row's end, on the action's line.
+        for (const name of OURS_AT_390) {
+          const row = page.locator(".lobby li.lobby-row").filter({ has: page.getByRole("link", { name, exact: true }) });
+          await row.scrollIntoViewIfNeeded();
+          const corners = await row.evaluate((li) => {
+            const r = li.getBoundingClientRect();
+            const link = li.querySelector("a.row-link");
+            const at = (x: number, y: number) => document.elementFromPoint(x, y)?.closest("a.row-link") ?? null;
+            return [at(r.left + 5, r.top + 5), at(r.left + 5, r.bottom - 5)].map((hit) => hit === link);
+          });
+          expect(corners, `${name}: the row's corners press its link`).toEqual([true, true]);
+        }
+        for (const name of ["Width check", "Against the bot"]) {
+          const row = rowOf(name);
+          const li = (await row.boundingBox())!;
+          const abandon = (await row.getByRole("button", { name: `abandon ${name}`, exact: true }).boundingBox())!;
+          const action = (await row.locator(".row-action button").first().boundingBox())!;
+          const boxes = JSON.stringify({ li, abandon, action });
+          expect(Math.abs(abandon.width - 44), `${name}'s Abandon is 44px wide: ${boxes}`).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(abandon.height - 44), `${name}'s Abandon is 44px tall: ${boxes}`).toBeLessThanOrEqual(0.5);
+          expect(
+            Math.abs(abandon.y + abandon.height / 2 - (action.y + action.height / 2)),
+            `${name}'s Abandon sits on the action's line: ${boxes}`,
+          ).toBeLessThanOrEqual(1);
+          expect(abandon.x, `${name}'s Abandon follows the action: ${boxes}`).toBeGreaterThanOrEqual(action.x + action.width);
+          expect(li.x + li.width - (abandon.x + abandon.width), `${name}'s Abandon ends the row: ${boxes}`).toBeLessThanOrEqual(16);
+        }
+        // Measured before: 148px. A creator's row whose name takes one line is
+        // now its action's line and its seats' line, and no taller.
+        const againstTheBot = (await rowOf("Against the bot").boundingBox())!.height;
+        // eslint-disable-next-line no-console
+        console.log(`a creator's row at 390 (Against the bot): ${againstTheBot}px`);
+        expect(againstTheBot, "a creator's one-line row at 390").toBeLessThan(112);
       }
       await look(page, `lobby-${size.width}`);
       if (size === PHONE) {
@@ -519,15 +576,20 @@ test("the open table and the device card at 390: every control a thumb presses i
     expect(names, "the sweep read the game's row").toContain(game.id);
     expect(names.some((n) => /^Back up/.test(n)), `the sweep read Back up: ${names}`).toBe(true);
     expect(names.some((n) => /restore/i.test(n)), `the sweep read the restore field: ${names}`).toBe(true);
-    // **The game's ROW is read and logged, and not held to 44px.** Its link's
-    // box covers the row (`styles.css`, `.device-row`), and the row draws ~33px
-    // at 390: no rule of cycle C's polish 2 names it (the list covers the
-    // card's buttons and its foot), so asserting 44 here would pin a claim the
-    // stylesheet never made. The exemption stands for cycle D by ruling, and the
-    // row is on cycle E's owner's-eye polish list (the cycle D close,
-    // `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`); this exemption is
-    // the one place it is written down in code.
-    const shortDevice = device.filter((c) => c.height < 44 && c.name !== game.id);
+    // **The game's ROW is held to 44px too** (cycle E, straw poll's device
+    // row; the exemption cycle D's ruling 42 left here is gone). Its link's box
+    // covers the row (`styles.css`, `.device-row`), so the row's height is the
+    // one read for it — and the row's own corner is pressed on the link, which
+    // is what makes reading the row for the link true.
+    const deviceRow = page.locator(".on-this-device .device-row").first();
+    // In view first: `elementFromPoint` answers nothing outside the viewport.
+    await deviceRow.scrollIntoViewIfNeeded();
+    const pressed = await deviceRow.evaluate((li) => {
+      const r = li.getBoundingClientRect();
+      return document.elementFromPoint(r.left + 3, r.bottom - 3)?.closest("a.device-name") === li.querySelector("a.device-name");
+    });
+    expect(pressed, "the device row's corner presses the game's link").toBe(true);
+    const shortDevice = device.filter((c) => c.height < 44);
     expect(shortDevice, `device-card controls under 44px at 390: ${JSON.stringify(shortDevice)}`).toEqual([]);
     await noSidewaysScroll(page, "the device card at 390px");
   } finally {

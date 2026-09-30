@@ -380,16 +380,30 @@ describe("the lobby", () => {
     expect(done).not.toHaveTextContent("can\u2019t continue here");
   });
 
-  it("copies a table's address, and says it did", async () => {
+  // **"Copied" is said ONCE** (cycle E, straw poll row 68): the button was
+  // itself the live region and both its words and its name changed, so a
+  // screen reader could announce the copy twice. The button's name stays what
+  // it was, and ONE status beside it — in the row from the first render, so
+  // its change is announced — carries the word.
+  it("copies a table's address, and says so once: one status in the row, the button's name unchanged", async () => {
     const { user } = show();
     const mine = section("Your tables");
-    await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
+    const button = await within(mine).findByRole("button", { name: "Copy link: wire2" });
+    const row = button.closest("li")!;
+    const statuses = () => within(row).getAllByRole("status");
+    expect(statuses(), "the status is in the row before anything is copied").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^$/);
+    await user.click(button);
     // `userEvent.setup()` installs the clipboard this reads back.
     expect(await navigator.clipboard.readText()).toBe(new URL("#/t/wire2", window.location.href).href);
-    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
-    // Heard as well as seen: the button is a polite live region, so the word's
-    // change is announced (the whole-branch review's triage, Task 5 M7).
-    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toHaveAttribute("aria-live", "polite");
+    expect(statuses(), "exactly one status in the row").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^Copied$/);
+    expect(button.contains(statuses()[0]!), "the status is beside the button, not in it").toBe(false);
+    // The button: its name and its words unchanged, and no live region of its own.
+    expect(button).toHaveAttribute("aria-label", "Copy link: wire2");
+    expect(button).toHaveTextContent(/^Copy link$/);
+    expect(button).not.toHaveAttribute("aria-live");
+    expect(row.querySelectorAll("[aria-live]"), "no other live region in the row").toHaveLength(0);
   });
 
   // **A copy that lands takes the refusal away** (M6.5c2 cycle C; the Opus
@@ -406,8 +420,9 @@ describe("the lobby", () => {
       .mockRejectedValueOnce(new DOMException("Write permission denied.", "NotAllowedError"));
     await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
     expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
-    await user.click(within(mine).getByRole("button", { name: "Copy link: wire2" }));
-    expect(await within(mine).findByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
+    const again = within(mine).getByRole("button", { name: "Copy link: wire2" });
+    await user.click(again);
+    expect(await within(again.closest("li")!).findByRole("status")).toHaveTextContent(/^Copied$/);
     expect(write).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
   });
@@ -420,8 +435,9 @@ describe("the lobby", () => {
     const cleared = vi.spyOn(globalThis, "clearTimeout");
     try {
       const { user } = show();
-      await user.click(await within(section("Your tables")).findByRole("button", { name: "Copy link: wire2" }));
-      await within(section("Your tables")).findByRole("button", { name: "Copied: wire2" });
+      const button = await within(section("Your tables")).findByRole("button", { name: "Copy link: wire2" });
+      await user.click(button);
+      await waitFor(() => expect(within(button.closest("li")!).getByRole("status")).toHaveTextContent(/^Copied$/));
       const twoSeconds = set.mock.calls.flatMap((c, i) => (c[1] === 2000 ? [set.mock.results[i]!.value] : []));
       expect(twoSeconds, "the premise: one two-second timer was set").toHaveLength(1);
       cleanup();
@@ -635,8 +651,8 @@ describe("the Finished group", () => {
     (...games: TableView[]) =>
     (call: ApiCall): Reply | undefined =>
       isGamesList(call, "playing") ? { ...wire.gamesPlaying, games } : undefined;
-  /** The summary's heading, once the lists have landed. */
-  const finishedHeading = () => screen.findByRole("heading", { level: 3, name: "Finished" });
+  /** The summary's heading, once the lists have landed: "Finished (N)". */
+  const finishedHeading = () => screen.findByRole("heading", { level: 3, name: /^Finished \(\d+\)$/ });
 
   it("folds a finished game you do not sit at under Finished, closed, and not under Being played", async () => {
     expect(playing.my_seats).toEqual([]);
@@ -646,7 +662,7 @@ describe("the Finished group", () => {
     expect(heading.closest("summary")?.parentElement, "the heading is the fold's summary").toBe(f);
     expect(f.open, "folded by default").toBe(false);
     expect(f).not.toHaveAttribute("open");
-    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^1 game$/);
+    expect(f.querySelector(":scope > summary")).toHaveTextContent(/^Finished \(1\)$/);
     expect([...f.querySelectorAll("a.row-link")].map((a) => a.getAttribute("href"))).toEqual(["#/t/wire"]);
     // Not under Being played: that list is the games still under way, and it
     // has none, so it says so.
@@ -689,8 +705,28 @@ describe("the Finished group", () => {
     show(listing(done, older));
     await finishedHeading();
     const f = fold()!;
-    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^2 games$/);
+    expect(f.querySelector(":scope > summary")).toHaveTextContent(/^Finished \(2\)$/);
     expect([...f.querySelectorAll("a.row-link")].map((a) => a.textContent)).toEqual(["wire", "older"]);
+  });
+
+  // **The shut fold names its count in its own words** (cycle E, straw poll
+  // row 63): at 1x a closed Finished read as a heading with a stray glyph,
+  // "2 games" set apart in the hint's grey. The count is now the heading's —
+  // "Finished (3)" is what the summary says and what a screen reader's heading
+  // list reads — over the corpus's playing listing with `over` moved, three
+  // tables named apart.
+  it("names the count in the summary's own text: Finished (3)", async () => {
+    const two: TableView = { ...done, id: "two", name: null, created_at: done.created_at - 60 };
+    const three: TableView = { ...done, id: "three", name: null, created_at: done.created_at - 120 };
+    show(listing(done, two, three));
+    const heading = await finishedHeading();
+    expect(heading).toHaveTextContent(/^Finished \(3\)$/);
+    expect(heading).toHaveAccessibleName("Finished (3)");
+    const summary = fold()!.querySelector(":scope > summary")!;
+    expect(summary.textContent).toBe("Finished (3)");
+    // Folded, and the count is still read: the rows are in the fold.
+    expect(fold()!.open).toBe(false);
+    expect(fold()!.querySelectorAll("li.lobby-row")).toHaveLength(3);
   });
 
   // **R-C6: an empty fold is clutter.** The group is absent, not empty, while
@@ -701,7 +737,7 @@ describe("the Finished group", () => {
     show(listing(playing));
     await within(section("Being played")).findByRole("button", { name: "Spectate: wire" });
     expect(document.querySelector("section.finished-tables")).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Finished" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^Finished/ })).toBeNull();
     cleanup();
 
     const yours: TableView = { ...wire.table, over: true }; // one field moved, `over`

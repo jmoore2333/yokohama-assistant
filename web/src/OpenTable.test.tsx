@@ -456,14 +456,27 @@ describe("the open table, to somebody sitting at it", () => {
   // **`userEvent.setup()` installs its own clipboard on `navigator`** (and
   // puts it back after every cell), so the copy is read back through it — a
   // stub defined before `show` is replaced by the setup and never called.
-  it("says Copied once the link has been copied", async () => {
+  // **"Copied" is said ONCE** (cycle E, straw poll row 68): the button was
+  // itself the live region and its words — which were its name — changed, so
+  // a screen reader could announce the copy twice. The button's name stays
+  // "Copy link", and ONE status beside it, there from the first render,
+  // carries the word.
+  it("says Copied once the link has been copied: one status beside the button, whose name does not change", async () => {
     const { user } = showSeated(tableIs(seated()));
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const button = await screen.findByRole("button", { name: "Copy link" });
+    const invite = screen.getByRole("region", { name: "Invite people" });
+    const statuses = () => within(invite).getAllByRole("status");
+    expect(statuses(), "the status is in the invite before anything is copied").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^$/);
+    await user.click(button);
     expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/#/t/wire2`);
-    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
-    // Heard as well as seen: the button is a polite live region, so the word's
-    // change is announced (the whole-branch review's triage, Task 5 M7).
-    expect(screen.getByRole("button", { name: "Copied" })).toHaveAttribute("aria-live", "polite");
+    expect(statuses(), "exactly one status in the invite").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^Copied$/);
+    expect(button.contains(statuses()[0]!), "the status is beside the button, not in it").toBe(false);
+    expect(button).toHaveAccessibleName("Copy link");
+    expect(button).toHaveTextContent(/^Copy link$/);
+    expect(button).not.toHaveAttribute("aria-live");
+    expect(invite.querySelectorAll("[aria-live]"), "no other live region in the invite").toHaveLength(0);
   });
 
   // **A refused clipboard is said, and the button claims no copy** (the
@@ -483,10 +496,11 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(copy);
     const url = `${window.location.origin}/#/t/wire2`;
     expect(refused).toHaveBeenCalledWith(url);
-    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed before an answer").toBeNull();
+    const said = within(screen.getByRole("region", { name: "Invite people" })).getByRole("status");
+    expect(said, "no copy is claimed before an answer").toHaveTextContent(/^$/);
     await act(async () => refuse(new DOMException("Write permission denied.", "NotAllowedError")));
     expect(await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed after a refusal").toBeNull();
+    expect(said, "no copy is claimed after a refusal").toHaveTextContent(/^$/);
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
@@ -504,7 +518,9 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(await screen.findByRole("button", { name: "Copy link" }));
     expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy link" }));
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole("region", { name: "Invite people" })).findByText("Copied"),
+    ).toHaveAttribute("role", "status");
     expect(write).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
   });

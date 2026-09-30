@@ -247,7 +247,7 @@ export function Lobby({
    *  message is one more house wake, and every visible lobby refetches its
    *  three listings on it. */
   const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);
-  /** The row whose link was just copied, for the two seconds its button says
+  /** The row whose link was just copied, for the two seconds its status says
    *  so. */
   const [copied, setCopied] = useState<string | null>(null);
   /** The two-second timer that puts the word back, held so a lobby that goes
@@ -439,16 +439,25 @@ export function Lobby({
             </button>
           )}
           {action.kind === "copy" && (
-            <button
-              type="button"
-              className="ghost row-go"
-              aria-label={`${copied === t.id ? "Copied" : "Copy link"}: ${name}`}
-              // A polite live region, so "Copied" is heard as well as seen.
-              aria-live="polite"
-              onClick={() => void copyLink(t)}
-            >
-              {copied === t.id ? "Copied" : "Copy link"}
-            </button>
+            <>
+              {/* **"Copied" is said ONCE** (cycle E, straw poll row 68): by
+                  this status, drawn from the first render so its change is
+                  announced, and never by the button — whose name and words
+                  stay "Copy link". The button was the live region, and its
+                  words and its name both changed, so the copy could be heard
+                  twice. */}
+              <span className="copy-state" role="status">
+                {copied === t.id ? "Copied" : ""}
+              </span>
+              <button
+                type="button"
+                className="ghost row-go"
+                aria-label={`Copy link: ${name}`}
+                onClick={() => void copyLink(t)}
+              >
+                Copy link
+              </button>
+            </>
           )}
           {action.kind === "stranded" && (
             <span
@@ -620,11 +629,15 @@ export function Lobby({
                 {finished.length > 0 && (
                   <section className="lobby-section finished-tables">
                     <details className="fold">
+                      {/* **The heading names the count** (cycle E, straw
+                          poll row 63): "Finished (3)" is what the shut fold
+                          says and what a heading list reads; the marker after
+                          it is drawn at the heading's size (`styles.css`). */}
                       <summary>
-                        <h3>Finished</h3>
-                        <span className="section-hint">
-                          {finished.length === 1 ? "1 game" : `${finished.length} games`}
-                        </span>
+                        <h3>
+                          Finished{" "}
+                          <span className="count">({finished.length})</span>
+                        </h3>
                       </summary>
                       <ul className="lobby-rows">{finished.map((t) => row(t, "finished"))}</ul>
                     </details>
