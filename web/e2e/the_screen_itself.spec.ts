@@ -1036,10 +1036,62 @@ test("the banner is one row at 1440, 1280 and 1024", async ({ page }) => {
   }
 
   // **And "reconnecting…" leaves the row alone** (cycle E, straw poll row 71):
-  // in the banner's row it broke the line at 1280 (93px against 56). It sits
-  // on the line under the banner now. The stream here answers the table's
-  // current frame and then ENDS without an end frame — a connection made and
-  // lost, which is what the client calls "reconnecting".
+  // in the banner's row it broke the line at 1280 (93px against 56). **Two
+  // shapes, by width (ruling 4b-1)**, and each is read here. From 1201 the
+  // word shares the end-trigger strip's line and takes NO height — the table
+  // is fitted to the window's height, and a line that came and went would
+  // refit the board on every reconnect — so at 1280 the banner's height and
+  // every row of `.app`'s grid are the same with the word as without it.
+  // Below 1201 it is a line of its own under the banner, above the end-trigger
+  // strip. The stream here answers the table's current frame and then ENDS
+  // without an end frame — a connection made and lost, which the client calls
+  // "reconnecting".
+  const read = () =>
+    page.evaluate(() => {
+      const box = (e: Element) => {
+        const r = e.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, height: r.height };
+      };
+      const banner = document.querySelector("header.banner")!;
+      const cs = getComputedStyle(banner);
+      const oneRowBox =
+        parseFloat(cs.paddingTop) +
+        parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderTopWidth) +
+        parseFloat(cs.borderBottomWidth) +
+        Math.max(...[...banner.children].map((c) => c.getBoundingClientRect().height));
+      // The word, read ONCE and inside this one script (Task 4b's review,
+      // Minor 4): the routed stream ends on every retry, and a retry that
+      // lands between two reads briefly says "live" and removes it.
+      const word = document.querySelector(".link-strip .link");
+      return {
+        word: word ? { text: word.textContent, ...box(word) } : null,
+        banner: box(banner),
+        oneRowBox,
+        endStrip: box(document.querySelector(".end-strip")!),
+        rows: getComputedStyle(document.querySelector(".app")!).gridTemplateRows,
+      };
+    });
+  /** One read in which the word is on screen, retried until there is one. */
+  const readWithTheWord = async () => {
+    let got: Awaited<ReturnType<typeof read>> | null = null;
+    await expect
+      .poll(
+        async () => {
+          got = await read();
+          return got.word?.text ?? null;
+        },
+        { timeout: 20_000, message: "the page says reconnecting" },
+      )
+      .toBe("reconnecting\u2026");
+    return got!;
+  };
+
+  // Live, at 1280: the rows the word must not move.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const live = await read();
+  expect(live.word, "live says nothing").toBeNull();
+
   const events = await page.request.get(`/api/games/${last}/events`, { headers: { "x-yokohama-claimed-user": WALKER } });
   expect(events.status(), await events.text()).toBe(200);
   const frame = `event: signal\ndata: ${await events.text()}\n\n`;
@@ -1048,27 +1100,22 @@ test("the banner is one row at 1440, 1280 and 1024", async ({ page }) => {
   );
   await page.reload();
   await expect(page.getByText(/end triggers:/)).toBeVisible();
-  await expect(page.locator(".link-strip .link")).toHaveText("reconnecting\u2026", { timeout: 20_000 });
-  for (const width of [1024, 1280]) {
-    await page.setViewportSize({ width, height: 900 });
-    const r = await page.evaluate(() => {
-      const banner = document.querySelector("header.banner")!;
-      const cs = getComputedStyle(banner);
-      const box =
-        parseFloat(cs.paddingTop) +
-        parseFloat(cs.paddingBottom) +
-        parseFloat(cs.borderTopWidth) +
-        parseFloat(cs.borderBottomWidth) +
-        Math.max(...[...banner.children].map((c) => c.getBoundingClientRect().height));
-      const b = banner.getBoundingClientRect();
-      const word = document.querySelector(".link-strip .link")!.getBoundingClientRect();
-      return { height: Math.round(b.height), oneRowBox: Math.round(box), bottom: b.bottom, wordTop: word.top };
-    });
-    // eslint-disable-next-line no-console
-    console.log(`banner reconnecting at ${width}px: ${JSON.stringify(r)}`);
-    expect(r.height, `the banner wrapped at ${width}px while reconnecting`).toBeLessThanOrEqual(r.oneRowBox + 1);
-    expect(r.wordTop, `the word sits under the banner at ${width}px`).toBeGreaterThanOrEqual(r.bottom - 1);
-  }
+
+  const at1280 = await readWithTheWord();
+  // eslint-disable-next-line no-console
+  console.log(`banner reconnecting at 1280px: ${JSON.stringify(at1280)} (live: ${JSON.stringify(live)})`);
+  expect(at1280.banner.height, "the banner is one row at 1280 while reconnecting").toBeLessThanOrEqual(at1280.oneRowBox + 1);
+  expect(Math.round(at1280.banner.height), "the banner's height is unchanged by the word").toBe(Math.round(live.banner.height));
+  expect(at1280.rows, "every row of the page's grid is unchanged by the word").toBe(live.rows);
+  expect(at1280.word!.top, "the word sits under the banner at 1280").toBeGreaterThanOrEqual(at1280.banner.bottom - 1);
+
+  await page.setViewportSize({ width: 1024, height: 900 });
+  const at1024 = await readWithTheWord();
+  // eslint-disable-next-line no-console
+  console.log(`banner reconnecting at 1024px: ${JSON.stringify(at1024)}`);
+  expect(at1024.banner.height, "the banner is one row at 1024 while reconnecting").toBeLessThanOrEqual(at1024.oneRowBox + 1);
+  expect(at1024.word!.top, "the word sits under the banner at 1024").toBeGreaterThanOrEqual(at1024.banner.bottom - 1);
+  expect(at1024.word!.bottom, "on a line of its own, above the end-trigger strip").toBeLessThanOrEqual(at1024.endStrip.top + 1);
   await page.unroute(`**/api/games/${last}/stream**`);
 
   expect(watch.failures).toEqual([]);

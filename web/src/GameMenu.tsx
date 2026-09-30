@@ -142,13 +142,15 @@ export function GameMenu({
         if (e.currentTarget.open) load();
       }}
     >
-      {/* **The words in a span of their own, and the whole of them its title**
-          (cycle E, straw poll row 71): from 1000px to 1200px this summary is
-          the banner's one child that gives way, ending in an ellipsis rather
-          than breaking the row (`styles.css`, `.banner > .game-menu`), and an ellipsis needs
-          a box of its own to end in. */}
+      {/* **The ID in a span of its own, and the whole summary its title**
+          (cycle E, straw poll row 71; ruling 4b-2): from 1000px to 1200px this
+          summary is the banner's one child that gives way, and what gives is
+          the game's id alone — it ends in an ellipsis (`styles.css`,
+          `.banner > .game-menu`), while the mode and "saved", the save state
+          a player reads, stay whole. The text is the one it always was. */}
       <summary className="ghost meta" title={summaryWords}>
-        <span className="game-menu-name">{summaryWords}</span>
+        {state.mode} &middot; <span className="game-menu-id">{state.id}</span>
+        {state.frame.title.autosaved ? " \u00b7 saved" : ""}
       </summary>
       <div>
         <button type="button" className="ghost" onClick={onLobby}>

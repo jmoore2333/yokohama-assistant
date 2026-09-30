@@ -202,7 +202,10 @@ function Players({
                   beside gold chip, reading as a second amount. Inside the name
                   it takes the muted outline (`styles.css`). */}
               <span className={`seat-name seat-${p.color.toLowerCase()}`}>
-                {p.color}
+                {/* The colour its own element, so a reader of the seat's
+                    colour reads the colour and not "Red V4" (Task 4b's
+                    review, Minor 10). */}
+                <span className="seat-color">{p.color}</span>
                 {bot && (
                   <>
                     {" "}

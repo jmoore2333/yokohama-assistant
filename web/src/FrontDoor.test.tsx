@@ -24,6 +24,7 @@ import type { ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
 import { stubWorker } from "./test/fakeWorker";
 import productionBot from "./wire/production_bot.json";
+import { topLevelRules } from "./test/css";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
  *  this device (`fakeWorker.ts`'s one permitted edit). */
@@ -309,33 +310,7 @@ describe("the door's readiness line", () => {
 // a box of its own. Read from the source (jsdom loads no stylesheet), the
 // lane's idiom (`BoardMark.test.tsx`); the widths are the headed look's.
 describe("the door's two filled controls", () => {
-  /** The stylesheet's top-level rules, comments stripped, as selector lists and
-   *  bodies — what is inside an `@media` block is skipped whole. */
-  const topLevelRules = (css: string): { selectors: string[]; body: string }[] => {
-    const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
-    const rules: { selectors: string[]; body: string }[] = [];
-    let depth = 0;
-    let start = 0;
-    let head = "";
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === "{") {
-        if (depth === 0) {
-          head = text.slice(start, i).trim();
-          start = i + 1;
-        }
-        depth++;
-      } else if (text[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          if (!head.startsWith("@")) {
-            rules.push({ selectors: head.split(",").map((s) => s.trim()), body: text.slice(start, i) });
-          }
-          start = i + 1;
-        }
-      }
-    }
-    return rules;
-  };
+  // The stylesheet's top-level rules: `test/css.ts`'s one parser.
   const BOX = /(^|[;\s])(padding|border|border-radius|background|font|font-weight)\s*:/;
 
   it("gives a.primary-link and button.primary their box in ONE declaration block", () => {

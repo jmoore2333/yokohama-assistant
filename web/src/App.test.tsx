@@ -647,7 +647,9 @@ describe("a reply for a game you left", () => {
 
     // The switch lands: the other game is on screen.
     switchGet.resolve(other);
-    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    // Read through the summary itself: its id is an element of its own since
+    // cycle E (ruling 4b-2), so the words are no single text node.
+    await waitFor(() => expect(gameMenu()).toHaveTextContent(/sim · sim-other/));
 
     // And now the reply to the move made in the game we left.
     reply.resolve(wire.options);
@@ -655,8 +657,9 @@ describe("a reply for a game you left", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument();
-    expect(screen.queryByText(new RegExp(`sim · ${wire.optionsMany.id}$`))).toBeNull();
+    expect(gameMenu()).toHaveTextContent(/sim · sim-other/);
+    expect(gameMenu().querySelector(".game-menu-id")?.textContent).toBe("sim-other");
+    expect(gameMenu().querySelector(".game-menu-id")?.textContent).not.toBe(wire.optionsMany.id);
     // The board is still the game we switched to. Without this the cell would
     // pass on a banner that agreed with a board it no longer describes.
     expect(document.querySelectorAll(".tile")).toHaveLength(other.frame.board.tiles.length);
@@ -1032,7 +1035,7 @@ describe("the turn playback", () => {
     tiles: [...document.querySelectorAll(".tile.changed")].map(
       (t) => t.querySelector(".tile-id")?.textContent ?? "?",
     ),
-    seats: [...document.querySelectorAll(".seat.changed .seat-name")].map((s) => s.textContent),
+    seats: [...document.querySelectorAll(".seat.changed .seat-name .seat-color")].map((s) => s.textContent),
   });
 
   /** Render the empty-ending fixture and run the walk up to its last step. */
@@ -2754,13 +2757,22 @@ describe("the banner's row and the name on it", () => {
     await flushReal();
     // Anti-vacuity: live says nothing, so the word below is the dropped stream's.
     expect(screen.queryByText(/connecting/)).toBeNull();
+    // The region is already mounted, empty, while live.
+    const live = document.querySelector("header.banner")!.nextElementSibling!;
+    expect(live).toHaveClass("link-strip");
+    expect(live).toHaveAttribute("role", "status");
+    expect(live.textContent).toBe("");
     stream.close();
     const word = await screen.findByText("reconnecting\u2026");
+    expect(word.closest(".link-strip"), "the word lands in that same region").toBe(live);
     const banner = document.querySelector("header.banner")!;
     expect(banner.contains(word), "the word is not in the banner's row").toBe(false);
-    expect(word).toHaveAttribute("role", "status");
     expect(banner.nextElementSibling, "its line is the one under the banner").toBe(word.closest(".link-strip"));
     expect(banner.nextElementSibling).not.toBeNull();
+    // **The strip is the live region, and it was there before the word**
+    // (Task 4b's review, Minor 5): a region mounted with its text is announced
+    // unreliably, so the role sits on the strip that is mounted while live.
+    expect(banner.nextElementSibling).toHaveAttribute("role", "status");
   });
 
   // **The banner names the player the way their seat card does** (straw poll,

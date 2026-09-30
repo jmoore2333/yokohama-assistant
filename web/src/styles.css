@@ -191,32 +191,41 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * game's mode, id and "saved") is the one child that gives way. Its basis is
  * 5rem, so the line breaks as though it were that narrow; it grows back to its
  * own width wherever the row has room (`max-width: max-content`), which above
- * 1201 is always, and ends in an ellipsis where it has not — the whole summary
- * is its title. Below 1000px no one row holds these children, the banner wraps
+ * 1201 is always, and its game id ends in an ellipsis where it has not — the
+ * whole summary is its title. Below 1000px no one row holds these children, the banner wraps
  * as it always has, and the summary keeps its words. */
-.game-menu-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What gives is the game's ID alone (ruling 4b-2): the mode and "saved" — the
+ * save state — keep their words, and the summary never breaks a line. */
+.game-menu > summary { white-space: nowrap; }
+.game-menu-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 @media (min-width: 1000px) {
   .banner > .game-menu { flex: 1 1 5rem; min-width: 0; max-width: max-content; }
   .banner > .game-menu > summary { max-width: 100%; }
 }
 @media (max-width: 1200px) {
   .banner { column-gap: 0.75rem; }
-  .banner h1 { letter-spacing: 0.2em; }
-  .banner .views button.ghost { padding-inline: 0.5rem; }
+  .banner h1 { letter-spacing: 0.12em; }
+  .banner .views button.ghost { padding-inline: 0.4rem; }
 }
 /* **The link word's line, under the banner** (cycle E, straw poll row 71):
  * "connecting…", "refreshing…" or "reconnecting…", and nothing while live —
- * `App.tsx` mounts the strip empty then. Below 1201 the page is a column and
- * the strip is a line of its own. Above it the table is fitted to the window's
- * height, and a line that came and went would refit the board on every return
- * to the tab; so there the word is drawn at the right-hand end of the
- * end-trigger strip's line (the same grid row, below) and takes no height. */
-.link-strip:empty { display: none; }
+ * `App.tsx` mounts the strip empty then. **Two shapes, by width (ruling
+ * 4b-1):** below 1201 the page is a column and the strip is a line of its own
+ * under the banner, as the row asked. From 1201 the table is fitted to the
+ * window's height (the fit rule reads `.table`'s), so a line that came and
+ * went would take its height and refit the board on every reconnect and every
+ * return to the tab; there the word is drawn at the right-hand end of the
+ * end-trigger strip's line (the same grid row, below) and takes no height —
+ * `the_screen_itself.spec.ts` reads both. The strip is the live region, so it
+ * stays in the page while empty: no padding and no rule, not `display: none`. */
+.link-strip:empty { padding: 0; border-bottom: 0; }
+/* The end-trigger strip's own metrics, on the strip and not only its word:
+ * its line box takes the strip's font size, so a word on a larger strut would
+ * make the strip taller than the row it shares from 1201. */
 .link-strip {
-  padding: 0.3rem 1.25rem; text-align: right;
+  padding: 0.3rem 1.25rem; text-align: right; font-size: 11.5px; letter-spacing: 0.02em;
   background: var(--bg-sunken); border-bottom: 1px solid var(--line);
 }
-.link-strip .link { font-size: 11.5px; letter-spacing: 0.02em; }
 
 /* ---- the end-trigger strip --------------------------------------------- */
 .end-strip {
@@ -2004,20 +2013,26 @@ a.primary-link {
    under the pill and beside it — "Yokohama / Lobby" then "/ Thumb check" at
    the pill's foot, measured at 390. The band is a grid here, `.band-brand` no
    box (`display: contents`), so its title and its path are the grid's own
-   items; the path's leading "/" goes, since nothing precedes it on its line. */
+   items; the path's leading "/" goes, since nothing precedes it on its line.
+   **Only a band whose corner holds something** (Task 4b's review, Important
+   1): the three screens that pass no corner — the form for a game on this
+   device, the lock screen and the broken store — have no pill to be beside,
+   and their one crumb stays on the title's line as it always did. The grid is
+   scoped by `:has()`, so a browser without it keeps that line for every
+   band. */
 @media (max-width: 600px) {
-  .lobby-band {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
-    gap: 0.15rem 1rem; padding: 0.55rem 1rem;
+  .lobby-band { padding: 0.55rem 1rem; }
+  .lobby-band:has(> .band-corner:not(:empty)) {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.15rem 1rem;
   }
-  .band-brand { display: contents; }
-  .band-brand h1 { grid-column: 1; grid-row: 1; }
-  .band-corner { grid-column: 2; grid-row: 1; justify-self: end; }
-  .band-crumbs {
+  .lobby-band:has(> .band-corner:not(:empty)) > .band-brand { display: contents; }
+  .lobby-band:has(> .band-corner:not(:empty)) h1 { grid-column: 1; grid-row: 1; }
+  .lobby-band:has(> .band-corner:not(:empty)) > .band-corner { grid-column: 2; grid-row: 1; justify-self: end; }
+  .lobby-band:has(> .band-corner:not(:empty)) .band-crumbs {
     grid-column: 1 / -1; grid-row: 2; min-width: 0;
     display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 0.55rem;
   }
-  .band-crumbs > .crumb-sep:first-child { display: none; }
+  .lobby-band:has(> .band-corner:not(:empty)) .band-crumbs > .crumb-sep:first-child { display: none; }
   .band-brand .band-mark { display: none; }
   .band-brand h1 { font-size: 19px; }
   .band-brand .crumb, .band-brand .crumb-sep { font-size: 16px; }
@@ -2567,7 +2582,12 @@ details.fold #seed { max-width: 23rem; }
 }
 /* The join block's refusal, under the block it is about (cycle C, polish 4):
  * spaced as the blocks around it are, a rem above what follows. Abandon's has
- * its own strip under the controls (R-C24), set off from them above. */
+ * its own strip under the controls (R-C24), set off from them above.
+ * `.open-table > .error` is the one other place a refusal lands: the screen's
+ * face before it has a table (`OpenTable.tsx`'s `!table` arm, its opening read
+ * refused), a direct child of the page. `App` always hands the screen the table
+ * it read, so App never draws that face; the component still does, when it is
+ * handed none (Task 4b's review, Minor 7). */
 .open-table > .error, .open-table-main > .error { margin: 0 0 1rem; overflow-wrap: anywhere; }
 .open-table-foot > .error.abandon-refusal { margin: 0.6rem 0 0; overflow-wrap: anywhere; }
 /* **The chat in mock 08's rail, from 976px** (cycle E, straw poll row 67). A

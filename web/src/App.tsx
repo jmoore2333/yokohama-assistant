@@ -2212,15 +2212,14 @@ export function App() {
           server ("connecting" before its first connection, "reconnecting" once
           one is lost). In the banner's row the word was one more child of a
           row GATED at one line (`the_screen_itself.spec.ts`), and measured at
-          1280 it broke the line: 93px against a 56px one-row box. The strip is
-          mounted whatever the word, so the line it sits on is always there to
-          find; `styles.css` says where it is drawn at each width. */}
-      <div className="link-strip">
-        {link !== "live" && (
-          <span className="meta link" role="status">
-            {link}&hellip;
-          </span>
-        )}
+          1280 it broke the line: 93px against a 56px one-row box. **The strip
+          is the live region, mounted whatever the word** (Task 4b's review,
+          Minor 5): a region inserted with its text is announced unreliably —
+          the end-trigger strip's own reason below — so the words arrive in a
+          region that was already there. `styles.css` says where it is drawn at
+          each width (ruling 4b-1). */}
+      <div className="link-strip" role="status">
+        {link !== "live" && <span className="meta link">{link}&hellip;</span>}
       </div>
 
       {/* How close the game is to ending, in the CLI's own words. Without it a

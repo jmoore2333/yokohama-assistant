@@ -98,6 +98,27 @@ for (const width of [1280, 390] as const) {
     if (width === 390) {
       const box = (await deal.boundingBox())!;
       expect(box.height, "Deal is a thumb's size on a phone").toBeGreaterThanOrEqual(44);
+      // **A band with no corner keeps its crumb on the title's line** (Task
+      // 4b's review, Important 1): row 60's phone grid — the pill beside the
+      // title, the path under both — is for a band whose corner holds
+      // something, and this screen passes none.
+      const band = await page.evaluate(() => {
+        const r = (e: Element) => {
+          const b = e.getBoundingClientRect();
+          return { top: Math.round(b.top), bottom: Math.round(b.bottom) };
+        };
+        const header = document.querySelector("header.lobby-band")!;
+        return {
+          corner: header.querySelector(".band-corner")!.childElementCount,
+          title: r(header.querySelector("h1")!),
+          crumb: r(header.querySelector(".crumb")!),
+          crumbText: header.querySelector(".crumb")!.textContent,
+        };
+      });
+      expect(band.corner, "the premise: this band's corner is empty").toBe(0);
+      expect(band.crumbText).toBe("On this device");
+      expect(band.crumb.top, "the crumb is on the title's line").toBeLessThan(band.title.bottom);
+      expect(band.crumb.bottom, "and not under it").toBeGreaterThan(band.title.top);
     }
     await page.screenshot({ path: info.outputPath(`new-local-${width}.png`), fullPage: true });
     expect(watch.failures).toEqual([]);

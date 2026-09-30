@@ -5,6 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { topLevelRules } from "./test/css";
 
 const CSS = readFileSync("src/styles.css", "utf8");
 
@@ -76,33 +77,61 @@ describe("the version tag in a seat's name", () => {
 // query would bring the band back; so it is read at the top level.
 describe("the who-strip", () => {
   /** The file's top-level rules only: a rule inside `@media` is not one. */
-  const topLevel = (() => {
-    const text = CSS.replace(/\/\*[\s\S]*?\*\//g, "");
-    const rules: { selectors: string[]; body: string }[] = [];
-    let depth = 0;
-    let start = 0;
-    let head = "";
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === "{") {
-        if (depth === 0) {
-          head = text.slice(start, i).trim();
-          start = i + 1;
-        }
-        depth++;
-      } else if (text[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          if (!head.startsWith("@")) rules.push({ selectors: head.split(",").map((x) => x.trim()), body: text.slice(start, i) });
-          start = i + 1;
-        }
-      }
-    }
-    return rules;
-  })();
+  const topLevel = topLevelRules(CSS);
   const bodies = (selector: string) => topLevel.filter((r) => r.selectors.includes(selector)).map((r) => r.body).join(";");
 
   it("wraps at every width, its button whole", () => {
     expect(bodies(".who-strip")).toMatch(/flex-wrap:\s*wrap/);
     expect(bodies(".who-strip button")).toMatch(/white-space:\s*nowrap/);
+  });
+});
+
+/** Every rule in the file — inside `@media` blocks too — as its selector text
+ *  and body: the innermost `{…}` pairs, comments stripped. */
+const everyRule = (): { selector: string; body: string }[] =>
+  [...CSS.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selector: m[1]!.trim(),
+    body: m[2]!,
+  }));
+
+// **The phone band's grid is for a band whose corner holds something** (Task
+// 4b's review, Important 1): the title and the pill on one line and the path
+// under both is row 60's rule, and the three screens that pass no corner — the
+// form for a game on this device, the lock screen, the broken store — have no
+// pill, so their one crumb keeps the title's line. `:has()` reads what the
+// corner actually drew, so a corner handed in but empty counts as none.
+describe("the band on a phone", () => {
+  const SCOPE = ".lobby-band:has(> .band-corner:not(:empty))";
+
+  it("makes a grid only of a band whose corner holds something", () => {
+    const grids = everyRule().filter((r) => /\.lobby-band\b/.test(r.selector) && /display:\s*grid/.test(r.body));
+    expect(grids.length, "the sweep found the band's grid").toBeGreaterThan(0);
+    for (const g of grids) expect(g.selector, "scoped to a filled corner").toBe(SCOPE);
+  });
+
+  it("moves the title, the corner and the path only inside that scope", () => {
+    const placed = everyRule().filter(
+      (r) => /(band-crumbs|band-corner|band-brand|\bh1\b)/.test(r.selector) && /grid-(row|column)\s*:/.test(r.body),
+    );
+    expect(placed.length, "the sweep found the placements").toBeGreaterThanOrEqual(3);
+    for (const p of placed) expect(p.selector.startsWith(SCOPE), p.selector).toBe(true);
+  });
+});
+
+// **What gives in the banner from 1000px to 1200px is the game's id alone**
+// (ruling 4b-2): the ellipsis is the id's element's, and the summary never
+// breaks a line, so the mode and "saved" — the save state — stay whole.
+describe("the Game menu's summary", () => {
+  it("ends the id in an ellipsis and keeps the rest of the summary whole", () => {
+    const id = everyRule().find((r) => r.selector === ".game-menu-id");
+    expect(id, "a rule for the id's element").toBeDefined();
+    expect(id!.body).toMatch(/text-overflow:\s*ellipsis/);
+    expect(id!.body).toMatch(/overflow:\s*hidden/);
+    expect(id!.body).toMatch(/min-width:\s*0/);
+    const summary = everyRule().find((r) => r.selector === ".game-menu > summary");
+    expect(summary?.body).toMatch(/white-space:\s*nowrap/);
+    // Nothing else in the summary is given an ellipsis.
+    const others = everyRule().filter((r) => /game-menu/.test(r.selector) && r.selector !== ".game-menu-id" && /ellipsis/.test(r.body));
+    expect(others.map((r) => r.selector)).toEqual([]);
   });
 });
