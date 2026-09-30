@@ -367,6 +367,7 @@ anyone's to spend, with the rate-limit rule as the deployer's tool.
   window's requests are the Workers Observability query API's: every ad-hoc body needs a `queryId`,
   `$workers.durableObjectId is_null` splits the Worker's own requests from the objects', and a log line is found
   by its full-text `needle` (`archive-landed`, `picker-dropped`, `object-failed`, `wake`).
+- **Cleaning out old games on the NAS.** No sweep runs there and no TTL is read; the by-hand recipe (stop, remove the three files of an id, start) and the sweep that could be built are `deploy/README.md` §8.
 - **Pulling a game as a save file.**
   - A FINISHED game is `GET /api/games/<id>/record` as one of its seats: the store's exact bytes. Over WARP on
     either host, the owner holds the owner's own seats.

@@ -220,3 +220,46 @@ installs to a home screen. A single-player game lives in the browser's own stora
 then goes to the archive if the server keeps one. A new image is a new release: an open tab offers
 "Reload to use it" on the door, and a waiting release nobody clicks activates by itself
 once every old page has closed.
+
+## 8. Cleaning out old games by hand
+
+**No sweep runs on this server.** It reads no TTL: a table lives until its creator abandons it or you remove
+it, and `/api/health` says so (`table_ttl_days: null`). The Cloudflare host is the one with expiry
+(`worker/RUNBOOK.md` §3). A sweep here — a periodic job over the games directory that ends idle tables through
+the same delete the creator's Abandon uses, so a finished game's archive copy lands exactly once — is a
+potential feature if there is a desire for it; it is not built.
+
+**What is on disk.** Under `/data` (the volume from §4):
+
+| Path | What it is |
+|---|---|
+| `/data/games/<id>.json` | the game's record — the save file; every applied move is written here |
+| `/data/games/<id>.table.json` | the table: who sits where, the status, the lock, the setup seed |
+| `/data/games/<id>.chat.json` | the table's chat |
+| `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
+| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document |
+
+The table document's modification time is its last write — a keep, a status change, and every applied move
+refreshes it — so it is the "last activity" a sweep would read.
+
+**The preferred way** is the creator's **Abandon** in the lobby: it files the archive copy (once, even for a
+finished game), leaves a marker, and removes the table. Everything below is for tables nobody will abandon.
+
+**By hand, with any Docker.** The server keeps a running game's handle in memory and would write its record
+again on the next move, and a file removed under it is a cross-process conflict the server detects rather than
+prevents — so stop the container first.
+
+```bash
+# 1. list the tables idle for more than N days (the container's name from §4; N=90 here)
+docker exec <container> find /data/games -name '*.table.json' -mtime +90
+# 2. keep what you want: a finished game's record is the CLI's save file
+docker cp <container>:/data/games/<id>.json ./<id>.json
+# 3. stop, remove the three files of each id, start
+docker stop <container>
+docker run --rm -v <volume>:/data alpine sh -c 'rm /data/games/<id>.json /data/games/<id>.table.json /data/games/<id>.chat.json'
+docker start <container>
+```
+
+A table removed this way leaves the lobby at once and leaves no marker: its link answers "no such game". A game
+removed mid-play is NOT archived — only a game over and an Abandon file there — so step 2 is the only copy.
+The archive directory is never part of a sweep; it is the keep.
