@@ -86,6 +86,17 @@ export const README_SHOTS_SPEC = "readme_shots.spec.ts";
 /** Whether the generator was asked for: `YOKOHAMA_WEB_README_SHOTS=1`. */
 export const README_SHOTS = process.env.YOKOHAMA_WEB_README_SHOTS === "1";
 
+/** The open door's plain two-person game (cycle E Task 10.K; the straw-poll
+ *  row 114): an opt-in spec that plays twenty applied moves between two PLAIN
+ *  contexts — no credential, no claimed header, each named at the client's own
+ *  name step — and abandons the table. Collected only under [`STATE1_GAME`],
+ *  like the README's generator; it runs on whichever target the run names, and
+ *  is a live spec for `live.node.test.ts`'s rules. */
+export const STATE1_GAME_SPEC = "state1_game.spec.ts";
+
+/** Whether the game was asked for: `YOKOHAMA_WEB_STATE1_GAME=1`. */
+export const STATE1_GAME = process.env.YOKOHAMA_WEB_STATE1_GAME === "1";
+
 /**
  * The two Chromium switches the exit's run launches with (R3's R-N6; ruling
  * I-91), meant to keep its headed windows VISIBLE when one covers another: a

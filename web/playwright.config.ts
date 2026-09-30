@@ -15,7 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, README_SHOTS, README_SHOTS_SPEC, baseUrlFor } from "./e2e/live";
+import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, README_SHOTS, README_SHOTS_SPEC, STATE1_GAME, STATE1_GAME_SPEC, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -171,6 +171,9 @@ export default defineConfig({
     ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
     ...(EXIT ? [] : [`**/${EXIT_SPEC}`]),
     ...(README_SHOTS ? [] : [`**/${README_SHOTS_SPEC}`]),
+    // The open door's plain two-person game (`YOKOHAMA_WEB_STATE1_GAME=1`,
+    // Task 10.K): opt-in, and it opens a table on whichever target it runs at.
+    ...(STATE1_GAME ? [] : [`**/${STATE1_GAME_SPEC}`]),
   ],
   // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks —
   // `LIVE_SPECS`, the one list — and the exit's game beside them when it is
@@ -178,7 +181,7 @@ export default defineConfig({
   // their local run as well.
   ...(LIVE
     ? {
-        testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : []), ...(README_SHOTS ? [README_SHOTS_SPEC] : [])].map((f) => `**/${f}`),
+        testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : []), ...(README_SHOTS ? [README_SHOTS_SPEC] : []), ...(STATE1_GAME ? [STATE1_GAME_SPEC] : [])].map((f) => `**/${f}`),
       }
     : {}),
   fullyParallel: false,

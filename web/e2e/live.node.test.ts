@@ -54,7 +54,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { EXIT_SPEC, LIVE_SPECS, README_SHOTS_SPEC } from "./live";
+import { EXIT_SPEC, LIVE_SPECS, README_SHOTS_SPEC, STATE1_GAME_SPEC } from "./live";
 
 /** The `APIRequestContext` methods that SEND. `newContext` is not one of
  *  them: it MAKES a context, which is refused wherever it is ([`madeFrom`]). */
@@ -348,7 +348,7 @@ describe("every live API call in web/e2e goes through liveRequest", () => {
   it("holds across every helper module and every spec a live run can play", () => {
     const files = readdirSync(here).filter((f) => f.endsWith(".ts"));
     const helpers = files.filter((f) => !f.endsWith(".spec.ts") && !f.endsWith(".test.ts"));
-    const live = [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC];
+    const live = [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC, STATE1_GAME_SPEC];
 
     // **Anti-vacuity, and it is the whole risk in a check like this**: a scan
     // over an empty or wrong listing passes without reading a line. The
@@ -597,7 +597,7 @@ describe("every live spec knows its table from the moment its create is sent (R3
     // The premise: the two labels are still the create button's.
     expect(readFileSync(join(here, "..", "src", "NewGame.tsx"), "utf8"), "NewGame.tsx's create button").toContain('{opensSeats ? "Open table" : "Deal"}');
     const refused: string[] = [];
-    for (const spec of [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC]) {
+    for (const spec of [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC, STATE1_GAME_SPEC]) {
       const read = creates(spec, readFileSync(join(here, spec), "utf8"));
       expect(read.clicks, `premise: ${spec} creates a table`).toBeGreaterThan(0);
       refused.push(...read.refused);
@@ -627,5 +627,26 @@ describe("the README's screenshot generator is collected only when asked for (Ta
     expect(collected({ YOKOHAMA_WEB_README_SHOTS: "0" }), "the switch reads only 1").toBe(false);
     expect(collected({ YOKOHAMA_WEB_README_SHOTS: "1" }), "switch, local").toBe(true);
     expect(collected({ YOKOHAMA_WEB_README_SHOTS: "1", YOKOHAMA_WEB_E2E_TARGET: "live" }), "switch, live").toBe(true);
+  }, 120_000);
+});
+
+describe("the open door's plain game is collected only when asked for (Task 10.K)", () => {
+  // Read through Playwright itself (`--list`), as the README generator's cell
+  // does. Mutants: the `testIgnore` entry missing; the live `testMatch` not
+  // naming it under the switch; the switch read as anything but "1".
+  const collected = (env: Record<string, string>): boolean => {
+    const out = execFileSync("npx", ["playwright", "test", "--list"], {
+      cwd: join(here, ".."),
+      env: { ...process.env, YOKOHAMA_WEB_STATE1_GAME: "", YOKOHAMA_WEB_E2E_TARGET: "", YOKOHAMA_WEB_E2E_OPTIONAL: "1", ...env },
+      encoding: "utf8",
+    });
+    return out.includes(STATE1_GAME_SPEC);
+  };
+  it("is not collected by a plain run, local or live, and is collected under the switch on either target", () => {
+    expect(collected({}), "plain, local").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_E2E_TARGET: "live" }), "plain, live").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_STATE1_GAME: "0" }), "the switch reads only 1").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_STATE1_GAME: "1" }), "switch, local").toBe(true);
+    expect(collected({ YOKOHAMA_WEB_STATE1_GAME: "1", YOKOHAMA_WEB_E2E_TARGET: "live" }), "switch, live").toBe(true);
   }, 120_000);
 });
