@@ -229,7 +229,7 @@ it, and `/api/health` says so (`table_ttl_days: null`). The Cloudflare host is t
 the same delete the creator's Abandon uses, so a finished game's archive copy lands exactly once — is a
 potential feature if there is a desire for it; it is not built.
 
-**What is on disk.** Under `/data` (the volume from §4):
+**What is on disk.** Under `/data` (the volume §4's run command names, `yokohama-web-data`):
 
 | Path | What it is |
 |---|---|
@@ -256,7 +256,7 @@ docker exec <container> find /data/games -name '*.table.json' -mtime +90
 docker cp <container>:/data/games/<id>.json ./<id>.json
 # 3. stop, remove the three files of each id, start
 docker stop <container>
-docker run --rm -v <volume>:/data alpine sh -c 'rm /data/games/<id>.json /data/games/<id>.table.json /data/games/<id>.chat.json'
+docker run --rm -v yokohama-web-data:/data alpine sh -c 'rm /data/games/<id>.json /data/games/<id>.table.json /data/games/<id>.chat.json'
 docker start <container>
 ```
 
