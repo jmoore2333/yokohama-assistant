@@ -6,13 +6,13 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-30, M6.5c2 cycle E "the finish": Tasks 1–14 done on `web-room-m6.5c2e` (the code head `c39da5a1`); both hosts run E's release `0.6.0` (`worker/RUNBOOK.md` §19, `deploy/RUNBOOK.md` §3.19), and the public door was vetted in two states on 2026-09-30 and reverted the same hour. The close (the plan's Task 16) is next, then the merge of the stack and the `v0.6.0` tag on your word (Track 3). The web lane's operating detail lives in [`web-lane.md`](web-lane.md); this board keeps the tracks.
+**Updated:** 2026-09-30, M6.5c2 cycle E "the finish" CLOSED on `web-room-m6.5c2e` (the code head `c39da5a1`; the final reviewed head `3107eb8b`; the record [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), its §7 what the cycle does NOT claim). Both hosts run E's release; the door was vetted in two states and reverted; PR #43 is open against `web-room-m6.5c2d`. **The merge #31 → #43 and the `v0.6.0` tag wait on your word** (Track 3). After them the project refocuses on the computer player (Track 1).
 
 **History, by record.** This board keeps no running history; each session's account is its record of record:
-- `<the day>` — cycle E "the finish" closes (the record: E's close, which goes in the last row of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
+- 2026-09-30 — cycle E "the finish" closed ([close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
 - 2026-09-29 — cycle D "the code" closed and live ([close](plans/2026-09-29-web-frontend-m6.5c2d-close.md)); cycle E planned (spec §10.11 in [the spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md), [the plan](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
-- 2026-09-28 — cycle C "the hosts and the close" closed and live ([close](plans/2026-09-28-web-frontend-m6.5c2c-close.md)); cycle D planned ([plan](plans/2026-09-28-web-frontend-m6.5c2d-plan.md)).
-- 2026-09-27 — cycle A "the layer" closed ([B's handover](plans/2026-09-27-web-frontend-m6.5c2b-handover.md) restates what it shipped). 2026-09-28 — cycle B "the screens" closed ([C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) restates what it shipped).
+- 2026-09-28 — cycle C "the hosts and the close" closed and live ([close](plans/2026-09-28-web-frontend-m6.5c2c-close.md)); cycle D planned ([plan](plans/2026-09-28-web-frontend-m6.5c2d-plan.md)); cycle B "the screens" closed ([C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) §1 restates what it shipped).
+- 2026-09-27 — cycle A "the layer" closed ([B's handover](plans/2026-09-27-web-frontend-m6.5c2b-handover.md) restates what it shipped).
 - 2026-09-26 — M6.5c "the objects" closed ([close](plans/2026-09-26-web-frontend-m6.5c-close.md)); M6.5c2 specified ([spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md)).
 - 2026-09-23 — M6.5c specified and planned ([spec](plans/2026-09-22-web-frontend-m6.5c-objects-spec.md), [plan](plans/2026-09-23-web-frontend-m6.5c-plan.md)).
 - 2026-09-22 — M6.5b2 closed ([close](plans/2026-09-22-web-frontend-m6.5b2-close.md)), and the PR #37 fix wave was live as `0.5.0-m6.5b2.1` ([record](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md) §5).
@@ -35,7 +35,7 @@ session close: rewrite the stale lines, do not append history (the decision log 
 - **The web client** is live on two hosts behind one Cloudflare Access application at E's release `0.6.0`: the Worker at `yokohama.moore.nyc` and the NAS at `yokohama-nas.moore.nyc`. Single player runs in the browser with no server. The lane is finished at cycle E and its record is [`web-lane.md`](web-lane.md) §11; the merge of its stack of pull requests waits on your word (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
-- **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`, and the web lane's in [`web-lane.md`](web-lane.md) §2); the fifteen gates last ran at E's close, `<Task 16's figure>` on the Mac beside D's 446 s.
+- **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`, and the web lane's in [`web-lane.md`](web-lane.md) §2); the fifteen gates last ran at E's close, `2881 s` on the Mac beside D's 446 s.
 
 ## Track 1 — V4 close-out: the owner annotates the ledger, then the findings doc, then D3 + W6
 
