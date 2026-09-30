@@ -78,14 +78,19 @@ function toWebp(png: string, webp: string): void {
   }
 }
 
+/** The ids of the tables this run opened: the only lobby rows left unmasked. */
+const ownTables = new Set<string>();
+
 /** Shoots `page` as the README's `name` (a `.png` or a `.webp`).
  *
- *  **Every lobby row that is not a `readme.test` table is masked**: live, the
- *  lobby is SHARED, and a stranger's table with its seat addresses must never
- *  reach a committed picture. A screen with no lobby row masks nothing. */
+ *  **Every lobby row that is not one of THIS run's tables is masked, by the
+ *  table's id in its link** (never by text: the spec's own row shows a name and
+ *  no address): live, the lobby is SHARED, and a stranger's table with its seat
+ *  addresses must never reach a committed picture. A screen with no lobby row masks nothing. */
 async function shoot(page: Page, name: string, scratch: string): Promise<string> {
   await settled(page);
-  const mask = [page.locator("li.lobby-row").filter({ hasNotText: "readme.test" })];
+  const own = [...ownTables].map((id) => `a.row-link[href$="#/t/${id}"]`).join(", ");
+  const mask = [page.locator(own === "" ? "li.lobby-row" : `li.lobby-row:not(:has(${own}))`)];
   const target = join(OUT, name);
   if (name.endsWith(".webp")) {
     const png = join(scratch, name.replace(/\.webp$/, ".png"));
@@ -120,6 +125,7 @@ async function openTable(alice: Page, name: string, password: string | null): Pr
   opened = awaitCreate(alice);
   await alice.getByRole("button", { name: "Open table" }).click();
   const id = await createdTable(opened);
+  ownTables.add(id);
   await expect(alice).toHaveURL(new RegExp(`#/t/${id}$`));
   await expect(alice.getByLabel("Invite link", { exact: true })).toBeVisible();
   return id;
