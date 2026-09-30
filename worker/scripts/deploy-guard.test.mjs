@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { sourceDigest } from "./build-module.mjs";
-import { configFailures, configFrom, deployGuard, doorLine } from "./deploy-guard.mjs";
+import { parse } from "jsonc-parser";
+import { cacheBlock, configFailures, configFrom, deployGuard, doorLine } from "./deploy-guard.mjs";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -720,6 +721,43 @@ describe("the deploy guard", () => {
       naming(/^wrangler\.open\.jsonc enables Workers Cache \(cache\.enabled is not false\)/),
     );
   });
+  // **At ANY depth** (Task 1 fix round 1; spec §2.1, "read as text and as
+  // values", ruled a structural read that does not depend on the walk knowing
+  // the places): a `cache` block wherever Wrangler may read one — a placement
+  // it adds later, a nesting nobody listed — is refused, named by its whole
+  // path, an array's element by its index. Off at that depth passes. Mutants:
+  // the walk back to the three known places; the walk stopping at objects
+  // (arrays unread); the path losing its prefix.
+  it("refuses a cache block at any depth, named by its whole path, and passes one that is off", () => {
+    const why =
+      " — with it on, static-asset requests are billed at the Worker request rate (Workers pricing, footnote 4); remove the block";
+    const refused = (where) => `wrangler.jsonc enables Workers Cache (${where}cache.enabled is not false)${why}`;
+    const at = (block) => ({ "wrangler.jsonc": PRODUCTION.replace('"main"', `${block},\n  "main"`) });
+
+    expect(deployGuard(worker(at('"placement": { "cache": { "enabled": true } }')))).toEqual([refused("placement.")]);
+    expect(deployGuard(worker(at('"env": { "staging": { "placement": { "cache": { "enabled": true } } } }')))).toEqual([
+      refused("env.staging.placement."),
+    ]);
+    expect(
+      deployGuard(worker(at('"routes": [{ "pattern": "x.example", "cache": { "enabled": true } }]'))),
+      "an array's element, by its index",
+    ).toEqual([refused("routes.0.")]);
+    expect(
+      deployGuard(
+        worker(at('"placement": { "cache": { "enabled": true } }, "env": { "staging": { "limits": { "cache": {} } } }')),
+      ),
+      "every block, once each, in the file's order",
+    ).toEqual([refused("placement."), refused("env.staging.limits.")]);
+    expect(
+      deployGuard(worker(at('"cache": { "enabled": false, "placement": { "cache": { "enabled": true } } }'))),
+      "inside a block that is itself off",
+    ).toEqual([refused("cache.placement.")]);
+
+    expect(deployGuard(worker(at('"placement": { "cache": { "enabled": false } }')))).toEqual([]);
+    expect(
+      deployGuard(worker(at('"env": { "staging": { "placement": { "cache": { "enabled": false } } } }'))),
+    ).toEqual([]);
+  });
   // The CLI takes exactly `--config wrangler<name>.jsonc`; anything else is
   // refused, so the guard cannot judge one file while a deploy ships another.
   it("reads --config from the command line and refuses any other argument", () => {
@@ -763,6 +801,26 @@ describe("the committed configurations", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     expect(configFailures(root, "wrangler.gate.jsonc")).toEqual([]);
     expect(doorLine(root, "wrangler.gate.jsonc")).toBe("wrangler.gate.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+  });
+  // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the five
+  // committed files are held to it here, parsed as the guard parses them.
+  it("carry no Workers Cache block at any depth, each of the five", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    for (const name of [
+      "wrangler.jsonc",
+      "wrangler.open.jsonc",
+      "wrangler.gate.jsonc",
+      "wrangler.test.jsonc",
+      "wrangler.open.test.jsonc",
+    ]) {
+      const errors = [];
+      const value = parse(readFileSync(join(root, name), "utf8"), errors, { allowTrailingComma: true, disallowComments: false });
+      expect(errors, `${name} parses`).toEqual([]);
+      expect(typeof value?.name, `${name} is read: it has a name`).toBe("string");
+      const failures = [];
+      cacheBlock(name, value, failures);
+      expect(failures, name).toEqual([]);
+    }
   });
   // M6.5c2 (R-6.5c2.5): production's door is the worker door.
   it("name the worker door", () => {

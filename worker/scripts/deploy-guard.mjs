@@ -76,12 +76,16 @@
 //    a change to `web/src/sw.ts` alone keeps it.
 // 10. The deployed configuration does not turn on Workers Cache (M6.5c2 cycle
 //    F, R-F3, R-FP13; spec §2.1): a `cache` block whose `enabled` is not
-//    `false` — at the top level, in any environment, or under ANY named
-//    export, an environment's included — is refused. With it on, "requests
-//    served from the Worker's cache are billed at the same per-request rate as
-//    requests that invoke the Worker. This includes requests to static
-//    assets" (Workers pricing, footnote 4), and the door stops being free. The
-//    block is an opt-in, so no block is off; read as values, so a comment is
+//    `false` is refused WHEREVER it sits — the top level, an environment, a
+//    named export, or any nesting a later Wrangler may read one at — found by
+//    walking the parsed configuration at every depth, arrays included, and
+//    named by its whole path (Task 1 fix round 1: spec §2.1's "read as text
+//    and as values", ruled a structural read that does not depend on the
+//    guard knowing the places). With it on, "requests served from the
+//    Worker's cache are billed at the same per-request rate as requests that
+//    invoke the Worker. This includes requests to static assets" (Workers
+//    pricing, footnote 4), and the door stops being free. The block is an
+//    opt-in, so no block is off; the parse drops comments, so a comment is
 //    prose.
 //
 // Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
@@ -302,27 +306,31 @@ function siblingDrift(name, production, sibling, differs, failures) {
   }
 }
 
-/** Check 10, over the deployed configuration: every place a `cache` block
- *  can sit — the top level, each environment, and each named export of
- *  either — refused unless its `enabled` is `false`. The parenthesis names
- *  where, so two blocks are two sentences. */
-function cacheBlock(name, value, failures) {
-  const places = [["", value]];
-  for (const [envName, env] of Object.entries(objectOf(value.env) ?? {})) {
-    if (objectOf(env)) places.push([`env.${envName}.`, env]);
-  }
-  for (const [prefix, at] of [...places]) {
-    for (const [exportName, exported] of Object.entries(objectOf(at.exports) ?? {})) {
-      if (objectOf(exported)) places.push([`${prefix}exports.${exportName}.`, exported]);
+/** Check 10, over the deployed configuration's parsed value: EVERY property
+ *  named `cache`, at any depth — objects and arrays alike, a `cache` block's
+ *  own contents included — refused unless its value's `enabled` is `false`.
+ *  Named by its dotted path (an array element by its index; the top level with
+ *  no prefix), so two blocks are two sentences, in the file's order. The value
+ *  is `parse`'s, the same read Wrangler makes: comments are gone, and of two
+ *  duplicate keys the last is the one read, so no path is reported twice. */
+export function cacheBlock(name, value, failures) {
+  const walk = (node, prefix) => {
+    if (Array.isArray(node)) {
+      node.forEach((item, i) => walk(item, `${prefix}${i}.`));
+      return;
     }
-  }
-  for (const [prefix, at] of places) {
-    if (!Object.hasOwn(at, "cache") || objectOf(at.cache)?.enabled === false) continue;
-    failures.push(
-      `${name} enables Workers Cache (${prefix}cache.enabled is not false) — with it on, static-asset requests are ` +
-        "billed at the Worker request rate (Workers pricing, footnote 4); remove the block",
-    );
-  }
+    if (!objectOf(node)) return;
+    for (const [key, child] of Object.entries(node)) {
+      if (key === "cache" && objectOf(child)?.enabled !== false) {
+        failures.push(
+          `${name} enables Workers Cache (${prefix}cache.enabled is not false) — with it on, static-asset requests are ` +
+            "billed at the Worker request rate (Workers pricing, footnote 4); remove the block",
+        );
+      }
+      walk(child, `${prefix}${key}.`);
+    }
+  };
+  walk(value, "");
 }
 
 /** Check 3, over the deployed configuration: the door, and its rules. */
