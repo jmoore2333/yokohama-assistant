@@ -349,6 +349,22 @@ export function App() {
   // instead of clearing them the instant the walk finishes; WHICH marks those
   // are is `heldChanges`, not the last step's own diff.
   const [run, setRun] = useState<Run | null>(null);
+  /** **The live position, off the newest run's LAST frame, and the game it is
+   *  of** (cycle E, Task 7; R-E9, ruling T7-a). A run ends on the live frame
+   *  (`fetchRun`'s `to` is `next + 1`), and that frame carries the port and
+   *  the laboratory `build_ports`/`build_labs` built for the position — the
+   *  same two builders `…/ports` and `…/labs` answer with — so the sections
+   *  draw them from here and ask neither route after a move. Held apart from
+   *  `run`, which the screen clears for its own reasons: a cleared account is
+   *  not a board that moved. */
+  const [liveFrame, setLiveFrame] = useState<{ game: string; frame: HistoricalFrame } | null>(null);
+  /** **The count a run is being fetched for, while it is** (R-E9). Set by
+   *  `landed` BEFORE its first `await` — so it lands in the same render as the
+   *  `state` that grew, which every caller sets in the same synchronous block —
+   *  and cleared when the run lands or fails. It is what stops the sections
+   *  asking for two boards in the gap between the new state and its run; a
+   *  run that failed clears it with no live frame, and they ask once. */
+  const [runFor, setRunFor] = useState<{ game: string; events: number } | null>(null);
   const [walk, setWalk] = useState<WalkState | null>(null);
   const [fresh, setFresh] = useState(false);
   const [cadence, setCadence] = useState<Cadence>(() => loadCadence());
@@ -493,15 +509,26 @@ export function App() {
         setWalk(null);
         return;
       }
-      const r = await fetchRun(game, prev, next);
-      // The same rule the reply itself is judged by: a run for a game the
-      // player has left is dropped, never shown over the game they are on.
-      if (gameId.current !== game) return;
-      const plays =
-        arrival.via === "reply" ? hasBotStep(r) : hasOpponentStep(r.steps, arrival.viewer);
-      setRun(r);
-      setFresh(true);
-      setWalk(plays ? { at: 0, playing: true } : null);
+      // **Marked before the first `await`** (R-E9): see `runFor`. The mark is
+      // this call's own object, so the `finally` clears it only if no later
+      // run has replaced it.
+      const mark = { game, events: next };
+      setRunFor(mark);
+      try {
+        const r = await fetchRun(game, prev, next);
+        // The same rule the reply itself is judged by: a run for a game the
+        // player has left is dropped, never shown over the game they are on.
+        if (gameId.current !== game) return;
+        const plays =
+          arrival.via === "reply" ? hasBotStep(r) : hasOpponentStep(r.steps, arrival.viewer);
+        setRun(r);
+        setFresh(true);
+        setWalk(plays ? { at: 0, playing: true } : null);
+        // The live frame, and with it the port and the laboratory (R-E9).
+        setLiveFrame({ game, frame: r.steps[r.steps.length - 1]!.after });
+      } finally {
+        setRunFor((f) => (f === mark ? null : f));
+      }
     },
     [],
   );
@@ -534,6 +561,9 @@ export function App() {
       setBroken(null);
       setTable(null);
       setRun(null);
+      // A game put on screen afresh draws its boards from its own reads, never
+      // from a frame this screen held for it before (R-E9).
+      setLiveFrame(null);
       setWalk(null);
       setFresh(false);
       // **The message count goes with the game too** (final review, minor 7).
@@ -2350,6 +2380,8 @@ export function App() {
             labels={labels}
             colors={colors}
             changedSlots={highlights?.slots}
+            live={liveFrame?.game === state.id ? liveFrame.frame : null}
+            runFor={runFor?.game === state.id ? runFor.events : null}
           />
         </div>
       </main>

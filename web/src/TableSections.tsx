@@ -1,11 +1,26 @@
 // The enabled sections under the pyramid (M5 spec §3.4).
 //
-// **Refresh on every state change.** The drawers fetched on demand because
-// "none of them changes between decisions in a way a player is watching for";
-// a section on the table is exactly that watching, so an enabled fetched
-// section re-fetches whenever `state` changes — every `/input`, re-read and
-// create — on the scrubber's own debounce-and-drop shape: a `live` flag, a
-// stale answer dropped. Tracks and Goals need no fetch; they are on the frame.
+// **Refreshed when the POSITION moved, and from the run where there is one**
+// (cycle E, Task 7; R-E9, ruling T7-a). M5 re-fetched every enabled board on
+// every `state` the screen took — a picker step's reply included, although a
+// step that applies no event cannot move a board — and a move's run already
+// carries the port and the laboratory at its live frame, built by the same
+// `build_ports`/`build_labs` the two routes answer with. Measured over the
+// two-browser walk, that was 7.12 of 16.74 requests per applied move. So:
+//
+// - the port and the laboratory are keyed on the COUNT (`state.events`), not
+//   on the state's identity — a new state at the same count asks nothing;
+// - a count a run is on its way for (`runFor`) asks nothing, and the run's
+//   last frame (`live`) is what they are drawn from once it lands;
+// - a count with no run — the mount, an undo's shrink, a re-read that found
+//   the game moved, a run whose fetch failed — asks each board ONCE, on the
+//   scrubber's own drop shape: an `alive` flag, a stale answer dropped;
+// - the building sites have no position-shaped version, and their strip reads
+//   only each tile's `site`, which the live board carries: they are re-read
+//   when those `site`s changed — a build, or an undo of one — and on nothing
+//   else.
+//
+// Tracks and Goals need no fetch; they are on the frame.
 //
 // **The port and the laboratory draw from a position that carries them.**
 // Since M5.5 `/at/{k}` serves the offers as they stood — face up at the time,
@@ -22,13 +37,13 @@
 // **The fetch is guarded by `scrubbing` and NOT by `replaying`, and the two
 // differ only during a walk.** A walk turns `replaying` on and off again while
 // `state` never moves, and a guard on a value that falls back to false at the
-// end of the walk fires a SECOND `/ports` for one move — the browser cell that
-// pins one refresh per state-changing response counts exactly that — and
-// cancels the first one's response on the way in. Scrubbing keeps M4's rule
-// (no state change happens while you are in the past, so nothing needs
-// re-reading) without either effect.
+// end of the walk fires a `/ports` for a move whose run already carried it —
+// the browser cell that pins NO `/ports` after a move counts exactly that
+// (`the_table.spec.ts`) — and cancels any answer in flight on the way in.
+// Scrubbing keeps M4's rule (no state change happens while you are in the
+// past, so nothing needs re-reading) without either effect.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "./api";
 import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { GoalsStrip, LabStrip, PortStrip, SitesStrip, TracksStrip } from "./Strips";
@@ -55,6 +70,8 @@ export function TableSections({
   labels,
   colors,
   changedSlots,
+  live = null,
+  runFor = null,
 }: {
   enabled: SectionKey[];
   /** `null` before a game is on screen — there is nothing to fetch and nothing
@@ -74,15 +91,48 @@ export function TableSections({
   colors: PlayerColor[];
   /** `port:<board>:<slot>` / `lab:<board>:<slot>` keys the walk is lighting. */
   changedSlots?: Set<string>;
+  /** The newest run's LAST frame for this game — the live position when its
+   *  `index` is the state's count, and then the port and the laboratory are
+   *  drawn from it with no request (R-E9). */
+  live?: HistoricalFrame | null;
+  /** The count a run is being fetched for, while it is: at that count the
+   *  boards wait for the run rather than ask (R-E9). */
+  runFor?: number | null;
 }) {
   const [ports, setPorts] = useState<PortsPanel | null>(null);
   const [labs, setLabs] = useState<LabsPanel | null>(null);
   const [areas, setAreas] = useState<AreasPanel | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The enabled SET as a scalar, so the effect keys on what is on rather than
-  // on the array's identity — `App` rebuilds that array on every toggle and a
-  // raw dependency would refetch every enabled section on every render.
-  const wanted = enabled.join(",");
+  /** The building sites' refusal, apart from the boards': the two are asked
+   *  on different keys, and one's success must not clear the other's. */
+  const [sitesError, setSitesError] = useState<string | null>(null);
+  // What is on, as scalars, so each effect keys on the boards IT asks for
+  // rather than on the array's identity — `App` rebuilds that array on every
+  // toggle, and a raw dependency would ask every enabled board on every render.
+  const portsOn = enabled.includes("ports");
+  const labsOn = enabled.includes("labs");
+  const sitesOn = enabled.includes("buildings");
+  /** The position's COUNT: what the port and the laboratory are keyed on. */
+  const events = state?.events ?? null;
+  /** The run's last frame IS this count's live position. */
+  const fromRun = live !== null && events !== null && live.index === events;
+  /** A run for this count is on its way. */
+  const coming = runFor !== null && runFor === events;
+  /** What the sites strip reads off each tile — its `site` — for the live
+   *  board: the building sites' key. */
+  const sites = useMemo(
+    () => (state === null ? "" : JSON.stringify(state.frame.board.tiles.map((t) => [t.area, t.site]))),
+    [state],
+  );
+
+  // The run's boards, taken as the live ones when they are this count's —
+  // into the same state a read writes, so an undo that asks again shows the
+  // newest boards meanwhile rather than the mount's.
+  useEffect(() => {
+    if (!fromRun || live === null) return;
+    setPorts(live.ports);
+    setLabs(live.labs);
+  }, [fromRun, live]);
 
   useEffect(() => {
     // **Cleared BEFORE the replaying return, not after it.** The other way
@@ -90,19 +140,31 @@ export function TableSections({
     // collapsed sections for the whole time the player was in the past —
     // a sentence about a fetch that is no longer being made.
     setError(null);
-    if (game === null || scrubbing) return;
-    let live = true;
-    const said = (e: unknown) => live && setError(e instanceof ApiError ? e.message : String(e));
-    if (enabled.includes("ports")) api.ports(game).then((p) => live && setPorts(p)).catch(said);
-    if (enabled.includes("labs")) api.labs(game).then((p) => live && setLabs(p)).catch(said);
-    if (enabled.includes("buildings")) api.areas(game).then((p) => live && setAreas(p)).catch(said);
+    if (game === null || scrubbing || fromRun || coming) return;
+    let alive = true;
+    const said = (e: unknown) => alive && setError(e instanceof ApiError ? e.message : String(e));
+    if (portsOn) api.ports(game).then((p) => alive && setPorts(p)).catch(said);
+    if (labsOn) api.labs(game).then((p) => alive && setLabs(p)).catch(said);
     return () => {
-      live = false;
+      alive = false;
     };
-    // `wanted` stands in for `enabled` here on purpose (see its comment above);
-    // the array itself is rebuilt on every toggle and would refetch everything.
-  }, [game, state, scrubbing, wanted]);
+  }, [game, events, scrubbing, fromRun, coming, portsOn, labsOn]);
 
+  useEffect(() => {
+    setSitesError(null);
+    if (game === null || scrubbing || !sitesOn) return;
+    let alive = true;
+    api
+      .areas(game)
+      .then((p) => alive && setAreas(p))
+      .catch((e: unknown) => alive && setSitesError(e instanceof ApiError ? e.message : String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [game, sites, scrubbing, sitesOn]);
+
+  /** The one refusal the sections carry: the boards', else the sites'. */
+  const refusal = error ?? sitesError;
   const tracksPanel = view.frame.dashboard.find((p) => "Tracks" in p);
   const tracks = tracksPanel && "Tracks" in tracksPanel ? tracksPanel.Tracks : null;
   const goalsPanel = view.frame.dashboard.find((p) => "Achievements" in p);
@@ -201,7 +263,7 @@ export function TableSections({
             );
         }
       })}
-      {error && <Refusal sentence={error} />}
+      {refusal && <Refusal sentence={refusal} />}
     </div>
   );
 }

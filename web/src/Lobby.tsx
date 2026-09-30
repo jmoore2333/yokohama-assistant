@@ -124,6 +124,36 @@ const houseCounts = (data: string): { chat: number; rev?: number } | null => {
   }
 };
 
+/** A house frame's three counters, or `null` for a frame that does not carry
+ *  a numeric `seq` and `chat` — which is then treated as a listing change. */
+const houseFrameOf = (data: string): { seq: number; chat: number; rev?: number } | null => {
+  try {
+    const f = JSON.parse(data) as { seq?: unknown; chat?: unknown; rev?: unknown };
+    if (typeof f.seq !== "number" || typeof f.chat !== "number") return null;
+    return { seq: f.seq, chat: f.chat, ...(typeof f.rev === "number" ? { rev: f.rev } : {}) };
+  } catch {
+    return null;
+  }
+};
+
+/** **A house frame that is a MESSAGE and nothing else** (cycle E, Task 7;
+ *  R-E9, ruling T7-a lever c): its `seq` — the LISTING counter, on both hosts
+ *  — is where the last frame left it, and its `chat` or `rev` moved. The NAS
+ *  moves `seq` on a table's write and on an end and never for a house message
+ *  (`Signals::bump_house_chat` moves `chat` and `rev` alone); the Worker raises
+ *  it per copy or removal the house applies, and a message's frame carries it
+ *  unchanged. So the three listings behind such a frame are what the lobby
+ *  already holds. A frame that moved NOTHING this recognises is not one: it
+ *  re-lists, which is also what a restarted host's frame does. */
+const onlyTheChatMoved = (
+  last: { seq: number; chat: number; rev?: number } | null,
+  now: { seq: number; chat: number; rev?: number } | null,
+): boolean =>
+  last !== null &&
+  now !== null &&
+  now.seq === last.seq &&
+  (now.chat !== last.chat || now.rev !== last.rev);
+
 /** The rows, with a table listed once however many pages it arrived on.
  *
  *  The poll refreshes PAGE ONE under a pager that has already fetched page two,
@@ -256,10 +286,15 @@ export function Lobby({
    *  waits, for as long as the house is quiet. And if the next thing is the
    *  reader's OWN post, its 201's number shows the gap and the panel reads
    *  the page rather than stepping past it (`Chat`'s gap check; cycle D's close
-   *  `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35). **The cost that is left, stated** (spec §6.2, §11): a house
-   *  message is one more house wake, and every visible lobby refetches its
-   *  three listings on it. */
+   *  `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35). **The cost spec §6.2
+   *  and §11 stated is gone since cycle E (R-E9)**: a house message is one more
+   *  house frame, and it re-lists nothing, because its `seq` did not move
+   *  (`onlyTheChatMoved`). */
   const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);
+  /** The last house frame's counters, for [`onlyTheChatMoved`]: a frame that
+   *  moved only the chat re-lists nothing (R-E9). A ref, because a frame is
+   *  compared with the frame before it and never drawn. */
+  const lastHouseFrame = useRef<{ seq: number; chat: number; rev?: number } | null>(null);
   /** The row whose link was just copied, for the two seconds its status says
    *  so. */
   const [copied, setCopied] = useState<string | null>(null);
@@ -349,6 +384,14 @@ export function Lobby({
       peek: (data) => {
         const counts = houseCounts(data);
         if (counts) setHouse(counts);
+        // **A message re-lists nothing** (R-E9, ruling T7-a lever c): the
+        // listings behind a frame that moved only the chat are the ones on
+        // screen. `false` declines the wake's re-read — which `usePolled`
+        // still makes for a connection's first frame and after a failed read.
+        const now = houseFrameOf(data);
+        const message = onlyTheChatMoved(lastHouseFrame.current, now);
+        lastHouseFrame.current = now;
+        return !message;
       },
     },
     me !== null,

@@ -1,7 +1,9 @@
 // What every browser walk needs: a game, a console watch, and a click policy.
 
-import { expect, test, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
+import { appendFileSync, writeFileSync } from "node:fs";
+import { expect, test, type ConsoleMessage, type Locator, type Page, type Request } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
+import { normalizeRoute } from "../scripts/tally-report.mjs";
 import { LIVE } from "./live";
 
 /** A deterministic PRNG, so a failing walk reproduces from its seed alone.
@@ -904,4 +906,68 @@ export async function noticeIsDrawn(page: Page, what: string): Promise<void> {
 /** A picture for the headed look, under this run's own output directory. */
 export async function look(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });
+}
+
+/** The variable that turns the request tally on: a file path (cycle E, Task 7;
+ *  R-E9). Unset or empty, [`tally`] installs nothing. */
+export const TALLY_VAR = "YOKOHAMA_WEB_TALLY";
+
+/** Who a tally line is about: the two players and the one who watches. */
+export type TallyPage = "a" | "b" | "watcher";
+
+/** When each tally file's run started — the first [`tally`] call naming it —
+ *  so every page written into one file is on one clock. */
+const tallyStarts = new Map<string, number>();
+
+/**
+ * **One JSON line per request this page makes** into `YOKOHAMA_WEB_TALLY`'s
+ * file, for `scripts/tally-report.mjs` (requests per move by route, and the
+ * 10-second peaks R-6.5c2.43's rate limit is set above):
+ * `{ t, page, method, route, status }`.
+ *
+ * - `t` is when the request was SENT, in milliseconds since the first `tally`
+ *   call naming this file — the rate limit counts arrivals, not answers.
+ * - `route` is the path named by the report's ONE regex (`normalizeRoute`,
+ *   imported rather than restated): `<id>` for a game, the query dropped. An
+ *   off-origin request keeps its origin in front, so it can never read as one
+ *   of this server's routes.
+ * - `status` is the response's; `0` for a request that failed with none. A
+ *   request is written ONCE: a stream aborted after its headers has a response
+ *   and may also report a failure, and counting both would be two requests.
+ * - A socket (the Worker's transport) is one line, `GET`, status `101`:
+ *   Playwright reports a WebSocket through `websocket` and never through
+ *   `request`. Locally the transport is a stream and no socket opens.
+ *
+ * **The FIRST call naming a file truncates it**, so a tally is one run and
+ * never an earlier run's lines with this one's appended. Each line is a synchronous
+ * `appendFileSync`: a walk that dies mid-game leaves every request it made on
+ * disk. Requests made through `page.request` (the walk's own reads of the
+ * server, `appliedEvents`) are not page events and are not tallied — the
+ * tally is what the BROWSERS ask.
+ */
+export function tally(page: Page, label: TallyPage, path: string | undefined = process.env[TALLY_VAR]): void {
+  if (!path) return;
+  const known = tallyStarts.get(path);
+  const start = known ?? Date.now();
+  if (known === undefined) {
+    tallyStarts.set(path, start);
+    writeFileSync(path, "");
+  }
+  const origin = new URL(BASE_URL).origin;
+  const sent = new WeakMap<Request, number>();
+  const written = new WeakSet<Request>();
+  const line = (at: number, method: string, url: string, status: number): void => {
+    const u = new URL(url);
+    const route = (u.origin === origin ? "" : u.origin) + normalizeRoute(u.pathname);
+    appendFileSync(path, `${JSON.stringify({ t: at - start, page: label, method, route, status })}\n`);
+  };
+  const write = (r: Request, status: number): void => {
+    if (written.has(r) || !/^https?:/.test(r.url())) return;
+    written.add(r);
+    line(sent.get(r) ?? Date.now(), r.method(), r.url(), status);
+  };
+  page.on("request", (r) => sent.set(r, Date.now()));
+  page.on("response", (res) => write(res.request(), res.status()));
+  page.on("requestfailed", (r) => write(r, 0));
+  page.on("websocket", (ws) => line(Date.now(), "GET", ws.url().replace(/^ws/, "http"), 101));
 }

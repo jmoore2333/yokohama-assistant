@@ -1276,3 +1276,65 @@ describe("the server area", () => {
     await waitFor(() => expect(onReached).toHaveBeenCalled());
   });
 });
+
+// ---- what a house frame costs the listings (cycle E, Task 7; R-E9, ruling
+// T7-a, lever c) ---------------------------------------------------------------
+//
+// The house frame is `{seq, chat, rev}` on both hosts, and its `seq` is the
+// LISTING counter: the NAS moves it on a table's write and on an end, and never
+// for a house message (`Signals::bump_house_chat` moves `chat` and `rev`
+// alone); the Worker raises it per copy or removal the house applies, and a
+// message's frame carries it unchanged. So a frame whose `seq` stayed and whose
+// chat moved is a MESSAGE, and the three listings behind it have not changed —
+// before this, every visible lobby re-listed all three on every house message
+// (the M6.4 close's recorded LEAVE, spec §6.2's "cost that is left"). The
+// frames are the corpus's `house_frame.json` with its numbers moved, the rule
+// every house cell in this file follows.
+
+describe("what a house frame costs the listings (R-E9)", () => {
+  /** Every listing read, of any scope. */
+  const listings = (stub: { calls: ApiCall[] }) => stub.calls.filter((c) => isGamesList(c));
+
+  it("re-lists nothing on a frame that moved only the house chat", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? stream.reply(call) : undefined));
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => listings(stub).length === 3, "the opening read");
+      // A table moved: the connection's first frame, and a listing change.
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
+      await until(() => listings(stub).length === 6, "a table's move re-lists");
+      await flush();
+      // A house message: `seq` stayed, `chat` and `rev` one on.
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
+      await flush();
+      expect(listings(stub), "a message asks no scope").toHaveLength(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-lists the three scopes once on a frame whose seq moved", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? stream.reply(call) : undefined));
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => listings(stub).length === 3, "the opening read");
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
+      await until(() => listings(stub).length === 6, "the first frame re-lists");
+      await flush();
+      // A table moved AND a message landed between two frames: `seq` moved, so
+      // it is a listing change whatever the chat did.
+      stream.push("house", { ...wire.houseFrame, seq: 2, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
+      await until(() => listings(stub).length === 9, "a moved seq re-lists");
+      await flush();
+      const last = listings(stub).slice(6);
+      expect(last.map((c) => new URLSearchParams(c.path.split("?")[1]).get("scope")).sort()).toEqual(["mine", "open", "playing"]);
+      expect(listings(stub), "once").toHaveLength(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

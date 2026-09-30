@@ -1235,6 +1235,117 @@ describe("the turn playback", () => {
     await waitFor(() => expect(document.querySelector("[data-busy]")).toBeNull());
   });
 
+  // **What a move costs the sections (cycle E, Task 7; R-E9, ruling T7-a).**
+  // The port and the laboratory used to be asked for on every `state` the
+  // screen took — a picker step's reply included — although the run the reply
+  // is followed by already carries both at its live frame. These three are the
+  // own-move arms, through `send` and `landed` rather than through props: the
+  // mark that a run is on its way has to land in the SAME render as the new
+  // state, or the panel asks in the gap, and only the real `App` can say it
+  // does. The fetch stub's call log is the witness; every payload is the
+  // corpus's (the fixture above).
+  const portCards = () =>
+    [...document.querySelectorAll(".table-sec.ports [data-card]")].map((e) => e.getAttribute("data-card"));
+  const cardsOf = (p: typeof wire.ports) => p.boards.flatMap((b) => b.slots.map((sl) => String(sl.card)));
+
+  it("asks neither board after a reply that applied events: the run's live frame draws both", async () => {
+    const { before, replied, at, log } = botReply();
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(1));
+    expect(stub.matching("GET", "/labs"), "premise: the mount read").toHaveLength(1);
+    expect(portCards(), "premise: the mount read's port is on screen").toEqual(cardsOf(wire.ports));
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
+    await user.click(within(document.querySelector<HTMLElement>(".turn-account")!).getByRole("button", { name: "skip" }));
+    await waitFor(() => expect(document.querySelector(".decision.walking")).toBeNull());
+    expect(stub.matching("GET", "/ports"), "the run carried the port").toHaveLength(1);
+    expect(stub.matching("GET", "/labs"), "and the laboratory").toHaveLength(1);
+    // The LIVE board beside the live strip is the run's last frame's.
+    expect(portCards(), "the strip draws the run's live frame").toEqual(cardsOf(wire.atK.ports));
+  });
+
+  // **The gap, held open.** A stub answers at once, so the new state and its
+  // run land in ONE render and the cell above cannot see the gap between them
+  // — the one `landed`'s mark exists for (measured: with the mark removed, the
+  // cell above stays green). Here the run is held, so the screen renders the
+  // new count with its run still out, which is exactly the render the mark
+  // must cover.
+  it("asks neither board in the gap between the reply and its run", async () => {
+    const { before, replied, at, log } = botReply();
+    const heldRun = gate<unknown>();
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      if (runRange(call.path)) return heldRun.promise;
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(1));
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    // The reply is on screen and its run is out.
+    await waitFor(() => expect(stub.matching("GET", "/at?")).toHaveLength(1));
+    await waitFor(() => expect(document.querySelector(".app[data-busy]")).not.toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(stub.matching("GET", "/ports"), "the gap asks the port nothing").toHaveLength(1);
+    expect(stub.matching("GET", "/labs"), "nor the laboratory").toHaveLength(1);
+    heldRun.resolve({ frames: [40, 41, 42, 43].map((k) => at(k)) });
+    await waitFor(() => expect(document.querySelector("[data-busy]")).toBeNull());
+    expect(stub.matching("GET", "/ports"), "and the run, landed, carried it").toHaveLength(1);
+  });
+
+  it("asks neither board after a reply at the same count — a picker step", async () => {
+    const { before } = botReply();
+    const step = { ...before, messages: ["Selected: A01", "-> legal — Place 1 assistant in each of: Church (A01)"] };
+    const stub = await renderApp(before, (call) => (call.path.endsWith("/input") ? step : undefined));
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(1));
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await waitFor(() => expect(screen.getByText(/Selected: A01/)).toBeInTheDocument());
+    await user.click(firstRow());
+    await waitFor(() => expect(stub.matching("POST", "/input")).toHaveLength(2));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(stub.matching("GET", "/ports"), "two picker steps ask the port nothing").toHaveLength(1);
+    expect(stub.matching("GET", "/labs"), "nor the laboratory").toHaveLength(1);
+  });
+
+  it("asks each board once when the run for the reply's events could not be fetched", async () => {
+    const { before, replied, log } = botReply();
+    // The move WAS applied: the re-read `send` makes after the refusal reads
+    // the server's count, which is the reply's.
+    let posted = false;
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) {
+        posted = true;
+        return replied;
+      }
+      if (posted && call.method === "GET" && call.path.endsWith(`/api/games/${before.id}`)) return replied;
+      if (runRange(call.path)) return { status: 500, body: { error: "the positions could not be read" } };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(1));
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await screen.findByText("the positions could not be read");
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(2));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(stub.matching("GET", "/ports"), "once").toHaveLength(2);
+    expect(stub.matching("GET", "/labs"), "once").toHaveLength(2);
+  });
+
   it("keeps the cadence the player chose, through storage", async () => {
     await renderApp(wire.optionsMany);
     await userEvent.setup().selectOptions(screen.getByLabelText("Cadence"), "1000");
@@ -3002,6 +3113,64 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(positionsWalked(stub)).toHaveLength(atCalls);
       expect(document.querySelector("ol.account")).toBeNull();
       expect(document.querySelector(".decision.walking")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **What an arrival costs the sections (cycle E, Task 7; R-E9, ruling T7-a).**
+  // Before, a frame that moved the count cost the state, the run, the log AND
+  // the port and the laboratory — the last two a second copy of what the run's
+  // live frame carries. The arrival's arm, through `arrive` and `landed`: a
+  // frame that did not move the count asks nothing at all, one that grew it
+  // asks for no board, and a shrink — an undo — asks each board once. The
+  // fetch stub's call log is the witness; the positions are `at_k` moved to
+  // their index, this describe's `at`.
+  it("asks for no board on an arrival its run covers, and each board once on a shrink", async () => {
+    let events = wire.watching.events;
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events };
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+      expect(boards(), "premise: the mount read, once each").toEqual([1, 1]);
+
+      // The on-connect frame, at the count this screen holds: nothing at all.
+      stream.push("signal", signal());
+      await settle();
+      expect(reloads()).toHaveLength(1);
+      expect(boards(), "a frame at the same count asks for no board").toEqual([1, 1]);
+
+      // The count grew: the state, the run and the log — and no board.
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => positionsWalked(stub).length === 3, "the run was fetched");
+      await settle();
+      expect(reloads()).toHaveLength(2);
+      expect(boards(), "the run's live frame carries both boards").toEqual([1, 1]);
+
+      // An undo: the count went backwards, there is no run, each board once.
+      events = wire.watching.events;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 3, "the game was re-read");
+      await until(() => boards()[0] === 2, "the port was asked for");
+      await settle();
+      expect(boards(), "a shrink asks each board once").toEqual([2, 2]);
     } finally {
       vi.useRealTimers();
     }

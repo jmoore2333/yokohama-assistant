@@ -9,7 +9,7 @@ import { expect, test } from "./sw";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, atTheGame, blame, newGameForm, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, atTheGame, blame, newGameForm, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -246,34 +246,38 @@ test("the Game menu switches between saved games from inside a game", async ({ p
 
 // ---- M5 W5b: the sections on the table --------------------------------------
 
-test("an enabled section re-fetches once after a move, collapses while replaying, and persists across a reload", async ({ page }) => {
+test("an enabled section asks nothing after a move its run covers, collapses while replaying, and persists across a reload", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
-  await startGame(page, { players: 2 });
-  const portRequests: string[] = [];
-  // **The two counters are the whole point of this cell (ruling R-T12b).**
+  const { id } = await startGame(page, { players: 2 });
+  // **The rule this cell pins moved in cycle E (Task 7; R-E9, ruling T7-a).**
   //
-  // Spec §3.4's rule is "an enabled fetched section re-fetches after every
-  // `setState`", and in `App.tsx` a `setState` of the game comes from exactly
-  // three places: the `/input` reply, the re-read `GET /api/games/{id}` in
-  // `send`'s catch branch, and `create`. So the count that follows from the rule
-  // is one `/ports` per state-changing RESPONSE, not one per "move" — and a move
-  // in `act()`'s sense is not one request: a placement asks up to six tiles
-  // and then Confirms or Cancels, and every one of those is its own `/input`
-  // post with its own reply. Asserting `+1` would therefore be asserting which
-  // affordance the seeded walk happened to take. This counts the posts instead
-  // and asserts the RELATION, which is what the spec actually says.
+  // M5's rule was "an enabled fetched section re-fetches after every
+  // `setState`", and this cell counted one `/ports` per state-changing
+  // RESPONSE. Measured over the two-browser walk, those reads were 7.12 of
+  // 16.74 requests per applied move, and every one of them was a copy: a
+  // picker step's reply applies no event and cannot move a board, and a reply
+  // that applied events is followed by its RUN, whose last frame is the live
+  // position with the port and the laboratory built by the same
+  // `build_ports`/`build_labs` those two routes answer with. So the port and
+  // the laboratory are asked for only where no run carries them — the mount,
+  // an undo, a re-read that found the game moved, a run that failed — and a
+  // move this walk makes is none of those (`act` never undoes).
   //
-  // **Counted on the RESPONSE, and only where it succeeded.** These are named
-  // for state-changing responses, and a request is not one: a refused `/input`
-  // is a 4xx that changes nothing and triggers no refetch, so counting the post
-  // would leave the relation below off by one on exactly the move worth
-  // catching. `/ports` stays on the request side — it is what the client ASKED
-  // for that this cell is about.
+  // **The relation, then, is ZERO, with two things that stop it being
+  // vacuous**: the walk made state-changing responses (counted on the
+  // response, and only where it succeeded, as before), and at least one of
+  // them applied events and fetched its run (`/at?from=`). And the strip is
+  // read against the SERVER's own `/ports` afterwards, which is what says the
+  // run's frame IS the live board rather than merely a board.
+  const boardRequests: string[] = [];
+  const runRequests: string[] = [];
   const inputPosts: string[] = [];
   const reReads: string[] = [];
   page.on("request", (r) => {
-    if (/\/ports$/.test(new URL(r.url()).pathname)) portRequests.push(r.url());
+    const u = new URL(r.url());
+    if (/\/(ports|labs)$/.test(u.pathname)) boardRequests.push(u.pathname);
+    if (/\/at$/.test(u.pathname) && u.searchParams.has("from")) runRequests.push(r.url());
   });
   page.on("response", (r) => {
     if (!r.ok()) return;
@@ -286,7 +290,10 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   await page.getByRole("button", { name: "Building sites" }).click();
   await page.keyboard.press("Escape");
   await expect(page.locator(".table-sec.buildings .site-card").first()).toBeVisible();
-  const before = portRequests.length;
+  // The mount's reads have landed: the strips are drawn.
+  await expect(page.locator(".table-sec.ports .board-strip").first()).toBeVisible();
+  const boardsBefore = boardRequests.length;
+  const runsBefore = runRequests.length;
   const postsBefore = inputPosts.length;
   const readsBefore = reReads.length;
   // `playAFew` settles the last move's walk (see its own note): the counts
@@ -296,17 +303,30 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   const stateChanges = () =>
     inputPosts.length - postsBefore + (reReads.length - readsBefore);
   await expect
-    .poll(() => stateChanges(), { message: "the walk applied nothing, so nothing could refresh" })
+    .poll(() => stateChanges(), { message: "the walk applied nothing, so there was nothing to ask for" })
     .toBeGreaterThan(0);
   await expect
-    .poll(() => portRequests.length - before, {
-      message: "a move did not refresh the port",
-    })
-    .toBe(stateChanges());
+    .poll(() => runRequests.length - runsBefore, { message: "no move applied events, so no run was fetched" })
+    .toBeGreaterThan(0);
+  expect(boardRequests.slice(boardsBefore), "a move's run carries the port and the laboratory").toEqual([]);
+  // The strip beside the live board is the server's live port.
+  const served = await page.request.get(`/api/games/${id}/ports`, {
+    headers: { "x-yokohama-claimed-user": WALKER },
+  });
+  expect(served.ok(), `the port is readable (${served.status()})`).toBeTruthy();
+  const livePort = ((await served.json()) as { boards: { slots: { card: number | null }[] }[] }).boards.flatMap(
+    (b) => b.slots.flatMap((sl) => (sl.card === null ? [] : [String(sl.card)])),
+  );
+  expect(livePort.length, "the server's port holds cards").toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      page.locator(".table-sec.ports [data-card]").evaluateAll((els) => els.map((e) => e.getAttribute("data-card"))),
+    )
+    .toEqual(livePort);
   // eslint-disable-next-line no-console
   console.log(
-    `sections refresh: one move made ${stateChanges()} state-changing responses ` +
-      `and ${portRequests.length - before} /ports requests`,
+    `sections after a move: ${stateChanges()} state-changing responses, ` +
+      `${runRequests.length - runsBefore} runs, ${boardRequests.length - boardsBefore} /ports or /labs requests`,
   );
 
   await page.getByRole("button", { name: "Log", exact: true }).click();

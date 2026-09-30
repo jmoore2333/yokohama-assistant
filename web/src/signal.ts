@@ -117,8 +117,19 @@ export interface Source<T> {
    *  the house chat's `chat`/`rev` off the house frame, and the open table its
    *  own off the table's `Events`, and hands them to the chat panel as its
    *  count. Never called for a `"value"` source, whose frame IS the value, nor
-   *  for the socket arm's probe, which reads no frame. */
-  peek?: (data: string) => void;
+   *  for the socket arm's probe, which reads no frame.
+   *
+   *  **`false` DECLINES the re-read** (cycle E, Task 7; R-E9, ruling T7-a):
+   *  the frame's counters say the value behind it has not changed. The lobby
+   *  answers so for a house frame that moved only the chat — a message, whose
+   *  `seq` (the listing counter, on both hosts) stayed where it was. Anything
+   *  else, `undefined` included, re-reads as before. **Two frames are read
+   *  whatever this answers**: a connection's FIRST, since nothing on it has
+   *  been compared yet (an outage's changes are owed, and a restarted Worker
+   *  counts its `seq` from 0 again); and any frame after a re-read that
+   *  failed, since the value on screen is then older than the frame and the
+   *  next frame is the retry. */
+  peek?: (data: string) => boolean | void;
   /** `"local"` for a game the module in this browser's own Worker answers
    *  (M6.5b, R-6.5b.12): there is NOTHING to wait for, because the bot's
    *  trailing run returns inside the reply that caused it and nobody else sits
@@ -275,6 +286,9 @@ export function usePolled<T>(
     // — it sets `again`, and the read is repeated once the first has landed.
     let reading = false;
     let again = false;
+    /** The last re-read FAILED (not refused), so the value on screen is older
+     *  than the frames: a frame `peek` declines is read anyway (see `peek`). */
+    let behind = false;
     const reread = async () => {
       if (reading) {
         again = true;
@@ -292,6 +306,7 @@ export function usePolled<T>(
           const v = await source.once();
           if (stopped) return;
           failures.current = 0;
+          behind = false;
           setLink("live");
           latest.current(v);
           if (!again) return;
@@ -312,8 +327,10 @@ export function usePolled<T>(
           return;
         }
         // The STREAM is still good and the re-read is what failed, so this is
-        // not a trip round the ladder — the next frame tries again. The word on
-        // screen is the true one meanwhile.
+        // not a trip round the ladder — the next frame tries again, whatever
+        // its `peek` says (`behind`). The word on screen is the true one
+        // meanwhile.
+        behind = true;
         setLink(lost());
       } finally {
         reading = false;
@@ -329,6 +346,9 @@ export function usePolled<T>(
       const mine = new AbortController();
       controller = mine;
       const frames = src.current.frames ?? "wake";
+      /** No frame has arrived on THIS connection yet — its first is read
+       *  whatever `peek` answers. */
+      let first = true;
       // **One frame, off EITHER transport** (M6.5c): the stream's reader and
       // the socket's hand this the same `Frame`, so what a frame MEANS is
       // decided here once.
@@ -353,7 +373,10 @@ export function usePolled<T>(
         if (f.event !== "signal" && f.event !== "house") return;
         if (frames === "value") latest.current(JSON.parse(f.data) as T);
         else {
-          src.current?.peek?.(f.data);
+          const declined = src.current?.peek?.(f.data) === false;
+          const firstHere = first;
+          first = false;
+          if (declined && !firstHere && !behind) return;
           void reread();
         }
       };

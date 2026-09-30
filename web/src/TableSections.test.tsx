@@ -2,7 +2,7 @@
 // frame wherever the frame already has them, and collapsed only where it does
 // not.
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TableSections } from "./TableSections";
 import { stubApi } from "./test/harness";
@@ -39,7 +39,10 @@ describe("the sections on the table", () => {
     expect(document.querySelector(".table-sec.labs")).toBeNull();
   });
 
-  it("re-fetch after the state changes, once per section", async () => {
+  // **A COUNT that moved, with no run on its way** (cycle E, R-E9): an undo's
+  // shrink, a re-read that found the game moved, a run whose fetch failed —
+  // the sections cannot come from a run, so they are asked for, once each.
+  it("re-fetch when the count moves and no run is on its way, once per section", async () => {
     const stub = stubApi((call) => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
@@ -48,7 +51,7 @@ describe("the sections on the table", () => {
     const view = show(["ports", "labs"]);
     await screen.findByText(/Port A/);
     expect(stub.matching("GET", "/ports")).toHaveLength(1);
-    const next = { ...wire.options };
+    const next = { ...wire.options, events: wire.options.events + 1 };
     view.rerender(
       <TableSections enabled={["ports", "labs"]} game={next.id} state={next} replaying={false} scrubbing={false} view={next} art={wire.artManifest} labels={wire.labels} colors={COLORS} />,
     );
@@ -93,5 +96,138 @@ describe("the sections on the table", () => {
     );
     show(["ports"]);
     expect(await screen.findByText(/the port is closed/)).toBeInTheDocument();
+  });
+});
+
+// ---- what a frame costs: the sections follow the COUNT, and the run carries
+// the offers (cycle E, Task 7; R-E9, ruling T7-a) ------------------------------
+//
+// The rule, arm by arm, with the fetch stub's call log as the witness: a new
+// state at the SAME count fetches nothing (a picker step, a re-read); a count
+// a run is on its way for fetches nothing, and the run's last frame — the live
+// position, built by the same `build_ports`/`build_labs` — is what the strips
+// draw; a shrink, and a run that failed, fetch each board ONCE. The building
+// sites follow the board's own `site`s rather than the count.
+//
+// Every payload is the corpus's: the state is `options.json` at its own count
+// and one past it, and the run's last frame is `at_k.json` re-indexed to that
+// count — the edit every run cell in this suite makes. `/ports` and `at_k`'s
+// port hold different cards (34… against 28…), which is what lets a cell say
+// WHICH panel the strip drew.
+
+describe("what a frame costs the sections (R-E9)", () => {
+  const N = wire.options.events;
+  const at = (events: number): ClientState => ({ ...wire.options, events });
+  /** The run's last frame for count `k`: the live position. */
+  const liveAt = (k: number): HistoricalFrame => ({ ...wire.atK, index: k, total: k });
+  const portCards = () =>
+    [...document.querySelectorAll(".table-sec.ports [data-card]")].map((e) => e.getAttribute("data-card"));
+  const panels = () =>
+    stubApi((call) => {
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      throw new Error(`unexpected ${call.path}`);
+    });
+  const sections = (
+    state: ClientState,
+    extra: { live?: HistoricalFrame | null; runFor?: number | null; enabled?: Parameters<typeof TableSections>[0]["enabled"] } = {},
+  ) => (
+    <TableSections
+      enabled={extra.enabled ?? ["ports", "labs"]}
+      game={state.id}
+      state={state}
+      replaying={false}
+      scrubbing={false}
+      view={state}
+      art={wire.artManifest}
+      labels={wire.labels}
+      colors={COLORS}
+      live={extra.live ?? null}
+      runFor={extra.runFor ?? null}
+    />
+  );
+  /** Let every effect and every answer land. */
+  const settled = () => act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it("fetch nothing for a new state at the same count — a picker step, a re-read", async () => {
+    const stub = panels();
+    const view = render(sections(at(N)));
+    await screen.findByText(/Port A/);
+    expect(stub.matching("GET", "/ports")).toHaveLength(1);
+    expect(stub.matching("GET", "/labs")).toHaveLength(1);
+    view.rerender(sections({ ...at(N) }));
+    view.rerender(sections({ ...at(N) }));
+    await settled();
+    expect(stub.matching("GET", "/ports"), "a picker step asks the port nothing").toHaveLength(1);
+    expect(stub.matching("GET", "/labs"), "nor the laboratory").toHaveLength(1);
+  });
+
+  it("fetch nothing while a run is on its way for the new count, and draw the run's last frame when it lands", async () => {
+    const stub = panels();
+    const view = render(sections(at(N)));
+    await screen.findByText(/Port A/);
+    expect(portCards(), "premise: the mount read's port").toEqual(wire.ports.boards.flatMap((b) => b.slots.map((s) => String(s.card))));
+    // The count moved and the run for it is being fetched: nothing is asked.
+    view.rerender(sections(at(N + 1), { runFor: N + 1 }));
+    await settled();
+    expect(stub.matching("GET", "/ports"), "a run is on its way").toHaveLength(1);
+    expect(stub.matching("GET", "/labs")).toHaveLength(1);
+    // The run landed: its last frame is the live position, and the strips are
+    // drawn from it — still without a request.
+    view.rerender(sections(at(N + 1), { live: liveAt(N + 1) }));
+    await settled();
+    expect(stub.matching("GET", "/ports"), "the run carried the port").toHaveLength(1);
+    expect(stub.matching("GET", "/labs"), "and the laboratory").toHaveLength(1);
+    expect(portCards(), "the strip draws the run's live frame").toEqual(
+      wire.atK.ports.boards.flatMap((b) => b.slots.map((s) => String(s.card))),
+    );
+  });
+
+  it("fetch each board once on a shrink — an undo — whatever run was held", async () => {
+    const stub = panels();
+    const view = render(sections(at(N + 1), { live: liveAt(N + 1) }));
+    await settled();
+    expect(stub.matching("GET", "/ports"), "a mount whose run is in hand asks nothing").toHaveLength(0);
+    view.rerender(sections(at(N), { live: liveAt(N + 1) }));
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(1));
+    await settled();
+    expect(stub.matching("GET", "/ports")).toHaveLength(1);
+    expect(stub.matching("GET", "/labs")).toHaveLength(1);
+  });
+
+  it("fetch each board once when the run for the new count failed", async () => {
+    const stub = panels();
+    const view = render(sections(at(N)));
+    await screen.findByText(/Port A/);
+    view.rerender(sections(at(N + 1), { runFor: N + 1 }));
+    await settled();
+    expect(stub.matching("GET", "/ports")).toHaveLength(1);
+    // The run's fetch failed: nothing is on its way and no frame is live.
+    view.rerender(sections(at(N + 1)));
+    await waitFor(() => expect(stub.matching("GET", "/ports")).toHaveLength(2));
+    await settled();
+    expect(stub.matching("GET", "/ports"), "once").toHaveLength(2);
+    expect(stub.matching("GET", "/labs"), "once").toHaveLength(2);
+  });
+
+  it("re-read the building sites only when the board's sites changed", async () => {
+    const stub = panels();
+    const view = render(sections(at(N), { enabled: ["buildings"] }));
+    await waitFor(() => expect(stub.matching("GET", "/areas")).toHaveLength(1));
+    // A move that built nothing: the count moved, the sites did not.
+    view.rerender(sections(at(N + 1), { enabled: ["buildings"] }));
+    await settled();
+    expect(stub.matching("GET", "/areas"), "a move that built nothing").toHaveLength(1);
+    // A build: one site's space now has an owner.
+    const built = JSON.parse(JSON.stringify(at(N + 2))) as ClientState;
+    const tile = built.frame.board.tiles.find((t) => t.site !== null)!;
+    tile.site!.slots[0]!.built_by = 0;
+    view.rerender(sections(built, { enabled: ["buildings"] }));
+    await waitFor(() => expect(stub.matching("GET", "/areas")).toHaveLength(2));
+    await settled();
+    expect(stub.matching("GET", "/areas"), "a build re-reads the sites once").toHaveLength(2);
   });
 });
