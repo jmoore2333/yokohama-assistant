@@ -417,8 +417,8 @@ mod tests {
         // controller spellings: an unparseable controller spelled like the
         // other's label (an unparsed controller's label is its own name), or
         // a rung's underscore alias (`retreat_averse` beside
-        // `retreat-averse`; `policy.rs` parses both, `family_weighted` too); two that differ only in version
-        // tie on their labels but stop at the version arm, row 2's shape. So
+        // `retreat-averse`; `policy.rs` parses both, `family_weighted` too);
+        // two that differ only in version tie on their labels but stop at the version arm, row 2's shape. So
         // the row is that: "uniform rung" against the uniform rung.
         let uniform = descriptor_of(Contestant::Policy(RolloutPolicy::Uniform));
         let spelled = BotDescriptor { controller: "uniform rung".to_string(), ..uniform.clone() };

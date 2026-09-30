@@ -2376,6 +2376,19 @@ async fn corpus() -> Corpus {
     // did not: the binding below reads exactly this prefix.
     let from_the_walk = all.len();
     all.extend(constructed());
+    // **The constructed house frame is the walk's house, at the row it names**:
+    // its `chat` and `rev` are the house chat page's `last` and `rev` (the walk
+    // reads that page right after the house POST), so a moved walk fails here
+    // rather than leaving a fixture that describes another house.
+    {
+        let value_of = |name: &str| all.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).expect(name);
+        let (frame, page) = (value_of("house_frame"), value_of("house_chat"));
+        assert_eq!(
+            (&frame["chat"], &frame["rev"]),
+            (&page["last"], &page["rev"]),
+            "house_frame.json no longer matches the house the walk leaves: {frame} against {page}",
+        );
+    }
     all.push((
         "art_manifest".to_string(),
         serde_json::to_value(

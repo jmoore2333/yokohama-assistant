@@ -494,8 +494,8 @@ impl AppState {
         )
         .with_log(log);
         // **The house frame's counters start where the house chat document is**
-        // (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46): a lobby's chat panel reads
-        // when the frame's `chat` passes the `last` of the page it holds, so a
+        // (M6.5c2 cycle D; the close `2026-09-29-web-frontend-m6.5c2d-close.md`
+        // §4 and §5, ruling 46): a lobby's chat panel reads when the frame's `chat` passes the `last` of the page it holds, so a
         // process that counted from 0 over a document at N told no lobby of a
         // message until it had taken N + 1. A document that cannot be read
         // seeds nothing: every house route refuses it out loud, and no message
@@ -503,9 +503,12 @@ impl AppState {
         // an operator repairs the file under a running process, which a
         // restart then seeds.
         //
-        // **Said out loud** (cycle E, cycle D's ruling 49): a transient read
-        // failure leaves this process counting from 0 until the next post,
-        // and that is now a line in the log rather than a silence.
+        // **Said out loud** (cycle E; the close's §5, ruling 49): a failed
+        // seed leaves this process's house counters OFFSET from the document
+        // for the process's life (`seed_house` runs once and `bump_house_chat`
+        // adds one per post), so a lobby misses house messages until the
+        // process has taken N + 1 posts; a restart re-seeds. That is now a
+        // line in the log rather than a silence.
         match games.house_counts() {
             Ok(counts) => signals.seed_house(counts),
             Err(e) => games
@@ -3595,7 +3598,7 @@ mod tests {
     /// acting holder's `undo` returned 200 and the record went from 357 events
     /// to 200, by unwinding a "bot run" and re-pumping into a `BOT HALT` — the
     /// fixture's record then named both seats bots. Since M6.5c2 cycle D (the
-    /// review of Task 4) it names both seats PEOPLE, so its rebuild reads the
+    /// Task 4 row of the close `2026-09-29-web-frontend-m6.5c2d-close.md` §1) it names both seats PEOPLE, so its rebuild reads the
     /// seats human/human and pumps nothing, and an undo there without the rule
     /// is the human-seated shape: the caller's own trailing move popped. Both
     /// are a finished shared game changing under a player who had already seen
@@ -7406,7 +7409,7 @@ mod tests {
     }
 
     /// **After a restart the house frame counts on from the DOCUMENT** (M6.5c2
-    /// cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46): its `chat` and `rev` are the stored
+    /// cycle D; the close `2026-09-29-web-frontend-m6.5c2d-close.md`, §4 and §5, ruling 46): its `chat` and `rev` are the stored
     /// house chat document's `last` and `rev`, so a lobby's chat panel — a
     /// COUNT host since row 130, which reads when the frame's `chat` passes the
     /// `last` of the page it holds — learns of the first message a restarted

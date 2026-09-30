@@ -35,8 +35,8 @@
 //! are the house chat DOCUMENT's `last` and `rev` on both hosts**: the Worker
 //! reads them off the stored document for every frame it sends, and the NAS seeds
 //! [`Signals`] from the stored document when it starts
-//! (`Signals::seed_house`, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46) and moves them in step with
-//! it after. `seq` is the frame's own sequence and names nothing stored.
+//! (`Signals::seed_house`; cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md`
+//! §4 and §5, ruling 46) and moves them in step with it after. `seq` is the frame's own sequence and names nothing stored.
 //! **The lobby's LISTINGS still take every frame as a wake-up** and refetch
 //! all three, a house message included (recorded in the M6.4 close as a LEAVE
 //! item): telling a message from a listing write there is the half no consumer
@@ -122,8 +122,8 @@ pub struct Bump {
 /// on any frame, chat included, which is the M6.4 close's own LEAVE item.
 ///
 /// `chat` and `rev` START at the stored house chat document's `last` and `rev`
-/// (`Signals::seed_house`, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46), so they are the document's
-/// numbers and not a count this process began at 0.
+/// (`Signals::seed_house`; cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md`
+/// §4 and §5, ruling 46), so they are the document's numbers and not a count this process began at 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg(feature = "server")]
 pub struct House {
@@ -163,8 +163,8 @@ impl Signals {
     }
 
     /// Start the house's `chat` and `rev` at the stored house chat document's
-    /// `last` and `rev` (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46), and `seq` at 0
-    /// — it is the frame's own sequence and names nothing stored.
+    /// `last` and `rev` (M6.5c2 cycle D; the close `2026-09-29-web-frontend-m6.5c2d-close.md`
+    /// §4 and §5, ruling 46), and `seq` at 0 — it is the frame's own sequence and names nothing stored.
     ///
     /// **Called ONCE, by `AppState::with_store_chat_and_archive`, before the
     /// state serves anything**: it REPLACES the two counters rather than adding

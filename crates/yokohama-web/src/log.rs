@@ -76,9 +76,12 @@ pub const KEPT_EARLIER_COMPLETION: &str = "archive-kept-earlier-completion";
 /// one of `does not parse`, `could not be read`, `is malformed`.
 pub const LISTING_SKIPPED: &str = "listing-skipped";
 /// The house chat document could not be read while the NAS seeded its house
-/// frame's counters at start-up — `{error}`, the store's reason. A transient
-/// failure leaves that process counting from 0 until the next post (cycle D's
-/// ruling 49); every house route refuses the same document out loud.
+/// frame's counters at start-up — `{error}`, the store's reason. A failed seed
+/// leaves that process's house counters OFFSET from the document for the
+/// process's life (`seed_house` runs once, `bump_house_chat` adds one per
+/// post), so a lobby misses house messages until N + 1 posts on that process
+/// (D's close §5, ruling 49); a restart re-seeds. Every house route refuses
+/// the same document out loud.
 pub const HOUSE_SEED_UNREAD: &str = "house-seed-unread";
 
 /// The NAS's log (M6.5c2): each line on stderr, beside `main.rs`'s own — the
