@@ -1,5 +1,7 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
-// wrangler deploy`, so nothing ships unless all nine hold. Every check that
+// wrangler deploy`, and `npm run deploy:open` the same over `--config
+// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 then judge THAT file, and 5 and
+// 6 hold it to production's blocks), so nothing ships unless all nine hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -167,6 +169,18 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
+/** Production's configuration, the reference the others are held to. */
+const PRODUCTION_FILE = "wrangler.jsonc";
+
+/** The open door's deployment configuration (R-6.5c2.39): the state-1 window,
+ *  held to production's blocks like a pool file, and judged whole by
+ *  `--config wrangler.open.jsonc`. */
+const OPEN_FILE = "wrangler.open.jsonc";
+
+/** The gate window's configuration (R-E10): production with the dev door
+ *  "off" — held to production's blocks like the open file. */
+const GATE_FILE = "wrangler.gate.jsonc";
+
 /** What check 6 compares, and what each block's absence leaves undeclared. */
 const OBJECT_BLOCKS = {
   durable_objects: "binds the three object classes",
@@ -184,14 +198,14 @@ const POOLS = ["wrangler.test.jsonc", "wrangler.open.test.jsonc"];
  *  pool's block that differs from production's is named for that pool. */
 function objectBlocks(production, pools, failures) {
   for (const [key, what] of Object.entries(OBJECT_BLOCKS)) {
-    const missing = [["wrangler.jsonc", production], ...pools].filter(([, config]) => config.value[key] === undefined);
+    const missing = [[PRODUCTION_FILE, production], ...pools].filter(([, config]) => config.value[key] === undefined);
     for (const [name] of missing) failures.push(`${name} has no ${key} block — spec §3.1 ${what}`);
     if (missing.length > 0) continue;
     const p = canonical(production.value[key]);
     for (const [name, pool] of pools) {
       const t = canonical(pool.value[key]);
       if (p !== t) {
-        failures.push(`${name}'s ${key} differs from wrangler.jsonc's — the pool would test what production does not ship: ${t} against ${p}`);
+        failures.push(`${name}'s ${key} differs from wrangler.jsonc's — it would ship or test what production does not ship: ${t} against ${p}`);
       }
     }
   }
@@ -211,7 +225,7 @@ function objectOf(value) {
 
 /** Check 7, over `wrangler.jsonc`: every `vars` block, the top level's and
  *  each environment's, read for the secrets' KEYS. */
-function secretsInVars(value, failures) {
+function secretsInVars(name, value, failures) {
   const blocks = [["vars", value.vars]];
   for (const [name, env] of Object.entries(objectOf(value.env) ?? {})) {
     if (objectOf(env)) blocks.push([`env.${name}.vars`, env.vars]);
@@ -219,7 +233,7 @@ function secretsInVars(value, failures) {
   for (const [where, vars] of blocks) {
     if (!objectOf(vars)) continue;
     for (const [key, why] of Object.entries(SECRETS)) {
-      if (Object.hasOwn(vars, key)) failures.push(`wrangler.jsonc's ${where} name ${key} — ${why}`);
+      if (Object.hasOwn(vars, key)) failures.push(`${name}'s ${where} name ${key} — ${why}`);
     }
   }
 }
@@ -245,26 +259,26 @@ function known(door) {
 }
 
 /** Check 3, over `wrangler.jsonc`: the door, and its rules. */
-function doorRules(value, failures) {
+function doorRules(name, value, failures) {
   const door = doorOf(value);
   if (door === undefined) {
-    failures.push("wrangler.jsonc names no door — its vars must set YOKOHAMA_WEB_IDENTITY to worker or open, and there is no default");
+    failures.push(`${name} names no door — its vars must set YOKOHAMA_WEB_IDENTITY to worker or open, and there is no default`);
   } else if (!known(door)) {
-    failures.push(`wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(door)}`);
+    failures.push(`${name}'s YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(door)}`);
   }
   for (const [key, why] of Object.entries(ABSENT)) {
     // An open door has no Access application for a workers.dev URL to go around.
     if (key === "workers_dev" && door === "open") continue;
     if (value[key] !== false) {
-      failures.push(`wrangler.jsonc must set "${key}": false — got ${JSON.stringify(value[key]) ?? "nothing"}; ${why}`);
+      failures.push(`${name} must set "${key}": false — got ${JSON.stringify(value[key]) ?? "nothing"}; ${why}`);
     }
   }
   const vars = objectOf(value.vars) ?? {};
   if (door === "worker") {
-    for (const name of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
-      if (typeof vars[name] !== "string" || vars[name].trim() === "") {
+    for (const key of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
+      if (typeof vars[key] !== "string" || vars[key].trim() === "") {
         failures.push(
-          `wrangler.jsonc's vars must set ${name} under the worker door — without it no assertion is verified, and every caller is no one`,
+          `${name}'s vars must set ${key} under the worker door — without it no assertion is verified, and every caller is no one`,
         );
       }
     }
@@ -273,7 +287,7 @@ function doorRules(value, failures) {
   const devDoor = vars.YOKOHAMA_DEV_DOOR;
   if (door === "open" && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
     failures.push(
-      "wrangler.jsonc's vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair",
+      `${name}'s vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair`,
     );
   }
 }
@@ -282,10 +296,10 @@ function doorRules(value, failures) {
  *  names (R-6.5c2.5), whatever else the guard refuses — or `undefined` when
  *  the file is absent or does not parse, or names neither door, which check 3
  *  refuses. */
-export function doorLine(root) {
-  const production = readConfig(root, "wrangler.jsonc", []);
-  const door = production === undefined ? undefined : doorOf(production.value);
-  return known(door) ? `wrangler.jsonc deploys the ${door} door — ${DOORS[door]}` : undefined;
+export function doorLine(root, config = PRODUCTION_FILE) {
+  const judged = readConfig(root, config, []);
+  const door = judged === undefined ? undefined : doorOf(judged.value);
+  return known(door) ? `${config} deploys the ${door} door — ${DOORS[door]}` : undefined;
 }
 
 /** Check 8: `gen/source.json` against the digest of the sources now. Asked
@@ -342,33 +356,45 @@ function staleAssets(root, repo, tree, shown, failures) {
   }
 }
 
-/** Checks 3 to 7: the ones that need no build. */
-export function configFailures(root) {
+/** Checks 3 to 7: the ones that need no build. `config` is the file the
+ *  deploy ships (`--config`, default `wrangler.jsonc`): checks 3, 4 and 7
+ *  judge it alone; check 5 holds production, the open file and each pool to
+ *  spec §2.3's assets block, and check 6 holds the open file and each pool
+ *  to production's object blocks, whichever file is named. */
+export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
-  const production = readConfig(root, "wrangler.jsonc", failures);
-  if (production) {
-    doorRules(production.value, failures);
-    if (production.text.includes("YOKOHAMA_WEB_TEST_CLOCK")) {
-      failures.push("wrangler.jsonc names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in the pool's configurations and nowhere else");
+  const production = readConfig(root, PRODUCTION_FILE, failures);
+  const judged = config === PRODUCTION_FILE ? production : readConfig(root, config, failures);
+  if (judged) {
+    doorRules(config, judged.value, failures);
+    if (judged.text.includes("YOKOHAMA_WEB_TEST_CLOCK")) {
+      failures.push(`${config} names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in the pool's configurations and nowhere else`);
     }
-    assetsBlock("wrangler.jsonc", production.value, failures);
-    secretsInVars(production.value, failures);
-  }
-  const pools = [];
-  for (const name of POOLS) {
-    const pool = readConfig(root, name, failures);
-    if (pool) {
-      assetsBlock(name, pool.value, failures);
-      pools.push([name, pool]);
+    secretsInVars(config, judged.value, failures);
+    // The gate file exists to shut the dev door: anything but "off" defeats it.
+    if (config === GATE_FILE) {
+      const gate = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
+      if (gate !== "off") {
+        failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${JSON.stringify(gate) ?? "nothing"}`);
+      }
     }
   }
-  if (production) objectBlocks(production, pools, failures);
+  if (production) assetsBlock(PRODUCTION_FILE, production.value, failures);
+  const others = [];
+  for (const name of [OPEN_FILE, GATE_FILE, ...POOLS]) {
+    const other = name === config && judged ? judged : readConfig(root, name, failures);
+    if (other) {
+      if (name !== config || config !== PRODUCTION_FILE) assetsBlock(name, other.value, failures);
+      others.push([name, other]);
+    }
+  }
+  if (production) objectBlocks(production, others, failures);
   return failures;
 }
 
 /** All nine checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
-export function deployGuard(root, repo = join(root, "..")) {
+export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
 
   const factory = join(root, "gen", "factory.js");
@@ -390,7 +416,7 @@ export function deployGuard(root, repo = join(root, "..")) {
 
   // Checks 3–5 report a configuration that does not parse; check 2 only needs
   // to know where the tree is, and says nothing more when it cannot.
-  const directory = readConfig(root, "wrangler.jsonc", [])?.value.assets?.directory;
+  const directory = readConfig(root, config, [])?.value.assets?.directory;
   if (typeof directory === "string" && directory !== "") {
     const shown = posix.normalize(directory);
     const tree = join(root, directory);
@@ -414,15 +440,33 @@ export function deployGuard(root, repo = join(root, "..")) {
     }
   }
 
-  failures.push(...configFailures(root));
+  failures.push(...configFailures(root, config));
   return failures;
+}
+
+/** The configuration the CLI was asked to judge: `--config <file>` (a bare
+ *  file name in this directory), default `wrangler.jsonc`. Any other argument,
+ *  or a path, is refused rather than ignored — a guard that judged one file
+ *  while `wrangler deploy` shipped another would be worse than none. */
+export function configFrom(argv) {
+  const args = argv.slice(2);
+  if (args.length === 0) return PRODUCTION_FILE;
+  if (args.length === 2 && args[0] === "--config" && /^wrangler[A-Za-z0-9.-]*\.jsonc$/.test(args[1])) return args[1];
+  throw new Error(`deploy-guard: expected no arguments or --config wrangler<name>.jsonc — got ${JSON.stringify(args)}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = fileURLToPath(new URL("..", import.meta.url));
-  const door = doorLine(root);
+  let config;
+  try {
+    config = configFrom(process.argv);
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+  const door = doorLine(root, config);
   if (door !== undefined) console.log(door);
-  const failures = deployGuard(root);
+  const failures = deployGuard(root, join(root, ".."), config);
   if (failures.length > 0) {
     console.error(`deploy-guard: refused —\n${failures.map((f) => `  ${f}`).join("\n")}`);
     process.exit(1);

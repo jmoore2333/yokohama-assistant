@@ -337,9 +337,20 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   judge it, and that object's `init` answers a 500 carrying the layer's own sentence where the NAS
   answers its 401. The client's name step never sends such a claim.
 
-**No open-door Worker is deployed by this project.** The owner's Worker is Access. The open door is
-proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells are
-`test/open/`), where the shell runs in workerd with real sockets.
+**The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
+`RUNBOOK.md` §19). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
+open door and no Access values or dev door. The recipe: delete the two Worker secrets first
+(`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
+list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
+--config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on) and
+then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first screen and the
+lobby with no login and a name of their own choosing, and the operator surface answers 404. The revert
+is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
+the state in between come from `node scripts/access-paths.mjs`, derived from the routers.
+`wrangler.gate.jsonc` is production with the dev door shut (`npm run deploy:gate`), for a window where
+the door must be Access alone. The open door is also proven in the test pool's second project
+(`wrangler.open.test.jsonc`, whose cells are `test/open/`), where the shell runs in workerd with real
+sockets.
 
 **Both doors show the same three build values**, read by `cd web && npm run build` when they are set
 (R-6.5c2.40; `web/scripts/build-values.mjs` checks them and a bad one fails the build naming it):

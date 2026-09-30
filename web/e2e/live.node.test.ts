@@ -35,7 +35,7 @@
 //
 //   - every helper module in this directory — every `.ts` that is not a spec
 //     or a test, since a live spec may import any of them;
-//   - every spec a live run can play: `LIVE_SPECS` and `EXIT_SPEC`, the lists
+//   - every spec a live run can play: `LIVE_SPECS`, `EXIT_SPEC` and `README_SHOTS_SPEC`, the lists
 //     `playwright.config.ts` matches a live run by.
 //
 // A local-only spec is not read: it never holds the cookie (`it_explains` asks
@@ -48,12 +48,13 @@
 // file: every create is armed through `awaitCreate` right before its click,
 // and every `afterEach` abandons through `abandonOpened`.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { EXIT_SPEC, LIVE_SPECS } from "./live";
+import { EXIT_SPEC, LIVE_SPECS, README_SHOTS_SPEC } from "./live";
 
 /** The `APIRequestContext` methods that SEND. `newContext` is not one of
  *  them: it MAKES a context, which is refused wherever it is ([`madeFrom`]). */
@@ -347,7 +348,7 @@ describe("every live API call in web/e2e goes through liveRequest", () => {
   it("holds across every helper module and every spec a live run can play", () => {
     const files = readdirSync(here).filter((f) => f.endsWith(".ts"));
     const helpers = files.filter((f) => !f.endsWith(".spec.ts") && !f.endsWith(".test.ts"));
-    const live = [...LIVE_SPECS, EXIT_SPEC];
+    const live = [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC];
 
     // **Anti-vacuity, and it is the whole risk in a check like this**: a scan
     // over an empty or wrong listing passes without reading a line. The
@@ -596,7 +597,7 @@ describe("every live spec knows its table from the moment its create is sent (R3
     // The premise: the two labels are still the create button's.
     expect(readFileSync(join(here, "..", "src", "NewGame.tsx"), "utf8"), "NewGame.tsx's create button").toContain('{opensSeats ? "Open table" : "Deal"}');
     const refused: string[] = [];
-    for (const spec of [...LIVE_SPECS, EXIT_SPEC]) {
+    for (const spec of [...LIVE_SPECS, EXIT_SPEC, README_SHOTS_SPEC]) {
       const read = creates(spec, readFileSync(join(here, spec), "utf8"));
       expect(read.clicks, `premise: ${spec} creates a table`).toBeGreaterThan(0);
       refused.push(...read.refused);
@@ -604,4 +605,27 @@ describe("every live spec knows its table from the moment its create is sent (R3
     }
     expect(refused, "a create not armed through awaitCreate, opened set otherwise, or an afterEach abandoning by hand").toEqual([]);
   });
+});
+
+describe("the README's screenshot generator is collected only when asked for (Task 8, R-6.5c2.44)", () => {
+  // It WRITES into `worker/docs/img/`, so a plain run — local or live — must
+  // never collect it. Read through Playwright itself (`--list`), not the
+  // config's text: the property is what the runner collects. Mutants: the
+  // `testIgnore` entry missing; the live `testMatch` not naming it under the
+  // switch; the switch read as anything but "1".
+  const collected = (env: Record<string, string>): boolean => {
+    const out = execFileSync("npx", ["playwright", "test", "--list"], {
+      cwd: join(here, ".."),
+      env: { ...process.env, YOKOHAMA_WEB_README_SHOTS: "", YOKOHAMA_WEB_E2E_TARGET: "", ...env },
+      encoding: "utf8",
+    });
+    return out.includes(README_SHOTS_SPEC);
+  };
+  it("is not collected by a plain run, local or live, and is collected under the switch on either target", () => {
+    expect(collected({}), "plain, local").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_E2E_TARGET: "live" }), "plain, live").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_README_SHOTS: "0" }), "the switch reads only 1").toBe(false);
+    expect(collected({ YOKOHAMA_WEB_README_SHOTS: "1" }), "switch, local").toBe(true);
+    expect(collected({ YOKOHAMA_WEB_README_SHOTS: "1", YOKOHAMA_WEB_E2E_TARGET: "live" }), "switch, live").toBe(true);
+  }, 120_000);
 });

@@ -1,0 +1,58 @@
+// **The Worker `yokohama-web` at the OPEN door** (R-6.5c2.39) — the state-1
+// configuration of the door window: `wrangler.jsonc` with no identity service.
+// Anyone who reaches the Worker plays under any name, so it is deployed for
+// the window and never left live: `npm run deploy:open` ships it, and the
+// plain `npm run deploy` reverts to the worker door (`worker/RUNBOOK.md` §19
+// is the window's record; `worker/README.md` "The two doors" is the recipe).
+//
+// Everything but the door is `wrangler.jsonc`'s — the route, the assets block,
+// the object bindings, the migration, the bucket, the archive and both TTLs —
+// and the deploy guard holds it to production's blocks (checks 5 and 6):
+// `node scripts/deploy-guard.mjs --config wrangler.open.jsonc`. It has no
+// `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` (the open door reads neither) and no
+// `YOKOHAMA_DEV_DOOR`, which the shell refuses beside `open`
+// (`src/config.ts`'s `openDoorRefusals`).
+//
+// THE OPERATOR SECRET MUST BE DELETED BEFORE THIS DEPLOYS. `YOKOHAMA_WEB_ADMINS`
+// and `DEV_DOOR_CLIENT_ID` are Worker secrets, which a deploy leaves alone, and
+// the shell refuses the open door beside an operator list: delete both
+// (`wrangler secret delete`), deploy this, and put them back on the revert.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yokohama-web",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }],
+  // No Access application stands in front of an open deployment, so a
+  // `workers.dev` URL would go around nothing; it stays off all the same, and
+  // the window is one hostname.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*", "/enter"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  "vars": {
+    "YOKOHAMA_WEB_IDENTITY": "open",
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
+    "YOKOHAMA_WEB_LOBBY_CHAT": "on",
+    "YOKOHAMA_WEB_CHAT_KEEP": "500",
+    "YOKOHAMA_WEB_CHAT_TEXT": "500"
+  }
+}
