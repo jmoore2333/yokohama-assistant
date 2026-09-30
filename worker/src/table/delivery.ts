@@ -85,7 +85,7 @@ export function withDelivery<T extends TableParts>(Base: T) {
      *
      * - a straggling acknowledgement that lands after a removal's `deleteAll()`
      *   must not recreate `meta` in an object that has ceased to exist
-     *   (re-review m-g) — and `deleteAll()` drops the tables;
+     *   (m-g of the plan `docs/plans/2026-09-23-web-frontend-m6.5c-plan.md`) — and `deleteAll()` drops the tables;
      * - the guard is the tables ALONE: one that also asked for a slot or a
      *   marker would skip the late acknowledgement of `r` that arrives after
      *   `r + 1` was acknowledged and cleared, so `advances` would never be

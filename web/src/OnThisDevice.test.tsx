@@ -204,7 +204,7 @@ describe("On this device", () => {
       expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
       // And the read that failed still says so, where it failed — and only
       // there: the module listed this game, so no line says the games could
-      // not be listed (the final review's triage; see the cell below).
+      // not be listed (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45; see the cell below).
       expect(within(block as HTMLElement).getByText(/the games that will not open could not be read/)).toBeInTheDocument();
     });
 
@@ -295,7 +295,7 @@ describe("On this device", () => {
   });
 
   // **Above a listed game, no line says the games could not be listed** (M6.5c2
-  // cycle D, the final review's triage). The
+  // cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45). The
   // module listed them: the rows are drawn and open through it, so "this
   // device's games could not be listed" above them was false, and it named the
   // one failure a second time beside `Unplayable`'s own line — which is the

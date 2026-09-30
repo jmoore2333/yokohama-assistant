@@ -108,7 +108,7 @@ export function judge(fixture, reply, context) {
       // ruling R-C3). The browser host's node replay
       // (`web/src/local/corpus.node.test.ts`) still spends an exemption on
       // `not.toEqual` alone, which an absent field passes: a recorded debt
-      // (Task 7's review, M-5; ruling R-C20).
+      // (ruling R-C20 of `docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md`).
       if (typeof got[field] !== "string") {
         diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
       } else if (isDeepStrictEqual(got[field], committed[field])) {

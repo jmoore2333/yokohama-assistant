@@ -241,8 +241,8 @@ export function Lobby({
    *  moved: every house frame carries the house chat's count. Until then it
    *  waits, for as long as the house is quiet. And if the next thing is the
    *  reader's OWN post, its 201's number shows the gap and the panel reads
-   *  the page rather than stepping past it (`Chat`'s gap check; the Task 11
-   *  re-review). **The cost that is left, stated** (spec §6.2, §11): a house
+   *  the page rather than stepping past it (`Chat`'s gap check; cycle D's close
+   *  `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35). **The cost that is left, stated** (spec §6.2, §11): a house
    *  message is one more house wake, and every visible lobby refetches its
    *  three listings on it. */
   const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);

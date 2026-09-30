@@ -1152,7 +1152,7 @@ impl Games {
 
     /// The house chat document's `last` and `rev` ([`ChatCounts`]), read as
     /// [`Games::house_page`] reads them — what the NAS SEEDS its house frame's
-    /// counters from when it starts (M6.5c2 cycle D, the final review's C1;
+    /// counters from when it starts (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46;
     /// `AppState::with_store_chat_and_archive`).
     ///
     /// An absent document is an empty one, `0` and `0`, as every read of it
@@ -1183,7 +1183,7 @@ impl Games {
     /// number back.
     ///
     /// **Exactly THREE things fill the entry, and keeping what is there is
-    /// never the older answer under any** (re-review of the fix wave; the
+    /// never the older answer under any** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §1, the Task 7 row; the
     /// delete since M6.5c2 cycle D): an append and a delete, each of which
     /// writes its own counts with a plain `insert` after the document is
     /// written and under the table's lock — so they land in the order the
@@ -1210,7 +1210,7 @@ impl Games {
         // will not parse reads 0 here while every route that SERVES it says so
         // out loud.
         //
-        // **That 0 is CACHED like any other** (re-review of the fix wave,
+        // **That 0 is CACHED like any other** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §1, the Task 7 row,
         // out-of-scope note), so an unparseable document makes this table
         // report 0 for the life of the process — until an append re-inserts a
         // real number, which it cannot do while the document will not parse.

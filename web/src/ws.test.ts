@@ -46,8 +46,8 @@ describe("the socket reader", () => {
     expect(location.protocol).toBe("http:");
     read("/api/games/wire/stream");
     expect(FakeSocket.made[0]!.url).toBe(`ws://${location.host}/api/games/wire/stream`);
-    read("https://yokohama.moore.nyc/api/stream");
-    expect(FakeSocket.made[1]!.url).toBe("wss://yokohama.moore.nyc/api/stream");
+    read("https://example.test/api/stream");
+    expect(FakeSocket.made[1]!.url).toBe("wss://example.test/api/stream");
   });
 
   it("hands a message over as the stream's own frame: the event, and the data as text", () => {

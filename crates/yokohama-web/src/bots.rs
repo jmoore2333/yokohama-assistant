@@ -413,9 +413,11 @@ mod tests {
 
         // Row 4: a knobless pair renders the controller alone, no trailing
         // space. Two DIFFERENT knobless descriptors reach this arm — their
-        // labels AND their versions tying — only when one controller is
-        // unparseable and spelled like the other's label (an unparsed
-        // controller's label is its own name); two that differ only in version
+        // labels AND their versions tying — when they name one label by two
+        // controller spellings: an unparseable controller spelled like the
+        // other's label (an unparsed controller's label is its own name), or
+        // a rung's underscore alias (`retreat_averse` beside
+        // `retreat-averse`; `policy.rs` parses both, `family_weighted` too); two that differ only in version
         // tie on their labels but stop at the version arm, row 2's shape. So
         // the row is that: "uniform rung" against the uniform rung.
         let uniform = descriptor_of(Contestant::Policy(RolloutPolicy::Uniform));

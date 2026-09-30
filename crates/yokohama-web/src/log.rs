@@ -75,6 +75,11 @@ pub const KEPT_EARLIER_COMPLETION: &str = "archive-kept-earlier-completion";
 /// The lobby's listing skipped a table document — `{id, why, error}`, `why`
 /// one of `does not parse`, `could not be read`, `is malformed`.
 pub const LISTING_SKIPPED: &str = "listing-skipped";
+/// The house chat document could not be read while the NAS seeded its house
+/// frame's counters at start-up — `{error}`, the store's reason. A transient
+/// failure leaves that process counting from 0 until the next post (cycle D's
+/// ruling 49); every house route refuses the same document out loud.
+pub const HOUSE_SEED_UNREAD: &str = "house-seed-unread";
 
 /// The NAS's log (M6.5c2): each line on stderr, beside `main.rs`'s own — the
 /// container log an operator reads.
@@ -107,14 +112,21 @@ mod tests {
         assert_eq!(render(OVER_TABLE_GONE, &Value::Null), r#"{"event":"archive-over-table-gone"}"#);
     }
 
-    /// Five events, five names — and none is a line the Worker's shell writes
+    /// Six events, six names — and none is a line the Worker's shell writes
     /// ITSELF (`archive-${outcome}` in `worker/src/r2.ts`'s `logOutcome`,
     /// `archive-stamped` and `archive-owed-*` in `worker/src/table.ts`). The
     /// pool reads its archive lines as exact lists, so a layer line under a
     /// shell's name would read as the shell's.
     #[test]
-    fn the_events_are_five_names_and_none_is_the_shells() {
-        let events = [OVER_PUT_REFUSED, OVER_UNSTAMPED, OVER_TABLE_GONE, KEPT_EARLIER_COMPLETION, LISTING_SKIPPED];
+    fn the_events_are_six_names_and_none_is_the_shells() {
+        let events = [
+            OVER_PUT_REFUSED,
+            OVER_UNSTAMPED,
+            OVER_TABLE_GONE,
+            KEPT_EARLIER_COMPLETION,
+            LISTING_SKIPPED,
+            HOUSE_SEED_UNREAD,
+        ];
         let mut unique = events.to_vec();
         unique.sort_unstable();
         unique.dedup();

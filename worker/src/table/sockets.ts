@@ -35,7 +35,7 @@ export function withSockets<T extends TableParts>(Base: T) {
      * - **200**: the socket is accepted, hibernatable, with the caller as its
      *   attachment, and sent that reading at once — M6.3's first frame;
      * - **403 or 404**: the socket is ACCEPTED, sent an `end` that carries the
-     *   layer's sentence (the orchestrator's ruling, Task 8's review), and
+     *   layer's sentence (the objects spec's §2.4, `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md`), and
      *   closed 4403 or 4404 with that sentence as the reason — because a browser
      *   reports a refused upgrade as an anonymous failure it cannot tell from
      *   the network;

@@ -467,6 +467,20 @@ impl AppState {
         chat: chat::ChatConfig,
         archive: Arc<dyn archive::Archive>,
     ) -> Self {
+        Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
+    }
+
+    /// [`Self::with_store_chat_and_archive`] with the log chosen: the one seam a
+    /// cell needs to read what the constructor says while it seeds (M6.5c2
+    /// cycle E). The NAS's binary passes [`log::StderrLog`] through the
+    /// constructor above and nothing else.
+    pub(crate) fn with_store_chat_archive_and_log(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+        log: Arc<dyn log::Log>,
+    ) -> Self {
         let rules = Arc::new(Rules::standard());
         let signals = Arc::new(signal::Signals::default());
         let games = Games::with_parts(
@@ -478,9 +492,9 @@ impl AppState {
             archive,
             games::RunHost::Server,
         )
-        .with_log(Arc::new(log::StderrLog));
+        .with_log(log);
         // **The house frame's counters start where the house chat document is**
-        // (M6.5c2 cycle D, the final review's C1): a lobby's chat panel reads
+        // (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46): a lobby's chat panel reads
         // when the frame's `chat` passes the `last` of the page it holds, so a
         // process that counted from 0 over a document at N told no lobby of a
         // message until it had taken N + 1. A document that cannot be read
@@ -488,8 +502,15 @@ impl AppState {
         // can be appended to it, so there is no count to be wrong about — until
         // an operator repairs the file under a running process, which a
         // restart then seeds.
-        if let Ok(counts) = games.house_counts() {
-            signals.seed_house(counts);
+        //
+        // **Said out loud** (cycle E, cycle D's ruling 49): a transient read
+        // failure leaves this process counting from 0 until the next post,
+        // and that is now a line in the log rather than a silence.
+        match games.house_counts() {
+            Ok(counts) => signals.seed_house(counts),
+            Err(e) => games
+                .log
+                .line(log::HOUSE_SEED_UNREAD, serde_json::json!({ "error": e.to_string() })),
         }
         Self {
             games,
@@ -4116,7 +4137,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{got}");
         assert_eq!(got["status"], "open", "nothing to watch yet: {got}");
-        // **And at DEALING** (M6.5c2 cycle D, the final review's triage): the
+        // **And at DEALING** (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45): the
         // stranger sweep skips `unlock` at every status, so this row is the one
         // place a stranger's knock at a dealing table is asked. Nobody watches a deal, so it is the open table's
         // answer — a 409 naming the status, before any password is read — and
@@ -7385,7 +7406,7 @@ mod tests {
     }
 
     /// **After a restart the house frame counts on from the DOCUMENT** (M6.5c2
-    /// cycle D, the final review's C1): its `chat` and `rev` are the stored
+    /// cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, ruling 46): its `chat` and `rev` are the stored
     /// house chat document's `last` and `rev`, so a lobby's chat panel — a
     /// COUNT host since row 130, which reads when the frame's `chat` passes the
     /// `last` of the page it holds — learns of the first message a restarted
@@ -7440,6 +7461,57 @@ mod tests {
             "a delete's frame is the document's revision too: {page}",
         );
         assert_eq!(frames[0]["rev"], 6);
+    }
+
+    /// **A house document that cannot be READ at boot is said out loud** (M6.5c2
+    /// cycle E, cycle D's ruling 49): the seed's `Err` arm used to say nothing,
+    /// and a process whose frame then counts from 0 over a document at N is the
+    /// very state the seed exists to prevent. The line is the layer's own,
+    /// `HOUSE_SEED_UNREAD`, exactly once, carrying the store's reason; the
+    /// counters stay at 0 and 0 (the frame's `seq` starts there too).
+    #[test]
+    fn a_house_document_that_cannot_be_read_at_boot_is_logged_once() {
+        use crate::store::{Version, WriteError};
+
+        #[derive(Default)]
+        struct HouseUnreadable(MemStore);
+        impl Store for HouseUnreadable {
+            fn list(&self, doc: Doc) -> Result<Vec<store::GameId>, String> {
+                self.0.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if doc == Doc::House {
+                    return Err("the disk went away".to_string());
+                }
+                self.0.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                self.0.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.0.delete(id)
+            }
+        }
+
+        let log = crate::games::test_support::RecordingLog::recording();
+        let state = AppState::with_store_chat_archive_and_log(
+            Arc::new(HouseUnreadable::default()),
+            identity::IdentityMode::Open,
+            chat::ChatConfig::default(),
+            Arc::new(archive::NoArchive),
+            log.clone(),
+        );
+        assert_eq!(log.events(), vec![log::HOUSE_SEED_UNREAD], "one line, the seed's");
+        let error = log.fields(0)["error"].as_str().map(str::to_string);
+        assert!(error.as_deref().is_some_and(|e| e.contains("the disk went away")), "the store's reason rides it: {error:?}");
+        let house = *state.signals.subscribe_house().borrow();
+        assert_eq!((house.seq, house.chat, house.rev), (0, 0, 0), "counting from 0, out loud");
     }
 
     /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles

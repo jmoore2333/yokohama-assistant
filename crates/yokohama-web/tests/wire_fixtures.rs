@@ -2308,7 +2308,19 @@ fn constructed() -> Vec<(String, Value)> {
         ("why_refused".to_string(), why_refused),
         ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
+        ("house_frame".to_string(), house_frame_fixture()),
     ]
+}
+
+/// **The house frame, as the lobby's socket or stream delivers it** (M6.5c2
+/// cycle E, D's leftover): `signal::house_frame`'s own bytes, parsed, for the
+/// house as it stands after the walk's last house POST (`house_chat_post`,
+/// `POST /api/chat`): one message, so `chat` 1, and one revision, so `rev` 1;
+/// `seq` is the frame's own sequence and starts at 0. Built here because the
+/// walk never reads a stream, and a lobby cell that hand-builds this frame
+/// keeps compiling after the server renames a key.
+fn house_frame_fixture() -> Value {
+    serde_json::from_str(&yokohama_web::signal::house_frame(0, 1, 1)).expect("the frame is JSON")
 }
 
 /// **Every refusal `why` can raise, as the browser would receive it.**

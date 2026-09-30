@@ -388,7 +388,7 @@ export function Chat({ scope, count, rev, canModerate = false, colors, sendName,
       const name = sendName ? displayName()?.trim() : undefined;
       const m = await api.postChat(scopeRef.current, { text, ...(name ? { name } : {}) });
       if (mine !== generation.current) return;
-      // **A GAP CHECK on the 201's number** (the Task 11 re-review's
+      // **A GAP CHECK on the 201's number** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35: the
       // lost-message finding). Numbers are contiguous — a trim drops the
       // oldest end and never reuses one, and a delete keeps its tombstone — so
       // a post numbered past `last + 1` says the messages between were never

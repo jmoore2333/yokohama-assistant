@@ -145,6 +145,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     // would let a `dealing` reply grow or lose a key unnoticed.
     ["events", wire.events, KEYS.events],
     ["events_dealing", wire.eventsDealing, KEYS.events],
+    ["house_frame", wire.houseFrame, KEYS.houseFrame],
     // The dealt CARD, reached through the one payload that still carries one:
     // a caller's own `deal`. It used to be reached through `preview.deals`,
     // which served every seat's at once and is retired (M6.1 §8).

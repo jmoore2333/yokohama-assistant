@@ -135,7 +135,7 @@ export function OnThisDevice({
       ) : games.length === 0 ? (
         unlisted !== null ? (
           /* **In place of "no game on this device yet", and only there**
-             (M6.5c2 cycle D, the final review's triage): the module listed
+             (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45): the module listed
              nothing, and with this browser's store unread that is not an empty
              device. Above a list the module DID draw, its rows open through
              the Worker and are the truth; the read that failed is the one that

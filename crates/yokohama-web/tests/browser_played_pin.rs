@@ -266,7 +266,7 @@ fn account(e: usize, body: &str) -> Result<Account, String> {
 /// **The one refusal this pin excuses is the human's own move** (M6.5c2 cycle
 /// D, dossier row 56). The reconstruction used to excuse a second — the
 /// `not_a_move` refusal `why` gives a setup reveal — and it never fired (0 of
-/// 595 events, the M6.5b Task 8 review's reading): the
+/// 595 events, the M6.5b close's reading, `docs/plans/2026-09-21-web-frontend-m6.5b-close.md`): the
 /// pair is a SIMULATION record, played in a browser against the module's bot,
 /// and a simulation deals from its own seeded decks, so it records no reveal
 /// at all (reveals are how a LIVE game learns a physical card). An excuse for

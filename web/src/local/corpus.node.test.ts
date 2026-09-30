@@ -126,8 +126,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   were never route payloads: the first is the host's own art directory,
  *   the other three CONTRACTS the client holds itself to (the terminal's
  *   words, the key grammar's verdicts, a seed's verdict).
- * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal` and
- *   `why_refusals` are built in process by `constructed()`, because a router
+ * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal`,
+ *   `why_refusals` and `house_frame` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
  *   this host — the `why` ones are what the committed pair is reconstructed
  *   through — and it is the walk that cannot ask for them.
@@ -157,6 +157,7 @@ const NOT_SERVED = [
   "why_refused",
   "explanation_terminal",
   "why_refusals",
+  "house_frame",
   "events",
   "events_dealing",
   "events_open",

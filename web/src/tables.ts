@@ -192,7 +192,7 @@ export const isStranded = (t: TableView): boolean => Boolean(t.bot && !t.bot.run
 
 /** May THIS reader abandon this server table? **The layer's own rule**, read
  *  off the two facts about the reader that every table carries (M6.5c2 cycle
- *  D, the Task 11 review's I-1): `delete_locked` refuses a caller who holds no
+ *  D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 34): `delete_locked` refuses a caller who holds no
  *  seat — "you are not seated at this table" — before it asks whether they
  *  created it. So the control is the creator's, SEATED, and one predicate
  *  says so for the open table, a lobby row and the broken-game screen alike:

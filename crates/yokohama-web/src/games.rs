@@ -2511,11 +2511,11 @@ mod tests {
         // No eviction here, and none is needed: `both_seats_as_bots` stamps
         // both seats as PEOPLE on every record it persists (M6.5c2 cycle D, the
         // review of Task 4), so a rebuild reads the seats human/human and pumps
-        // nothing — the re-review measured 200 events before a rebuild and 200
+        // nothing — cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, rulings 19-20, records 200 events before a rebuild and 200
         // after. Before that re-stamp the record named both seats bots, and a
         // rebuild's `bring_alive` played the remaining 157 moves to game over
-        // (357 events) and archived the game from its own persist (re-review
-        // N3), which is why this half evicted nothing then.
+        // (357 events) and archived the game from its own persist (the same
+        // rulings), which is why this half evicted nothing then.
         running.archive_over_retry("mid").expect("an unfinished game is not an error");
         assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 

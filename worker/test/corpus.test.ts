@@ -89,6 +89,8 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  *   replays.
  * - `deal_bot_table` and `table_two_open` (cycle D) come from that same vs-bot
  *   table's `Api`, which no script replays.
+ * - `house_frame` (cycle E) is built in process from `signal::house_frame`:
+ *   the walk never reads a stream.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
@@ -98,6 +100,7 @@ const THIRD_COLUMN = [
   "explanation_terminal",
   "foreign_bot_409",
   "house_chat_off_404",
+  "house_frame",
   "identity_cases",
   "locked",
   "production_bot",

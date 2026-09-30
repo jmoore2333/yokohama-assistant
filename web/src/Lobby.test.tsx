@@ -474,7 +474,7 @@ describe("the lobby", () => {
     });
 
     // **The creator's, SEATED — the layer's rule** (R-13; `mayAbandon`, as
-    // ruled after the Task 11 review's I-1). The layer's delete refuses a
+    // ruled after cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 34). The layer's delete refuses a
     // caller who holds no seat before it asks who created the table —
     // `delete_locked`: "you are not seated at this table" — so a creator's
     // SEATLESS reading carries no control, and a seated one does. A table you
@@ -583,7 +583,7 @@ describe("the lobby", () => {
       expect(within(open()).getAllByRole("listitem")).toHaveLength(openRows);
       await until(() => stream.opens() > 0, "the house stream is open");
 
-      stream.push("house", { seq: 1, chat: 0 });
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: 0 });
       await until(() => within(mine()).queryAllByRole("listitem").length === 1, "Your tables was refreshed");
       expect(within(open()).getAllByRole("listitem"), "the refused section keeps its rows").toHaveLength(openRows);
       expect(within(open()).getByText(wire.error.error)).toBeInTheDocument();
@@ -766,13 +766,13 @@ describe("the lobby's chat", () => {
   // the mount read is the only read until then. The panel is OPEN, because a
   // folded count host reads nothing whatever the count says.
   //
-  // **Where the house frames come from**: no corpus fixture carries one — a
-  // frame is a stream's, not a route's payload — so each is built in the shape
-  // the layer pins (`signal.rs`'s `house_frame`, `{"seq":…,"chat":…,"rev":…}`,
-  // the same on the Worker) from the corpus's own numbers: `house_chat.json`'s
-  // `last` and `rev`, and one past each for the message that moves them. The
-  // page behind that message is `house_chat.json` with its first message
-  // renumbered to it.
+  // **Where the house frames come from**: the corpus. `house_frame.json` is
+  // `signal.rs`'s `house_frame` for the house as the walk leaves it (one message,
+  // one revision), emitted by `wire_fixtures.rs` and typed by `contract.ts`, so
+  // a key the server renames fails here and not silently. Each cell derives its
+  // moved frame from it (`chat` and `rev` one past for the message that moves
+  // them); the page behind that message is `house_chat.json` with its first
+  // message renumbered to it.
   it("reads the lobby chat once at mount, not on a table's move, and again when the house chat moves", async () => {
     setLobbyChat(true);
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
@@ -791,11 +791,11 @@ describe("the lobby's chat", () => {
       await flush();
       expect(stub.matching("GET", "/api/chat"), "one read at mount, the lists' landing none").toHaveLength(1);
       // A table moved: the sequence moves and the house chat does not.
-      stream.push("house", { seq: 1, chat: wire.houseChat.last, rev: wire.houseChat.rev });
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "a table's move asks the chat nothing").toHaveLength(1);
       page = { ...wire.houseChat, messages: [...wire.houseChat.messages, next], last: next.seq, rev: wire.houseChat.rev + 1 };
-      stream.push("house", { seq: 2, chat: next.seq, rev: wire.houseChat.rev + 1 });
+      stream.push("house", { ...wire.houseFrame, seq: 2, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
       await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
       await flush();
       expect(stub.matching("GET", "/api/chat"), "one read for the one message").toHaveLength(2);
@@ -842,11 +842,11 @@ describe("the lobby's chat", () => {
       expect(within(panel()).getAllByRole("listitem"), "premise: the room at 57").toHaveLength(1);
       page = { ...page, messages: [held, next], last: 58, rev: 58 };
       // The frame a restarted NAS sent before the seed: a count from 0.
-      stream.push("house", { seq: 0, chat: 1, rev: 1 });
+      stream.push("house", { ...wire.houseFrame });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "a count below what the panel holds is not news").toHaveLength(1);
       // The frame it sends now: the document's numbers.
-      stream.push("house", { seq: 0, chat: 58, rev: 58 });
+      stream.push("house", { ...wire.houseFrame, chat: 58, rev: 58 });
       await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
       await flush();
       expect(within(panel()).getAllByRole("listitem"), "the 58th message is drawn").toHaveLength(2);
@@ -856,7 +856,7 @@ describe("the lobby's chat", () => {
   });
 
   // **A house message its socket's reconnect missed is read once the reader's
-  // own post shows the gap** (the Task 11 re-review's lost-message finding;
+  // own post shows the gap** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35: the lost-message finding;
   // the production path of `Chat.test.tsx`'s "reads the messages its own
   // post's number shows it missed"). On the socket arm, a close this client did
   // not make is followed by ONE probe, and the lobby's probe reads the
@@ -917,7 +917,7 @@ describe("the lobby's chat", () => {
       });
       await until(() => FakeSocket.made.length === 2, "the house socket reopened");
       act(() => FakeSocket.made[1]!.accept());
-      act(() => FakeSocket.made[1]!.frame("house", { seq: 2, chat: post.seq, rev: post.seq }));
+      act(() => FakeSocket.made[1]!.frame("house", { ...wire.houseFrame, seq: 2 }));
       await flush();
       expect(within(panel()).getAllByRole("listitem"), "the missed message is drawn").toHaveLength(all.length);
     } finally {
@@ -952,7 +952,7 @@ describe("the lobby's chat", () => {
       await flush();
       const before = stub.matching("GET", "/api/chat").length;
       expect(before, "the mount read").toBe(1);
-      stream.push("house", { seq: 1, chat: wire.houseChatPost.seq, rev: wire.houseChatPost.seq });
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "the frame counts the post the 201 drew").toHaveLength(before);
       expect(screen.getByText(wire.houseChatPost.text)).toBeInTheDocument();

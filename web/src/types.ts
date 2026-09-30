@@ -407,6 +407,16 @@ export interface Events {
   chat_rev: number;
 }
 
+/** The house frame (M6.5c2 cycle E): what the lobby's stream or socket
+ *  delivers as each `house` event's data, `signal::house_frame`'s own bytes.
+ *  `seq` is the frame's own sequence and names nothing stored; `chat` and
+ *  `rev` are the house chat document's `last` and `rev`. */
+export interface HouseFrame {
+  seq: number;
+  chat: number;
+  rev: number;
+}
+
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.
  *

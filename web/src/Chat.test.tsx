@@ -384,7 +384,7 @@ describe("the chat panel", () => {
   });
 
   /** **The 201's number can prove a message was missed — and the panel reads
-   *  it** (the Task 11 re-review's lost-message finding; catcher: "the 201's
+   *  it** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35: the lost-message finding; catcher: "the 201's
    *  seq gap ignored"). Message numbers are contiguous: a trim drops the
    *  oldest end and never reuses a number, and a delete keeps its tombstone.
    *  So a post answered with `seq` above `last + 1` says the messages between
@@ -392,7 +392,7 @@ describe("the chat panel", () => {
    *  the lobby's listings and no chat count, and neither a stream reconnect
    *  nor a tab's return brings a house frame at all. Taking the 201 alone
    *  moved the cursor past them, the post's own frame then counted nothing
-   *  new, and they were never drawn. This is the re-reviewer's probe: the
+   *  new, and they were never drawn. This is ruling 35's probe: the
    *  corpus's three messages served up to what the server holds, and the 201
    *  `chat_post.json` renumbered to the third. */
   it("reads the messages its own post's number shows it missed, and draws them", async () => {
@@ -431,7 +431,7 @@ describe("the chat panel", () => {
   });
 
   /** **The same gap with the post's OWN frame landing while the post is still
-   *  out** (the live tunnel's order; Task 11's re-review). The count is parked
+   *  out** (the live tunnel's order; cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35). The count is parked
    *  while a post is in flight, so no later frame moves it and the gap must be
    *  read by the 201's own arrival — the immediate re-read in `send`. Held at
    *  the reply with a gate, and the frame delivered before it opens. */

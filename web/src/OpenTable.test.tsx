@@ -532,7 +532,7 @@ describe("the open table, to somebody sitting at it", () => {
   });
 
   // **A PIN: the table's creator who holds no seat is offered NO Abandon**
-  // (dossier row 17, as ruled after the Task 11 review's I-1). The layer's
+  // (dossier row 17, as ruled after cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 34). The layer's
   // delete refuses a caller who holds no seat before it asks who created the
   // table — `delete_locked`: "you are not seated at this table" — so a control
   // here would be drawn over a guaranteed refusal; the rule is `mayAbandon`,

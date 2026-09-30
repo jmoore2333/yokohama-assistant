@@ -750,7 +750,7 @@ export function App() {
         if (!here()) return;
         // The game that was on screen stays, and so does its address — with no
         // history entry left pointing at the table that refused. **The cost,
-        // stated** (the Task 11 review's m-2): the switch pushed an entry and
+        // stated** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §1, the Task 11 row: m-2): the switch pushed an entry and
         // this REPLACES it, so the history holds the game twice, and the first
         // Back changes nothing a player can see. `history.back()` would pop it,
         // but it arrives as a queued `popstate` racing the route effect; one
