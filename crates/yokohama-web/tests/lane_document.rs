@@ -20,7 +20,10 @@
 //! (`app`) or to `worker/src/route.ts` and `admin.ts` without a line in the
 //! map AND here. `worker/scripts/access-paths.test.mjs` reads those router
 //! files for their `/api/<segment>` prefixes, which catches a new prefix but
-//! not a new route under an existing one.
+//! not a new route under an existing one. Nor a host that stops answering
+//! `GET /api/art` itself: the map carries it as a `layer` row, since it is in
+//! `api::routes`, and both hosts intercept it before dispatch (axum's adapter,
+//! the Worker's `route.ts`) — this binary holds the row, not the interception.
 //!
 //! Per-edit, with the other `tests/` binaries: it reads one committed file and
 //! runs in milliseconds.

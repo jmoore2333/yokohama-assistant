@@ -17,7 +17,10 @@
 // (`docs/plans/2026-09-29-web-frontend-m6.5c2e-dossier.md`, "The variable
 // inventory"), listed in SCANNED below, tracked files only, code only — no
 // Markdown and no JSON, whose corpus and fixtures are data. A mention in a
-// comment counts: a name the code talks about is one a reader looks up.
+// comment counts: a name the code talks about is one a reader looks up. The
+// cost of that choice, stated: a variable the code stops READING while a
+// comment still names it stays green here (at cycle E no row is spelled only
+// in comments).
 //
 // What it cannot see: a variable read under a name of another shape
 // (`process.env.TZ` in one cell is the operating system's, not the lane's),
