@@ -10,13 +10,13 @@
 //    debug_trap === "function" ? …`), and only the debug glue defines and calls
 //    it. And no `gen/.unoptimized` sits beside it: the build leaves that marker
 //    when its optimizer step changed nothing (`scripts/build-module.mjs`).
-// 2. The assets directory `wrangler.jsonc` names holds a `sw.js`, `verifyTree`
+// 2. The assets directory the deployed configuration names holds a `sw.js`, `verifyTree`
 //    passes over it, and no browser module in it is a DEBUG build
 //    (`debugModuleIn`) — so the tree wrangler uploads IS the release the
 //    service worker installs, however the tree was made. A debug `web/dist`
 //    carries a precache list that matches it, so the digests alone would pass
 //    one (task 7 review, Important 1).
-// 3. `wrangler.jsonc` names its door (M6.5c2, spec §2.1; R-6.5c2.5):
+// 3. The deployed configuration (`wrangler.jsonc`, or `--config`) names its door (M6.5c2, spec §2.1; R-6.5c2.5):
 //    `YOKOHAMA_WEB_IDENTITY` in its top-level `vars` — the deploy's — is
 //    `worker` or `open`, read as the shell reads it (trimmed, then matched
 //    exactly), and there is no default, so a configuration naming none is
@@ -34,7 +34,7 @@
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
 //    prints the door it reads before its verdict (`doorLine`).
-// 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in `wrangler.jsonc` — read as
+// 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 5. The `assets` block is EXACTLY spec §2.3's, in `wrangler.jsonc` AND in
 //    both pool configurations, `wrangler.test.jsonc` and
@@ -52,7 +52,7 @@
 //    would be tested green and never shipped — and production's
 //    `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the 500 naming that
 //    variable (spec §2.6).
-// 7. No `vars` block in `wrangler.jsonc` — the top level's, or any
+// 7. No `vars` block in the deployed configuration — the top level's, or any
 //    environment's — names a SECRET: `YOKOHAMA_WEB_ADMINS` (the plan's ruling
 //    P-1, as the orchestrator ruled at Task 14's review), whose value is an
 //    address committed to the repository, or `DEV_DOOR_CLIENT_ID` (M6.5c2,
@@ -223,7 +223,7 @@ function objectOf(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
-/** Check 7, over `wrangler.jsonc`: every `vars` block, the top level's and
+/** Check 7, over the deployed configuration: every `vars` block, the top level's and
  *  each environment's, read for the secrets' KEYS. */
 function secretsInVars(name, value, failures) {
   const blocks = [["vars", value.vars]];
@@ -258,7 +258,42 @@ function known(door) {
   return typeof door === "string" && Object.hasOwn(DOORS, door);
 }
 
-/** Check 3, over `wrangler.jsonc`: the door, and its rules. */
+/** What each deployable sibling may differ in: `vars` keys, each with the
+ *  value the sibling must hold (`undefined`: absent). Everything else is
+ *  production's, exactly. */
+const GATE_DIFFERS = { YOKOHAMA_DEV_DOOR: "off" };
+const OPEN_DIFFERS = {
+  YOKOHAMA_WEB_IDENTITY: "open",
+  ACCESS_TEAM_DOMAIN: undefined,
+  ACCESS_AUD: undefined,
+  YOKOHAMA_DEV_DOOR: undefined,
+};
+
+/** T8-a: `sibling` equals `production` (comments are already gone, keys are
+ *  compared sorted) except the `vars` keys in `differs`, each of which must
+ *  hold exactly its stated value. Each drift names the key. */
+function siblingDrift(name, production, sibling, differs, failures) {
+  const shown = (v) => (v === undefined ? "nothing" : canonical(v));
+  const drift = (key, mine, theirs) =>
+    failures.push(`${name}'s ${key} differs from wrangler.jsonc's — a deploy of it would roll production back: ${shown(mine)} against ${shown(theirs)}`);
+  for (const key of new Set([...Object.keys(production), ...Object.keys(sibling)])) {
+    if (key === "vars") continue;
+    if (canonical(production[key]) !== canonical(sibling[key])) drift(key, sibling[key], production[key]);
+  }
+  const p = objectOf(production.vars) ?? {};
+  const v = objectOf(sibling.vars) ?? {};
+  for (const key of new Set([...Object.keys(p), ...Object.keys(v)])) {
+    if (Object.hasOwn(differs, key)) {
+      if (canonical(v[key]) !== canonical(differs[key])) {
+        failures.push(`${name}'s vars.${key} must be ${differs[key] === undefined ? "absent" : JSON.stringify(differs[key])} — got ${shown(v[key])}`);
+      }
+    } else if (canonical(p[key]) !== canonical(v[key])) {
+      drift(`vars.${key}`, v[key], p[key]);
+    }
+  }
+}
+
+/** Check 3, over the deployed configuration: the door, and its rules. */
 function doorRules(name, value, failures) {
   const door = doorOf(value);
   if (door === undefined) {
@@ -381,14 +416,23 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   }
   if (production) assetsBlock(PRODUCTION_FILE, production.value, failures);
   const others = [];
-  for (const name of [OPEN_FILE, GATE_FILE, ...POOLS]) {
+  // The named configuration is held to the same blocks even when it is none of
+  // the listed ones (`configFrom` accepts any `wrangler*.jsonc`).
+  const held = [OPEN_FILE, GATE_FILE, ...POOLS];
+  if (config !== PRODUCTION_FILE && !held.includes(config)) held.push(config);
+  for (const name of held) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
     if (other) {
-      if (name !== config || config !== PRODUCTION_FILE) assetsBlock(name, other.value, failures);
+      assetsBlock(name, other.value, failures);
       others.push([name, other]);
     }
   }
   if (production) objectBlocks(production, others, failures);
+  // A deployable sibling is production with ONE thing changed (T8-a): a deploy
+  // REPLACES the Worker's variables wholesale, so a sibling that fell behind
+  // production would roll it back. Judged when the file is the one deployed.
+  if (production && judged && config === GATE_FILE) siblingDrift(config, production.value, judged.value, GATE_DIFFERS, failures);
+  if (production && judged && config === OPEN_FILE) siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
   return failures;
 }
 
@@ -475,7 +519,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; spec §2.3's assets block in all three configurations; " +
+      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door; " +
       "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars",
   );
 }

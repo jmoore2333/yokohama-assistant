@@ -37,7 +37,7 @@ describe("the protected path list", () => {
     for (const file of ROUTER_FILES) {
       const text = readFileSync(`${repo}/${file}`, "utf8");
       const scoped = file.endsWith("api.rs") ? layerRoutesText(text) : text;
-      for (const m of scoped.matchAll(/\/api\/([a-z][a-z-]*)/g)) found.add(m[1]);
+      for (const segment of apiSegments(scoped)) found.add(segment);
     }
     expect(found.has("health"), "health is read, then excepted").toBe(true);
     found.delete("health");

@@ -74,7 +74,7 @@
     // Cloudflare Access, verified by the shell — this repository's
     // configuration, behind the `yokohama` Access application. `open` is a
     // deployment with no identity provider, where anyone who reaches the Worker
-    // may play under any name; no Worker of this repository runs it.
+    // may play under any name; this repository runs it only for the door window (`wrangler.open.jsonc`).
     "YOKOHAMA_WEB_IDENTITY": "worker",
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",

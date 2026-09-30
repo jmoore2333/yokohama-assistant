@@ -27,11 +27,11 @@
 // under the `readme.test` addresses, and are taken away.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { signIn } from "./harness";
 import { abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
@@ -78,9 +78,14 @@ function toWebp(png: string, webp: string): void {
   }
 }
 
-/** Shoots `page` as the README's `name` (a `.png` or a `.webp`). */
-async function shoot(page: Page, name: string, scratch: string, mask: Locator[] = []): Promise<string> {
+/** Shoots `page` as the README's `name` (a `.png` or a `.webp`).
+ *
+ *  **Every lobby row that is not a `readme.test` table is masked**: live, the
+ *  lobby is SHARED, and a stranger's table with its seat addresses must never
+ *  reach a committed picture. A screen with no lobby row masks nothing. */
+async function shoot(page: Page, name: string, scratch: string): Promise<string> {
   await settled(page);
+  const mask = [page.locator("li.lobby-row").filter({ hasNotText: "readme.test" })];
   const target = join(OUT, name);
   if (name.endsWith(".webp")) {
     const png = join(scratch, name.replace(/\.webp$/, ".png"));
@@ -125,7 +130,20 @@ test("the README's ten pictures", async ({ browser }) => {
   mkdirSync(OUT, { recursive: true });
   const scratch = mkdtempSync(join(tmpdir(), "readme-shots-"));
   const written: string[] = [];
+  try {
+    await play(browser, scratch, written);
+  } finally {
+    // The scratch directory holds only the PNG intermediates: each file by
+    // its explicit path, then the empty directory (never a recursive remove).
+    for (const f of readdirSync(scratch)) unlinkSync(join(scratch, f));
+    rmdirSync(scratch);
+  }
+  expect(written, "ten pictures").toHaveLength(10);
+  // eslint-disable-next-line no-console
+  console.log(`readme_shots: wrote ${written.length} pictures into ${OUT}`);
+});
 
+async function play(browser: Parameters<typeof person>[0], scratch: string, written: string[]): Promise<void> {
   const alice = await person(browser, "alice@readme.test");
   const ben = await person(browser, "ben@readme.test");
   const carol = await person(browser, "carol@readme.test");
@@ -195,9 +213,4 @@ test("the README's ten pictures", async ({ browser }) => {
   await carol.getByRole("button", { name: "Spectate" }).click();
   await expect(carol.getByText("You are spectating")).toBeVisible({ timeout: 30_000 });
   written.push(await shoot(carol, "game-desktop-watcher.webp", scratch));
-
-  rmdirSync(scratch);
-  expect(written, "ten pictures").toHaveLength(10);
-  // eslint-disable-next-line no-console
-  console.log(`readme_shots: wrote ${written.length} pictures into ${OUT}`);
-});
+}

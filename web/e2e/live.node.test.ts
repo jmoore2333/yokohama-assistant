@@ -616,7 +616,7 @@ describe("the README's screenshot generator is collected only when asked for (Ta
   const collected = (env: Record<string, string>): boolean => {
     const out = execFileSync("npx", ["playwright", "test", "--list"], {
       cwd: join(here, ".."),
-      env: { ...process.env, YOKOHAMA_WEB_README_SHOTS: "", YOKOHAMA_WEB_E2E_TARGET: "", ...env },
+      env: { ...process.env, YOKOHAMA_WEB_README_SHOTS: "", YOKOHAMA_WEB_E2E_TARGET: "", YOKOHAMA_WEB_E2E_OPTIONAL: "1", ...env },
       encoding: "utf8",
     });
     return out.includes(README_SHOTS_SPEC);

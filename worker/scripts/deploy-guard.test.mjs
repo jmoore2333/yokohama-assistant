@@ -104,6 +104,11 @@ const OPEN_TEST_CONFIG = `{
 }
 `;
 
+/** Contains a failure matching each of `patterns` (a sibling's drift and the
+ *  block checks can name the same defect twice; a cell asks for the one it is
+ *  about). */
+const naming = (...patterns) => expect.arrayContaining(patterns.map((p) => expect.stringMatching(p)));
+
 const dirs = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -534,21 +539,22 @@ describe("the deploy guard", () => {
     expect(doorLine(worker(), "wrangler.open.jsonc")).toBe(
       "wrangler.open.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
     );
-    // production broken: the open run does not judge it, the plain run does
+    // production broken: the plain run judges it; the open run names the
+    // drift of the file it ships instead
     const broken = PRODUCTION.replace('"preview_urls": false,', "");
-    expect(at({ "wrangler.jsonc": broken })).toEqual([]);
+    expect(at({ "wrangler.jsonc": broken })).toEqual([
+      expect.stringMatching(/^wrangler\.open\.jsonc's preview_urls differs from wrangler\.jsonc's/),
+    ]);
     expect(deployGuard(worker({ "wrangler.jsonc": broken }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc must set "preview_urls": false/),
     ]);
     // the open file broken: the plain run does not judge its door
     const preview = OPEN.replace('"preview_urls": false', '"preview_urls": true');
-    expect(at({ "wrangler.open.jsonc": preview })).toEqual([
-      expect.stringMatching(/^wrangler\.open\.jsonc must set "preview_urls": false/),
-    ]);
+    expect(at({ "wrangler.open.jsonc": preview })).toEqual(naming(/^wrangler\.open\.jsonc must set "preview_urls": false/));
     expect(deployGuard(worker({ "wrangler.open.jsonc": preview }))).toEqual([]);
     // check 2 reads the named file's directory
     const moved = OPEN.replace('"./assets"', '"./elsewhere"');
-    expect(at({ "wrangler.open.jsonc": moved })).toEqual([expect.stringMatching(/^elsewhere\/sw\.js is absent/)]);
+    expect(at({ "wrangler.open.jsonc": moved })).toEqual(naming(/^elsewhere\/sw\.js is absent/));
   });
   // Review Focus 4: the open window's file never names the dev door on, the
   // operator list, or the client id, and never the worker door's Access pair
@@ -557,15 +563,25 @@ describe("the deploy guard", () => {
   it("refuses the dev door on, the operator list and the client id in the open file", () => {
     const at = (text) => deployGuard(worker({ "wrangler.open.jsonc": text }), undefined, "wrangler.open.jsonc");
     const on = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "on"');
-    expect(at(on)).toEqual([
-      "wrangler.open.jsonc's vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair",
-    ]);
+    expect(at(on)).toEqual(
+      expect.arrayContaining([
+        "wrangler.open.jsonc's vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair",
+      ]),
+    );
     const admins = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_WEB_ADMINS": "someone@example.test"');
-    expect(at(admins)).toEqual([
-      "wrangler.open.jsonc's vars name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value",
-    ]);
+    expect(at(admins)).toEqual(
+      expect.arrayContaining([
+        "wrangler.open.jsonc's vars name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value",
+      ]),
+    );
+    const client = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "DEV_DOOR_CLIENT_ID": "some-client.access"');
+    expect(at(client)).toEqual(
+      expect.arrayContaining([
+        "wrangler.open.jsonc's vars name DEV_DOOR_CLIENT_ID — the dev door's client id is a secret (wrangler secret put), never a committed value",
+      ]),
+    );
     const clocked = OPEN.replace('"main"', '"vars": { "YOKOHAMA_WEB_TEST_CLOCK": "tick:1" },\n  "main"');
-    expect(at(clocked)).toEqual([expect.stringMatching(/^wrangler\.open\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/)]);
+    expect(at(clocked)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/));
   });
   // The open file is held to production's blocks whichever file is named:
   // a deploy of either must ship the objects, migration and bucket the other
@@ -574,12 +590,12 @@ describe("the deploy guard", () => {
     const spa = OPEN.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"');
     const drift = OPEN.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
     for (const config of [undefined, "wrangler.open.jsonc"]) {
-      expect(deployGuard(worker({ "wrangler.open.jsonc": spa }), undefined, config), String(config)).toEqual([
-        expect.stringMatching(/^wrangler\.open\.jsonc's assets\.not_found_handling must be "none"/),
-      ]);
-      expect(deployGuard(worker({ "wrangler.open.jsonc": drift }), undefined, config), String(config)).toEqual([
-        expect.stringMatching(/^wrangler\.open\.jsonc's durable_objects differs from wrangler\.jsonc's/),
-      ]);
+      expect(deployGuard(worker({ "wrangler.open.jsonc": spa }), undefined, config), String(config)).toEqual(
+        naming(/^wrangler\.open\.jsonc's assets\.not_found_handling must be "none"/),
+      );
+      expect(deployGuard(worker({ "wrangler.open.jsonc": drift }), undefined, config), String(config)).toEqual(
+        naming(/^wrangler\.open\.jsonc's durable_objects differs from wrangler\.jsonc's/),
+      );
     }
     expect(deployGuard(worker({ "wrangler.open.jsonc": null }))).toEqual(["wrangler.open.jsonc is absent"]);
   });
@@ -593,16 +609,69 @@ describe("the deploy guard", () => {
       ['"on"', '"on"'],
       ['"OFF"', '"OFF"'],
     ]) {
-      expect(at({ "wrangler.gate.jsonc": GATE.replace('"YOKOHAMA_DEV_DOOR": "off"', `"YOKOHAMA_DEV_DOOR": ${on}`) }), on).toEqual([
-        `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${shown}`,
-      ]);
+      expect(at({ "wrangler.gate.jsonc": GATE.replace('"YOKOHAMA_DEV_DOOR": "off"', `"YOKOHAMA_DEV_DOOR": ${on}`) }), on).toEqual(
+        expect.arrayContaining([
+          `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${shown}`,
+        ]),
+      );
     }
-    expect(at({ "wrangler.gate.jsonc": PRODUCTION })).toEqual([
-      `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got nothing`,
-    ]);
+    expect(at({ "wrangler.gate.jsonc": PRODUCTION })).toEqual(
+      expect.arrayContaining([
+        `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got nothing`,
+      ]),
+    );
     const drift = GATE.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
-    expect(at({ "wrangler.gate.jsonc": drift })).toEqual([expect.stringMatching(/^wrangler\.gate\.jsonc's durable_objects differs from wrangler\.jsonc's/)]);
+    expect(at({ "wrangler.gate.jsonc": drift })).toEqual(naming(/^wrangler\.gate\.jsonc's durable_objects differs from wrangler\.jsonc's/));
     expect(deployGuard(worker({ "wrangler.gate.jsonc": null }))).toEqual(["wrangler.gate.jsonc is absent"]);
+  });
+  // T8-a: `wrangler deploy` REPLACES the Worker's variables wholesale, so an
+  // open or gate file that fell behind production rolls production back. Each
+  // deployable sibling equals production but for its one thing, and each drift
+  // is named by key. Mutants: the comparison missing; `vars` compared as one
+  // block (the key unnamed); an allowed difference left unpinned.
+  it("refuses a sibling that has drifted from production, naming the key (probes G3, G4)", () => {
+    // G3: production moved; the two siblings are stale.
+    const moved = PRODUCTION.replace('"name": "yokohama-web",', '"name": "yokohama-web",\n  "compatibility_date": "2026-10-01",').replace(
+      '"YOKOHAMA_WEB_IDENTITY": "worker",',
+      '"YOKOHAMA_WEB_IDENTITY": "worker",\n    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "30",',
+    );
+    for (const [file, config] of [
+      ["wrangler.open.jsonc", "wrangler.open.jsonc"],
+      ["wrangler.gate.jsonc", "wrangler.gate.jsonc"],
+    ]) {
+      expect(deployGuard(worker({ "wrangler.jsonc": moved }), undefined, config), file).toEqual(
+        naming(new RegExp(`^${file.replace(/\./g, "\\.")}'s compatibility_date differs from wrangler\\.jsonc's`), new RegExp(`^${file.replace(/\./g, "\\.")}'s vars\\.YOKOHAMA_WEB_TABLE_TTL_DAYS differs`)),
+      );
+    }
+    // G4: the gate file has a stale audience and another route.
+    const stale = GATE.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"').replace(
+      '"name": "yokohama-web",',
+      '"name": "yokohama-web",\n  "routes": [{ "pattern": "elsewhere.example", "custom_domain": true }],',
+    );
+    expect(deployGuard(worker({ "wrangler.gate.jsonc": stale }), undefined, "wrangler.gate.jsonc")).toEqual(
+      naming(/^wrangler\.gate\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/, /^wrangler\.gate\.jsonc's routes differs from wrangler\.jsonc's/),
+    );
+    // The open file: Access values must be absent, and the door must be open.
+    const access = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "ACCESS_AUD": "test-aud"');
+    expect(deployGuard(worker({ "wrangler.open.jsonc": access }), undefined, "wrangler.open.jsonc")).toEqual(
+      naming(/^wrangler\.open\.jsonc's vars\.ACCESS_AUD must be absent/),
+    );
+    expect(deployGuard(worker({ "wrangler.open.jsonc": PRODUCTION }), undefined, "wrangler.open.jsonc")).toEqual(
+      naming(/^wrangler\.open\.jsonc's vars\.YOKOHAMA_WEB_IDENTITY must be "open"/),
+    );
+    // The plain run does not judge a sibling's drift.
+    expect(deployGuard(worker({ "wrangler.jsonc": moved }))).toEqual([]);
+  });
+  // The named configuration is held to the assets and object blocks even when
+  // it is no listed file (probe G2). Mutant: the named file left out of the loop.
+  it("holds an unlisted --config file to the assets and object blocks", () => {
+    const extra = PRODUCTION.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"').replace(
+      '{ "name": "ARCHIVER", "class_name": "Archive" }',
+      '{ "name": "ARCHIVER", "class_name": "Archive" },\n      { "name": "OTHER", "class_name": "Other" }',
+    );
+    expect(deployGuard(worker({ "wrangler.extra.jsonc": extra }), undefined, "wrangler.extra.jsonc")).toEqual(
+      naming(/^wrangler\.extra\.jsonc's assets\.not_found_handling must be "none"/, /^wrangler\.extra\.jsonc's durable_objects differs from wrangler\.jsonc's/),
+    );
   });
   // The CLI takes exactly `--config wrangler<name>.jsonc`; anything else is
   // refused, so the guard cannot judge one file while a deploy ships another.
