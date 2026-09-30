@@ -560,7 +560,7 @@ laboratory and the goals read their line until the pick. **Eight tags now sit
 on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`,
 `0.5.0-m5.5.2`, `0.5.0-m5.5.3`, `0.5.0-m5.5.4` — each a rollback point (§5).
 The checks' own saves were erased the same day at the owner's word; the owner's
-five remain. The live build is `fb6cec7` (a record of 2026-09-05; the live build is §3.19's); the wave's record commit follows it.
+five remain. The live build is `fb6cec7` (a record of 2026-09-06; the live build is §3.19's); the wave's record commit follows it.
 
 ### 3.7 M6.1 is live — the fourth deployment, 2026-09-15 (a record, not a plan)
 

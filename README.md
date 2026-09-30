@@ -7,7 +7,7 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 > **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
 > builds for Apple Silicon macOS, Ubuntu x86_64, and Windows x86_64 are on the
 > [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases). The release this tree
-> builds is **v0.6.0**, cut from the M6.5c2 close; the newest build is always the one on the Releases
+> builds is **v0.6.0**, the version set at the M6.5c2 close; the newest build is always the one on the Releases
 > page. The default bot has been the sighted evaluator `v4-step9-draft1` since v0.5.0, and each
 > download also includes an offline copy of the guide.
 
@@ -226,14 +226,14 @@ multiplayer on Cloudflare, the NAS container, and single player entirely inside 
    it with `YOKOHAMA_WEB_IDENTITY` set, `cf-access` behind Access or `open` for a home network, and a
    named volume at `/data`.
 3. **Play the bot with no server.** The door's bot card runs the whole game in the browser, kept in its own
-   storage and playable offline once the release is installed. A local game makes no server call.
+   storage and playable offline once the release is installed. A local game makes no server call until it ends.
 
 The full walkthrough is [`docs/web-lane.md` §14](docs/web-lane.md#14-getting-started).
 
 ### What both deployments run
 
-The settings a player notices, as cycle E's release set them; the table of every default is
-[`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
+The settings a player notices, as cycle E's release set them; the table of the defaults both
+run is [`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
 
 - **The door.** The NAS runs `cf-access`; the Worker runs `worker` with a dev door behind Access.
 - **The archive.** A finished game is filed to a directory on the NAS and to an R2 bucket on the Worker.
@@ -270,9 +270,10 @@ cannot drift from them.
 
 **Starting a game.** You sign in first — the server reads one identity header, and which header
 it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
-is me, this is *someone@else*, or this is the bot, which is offered at two players only. Creating
-the table does not deal onto one screen: the table opens **dealing**, and each person opens it and
-keeps from **their own view**. You see your own two cards on the
+is me, this is *someone@else*, an open seat for anyone with the link, or the bot, which is offered
+at two players only. A table with an open seat waits, **open**, until the last seat is taken; a
+table with every seat filled opens **dealing**. Nothing is dealt onto one screen: each person opens
+the table and keeps from **their own view**. You see your own two cards on the
 **set table** — the areas with their site cards and tokens, the port and the tracks, what the
 rulebook has on the table at the step where the two starting orders are dealt and chosen in
 secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach
@@ -347,7 +348,7 @@ YOKOHAMA_WEB_IDENTITY=open cargo run --release -p yokohama-web   # http://127.0.
 ```
 
 `YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `open` is the mode for your
-own machine: the first screen asks for a name and you play under it. Before you put the server on a
+own machine: the door is the first screen, the lobby asks for a name, and you play under it. Before you put the server on a
 network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 ## Hosting
@@ -363,9 +364,10 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
   - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached only
     through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
     2026-09-22 under the mode then called `claimed`, from the M6.5c2 close (2026-09-28) it ran
-    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, and since cycle E's release (2026-09-30) it runs
+    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, from cycle D's close (2026-09-29) it ran
+    `yokohama-web:0.6.0-m6.5c2d`, and since cycle E's release (2026-09-30) it runs
     `yokohama-web:0.6.0-m6.5c2e`, with server-sent events and a directory archive
-    (`deploy/RUNBOOK.md` §3.17 to §3.19 are those deployments' records).
+    (`deploy/RUNBOOK.md` §3.17 to §3.19 are the last three deployments' records).
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
@@ -575,9 +577,10 @@ carries three printed mechanical exhibits instead of an inference.
 
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
-Releases track completed phases (**v0.5.0** ↔ the V4 close — the current build, whose default bot
-is the sighted evaluator; **v0.3.3** ↔ Phase 3.3 was the previous full cut). The workspace is at
-0.6.0 since M6.5c2 (R-6.5c2.19); the `v0.6.0` tag is cut at cycle D's close, after the merge. Saves
+Releases track completed phases (**v0.5.0** ↔ the V4 close, whose default bot is the sighted
+evaluator, is the newest tagged release until the next tag; **v0.3.3** ↔ Phase 3.3 was the previous
+full cut). The workspace is at 0.6.0 since M6.5c2 (R-6.5c2.19); the `v0.6.0` tag is cut after the
+stack's merge, on the owner's word. Saves
 and self-play records are compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`,
 currently 7), not the release version (PR #14), so they survive release cuts — though a save stops
 resuming across a semantics bump by design, and rev-6-and-earlier saves no longer resume.
