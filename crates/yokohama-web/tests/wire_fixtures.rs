@@ -1882,7 +1882,15 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // (finished: it opens, and `why` names its bot). The three payloads are the
     // client's only sources for the refusal it branches on, the lobby row that
     // does not run here, and `why`'s thirteenth refusal shape.
-    let foreign = Api::new();
+    //
+    // **Over a real archive directory** (cycle E, R-E5), so `table_foreign`
+    // reads as a host that keeps an archive serves it: its creator's reading
+    // of a playing game with events and no stamp, the corpus's one table
+    // whose `saves` is TRUE — the primary `Api` keeps `NoArchive`, and every
+    // other table in the corpus reads `false`. No route here writes a game,
+    // so nothing is put and the directory stays empty.
+    let foreign_dir = archive_tempdir();
+    let foreign = Api::with_archive(&foreign_dir);
     for (id, cut) in [("wire-foreign", Some(300)), ("wire-foreign-over", None)] {
         let (record, table) = foreign_pair(id, "v2-padded", cut);
         let games = &foreign.state.games;
@@ -1898,12 +1906,19 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign/table", None).await;
     assert_eq!(status, StatusCode::OK, "{table_foreign}");
     assert_eq!(table_foreign["bot"]["runs_here"], false, "premise: the row says this build does not run it");
+    assert_eq!(table_foreign["saves"], true, "the corpus's one table an abandon would save: {table_foreign}");
     out.push(("table_foreign".to_string(), table_foreign));
     let (status, why_foreign) =
         foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign-over/why", None).await;
     assert_eq!(status, StatusCode::OK, "{why_foreign}");
     assert_eq!(why_foreign["refusal"]["kind"], "foreign_bot", "{why_foreign}");
     out.push(("why_foreign".to_string(), why_foreign));
+    assert_eq!(
+        std::fs::read_dir(&foreign_dir).expect("the foreign archive").count(),
+        0,
+        "no route here put anything"
+    );
+    std::fs::remove_dir_all(&foreign_dir).ok();
 
     let (archived, archive_script) = archive_payloads(api).await;
     out.extend(archived);
@@ -1951,6 +1966,7 @@ fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, Stri
             to_move: state.current_player.0,
             over: false,
             winner: None,
+            has_events: cut > 0,
             bot: mirror.bot.take(),
         };
     }

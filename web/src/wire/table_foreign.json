@@ -14,6 +14,7 @@
   ],
   "created_at": 1789000000,
   "creator": null,
+  "has_events": true,
   "id": "wire-foreign",
   "locked": false,
   "mine": true,
@@ -23,6 +24,7 @@
   "name": null,
   "over": false,
   "players": 2,
+  "saves": true,
   "seats": [
     {
       "invited": "local@browser",

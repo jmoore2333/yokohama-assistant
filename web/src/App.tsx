@@ -1560,6 +1560,31 @@ export function App() {
     />
   );
 
+  /** **A table route's screen while its table is being read** (cycle E,
+   *  R-E7; the M6.3 close's own fix, §6.2): a cold `#/t/<id>` — a link, a
+   *  reload — drew the LOBBY for one round trip while `open(id)` awaited
+   *  `GET …/table`, which mounted `<Lobby>` and so fired its three listings
+   *  and opened the house stream, all thrown away. The lists load only where
+   *  the lobby is the screen. Drawn while the door is still asking who this
+   *  is, too: a signed-out caller is answered by the lobby's door content
+   *  once the door has said so. In the table's own crumb, by its id — the
+   *  name is what is being read. */
+  const openingScreen = (id: string) => {
+    const local = isLocal(id);
+    return (
+      <div className="band-screen">
+        <LobbyBand crumbs={local ? ["On this device", id] : ["Lobby", id]} corner={local ? undefined : serverCorner} />
+        <div className="setup opening-table">
+          <p className="muted" role="status">
+            opening&hellip;
+          </p>
+        </div>
+      </div>
+    );
+  };
+  /** The door has not answered yet: neither a caller nor a refusal. */
+  const doorAsking = door.me === null && door.error === null;
+
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
   // and the game must agree about which boards are on, and a second
   // `useSections()` inside `NewGame` was two copies that stopped agreeing the
@@ -1726,8 +1751,13 @@ export function App() {
     // behind it** (R-6.5b2.1). Below this line every screen is the SERVER's.
     if (route.kind === "door") return doorScreen(error);
     // The door the server owns stands in front of those, as content on the
-    // lobby rather than as a gate.
-    if (!signedIn) return lobbyScreen(error);
+    // lobby rather than as a gate — once it has answered. A table route waits
+    // for that answer on its own screen (R-E7), and a LOCAL table needs no
+    // door at all: its read is the lock's and the module's.
+    if (!signedIn)
+      return route.kind === "table" && (doorAsking || isLocal(route.id))
+        ? openingScreen(route.id)
+        : lobbyScreen(error);
     if (route.kind === "new")
       return (
         <NewGame
@@ -1815,6 +1845,11 @@ export function App() {
           who={serverCorner}
         />
       );
+    // **A table route with no screen yet is a table being read** (R-E7): the
+    // route effect's `open(id)` is in flight, or a local game's lock has not
+    // answered. A refused read navigates to the lobby or the door with the
+    // sentence, so this never stands in for a refusal.
+    if (route.kind === "table") return openingScreen(route.id);
     return lobbyScreen(error);
   }
 
@@ -2196,10 +2231,18 @@ export function App() {
         ) : null}
         {/* **The abandon lives on a LOCAL game's own screen** (P-6), where this
             tab holds its lock — the lobby's rows withhold it. It reads "Abandon
-            and save" when the SERVER keeps an archive, because that is where
-            the copy goes. */}
+            and save" when the SERVER keeps an archive and the game has a move
+            in it, because that is where the copy goes. **Whether it has one
+            is the game's own fact** (cycle E, R-E5): `table` was read once, at
+            open, and a game opened at its deal would go on reading no events
+            after every move since; `state.events` is the record's length now. */}
         {isLocal(state.id) && table && lockState !== "lost" ? (
-          <Abandon table={table} local onDone={() => toDoor()} onError={setError} />
+          <Abandon
+            table={{ ...table, has_events: state.events > 0 }}
+            local
+            onDone={() => toDoor()}
+            onError={setError}
+          />
         ) : null}
       </header>
 

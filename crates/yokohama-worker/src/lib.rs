@@ -1330,6 +1330,7 @@ mod tests {
             to_move: state.current_player.0,
             over: false,
             winner: None,
+            has_events: true,
             bot: None,
         });
         (serde_json::to_string(&record).unwrap(), serde_json::to_string(&table).unwrap())

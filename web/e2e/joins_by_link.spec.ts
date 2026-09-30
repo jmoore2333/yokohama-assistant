@@ -344,10 +344,22 @@ test("a person holding only a link joins a locked open table and plays", async (
   b.on("request", (r) => {
     if (new URL(r.url()).pathname.endsWith("/join")) joinsByB.push(r.url());
   });
+  /** What B's page asks of the LOBBY on the way in (cycle E, R-E7): nothing.
+   *  A cold `#/t/<id>` drew the lobby for one round trip while the table was
+   *  read, which fired its three listings and opened the house stream; the
+   *  screen of that window is "opening…" now. Armed before B goes to the
+   *  address, so the whole arrival is inside it. */
+  const lobbyReadsByB: string[] = [];
+  b.on("request", (r) => {
+    const u = new URL(r.url());
+    if ((u.pathname === "/api/games" && u.searchParams.has("scope")) || u.pathname === "/api/stream")
+      lobbyReadsByB.push(`${u.pathname}${u.search}`);
+  });
   await signIn(b, "b@e2e.test", `/#/t/${id}`);
   // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
   // table's name too.
   await expect(b.getByRole("heading", { name: "Link test", exact: true, level: 3 })).toBeVisible();
+  expect(lobbyReadsByB, "arriving by the link read no listing and opened no house stream").toEqual([]);
   // The lock, as its tag, and ONE way in: exactly one seat is free.
   await expect(b.getByRole("img", { name: "password required" })).toBeVisible();
   const join = b.getByRole("button", { name: "Join as Blue" });

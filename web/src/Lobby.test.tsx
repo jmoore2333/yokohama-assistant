@@ -235,6 +235,96 @@ describe("the lobby", () => {
     expect(within(mine).queryByRole("button", { name: "more" })).toBeNull();
   });
 
+  // **Open tables and Being played page as Your tables does** (cycle E, R-E6;
+  // straw poll row 84): a cursor per scope, a "more" per scope while its
+  // `next` is non-null, and the poll replacing PAGE ONE only — so a wake
+  // re-reads the first page and the page the pager fetched stays under it.
+  // The first page is the corpus's listing carrying the corpus's own cursor
+  // (`games_next.json`'s); the page it names is a corpus row with its id moved.
+  it("pages Open tables with the open scope's own cursor, once, and a wake keeps the page it fetched", async () => {
+    const stream = fakeStream();
+    const cursor = wire.gamesNext.next!;
+    const older: TableView = { ...wire.gamesOpen.games[1]!, id: "older-open", name: null };
+    let firstPages = 0;
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (!isGamesList(call, "open")) return undefined;
+        if (call.path.includes("before=")) return { ...wire.gamesOpen, games: [older], next: null };
+        firstPages += 1;
+        return { ...wire.gamesOpen, next: cursor };
+      });
+      const open = () => section("Open tables");
+      await until(() => within(open()).queryByRole("link", { name: "wire2" }) !== null, "the first page");
+      // Your tables' first page is its last: the one "more" is Open's.
+      expect(within(section("Your tables")).queryByRole("button", { name: "more" })).toBeNull();
+      fireEvent.click(within(open()).getByRole("button", { name: "more" }));
+      await until(() => within(open()).queryByRole("link", { name: "older-open" }) !== null, "the page it names");
+      const pagedCalls = () => stub.calls.filter((c) => c.path.includes("before="));
+      expect(pagedCalls().map((c) => isGamesList(c, "open"))).toEqual([true]);
+      expect(pagedCalls()[0]!.path).toContain(`before=${encodeURIComponent(cursor)}`);
+      expect(within(open()).queryByRole("button", { name: "more" }), "the page named no successor").toBeNull();
+
+      await until(() => stream.opens() > 0, "the house stream is open");
+      const read = firstPages;
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: 0 });
+      await until(() => firstPages > read, "a wake read page one again");
+      await flush(4);
+      expect(within(open()).getByRole("link", { name: "wire2" })).toBeInTheDocument();
+      expect(within(open()).getByRole("link", { name: "older-open" }), "the fetched page survives the poll").toBeInTheDocument();
+      expect(within(open()).queryByRole("button", { name: "more" }), "and so does its cursor").toBeNull();
+      expect(pagedCalls(), "nothing was paged twice").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **The playing scope is ONE pager for two lists** (R-E6; Review Focus 3):
+  // Being played and Finished split one listing by `over`, so its "more" sits
+  // after the Finished fold, and the rows a page brings fall into either list
+  // by their own `over`.
+  it("pages the playing scope once, after the Finished fold, and sorts the page into Being played and Finished", async () => {
+    const stream = fakeStream();
+    const cursor = wire.gamesNext.next!;
+    const playing = wire.gamesPlaying.games[0]!;
+    const done: TableView = { ...playing, id: "done-first", name: null, over: true };
+    const underWay: TableView = { ...playing, id: "older-under-way", name: null };
+    const olderDone: TableView = { ...playing, id: "older-done", name: null, over: true };
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (!isGamesList(call, "playing")) return undefined;
+        if (call.path.includes("before=")) return { ...wire.gamesPlaying, games: [underWay, olderDone], next: null };
+        return { ...wire.gamesPlaying, games: [playing, done], next: cursor };
+      });
+      const beingPlayed = () => section("Being played");
+      const finished = () =>
+        [...document.querySelectorAll("section.finished-tables a.row-link")].map((a) => a.textContent);
+      await until(() => within(beingPlayed()).queryByRole("link", { name: "wire" }) !== null, "the first page");
+      expect(finished()).toEqual(["done-first"]);
+      const more = document.querySelector<HTMLButtonElement>(".lobby-lists > .playing-more > button.more");
+      expect(more, "the playing scope's more").not.toBeNull();
+      const fold = document.querySelector("section.finished-tables")!;
+      expect(
+        fold.compareDocumentPosition(more!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "placed after the Finished fold",
+      ).toBeTruthy();
+      expect(within(beingPlayed()).queryByRole("button", { name: "more" }), "not inside Being played").toBeNull();
+      fireEvent.click(more!);
+      await until(() => within(beingPlayed()).queryByRole("link", { name: "older-under-way" }) !== null, "the page");
+      expect(finished(), "the finished row of the page is under Finished").toEqual(["done-first", "older-done"]);
+      expect(within(beingPlayed()).queryByRole("link", { name: "older-done" })).toBeNull();
+      const pagedCalls = stub.calls.filter((c) => c.path.includes("before="));
+      expect(pagedCalls.map((c) => isGamesList(c, "playing"))).toEqual([true]);
+      expect(pagedCalls[0]!.path).toContain(`before=${encodeURIComponent(cursor)}`);
+      expect(document.querySelector(".playing-more"), "the page named no successor").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("offers no more when the first page is the last", async () => {
     show();
     await screen.findByRole("heading", { name: "Your tables" });
@@ -369,7 +459,9 @@ describe("the lobby", () => {
     expect(row(foreign.id)).toHaveTextContent("can\u2019t continue here");
     expect(row(foreign.id).querySelector("span.stranded")).not.toBeNull();
     expect(within(row(foreign.id)).queryByRole("button", { name: /^(Play|View):/ })).toBeNull();
-    expect(within(row(foreign.id)).getByRole("button", { name: `abandon ${foreign.id}` })).toBeInTheDocument();
+    // "and save", in its NAME (ruling 4a-1): the server says its delete saves
+    // this game — playing, moves in it, an archive (cycle E, R-E5).
+    expect(within(row(foreign.id)).getByRole("button", { name: `abandon and save ${foreign.id}` })).toBeInTheDocument();
     cleanup();
     // Finished, it opens as ever (spec section 2.4). One field moved, `over`.
     show((call) =>

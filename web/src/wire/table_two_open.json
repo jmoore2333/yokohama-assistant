@@ -13,6 +13,7 @@
   ],
   "created_at": 1789000000,
   "creator": null,
+  "has_events": false,
   "id": "wire-open3",
   "locked": false,
   "mine": true,
@@ -22,6 +23,7 @@
   "name": "wire-open3",
   "over": null,
   "players": 3,
+  "saves": false,
   "seats": [
     {
       "invited": "red@wire.test",

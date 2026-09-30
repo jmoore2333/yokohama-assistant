@@ -662,7 +662,7 @@ const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "mine", "creator", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
-  "can_watch", "bot",
+  "can_watch", "bot", "has_events", "saves",
 ] as const;
 // M6.5c2 cycle D (R-6.5c2.35): a HUMAN seat, which carries no address. Its own
 // list because `Widen<TableView>` distributes over the seat union — a human

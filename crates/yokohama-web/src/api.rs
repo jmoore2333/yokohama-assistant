@@ -871,7 +871,7 @@ pub fn get_table(
     id: &str,
 ) -> Result<crate::table::TableView, ApiError> {
     let doc = games.table_for_anyone(id, user)?;
-    Ok(doc.view(user))
+    Ok(doc.view(user, games.archive_on()))
 }
 
 /// The caller's own two cards, over the set table. A seated caller's, or a 403.

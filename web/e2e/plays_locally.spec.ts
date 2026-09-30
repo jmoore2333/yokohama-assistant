@@ -1256,7 +1256,10 @@ test("a game dealt a bot this build does not run: the door lists it under Will n
   await expect(
     page.getByText("This game was played against V2. This server now runs V4 and can't continue it."),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: `abandon ${game.id}` })).toBeVisible();
+  // "and save" in its NAME (cycle E, ruling 4a-1): the server keeps an
+  // archive, and the game has moves in it — the bit this browser's own host
+  // stamped on the table's mirror (R-E5; ruling T5-a).
+  await expect(page.getByRole("button", { name: `abandon and save ${game.id}` })).toBeVisible();
   await expect(page.locator(".decision .options"), "no move can be made on it").toHaveCount(0);
 
   // ---- Remove, completed from the door: two clicks, and the row is gone.

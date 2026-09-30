@@ -174,23 +174,40 @@ describe("the abandon control", () => {
     expect(screen.getByRole("button", { name: `abandon ${wire.table.id}` })).toBeInTheDocument();
   });
 
-  // **The label is the near truth** (M6.5a, R-6.5a.13): "Abandon and save" at a
-  // PLAYING table when this deployment keeps an archive, "Abandon" otherwise —
-  // and the accessible name stays `abandon <table>` in every case, so nothing
-  // that clicks by name moves.
-  it("reads Abandon and save at a playing table when the archive is on, and Abandon otherwise", () => {
-    expect(wire.table.status, "the premise: the corpus table is playing").toBe("playing");
-    expect(wire.tableOpen.status).toBe("open");
+  // **The label is the SERVER's word for a table it holds** (cycle E, R-E5):
+  // `TableView.saves` is the rule the server's own delete applies — playing,
+  // at least one event, no archive stamp, an archive — so a table dealt a
+  // moment ago no longer reads "and save" over a delete that saves nothing.
+  // What this browser remembers about the archive is NOT asked: the corpus's
+  // one saving table reads "and save" while the browser remembers the archive
+  // off, and its playing table with no events reads "Abandon" while it
+  // remembers one on. **Ruling 4a-1**: the words ride the button's NAME,
+  // because the lobby row draws it as a cross on a phone, and the confirm
+  // step says them again — the confirm is where the decision is made.
+  it("reads Abandon and save where the server says the abandon saves, and Abandon where it does not", async () => {
+    expect(wire.tableForeign.saves, "the premise: the corpus's saving table").toBe(true);
+    expect(wire.table.saves).toBe(false);
+    expect(wire.table.status, "and a playing table that saves nothing: no events yet").toBe("playing");
+    expect(wire.table.has_events).toBe(false);
+    const user = userEvent.setup();
     try {
-      serverSays("dir");
-      render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
-      expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent("Abandon and save");
-      cleanup();
+      stubApi(() => null);
       serverSays("off");
-      render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
-      expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent(/^Abandon$/);
+      render(<Abandon table={wire.tableForeign} onDone={() => {}} onError={() => {}} />);
+      const saving = screen.getByRole("button", { name: `abandon and save ${wire.tableForeign.id}` });
+      expect(saving).toHaveTextContent(/^Abandon and save$/);
+      await user.click(saving);
+      expect(
+        screen.getByRole("button", { name: `confirm abandon and save ${wire.tableForeign.id}` }),
+      ).toHaveTextContent(/^confirm abandon and save$/);
       cleanup();
       serverSays("dir");
+      render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
+      const plain = screen.getByRole("button", { name: "abandon wire" });
+      expect(plain).toHaveTextContent(/^Abandon$/);
+      await user.click(plain);
+      expect(screen.getByRole("button", { name: "confirm abandon wire" })).toHaveTextContent(/^confirm abandon$/);
+      cleanup();
       render(<Abandon table={wire.tableOpen} onDone={() => {}} onError={() => {}} />);
       expect(screen.getByRole("button", { name: `abandon ${wire.tableOpen.name ?? wire.tableOpen.id}` }))
         .toHaveTextContent(/^Abandon$/);
@@ -237,7 +254,14 @@ describe("the abandon control on a local game", () => {
   const TABLE = '{"schema":3,"id":"local-1"}';
   /** The row this control sits beside: the corpus's own table, re-addressed to
    *  this device — which is what routes its DELETE to the Worker. */
-  const localTable = { ...wire.table, id: LOCAL, name: null };
+  /** A local game WITH moves (cycle E): the corpus's one table with events
+   *  (`has_events`, and no name), re-addressed to this device — the one
+   *  permitted edit. Every label cell below reads the ARCHIVE fact through it, where a
+   *  game with no moves would read "Abandon" whatever the fact said. */
+  const localTable = { ...wire.tableForeign, id: LOCAL };
+  const playedLocal = localTable;
+  /** The same device's game dealt a moment ago: no events, so nothing to save. */
+  const movelessLocal = { ...wire.table, id: LOCAL, name: null };
 
   beforeEach(() => {
     resetLocalHostForTests();
@@ -286,10 +310,14 @@ describe("the abandon control on a local game", () => {
     return { steps, stub, onDone, onError, user: userEvent.setup() };
   }
 
+  /** A face's name with or without "and save" (ruling 4a-1): the words are
+   *  the LABEL's — "and save" wherever the archive is remembered on — and the
+   *  label is not what the cells that click through it are about. */
+  const either = (face: string) => new RegExp(`^${face}(?: and save)? ${LOCAL}$`);
   /** Both clicks. */
   const confirm = async (user: ReturnType<typeof userEvent.setup>) => {
-    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL}` }));
-    await user.click(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` }));
+    await user.click(screen.getByRole("button", { name: either("abandon") }));
+    await user.click(screen.getByRole("button", { name: either("confirm abandon") }));
   };
 
   it("sends the pair to the archive BEFORE the local delete", async () => {
@@ -329,7 +357,7 @@ describe("the abandon control on a local game", () => {
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
     // Still asking, so the player can try again beside the sentence.
-    expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: either("confirm abandon") })).toBeInTheDocument();
   });
 
   it("keeps the game when the record is refused, in the server's own words", async () => {
@@ -361,7 +389,7 @@ describe("the abandon control on a local game", () => {
     // The first answer, unchanged: kept, and still asking.
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: either("confirm abandon") })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
@@ -472,10 +500,32 @@ describe("the abandon control on a local game", () => {
     serverSays("dir");
     stubWorker();
     stubApi(() => null);
-    render(<Abandon table={localTable} local onDone={() => {}} onError={() => {}} />);
-    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(
-      "Abandon and save",
+    render(<Abandon table={playedLocal} local onDone={() => {}} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: `abandon and save ${LOCAL}` })).toHaveTextContent(
+      /^Abandon and save$/,
     );
+  });
+
+  // **The local rule asks whether the game has an event** (cycle E, R-E5;
+  // ruling T5-a: `has_events`): the server's
+  // own delete saves nothing from a game with no moves in it, and a local
+  // game's label keeps to the same rule — so a game dealt a moment ago reads
+  // "Abandon" even where the server keeps an archive. The server's `saves`
+  // is NOT read for a local id: its host keeps no archive, so it is `false`
+  // on every local table, and the corpus's saving table re-addressed here
+  // would otherwise read the NAS's answer.
+  it("reads Abandon for a local game with no events, even where the server keeps an archive", () => {
+    expect(movelessLocal.has_events, "the premise: a game with no moves").toBe(false);
+    expect(movelessLocal.status).toBe("playing");
+    serverSays("dir");
+    stubWorker();
+    stubApi(() => null);
+    render(<Abandon table={movelessLocal} local onDone={() => {}} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
+    cleanup();
+    serverSays("off");
+    render(<Abandon table={playedLocal} local onDone={() => {}} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
   });
 
   // ---- THREE states, and the middle one is the finding (R-6.5b2.13) --------

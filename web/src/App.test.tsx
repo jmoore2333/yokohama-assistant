@@ -1808,6 +1808,34 @@ describe("the route", () => {
     expect(stub.matching("GET", "/api/games/wire/table")).toHaveLength(1);
   });
 
+  // **A table link draws the TABLE, and never the lobby first** (cycle E,
+  // R-E7; straw poll row 73; the M6.3 close's own fix, §6.2). A cold
+  // `#/t/<id>` fell through to `<Lobby>` while `open(id)` awaited
+  // `GET …/table`: three listings thrown away and the house stream opened, for
+  // one round trip. The table read is HELD here, so the screen of that window
+  // is the one read — "opening…", in the table's own crumb — and the lists
+  // load only where the lobby is the screen, which is never, on this visit.
+  it("draws opening… on a cold table link until the table answers, and never lists or opens the house stream", async () => {
+    window.location.hash = "#/t/wire";
+    const held = gate<unknown>();
+    const { stub } = app((call) => (call.path.endsWith("/api/games/wire/table") ? held.promise : undefined));
+    await waitFor(() => expect(stub.matching("GET", "/api/games/wire/table")).toHaveLength(1));
+    await flushReal();
+    expect(screen.getByText("opening\u2026"), "the window's screen, said").toHaveAttribute("role", "status");
+    expect(screen.getByRole("heading", { level: 2, name: "wire" }), "the table's own crumb").toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
+    held.resolve(wire.tableOpen);
+    expect(await screen.findByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
+    expect(screen.queryByText("opening\u2026")).toBeNull();
+    await flushReal();
+    expect(stub.calls.filter((c) => isGamesList(c)).map((c) => c.path), "no listing was asked for").toEqual([]);
+    expect(
+      stub.calls.filter((c) => c.path.endsWith("/api/stream")).map((c) => c.path),
+      "the house stream was never opened",
+    ).toEqual([]);
+  });
+
   // ---- the open table, and the hand-over BY STATUS (spec §5.4) -------------
   //
   // **`#/t/<id>` is whichever of three screens the table's own status makes
@@ -1982,9 +2010,10 @@ describe("the route", () => {
         sentence: refusal.error,
       });
       // The reader created the table and sits at it, and the layer's delete
-      // is the creator's, seated.
-      expect([dealt.mine, dealt.my_seats.length > 0]).toEqual([true, true]);
-      expect(within(card).getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
+      // is the creator's, seated. It reads "and save" because the SERVER
+      // says its delete saves this game (cycle E, R-E5: `saves`).
+      expect([dealt.mine, dealt.my_seats.length > 0, dealt.saves]).toEqual([true, true, true]);
+      expect(within(card).getByRole("button", { name: `abandon and save ${id}` })).toBeInTheDocument();
       // A server game's record is served only once it is over, so its bytes are
       // not offered here — "Save game file" is the LOCAL screen's alone.
       expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
@@ -2009,7 +2038,7 @@ describe("the route", () => {
       expect(await screen.findByText(pairRefused.error)).toBeInTheDocument();
       expect(window.location.hash).toBe(`#/t/${id}`);
       const card = noticeScreen({ path: "Lobby", heading: dealt.name ?? id, corner: wire.me.user!, sentence: pairRefused.error });
-      expect(within(card).getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
+      expect(within(card).getByRole("button", { name: `abandon and save ${id}` })).toBeInTheDocument();
     });
 
     // **The seat half of the creator rule**: the layer's delete is the
@@ -2067,7 +2096,7 @@ describe("the route", () => {
       });
       expect(await screen.findByText(reworded.error)).toBeInTheDocument();
       expect(window.location.hash).toBe(`#/t/${id}`);
-      expect(screen.getByRole("button", { name: `abandon ${id}` })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: `abandon and save ${id}` })).toBeInTheDocument();
     });
 
     // **Review Focus 5's third half: the refused game opens no stream.** The
@@ -4515,6 +4544,13 @@ describe("a local game", () => {
           call: (req) => {
             if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
               return { status: 409, body: wire.foreignBot409 };
+            // **The foreign game's own table, as this device serves it**
+            // (cycle E, R-E5): the corpus's foreign row re-addressed — a
+            // playing game with moves in it (`has_events`), the fact a local
+            // label reads. The corpus's playing table is one dealt a moment
+            // ago, with none.
+            if (req.path === `/api/games/${LOCAL}/table`)
+              return { status: 200, body: { ...wire.tableForeign, id: LOCAL } };
             if (req.path === `/api/games/${LOCAL}` && req.method === "DELETE") {
               order.push("delete");
               return { status: 204, body: undefined };

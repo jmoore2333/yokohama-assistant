@@ -216,15 +216,18 @@ export function Lobby({
   /** The lobby's own strip, at the foot: a reading where every scope was
    *  refused, the pager's, a copy the browser refused, and Abandon's. */
   const [error, setError] = useState<string | null>(null);
-  /** The pages after the first, and the cursor after THEM.
+  /** Each scope's pages after the first, and the cursor after THEM — one
+   *  pager per scope (cycle E, R-E6; Your tables' alone until then).
    *
    *  **Held apart from `lists`, because the poll replaces `lists`.** A pager
    *  that wrote its cursor back into the polled answer would have it reset three
    *  seconds later, and the next click on "more" would re-fetch the page it
-   *  already has. `null` means the pager has not been used, and the cursor is
-   *  then the polled list's own. */
-  const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
-  const pageInFlight = useRef(false);
+   *  already has. `null` means that scope's pager has not been used, and its
+   *  cursor is then the polled list's own. */
+  const [paged, setPaged] = useState<Lists>(NOTHING);
+  /** One in-flight guard per scope: a page of Open tables in flight must not
+   *  stop a player paging Your tables. */
+  const pageInFlight = useRef<Record<Scope, boolean>>({ mine: false, open: false, playing: false });
   /** The house chat's newest message number and revision, off the house frame
    *  itself (`Source.peek`; M6.5c2 cycle D, row 130) — the lobby chat's
    *  `count` and `rev`. The frame names no table (M6.3 R-3.4) and is still only
@@ -342,35 +345,37 @@ export function Lobby({
     take,
   );
 
-  const page = async (cursor: string) => {
+  const page = async (scope: Scope, cursor: string) => {
     // The same guard, and the same reasoning, as `App`'s `inFlight`: React
     // batches, so two clicks in one tick both read a state flag as false and
     // both fetch — and here that appends the same page twice.
-    if (pageInFlight.current) return;
-    pageInFlight.current = true;
+    if (pageInFlight.current[scope]) return;
+    pageInFlight.current[scope] = true;
     try {
-      const p = await api.list("mine", cursor);
-      setPaged((old) => ({ games: [...(old?.games ?? []), ...p.games], next: p.next }));
+      const p = await api.list(scope, cursor);
+      setPaged((old) => ({ ...old, [scope]: { games: [...(old[scope]?.games ?? []), ...p.games], next: p.next } }));
     } catch (e) {
       setError(said(e));
     } finally {
-      pageInFlight.current = false;
+      pageInFlight.current[scope] = false;
     }
   };
 
   /** What follows an abandon: re-read the listings, so the screen agrees with
    *  the store.
    *
-   *  **The pager is dropped too.** Its pages were fetched around a table that no
-   *  longer exists, and a cursor is `<created_at>,<id>` — the id of a row that
-   *  has just gone. The DELETE, its confirmation and its in-flight guard are
-   *  `Abandon`'s; this is only the part that is the lobby's.
+   *  **Every scope's pager is dropped too.** Its pages were fetched around a
+   *  table that no longer exists, and a cursor is `<created_at>,<id>` — the id
+   *  of a row that has just gone, and a table is listed in more than one
+   *  scope (Your tables and Open or Being played answer it both; the lobby
+   *  hides the second). The DELETE, its confirmation and its in-flight guard
+   *  are `Abandon`'s; this is only the part that is the lobby's.
    *
    *  It can THROW, and is meant to: `Abandon` awaits it inside its own attempt,
    *  so a listing that will not read reports in the strip below rather than as
    *  an unhandled rejection. */
   const reread = async () => {
-    setPaged(null);
+    setPaged(NOTHING);
     take(await fetchLists());
   };
 
@@ -477,15 +482,38 @@ export function Lobby({
     );
   };
 
-  const mine = lists.mine ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
-  const open = lists.open ? lists.open.games.filter(notMine) : [];
+  /** A scope's rows: its polled first page, then every page its pager has
+   *  fetched, each table once. */
+  const rowsOf = (scope: Scope): TableView[] => {
+    const first = lists[scope];
+    return first ? unique([...first.games, ...(paged[scope]?.games ?? [])]) : [];
+  };
+  const mine = rowsOf("mine");
+  const open = rowsOf("open").filter(notMine);
   /** The `playing` scope, split (R-6.5c2.22): it lists finished games too,
    *  because "over" is not a table STATUS (`tables.rs`), so Being played takes
    *  the games still under way and Finished the rest — in the listing's own
-   *  order, which is newest first. */
-  const playing = lists.playing ? lists.playing.games.filter(notMine).filter((t) => !t.over) : [];
-  const finished = lists.playing ? lists.playing.games.filter(notMine).filter((t) => t.over) : [];
-  const nextCursor = paged ? paged.next : (lists.mine?.next ?? null);
+   *  order, which is newest first. ONE pager serves both (R-E6), and a page's
+   *  rows fall into either list by their own `over`. */
+  const watchable = rowsOf("playing").filter(notMine);
+  const playing = watchable.filter((t) => !t.over);
+  const finished = watchable.filter((t) => t.over);
+  /** A scope's cursor: its pager's once used, else its polled list's own. */
+  const nextCursor = (scope: Scope): string | null => {
+    const p = paged[scope];
+    return p ? p.next : (lists[scope]?.next ?? null);
+  };
+  /** A scope's "more", while the server names a next page for it. */
+  const more = (scope: Scope) => {
+    const cursor = nextCursor(scope);
+    return (
+      cursor && (
+        <button type="button" className="ghost more" onClick={() => void page(scope, cursor)}>
+          more
+        </button>
+      )
+    );
+  };
   /** A section's own refusal, drawn under its heading (dossier row 4). */
   const strip = (s: Scope) => {
     const refused = refusals[s];
@@ -573,11 +601,7 @@ export function Lobby({
                   ) : (
                     <ul className="lobby-rows">{mine.map((t) => row(t, "mine"))}</ul>
                   )}
-                  {nextCursor && (
-                    <button type="button" className="ghost more" onClick={() => void page(nextCursor)}>
-                      more
-                    </button>
-                  )}
+                  {more("mine")}
                 </section>
 
                 {/* Every open table on the server that is not already yours
@@ -594,6 +618,7 @@ export function Lobby({
                   ) : (
                     <ul className="lobby-rows">{open.map((t) => row(t, "open"))}</ul>
                   )}
+                  {more("open")}
                 </section>
 
                 {/* Every game still being played that is not yours, so a
@@ -643,6 +668,13 @@ export function Lobby({
                     </details>
                   </section>
                 )}
+                {/* **The playing scope's "more", after BOTH its lists** (cycle
+                    E, R-E6): Being played and Finished are one listing split
+                    by `over`, so one page of it can add rows to either, and
+                    the control that fetches it sits under the pair. A
+                    `lobby-section` of its own so the section rules (its
+                    spacing, and a thumb's height on a phone) reach it. */}
+                {nextCursor("playing") && <div className="lobby-section playing-more">{more("playing")}</div>}
               </div>
               {/* The house chat (R-6.4.5, R-6.4.6), in the RAIL: folded by
                   default (opening it is entering the lobby chat) and absent

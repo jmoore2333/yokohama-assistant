@@ -620,6 +620,18 @@ export interface TableView {
   /** The table's bot, or `null`: no bot seat, or a table dealt before the
    *  field existed (its row says "the bot" with no version). */
   bot: TableBot | null;
+  /** Whether the game's record holds any event, off the table's own mirror
+   *  of it: `false` before the first move, and at a table whose mirror was
+   *  last written before the field (cycle E, R-E5; ruling T5-a). A bit and
+   *  never a count — a count would cost the server a write per move. What
+   *  this client's rule for a LOCAL game reads, since that game's save is
+   *  this client's own upload. */
+  has_events: boolean;
+  /** Whether the creator's Abandon would SAVE this table before deleting it
+   *  — the server's own rule, the one its delete applies (cycle E, R-E5):
+   *  what "Abandon and save" is worded from for a hosted table. The server
+   *  answers `false` for a local one (its host keeps no archive). */
+  saves: boolean;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.

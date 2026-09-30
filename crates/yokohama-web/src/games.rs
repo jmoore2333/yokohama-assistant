@@ -137,6 +137,10 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
         to_move: repl.session.state().current_player.0,
         over,
         winner: over.then(|| repl.session.final_result().winner.0),
+        // What `saves_on_abandon` reads off the view (cycle E, R-E5; ruling
+        // T5-a): a bit, so it changes once per game and the equal-skip in
+        // `mirror_turn` still spares every later mid-turn move a write.
+        has_events: !repl.session.record().events.is_empty(),
         // The record's first bot seat (M6.5c2, R-6.5c2.10). Every bot a web
         // table deals is one contestant (`tables::contestants_of`), so the
         // first names them all.
@@ -473,6 +477,13 @@ impl Games {
             run_host,
             log: Arc::new(NoLog),
         }
+    }
+
+    /// Whether this host keeps an archive — `archive::is_on` over the one it
+    /// was built with. Handed to every [`TableDoc::view`] a route builds, so a
+    /// view's `saves` is this host's answer (cycle E, R-E5).
+    pub fn archive_on(&self) -> bool {
+        crate::archive::is_on(&self.archive)
     }
 
     /// This `Games` with a different [`Archive`] — the builder step a cell
@@ -1303,7 +1314,7 @@ mod tests {
         let (mut doc, version) = games.read_table("vsbot").unwrap().unwrap();
         doc.turn.as_mut().expect("a mirror").bot = None;
         games.write_table(&doc, Some(version)).unwrap();
-        assert_eq!(games.table("vsbot", &red).unwrap().view(&red).bot, None, "premise: no version to name");
+        assert_eq!(games.table("vsbot", &red).unwrap().view(&red, false).bot, None, "premise: no version to name");
 
         // Red's next move is persisted, and the persist puts the bot back.
         {
@@ -3365,6 +3376,7 @@ pub(crate) mod test_support {
                 to_move: state.current_player.0,
                 over: false,
                 winner: None,
+                has_events: cut > 0,
                 bot: mirror.bot.take(),
             };
         }

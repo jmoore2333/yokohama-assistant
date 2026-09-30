@@ -30,6 +30,7 @@
     "to_move": 1,
     "over": true,
     "winner": 1,
+    "has_events": true,
     "bot": {
       "controller": "v4-step9-draft1",
       "version": 2,
