@@ -356,8 +356,17 @@ export function App() {
    *  same two builders `…/ports` and `…/labs` answer with — so the sections
    *  draw them from here and ask neither route after a move. Held apart from
    *  `run`, which the screen clears for its own reasons: a cleared account is
-   *  not a board that moved. Let go when the next run BEGINS, so a frame is
-   *  only ever the newest run's (see `landed`). */
+   *  not a board that moved.
+   *
+   *  **A frame is taken as live only while it is the newest run's for the
+   *  count on screen**, and that is kept on every path that moves the count:
+   *  a run BEGINNING lets go of it (`landed`), so a run that then fails holds
+   *  none; `send`'s refusal re-read lets go of it when the count it read is
+   *  another (a refused or lost post after an undo can read the count an
+   *  undone branch's run ended on); a SHRINK — `landed`'s and `arrive`'s — may
+   *  keep it, since its index is then above the count and every way back up
+   *  passes one of those two; the hot-seat re-read reads the reply's own count,
+   *  whose run it is; and `show` clears it. */
   const [liveFrame, setLiveFrame] = useState<{ game: string; frame: HistoricalFrame } | null>(null);
   /** **The count a run is being fetched for, while it is** (R-E9). Set by
    *  `landed` BEFORE its first `await` — so it lands in the same render as the
@@ -1340,7 +1349,16 @@ export function App() {
         // with the server.
         try {
           const fresh = await api.get(game);
-          if (fresh.id === gameId.current) setState(fresh);
+          if (fresh.id === gameId.current) {
+            setState(fresh);
+            // **A count this re-read moved has no run behind it** (Task 7
+            // re-review, Important 1's second path): after an undo, a refused
+            // or lost post can read the count an undone branch's run ended
+            // on, and the frame that run left would pass for the live one.
+            // Let go of it, and the sections ask each board once; a refusal at
+            // an unchanged count keeps the frame, which is still this count's.
+            if (fresh.events !== state.events) setLiveFrame(null);
+          }
         } catch {
           // The re-read failed too. Keep the original refusal on screen: it is
           // the more useful of the two, and a second error would replace the

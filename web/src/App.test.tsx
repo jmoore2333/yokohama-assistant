@@ -1271,6 +1271,103 @@ describe("the turn playback", () => {
     expect(portCards(), "the strip draws the run's live frame").toEqual(cardsOf(wire.atK.ports));
   });
 
+  // **The same wrong board by a path with no run** (Task 7 re-review,
+  // Important 1's second path). `send`'s refusal re-read sets a state whose
+  // count can MOVE with no run behind it: a run lands at 43, an undo's reply
+  // takes the count to 40 (the boards are asked for), and then a post is
+  // refused — or its reply lost after the server applied it — and the re-read
+  // reads 43 from ANOTHER branch. The frame the undone branch's run left names
+  // 43 too, so unless the re-read lets go of it, the strip draws the undone
+  // branch's port and nothing is asked, until the count next moves. The
+  // payloads are this describe's `botReply()` (the reply, its positions, its
+  // log) and the corpus's `error.json` for the refusal.
+  it("asks each board once when a refused move's re-read reads an undone branch's count, and draws the server's port", async () => {
+    const { before, replied, at, log } = botReply();
+    let posts = 0;
+    let served: typeof before = before;
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) {
+        posts += 1;
+        if (posts === 1) return replied;
+        if (posts === 2) return before;
+        return { status: 409, body: wire.error };
+      }
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${before.id}`)) return served;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const turn = async () =>
+      act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    await waitFor(() => expect(boards()).toEqual([1, 1]));
+    const user = userEvent.setup();
+    // The move: a run 40 → 43 lands, and carries both boards.
+    await user.click(firstRow());
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
+    await user.click(within(document.querySelector<HTMLElement>(".turn-account")!).getByRole("button", { name: "skip" }));
+    await waitFor(() => expect(document.querySelector(".decision.walking")).toBeNull());
+    expect(boards(), "the run carried both boards").toEqual([1, 1]);
+    const undonePort = portCards();
+    // The undo: the reply's count is 40 again, and each board is asked once.
+    await user.click(firstRow());
+    await waitFor(() => expect(boards()).toEqual([2, 2]));
+    await turn();
+    const servedPort = portCards();
+    expect(servedPort, "premise: the undone branch's port is not the server's").not.toEqual(undonePort);
+    // Another branch reaches 43, and this browser learns it only from the
+    // refusal's re-read.
+    served = replied;
+    await user.click(firstRow());
+    await screen.findByText(wire.error.error);
+    await waitFor(() => expect(boards()).toEqual([3, 3]));
+    await turn();
+    await turn();
+    expect(boards(), "the re-read's count asks each board once").toEqual([3, 3]);
+    expect(portCards(), "and the strip is the server's port, not the undone branch's").toEqual(servedPort);
+  });
+
+  // **And the refusal that moved nothing keeps the run's boards.** The let-go
+  // above is for a re-read that reads ANOTHER count; a stale click's refusal
+  // re-reads the count on screen, whose frame is still the live one, and must
+  // cost no board. Without the guard it would ask both again.
+  it("keeps the run's boards when a refused move's re-read reads the same count", async () => {
+    const { before, replied, at, log } = botReply();
+    let posts = 0;
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) {
+        posts += 1;
+        return posts === 1 ? replied : { status: 409, body: wire.error };
+      }
+      if (posts > 0 && call.method === "GET" && call.path.endsWith(`/api/games/${before.id}`)) return replied;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    await waitFor(() => expect(boards()).toEqual([1, 1]));
+    const user = userEvent.setup();
+    await user.click(firstRow());
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
+    await user.click(within(document.querySelector<HTMLElement>(".turn-account")!).getByRole("button", { name: "skip" }));
+    await waitFor(() => expect(document.querySelector(".decision.walking")).toBeNull());
+    const runPort = portCards();
+    const reads = () => stub.calls.filter((c) => c.method === "GET" && c.path.endsWith(`/api/games/${before.id}`)).length;
+    const readsBefore = reads();
+    await user.click(firstRow());
+    await screen.findByText(wire.error.error);
+    await waitFor(() => expect(reads()).toBe(readsBefore + 1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(boards(), "a refusal at the same count asks for no board").toEqual([1, 1]);
+    expect(portCards(), "and the strip is still the run's").toEqual(runPort);
+  });
+
   // **The gap, held open.** A stub answers at once, so the new state and its
   // run land in ONE render and the cell above cannot see the gap between them
   // — the one `landed`'s mark exists for (measured: with the mark removed, the
@@ -3176,16 +3273,18 @@ describe("the opponent's turn arrives by the signal", () => {
     }
   });
 
-  // **An undone branch's frame is never the live board** (Task 7 review,
-  // Important 1). The run a move lands leaves its last frame held, and a frame
-  // is taken as live when its index is the count on screen. An undo takes the
-  // count back and a DIFFERENT move can bring it to the same number again — so
-  // if that move's run fails, the frame the undone branch left reads as this
-  // count's, the strip draws a port that is not on the table, and nothing is
-  // asked. `landed` lets go of the held frame when a run begins; this cell
-  // walks that sequence: a run lands at +2, an undo, a regrowth to +2 whose run
-  // fails. The positions are this describe's `at`; the served port is
-  // `ports.json` and the run's is `at_k.json`'s, which hold different cards.
+  // **An undone branch's frame is never taken for the live board** (Task 7
+  // review, Important 1; re-review 1). The run a move lands leaves its last
+  // frame held, and a frame is taken as live when its index is the count on
+  // screen. An undo takes the count back, and a DIFFERENT move can bring it to
+  // the same number again — by a run, or by `send`'s refusal re-read, which
+  // moves the count with no run. So the held frame is let go on both: when a
+  // run BEGINS (`landed`), and when the re-read reads another count. Three
+  // cells walk the three ways back up: this one (the regrowth's run FAILS),
+  // the one after it (the regrowth's run is held, then lands — what the gap
+  // draws), and, in "the turn playback", the refused move's re-read. The
+  // positions here are this describe's `at`; the served port is `ports.json`
+  // and the run's is `at_k.json`'s, which hold different cards.
   it("asks each board once when a regrowth's run fails, and draws the server's port, not an undone branch's", async () => {
     let events = wire.watching.events;
     let runFails = false;
@@ -3240,6 +3339,84 @@ describe("the opponent's turn arrives by the signal", () => {
       await settle();
       expect(boards(), "a failed run asks each board once").toEqual([3, 3]);
       expect(portCards(), "and the strip is the server's port, not the undone branch's").toEqual(served);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **What the regrowth's GAP draws** (Task 7 re-review, Minor). The cell
+  // above fails the regrowth's run; this one HOLDS it and then lands it. In the
+  // gap the count is 43 again with its run still out: the held frame has been
+  // let go, so the strip is the port the undo read (the server's) and no board
+  // is asked for; at the landing the strip is the new run's. A let-go made only
+  // when a run FAILS would keep every other cell green and draw the undone
+  // branch's port in this gap — the reviewer's mutant, which this cell reads.
+  it("draws the server's port in a regrowth's gap and the run's at its landing, asking for no board", async () => {
+    let events = wire.watching.events;
+    let held: ReturnType<typeof gate<unknown>> | null = null;
+    let heldKs: number[] = [];
+    const signal = (): Events => ({ ...wire.events, events, to_move: wire.watching.to_move });
+    const stream = fakeStream(() => [["signal", signal()]]);
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events };
+      const ks = runRange(call.path);
+      if (ks) {
+        if (held) {
+          heldKs = ks;
+          return held.promise;
+        }
+        return { frames: ks.map((k) => at(k, events)) };
+      }
+      return undefined;
+    });
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    const boards = () => [stub.matching("GET", "/ports").length, stub.matching("GET", "/labs").length];
+    const portCards = () =>
+      [...document.querySelectorAll(".table-sec.ports [data-card]")].map((e) => e.getAttribute("data-card"));
+    const opened = stream.opens();
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      await until(() => stream.opens() > opened, "the reader was opened again");
+      await settle();
+      stream.push("signal", signal());
+      await settle();
+      const served = portCards();
+      // One branch to +2, and its run lands.
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => positionsWalked(stub).length === 3, "the run was fetched");
+      await settle();
+      const runPort = portCards();
+      expect(runPort, "premise: the run's port is not the served one").not.toEqual(served);
+      // The undo, and the server's port asked for.
+      events = wire.watching.events;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 3, "the game was re-read");
+      await until(() => boards()[0] === 2, "the port was asked for");
+      await settle();
+      expect(portCards(), "premise: the shrink drew the server's port").toEqual(served);
+      // Another branch to the SAME count, its run HELD.
+      const g = gate<unknown>();
+      held = g;
+      events = wire.watching.events + 2;
+      stream.push("signal", signal());
+      await until(() => reloads().length === 4, "the game was re-read again");
+      await until(() => stub.matching("GET", "/at?").length === 2, "the regrowth's run was asked for");
+      await settle();
+      await settle();
+      expect(boards(), "the gap asks for no board").toEqual([2, 2]);
+      expect(portCards(), "the gap draws the server's port, not the undone branch's").toEqual(served);
+      // The landing: the new run's port, and still no board asked for.
+      g.resolve({ frames: heldKs.map((k) => at(k, events)) });
+      await settle();
+      await settle();
+      expect(boards(), "the landing asks for no board").toEqual([2, 2]);
+      expect(portCards(), "the landing draws the run's port").toEqual(runPort);
     } finally {
       vi.useRealTimers();
     }
