@@ -245,8 +245,8 @@ applied move, a chat message. A pass ends:
 **Each pass lists before it ends anything.** It writes one `sweep-listed` line for every table it is about to
 end, and only then ends them, one `sweep-ended` line each: a pass that ends forty tables has written forty
 lines before the first one goes. Each ending is the creator's own **Abandon**. A finished game is already in
-the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`
-with every move. A table where no move was played files nothing. If the archive cannot be written, the delete
+the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`.
+A table where no move was played files nothing. If the archive cannot be written, the delete
 is refused, a `sweep-failed` line says why, and the table stays for the next pass. A table the sweep cannot
 read gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
 no marker in its place, and the log line is the record.
@@ -274,9 +274,14 @@ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — g
 ```
 
 `kept` is `archive` when the game is in the archive, `nothing` when the table held no game, and `off` for a
-game with no archive to keep it, which a server that sweeps never has. A move that lands in the seconds
-between a pass's listing and its delete is filed with its game, or refused if its save arrives while the
-delete is unlinking; either way the archive has the game.
+game with no archive to keep it, which a server that sweeps never has.
+
+**A move during a sweep.** A move that lands in the seconds between a pass's listing and its delete is played,
+and the delete files the game with it. A move whose save begins after the delete's tombstone (its mark that
+the table is going) is refused out loud. One window is not closed, and every Abandon shares it: a move whose
+save began before the delete's tombstone and writes while the delete is filing its copy is answered saved,
+then removed, and is missing from the copy under `abandoned/` — a window as wide as the archive's write to
+disk. A narrower variant of the same window can leave an unlisted record holding the game's name.
 
 **The sweep reads the files' modification times**, so a copy or a restore of the volume that resets them
 restarts every table's clock.

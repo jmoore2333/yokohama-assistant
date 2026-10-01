@@ -603,8 +603,11 @@ These read like gaps and are not; each is the owner's ruling or a stated propert
 - **The sweep decides, then deletes** (cycle F, R-F9; spec §9 F-25). A pass reads each table's last write and
   then calls the creator's delete, which re-checks the seat and the creator but not idleness. A move that lands
   in the seconds between is played, and the delete then files the game with it under `abandoned/`; a move whose
-  save lands once the delete has tombstoned the table is refused out loud ("…was deleted while this move was in
-  flight"). Either way the game is archived, not lost — the table is ended all the same.
+  save begins after the delete has tombstoned the table is refused out loud ("…was deleted while this move was in
+  flight"). The table is ended all the same. One window is not closed, and every Abandon shares it: a move whose
+  save began before the delete's tombstone and writes while the delete is filing its copy is answered saved, then
+  removed, and is missing from the copy under `abandoned/` — a window as wide as the archive's write to disk. A
+  narrower variant of the same window can leave an unlisted record holding the game's name.
 - **A table stuck at its deal waits the long TTL, not 7 days** (ruling 9-b, on cycle E's whole-branch review).
   The 7-day TTL is for status `open` — R-6.5c2.42's "without enough players" — and a `dealing` table has every
   seat taken and waits on a keep, so it expires by the 90-day idle TTL. Cost: a stuck dealing table lingers 90

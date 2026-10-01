@@ -38,9 +38,13 @@
 //! it read and then calls the delete, which re-checks the seat and the creator
 //! but not idleness. A move that lands in the seconds between is played, and
 //! the delete then files the game WITH it under `abandoned/`; a move whose save
-//! lands once the delete has tombstoned the table is refused out loud ("…was
-//! deleted while this move was in flight"). The archive keeps the game either
-//! way.
+//! begins after the delete has tombstoned the table is refused out loud ("…was
+//! deleted while this move was in flight"). One window is not closed, and every
+//! Abandon shares it: a move whose save began before the delete's tombstone and
+//! writes while the delete is filing its copy is answered saved, then removed,
+//! and is missing from the copy under `abandoned/` — a window as wide as the
+//! archive's write to disk. A narrower variant of the same window can leave an
+//! unlisted record holding the game's name.
 //!
 //! **Where it lives** (spec §2.4, §9 F-11): everything above the gated region
 //! makes no platform call — the decision is pure, and a pass reaches the disk
