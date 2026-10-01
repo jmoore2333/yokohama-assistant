@@ -467,9 +467,16 @@ pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
 /// move made by a FOREIGN bot seat of `record`, `None` to let
 /// `why::account_parts` answer.
 ///
-/// - **Bare `why`** addresses the most recent bot move, and every bot a web
-///   table deals is one contestant (`tables::contestants_of`), so a record
-///   that names a foreign bot names no other — it is answered here.
+/// - **Bare `why`** addresses the most recent bot move, and is answered here
+///   with the FIRST foreign seat's reason whenever the record has one. A web
+///   table deals every bot one contestant under one seed
+///   (`tables::contestants_of`), so in a record a web table made the bots are
+///   foreign together or not at all, and that seat is the one bare `why`
+///   means. A record made elsewhere — one whose later bot seat carries a
+///   second stream seed, say, which the CLI's resume holds against that seat
+///   alone — can carry a runnable seat beside a foreign one, and bare `why`
+///   then answers with the foreign seat's reason even where the runnable seat
+///   moved last: a shape no web table reaches.
 /// - **`why <n>`** is answered here only when event `n` is a move whose mover
 ///   — `state_at(record, n).current_player`, the CLI's own attribution — is a
 ///   foreign seat. A human's move, an event out of range, a setup reveal or a

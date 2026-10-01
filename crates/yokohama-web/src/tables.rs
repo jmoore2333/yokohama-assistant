@@ -4249,9 +4249,10 @@ mod tests {
     ///    and writes a brand-new table;
     /// 3. `delete` inserts the id into `deleted`.
     ///
-    /// The new table is now tombstoned. `Games::persist` reads that set before
-    /// anything else, so EVERY move at a game the player just created answers
-    /// `"…" was deleted while this move was in flight` and evicts its handle —
+    /// The new table is now tombstoned. `Games::persist` reads that set under
+    /// its save lock, before it writes (cycle F, Task 4b), so EVERY move at a
+    /// game the player just created answers `"…" was deleted while this move
+    /// was in flight` and evicts its handle —
     /// a game that cannot be played and says something untrue about why. Under
     /// M6.1 both calls took the one global mutex and the interleaving did not
     /// exist; none of that cycle's four race cells is delete-versus-create.

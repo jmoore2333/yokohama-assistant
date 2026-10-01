@@ -723,14 +723,18 @@ pub(crate) fn undo_allowed(
 ) -> Result<(), UndoRefusal> {
     // **Nobody undoes a game played against a bot this build does not run**
     // (M6.5c2, R-6.5c2.10; spec §2.4's third mask), on the one-human path and
-    // the shared path alike, and so FIRST. Such a game reaches here only
-    // finished (`Games::live_handle` refuses one that is not), and its bot's
-    // seat is a human one inside the resident `Repl` — so the CLI's undo, which
-    // pops back to the last human move, would pop the BOT's final move and
-    // leave a game nobody can play. The bot is named by the `played` half of
-    // the refusal's pair (R-C5), so a same-name re-point reads "V4.2", never
-    // "V4" on a server that runs V4; and the CLI's reason follows it, as on
-    // every foreign-bot refusal (cycle F, spec §2.3).
+    // the shared path alike, and so FIRST. Since cycle F (spec §2.3) which
+    // bots those are is the CLI's own resume's answer ([`crate::bots::foreign`]):
+    // a seat it does not seat exactly, for the CLI's reason. Such a game
+    // reaches here only finished (`Games::live_handle` refuses one that is
+    // not), and an undo would give its bot's seat back to something other than
+    // the bot that played it: the resume plays a drifted seat on under the
+    // CURRENT build and makes an unknown one a human seat, so the undo would
+    // either let a different bot move where the recorded one moved, or pop the
+    // bot's final move as a human's and leave a game nobody can play. The bot
+    // is named by the `played` half of the refusal's pair (R-C5), so a
+    // same-name re-point reads "V4.2", never "V4" on a server that runs V4;
+    // and the CLI's reason follows it, as on every foreign-bot refusal.
     if let Some((_, played, why)) = crate::bots::foreign(repl.session.record()).first() {
         return Err(UndoRefusal::Refused(format!(
             "undo is not offered on a game played against {}, which this server doesn't run: {why}",
