@@ -299,6 +299,7 @@ describe("the replay track", () => {
 
   // The step buttons are the keyboard-and-touch path to the same stops the
   // range gives a mouse, so they are asserted to MOVE, not merely to exist.
+  // 10 s: 5.9-6.1 s under the close sequence's load (E's close); green alone.
   it("steps one event at a time and cannot walk off either end", async () => {
     stubApi(() => wire.log);
     const { onScrub, user } = showLog(0);
@@ -309,7 +310,7 @@ describe("the replay track", () => {
 
     await user.click(screen.getByRole("button", { name: "Next move" }));
     expect(onScrub).toHaveBeenCalledWith(1);
-  });
+  }, 10_000);
 
   it("stops at the present rather than past it", async () => {
     stubApi(() => wire.log);
@@ -354,12 +355,13 @@ describe("the replay track", () => {
   // ran out of vitest's 5 s budget in all three (measured: 5,325–5,490 ms,
   // "Test timed out in 5000ms" — the whole-branch review's L-11). Each case
   // now pays for one render.
+  // 10 s: 5.9-6.1 s under the close sequence's load (E's close); green alone.
   it("offers a way back to the present while you are away from it", async () => {
     stubApi(() => wire.log);
     const { user, onScrub } = showLog(2);
     await user.click(await screen.findByRole("button", { name: "Back to live" }));
     expect(onScrub).toHaveBeenCalledWith(null);
-  });
+  }, 10_000);
 
   it("offers no way back while you are at the present", async () => {
     stubApi(() => wire.log);

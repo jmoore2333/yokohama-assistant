@@ -19,14 +19,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, useIdentityMode } from "./api";
 import { unplayableIds } from "./backup";
+import { turnstileSiteKey } from "./buildValues";
 import { BackUpEverything, Restore, Unplayable } from "./BackupControls";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
-import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
+import { drainVisible, reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
 import { hashOf } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
-import type { ReadinessStatus } from "./swRegister";
+import { setApplyBusy, type ReadinessStatus } from "./swRegister";
 import { deviceWord, isStranded } from "./tables";
+import { UpdateLine } from "./UpdateLine";
 import type { TableView } from "./types";
 
 export function OnThisDevice({
@@ -225,27 +227,33 @@ function oneStop(reason: string): string {
  *
  *  **Quiet, and in the device card's foot** (M6.5c2, mock 01): it is a report
  *  about the shell rather than a way on, so it sits beside Back up and Restore
- *  under the games; the update is ONE line offering a reload, and nothing
- *  switches until it is pressed. **Pressing it switches every open tab the old
- *  worker controls, not only this one**: `skipWaiting` is registration-wide,
- *  so the new worker takes over each of them — a tab still playing on the old
- *  bundle included — and of all the open tabs only the one that clicked
- *  reloads, whether or not the old worker controlled it (`applyUpdate`'s two
- *  events). What keeps the other tabs working is the worker, not the click:
- *  `activate` retains the previous generation, and the fetch handler answers
- *  the old bundle's requests for files the new release no longer lists out of
- *  it (PR #37, R-F2 and R-F5). What the click decides is WHEN.
+ *  under the games; the update is ONE line offering a reload — `UpdateLine`,
+ *  the same line the lobby and a game's banner draw (M6.5c2 cycle F, R-FP9).
+ *  **Taking it switches every open tab the old worker controls, not only this
+ *  one**: `skipWaiting` is registration-wide, so the new worker takes over
+ *  each of them — a tab still playing on the old bundle included — and of all
+ *  the open tabs only the one that asked reloads, whether or not the old
+ *  worker controlled it (`applyUpdate`'s two events). What keeps the other
+ *  tabs working is the worker, not the ask: `activate` retains the previous
+ *  generation, and the fetch handler answers the old bundle's requests for
+ *  files the new release no longer lists out of it (PR #37, R-F2 and R-F5).
+ *  Such a tab is `staleTab` since cycle F, and draws the line again, its click
+ *  a plain reload.
  *
- *  **Where a player sees the offer is the door**, deliberately: it is the
- *  screen between games. A waiting worker that is never clicked activates by
- *  itself once every page using the old one has closed, which is the platform's
- *  ordinary behaviour and is safe precisely because nobody is playing on it.
+ *  **The door takes the release itself** (M6.5c2 cycle F, R-F3): it is the
+ *  screen between games, so the App applies a waiting release there without a
+ *  click (`useDoorAutoApply`), once in a page's life, and holds it while a
+ *  restore or a send is in flight. The line here is what shows in the moment
+ *  before that, or while it is held; this component still switches nothing
+ *  until its button is pressed, and a waiting worker nobody takes activates by
+ *  itself once every page using the old one has closed, which is the
+ *  platform's ordinary behaviour.
  *
  *  **"Ready to play offline" carries no period** (M6.5c2, the mock's status
  *  line); the green dot before it is the stylesheet's `::before`, so the text a
  *  cell or a walk reads stays the sentence alone. */
 function Readiness({ status }: { status?: ReadinessStatus }) {
-  if (!status || (status.readiness === "none" && !status.updateWaiting)) return null;
+  if (!status || (status.readiness === "none" && !status.updateWaiting && !status.staleTab)) return null;
   // **`failed` takes the foot's whole first row** (M6.5c2 cycle C; the
   // whole-branch review's Minor 7): beside Back up and Restore the failure's
   // sentence wrapped to eleven lines at 390px. A CLASS and not only the
@@ -264,14 +272,7 @@ function Readiness({ status }: { status?: ReadinessStatus }) {
           </button>
         </p>
       )}
-      {status.updateWaiting && (
-        <p className="muted">
-          A new version is ready.{" "}
-          <button type="button" className="linkish" onClick={status.applyUpdate}>
-            Reload to use it
-          </button>
-        </p>
-      )}
+      <UpdateLine status={status} />
     </div>
   );
 }
@@ -431,6 +432,11 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
   // ever, so the row says what the server said and offers no button that would
   // only ask again.
   const retryable = row.reason !== "refused";
+  /** A row waiting for a human check is offered the CHECK (cycle F, spec
+   *  §2.6): `drainVisible` shows the widget through the overlay and sends
+   *  every challenged row again — one widget for all of them, not one per
+   *  row. */
+  const challenged = row.reason === "challenged";
   return (
     <li className={`outbox-row ${row.reason}`}>
       <span className="name">{row.id}</span>
@@ -440,14 +446,23 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
         <button
           type="button"
           className="ghost"
-          aria-label={`send ${row.id} to the archive now`}
+          aria-label={
+            challenged ? `check now, then send ${row.id} to the archive` : `send ${row.id} to the archive now`
+          }
           disabled={sending}
           onClick={() => {
             setSending(true);
-            void sendNow(row.id).finally(() => setSending(false));
+            // **The door's own apply waits for the send** (M6.5c2 cycle F,
+            // R-FP14): a reload in the middle of it would lose the row's
+            // answer. Released when the send settles, whatever it did.
+            setApplyBusy(true);
+            void (challenged ? drainVisible() : sendNow(row.id)).finally(() => {
+              setSending(false);
+              setApplyBusy(false);
+            });
           }}
         >
-          Send now
+          {challenged ? "Check now" : "Send now"}
         </button>
       ) : null}
     </li>
@@ -468,10 +483,14 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  *
  * **A door this browser has never been told about gets the turnstile alone**,
  * which is the first step under every mode: it is the instruction that is true
- * whatever the answer turns out to be.
+ * whatever the answer turns out to be — **except in a build with a Turnstile
+ * site key**, which IS the open door (R-FP4; cycle F's fix wave). There a
+ * nameless visitor's game is written "not signed in" before any read has said
+ * which door this is (`outbox.ts`'s rule 6b), and the name step is the
+ * remedy, so it is named whatever this browser has been told.
  */
 function Remedy(): React.ReactNode {
-  const open = useIdentityMode() === "open";
+  const open = useIdentityMode() === "open" || Boolean(turnstileSiteKey());
   return (
     <span className="muted remedy">
       <a href="/enter">Sign in at the door</a>

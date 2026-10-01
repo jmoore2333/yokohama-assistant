@@ -23,6 +23,7 @@ import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
 import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isCreate, isGamesList, openStream, playOneLocalMove, positionsWalked, renderApp, runRange, signedOutReply, stubApi, stubLocalGame, type ApiCall, type ApiStub, type Reply } from "./test/harness";
 import { resetPersistenceRequestForTests } from "./storage";
+import { resetDoorAutoApplyForTests } from "./swRegister";
 import { stubStorage } from "./test/platform";
 import { wire } from "./wire/contract";
 import type { ClientState, Events, TableView } from "./types";
@@ -2868,6 +2869,7 @@ describe("the door", () => {
 
   // The scrubber reads the same record every other route does, and it is the
   // one catch site that is an effect rather than a click handler.
+  // 10 s: 5.9-6.1 s under the close sequence's load (E's close); green alone.
   it("a 401 from the replay scrubber returns to sign-in", async () => {
     await renderApp(wire.options, (call) =>
       // The SCRUBBER still asks `/at/{k}` one position at a time (R-6.5b.10
@@ -2881,7 +2883,7 @@ describe("the door", () => {
     await user.click(await screen.findByRole("button", { name: "Previous move" }));
     await screen.findByRole("heading", { name: "Choose a name" }, { timeout: 2000 });
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
-  });
+  }, 10_000);
 
   it("a refusal that is not about identity leaves you in the game", async () => {
     // **What makes the cell above about 401 and not about 4xx.** Not being
@@ -5970,5 +5972,193 @@ describe("the facts this page asks the server for", () => {
     // statement about the latch and not about a screen that never came up.
     await waitFor(() => expect(listings.length).toBeGreaterThan(listed));
     expect(healths).toHaveLength(2);
+  });
+});
+
+// ---- the update line off the door, and the door's own apply (M6.5c2 cycle F)
+//
+// **R-F3 and R-FP9, through the App's REAL registration path.** A production
+// build (the hook registers nothing in development), a `navigator.serviceWorker`
+// that hands back ONE registration with a release waiting behind the running
+// one, and a `location` whose `reload` is counted. `browserSwHost`,
+// `useReadiness`, `useDoorAutoApply` and `UpdateLine` are the App's own; only
+// the platform under them is stood in. jsdom has no service workers at all,
+// and its `location.reload` is not implemented and cannot be spied on — the
+// property is non-configurable — so `location` is a stand-in that hands every
+// other read and write to jsdom's own, which keeps the hash routing real.
+
+/** A worker as a window sees one: a state, its `statechange` listeners, and
+ *  what was posted to it. */
+class StandInWorker {
+  state: string;
+  readonly posted: unknown[] = [];
+  private readonly heard = new Set<() => void>();
+  constructor(state: string) {
+    this.state = state;
+  }
+  addEventListener(_type: string, listener: () => void): void {
+    this.heard.add(listener);
+  }
+  removeEventListener(_type: string, listener: () => void): void {
+    this.heard.delete(listener);
+  }
+  postMessage(message: unknown): void {
+    this.posted.push(message);
+  }
+  become(state: string): void {
+    this.state = state;
+    for (const listener of [...this.heard]) listener();
+  }
+}
+
+/** Release 2 installed and waiting behind release 1, which controls this page. */
+function releaseWaiting() {
+  const running = new StandInWorker("activated");
+  const next = new StandInWorker("installed");
+  const registration = {
+    installing: null as StandInWorker | null,
+    waiting: next as StandInWorker | null,
+    active: running as StandInWorker | null,
+    addEventListener() {},
+    removeEventListener() {},
+    update: async () => undefined,
+  };
+  const changes = new Set<() => void>();
+  const container = {
+    controller: running,
+    register: async () => registration,
+    addEventListener(type: string, listener: () => void) {
+      if (type === "controllerchange") changes.add(listener);
+    },
+    removeEventListener(type: string, listener: () => void) {
+      if (type === "controllerchange") changes.delete(listener);
+    },
+  };
+  vi.stubEnv("PROD", true);
+  Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: container });
+  const real = window.location;
+  const reloads: number[] = [];
+  vi.stubGlobal(
+    "location",
+    new Proxy(
+      {},
+      {
+        get(_t, key) {
+          if (key === "reload") return () => reloads.push(1);
+          const value = Reflect.get(real, key, real);
+          return typeof value === "function" ? value.bind(real) : value;
+        },
+        set(_t, key, value) {
+          return Reflect.set(real, key, value, real);
+        },
+      },
+    ),
+  );
+  return {
+    next,
+    reloads,
+    /** The platform handing this page to the new worker. */
+    handOver: () => {
+      registration.waiting = null;
+      registration.active = next;
+      container.controller = next;
+      next.become("activating");
+      for (const listener of [...changes]) listener();
+      next.become("activated");
+    },
+  };
+}
+
+describe("the update line and the door's own apply", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+    resetDoorAutoApplyForTests();
+  });
+  afterEach(() => {
+    cleanup();
+    delete (navigator as { serviceWorker?: unknown }).serviceWorker;
+    resetDoorAutoApplyForTests();
+    resetLocalHostForTests();
+  });
+
+  const banner = () => document.querySelector<HTMLElement>("header.banner")!;
+
+  // **A game is where a reload would cost a move**, so the line is passive
+  // there: it says a release is ready, and nothing switches until the click.
+  it("draws the line in a game's banner and takes the release only on the click", async () => {
+    const sw = releaseWaiting();
+    await renderApp(wire.options);
+    const line = await within(banner()).findByText(/A new version is ready\./);
+    expect(line).toHaveClass("update-line");
+    await flushReal();
+    expect(sw.next.posted, "nothing is asked of the worker before the click").toEqual([]);
+    expect(sw.reloads, "and nothing reloads").toEqual([]);
+
+    await userEvent.setup().click(within(banner()).getByRole("button", { name: "Reload to use it" }));
+    expect(sw.next.posted, "the click takes it").toEqual([{ yokohama: "skip-waiting" }]);
+    expect(sw.reloads, "and waits for the new worker to take charge").toEqual([]);
+    act(() => sw.handOver());
+    expect(sw.reloads, "then reloads this tab, once").toHaveLength(1);
+  });
+
+  // **Review Focus 1, on the game screen**: another tab's apply hands this one
+  // to the new worker. It reloads nothing, keeps its game on screen, and keeps
+  // the line — whose click is now a plain reload.
+  it("keeps the line in a game handed over by another tab's apply, and reloads only on its click", async () => {
+    const sw = releaseWaiting();
+    await renderApp(wire.options);
+    await within(banner()).findByText(/A new version is ready\./);
+    act(() => sw.handOver());
+    await flushReal();
+    expect(sw.reloads, "a tab that asked for nothing reloads nothing").toEqual([]);
+    expect(sw.next.posted, "and asked for nothing").toEqual([]);
+    expect(screen.getByText(/end triggers:/), "the game is still on screen").toBeInTheDocument();
+    expect(within(banner()).getByText(/A new version is ready\./), "and the line is still there").toBeInTheDocument();
+    await userEvent.setup().click(within(banner()).getByRole("button", { name: "Reload to use it" }));
+    expect(sw.reloads, "its click reloads it").toHaveLength(1);
+  });
+
+  it("draws the line in the lobby's actions and takes the release only on the click", async () => {
+    const sw = releaseWaiting();
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/stream")) return openStream();
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/lobby";
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
+    const actions = () => document.querySelector<HTMLElement>(".lobby-actions")!;
+    const line = await within(await waitFor(() => actions())).findByText(/A new version is ready\./);
+    expect(line).toHaveClass("update-line");
+    await flushReal();
+    expect(sw.next.posted, "nothing is asked of the worker before the click").toEqual([]);
+    expect(sw.reloads).toEqual([]);
+    await userEvent.setup().click(within(actions()).getByRole("button", { name: "Reload to use it" }));
+    expect(sw.next.posted).toEqual([{ yokohama: "skip-waiting" }]);
+    act(() => sw.handOver());
+    expect(sw.reloads).toHaveLength(1);
+  });
+
+  // **The door takes it by itself** (R-F3): the screen between games, where a
+  // reload costs nobody a move — no click, and the tab reloads once the new
+  // worker is in charge.
+  it("takes a waiting release on the door with no click, and reloads once", async () => {
+    const sw = releaseWaiting();
+    stubWorker();
+    window.location.hash = "#/";
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    await waitFor(() => expect(sw.next.posted).toEqual([{ yokohama: "skip-waiting" }]));
+    expect(sw.reloads, "not before the new worker is in charge").toEqual([]);
+    act(() => sw.handOver());
+    expect(sw.reloads).toHaveLength(1);
+    await flushReal();
+    expect(sw.next.posted, "asked once").toHaveLength(1);
   });
 });

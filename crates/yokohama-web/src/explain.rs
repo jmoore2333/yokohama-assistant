@@ -435,24 +435,30 @@ impl Why {
     }
 
     /// A move made by `played`, a bot this build does not run (spec §2.4's
-    /// second mask). Answered BEFORE `why::account_parts`, which would read the
-    /// converted seat as "a controller this driver will not run … resumed as a
-    /// HUMAN seat" — a CLI fact that is false on the web, where nothing
-    /// converts a bot's seat. A deliberate exception of `suggest`'s kind: the
-    /// twelve `Refusal`s stay `account_parts`' own strings, carried verbatim.
-    pub fn foreign(played: &str) -> Self {
+    /// second mask), and `why` it does not — the CLI's reason, cut to its
+    /// clause ([`crate::bots::Runs::No`]; cycle F, spec §2.3: every refusal
+    /// keeps its reason). Answered BEFORE `why::account_parts`, which would
+    /// read the converted seat as "a controller this driver will not run …
+    /// resumed as a HUMAN seat" — a CLI fact that is false on the web, where
+    /// nothing converts a bot's seat. A deliberate exception of `suggest`'s
+    /// kind: the twelve `Refusal`s stay `account_parts`' own strings, carried
+    /// verbatim.
+    pub fn foreign(played: &str, why: &str) -> Self {
         Self {
             ok: None,
             refusal: Some(RefusalDto {
                 kind: FOREIGN_BOT_KIND,
-                message: format!("This move was made by {played}, which this server doesn't run."),
+                message: format!("This move was made by {played}, which this server doesn't run: {why}"),
             }),
         }
     }
 }
 
 /// The tag of `why`'s THIRTEENTH refusal shape (M6.5c2, R-6.5c2.10): a move
-/// made by a bot this build does not run. The layer's own, not the CLI's, so it
+/// made by a bot this build does not run — since cycle F, a bot the CLI's
+/// resume does not seat exactly ([`crate::bots::foreign`]), so a move by a
+/// runnable bot that is not the production one is reconstructed by replay like
+/// any other. The layer's own, not the CLI's, so it
 /// is outside [`kind_of`]'s fence and [`refusal_samples`]' list — the corpus
 /// carries it as a sample of its own (`why_foreign.json`).
 pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
@@ -461,28 +467,35 @@ pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
 /// move made by a FOREIGN bot seat of `record`, `None` to let
 /// `why::account_parts` answer.
 ///
-/// - **Bare `why`** addresses the most recent bot move, and every bot a web
-///   table deals is one contestant (`tables::contestants_of`), so a record
-///   that names a foreign bot names no other — it is answered here.
+/// - **Bare `why`** addresses the most recent bot move, and is answered here
+///   with the FIRST foreign seat's reason whenever the record has one. A web
+///   table deals every bot one contestant under one seed
+///   (`tables::contestants_of`), so in a record a web table made the bots are
+///   foreign together or not at all, and that seat is the one bare `why`
+///   means. A record made elsewhere — one whose later bot seat carries a
+///   second stream seed, say, which the CLI's resume holds against that seat
+///   alone — can carry a runnable seat beside a foreign one, and bare `why`
+///   then answers with the foreign seat's reason even where the runnable seat
+///   moved last: a shape no web table reaches.
 /// - **`why <n>`** is answered here only when event `n` is a move whose mover
 ///   — `state_at(record, n).current_player`, the CLI's own attribution — is a
 ///   foreign seat. A human's move, an event out of range, a setup reveal or a
 ///   replay that fails are `account_parts`' to word.
 pub fn foreign_why(record: &yokohama_core::GameRecord, rules: &Rules, event: Option<usize>) -> Option<Why> {
     let foreign = crate::bots::foreign(record);
-    let (_, first) = foreign.first()?;
+    let (_, first, first_why) = foreign.first()?;
     // The `played` half of the refusal's pair (R-C5): a bot that shares this
     // build's label is told apart by its version, then by its knobs, so a
     // same-name re-point reads "made by V4.2" — never "made by V4" on a server
     // that runs V4.
     let running = crate::bots::production();
     let played = |d: &crate::bots::BotDescriptor| crate::bots::distinguishing_labels(d, &running).0;
-    let Some(n) = event else { return Some(Why::foreign(&played(first))) };
+    let Some(n) = event else { return Some(Why::foreign(&played(first), first_why)) };
     if !matches!(record.events.get(n), Some(yokohama_core::RecordedEvent::Move(_))) {
         return None;
     }
     let mover = yokohama_core::state_at(record, n, rules).ok()?.current_player.0;
-    foreign.iter().find(|(seat, _)| *seat == mover).map(|(_, d)| Why::foreign(&played(d)))
+    foreign.iter().find(|(seat, _, _)| *seat == mover).map(|(_, d, why)| Why::foreign(&played(d), why))
 }
 
 impl Provenance {

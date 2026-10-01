@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Nothing here</title>
+    <!-- **The page a browser's miss is answered with** (M6.5c2 cycle F,
+         R-F5; spec §2.5). The Worker's asset layer serves it for a path no
+         file answers (`not_found_handling: "404-page"`): read on 2026-10-01,
+         for a miss under an allowed prefix (`/assets/…`, `/art/…`) in EVERY
+         request shape, with no Worker invocation; and the axum host serves it
+         for a miss that carries an extension (`assets.rs`). It is a
+         courtesy, not a fence: a miss OUTSIDE the allowed set is the edge
+         rule's to refuse, and what answers one without the rule was not
+         counted. The release never lists it (`scripts/precache.mjs`), so a
+         controlled browser never sees it: its worker answers every navigation
+         from the shell.
+
+         Self-contained: no script, no stylesheet, no font. The one request
+         it makes is the icon, declared so the browser does not ask for
+         `/favicon.ico`, a miss of its own. The colours are `src/styles.css`'s
+         `--bg`, `--fg`, `--fg-dim`, `--line-bright` and `--blue`. -->
+    <link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png" />
+    <meta name="theme-color" content="#0d1013" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #0d1013;
+        color: #e8ecf2;
+        font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      main {
+        box-sizing: border-box;
+        max-width: 32rem;
+        padding: 2rem 1rem;
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-family: "Fraunces", Georgia, "Times New Roman", serif;
+        font-size: 2rem;
+        font-weight: 600;
+      }
+      p {
+        margin: 0 0 1.5rem;
+        color: #8b97a6;
+      }
+      a {
+        color: #e8ecf2;
+        text-decoration: underline;
+        text-decoration-color: #33404d;
+        text-underline-offset: 4px;
+      }
+      a:hover {
+        text-decoration-color: #e8ecf2;
+      }
+      a:focus-visible {
+        outline: 2px solid #6f9bff;
+        outline-offset: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nothing here</h1>
+      <p>There's nothing at this address.</p>
+      <a href="/">Go to the door</a>
+    </main>
+  </body>
+</html>

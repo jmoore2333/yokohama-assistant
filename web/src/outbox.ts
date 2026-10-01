@@ -10,7 +10,8 @@
 //
 // ## The rules this module is, in the order they matter
 //
-// 1. **FOUR reasons, and the third is the one a first draft omitted.** A fresh
+// 1. **FOUR reasons, and the third is the one a first draft omitted** (a fifth,
+//    `"challenged"`, is cycle F's — rule 6a). A fresh
 //    visitor can install the shell, go offline and finish their FIRST game with
 //    the archive fact never having been read: an entry condition of "the
 //    archive is known to be on" queues that game nowhere and coming back online
@@ -33,6 +34,37 @@
 //    queue (R-6.5b2.13).
 // 6. **Deliberately NOT the Background Sync API**, which Safari does not
 //    implement: a portable mechanism beats one that works on one platform.
+// 6a. **The edge's challenge waits for a PERSON** (cycle F, spec §2.6). Under
+//    the no-Access door a request with no clearance meets a Managed Challenge
+//    that only the widget can pass. The passes nobody is watching — the
+//    `online` event, a launch in a hidden tab, the sweep — send with
+//    `interactive: false`, and a challenge met by their health read OR a send
+//    marks EVERY row still waiting `"challenged"` and stops; the next `online`
+//    does not retry those rows. A VISIBLE tab's launch and the row's own button
+//    are `drainVisible`, which shows the widget through the seam and sends
+//    again. And a visitor who has chosen no name under the open door is never
+//    posted for: the layer's refusal is certain (F-14).
+// 6b. **A keyed build is the open door by R-FP4 (one build per door state)**
+//    (Task 6 fix round 1): the deploy guard's check 12 holds the declaration
+//    to the stamp and, from Task 7, to the open identity. So under a keyed build a
+//    visitor with no claimed name is refused an upload for CERTAIN without
+//    anything being asked — and nothing is: no health read, no widget, no post,
+//    at game over (a fresh context's included), at a launch or in any drain.
+//    Their games are written down `"signed-out"`, and a `"signed-out"` row is
+//    retried only once a name is stored. A KEYLESS build (the Access builds,
+//    the NAS) cannot know its door without the read, and makes it as E did.
+// 6c. **The archive fact's wait is the caller's, and the read has its own
+//    bound** (Task 6 fix rounds 1 and 2): a check that takes longer than the
+//    read's 5 s wait still lands its answer, which is written down, and the
+//    pass that waited sends its rows again then — with the door's own apply
+//    held until it has. The read past the wait is bounded too (M6.5c I-86: a
+//    read that never settles is a state, not a delay): any pass in progress is
+//    waited out (the overlay's own 90 s ends it), then the transport's
+//    `BOUND_MS`; past that the hold goes — released by the bound's own timer,
+//    never behind work queued in the meantime — and the rows stay AS THEY ARE.
+//    Only a challenge actually SEEN (a late refusal) writes "waiting for a
+//    human check" (fix round 3). The pass a late answer starts carries the
+//    same bound on its own posts, so none can hang the queue past it.
 // 7. **Every entry point ANSWERS, with ONE named exception.** Each is called
 //    with `void` from a render or an event handler, so a browser with no usable
 //    IndexedDB — a private window, a blocked site — has no outbox rather than
@@ -52,7 +84,7 @@
 //    dropped unposted.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, ensureArchiveFact } from "./api";
+import { api, ApiError, BOUND_MS, claimedUser, ensureArchiveFact, isEdgeRefusal } from "./api";
 import { openDbBounded } from "./backup";
 import { localPair } from "./local/client";
 import {
@@ -67,8 +99,12 @@ import {
   archiveAnswer,
   onServerFacts,
   rememberArchiveOff,
+  serverFacts,
   type ArchiveKind,
 } from "./local/facts";
+import { setApplyBusy } from "./swRegister";
+import { turnstileSiteKey } from "./buildValues";
+import { passesSoFar, passInProgress } from "./turnstile";
 
 export type { PendingReason };
 
@@ -108,6 +144,8 @@ export const reasonWords = (reason: PendingReason, sentence?: string): string =>
       return "not yet known";
     case "refused":
       return sentence ?? "the archive would not take it";
+    case "challenged":
+      return "waiting for a human check";
   }
 };
 
@@ -327,12 +365,24 @@ async function offer(
   db: IDBDatabase,
   id: string,
   pair: { record: string; table: string },
-): Promise<void> {
+  interactive: boolean,
+  /** The late answer's pass (rule 6c): the post carries the transport's
+   *  bound, so it cannot hang the queue. */
+  bounded = false,
+): Promise<Outcome> {
   try {
-    const reply = await api.archive(pair.record, pair.table);
+    const post = api.archive(pair.record, pair.table, { interactive });
+    const reply = bounded ? await withinBound(post) : await post;
     await putReceipt(db, id, pair.record);
     announceLanded(id, reply.path);
   } catch (e) {
+    // **The EDGE asked for a person, and none passed** (cycle F, rule 6a): the
+    // row waits for one, and the pass stops — every row behind this one would
+    // meet the same challenge.
+    if (isEdgeRefusal(e)) {
+      await putPending(db, id, "challenged");
+      return "challenged";
+    }
     // **A 404 is the deployment's answer, not the moment's** (M6.5c,
     // R-6.5c.14; spec §2.6): the layer's "this server keeps no archive". Filed
     // as "offline", the row was posted again on every reconnect until the
@@ -342,11 +392,12 @@ async function offer(
     if (e instanceof ApiError && e.status === 404) {
       rememberArchiveOff();
       await forget(db, id);
-      return;
+      return undefined;
     }
     const { reason, sentence } = reasonFor(e);
     await putPending(db, id, reason, sentence);
   }
+  return undefined;
 }
 
 /** Has this game's CURRENT record already landed? The receipt is about the
@@ -385,7 +436,9 @@ async function attempt(
   db: IDBDatabase,
   id: string,
   kind: ArchiveKind | "unknown",
-): Promise<void> {
+  interactive = false,
+  bounded = false,
+): Promise<Outcome> {
   try {
     const pair = await localPair(id);
     // Nothing to send is nothing owed. A game with no record is a game with no
@@ -393,9 +446,9 @@ async function attempt(
     // no use for either.
     if (pair.record === null || pair.table === null) {
       await forget(db, id);
-      return;
+      return undefined;
     }
-    if (await alreadySent(db, id, pair.record)) return;
+    if (await alreadySent(db, id, pair.record)) return undefined;
     // **L-6: a 404 earlier in THIS pass answers for every row after it**
     // (M6.5c2). `kind` is read once per operation, and it is the REMEMBERED
     // fact that moves when the route says "this server keeps no archive"
@@ -403,19 +456,222 @@ async function attempt(
     // known "off" drops one, and never posted to be told the same thing.
     if (kind === "off" || archiveAnswer() === "off") {
       await forget(db, id);
-      return;
+      return undefined;
+    }
+    // **Rule 6b: a keyed build is the open door by R-FP4**, so a nameless
+    // visitor's upload is refused for certain — whatever this browser has or
+    // has not been told — and the game waits for a name.
+    if (namelessUnderKey()) {
+      await putPending(db, id, "signed-out");
+      return undefined;
     }
     if (kind === "unknown") {
       await putPending(db, id, "unknown");
-      return;
+      return undefined;
     }
-    await offer(db, id, { record: pair.record, table: pair.table });
+    // **A visitor with no name under the open door is not posted for** (cycle
+    // F, F-14; spec §2.6): the layer answers that post 401 for certain, so it
+    // would buy an invocation to be told what is already known. The row says
+    // "not signed in", whose remedy names the name step. Only a door KNOWN to
+    // be open: under any other, or one never heard of, the name is not what
+    // the server reads.
+    if (serverFacts().identity === "open" && claimedUser() === null) {
+      await putPending(db, id, "signed-out");
+      return undefined;
+    }
+    return await offer(db, id, { record: pair.record, table: pair.table }, interactive, bounded);
   } catch (e) {
     // The row records the attempt — which is what `lastTried` means — and the
     // loop above goes on.
     await putPending(db, id, "offline", localSentence(e));
+    return undefined;
   }
 }
+
+/** What one attempt tells the pass it is in: `"challenged"` when the edge
+ *  asked for a person and none passed, which stops the pass (rule 6a). */
+type Outcome = "challenged" | undefined;
+
+/** Rule 6b: whether this visitor's upload is refused for CERTAIN with nothing
+ *  asked — a keyed build is the open door by R-FP4, and under the open door a
+ *  visitor with no claimed name is not one the layer will take a post from. */
+const namelessUnderKey = (): boolean => Boolean(turnstileSiteKey()) && claimedUser() === null;
+
+/** Rule 6b's pass: write each game down for what it is waiting on, asking the
+ *  server NOTHING. The remembered archive fact still drops a game a deployment
+ *  known to keep none has no use for (`attempt`'s order). */
+async function holdForAName(ids: readonly string[]): Promise<void> {
+  const kind = archiveAnswer();
+  await withStore(async (db) => {
+    for (const id of ids) await attempt(db, id, kind);
+  }, undefined);
+}
+
+/** Mark every row in `ids` "waiting for a human check" — what a challenge met
+ *  by a pass's health read, or by one of its sends, says of the rest (F-15). */
+async function markChallenged(ids: readonly string[]): Promise<void> {
+  await withStore(async (db) => {
+    for (const id of ids) await putPending(db, id, "challenged");
+  }, undefined);
+}
+
+/** Try `ids` in order and stop at the first the edge challenged, marking it and
+ *  every row after it (rule 6a). The caller holds the queue. */
+async function attemptAll(
+  ids: readonly string[],
+  kind: ArchiveKind,
+  interactive: boolean,
+  bounded = false,
+): Promise<void> {
+  await withStore(async (db) => {
+    for (let i = 0; i < ids.length; i += 1) {
+      if ((await attempt(db, ids[i]!, kind, interactive, bounded)) === "challenged") {
+        for (const rest of ids.slice(i + 1)) await putPending(db, rest, "challenged");
+        return;
+      }
+    }
+  }, undefined);
+}
+
+/** The archive fact for a pass — or `"challenged"` when the edge challenged the
+ *  health read and no check passed for it (rule 6a; F-15: a fresh context's
+ *  FIRST request is this one).
+ *
+ *  **And a read that outlives its wait is followed** (rule 6c): `ids` are the
+ *  rows this pass was for, and [`followLate`] sends them again when the late
+ *  answer lands. */
+async function archiveFactFor(
+  interactive: boolean,
+  ids: readonly string[],
+): Promise<ArchiveKind | "unknown" | "challenged"> {
+  try {
+    return await ensureArchiveFact({ interactive, onLate: (landed) => followLate(landed, interactive, ids) });
+  } catch (e) {
+    if (isEdgeRefusal(e)) return "challenged";
+    throw e;
+  }
+}
+
+/**
+ * Rule 6c: the archive fact's read went on past its wait — a person still
+ * passing the widget, or a slow server.
+ *
+ * **The door's own apply is held until it settles** (R-FP14): a waiting release
+ * must not reload the page under the overlay. When the answer lands it has
+ * been written down, and the waiting rows go through the ordinary pass — a
+ * VISIBLE one where this was, so a challenged row is among them — which now
+ * finds the fact fresh and the clearance set: no second read, no second
+ * widget. A read the edge refused after all (Cancel, a second challenge) marks
+ * the rows it was for "waiting for a human check", as an answer inside the
+ * wait would have.
+ *
+ * **And the read is BOUNDED** (Task 6 fix rounds 2 and 3; M6.5c I-86): a read
+ * that never answers would otherwise hold the door's apply for as long as it
+ * is out. [`passAwareBound`] waits out any pass in progress, then `BOUND_MS`.
+ *
+ * - **The hold is released by that bound's own timer**, directly, whatever is
+ *   still running. A release queued behind the pass that waited would wait
+ *   with it: that pass may be sitting on a post that never answers, holding
+ *   the serial queue (the r2 re-review's Q1, 600 s and more).
+ * - **Only a challenge SEEN writes the mark.** A late refusal (Cancel, a second
+ *   challenge) marks the rows it was for "waiting for a human check". Running
+ *   out of time, or a read that failed, leaves every row exactly as it was —
+ *   `offline`, `unknown`, landed or dropped meanwhile — so the `online` retry
+ *   still sends them, and a game that landed or was dropped during the bound
+ *   is not written back.
+ * - **The pass a late answer starts is bounded too**: its posts carry the same
+ *   bound (`bounded: true`), so none can hang the queue past it.
+ */
+function followLate(landed: Promise<unknown>, interactive: boolean, ids: readonly string[]): void {
+  setApplyBusy(true);
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    setApplyBusy(false);
+  };
+  const bound = passAwareBound();
+  void bound.elapsed.then(release);
+  const settled = landed.then(
+    () => "landed" as const,
+    (e: unknown) => (isEdgeRefusal(e) ? ("refused" as const) : ("failed" as const)),
+  );
+  void Promise.race([settled, bound.elapsed.then(() => "out of time" as const)])
+    .then((how) => {
+      if (how === "landed") return drain({ interactive: interactive && visible(), bounded: true });
+      if (how === "refused") return serial(() => markChallenged(ids));
+      return undefined;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      bound.stop();
+      release();
+    });
+}
+
+/** `p`, or a refusal once [`passAwareBound`] has elapsed — the bound a late
+ *  answer's pass puts on each of its posts (rule 6c). The post itself is not
+ *  aborted: one that lands later is answered `identical` on the next send. */
+async function withinBound<T>(p: Promise<T>): Promise<T> {
+  const bound = passAwareBound();
+  try {
+    return await Promise.race([
+      p,
+      bound.elapsed.then((): never => {
+        throw new Error("the server did not answer in time");
+      }),
+    ]);
+  } finally {
+    bound.stop();
+  }
+}
+
+/**
+ * The transport's bound, made safe for a person mid-check (Task 6 fix rounds 2
+ * and 3): every pass in progress waited out first — the overlay's widget ends
+ * by its own 90 s, so a person mid-check is never cut off — and then
+ * `BOUND_MS` with no pass running. **A pass that ends during that sleep earns
+ * the request after it a full `BOUND_MS` of its own**: one still running at
+ * the wake is waited out, and one that began AND ended inside the sleep is read
+ * from `passesSoFar()` (a pass that landed moves it), so the retry it sends is
+ * never left the sleep's last moments (the r2 re-review's Q3). A pass that
+ * FAILED moves nothing: its request is the edge's refusal, settled already.
+ * `elapsed` resolves at the bound, or at `stop`, which clears what is armed.
+ */
+function passAwareBound(): { elapsed: Promise<void>; stop: () => void } {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const elapsed = (async () => {
+    while (!stopped) {
+      const pass = passInProgress();
+      if (pass) {
+        await pass.then(
+          () => undefined,
+          () => undefined,
+        );
+        continue;
+      }
+      const before = passesSoFar();
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        timer = setTimeout(resolve, BOUND_MS);
+      });
+      if (!stopped && !passInProgress() && passesSoFar() === before) return;
+    }
+  })();
+  return {
+    elapsed,
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+      wake?.();
+    },
+  };
+}
+
+/** Whether this pass may show the widget: a person is looking at the tab. */
+const visible = (): boolean => typeof document !== "undefined" && document.visibilityState === "visible";
 
 /**
  * A local game has reached `over` — the real game-over hook (spec §2.6).
@@ -434,8 +690,26 @@ export async function noteGameOver(id: string): Promise<void> {
     // that could not open its database would otherwise never learn what this
     // deployment keeps. A browser with no usable store has no outbox and no
     // local games either, so nothing below it runs.
-    const kind = await ensureArchiveFact();
-    await withStore((db) => attempt(db, id, kind), undefined);
+    //
+    // **A person is at the game when it ends**, so the edge's challenge shows
+    // the widget here (cycle F) — unless the tab is hidden, as a reload of a
+    // finished game in a background tab is: then the row waits for a visible
+    // one, like every background pass's.
+    //
+    // **Rule 6b first**: under a keyed build a nameless visitor's game is
+    // written down for its name, and the server is asked nothing — a fresh
+    // context's first game over included.
+    if (namelessUnderKey()) {
+      await holdForAName([id]);
+      return;
+    }
+    const interactive = visible();
+    const kind = await archiveFactFor(interactive, [id]);
+    if (kind === "challenged") {
+      await markChallenged([id]);
+      return;
+    }
+    await withStore((db) => attempt(db, id, kind, interactive), undefined);
   });
 }
 
@@ -447,34 +721,113 @@ export async function noteGameOver(id: string): Promise<void> {
  * BEFORE the archive fact is asked for: there is nothing an answer could
  * change, and a health read on every `online` event for a queue that will never
  * move is a request a single-player visitor should not pay.
+ *
+ * **Nor is a `challenged` row, unless the pass is `interactive`** (cycle F,
+ * rule 6a): a background pass cannot show the widget the row is waiting for,
+ * so asking again is a request the edge refuses again. A background pass that
+ * meets the challenge — at its health read or at a send — marks every row
+ * still waiting and stops. The default is the background pass; a visible tab's
+ * is [`drainVisible`].
  */
-export async function drain(): Promise<void> {
+export async function drain(
+  opts: {
+    interactive?: boolean;
+    /** The pass a late archive-fact answer starts (rule 6c): each post carries
+     *  the transport's bound. Internal to this module's `followLate`. */
+    bounded?: boolean;
+  } = {},
+): Promise<void> {
+  const interactive = opts.interactive ?? false;
   await serial(async () => {
+    // **Rule 6b**: a `signed-out` row under a keyed build with no name stored
+    // is waiting on a NAME, which no read and no widget can supply — it is
+    // left out, and retried once a name is stored.
+    const nameless = namelessUnderKey();
     const waiting = await withStore(
-      async (db) => (await readOutbox(db)).filter(isPending).filter((r) => r.reason !== "refused"),
+      async (db) =>
+        (await readOutbox(db))
+          .filter(isPending)
+          .filter(
+            (r) =>
+              r.reason !== "refused" &&
+              (interactive || r.reason !== "challenged") &&
+              !(nameless && r.reason === "signed-out"),
+          ),
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     if (waiting.length === 0) return;
-    const kind = await ensureArchiveFact();
-    // **Still nothing known: the rows stay AS THEY ARE** (review M-7). An
-    // earlier draft rewrote each one as "not yet known", which threw away the
-    // more specific reason a row had been given.
-    if (kind === "unknown") return;
-    await withStore(async (db) => {
-      if (kind === "off") {
-        for (const r of waiting) await forget(db, r.id);
+    // Any other row of a nameless visitor's under a keyed build is written down
+    // for its name, with nothing asked (rule 6b).
+    if (nameless) {
+      await holdForAName(waiting.map((r) => r.id));
+      return;
+    }
+    // **The door's own apply waits while rows are being sent** (cycle F,
+    // R-FP14): a reload in the middle of a send would lose the row's answer.
+    // Held only where there is something to send — an empty queue, the
+    // ordinary state, never touches it.
+    setApplyBusy(true);
+    try {
+      const kind = await archiveFactFor(
+        interactive,
+        waiting.map((r) => r.id),
+      );
+      if (kind === "challenged") {
+        await markChallenged(waiting.map((r) => r.id));
         return;
       }
-      for (const r of waiting) await attempt(db, r.id, kind);
-    }, undefined);
+      // **Still nothing known: the rows stay AS THEY ARE** (review M-7). An
+      // earlier draft rewrote each one as "not yet known", which threw away the
+      // more specific reason a row had been given.
+      if (kind === "unknown") return;
+      if (kind === "off") {
+        await withStore(async (db) => {
+          for (const r of waiting) await forget(db, r.id);
+        }, undefined);
+        return;
+      }
+      await attemptAll(
+        waiting.map((r) => r.id),
+        kind,
+        interactive,
+        opts.bounded ?? false,
+      );
+    } finally {
+      setApplyBusy(false);
+    }
   });
+}
+
+/**
+ * Try everything that is waiting — the `challenged` rows included — in a tab a
+ * person is looking at (cycle F, spec §2.6): the door's launch when the
+ * document is visible, and a `challenged` row's Check now.
+ *
+ * **The widget is shown here and nowhere in the background**: a challenge this
+ * pass meets goes through the seam (`passChallenge`, the overlay), once, and
+ * the request is sent again. In a hidden tab this is the background pass, so a
+ * challenged row is never retried — and never shows a widget — where nobody
+ * can see it.
+ */
+export async function drainVisible(): Promise<void> {
+  await drain({ interactive: visible() });
 }
 
 /** One game, because the player asked for it by name. */
 export async function sendNow(id: string): Promise<void> {
   await serial(async () => {
-    const kind = await ensureArchiveFact();
-    await withStore((db) => attempt(db, id, kind), undefined);
+    // Rule 6b: a nameless visitor under a keyed build is asked nothing.
+    if (namelessUnderKey()) {
+      await holdForAName([id]);
+      return;
+    }
+    // A click: a person is here, and a challenge shows the widget (cycle F).
+    const kind = await archiveFactFor(true, [id]);
+    if (kind === "challenged") {
+      await markChallenged([id]);
+      return;
+    }
+    await withStore((db) => attempt(db, id, kind, true), undefined);
   });
 }
 
@@ -499,7 +852,23 @@ export async function reconsiderAll(): Promise<void> {
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     const waiting = rows.filter((r) => r.reason !== "refused");
-    const kind = await ensureArchiveFact();
+    // Rule 6b: a nameless visitor under a keyed build is asked nothing, and
+    // their `signed-out` rows stay as they are.
+    if (namelessUnderKey()) {
+      await holdForAName(waiting.filter((r) => r.reason !== "signed-out").map((r) => r.id));
+      return;
+    }
+    // **A background pass** (cycle F, rule 6a): a discovery is neither a
+    // launch nor a click, so it shows no widget, and a challenge marks the
+    // rows it would have sent.
+    const kind = await archiveFactFor(
+      false,
+      waiting.map((r) => r.id),
+    );
+    if (kind === "challenged") {
+      await markChallenged(waiting.map((r) => r.id));
+      return;
+    }
     if (kind === "unknown") return;
     if (kind === "off") {
       await withStore(async (db) => {
@@ -520,9 +889,7 @@ export async function reconsiderAll(): Promise<void> {
       // The module could not list. The rows this browser already wrote down are
       // still owed, and are still tried below.
     }
-    await withStore(async (db) => {
-      for (const id of ids) await attempt(db, id, kind);
-    }, undefined);
+    await attemptAll([...ids], kind, false);
   });
 }
 
@@ -544,7 +911,9 @@ const running = new Set<() => void>();
  * could never be taken off again.
  */
 export function startOutbox(): () => void {
-  const online = () => void drain();
+  // The browser's `online` event is a background pass: it shows no widget
+  // and retries no `challenged` row (rule 6a).
+  const online = () => void drain({ interactive: false });
   const facts = () => {
     const now = archiveAnswer();
     // Discovery, and not every health read: the sweep is worth a listing read
@@ -556,8 +925,10 @@ export function startOutbox(): () => void {
   window.addEventListener("online", online);
   const offFacts = onServerFacts(facts);
   // At launch. A queue that is empty answers without asking the server
-  // anything, so a visitor with nothing waiting pays nothing.
-  void drain();
+  // anything, so a visitor with nothing waiting pays nothing. A VISIBLE
+  // launch is where a `challenged` row is offered the widget (rule 6a); a
+  // launch in a hidden tab is a background pass.
+  void drainVisible();
   const stop = () => {
     window.removeEventListener("online", online);
     offFacts();

@@ -9,7 +9,7 @@
     "build:wasm:debug": "cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm --features debug --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/local/wasm ../target/wasm32-unknown-unknown/release/yokohama_wasm.wasm",
     "dev": "vite",
     "build": "npm run build:wasm && npm run build:client",
-    "build:client": "tsc -b && vite build && node scripts/precache.mjs",
+    "build:client": "tsc -b && vite build && node scripts/precache.mjs && node scripts/presence.mjs",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit && tsc -p tsconfig.node.json && tsc -p tsconfig.sw.json && node scripts/typecheck-worker.mjs",
     "test": "vitest run",

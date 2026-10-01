@@ -4,6 +4,7 @@
 //! testable lives in the library half, which route tests drive without a socket.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use yokohama_web::{app, AppState};
 
@@ -99,6 +100,18 @@ async fn main() {
         }
     };
 
+    // **A client built with a Turnstile site key is the open door's** (M6.5c2
+    // cycle F's fix wave; R-FP4): it reads the key as a door with no identity
+    // provider in front, so behind `cf-access` or `worker` it would upload
+    // nobody's finished games. The Worker's deploy guard holds the pairing
+    // (check 12); this is the self-host's half, read off the stamp in the root
+    // this process serves (`assets::check_build_stamp`). A `dist` with no
+    // stamp, built before it, starts.
+    if let Err(e) = yokohama_web::assets::check_build_stamp(&yokohama_web::assets::dist_dir(), identity) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+
     // **Every chat variable HAS a default (R-6.4.6, R-6.4.8)**, which is the
     // one way this differs from the identity mode above: a missing switch is
     // not a missing door. A BAD value still stops the process, and names the
@@ -129,16 +142,40 @@ async fn main() {
         }
     };
 
+    // **The sweep's two TTLs** (M6.5c2 cycle F, R-F9): the Worker's names and
+    // meanings, unset meaning no sweep, a bad value a refusal naming the
+    // variable. Read as the archive directory is (`var_os`), so a value that
+    // is not UTF-8 is refused by name rather than read as unset (M6.5c2 cycle
+    // D, row 130).
+    let ttls = match yokohama_web::sweep::Ttls::from_lookup(|k| {
+        std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+    }) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
     // The archive directory is the third variable read here (M6.5a, R-6.5a.9):
     // unset is no archive, a directory that cannot be created is a refusal to
-    // start that names the variable.
-    let state = match AppState::new(identity, chat, multiplayer) {
+    // start that names the variable — and so is a table TTL without one.
+    let state = match AppState::new(identity, chat, multiplayer, ttls) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
         }
     };
+    // Hourly, the first pass a minute after start (spec §2.4).
+    if state.ttls.table.is_some() {
+        tokio::spawn(yokohama_web::sweep::run(
+            state.clone(),
+            state.ttls,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+        ));
+    }
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {

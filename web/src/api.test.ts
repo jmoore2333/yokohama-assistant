@@ -4,7 +4,18 @@
 // the status, and the door on a 401.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACCESS_CHALLENGE, api, ApiError, BOUND_MS, bounded, onUnauthorized } from "./api";
+import {
+  ACCESS_CHALLENGE,
+  api,
+  ApiError,
+  BOUND_MS,
+  bounded,
+  ensureArchiveFact,
+  isEdgeRefusal,
+  onUnauthorized,
+} from "./api";
+import { EDGE_CHECK, EDGE_CHECK_REPEATED, resetTurnstileForTests, setChallengeHandler } from "./turnstile";
+import { facts, resetFactsForTest, serverFactsTakenAt } from "./local/facts";
 import { readStream } from "./sse";
 import { resetLocalHostForTests } from "./local/client";
 import { TAKEN_OVER_SENTENCE } from "./local/lost";
@@ -372,5 +383,221 @@ describe("bounded", () => {
     const settled = expect(bounded(new Promise<never>(() => {}), BOUND_MS)).rejects.toThrow("timed out");
     await vi.advanceTimersByTimeAsync(BOUND_MS);
     await settled;
+  });
+});
+
+// ---- cycle F: the edge's challenge, met once (R-F6, R-FP8; spec §2.6) -------
+//
+// **One predicate, and a retry that is ONE.** Under the no-Access door the edge
+// answers a request with no clearance `403` + `cf-mitigated: challenge`; the
+// site shows the widget once through the seam (`setChallengeHandler`) and asks
+// again ONCE. Two of the three fetch sites are here — `call` and the record
+// download, which builds its own request — and the stream's is `sse.test.ts`.
+// The challenge is the EDGE's shape, held beside the cells (it is not a wire
+// payload); every answer the layer gives is the corpus's.
+describe("the edge's challenge (cycle F, R-FP8)", () => {
+  /** What the edge answers a request it challenges. */
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** A `fetch` that answers each request with the next of `replies`, and
+   *  records what was asked. */
+  function answers(...replies: Array<() => Response>) {
+    const asked: { path: string; init: RequestInit }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        asked.push({ path: String(input), init: init ?? {} });
+        const next = replies[asked.length - 1];
+        if (!next) throw new Error(`an unexpected request: ${String(input)}`);
+        return next();
+      }),
+    );
+    return asked;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetTurnstileForTests();
+    onUnauthorized(null);
+  });
+
+  it("shows the widget once and returns the retried answer, the request sent again whole", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(challenged, () => json(wire.archivePost, 201));
+    const reply = await api.archive('{"seed":18446744073709551615}', '{"schema":3}');
+    expect(reply).toEqual(wire.archivePost);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(2);
+    // The retry is the same request: method, path, headers and body.
+    expect(asked[1]!.path).toBe(asked[0]!.path);
+    expect(asked[1]!.init.method).toBe("POST");
+    expect(asked[1]!.init.body).toBe(asked[0]!.init.body);
+    expect(asked[1]!.init.headers).toEqual(asked[0]!.init.headers);
+  });
+
+  // **Review Focus 4, F battery 24: the fetch handler retrying without bound.** A
+  // second challenge on the retried request is the refusal it is — a widget
+  // that passed and a cookie the edge still will not take is not fixed by a
+  // third request, nor by a second widget.
+  it("refuses with EDGE_CHECK_REPEATED on a second challenge, the widget shown once and no third request (Review Focus 4)", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(challenged, challenged);
+    const refused = await api.table("wire").catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).status).toBe(403);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK_REPEATED);
+    expect(isEdgeRefusal(refused)).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(2);
+  });
+
+  it("refuses with EDGE_CHECK at once, and asks nothing again, where no widget can be shown", async () => {
+    // No overlay mounted: a build with no site key mounts none.
+    const asked = answers(challenged);
+    const refused = await api.health().catch((e: unknown) => e);
+    expect((refused as ApiError).status).toBe(403);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK);
+    expect(isEdgeRefusal(refused)).toBe(true);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("refuses at once under interactive: false, whatever is mounted — no widget and no retry", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(challenged);
+    const refused = await api.health(undefined, { interactive: false }).catch((e: unknown) => e);
+    expect(isEdgeRefusal(refused)).toBe(true);
+    expect((refused as ApiError).status).toBe(403);
+    expect(handler).not.toHaveBeenCalled();
+    expect(asked).toHaveLength(1);
+  });
+
+  it("refuses with EDGE_CHECK_REPEATED when the check is cancelled, and asks nothing again", async () => {
+    setChallengeHandler(() => Promise.reject(new Error("cancelled")));
+    const asked = answers(challenged);
+    const refused = await api.archive("{}", "{}").catch((e: unknown) => e);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK_REPEATED);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("leaves a 403 of the layer's own exactly as it was: the server's sentence, no widget, no retry", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(() => json(wire.notSeated403, 403));
+    const refused = await api.table("wire").catch((e: unknown) => e);
+    expect((refused as ApiError).status).toBe(403);
+    expect((refused as ApiError).message).toBe(wire.notSeated403.error);
+    expect(isEdgeRefusal(refused)).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    expect(asked).toHaveLength(1);
+  });
+
+  // **The widget ONCE, for a request that straddles the pass** (Review Focus
+  // 4): a table link's screen asks several things at once, and one of them can
+  // be answered with the challenge AFTER the check another met has passed — it
+  // was sent before the cookie existed. Its challenge is older than the
+  // clearance: it is sent again, and no second widget is shown.
+  it("sends again WITHOUT a second widget a request whose challenge predates a pass that has since landed", async () => {
+    let finish: () => void = () => {};
+    const handler = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    setChallengeHandler(handler);
+    let lateChallenge: (r: Response) => void = () => {};
+    const replies: Array<() => Response | Promise<Response>> = [
+      challenged, // the table's first send
+      () => new Promise<Response>((resolve) => (lateChallenge = resolve)), // the health read, out while the check runs
+      () => json(wire.table), // the table, again
+      () => json(wire.health), // the health read, again
+    ];
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => replies[n++]!()),
+    );
+    const table = api.table("wire");
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    const health = api.health();
+    await vi.waitFor(() => expect(n).toBe(2));
+    finish();
+    await expect(table).resolves.toEqual(wire.table);
+    lateChallenge(challenged());
+    await expect(health).resolves.toEqual(wire.health);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(n).toBe(4);
+  });
+
+  // The record download builds its own request (`recordText`), so it is a site
+  // of its own: the same predicate, the same one retry, the body still the
+  // very string it arrived as.
+  it("meets the challenge on the RECORD download too: once, then the unparsed text", async () => {
+    const record = '{"seed":18446744073709551615,"events":[]}';
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(challenged, () => new Response(record, { status: 200 }));
+    expect(await api.recordText("sim-1")).toBe(record);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.path).toBe("/api/games/sim-1/record");
+  });
+
+  it("refuses the RECORD download on a second challenge, with no third request (Review Focus 4)", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const asked = answers(challenged, challenged);
+    const refused = await api.recordText("sim-1").catch((e: unknown) => e);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK_REPEATED);
+    expect(isEdgeRefusal(refused)).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(2);
+  });
+
+  // **The bound is the caller's WAIT, never the read's** (Task 6 fix round 1,
+  // Important 2): a check a person takes 6 s to pass still pays for an answer,
+  // and that answer is written down when it lands — the caller told, through
+  // `onLate`, that the read it stopped waiting for is still out.
+  it("keeps the archive fact's answer when it lands after the 5 s wait, and tells the caller", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      resetFactsForTest();
+      setChallengeHandler(() => new Promise<void>((resolve) => setTimeout(resolve, 6_000)));
+      answers(challenged, () => json({ ...wire.health, archive: "dir" }));
+      let late: Promise<unknown> | null = null;
+      const waited = ensureArchiveFact({ onLate: (p) => (late = p) });
+      await vi.advanceTimersByTimeAsync(BOUND_MS);
+      await expect(waited, "the caller's wait ends at the bound").resolves.toBe("unknown");
+      expect(late, "the caller is told the read is still out").not.toBeNull();
+      expect(serverFactsTakenAt()).toBeNull();
+      await vi.advanceTimersByTimeAsync(6_000 - BOUND_MS);
+      await expect(late).resolves.toBe("dir");
+      expect(serverFactsTakenAt(), "the late answer is written down").not.toBeNull();
+      expect(facts("server").archive).toBe("dir");
+    } finally {
+      vi.useRealTimers();
+      resetFactsForTest();
+    }
+  });
+
+  // **The archive fact's read hands the edge's refusal ON** — it is the one
+  // failure that is not "nothing answered": the edge answered, and the outbox
+  // turns it into the row's mark (spec §2.6, F-15). Any other failure still
+  // falls back to what is remembered.
+  it("lets ensureArchiveFact's health read hand the edge's refusal on, and nothing else", async () => {
+    answers(challenged);
+    const refused = await ensureArchiveFact({ interactive: false }).catch((e: unknown) => e);
+    expect(isEdgeRefusal(refused)).toBe(true);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await expect(ensureArchiveFact()).resolves.toBe("unknown");
   });
 });

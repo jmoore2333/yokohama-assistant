@@ -1,0 +1,343 @@
+#![cfg(feature = "server")]
+//! **The self-host's keyed-build start refusal, run on the binary itself**
+//! (M6.5c2 cycle F, Task 10.E; the mutation battery's finding F-1).
+//!
+//! `assets::keyed_build_refusal` decides and `assets::check_build_stamp`
+//! reads, and unit cells beside them pin both. The one call in `main` that
+//! turns the decision into an exit 1 was run by no cell: the battery deleted
+//! it and every test stayed green. These cells spawn the built server
+//! (`CARGO_BIN_EXE_yokohama-web`, the way `yokohama-cli`'s `piped_dogfood`
+//! spawns the CLI) over a scratch `dist` and read what the PROCESS does:
+//!
+//! - a stamp saying the client was built with a Turnstile site key, behind
+//!   `cf-access` — the process exits 1 before it listens, and its stderr is
+//!   the pure rule's own sentence for the same inputs (the catcher);
+//! - the same stamp at the `open` door — the process starts (a control: what
+//!   the catcher reads is the stamp under a door, not the stamp alone);
+//! - no stamp at all, behind `cf-access` — the process starts and says
+//!   nothing about a stamp (a control: a `dist` built before the stamp runs).
+//!
+//! **Every wait is bounded.** Both pipes are read on their own threads into
+//! channels; a start is polled every 50 ms for its listening line or its exit,
+//! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
+//! [`Server`] kills and reaps its child when dropped, so a cell that fails
+//! mid-wait leaves no process listening behind it.
+//!
+//! **The child's environment is the cell's own.** Every inherited `YOKOHAMA_`
+//! variable is removed from the child, so a developer's shell cannot change
+//! what start reads, and only what a start needs is set: the door, the scratch
+//! `dist`, a store directory under the scratch root, and port 0 — the OS picks
+//! a port nobody holds at the moment of the bind, so the cells run in parallel
+//! with each other and on a busy machine without a collision (the listening
+//! line names the configured port, so it reads `:0`). `Command::env` sets the
+//! CHILD's environment, never this process's, so nothing here mutates the test
+//! runner's environment (`identity::from_env_value`'s rule).
+
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use yokohama_web::assets::{keyed_build_refusal, Stamp, BUILD_STAMP};
+use yokohama_web::identity::{IdentityMode, ENV_VAR as IDENTITY_VAR};
+
+/// How long a start may take to show what it does: exit, or listen.
+const BOUND: Duration = Duration::from_secs(20);
+
+/// How long a reaped child's pipes may take to deliver the rest and close.
+const DRAIN: Duration = Duration::from_secs(5);
+
+/// The start of the line `main` prints once it has bound its port, and only
+/// then.
+const LISTENING: &str = "yokohama-web listening on ";
+
+/// A stamp as `web/vite.config.ts` writes it, all six build values `true`:
+/// the client was built with a Turnstile site key.
+const KEYED_STAMP: &str = r#"{
+  "project_url": true,
+  "blurb": true,
+  "notice": true,
+  "release_feed": true,
+  "site_url": true,
+  "turnstile_sitekey": true
+}
+"#;
+
+/// A scratch root under the target directory's test scratch area, unique per
+/// cell and run, holding an empty `dist`. Removed when dropped — even when the
+/// cell panics — and only ever this root, which the cell created.
+struct Scratch {
+    root: PathBuf,
+}
+
+impl Scratch {
+    fn new(cell: &str) -> Self {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("start-refusal-{cell}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(root.join("dist")).expect("a scratch dist");
+        Self { root }
+    }
+
+    fn dist(&self) -> PathBuf {
+        self.root.join("dist")
+    }
+
+    /// The stamp's path as `check_build_stamp` shows it in its sentence: the
+    /// served root joined with the stamp's name, displayed.
+    fn stamp_shown(&self) -> String {
+        self.dist().join(BUILD_STAMP).display().to_string()
+    }
+
+    fn write_stamp(&self, text: &str) {
+        std::fs::write(self.dist().join(BUILD_STAMP), text).expect("the stamp writes");
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Every line `pipe` carries, newline included, on a channel that disconnects
+/// when the pipe closes.
+fn lines_of(pipe: impl Read + Send + 'static) -> Receiver<String> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        loop {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(String::from_utf8_lossy(&line).into_owned()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    rx
+}
+
+/// The rest of what a closed pipe carried, read until its channel
+/// disconnects — bounded, since a pipe that never closes belongs to a process
+/// that never went away.
+fn drain(pipe: &Receiver<String>, deadline: Instant) -> String {
+    let mut text = String::new();
+    loop {
+        match pipe.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => text.push_str(&line),
+            Err(RecvTimeoutError::Disconnected) => return text,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("a pipe of the reaped server stayed open past {DRAIN:?}; it carried {text:?}")
+            }
+        }
+    }
+}
+
+/// What a start showed within [`BOUND`].
+enum Start {
+    /// The process exited, with this status.
+    Exited(ExitStatus),
+    /// The process printed its listening line (trimmed) and was running.
+    Listening(String),
+    /// Neither, by the bound.
+    Silent,
+}
+
+/// The built server, spawned over a scratch root behind one door; killed and
+/// reaped when dropped.
+struct Server {
+    child: Child,
+    stdout: Receiver<String>,
+    stderr: Receiver<String>,
+    /// What stdout carried while [`Server::start`] watched it.
+    printed: String,
+}
+
+impl Server {
+    fn spawn(door: &str, scratch: &Scratch) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yokohama-web"));
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("YOKOHAMA_") {
+                command.env_remove(&key);
+            }
+        }
+        let mut child = command
+            .env(IDENTITY_VAR, door)
+            .env("YOKOHAMA_WEB_DIST", scratch.dist())
+            .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
+            .env("YOKOHAMA_WEB_PORT", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the server binary spawns");
+        let stdout = lines_of(child.stdout.take().expect("stdout is piped"));
+        let stderr = lines_of(child.stderr.take().expect("stderr is piped"));
+        Self { child, stdout, stderr, printed: String::new() }
+    }
+
+    /// Poll every 50 ms, up to [`BOUND`], for the listening line or an exit.
+    fn start(&mut self) -> Start {
+        let deadline = Instant::now() + BOUND;
+        loop {
+            while let Ok(line) = self.stdout.try_recv() {
+                self.printed.push_str(&line);
+                if line.starts_with(LISTENING) {
+                    return Start::Listening(line.trim_end().to_string());
+                }
+            }
+            if let Some(status) = self.child.try_wait().expect("the child's status reads") {
+                return Start::Exited(status);
+            }
+            if Instant::now() >= deadline {
+                return Start::Silent;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whether the process has not exited.
+    fn running(&mut self) -> bool {
+        self.child.try_wait().expect("the child's status reads").is_none()
+    }
+
+    /// Kill the process if it still runs, reap it, and return its status and
+    /// everything each pipe carried.
+    fn finish(&mut self) -> (ExitStatus, String, String) {
+        let _ = self.child.kill();
+        let status = self.child.wait().expect("the child is reaped");
+        let deadline = Instant::now() + DRAIN;
+        let mut stdout = std::mem::take(&mut self.printed);
+        stdout.push_str(&drain(&self.stdout, deadline));
+        (status, stdout, drain(&self.stderr, deadline))
+    }
+
+    /// The listening line, or a failure naming what the process did instead.
+    fn listening(&mut self, what: &str) -> String {
+        match self.start() {
+            Start::Listening(line) => line,
+            Start::Exited(status) => {
+                let (_, stdout, stderr) = self.finish();
+                panic!("{what}: the server exited ({status}) instead of listening; stdout {stdout:?}, stderr {stderr:?}")
+            }
+            Start::Silent => {
+                let (_, stdout, stderr) = self.finish();
+                panic!(
+                    "{what}: the server neither listened nor exited within {BOUND:?}; stdout {stdout:?}, stderr \
+                     {stderr:?}"
+                )
+            }
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// No stamp sentence of any of the rule's three shapes: each names the stamp
+/// file, and each says "Turnstile site key".
+fn assert_no_stamp_sentence(stderr: &str, shown: &str, what: &str) {
+    assert!(!stderr.contains(shown), "{what}: stderr names the stamp file: {stderr:?}");
+    assert!(!stderr.contains("Turnstile site key"), "{what}: stderr speaks of a site key: {stderr:?}");
+}
+
+/// **The catcher** (finding F-1): a client built with a Turnstile site key
+/// behind `cf-access` — the process exits 1 BEFORE it listens (nothing on
+/// stdout, where the listening line would be), and its stderr is exactly the
+/// sentence `keyed_build_refusal` builds for the same stamp, file and door,
+/// which names the file, the key, `YOKOHAMA_TURNSTILE_SITEKEY` and the door.
+/// Mutant: the `check_build_stamp` call in `main` deleted — the server
+/// starts, and this cell fails on its listening line.
+#[test]
+fn a_keyed_build_behind_cf_access_exits_1_before_it_listens_saying_the_rule_s_own_sentence() {
+    let scratch = Scratch::new("keyed-cf-access");
+    scratch.write_stamp(KEYED_STAMP);
+    let shown = scratch.stamp_shown();
+    let expected = keyed_build_refusal(Stamp::Text(KEYED_STAMP), &shown, IdentityMode::CfAccess)
+        .expect_err("the rule refuses a keyed stamp behind cf-access");
+    for part in [
+        shown.as_str(),
+        "says the client was built with a Turnstile site key",
+        "YOKOHAMA_TURNSTILE_SITEKEY",
+        "YOKOHAMA_WEB_IDENTITY is cf-access",
+    ] {
+        assert!(expected.contains(part), "the rule's sentence names {part:?}: {expected}");
+    }
+
+    let mut server = Server::spawn("cf-access", &scratch);
+    match server.start() {
+        Start::Exited(status) => {
+            let (_, stdout, stderr) = server.finish();
+            assert_eq!(status.code(), Some(1), "the refusal exits 1; stderr {stderr:?}");
+            assert_eq!(stdout, "", "nothing printed before the exit, so it never listened");
+            assert_eq!(stderr, format!("{expected}\n"), "stderr is the rule's sentence, whole");
+        }
+        Start::Listening(line) => {
+            let (_, _, stderr) = server.finish();
+            panic!(
+                "the server STARTED with a keyed client build behind cf-access — it printed {line:?} and its stderr \
+                 was {stderr:?}: the start refusal in main did not run"
+            )
+        }
+        Start::Silent => {
+            let (_, stdout, stderr) = server.finish();
+            panic!(
+                "the server did not exit within {BOUND:?} with a keyed client build behind cf-access (killed); \
+                 stdout {stdout:?}, stderr {stderr:?}"
+            )
+        }
+    }
+}
+
+/// **The control at the open door**: the SAME keyed stamp under `open` — the
+/// door a keyed build is for — starts, is still running when killed, and
+/// prints no stamp sentence. So what the catcher reads is the stamp under a
+/// door, not the stamp alone. A build without the `open-door` feature refuses
+/// `open` by name before the stamp is read, so the cell is that feature's.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_same_keyed_build_at_the_open_door_starts_and_says_nothing_of_the_stamp() {
+    let scratch = Scratch::new("keyed-open");
+    scratch.write_stamp(KEYED_STAMP);
+    let shown = scratch.stamp_shown();
+    assert_eq!(
+        keyed_build_refusal(Stamp::Text(KEYED_STAMP), &shown, IdentityMode::Open),
+        Ok(()),
+        "the rule asks nothing at the open door",
+    );
+
+    let mut server = Server::spawn("open", &scratch);
+    let line = server.listening("a keyed build at the open door");
+    assert!(server.running(), "still running when killed, after {line:?}");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+    assert_no_stamp_sentence(&stderr, &shown, "a keyed build at the open door");
+}
+
+/// **The control with no stamp**: a `dist` with no `build-values.json` (one
+/// built before the stamp) behind `cf-access` — the rule reads `Absent` as a
+/// start, and the process starts: it listens, is still running when killed,
+/// and prints no stamp sentence.
+#[test]
+fn a_dist_with_no_stamp_behind_cf_access_starts_and_says_nothing_of_a_stamp() {
+    let scratch = Scratch::new("absent-cf-access");
+    let shown = scratch.stamp_shown();
+    assert!(!Path::new(&shown).exists(), "the scratch dist holds no stamp");
+    assert_eq!(keyed_build_refusal(Stamp::Absent, &shown, IdentityMode::CfAccess), Ok(()), "the rule starts it");
+
+    let mut server = Server::spawn("cf-access", &scratch);
+    let line = server.listening("no stamp behind cf-access");
+    assert!(server.running(), "still running when killed, after {line:?}");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+    assert_no_stamp_sentence(&stderr, &shown, "no stamp behind cf-access");
+}

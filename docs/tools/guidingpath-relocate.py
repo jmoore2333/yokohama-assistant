@@ -200,7 +200,12 @@ def assemble(src: list[bytes], plan: dict) -> dict[str, bytes]:
 
 
 def check(src: list[bytes], plan: dict, written: dict[str, bytes]) -> str:
-    """Checks 1-6 over files already written; returns the check line and a line per file."""
+    """Checks 1-6 over files already written; returns the check line and a line per file.
+
+    Read from the TREE, a live file that has grown since the relocation fails check 4 with "a line
+    past the plan's end": expected once the tree has moved on after the relocation. The proof is
+    `check --at 054b1e4f`, which reads the files at the relocation's own commit.
+    """
     files = preflight(src, plan)
     moved = kept = inserted = 0
     report: list[str] = []
@@ -238,7 +243,10 @@ def check(src: list[bytes], plan: dict, written: dict[str, bytes]) -> str:
                 pos += count
                 new_here += count
         if pos != len(got):
-            raise Fail(f"{path}:{pos + 1}: a line past the plan's end")
+            raise Fail(
+                f"{path}:{pos + 1}: a line past the plan's end — expected once the tree has moved on "
+                "after the relocation; the proof is `check --at 054b1e4f`"
+            )
         if path == LIVE:
             kept, inserted = placed_here, new_here
         else:

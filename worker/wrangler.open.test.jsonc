@@ -24,7 +24,7 @@
     "directory": "./.test-assets",
     "binding": "ASSETS",
     "html_handling": "none",
-    "not_found_handling": "none",
+    "not_found_handling": "404-page",
     "run_worker_first": ["/api/*", "/enter"]
   },
   "durable_objects": {
@@ -42,6 +42,7 @@
     "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
     "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000",
-    "YOKOHAMA_WEB_COUNT_WAKES": "on"
+    "YOKOHAMA_WEB_COUNT_WAKES": "on",
+    "YOKOHAMA_TURNSTILE": "off"
   }
 }

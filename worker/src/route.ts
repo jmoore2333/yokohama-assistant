@@ -3,9 +3,14 @@
  * alone. What each target then does is `handle`'s (`index.ts`): a create's
  * object name comes from its body, which this function never sees.
  *
- * The asset layer hands the Worker only `/api/*`, `/enter` (its
- * `run_worker_first`) and a path it has no file for, so every other path is
- * `missing`.
+ * The asset layer hands the Worker `/api/*` and `/enter` (its
+ * `run_worker_first`). It answers a miss with its own 404 page
+ * (`not_found_handling: "404-page"`): read in every request shape for a miss
+ * under an allowed prefix (`/assets/…`, `/art/…`), with no Worker
+ * invocation, on 2026-10-01 (`worker/RUNBOOK.md` §20). What answers any other
+ * miss without the edge rule was not counted, and the design expects the
+ * Worker for a request that is not a navigation (spec §2.5). Any path outside
+ * `/api/` and `/enter` that does reach the Worker is `missing`.
  */
 export type Target =
   /** No file, no route: 404 with an empty body, never `index.html`. */

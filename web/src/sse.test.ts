@@ -6,10 +6,12 @@
 // fourth — so a parser tested only on whole frames is a parser tested on the
 // one case the network does not guarantee.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, CLAIMED_USER_KEY } from "./api";
 import { parseSse, readStream, type Frame } from "./sse";
 import { fakeStream, stubApi } from "./test/harness";
+import { EDGE_CHECK, EDGE_CHECK_REPEATED, resetTurnstileForTests, setChallengeHandler } from "./turnstile";
+import { wire } from "./wire/contract";
 
 describe("the event-stream grammar", () => {
   it("yields a frame whole however the chunks fall across it", () => {
@@ -167,5 +169,72 @@ describe("the reader", () => {
     const stub = stubApi((call) => stream.reply(call));
     void readStream("/api/games/wire/stream", new AbortController().signal, () => {});
     expect(stub.calls[0]!.headers["x-yokohama-claimed-user"]).toBeUndefined();
+  });
+});
+
+// ---- cycle F: a stream the EDGE challenges (R-F6, R-FP8; spec §2.6) ---------
+//
+// **A watcher who makes no other call is not stranded** (Review Focus 4). The
+// stream is the one request a watcher holds, so when the clearance lapses it is
+// the stream's open the edge challenges — and a stream cannot show a widget.
+// The reader makes ONE `call` (`GET /api/health`, interactive), which is where
+// the widget is shown and the retry made, and then fails into the ladder, which
+// reopens the stream under the clearance (`signal.test.ts` holds the reopen).
+// A second challenge on that one call is the refusal it is: the source ends.
+describe("the reader, under the edge's challenge", () => {
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+
+  afterEach(() => {
+    resetTurnstileForTests();
+  });
+
+  it("makes ONE call to pass the check, and then fails into the ladder rather than ending (Review Focus 4)", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    let healths = 0;
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/stream")) return challenged();
+      if (call.path === "/api/health") {
+        healths += 1;
+        return healths === 1 ? challenged() : wire.health;
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const failed = await readStream("/api/games/wire/stream", new AbortController().signal, () => {}).catch(
+      (e: unknown) => e,
+    );
+    // Not a refusal — a 403 would END the source — but a failure, which the
+    // ladder is for.
+    expect(failed).toBeInstanceOf(Error);
+    expect(failed).not.toBeInstanceOf(ApiError);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    // ONE call: the health read the edge challenged, and its one retry.
+    expect(stub.matching("GET", "/api/health")).toHaveLength(2);
+  });
+
+  it("ends on the refusal when that one call is challenged again", async () => {
+    setChallengeHandler(() => Promise.resolve());
+    const stub = stubApi(() => challenged());
+    const refused = await readStream("/api/games/wire/stream", new AbortController().signal, () => {}).catch(
+      (e: unknown) => e,
+    );
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).status).toBe(403);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK_REPEATED);
+    expect(stub.calls).toHaveLength(3);
+  });
+
+  it("ends on EDGE_CHECK where no widget can be shown", async () => {
+    stubApi(() => challenged());
+    const refused = await readStream("/api/games/wire/stream", new AbortController().signal, () => {}).catch(
+      (e: unknown) => e,
+    );
+    expect((refused as ApiError).status).toBe(403);
+    expect((refused as ApiError).message).toBe(EDGE_CHECK);
   });
 });

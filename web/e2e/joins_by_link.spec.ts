@@ -539,8 +539,11 @@ test("a person holding only a link joins a locked open table and plays", async (
       // The dealing screen's designed 409, forgiven in both modes (`harness.ts`,
       // `isDealAnswer`): two lines per 409, the response and Chromium's own.
       `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers} times` +
-      // Live, how often the one allowed console error was spent.
-      (LIVE ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, b ${watchB.forgiven} times` : ""),
+      // Live, how often each allowed console error was spent, each its own count.
+      (LIVE
+        ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, b ${watchB.forgiven} times` +
+          `; the release feed's failure forgiven a ${watchA.feedForgiven}, b ${watchB.feedForgiven} times`
+        : ""),
   );
   expect(watchA.failures, "a's page reported no errors").toEqual([]);
   expect(watchB.failures, "b's page reported no errors").toEqual([]);

@@ -334,7 +334,7 @@ pub(crate) fn without_foreign_conversion(
     let bga = yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
     let converted: Vec<String> = crate::bots::foreign(record)
         .into_iter()
-        .map(|(seat, d)| (seat, d.controller))
+        .map(|(seat, d, _)| (seat, d.controller))
         .chain(crate::bots::bga_human_seats(record).into_iter().map(|seat| (seat, bga.to_string())))
         .map(|(seat, controller)| format!("warning: seat {seat} was played by controller \"{controller}\""))
         .collect();
@@ -571,8 +571,8 @@ impl ClientState {
 ///    prefix. Each tells a CLI player the seat "still plays, under the CURRENT
 ///    build" (or "will not reproduce its recorded line"): the CLI's truth, and
 ///    false here, where a foreign game reaches this screen only FINISHED — an
-///    unfinished one is the typed 409, "This server now runs … and can't
-///    continue it" — so no build plays that seat again. A same-name re-point
+///    unfinished one is the typed 409, "This server can't continue it: …" —
+///    so no build plays that seat again. A same-name re-point
 ///    (V4's name at another controller version) is the case that reaches it:
 ///    finished, it opened with the line beside the refusals that name its bot
 ///    "V4.3". **This reverses R-C18** (spec §10.8), which kept the CLI-worded
@@ -588,7 +588,7 @@ impl ClientState {
 pub fn without_version_drift(warnings: Vec<String>, record: &yokohama_core::GameRecord) -> Vec<String> {
     const DRIFT: &str = "warning: GameRecord.engine_version=";
     let seats: Vec<String> =
-        crate::bots::foreign(record).into_iter().map(|(seat, _)| format!("warning: seat {seat} records ")).collect();
+        crate::bots::foreign(record).into_iter().map(|(seat, _, _)| format!("warning: seat {seat} records ")).collect();
     warnings
         .into_iter()
         .filter(|w| !w.starts_with(DRIFT) && !seats.iter().any(|p| w.starts_with(p.as_str())))

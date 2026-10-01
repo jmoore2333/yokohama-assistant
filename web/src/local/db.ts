@@ -83,8 +83,12 @@ export interface DocRow {
  *
  *  `PendingReason` lives here rather than in `outbox.ts` for the reason
  *  [`CompatNote`] does: this module owns every shape this database holds, and
- *  the Worker compiles it without the page's imports. */
-export type PendingReason = "offline" | "signed-out" | "unknown" | "refused";
+ *  the Worker compiles it without the page's imports.
+ *
+ *  **`"challenged"` is cycle F's** (spec §2.6): the edge asked for a human
+ *  check during a pass that could not show one — the `online` event, a launch
+ *  in a hidden tab. It waits for a visible tab, never for the next `online`. */
+export type PendingReason = "offline" | "signed-out" | "unknown" | "refused" | "challenged";
 
 export type OutboxRow =
   | {

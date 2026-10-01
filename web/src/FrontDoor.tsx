@@ -6,7 +6,9 @@
 // invocations. Everything it draws comes from the BUILD or from this browser:
 // whether the friends card is drawn (`VITE_MULTIPLAYER`), the project link
 // and the blurb under the title (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`,
-// `buildValues.ts`), the bot's version (the committed
+// `buildValues.ts`), the newer release the feed names, if any (`ReleaseNotice`
+// — **the ONE request this screen makes, to another origin**: a cell asserts no
+// same-origin call), the bot's version (the committed
 // contract file `wire/production_bot.json`, which `wire_fixtures` refuses when
 // it is stale), and the games in this browser (the local host's own listing).
 // The runtime switch (`YOKOHAMA_WEB_MULTIPLAYER`) is what ENFORCES; this only
@@ -14,10 +16,17 @@
 // the server the other, the link lands on `/enter`'s own 404, whose body says
 // so.
 //
-// **"Go to the lobby" is an `<a>` and never a `fetch`.** Access answers a
+// **"Go to the lobby" is a navigation and never a `fetch`.** Access answers a
 // navigation with a `302` to another origin, which a `fetch` follows and then
 // fails opaquely; a navigation is what the browser already knows how to do,
 // and passing `/enter` is what mints the token every later request carries.
+//
+// **Under a Turnstile site key it is a BUTTON** (cycle F, R-F6; spec §2.6):
+// the click renders the widget in the friends card — pre-clearance, so the
+// cookie it sets carries every later request past the edge's one challenge
+// rule — and then makes the same plain navigation to `/enter`. The widget's
+// script is asked for on the CLICK and never at mount (the door-unmetered
+// fence); a build with no key draws the link and loads nothing at all.
 //
 // **No card art, here or on any setup screen** (`ASSETS.md`): the board is an
 // original drawing (`BoardMark`), and "How to play" draws the help panel
@@ -28,10 +37,12 @@ import { BoardMark } from "./BoardMark";
 import { VersionTag } from "./Chips";
 import { Help } from "./Help";
 import { OnThisDevice } from "./OnThisDevice";
-import { siteBlurb, type ProjectLink } from "./buildValues";
+import { siteBlurb, turnstileSiteKey, type ProjectLink } from "./buildValues";
 import { Refusal } from "./Refusal";
+import { ReleaseNotice } from "./ReleaseNotice";
 import { navigate } from "./route";
-import type { ReadinessStatus } from "./swRegister";
+import { setApplyBusy, type ReadinessStatus } from "./swRegister";
+import { challengeOnce } from "./turnstile";
 import productionBot from "./wire/production_bot.json";
 
 /** Whether this BUILD offers the other channel.
@@ -94,6 +105,12 @@ export function FrontDoor({
           <div className="door-title">
             <h1>Yokohama</h1>
             {blurb && <p className="blurb">{blurb}</p>}
+            {/* **A newer release, told and never taken** (cycle F, R-F2,
+                R-FP9): one quiet line under the blurb, above the link, which
+                draws nothing until the feed has answered and nothing for an
+                answer that is not newer. The one request this screen makes is
+                its feed's, and that is another origin. */}
+            <ReleaseNotice />
             {link && (
               <a className="project-link" href={link.href} target="_blank" rel="noopener noreferrer">
                 {link.text}
@@ -149,9 +166,13 @@ export function FrontDoor({
                   Open a table and send the link, or take a free seat at someone else&rsquo;s. You
                   can spectate games in progress, too.
                 </p>
-                <a className="primary-link" href="/enter">
-                  Go to the lobby
-                </a>
+                {turnstileSiteKey() ? (
+                  <LobbyButton />
+                ) : (
+                  <a className="primary-link" href="/enter">
+                    Go to the lobby
+                  </a>
+                )}
               </div>
             </section>
           )}
@@ -193,5 +214,74 @@ export function FrontDoor({
         )}
       </main>
     </div>
+  );
+}
+
+/** What the friends card says on a click made offline. The lobby is the
+ *  server's, so the offline door offers nothing more than this sentence — and
+ *  asks for no widget it could not reach. */
+export const LOBBY_OFFLINE = "The lobby needs a connection.";
+
+/**
+ * "Go to the lobby" in a build with a Turnstile site key (cycle F, R-F6).
+ *
+ * **The widget, then the same navigation.** The click renders the widget into
+ * the card ([`challengeOnce`], which loads the script the first time); when it
+ * passes, the pre-clearance cookie is set and `/enter` is the plain GET it
+ * always was — no token is read there or sent anywhere. **A widget that fails
+ * navigates too**: a blocked script or a refused widget is not a dead end, it
+ * is the edge's own interstitial at `/enter`, which a browser passes by itself
+ * and which is the decision that counts.
+ *
+ * **The door's own apply waits for the widget** (cycle F's fix wave; the final
+ * review's Minor 1): a release found while a person is on it would reload the
+ * door under them, so the click holds the apply ([`setApplyBusy`]) until the
+ * check settles, whichever way — `BackupControls`' restore's shape. **And the
+ * button stays disabled through the navigation** (Minor 2): the card goes back
+ * to idle only when the page is SHOWN again — brought back from the history
+ * cache, a door again rather than one waiting on a widget that has gone — so
+ * a second click while `/enter` loads cannot start a second widget.
+ */
+function LobbyButton(): React.ReactNode {
+  const [phase, setPhase] = useState<"idle" | "checking" | "offline">("idle");
+  const box = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (phase !== "checking" || !el) return;
+    const abort = new AbortController();
+    let live = true;
+    const shown = () => setPhase("idle");
+    window.addEventListener("pageshow", shown);
+    const go = () => {
+      if (!live) return;
+      window.location.assign("/enter");
+    };
+    setApplyBusy(true);
+    void challengeOnce(el, abort.signal)
+      .then(go, go)
+      .finally(() => setApplyBusy(false));
+    return () => {
+      live = false;
+      abort.abort();
+      window.removeEventListener("pageshow", shown);
+    };
+  }, [phase]);
+  return (
+    <>
+      <button
+        type="button"
+        className="primary-link"
+        disabled={phase === "checking"}
+        onClick={() => setPhase(navigator.onLine === false ? "offline" : "checking")}
+      >
+        Go to the lobby
+      </button>
+      {phase === "checking" && <div ref={box} className="door-widget" />}
+      {phase === "offline" && (
+        <p className="muted door-offline" role="status">
+          {LOBBY_OFFLINE}
+        </p>
+      )}
+    </>
   );
 }

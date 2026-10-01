@@ -28,7 +28,8 @@
 // `Events` or that an `end` frame means a table was deleted. That belongs to
 // `signal.ts`, which is the one place the four consumers meet.
 
-import { ACCESS_CHALLENGE, ApiError, isAccessChallenge, serverHeaders } from "./api";
+import { ACCESS_CHALLENGE, api, ApiError, isAccessChallenge, serverHeaders } from "./api";
+import { isEdgeChallenge } from "./turnstile";
 
 /** One frame off the wire: its name, and its payload as TEXT.
  *
@@ -101,6 +102,15 @@ export function parseSse(): (chunk: string) => Frame[] {
  * The `end` frame is handed to `onFrame` BEFORE this resolves: its body carries
  * the reason, and the caller needs it.
  *
+ * **An open the EDGE challenges is passed, not refused** (cycle F, R-FP8; spec
+ * §2.6). Under the no-Access door a watcher whose clearance has lapsed holds
+ * no request but this one, and a stream cannot show a widget: so the reader
+ * makes ONE `call` — `GET /api/health`, interactive — which meets the same
+ * challenge, shows the widget once and retries, and then rejects with a plain
+ * failure, which the caller's ladder reopens under the clearance. A refusal on
+ * that one call (a second challenge, Cancel, a build with no key) is thrown as
+ * it is: a 403, which ends the source with its sentence.
+ *
  * `onOpen` fires ONCE, after the response is known to be a readable 200 and
  * before any frame. **A request that has gone out is not a connection**, and
  * this is the only moment at which the difference is visible from outside: the
@@ -119,6 +129,10 @@ export async function readStream(
     signal,
   });
   if (!res.ok || !res.body) {
+    if (isEdgeChallenge(res)) {
+      await api.health();
+      throw new Error("the edge's check was passed: the stream reopens on the ladder");
+    }
     // **The EDGE's 401 is not this API's** (spec §2.1): the session in front of
     // the server expired, and the sentence for that is the one with the
     // turnstile's link. Read the same way `call` reads it, through the same

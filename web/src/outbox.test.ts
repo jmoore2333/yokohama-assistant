@@ -20,11 +20,15 @@ import {
   serverFactsTakenAt,
 } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
+import { BOUND_MS, CLAIMED_USER_KEY } from "./api";
+import { applyBusy, resetDoorAutoApplyForTests } from "./swRegister";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { DB_NAME, openDb, readOutboxRow } from "./local/db";
 import { STORAGE_BOUND_MS } from "./backup";
 import {
   archiveDisposition,
   drain,
+  drainVisible,
   enqueue,
   onArchived,
   noteGameOver,
@@ -108,11 +112,19 @@ beforeEach(() => {
   resetLocalHostForTests();
   resetOutboxForTests();
   resetFactsForTest();
+  // **A visitor who has CHOSEN A NAME** (cycle F, F-14): the corpus's health
+  // names the open door, and under it a nameless visitor's post is refused by
+  // the layer for certain — so the outbox no longer makes one (the cells at the
+  // end of this file). Every cell before them is about a send, so its visitor
+  // is the one the layer would answer.
+  localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 });
 afterEach(() => {
   resetLocalHostForTests();
   resetOutboxForTests();
   resetFactsForTest();
+  resetTurnstileForTests();
+  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 });
 
 // ---- the three states an archive fact puts Abandon and the hook in ---------
@@ -718,5 +730,626 @@ describe("a deployment whose archive route answers 404", () => {
     await reconsiderAll();
     expect(off.posts, "ONE upload in the sweep as well").toHaveLength(1);
     expect(archiveAnswer()).toBe("off");
+  });
+});
+
+// ---- cycle F: the edge's challenge, and the nameless visitor (spec §2.6) ----
+//
+// **The outbox works when nobody is watching, and a challenge needs a person.**
+// So a pass that cannot show the widget — the browser's `online` event, a
+// launch in a hidden tab — sends with `interactive: false`, and the edge's
+// challenge, met by its health read OR a send, marks EVERY waiting row
+// "waiting for a human check" rather than one row at a time (F-15). Those rows
+// wait for a VISIBLE tab — the door's launch, or the row's own Check now —
+// where `drainVisible` shows the widget through the seam and sends again. The
+// challenge is the EDGE's shape, held beside these cells; every answer the
+// layer gives is the corpus's.
+describe("the edge's challenge (cycle F)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  const visibility = (state: "visible" | "hidden") =>
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+  /** The archive is ON, remembered a minute ago — no health read is owed. */
+  const rememberedDir = () => rememberServerFacts({ ...wire.health, archive: "dir" }, Date.now() - 60_000);
+  /** Two games waiting, each for a reason that is not the edge's. */
+  const twoWaiting = async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "offline");
+    await enqueue(SECOND, "unknown");
+  };
+  const reasons = async () => (await pending()).map((r) => [r.id, r.reason]).sort();
+
+  // **F battery 28: a challenged health read marks nothing.** The health read is
+  // a fresh context's FIRST request, so it is the one the edge challenges first;
+  // an outbox that swallowed it as "nothing answered" left every row as it
+  // was, and the next `online` asked again — and was challenged again.
+  it("marks EVERY waiting row challenged when the background pass's HEALTH read meets the edge, and shows no widget (F battery 28)", async () => {
+    await twoWaiting();
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    await drain({ interactive: false });
+    expect(await reasons()).toEqual([
+      [GAME, "challenged"],
+      [SECOND, "challenged"],
+    ]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /api/health"]);
+  });
+
+  it("marks EVERY waiting row challenged when a SEND meets the edge, posting nothing after it", async () => {
+    await twoWaiting();
+    rememberedDir();
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await drain({ interactive: false });
+    expect(await reasons()).toEqual([
+      [GAME, "challenged"],
+      [SECOND, "challenged"],
+    ]);
+    expect(handler).not.toHaveBeenCalled();
+    // ONE post: the challenge answers for every row behind it.
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+  });
+
+  // **F battery 27: the non-interactive drain pops the widget.** The two
+  // background triggers — a launch in a hidden tab and the browser's `online`
+  // event — show nothing, and the second does not even ask: a challenged row
+  // waits for a person, and asking again for it is a request the edge refuses.
+  it("shows no widget from a hidden tab's launch, and the next online event retries no challenged row (F battery 27)", async () => {
+    await twoWaiting();
+    rememberedDir();
+    visibility("hidden");
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () =>
+      expect(await reasons()).toEqual([
+        [GAME, "challenged"],
+        [SECOND, "challenged"],
+      ]),
+    );
+    const asked = stub.calls.length;
+    window.dispatchEvent(new Event("online"));
+    await drain({ interactive: false }); // queued behind the event's own pass
+    expect(stub.calls, "the online event asked nothing").toHaveLength(asked);
+    expect(handler).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("retries the challenged rows through the widget at a VISIBLE tab's launch, and clears them when the sends land", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    await enqueue(SECOND, "challenged");
+    rememberedDir();
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return cleared ? wire.archivePost : challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () => expect(await pending()).toEqual([]));
+    // The widget ONCE, then the first send again and the second under the
+    // clearance.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(3);
+    stop();
+  });
+
+  it("does the same on drainVisible itself — the row's Check now — and never from a hidden tab", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    rememberedDir();
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return cleared ? wire.archivePost : challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    // Hidden: nothing — a challenged row is not a background pass's.
+    visibility("hidden");
+    await drainVisible();
+    expect(stub.calls).toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    visibility("visible");
+    await drainVisible();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(await pending()).toEqual([]);
+  });
+
+  it("keeps a row challenged when the visible check is cancelled", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    rememberedDir();
+    setChallengeHandler(() => Promise.reject(new Error("cancelled")));
+    stubApi(() => challenged());
+    await drainVisible();
+    expect(await reasons()).toEqual([[GAME, "challenged"]]);
+  });
+
+  it("says waiting for a human check", () => {
+    expect(reasonWords("challenged")).toBe("waiting for a human check");
+  });
+
+  // **F battery 29: the nameless visitor's game posted** (F-14). Under the open
+  // door a visitor who never chose a name finishes a bot game; the layer's
+  // refusal of their post is certain, so the post is not made — the row says
+  // "not signed in" (whose remedy names the name step) and nothing is sent.
+  it("marks a nameless visitor's finished game signed-out under the open door, with NO request (F battery 29)", async () => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, identity: "open", archive: "dir" }, Date.now() - 60_000);
+    const stub = stubApi((call) => {
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+    expect(stub.calls, "nothing was sent").toHaveLength(0);
+
+    // Anti-vacuity: the same visitor, NAMED, posts.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const named = stubApi((call) =>
+      call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+    );
+    await noteGameOver(SECOND);
+    expect(named.matching("POST", "/api/archive")).toHaveLength(1);
+  });
+
+  it("still posts a nameless visitor's game under any other door", async () => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, identity: "cf-access", archive: "dir" }, Date.now() - 60_000);
+    const stub = stubApi((call) =>
+      call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+    );
+    await noteGameOver(GAME);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    expect(await pending()).toEqual([]);
+  });
+});
+
+// ---- Task 6 fix round 1 ------------------------------------------------------
+//
+// **A keyed build IS the open door** (R-FP4, one build per door state:
+// production, behind Access, is built WITHOUT the site key, and only the open
+// configuration deploys a build with one; the deploy guard's check 12 holds the
+// declaration to the stamp and, from Task 7, to the open identity). So under a keyed build a
+// visitor who has chosen no name is refused an upload for CERTAIN, and nothing
+// needs to be asked to know it: no health read, no widget, no post — at game
+// over, at a launch, in a drain. A keyless build (the Access builds, the NAS)
+// cannot know its door without the read, and makes it as E did.
+describe("a nameless visitor under a keyed build (Task 6 fix round 1, Important 1)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  const reasons = async () => (await pending()).map((r) => [r.id, r.reason]).sort();
+  /** The remembered facts: the open door, keeping an archive, read `age` ms ago. */
+  const remembered = (age: number) =>
+    rememberServerFacts({ ...wire.health, identity: "open", archive: "dir" }, Date.now() - age);
+
+  beforeEach(() => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+  });
+
+  it("makes NO request at a fresh context's game over, and marks the game signed-out", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    expect(serverFactsTakenAt(), "the premise: nothing has ever been read").toBeNull();
+    await noteGameOver(GAME);
+    expect(stub.calls, "no health read and no post").toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+  });
+
+  it("makes NO request for a signed-out row at a visible launch, however stale the facts, nor for any row in a drain", async () => {
+    await enqueue(GAME, "signed-out");
+    await enqueue(SECOND, "offline");
+    remembered(2 * 3_600_000);
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    const stop = startOutbox();
+    await drainVisible(); // queued behind the launch's own pass
+    await drain({ interactive: false });
+    await sendNow(SECOND);
+    expect(stub.calls, "nothing asked of the server").toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    // The row a drain would have sent is written down for what it is waiting
+    // on — a name — and the signed-out row stays as it was.
+    expect(await reasons()).toEqual([
+      [GAME, "signed-out"],
+      [SECOND, "signed-out"],
+    ]);
+    stop();
+  });
+
+  it("retries a signed-out row through the widget at a visible launch once a name is stored", async () => {
+    await enqueue(GAME, "signed-out");
+    remembered(2 * 3_600_000);
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () => expect(await pending()).toEqual([]));
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    stop();
+  });
+
+  it("keeps E's health read in a KEYLESS build, where the door is not known without it", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "open", archive: "dir" };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /api/health"]);
+    // The read named the open door, and the post it would refuse is not made
+    // (F-14, the first commit's rule).
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+  });
+});
+
+// **The check outlasts the read's 5 s wait** (Task 6 fix round 1, Important
+// 2). The bound is the CALLER's wait, not the request's: a person passing the
+// widget in 6 s pays for an answer, and the answer is kept when it lands — the
+// fact written down, the rows sent again through the ordinary pass under the
+// clearance, with no second widget — and the door's own apply is held until
+// then, so a waiting release cannot reload the page under the overlay.
+describe("a check that outlasts the archive fact's wait (Task 6 fix round 1, Important 2)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  /** A real turn of the event loop: the store runs on `setImmediate`, which
+   *  the cell leaves real while it fakes the clock. */
+  const tick = () => new Promise<void>((r) => setImmediate(r));
+  const until = async (ok: () => boolean | Promise<boolean>, what: string) => {
+    for (let i = 0; i < 400; i += 1) {
+      if (await ok()) return;
+      await tick();
+    }
+    throw new Error(`${what} never became true`);
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetDoorAutoApplyForTests();
+  });
+
+  it("returns at the bound, keeps the answer that lands at 6 s, lands the rows with no second widget, and holds the door's apply until then", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    await enqueue(SECOND, "challenged");
+    expect(serverFactsTakenAt(), "the premise: a fresh context, nothing read").toBeNull();
+    let cleared = false;
+    const handler = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            cleared = true;
+            resolve();
+          }, 6_000);
+        }),
+    );
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    let returned = false;
+    const drained = drainVisible().then(() => {
+      returned = true;
+    });
+    await until(() => handler.mock.calls.length > 0, "the widget was asked for");
+
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => returned, "the drain returned at the bound");
+    await drained;
+    expect(cleared, "the overlay is still up").toBe(false);
+    expect(applyBusy(), "the door's apply is held under the overlay").toBe(true);
+    expect(serverFactsTakenAt()).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(6_000 - BOUND_MS);
+    expect(cleared).toBe(true);
+    await until(async () => (await pending()).length === 0, "the rows landed");
+    expect(serverFactsTakenAt(), "the answer the check paid for is kept").not.toBeNull();
+    expect(archiveAnswer()).toBe("dir");
+    expect(handler, "no second widget").toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(2);
+    await until(() => !applyBusy(), "the door's apply was released");
+  });
+
+  // **Fix round 2: the late read is BOUNDED** (CLAUDE.md, M6.5c I-86: "a read
+  // that never settles is a state, not a delay"). Past the caller's wait, a
+  // read that never answers would hold the door's apply for as long as it is
+  // out — minutes, on a stalled connection. It gets the transport's own bound
+  // after any pass in progress, and then the hold goes. **The rows stay as
+  // they are** (fix round 3): running out of time is not a check owed, and
+  // only a challenge actually seen writes "waiting for a human check".
+  it("releases the door's hold and leaves the rows as they were when a late read never answers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "offline");
+    await enqueue(SECOND, "unknown");
+    const stub = stubApi(() => new Promise<Response>(() => {}));
+    let returned = false;
+    const drained = drainVisible().then(() => {
+      returned = true;
+    });
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => returned, "the drain returned at the bound");
+    await drained;
+    expect(applyBusy(), "held past the caller's wait").toBe(true);
+    await vi.advanceTimersByTimeAsync(BOUND_MS - 1);
+    expect(applyBusy(), "held through the late read's own bound").toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => !applyBusy(), "the hold was released at the bound");
+    const reasons = (await pending()).map((r) => [r.id, r.reason]).sort();
+    expect(reasons).toEqual([
+      [GAME, "offline"],
+      [SECOND, "unknown"],
+    ]);
+    expect(stub.calls, "nothing asked again").toHaveLength(1);
+  });
+
+  // The bound's partner: a pass still in the overlay is the overlay's to end
+  // (its own 90 s), and the late read's bound starts after it — so a person
+  // who takes 12 s is not cut off at 10.
+  it("does not cut a pass that is still in the overlay: a 12 s check lands its rows", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    let cleared = false;
+    const handler = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            cleared = true;
+            resolve();
+          }, 12_000);
+        }),
+    );
+    setChallengeHandler(handler);
+    stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    void drainVisible();
+    await until(() => handler.mock.calls.length > 0, "the widget was asked for");
+    await vi.advanceTimersByTimeAsync(2 * BOUND_MS + 1_000);
+    expect(applyBusy(), "held while the overlay is up").toBe(true);
+    expect(await pending(), "not marked while the check is still running").toEqual([
+      expect.objectContaining({ id: GAME, reason: "challenged" }),
+    ]);
+    await vi.advanceTimersByTimeAsync(12_000 - (2 * BOUND_MS + 1_000));
+    await until(async () => (await pending()).length === 0, "the row landed");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await until(() => !applyBusy(), "the hold was released");
+  });
+
+  // ---- fix round 3 -----------------------------------------------------------
+  //
+  // **The hold is released by the bound itself** (the r2 re-review's Q1): a
+  // pass that went on with a remembered fact older than an hour can sit on a
+  // post that never answers, holding the serial queue. A release queued behind
+  // that work waited with it — 600 s and more. The bound's timer releases the
+  // hold directly.
+  it("releases the hold at the bound though the pass that waited still sits on a post that never answers (Q1)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, archive: "dir" }, Date.now() - 2 * 3_600_000);
+    const stub = stubApi(() => new Promise<Response>(() => {}));
+    void noteGameOver(GAME);
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(
+      () => stub.matching("POST", "/api/archive").length === 1,
+      "the pass went on to its post with the remembered fact",
+    );
+    expect(applyBusy(), "held past the caller's wait").toBe(true);
+    await vi.advanceTimersByTimeAsync(BOUND_MS - 1);
+    expect(applyBusy()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => !applyBusy(), "the hold was released at the bound, the post still out");
+  });
+
+  // **The same, when the late read ANSWERS**: the answer starts a pass of its
+  // own, which waits in the queue behind the very pass that is sitting on the
+  // post that never answers. Released at the bound by its own timer — a release
+  // chained after that queued pass would wait with it for ever.
+  it("releases the hold at the bound when the late answer's pass is queued behind a post that never answers (Q1, answered)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, archive: "dir" }, Date.now() - 2 * 3_600_000);
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health"))
+        return new Promise((resolve) => setTimeout(() => resolve({ ...wire.health, archive: "dir" }), 6_000));
+      return new Promise<Response>(() => {});
+    });
+    void noteGameOver(GAME);
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(
+      () => stub.matching("POST", "/api/archive").length === 1,
+      "the pass went on to its post with the remembered fact",
+    );
+    await vi.advanceTimersByTimeAsync(1_000); // 6 s: the late answer lands
+    await vi.advanceTimersByTimeAsync(BOUND_MS - 1_000 - 1);
+    expect(applyBusy(), "held until the bound").toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => !applyBusy(), "the hold was released at the bound, the queue still held");
+    expect(stub.matching("POST", "/api/archive"), "the answer's own pass is still queued").toHaveLength(1);
+  });
+
+  // **And the follow-up pass's own requests carry the transport's bound**: a
+  // late answer that lands sends the rows again, and a post that never
+  // answers there must not hang the queue — nor the hold — past it.
+  it("releases the hold and frees the queue when a late read answers but the follow-up's post never does", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({
+      pair: (id) => (id === "local-empty" ? { record: null, table: null } : { record: RECORD, table: TABLE }),
+    });
+    await enqueue(GAME, "offline");
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health"))
+        return new Promise((resolve) => setTimeout(() => resolve({ ...wire.health, archive: "dir" }), 6_000));
+      if (call.method === "POST" && call.path === "/api/archive") return new Promise<Response>(() => {});
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    let returned = false;
+    void drainVisible().then(() => {
+      returned = true;
+    });
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => returned, "the drain returned at the bound");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await until(() => stub.matching("POST", "/api/archive").length === 1, "the late answer's pass posted");
+    expect(applyBusy()).toBe(true);
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => !applyBusy(), "the hold was released, the post still out");
+    // The post's own bound settled its row, and the queue is free: a pass
+    // queued now runs.
+    await until(
+      async () => (await pending()).some((r) => r.id === GAME && r.reason === "offline"),
+      "the row was settled by the post's bound",
+    );
+    let next = false;
+    void noteGameOver("local-empty").then(() => {
+      next = true;
+    });
+    await until(() => next, "the queue is free");
+  });
+
+  // **Only a challenge SEEN writes "waiting for a human check"** (the r2
+  // re-review's New Breakage 1): running out of time used to write it over
+  // whatever each row had become meanwhile — a game that LANDED reappeared on
+  // the door (Q2), and a game a remembered "off" had DROPPED came back (Q2b).
+  it("leaves a row that landed during the bound landed (Q2)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, archive: "dir" }, Date.now() - 2 * 3_600_000);
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return new Promise<Response>(() => {});
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    void noteGameOver(GAME);
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    const sent = async () => {
+      const db = await openDb();
+      try {
+        return (await readOutboxRow(db, GAME))?.state === "sent";
+      } finally {
+        db.close();
+      }
+    };
+    await until(sent, "the post landed with the remembered fact");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => !applyBusy(), "the late read's bound passed");
+    expect(await sent(), "still a receipt").toBe(true);
+    expect(await pending()).toEqual([]);
+  });
+
+  it("does not bring back a row a remembered off dropped during the bound (Q2b)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, archive: "off" }, Date.now() - 2 * 3_600_000);
+    const stub = stubApi(() => new Promise<Response>(() => {}));
+    void noteGameOver(GAME);
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => !applyBusy(), "the late read's bound passed");
+    for (let i = 0; i < 20; i += 1) await tick();
+    const db = await openDb();
+    try {
+      expect(await readOutboxRow(db, GAME), "dropped, and not brought back").toBeNull();
+    } finally {
+      db.close();
+    }
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(0);
+  });
+
+  // **A pass that starts AND ends inside the bound's sleep** (the r2
+  // re-review's New Breakage 2, Q3): the edge's challenge arrived after the
+  // caller's wait, the person passed at 9.9 s, and the retried read was left
+  // 0.1 s before the bound fired. The bound now reads the pass's END, and the
+  // retry after it gets the transport's full bound.
+  it("gives the read after a pass that began and ended inside the bound its own full bound, and lands the row (Q3)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "offline");
+    const handler = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 3_900)));
+    setChallengeHandler(handler);
+    let healths = 0;
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) {
+        healths += 1;
+        if (healths === 1) return new Promise<Response>((resolve) => setTimeout(() => resolve(challenged()), 6_000));
+        return new Promise((resolve) => setTimeout(() => resolve({ ...wire.health, archive: "dir" }), 300));
+      }
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    void drainVisible();
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS); // 5 s: the caller's wait ends
+    await vi.advanceTimersByTimeAsync(1_000); // 6 s: the edge's challenge arrives
+    await until(() => handler.mock.calls.length === 1, "the widget was asked for");
+    await vi.advanceTimersByTimeAsync(3_900); // 9.9 s: the person passes
+    await until(() => stub.matching("GET", "/api/health").length === 2, "the read was sent again");
+    await vi.advanceTimersByTimeAsync(100); // 10 s: the bound's first sleep ends
+    await vi.advanceTimersByTimeAsync(200); // 10.2 s: the read answers
+    await until(async () => (await pending()).length === 0, "the row landed");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await until(() => !applyBusy(), "the hold was released");
   });
 });

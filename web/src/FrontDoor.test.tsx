@@ -11,24 +11,56 @@
 // (R-6.5b2.7): the friends card is a build value, the project link is a build
 // value, the bot's version is the committed contract file, and the games are
 // the local host's. The door asks the server nothing, and a cell below says so
-// with `fetch` as the setup file's throwing stub.
+// with `fetch` as the setup file's throwing stub — **except the one request it
+// MAY make, the release notice's (cycle F, R-F2): a cross-origin read of the
+// release feed, which the service worker leaves alone and the Worker never
+// sees.** The cell therefore answers that one URL and asserts that no SAME-
+// origin call was made.
 
 import { readFileSync } from "node:fs";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import * as values from "./buildValues";
 import { linkFor } from "./buildValues";
-import type { ReadinessStatus } from "./swRegister";
+import { applyBusy, resetDoorAutoApplyForTests, type ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
+import { resetReleaseNoticeForTests } from "./releaseFeed";
 import { stubWorker } from "./test/fakeWorker";
+import { resetTurnstileForTests, type TurnstileApi, type TurnstileOptions } from "./turnstile";
 import productionBot from "./wire/production_bot.json";
 import { topLevelRules } from "./test/css";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
  *  this device (`fakeWorker.ts`'s one permitted edit). */
 const LOCAL = "local-1";
+
+/** The release feed a cell points the build at — ANOTHER host's, like the real
+ *  one — and GitHub's shape for what it answers (a third party's payload is not
+ *  a wire payload; see `releaseFeed.test.ts`). */
+const FEED = "https://api.github.com/repos/you/yokohama-assistant/releases/latest";
+const RELEASE_PAGE = "https://github.com/you/yokohama-assistant/releases/tag/v0.7.0";
+
+/** Point the build at `FEED`, running 0.6.0, and install a `fetch` that answers
+ *  the feed with a newer release and REFUSES everything else by recording it:
+ *  the recorded list is what the cells read, because a refusal thrown inside the
+ *  notice's own request is caught there and would pass unseen. */
+function feedAnswers(): { asked: string[] } {
+  vi.stubGlobal("__YOKOHAMA_RELEASE_FEED__", FEED);
+  vi.stubGlobal("__YOKOHAMA_VERSION__", "0.6.0");
+  resetReleaseNoticeForTests();
+  const asked: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      if (String(input) !== FEED) throw new Error(`the door asked the server: ${String(input)}`);
+      return new Response(JSON.stringify({ tag_name: "v0.7.0", html_url: RELEASE_PAGE }), { status: 200 });
+    }),
+  );
+  return { asked };
+}
 
 describe("the front door", () => {
   beforeEach(() => {
@@ -37,6 +69,7 @@ describe("the front door", () => {
   });
   afterEach(() => {
     resetLocalHostForTests();
+    resetReleaseNoticeForTests();
   });
 
   it("offers multiplayer as a navigation to the turnstile", () => {
@@ -79,14 +112,51 @@ describe("the front door", () => {
     expect(grid.querySelectorAll(":scope > .door-card")).toHaveLength(2);
   });
 
-  // **The door asks the server NOTHING** (R-6.5b2.7): `fetch` is the setup
-  // file's throwing stub, so a door that asked the server for any part of
-  // itself — the bot's label included — fails here rather than being slower.
+  // **The door asks the server NOTHING** (R-6.5b2.7): every call but the feed's
+  // is refused, so a door that asked the server for any part of itself — the
+  // bot's label included — fails here rather than being slower. **The feed is
+  // the one request the door may make (cycle F, R-F2), and it is cross-origin**:
+  // the cell points the build at one and proves it WAS asked — without that the
+  // "no same-origin call" below would be true of a door that never looked — and
+  // that nothing else was.
   it("draws the games on this device, and asks the server for nothing", async () => {
+    const { asked } = feedAnswers();
     render(<FrontDoor multiplayer />);
     expect(await screen.findByRole("link", { name: LOCAL })).toHaveAttribute("href", `#/t/${LOCAL}`);
     expect(screen.getByRole("button", { name: "New game" })).toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(await screen.findByText(/A newer release is available/), "the premise: the feed was read").toBeInTheDocument();
+    expect(asked).toEqual([FEED]);
+    const sameOrigin = asked.filter((u) => new URL(u, window.location.href).origin === window.location.origin);
+    expect(sameOrigin, "no same-origin call").toEqual([]);
+  });
+
+  // **The release notice's place** (cycle F, R-F2, R-FP9): under the blurb and
+  // above the project link, inside the title's block; with no blurb, straight
+  // after the title.
+  it("draws the release notice under the blurb and above the project link", async () => {
+    feedAnswers();
+    vi.spyOn(values, "siteBlurb").mockReturnValue("First sentence. Second sentence.");
+    const { container, unmount } = render(
+      <FrontDoor multiplayer link={linkFor("https://github.com/you/yokohama-assistant")} />,
+    );
+    const notice = await waitFor(() => {
+      const p = container.querySelector("p.release-notice");
+      expect(p).not.toBeNull();
+      return p as HTMLElement;
+    });
+    expect(notice.parentElement).toHaveClass("door-title");
+    expect(container.querySelector("p.blurb")?.nextElementSibling).toBe(notice);
+    expect(notice.nextElementSibling).toHaveClass("project-link");
+    expect(within(notice).getByRole("link", { name: "v0.7.0" })).toHaveAttribute("href", RELEASE_PAGE);
+    unmount();
+    vi.spyOn(values, "siteBlurb").mockReturnValue(null);
+    const bare = render(<FrontDoor multiplayer />);
+    expect(bare.container.querySelector("h1 + p.release-notice"), "with no blurb it follows the title").not.toBeNull();
+  });
+
+  it("draws no release notice where the build has no feed", () => {
+    const { container } = render(<FrontDoor multiplayer />);
+    expect(container.querySelector(".release-notice")).toBeNull();
   });
 
   it("opens the local form from New game, which needs no door", async () => {
@@ -199,6 +269,190 @@ describe("the front door", () => {
 });
 
 
+// **The multiplayer button under a site key** (cycle F, R-F6; spec §2.6). With
+// a key in the build the friends card draws a BUTTON, and its click renders the
+// Turnstile widget in the card — pre-clearance, so the cookie the widget sets
+// carries every later request past the edge's rule — and then navigates to
+// `/enter` exactly as the link did. **Nothing is asked for at mount** (F battery
+// 26; the door-unmetered fence): the widget's script is Cloudflare's, and the
+// door injects it on the click and never before. Without a key the card keeps
+// the plain link and loads nothing at all. The widget is a FAKE held beside
+// these cells (a third party's shape, never a wire payload).
+describe("the door's lobby button under a site key (cycle F)", () => {
+  type Platform = Window & { turnstile?: TurnstileApi; __yokohamaTurnstile?: () => void };
+  const turnstileScripts = () =>
+    [...document.querySelectorAll("script")].filter((s) => s.src.startsWith("https://challenges.cloudflare.com/"));
+
+  /** `location`, standing in for jsdom's — whose `assign` is not implemented
+   *  and cannot be spied on — and counting every navigation it is asked for.
+   *  Every other read goes to jsdom's own. */
+  function countNavigations(): string[] {
+    const real = window.location;
+    const went: string[] = [];
+    vi.stubGlobal(
+      "location",
+      new Proxy(
+        {},
+        {
+          get(_t, key) {
+            if (key === "assign") return (url: string) => went.push(url);
+            const value = Reflect.get(real, key, real);
+            return typeof value === "function" ? value.bind(real) : value;
+          },
+        },
+      ),
+    );
+    return went;
+  }
+
+  /** The widget's script arriving, with a fake API that records what it is
+   *  asked. */
+  function arrive() {
+    const rendered: { container: HTMLElement; options: TurnstileOptions }[] = [];
+    const w = window as Platform;
+    w.turnstile = {
+      render: (container, options) => {
+        rendered.push({ container, options });
+        return `widget-${rendered.length}`;
+      },
+      remove: () => {},
+    };
+    w.__yokohamaTurnstile?.();
+    return rendered;
+  }
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+    resetTurnstileForTests();
+    stubWorker();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetTurnstileForTests();
+    resetDoorAutoApplyForTests();
+    for (const s of turnstileScripts()) s.remove();
+    delete (window as Platform).turnstile;
+  });
+
+  it("keeps the plain link and asks for no script where the build has no key", () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
+    render(<FrontDoor multiplayer />);
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
+    expect(screen.queryByRole("button", { name: "Go to the lobby" })).toBeNull();
+    expect(turnstileScripts()).toEqual([]);
+  });
+
+  it("draws a button, asks for nothing at mount, and on the click renders the widget in the card and then goes to /enter (F battery 26)", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    const button = screen.getByRole("button", { name: "Go to the lobby" });
+    expect(button).toHaveClass("primary-link");
+    expect(screen.queryByRole("link", { name: "Go to the lobby" })).toBeNull();
+    // At MOUNT: no script, no widget, no navigation.
+    expect(turnstileScripts(), "nothing loaded at mount").toEqual([]);
+
+    await userEvent.setup().click(button);
+    expect(turnstileScripts(), "the script, once, on the click").toHaveLength(1);
+    expect(went, "not before the widget has passed").toEqual([]);
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    const card = screen.getByRole("heading", { name: "Play with friends" }).closest("section")!;
+    expect(card.contains(rendered[0]!.container), "the widget is in the friends card").toBe(true);
+    expect(rendered[0]!.options.sitekey).toBe("site-key-fixture");
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    expect(turnstileScripts()).toHaveLength(1);
+  });
+
+  // The widget is how a person passes the edge in the page; where it cannot —
+  // a blocked script, a failed widget — the navigation still goes, and the
+  // edge's own interstitial (which a browser passes on its own) decides.
+  it("still goes to /enter when the widget fails, for the edge's own check to decide", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    rendered[0]!.options["error-callback"]("300030");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+  });
+
+  // **The widget holds the door's own apply** (cycle F's fix wave; the final
+  // review's Minor 1): a release found while a person is on the widget must
+  // not reload the door under them. Held from the click until the check
+  // settles — passed or failed — as a restore holds it. Mutants: no hold; the
+  // hold never released; released on one way out only.
+  it("holds the door's own apply from the click until the check settles, whichever way", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    expect(applyBusy(), "nothing is held before the click").toBe(false);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    expect(applyBusy(), "held while the script loads").toBe(true);
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    expect(applyBusy(), "held while the widget is up").toBe(true);
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    await waitFor(() => expect(applyBusy(), "released once it passed").toBe(false));
+  });
+  it("releases the door's own apply when the widget fails, too", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    expect(applyBusy()).toBe(true);
+    rendered[0]!.options["error-callback"]("300030");
+    await waitFor(() => expect(applyBusy(), "released once it failed").toBe(false));
+  });
+
+  // **The button stays disabled through the navigation** (Minor 2): the card
+  // goes back to idle only when the page is SHOWN again — brought back from
+  // the history cache — so a second click while `/enter` loads cannot start a
+  // second widget. Mutant: idle set as the navigation starts.
+  it("keeps the button disabled once it has navigated, and draws it again only when the page is shown again", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    expect(screen.getByRole("button", { name: "Go to the lobby" }), "disabled while the navigation is in flight").toBeDisabled();
+    expect(rendered, "and no second widget").toHaveLength(1);
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    expect(screen.getByRole("button", { name: "Go to the lobby" }), "a door again, once shown again").toBeEnabled();
+  });
+
+  it("says the lobby needs a connection when offline, and asks for nothing", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    expect(screen.getByText("The lobby needs a connection.")).toBeInTheDocument();
+    expect(turnstileScripts()).toEqual([]);
+    expect(went).toEqual([]);
+  });
+
+  // Task 2's shape, under a key: the door's mount is still no same-origin call.
+  it("asks the server for nothing at mount with a key either", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const { asked } = feedAnswers();
+    render(<FrontDoor multiplayer />);
+    expect(await screen.findByText(/A newer release is available/), "the premise: the feed was read").toBeInTheDocument();
+    expect(asked).toEqual([FEED]);
+    expect(turnstileScripts()).toEqual([]);
+  });
+});
+
 // **What the door says about the release** (M6.5b2, spec §4's four sentences).
 //
 // The status is a PROP, so these cells render each state directly rather than
@@ -219,7 +473,9 @@ describe("the door's readiness line", () => {
     readiness: "none",
     reason: null,
     updateWaiting: false,
+    staleTab: false,
     applyUpdate: vi.fn(),
+    reload: vi.fn(),
     retry: vi.fn(),
     ...over,
   });
@@ -282,9 +538,14 @@ describe("the door's readiness line", () => {
     expect(screen.queryByText(/play offline/i)).toBeNull();
   });
 
-  // **The switch is the CLICK and only the click** (spec §2.3): the offer is
-  // one quiet line, and nothing happens until a player presses it.
-  it("offers the update and switches only when it is pressed", async () => {
+  // **The door's LINE switches only when it is pressed** (spec §2.3): the offer
+  // is one quiet line, and this component does nothing until a player presses
+  // it. **The App takes the release by itself on the door** since M6.5c2 cycle
+  // F (R-F3; `useDoorAutoApply`, `swRegister.test.ts`'s "the door's own
+  // apply"), so what a player sees on a live door is that line for a moment
+  // and then a reload; the line stays the switch wherever the App's apply is
+  // held, and it is the only one off the door.
+  it("the door's release line switches only when it is pressed, and the App applies by itself", async () => {
     const applyUpdate = vi.fn();
     render(
       <FrontDoor multiplayer readiness={status({ readiness: "ready", updateWaiting: true, applyUpdate })} />,

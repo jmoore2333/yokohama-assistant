@@ -255,6 +255,10 @@ export function expectedType(path: string): string {
       return "application/manifest+json";
     case "txt":
       return "text/plain";
+    case "xml":
+      // Cycle F's sitemap (R-F12). Never precached, so no install meets it;
+      // the case is here so the table stays equal to the server's, arm for arm.
+      return "application/xml";
     default:
       return "application/octet-stream";
   }

@@ -6,10 +6,10 @@ A Rust engine, live-game CLI tracker, and verification stack for the board game 
 > [!IMPORTANT]
 > **Testing the CLI? Start with the [HTML CLI guide](docs/cli-guide.html).** Ready-to-run
 > builds for Apple Silicon macOS, Ubuntu x86_64, and Windows x86_64 are on the
-> [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases). The release this tree
-> builds is **v0.6.0**, the version set at the M6.5c2 close; the newest build is always the one on the Releases
-> page. The default bot has been the sighted evaluator `v4-step9-draft1` since v0.5.0, and each
-> download also includes an offline copy of the guide.
+> [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases). This tree builds version
+> **0.6.0**, set at the M6.5c2 close; its `v0.6.0` tag and Releases entry wait on the owner's word, and the
+> newest build is always the one on the Releases page. The default bot has been the sighted evaluator
+> `v4-step9-draft1` since v0.5.0, and each download also includes an offline copy of the guide.
 
 **Priority order:** 1) engine-validated move-by-move tracking of live games via CLI →
 2) a computer player → 3) computer vision / AR assist (deferred; the original 2025 AR-first
@@ -220,30 +220,64 @@ multiplayer on Cloudflare, the NAS container, and single player entirely inside 
 
 1. **Play at a hosted site.** Open `https://yokohama.moore.nyc` (Cloudflare) or
    `https://yokohama-nas.moore.nyc` (the NAS) and pass Cloudflare Access's login. The door offers the
-   bot, friends and the games on this device, and "Play with friends" opens the lobby, where a new table
-   seats you, the bot or an open seat.
-2. **Self-host in Docker.** [`deploy/README.md`](deploy/README.md) is the guide: build the image, then run
-   it with `YOKOHAMA_WEB_IDENTITY` set, `cf-access` behind Access or `open` for a home network, and a
-   named volume at `/data`.
+   bot, friends and the games on this device. "Play with friends" opens the lobby, where a new table
+   seats you, the bot or an open seat, optionally behind a password; share the table's link, each person
+   keeps one of two dealt cards, and the game begins.
+2. **Self-host in Docker.** [`deploy/README.md`](deploy/README.md) is the guide: build the image (its five
+   build values are `--build-arg`s, and the Turnstile site key's stays blank behind Access), then run it
+   with `YOKOHAMA_WEB_IDENTITY` set, `cf-access` behind Access or `open` for a home network, and a named
+   volume at `/data`. `YOKOHAMA_WEB_TABLE_TTL_DAYS` with an archive directory turns on an hourly sweep of
+   idle tables, and `deploy/update.sh` moves a running container to a new release tag: fetch, build, smoke,
+   swap ([§9, Updating](deploy/README.md#9-updating)).
 3. **Play the bot with no server.** The door's bot card runs the whole game in the browser, kept in its own
-   storage and playable offline once the release is installed. A local game makes no server call until it ends.
+   storage and playable offline once the release is installed. A local game makes no server call until it
+   ends. Any host that serves the release will do.
+
+**Resuming.** A game that is not over opens on the web exactly when this build's own CLI resume reconstructs
+the exact bot recorded in it: an update that still runs a game's bot keeps it playable, and one that no longer
+does refuses it with the CLI's reason, never playing it as another bot; a finished game always opens
+([`docs/web-lane.md` §6](docs/web-lane.md#6-what-a-save-file-says)).
 
 The full walkthrough is [`docs/web-lane.md` §14](docs/web-lane.md#14-getting-started).
 
 ### What both deployments run
 
-The settings a player notices, as cycle E's release set them; the table of the defaults both
+The settings a player notices, as cycle F's release set them (2026-10-01); the table of the defaults both
 run is [`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
 
 - **The door.** The NAS runs `cf-access`; the Worker runs `worker` with a dev door behind Access.
 - **The archive.** A finished game is filed to a directory on the NAS and to an R2 bucket on the Worker.
 - **The transport.** Server-sent events on the NAS, a WebSocket on the Worker.
-- **Expiry.** None on the NAS. The Worker expires a table idle for 90 days, or 7 days while a seat is
-  still empty.
+- **Expiry.** Both end a table idle for 90 days, or 7 days while a seat is still empty. The Worker does it
+  with an alarm; the NAS with an hourly sweep that refuses to start without an archive and files what it
+  ends there.
 - **Chat.** On, keeping 500 messages a room and 500 characters a message, on both.
-- **The three build values.** `YOKOHAMA_PROJECT_URL` (the door's link to this repository),
-  `YOKOHAMA_SITE_NOTICE` ("Not affiliated with Asmodee") and `YOKOHAMA_SITE_BLURB` (the door's
-  paragraph, quoted in the lane document).
+- **The build values.** `YOKOHAMA_PROJECT_URL` (the door's link to this repository),
+  `YOKOHAMA_SITE_NOTICE` ("Not affiliated with Asmodee"), `YOKOHAMA_SITE_BLURB` (the door's paragraph,
+  quoted in the lane document), `YOKOHAMA_RELEASE_FEED` (unset, so derived from the project link) and
+  `YOKOHAMA_SITE_URL`, which names the host, so each host serves its own client build. Neither host's
+  build carries a Turnstile site key: both run behind Access.
+
+### What a public deployment gets for free
+
+A build that is given its own address and repository carries a web presence with no extra service. Every
+file is static, served with no request to anything else, and left out of the offline release.
+
+- **For crawlers and language models.** `robots.txt` (everything allowed but `/api/`, `/enter` and
+  `/cdn-cgi/`) and `llms.txt` (what the site is, in the `llmstxt.org` shape). With `YOKOHAMA_SITE_URL`
+  set, also `sitemap.xml` and the `Sitemap:` line in `robots.txt`.
+- **For a link's preview.** The page's description, Open Graph and Twitter-card tags and one JSON-LD block,
+  with the canonical link and `og:url` when `YOKOHAMA_SITE_URL` is set. None of it claims any affiliation.
+- **A notice of a newer release.** When `YOKOHAMA_PROJECT_URL` is a GitHub repository, the door and the
+  lobby ask GitHub's latest-release feed from the visitor's own browser and say so when it is newer than the
+  build running. While the repository is private GitHub answers 404, and the page draws nothing.
+- **Updates with no click.** An installed door takes a waiting release itself and reloads once; a game in
+  play shows "A new version is ready. Reload to use it" and waits for the click.
+- **A 404 page.** A browser that asks for a file the release does not have gets a static page, "Nothing
+  here", with a link home, in place of a blank.
+
+Both hosts sit behind Access today, so a crawler meets Access's login: these files are what a deployment
+gets the day its hostname leaves Access ([`docs/web-lane.md` §8](docs/web-lane.md#8-the-public-doors-preconditions)).
 
 ### Every variable and the API
 
@@ -253,11 +287,15 @@ cannot drift from them.
 
 ### See it
 
-![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository link, and three cards: You against the bot, Play with friends and On this device; the footer reads Not affiliated with Asmodee](worker/docs/img/door-desktop.png)
+![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository
+link, and three cards: You against the bot, Play with friends and On this device; the footer reads
+Not affiliated with Asmodee](worker/docs/img/door-desktop.png)
 
 *The door, the first screen. It asks the server for nothing.*
 
-![The lobby as Ben sees it: Playing as ben@readme.test in the corner, Your tables empty, one open table Friday game with a password badge and a Take a seat button, and Being played empty](worker/docs/img/lobby-desktop.png)
+![The lobby as Ben sees it: Playing as ben@readme.test in the corner, Your tables empty, one open
+table Friday game with a password badge and a Take a seat button, and Being played
+empty](worker/docs/img/lobby-desktop.png)
 
 *The lobby: the tables you sit at, the open tables and the games being played.*
 
@@ -268,19 +306,18 @@ cannot drift from them.
 
 ### How it plays
 
-**Starting a game.** You sign in first — the server reads one identity header, and which header
-it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
-is me, this is *someone@else*, an open seat for anyone with the link, or the bot, which is offered
-at two players only. A table with an open seat waits, **open**, until the last seat is taken; a
-table with every seat filled opens **dealing**. Nothing is dealt onto one screen: each person opens
-the table and keeps from **their own view**. You see your own two cards on the
-**set table** — the areas with their site cards and tokens, the port and the tracks, what the
-rulebook has on the table at the step where the two starting orders are dealt and chosen in
-secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach
-your browser at all. The technologies and the goals go out at the two steps after that one, so
-they are revealed once you have chosen, and a bot seat's own two are face down: it keeps one of
-them, the record knows which, and you never see it. When the last person has kept, the game
-starts.
+**Starting a game.** You sign in first — the server reads one identity header, and which header it
+reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this is
+me, this is *someone@else*, an open seat for anyone who has the link and can pass the deployment's
+door, or the bot, which is offered at two players only. A table with an open seat waits, **open**,
+until the last seat is taken; a table with every seat filled opens **dealing**. Nothing is dealt
+onto one screen: each person opens the table and keeps from **their own view**. You see your own two
+cards on the **set table** — the areas with their site cards and tokens, the port and the tracks,
+what the rulebook has on the table at the step where the two starting orders are dealt and chosen in
+secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach your
+browser at all. The technologies and the goals go out at the two steps after that one, so they are
+revealed once you have chosen, and a bot seat's own two are face down: it keeps one of them, the
+record knows which, and you never see it. When the last person has kept, the game starts.
 
 While it runs, each browser is served **its own seat**: your hand is open, every other seat is a
 count. Your opponent's turn arrives on its own — pushed to each visible tab over one held
@@ -355,8 +392,10 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 **One table layer, three hosts, and a guide and a runbook for each server.**
 
-- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** No table expires there (the Worker's TTLs are its own); cleaning out old games by hand, and the sweep that could be built, is its §8. One image
-  carries the server and the client.
+- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** Set
+  the Worker's two TTL variables there and an hourly sweep ends idle tables, refusing to start
+  without an archive; the sweep, and the by-hand recipe for a server with no TTL, are its §8, and its §9 with
+  `deploy/update.sh` moves a running container to a release tag. One image carries the server and the client.
   - The guide leads with Access: `cf-access` behind a Cloudflare Access application, this repository's
     default.
   - It gives the open door its own section and trust model, for a home network, a LAN or a VPN with no
@@ -365,9 +404,10 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
     2026-09-22 under the mode then called `claimed`, from the M6.5c2 close (2026-09-28) it ran
     `yokohama-web:0.6.0-m6.5c2` under `cf-access`, from cycle D's close (2026-09-29) it ran
-    `yokohama-web:0.6.0-m6.5c2d`, and since cycle E's release (2026-09-30) it runs
-    `yokohama-web:0.6.0-m6.5c2e`, with server-sent events and a directory archive
-    (`deploy/RUNBOOK.md` §3.17 to §3.19 are the last three deployments' records).
+    `yokohama-web:0.6.0-m6.5c2d`, from cycle E's release (2026-09-30) it ran
+    `yokohama-web:0.6.0-m6.5c2e`, and since cycle F's release (2026-10-01) it runs
+    `yokohama-web:0.6.0-m6.5c2f`, with server-sent events, a directory archive and the hourly sweep at the
+    Worker's 90 and 7 days (`deploy/RUNBOOK.md` §3.17 to §3.20 are the last four deployments' records).
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
@@ -390,8 +430,9 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     [the two doors](worker/README.md#15-the-two-doors-access-or-an-open-door) are its identity choice:
     Access, as this repository deploys it, or an open door.
   - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md). The cleanup
-    cycles after it, M6.5c2's A to E, are recorded in
-    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record).
+    cycles after it, M6.5c2's A to F, are recorded in
+    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record). Since 2026-10-01 it
+    runs cycle F's release, the Worker's thirty-first deployment (`worker/RUNBOOK.md` §20).
 - **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in a Web
   Worker, so a game against the bot needs no server.
   - The game is kept in the browser's own storage, and the release installs whole for offline play.
@@ -432,9 +473,11 @@ The mode M6.1 called `claimed` has been named `open` since M6.5c2 (R-6.5c2.3), a
 - [M6.5c, the objects](docs/plans/2026-09-26-web-frontend-m6.5c-close.md)
 - [M6.5c2 cycle C, the hosts and the close](docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md)
 - [M6.5c2 cycle D, the code](docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md)
-- Cycle E, the finish: its close is the last row of
-  [the lane document's list](docs/web-lane.md#11-the-records-of-record). The merge of the cycles'
-  branches and the `v0.6.0` tag are the owner's word and are not claimed here.
+- [M6.5c2 cycle E, the finish](docs/plans/2026-09-30-web-frontend-m6.5c2e-close.md)
+- Cycle F, the clean finish: its record of record is its close,
+  `docs/plans/2026-10-01-web-frontend-m6.5c2f-close.md`, written at the cycle's end; the other rows of
+  [the lane document's list](docs/web-lane.md#11-the-records-of-record) lead to its plan and spec. The merge of
+  the cycles' branches and the `v0.6.0` tag are the owner's word and are not claimed here.
 
 ## Status (2026-08-30)
 

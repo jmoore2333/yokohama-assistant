@@ -27,6 +27,7 @@ import {
 } from "./signal";
 import { ACCESS_CHALLENGE, BOUND_MS, api, resetHealthReadForTest, setSignalKind, signalKind } from "./api";
 import { resetFactsForTest } from "./local/facts";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { FakeSocket } from "./test/fakeSocket";
 import { fakeStream, flush, gate, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -1157,6 +1158,109 @@ describe("the signal, over a WebSocket (M6.5c)", () => {
 // health read App makes on entering the multiplayer channel is still out. So
 // the hook waits for that answer when this page has none, and a read that
 // FAILED is the ladder's business — never a guess at the stream.
+
+// ---- cycle F: a WATCHER whose clearance lapses (Review Focus 4; spec §2.6) --
+//
+// **A watcher makes no other call**: the stream (or the socket) is the one
+// request it holds, so when the edge's clearance lapses it is the reopen the
+// edge challenges. The widget is shown ONCE — through the seam, here a handler
+// that passes at once — and then the signal reopens on its own ladder, under
+// the clearance, and says live again. Without the one `call` the stream arm
+// ENDED on the challenge's 403 ("refused"), and the socket arm laddered for
+// ever against an upgrade it cannot read: F battery 25 is the stream's cell.
+describe("the edge's challenge under a held signal (cycle F, Review Focus 4)", () => {
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+
+  beforeEach(() => {
+    resetHealthReadForTest();
+  });
+  afterEach(() => {
+    resetTurnstileForTests();
+    resetHealthReadForTest();
+  });
+
+  it("over the stream: the widget once at the stream's failure, one call, then the stream reopens on the ladder (F battery 25)", async () => {
+    const ends: End[] = [];
+    // The clearance lapsed: the edge challenges every request until the
+    // widget has passed, and lets every one through after.
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stream = fakeStream((open) => [["signal", at(open)]]);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      if (call.path === "/api/health") return wire.health;
+      return undefined;
+    });
+    const seen: Events[] = [];
+    const { result } = renderHook(() => useSignal("wire", true, (e) => seen.push(e), (e) => ends.push(e)));
+    await until(() => handler.mock.calls.length > 0, "the widget was asked for");
+    await settle();
+    // The open the edge challenged, and ONE call: the health read it
+    // challenged too, and that read's one retry.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(stub.matching("GET", "/api/health")).toHaveLength(2);
+    // Not ended: a 403 that was the edge's is not the table refusing.
+    expect(ends).toEqual([]);
+    // The ladder's first rung, and the stream reopens under the clearance.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]!);
+    });
+    await until(() => stream.opens() > 0, "the stream reopened");
+    await settle();
+    expect(result.current).toBe("live");
+    expect(seen.map((e) => e.events)).toEqual([1]);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(ends).toEqual([]);
+  });
+
+  it("over a WebSocket: the probe's call shows the widget once, hands its answer over, and the socket reopens on the ladder", async () => {
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      return call.path.includes("/events") ? at(5) : undefined;
+    });
+    const seen: Events[] = [];
+    const ends: End[] = [];
+    renderHook(() => useSignal("wire", true, (e) => seen.push(e), (e) => ends.push(e)));
+    await until(() => FakeSocket.made.length === 1, "the socket was opened");
+    // What a challenged upgrade is from inside a page: `error`, then 1006.
+    act(() => FakeSocket.made[0]!.drop());
+    await until(() => seen.length === 1, "the probe's answer was handed over");
+    expect(handler).toHaveBeenCalledTimes(1);
+    // The probe is the one call: challenged, then its one retry.
+    expect(stub.matching("GET", "/events")).toHaveLength(2);
+    expect(seen.map((e) => e.events)).toEqual([5]);
+    expect(ends).toEqual([]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]!);
+    });
+    await until(() => FakeSocket.made.length === 2, "the socket reopened");
+    act(() => {
+      FakeSocket.made[1]!.accept();
+      FakeSocket.made[1]!.frame("signal", at(6));
+    });
+    expect(seen.map((e) => e.events)).toEqual([5, 6]);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("the transport is known before anything opens (M6.5c live tier)", () => {
   /** The lobby's house channel: a `"wake"` source on `/api/stream`. */

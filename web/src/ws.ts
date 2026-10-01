@@ -16,6 +16,14 @@
 // tell an expired session from a dropped network, and does not try. It answers
 // `"closed"`, and the arm asks one plain fetch what happened.
 //
+// **The EDGE's challenge reaches this reader the same way** (cycle F, R-FP8;
+// spec §2.6): under the no-Access door an upgrade with no clearance is answered
+// `403` + `cf-mitigated: challenge`, and the page sees only the `error` and the
+// 1006. So the socket's failure path has no response to ask the predicate of,
+// and needs none: the arm's probe IS a `call`, and `call` is where the
+// challenge is met — the widget once, one retry — after which the ladder opens
+// this socket again under the clearance (`signal.test.ts`, Review Focus 4).
+//
 // **So under the open door the name rides the URL** (M6.5c2, spec §2.1): the
 // upgrade carries `claimed=<the stored name>` — `api.ts`'s `identityParams`,
 // the value the fetch header carries — set through `URLSearchParams`, so a `+`

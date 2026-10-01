@@ -960,8 +960,10 @@ mod tests {
     /// **The view names the table's bot** (M6.5c2, R-6.5c2.10): an undealt
     /// table's is the one this build deals, a dealt one's is its mirror's — the
     /// record's — and `null` where there is no bot seat, or where a dealt
-    /// table's mirror predates the field (review m7). `runs_here` compares the
-    /// TRIPLE, not the name (review m12).
+    /// table's mirror predates the field (review m7). `runs_here` asks the
+    /// CLI's resume of the whole TRIPLE, not the name (review m12; cycle F,
+    /// spec §2.3): a bot that resume seats exactly runs here whichever bot this
+    /// build deals, and a drift in the version or any knob does not.
     #[test]
     fn the_view_names_the_bot_undealt_dealt_foreign_and_before_the_field() {
         use serde_json::{json, Value};
@@ -982,6 +984,14 @@ mod tests {
         let mut foreign = dealt.clone();
         foreign.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").controller = "v2-padded".into();
         assert_eq!(bot_of(&foreign), json!({ "label": "V2", "runs_here": false }), "another bot: named, not run here");
+
+        // A bot this build's CLI resumes exactly — `lookahead-v1`'s own
+        // descriptor, all three halves — runs here, though it is not the one
+        // this build deals (cycle F, R-F4).
+        let mut genuine = dealt.clone();
+        let (controller, version, params) = yokohama_core::Contestant::LOOKAHEAD_V1_DEFAULT.descriptor();
+        genuine.turn.as_mut().expect("a mirror").bot = Some(crate::bots::BotDescriptor { controller, version, params });
+        assert_eq!(bot_of(&genuine), json!({ "label": "V2 lookahead", "runs_here": true }), "a grandfathered bot runs here");
 
         // Production's NAME at another version, or with other weights, still
         // labels "V4" (`from_parts` reads neither), and does not run here: a

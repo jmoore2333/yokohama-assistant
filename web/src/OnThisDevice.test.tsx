@@ -16,7 +16,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnThisDevice } from "./OnThisDevice";
-import { api, rememberServerFacts } from "./api";
+import { api, CLAIMED_USER_KEY, rememberServerFacts } from "./api";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { resetFactsForTest } from "./local/facts";
 import { enqueue, resetOutboxForTests } from "./outbox";
 import { isGamesList, stubApi } from "./test/harness";
@@ -27,7 +28,7 @@ import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { resetInstallForTests } from "./install";
 import { requestPersistence, resetPersistenceRequestForTests } from "./storage";
 import { stubDesktopMac, stubIosSafari, stubStorage } from "./test/platform";
-import type { ReadinessStatus } from "./swRegister";
+import { applyBusy, resetDoorAutoApplyForTests, type ReadinessStatus } from "./swRegister";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
 
@@ -174,7 +175,11 @@ describe("On this device", () => {
         ".unplayable",
       )!;
       expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
-      expect(within(block as HTMLElement).getByText(new RegExp(`played against ${played}`))).toBeInTheDocument();
+      // The server's refusal's head, worded for a game on this device (cycle
+      // F, spec §2.3): the bot, and that this server can't continue it.
+      expect(
+        within(block as HTMLElement).getByText(`played against ${played}; this server can't continue it`),
+      ).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "Back up" })).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: "local-9" })).toBeNull();
@@ -617,7 +622,9 @@ describe("the device foot's readiness line", () => {
     readiness: "none",
     reason: null,
     updateWaiting: false,
+    staleTab: false,
     applyUpdate: vi.fn(),
+    reload: vi.fn(),
     retry: vi.fn(),
     ...over,
   });
@@ -649,11 +656,16 @@ describe("the games waiting to reach the archive", () => {
     resetLocalHostForTests();
     resetOutboxForTests();
     resetFactsForTest();
+    // **A visitor who has chosen a name** (cycle F, F-14): the corpus's health
+    // names the open door, under which the outbox no longer posts for a
+    // nameless visitor — and the sends below are a named visitor's.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
   });
   afterEach(() => {
     resetLocalHostForTests();
     resetOutboxForTests();
     resetFactsForTest();
+    resetTurnstileForTests();
   });
 
   /** The section, once its rows have been read out of the store.
@@ -719,6 +731,22 @@ describe("the games waiting to reach the archive", () => {
     expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
   });
 
+  // **A keyed build IS the open door** (R-FP4; cycle F's fix wave, Task 6's
+  // deferred minor): its nameless visitor's game is written "not signed in"
+  // before any read has said which door this is (`outbox.ts`'s rule 6b), and
+  // the name step is the remedy. So the clause is drawn under a key with no
+  // door named — the arm the cell below draws WITHOUT a key, as the turnstile
+  // alone. Mutant: the clause read off the remembered door only.
+  it("names the name step under a keyed build, before any door has been named", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    stubWorker();
+    await enqueue(LOCAL, "signed-out");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toHaveAttribute("href", "/enter");
+    expect(within(box).getByText(/then choose a name in the lobby/i)).toBeInTheDocument();
+  });
+
   // **The remedy follows the door the server NAMES, even when it is named after
   // the row is drawn** (review M-5). The identity is read through the facts
   // subscription and not off the module during render — the same shape the
@@ -775,5 +803,82 @@ describe("the games waiting to reach the archive", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
     );
+  });
+
+  // **The send holds the door's own apply while it is in flight** (M6.5c2
+  // cycle F, R-FP14; spec §2.1): the door takes a waiting release by itself,
+  // and a reload in the middle of a send would lose the row's answer. Read
+  // from INSIDE the post, and after it.
+  it("holds the door's own apply while the button's send is in flight, and releases it after", async () => {
+    const during: boolean[] = [];
+    stubWorker({ pair: () => ({ record: '{"seed":1,"events":[]}', table: "{}" }) });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") {
+        during.push(applyBusy());
+        return wire.archivePost;
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    try {
+      await enqueue(LOCAL, "offline");
+      render(<OnThisDevice />);
+      const box = await waiting();
+      expect(applyBusy(), "nothing is held before the click").toBe(false);
+      await userEvent.setup().click(
+        within(box).getByRole("button", { name: `send ${LOCAL} to the archive now` }),
+      );
+      await waitFor(() => expect(during).toHaveLength(1));
+      expect(during, "held while the post was in flight").toEqual([true]);
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
+      );
+      await waitFor(() => expect(applyBusy(), "released once the send settled").toBe(false));
+    } finally {
+      resetDoorAutoApplyForTests();
+    }
+  });
+
+  // **"Waiting for a human check"** (cycle F, spec §2.6): the edge asked for a
+  // person during a pass nobody was watching. The row says so and offers the
+  // check — Check now, which shows the widget through the overlay's seam and
+  // sends again — holding the door's own apply while it does (R-FP14).
+  it("says waiting for a human check, and Check now passes the widget and sends", async () => {
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const during: boolean[] = [];
+    stubWorker({ pair: () => ({ record: '{"seed":1,"events":[]}', table: "{}" }) });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") {
+        during.push(applyBusy());
+        return cleared
+          ? wire.archivePost
+          : new Response("<html>challenge</html>", { status: 403, headers: { "cf-mitigated": "challenge" } });
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    try {
+      await enqueue(LOCAL, "challenged");
+      render(<OnThisDevice />);
+      const box = await waiting();
+      expect(within(box).getByText("waiting for a human check")).toBeInTheDocument();
+      // The check is the remedy, and not the turnstile's link or a plain send.
+      expect(within(box).queryByRole("link", { name: /sign in at the door/i })).toBeNull();
+      expect(within(box).queryByRole("button", { name: /send .* now/i })).toBeNull();
+      await userEvent.setup().click(within(box).getByRole("button", { name: /check now/i }));
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(during, "held while each post was in flight").toEqual([true, true]);
+      await waitFor(() => expect(applyBusy(), "released once the check settled").toBe(false));
+    } finally {
+      resetDoorAutoApplyForTests();
+    }
   });
 });

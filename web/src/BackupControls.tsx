@@ -37,8 +37,8 @@ import {
   type RestoreReport,
   type UnplayableGame,
 } from "./backup";
+import { setApplyBusy } from "./swRegister";
 import type { TableView } from "./types";
-import productionBot from "./wire/production_bot.json";
 
 /** What one outcome reads as. The clash NAMES its row — the id is beside it in
  *  the list — and says what is in the way rather than only that something is. */
@@ -68,13 +68,15 @@ function stamp(): string {
 /** A refusal this control met, shown where it happened rather than thrown. */
 const sentenceOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** The bot this build deals, by its label — the contract file (spec §2.4). */
-const PRODUCTION_LABEL = productionBot.label;
-
-/** What a foreign row says: the bot it was played against and the one this
- *  build runs — the server's own refusal, worded for a game on this device. */
+/** What a foreign row says: the bot it was played against, and that this
+ *  server can't continue it — the server's own refusal's head, worded for a
+ *  game on this device (cycle F, spec §2.3). It no longer names the bot this
+ *  build deals: a build plays on every bot its CLI resumes exactly, so that
+ *  bot is not the reason. The reason itself is the CLI's, and the listing
+ *  does not carry it (`TableView.bot` is `{label, runs_here}`): the game's own
+ *  screen draws it, from the 409's sentence. */
 const foreignWords = (t: TableView): string =>
-  `played against ${t.bot?.label ?? "a bot"}; this build runs ${PRODUCTION_LABEL} and cannot continue it`;
+  `played against ${t.bot?.label ?? "a bot"}; this server can't continue it`;
 
 /**
  * Every game in this browser, as one file (R-6.5b2.10).
@@ -187,6 +189,11 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
   const take = async (file: File) => {
     if (busy.current) return;
     busy.current = true;
+    // **The door's own apply waits for this** (M6.5c2 cycle F, R-FP14): the
+    // door takes a waiting release by itself, and a reload in the middle of a
+    // restore would lose its report. Released in the `finally`, whatever the
+    // restore did.
+    setApplyBusy(true);
     setError(null);
     setReport(null);
     try {
@@ -203,6 +210,7 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
       // unchanged value.
       if (input.current) input.current.value = "";
       busy.current = false;
+      setApplyBusy(false);
     }
   };
 

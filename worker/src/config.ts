@@ -34,11 +34,14 @@ export interface ShellConfig {
 type Variable = { [K in keyof Env]-?: NonNullable<Env[K]> extends string ? K : never }[keyof Env];
 
 /**
- * Every variable the Worker reads, in `Env`'s order — written as a record over
+ * Every variable `Env` declares, in its order — written as a record over
  * `Variable` so the compiler holds the two to ONE list (task 7 review, Minor
  * 3): a variable `Env` gains without a row here fails to compile, naming it,
  * and so does a row `Env` does not declare. A variable left out would skip the
- * string check (`strings`, below) without a word.
+ * string check (`strings`, below) without a word. Every one is a variable the
+ * Worker reads but `YOKOHAMA_TURNSTILE` (cycle F, R-FP2), the deploy
+ * declaration: held to a string here, like the rest, and read by nothing else
+ * in the Worker — the deploy guard and the smoke read it.
  */
 const ROWS: { readonly [K in Variable]: true } = {
   YOKOHAMA_WEB_IDENTITY: true,
@@ -54,6 +57,7 @@ const ROWS: { readonly [K in Variable]: true } = {
   YOKOHAMA_WEB_LOBBY_CHAT: true,
   YOKOHAMA_WEB_CHAT_KEEP: true,
   YOKOHAMA_WEB_CHAT_TEXT: true,
+  YOKOHAMA_TURNSTILE: true,
   YOKOHAMA_WEB_TEST_CLOCK: true,
 };
 const VARIABLES = Object.keys(ROWS) as Variable[];

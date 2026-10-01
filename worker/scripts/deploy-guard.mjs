@@ -1,7 +1,7 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
 // wrangler deploy`, and `npm run deploy:open` the same over `--config
-// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 then judge THAT file, and 5 and
-// 6 hold it to production's blocks), so nothing ships unless all nine hold. Every check that
+// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
+// 6 hold it to production's blocks), so nothing ships unless all twelve hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -36,14 +36,24 @@
 //    prints the door it reads before its verdict (`doorLine`).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
-// 5. The `assets` block is EXACTLY spec §2.3's, in `wrangler.jsonc` AND in
-//    both pool configurations, `wrangler.test.jsonc` and
-//    `wrangler.open.test.jsonc` (M6.5c2): `html_handling` and
-//    `not_found_handling` `none`, `run_worker_first` `["/api/*", "/enter"]`,
-//    the binding `ASSETS`, and no key beyond those and `directory`. Battery
-//    rows 13 and 14 (plan review M5): an asset-layer fallback answers a
-//    missing file WITHOUT invoking the Worker, and the pool reads only its
-//    own two files, so no pool cell can see production's block drift.
+// 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
+//    `wrangler.jsonc`, the open and gate files AND both pool configurations,
+//    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
+//    `html_handling` `none`, `not_found_handling` `404-page` (cycle F, R-F5;
+//    spec §2.5), `run_worker_first` `["/api/*", "/enter"]`, the binding
+//    `ASSETS`, and no key beyond those and `directory`. Battery rows 13 and 14
+//    (plan review M5): the asset layer answers what it answers WITHOUT
+//    invoking the Worker, and the pool reads only its own two files, so no
+//    pool cell can see production's block drift. `404-page` answers a miss
+//    with the static `404.html` instead of a blank — read on 2026-10-01 in
+//    every request shape for a miss under an allowed prefix, with no Worker
+//    invocation (`worker/RUNBOOK.md` §20); a miss outside the allowed set is
+//    the edge rule's to refuse, and what answers one without the rule was not
+//    counted (the design expects the Worker for a request that is not a
+//    navigation, spec §2.5) — so the page is a courtesy and the fence against
+//    a scanner is the edge rule, never this.
+//    `single-page-application` stays refused: it answered `index.html` with a
+//    200 for a missing script, which a precache would store as the script.
 // 6. The `durable_objects`, `migrations` and `r2_buckets` blocks are present
 //    in production's file and in each pool file, and each pool's EQUALS
 //    production's, read as values (the orchestrator's ruling at Task 9's
@@ -74,6 +84,50 @@
 //    assembled from an earlier `web/dist` passes; the bytes are compared, not
 //    the release names alone, because the name digests the precache list and
 //    a change to `web/src/sw.ts` alone keeps it.
+// 10. The deployed configuration does not turn on Workers Cache (M6.5c2 cycle
+//    F, R-F3, R-FP13; spec §2.1): a `cache` block whose `enabled` is not
+//    `false` is refused WHEREVER it sits — the top level, an environment, a
+//    named export, or any nesting a later Wrangler may read one at — found by
+//    walking the parsed configuration at every depth, arrays included, and
+//    named by its whole path (Task 1 fix round 1: spec §2.1's "read as text
+//    and as values", ruled a structural read that does not depend on the
+//    guard knowing the places). With it on, "requests served from the
+//    Worker's cache are billed at the same per-request rate as requests that
+//    invoke the Worker. This includes requests to static assets" (Workers
+//    pricing, footnote 4), and the door stops being free. The block is an
+//    opt-in, so no block is off; the parse drops comments, so a comment is
+//    prose.
+// 11. The assets tree holds `404.html` (cycle F, R-F5, R-FP13; spec §2.5) —
+//    the page check 5's `404-page` answers a browser's miss with; without it
+//    the asset layer has nothing to serve and the miss is a blank again.
+//    Read off the tree the deploy uploads, never `web/dist`.
+// 12. The deploy's Turnstile DECLARATION agrees with the build it ships
+//    (cycle F, R-FP3, R-FP4; spec §2.6): the judged configuration's top-level
+//    `vars.YOKOHAMA_TURNSTILE` — `on`, `off`, or absent, which is `off`; any
+//    other value is refused rather than read as `off` — against the tree's
+//    `build-values.json`, the stamp the client build writes (six booleans
+//    naming which build values were set, never a value), whose
+//    `turnstile_sitekey` says whether the bundle carries a site key. `on`
+//    exactly when it does: `on` over a keyless build is a door whose
+//    challenged fetches have no widget to pass them, and a key under `off`
+//    renders the widget under Access (R-FP4: one client build per door
+//    state). A tree with no stamp, or a stamp that is not one, is refused
+//    naming the file. Never read by the Worker at run time. **And the
+//    identity rule** (Task 7, the orchestrator's amendment from Task 6's
+//    re-review): `on`, and a keyed stamp, stand only beside
+//    `YOKOHAMA_WEB_IDENTITY` `open`, read as the shell reads the door; under
+//    any other each is refused with ONE sentence naming the identity and the
+//    declaration, and the stamp comparison is not asked there. The client
+//    infers the open door from the presence of a site key
+//    (`web/src/outbox.ts`'s keyed-build rule), so a keyed build behind Access
+//    would silently never upload a nameless visitor's games. The open file's
+//    `on` is one of its allowed differences from production (T8-a), and a POOL
+//    file's `on` is refused whichever file is judged: the pool never deploys,
+//    so never a keyed build.
+//
+// Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
+// and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
+// a tree without one, and its sentence is the one to act on.
 //
 // Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
@@ -83,18 +137,18 @@
 // comment: stripping `//` before `JSON.parse` would corrupt every string that
 // holds one (every URL), and would choke on a trailing comma.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 import { debugModuleIn, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
 import { sourceDigest } from "./build-module.mjs";
 
-/** Spec §2.3's handling, and the binding `/api/art` reads the manifest
- *  through. */
+/** Spec §2.3's handling as cycle F amends it (`not_found_handling`, spec
+ *  §2.5), and the binding `/api/art` reads the manifest through. */
 const ASSETS = {
   html_handling: "none",
-  not_found_handling: "none",
+  not_found_handling: "404-page",
   run_worker_first: ["/api/*", "/enter"],
   binding: "ASSETS",
 };
@@ -267,6 +321,8 @@ const OPEN_DIFFERS = {
   ACCESS_TEAM_DOMAIN: undefined,
   ACCESS_AUD: undefined,
   YOKOHAMA_DEV_DOOR: undefined,
+  // The window ships a keyed build (cycle F, R-FP4): check 12 holds it there.
+  YOKOHAMA_TURNSTILE: "on",
 };
 
 /** T8-a: `sibling` equals `production` (comments are already gone, keys are
@@ -291,6 +347,33 @@ function siblingDrift(name, production, sibling, differs, failures) {
       drift(`vars.${key}`, v[key], p[key]);
     }
   }
+}
+
+/** Check 10, over the deployed configuration's parsed value: EVERY property
+ *  named `cache`, at any depth — objects and arrays alike, a `cache` block's
+ *  own contents included — refused unless its value's `enabled` is `false`.
+ *  Named by its dotted path (an array element by its index; the top level with
+ *  no prefix), so two blocks are two sentences, in the file's order. The value
+ *  is `parse`'s, the same read Wrangler makes: comments are gone, and of two
+ *  duplicate keys the last is the one read, so no path is reported twice. */
+export function cacheBlock(name, value, failures) {
+  const walk = (node, prefix) => {
+    if (Array.isArray(node)) {
+      node.forEach((item, i) => walk(item, `${prefix}${i}.`));
+      return;
+    }
+    if (!objectOf(node)) return;
+    for (const [key, child] of Object.entries(node)) {
+      if (key === "cache" && objectOf(child)?.enabled !== false) {
+        failures.push(
+          `${name} enables Workers Cache (${prefix}cache.enabled is not false) — with it on, static-asset requests are ` +
+            "billed at the Worker request rate (Workers pricing, footnote 4); remove the block",
+        );
+      }
+      walk(child, `${prefix}${key}.`);
+    }
+  };
+  walk(value, "");
 }
 
 /** Check 3, over the deployed configuration: the door, and its rules. */
@@ -365,21 +448,27 @@ function releaseOf(sw) {
   return /the release is (yokohama-release-[0-9a-f]+)\./.exec(sw)?.[1] ?? "no release name";
 }
 
+/** Whether `path` is a regular file (a directory of that name is not). */
+const isFile = (path) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+
+/** What a refusal of the assets tree's contents asks for: the client built,
+ *  then the tree assembled from it (checks 9, 11 and 12). */
+const REBUILD = "run npm run build in web/, then in worker/";
+
 /** Check 9: the tree `shown` at `tree` against the current `web/dist/sw.js`
  *  and `worker/static`. Asked only of a tree that holds a `sw.js` — check 2
  *  names a missing one. */
 function staleAssets(root, repo, tree, shown, failures) {
   const dist = join(repo, "web", "dist", "sw.js");
-  const rebuild = "run npm run build in web/, then in worker/";
   if (!existsSync(dist)) {
-    failures.push(`web/dist/sw.js is absent, so nothing says whether worker/${shown} is the current release — ${rebuild}`);
+    failures.push(`web/dist/sw.js is absent, so nothing says whether worker/${shown} is the current release — ${REBUILD}`);
   } else {
     const [assembled, current] = [readFileSync(join(tree, "sw.js"), "utf8"), readFileSync(dist, "utf8")];
     if (assembled !== current) {
       const [was, now] = [releaseOf(assembled), releaseOf(current)];
       const names =
         was === now ? `both name ${was}, so its service worker's own code moved` : `it holds ${was}, and web/dist ${now}`;
-      failures.push(`worker/${shown} was assembled from a web/dist that has since changed — ${names}: ${rebuild}`);
+      failures.push(`worker/${shown} was assembled from a web/dist that has since changed — ${names}: ${REBUILD}`);
     }
   }
   const statics = join(root, "static");
@@ -391,11 +480,110 @@ function staleAssets(root, repo, tree, shown, failures) {
   }
 }
 
+/** Check 11: the assets tree at `tree` (printed as `shown`) holds the 404 page
+ *  `not_found_handling: "404-page"` serves. */
+function notFoundPage(tree, failures, shown = tree) {
+  if (!isFile(join(tree, "404.html"))) {
+    failures.push(`${shown}/404.html is absent — not_found_handling "404-page" answers a browser's miss with it: ${REBUILD}`);
+  }
+}
+
+/** What check 12's identity rule says, after naming the file, the
+ *  declaration and the identity (the orchestrator's amendment, Task 7). */
+const KEYED_IS_OPEN =
+  "a keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of the API";
+
+/** The identity a configuration names, as check 12's sentences show it. */
+function identityShown(door) {
+  if (door === undefined) return "nothing";
+  return typeof door === "string" && door !== "" ? door : JSON.stringify(door);
+}
+
+/** Check 12: the judged configuration `config`'s (parsed `value`) Turnstile
+ *  declaration against the stamp in the tree at `tree` (printed as `shown`),
+ *  and against its door. Both are read whatever the other says, so a bad
+ *  declaration and a missing stamp are two sentences. The identity rule
+ *  comes first: `on`, or a keyed stamp, under any door but `open` is ONE
+ *  sentence naming the identity and the declaration, and the stamp is
+ *  compared with the declaration only at the open door — at any other, its
+ *  sentences' advice (build with the key, set the var on) is wrong. */
+function turnstileConsistency(config, value, tree, failures, shown = tree) {
+  const declared = objectOf(value.vars)?.YOKOHAMA_TURNSTILE;
+  const readable = declared === undefined || declared === "on" || declared === "off";
+  if (!readable) {
+    failures.push(`${config}'s vars.YOKOHAMA_TURNSTILE must be "on" or "off" (absent is off) — got ${JSON.stringify(declared)}`);
+  }
+  const door = doorOf(value);
+  const open = door === "open";
+  const on = declared === "on";
+  if (on && !open) {
+    failures.push(
+      `${config} sets YOKOHAMA_TURNSTILE on under identity ${identityShown(door)} — ${KEYED_IS_OPEN}; ` +
+        "deploy the key only with wrangler.open.jsonc",
+    );
+  }
+  const file = join(tree, "build-values.json");
+  if (!isFile(file)) {
+    failures.push(`${shown}/build-values.json is absent, so nothing says whether the build carries a Turnstile site key — ${REBUILD}`);
+    return;
+  }
+  let stamp;
+  let why;
+  try {
+    stamp = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    why = "it does not parse";
+  }
+  if (why === undefined && objectOf(stamp) === undefined) why = "it is not an object";
+  if (why === undefined && typeof stamp.turnstile_sitekey !== "boolean") why = "its turnstile_sitekey is not a boolean";
+  if (why !== undefined) {
+    failures.push(`${shown}/build-values.json is not the client build's stamp (${why}) — ${REBUILD}`);
+    return;
+  }
+  if (!readable) return;
+  if (!open) {
+    if (!on && stamp.turnstile_sitekey) {
+      failures.push(
+        `${config} leaves YOKOHAMA_TURNSTILE off under identity ${identityShown(door)} but the assets tree's build carries a ` +
+          `site key — ${KEYED_IS_OPEN}; build the client without the key, and deploy the key only with wrangler.open.jsonc`,
+      );
+    }
+    return;
+  }
+  if (on && !stamp.turnstile_sitekey) {
+    failures.push(
+      `${config} sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — ` +
+        "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
+    );
+  } else if (!on && stamp.turnstile_sitekey) {
+    // Asked only at the open door, which has no Access in front of it: a
+    // keyed build there is the open door's own, and its declaration says so.
+    failures.push(
+      `${config} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at ` +
+        "the open door declares on: set the var on, or build the client without the key",
+    );
+  }
+}
+
+/** The pool's two files never deploy, so never a keyed build (cycle F,
+ *  R-FP4): `YOKOHAMA_TURNSTILE` there is `off` or absent, whichever file the
+ *  guard judges. */
+function poolDeclaration(name, value, failures) {
+  const declared = objectOf(value.vars)?.YOKOHAMA_TURNSTILE;
+  if (declared !== undefined && declared !== "off") {
+    failures.push(
+      `${name}'s vars.YOKOHAMA_TURNSTILE must be "off" (absent is off) — the pool never deploys, so it never ships a keyed build; ` +
+        `got ${JSON.stringify(declared)}`,
+    );
+  }
+}
+
 /** Checks 3 to 7: the ones that need no build. `config` is the file the
  *  deploy ships (`--config`, default `wrangler.jsonc`): checks 3, 4 and 7
  *  judge it alone; check 5 holds production, the open file and each pool to
  *  spec §2.3's assets block, and check 6 holds the open file and each pool
- *  to production's object blocks, whichever file is named. */
+ *  to production's object blocks, whichever file is named. Check 12's pool
+ *  half rides here too (cycle F): neither pool file declares `on`. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -424,6 +612,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
     if (other) {
       assetsBlock(name, other.value, failures);
+      if (POOLS.includes(name)) poolDeclaration(name, other.value, failures);
       others.push([name, other]);
     }
   }
@@ -436,7 +625,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   return failures;
 }
 
-/** All nine checks over the worker package at `root`, inside the repository
+/** All twelve checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
 export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
@@ -458,9 +647,11 @@ export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_F
     );
   }
 
-  // Checks 3–5 report a configuration that does not parse; check 2 only needs
-  // to know where the tree is, and says nothing more when it cannot.
-  const directory = readConfig(root, config, [])?.value.assets?.directory;
+  // Checks 3–5 report a configuration that does not parse; checks 2 and 9–12
+  // only need its values, and say nothing more when they cannot be read.
+  const judged = readConfig(root, config, [])?.value;
+  if (judged) cacheBlock(config, judged, failures);
+  const directory = judged?.assets?.directory;
   if (typeof directory === "string" && directory !== "") {
     const shown = posix.normalize(directory);
     const tree = join(root, directory);
@@ -474,6 +665,8 @@ export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_F
         failures.push(`${shown}: ${e instanceof Error ? e.message : String(e)}`);
       }
       staleAssets(root, repo, tree, shown, failures);
+      notFoundPage(tree, failures, shown);
+      turnstileConsistency(config, judged, tree, failures, shown);
     }
     const debug = existsSync(tree) ? debugModuleIn(tree) : undefined;
     if (debug) {
@@ -519,7 +712,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door; " +
-      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars",
+      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
+      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
+      "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );
 }

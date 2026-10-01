@@ -72,6 +72,7 @@ pub mod outcome;
 pub mod platform;
 pub mod signal;
 pub mod store;
+pub mod sweep;
 pub mod table;
 pub mod tables;
 
@@ -206,9 +207,11 @@ impl From<games::GameError> for ApiError {
             E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
-            E::ForeignBot { played, runs } => Self {
+            // `why` rides the sentence only: the pair beside it keeps exactly
+            // `{played, runs}` (cycle F, spec §2.3).
+            E::ForeignBot { played, runs, why } => Self {
                 status: StatusCode::CONFLICT,
-                message: bots::cannot_continue(&played, &runs),
+                message: bots::cannot_continue(&played, &runs, &why),
                 table_status: None,
                 foreign_bot: Some(bots::ForeignBot { played, runs }),
             },
@@ -386,6 +389,12 @@ pub struct AppState {
     /// a test, and `identity::from_env_value`'s own doc is this crate's rule
     /// against mutating the process environment under a threaded runner.
     pub dist: std::path::PathBuf,
+    /// The two table TTLs (M6.5c2 cycle F, R-F9): what `main` hands the sweep
+    /// ([`sweep::run`]) and what `/api/health` reports through the adapter's
+    /// [`api::Host`]. [`sweep::Ttls::none`] on every constructor but
+    /// [`Self::new`], which takes the reading `main` made; a cell sets them
+    /// with [`Self::with_ttls`].
+    pub ttls: sweep::Ttls,
 }
 
 #[cfg(feature = "server")]
@@ -395,22 +404,32 @@ impl AppState {
     /// names (M6.5a, R-6.5a.9) — `YOKOHAMA_WEB_ARCHIVE_DIR` unset is no archive;
     /// set to a directory that cannot be created is an `Err` `main` exits 1
     /// on, naming the variable, the shape `ChatConfig::from_env` already has.
+    ///
+    /// **`ttls` is `main`'s reading of the two TTL variables** (M6.5c2 cycle
+    /// F, R-F9; [`sweep::Ttls::from_lookup`]), and a table TTL with no archive
+    /// is the second `Err` here, naming both variables
+    /// ([`sweep::check_archive`]): asked once the archive is resolved and
+    /// before the store is built, so a server that would throw games away
+    /// never opens one.
     pub fn new(
         identity: identity::IdentityMode,
         chat: chat::ChatConfig,
         multiplayer: Multiplayer,
+        ttls: sweep::Ttls,
     ) -> Result<Self, String> {
         let archive: Arc<dyn archive::Archive> = match archive::DirArchive::from_env()? {
             Some(dir) => Arc::new(dir),
             None => Arc::new(archive::NoArchive),
         };
+        sweep::check_archive(&ttls, archive::is_on(&archive))?;
         Ok(Self::with_store_chat_and_archive(
             Arc::new(FsStore::new(store::default_dir())),
             identity,
             chat,
             archive,
         )
-        .with_multiplayer(multiplayer))
+        .with_multiplayer(multiplayer)
+        .with_ttls(ttls))
     }
 
     /// Backed by memory, in `open` mode — the mode every test drives with a
@@ -526,6 +545,9 @@ impl AppState {
             // [`Self::with_multiplayer`] can say otherwise.
             multiplayer: Multiplayer(true),
             dist: assets::dist_dir(),
+            // No TTL, which is what an unset variable reads: only `new`,
+            // given `main`'s reading, and [`Self::with_ttls`] say otherwise.
+            ttls: sweep::Ttls::none(),
         }
     }
 
@@ -542,6 +564,14 @@ impl AppState {
     /// assert what a single-player deployment serves.
     pub fn with_multiplayer(self, multiplayer: Multiplayer) -> Self {
         Self { multiplayer, ..self }
+    }
+
+    /// This state with its two table TTLs (M6.5c2 cycle F, R-F9) — the
+    /// builder a cell takes for what `/api/health` reports and what the sweep
+    /// runs under. It asks no archive question: [`Self::new`] is where a TTL
+    /// without an archive refuses to start.
+    pub fn with_ttls(self, ttls: sweep::Ttls) -> Self {
+        Self { ttls, ..self }
     }
 
     /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
@@ -818,15 +848,16 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // On THIS host the two multiplayer facts are one answer: an axum deployment
     // that offers no multiplayer serves no game route either, because nothing
     // plays here locally (spec §3.1 — the browser host is where they differ).
-    // The NAS keeps no TTL (R-6.5c2.2): no table here expires, and
-    // `/api/health` says so (R-6.5c2.42).
+    // The TTLs are the ones the sweep runs under (M6.5c2 cycle F, R-F9), so
+    // `/api/health` reports what is in force — both `null` where none is set,
+    // as before the sweep (R-6.5c2.42).
     let host = api::Host {
         identity_name: state.identity.name(),
         signal_kind: SIGNAL_KIND,
         serves_games: state.multiplayer.0,
         multiplayer_offered: state.multiplayer.0,
-        table_ttl_days: None,
-        open_table_ttl_days: None,
+        table_ttl_days: state.ttls.table,
+        open_table_ttl_days: state.ttls.open,
     };
     let out = api::dispatch(&state.games, &host, identity, &request);
     let mut response = Response::new(axum::body::Body::from(out.body.clone()));
@@ -1250,8 +1281,8 @@ mod tests {
                 signal_kind: SIGNAL_KIND,
                 serves_games: true,
                 multiplayer_offered: true,
-                table_ttl_days: None,
-                open_table_ttl_days: None,
+                table_ttl_days: state.ttls.table,
+                open_table_ttl_days: state.ttls.open,
             };
             let out = api::dispatch(
                 &state.games,
@@ -6714,13 +6745,15 @@ mod tests {
         assert_eq!(v["chat_text"], 140);
     }
 
-    /// **`/api/health` reports no table TTL on this host** (M6.5c2 cycle E,
-    /// R-6.5c2.42; R-6.5c2.2). The Worker expires an idle table, and a table
-    /// still waiting for players sooner, and reports both TTLs so a client can
-    /// say so; the NAS keeps no TTL, and says THAT — both keys present and
-    /// `null`, never absent, because a client reading an absent key cannot
-    /// tell "no TTL" from "a server too old to say". The keys are asked by
-    /// `get`, since indexing a `Value` by a missing key also reads null.
+    /// **`/api/health` reports no table TTL on this host when none is set**
+    /// (M6.5c2 cycle E, R-6.5c2.42; R-6.5c2.2). The Worker expires an idle
+    /// table, and a table still waiting for players sooner, and reports both
+    /// TTLs so a client can say so; a NAS that sets no TTL runs no sweep
+    /// (cycle F, R-F9) and says THAT — both keys present and `null`, never
+    /// absent, because a client reading an absent key cannot tell "no TTL"
+    /// from "a server too old to say". The keys are asked by `get`, since
+    /// indexing a `Value` by a missing key also reads null. The cell beside it
+    /// reads the TTLs a state was built with.
     /// Mutants: either key dropped; a number reported where nothing expires.
     #[tokio::test]
     async fn health_reports_no_table_ttl_on_the_nas() {
@@ -6728,6 +6761,53 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v.get("table_ttl_days"), Some(&serde_json::Value::Null), "{v}");
         assert_eq!(v.get("open_table_ttl_days"), Some(&serde_json::Value::Null), "{v}");
+    }
+
+    /// **`/api/health` reports the TTLs the state was built with** (M6.5c2
+    /// cycle F, R-F9), as the Worker reports its own: the table TTL set alone
+    /// reads it and the waiting TTL's default, 7, both through the adapter's
+    /// [`api::Host`]. Mutants: either `Host` field left `None`; the two
+    /// swapped.
+    #[tokio::test]
+    async fn health_reports_the_ttls_the_state_was_built_with() {
+        let ttls = sweep::Ttls::from_lookup(|k| (k == sweep::TABLE_VAR).then(|| "90".to_string())).expect("90 days");
+        let state = Arc::new(AppState::in_memory().with_ttls(ttls));
+        let (status, v) = get_as(&state, WHO, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!((v["table_ttl_days"].as_u64(), v["open_table_ttl_days"].as_u64()), (Some(90), Some(7)), "{v}");
+        let other = Arc::new(AppState::in_memory().with_ttls(sweep::Ttls { table: Some(30), open: Some(3) }));
+        let (_, v) = get_as(&other, WHO, "/api/health").await;
+        assert_eq!((v["table_ttl_days"].as_u64(), v["open_table_ttl_days"].as_u64()), (Some(30), Some(3)), "{v}");
+    }
+
+    /// **A table TTL with no archive directory refuses to start** (M6.5c2
+    /// cycle F, R-F9; Review Focus 3; battery row 15): `AppState::new` asks
+    /// [`sweep::check_archive`] once the archive is resolved and answers its
+    /// sentence, which `main` prints and exits 1 on — before any store is
+    /// built. Read with `YOKOHAMA_WEB_ARCHIVE_DIR` unset, which this crate's
+    /// cells never set (the environment is not mutated under a threaded
+    /// runner); a run that sets it skips, as the `chmod` cell skips as root.
+    /// Mutant: the check dropped from `new`.
+    #[test]
+    fn a_ttl_without_an_archive_directory_refuses_to_start() {
+        if std::env::var_os("YOKOHAMA_WEB_ARCHIVE_DIR").is_some() {
+            return;
+        }
+        let ttls = sweep::Ttls { table: Some(90), open: Some(7) };
+        let refused = AppState::new(
+            identity::IdentityMode::Open,
+            chat::ChatConfig::default(),
+            Multiplayer(true),
+            ttls,
+        );
+        assert_eq!(
+            refused.err(),
+            Some(
+                "YOKOHAMA_WEB_TABLE_TTL_DAYS is set but YOKOHAMA_WEB_ARCHIVE_DIR is not — a sweep without an \
+                 archive throws games away; set both or neither"
+                    .to_string()
+            ),
+        );
     }
 
     /// **`?wait` is accepted and answered at once** (M6.5c2 cycle D, R-D5).

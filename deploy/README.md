@@ -16,6 +16,7 @@ What else is in this directory:
 - **`Dockerfile.runtime`** assembles an image from artifacts built elsewhere (a static musl binary and a
   built `web/dist`). That is how the NAS is deployed (RUNBOOK §1–§2).
 - **`smoke-image.sh`** checks an image under each door before you put it anywhere (§5).
+- **`update.sh`** moves a running container to a release tag: fetch, build, smoke, swap (§9).
 
 **The image contains the game's own card art**, which carries no licence grant ([`ASSETS.md`](../ASSETS.md)).
 Build it for yourself, and never push it to a public registry.
@@ -89,6 +90,13 @@ network, a LAN, or a VPN. Never put an open door on the public internet.
 The corner of the lobby and the setup screens reads "Playing as" and the name, and its action is
 **switch player**, which forgets the name and asks for another.
 
+**A Turnstile site key goes with this door and no other.** A client built with
+`YOKOHAMA_TURNSTILE_SITEKEY` (§3) is the open door's: it takes the key to mean no identity provider stands
+in front, so it holds a finished game until its player has chosen a name. Behind Access nobody chooses one,
+and every finished game would stay on its device. So build with a key only for `YOKOHAMA_WEB_IDENTITY=open`;
+the server reads the build's stamp at start and refuses a keyed build under `cf-access` or `worker`, naming
+both.
+
 **Changing one origin's door.** A browser keeps the name it typed as a display name, per origin. So an
 operator who flips one origin from `open` to `cf-access` sees that stored display name in the corner
 until "change name" replaces it, while every seat is keyed by the Access address. Two hosts at two
@@ -116,7 +124,8 @@ cached took 230 s, and `docker images` read the image's content as 42.4 MB (151.
 a reading of 2026-09-28 (M6.5c2).
 `deploy/Dockerfile.dockerignore` decides what the build sees.
 
-**The three build values** are build arguments. Each is optional, and each is checked by the build:
+**The build values** are build arguments: the door's three, and the release feed, the Turnstile site key and the
+site's own address beside them. Each is optional, and each is checked by the build:
 
 ```bash
 docker build --platform linux/amd64 -f deploy/Dockerfile \
@@ -131,12 +140,24 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_PROJECT_URL` | 200 characters | A link under the title on the first screen, and a quiet link among the lobby's actions. An absolute `https://` or `http://` URL with a host, holding no whitespace or control character. |
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
+| `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door, naming both. **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
+| `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
-- **Omit an argument, or leave it empty, for none of that value.**
+- **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
+  are the derived default and only `off` is none.
+- **The release feed is read in the visitor's browser**, once per page and, after a read, answered or refused, not
+  again in that browser for an hour. Your server never sees the request; the feed's host sees it, from the visitor's
+  address.
+- **The web presence is built from these values** (`web/scripts/presence.mjs`, the last step of `npm run build:client`):
+  `robots.txt` (everything allowed but `/api/`, `/enter` and `/cdn-cgi/`), `llms.txt` (what the site is, in the
+  `llmstxt.org` shape, with the repository link only where `YOKOHAMA_PROJECT_URL` is set), the page's description, Open
+  Graph and Twitter-card tags and one JSON-LD block. They are static files, served without a request to anything else
+  and left out of the offline release. Nothing in them names an address but the one you gave as `YOKOHAMA_SITE_URL`.
 - The blurb and the notice must hold words and no control character (a line break, a zero-width character or a bidirectional control all count). A value the build
   refuses stops the build with a message naming the variable.
 
-**Why the three are fixed at build time and not at run time:** the whole release is precached for offline
+**Why these are fixed at build time and not at run time:** the whole release is precached for offline
 play under a name that is a digest of its own bytes, and every browser checks each file against that
 digest when it installs. A server that rewrote `index.html` at start-up would fail that check in every
 browser. So each value is baked into the release, and changing one is a rebuild.
@@ -169,14 +190,16 @@ docker run -d --name yokohama-web \
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document |
+| `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
 | `YOKOHAMA_WEB_CHAT_KEEP` | a positive number of messages, or `all` | 500 a room |
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
 
-A bad value stops the server at start-up, naming the variable. `/api/health` reports the door, the
-transport, the archive and the chat limits, so a client sizes itself from the server's rules. No
-table expires on this server: it reads no TTL, and `/api/health` reports `table_ttl_days` and
-`open_table_ttl_days` as `null` (the Worker's two TTLs are its own, `worker/RUNBOOK.md` §3).
+A bad value stops the server at start-up, naming the variable, and so does a table TTL with no archive
+directory and a client built with `YOKOHAMA_TURNSTILE_SITEKEY` under any door but `open` (§2). `/api/health` reports the door, the transport, the archive, the chat limits and the two TTLs, so
+a client sizes itself from the server's rules; `table_ttl_days` and `open_table_ttl_days` read `null` while
+no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`worker/RUNBOOK.md` §3).
 
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
@@ -217,17 +240,68 @@ link, and checks the image it builds with one for the link alone (`.github/workf
 The release — the client, the WebAssembly module, the fonts, the help pictures and the card art — is
 precached whole on a first visit. The door and a game against the bot then work offline, and the app
 installs to a home screen. A single-player game lives in the browser's own storage until it is finished,
-then goes to the archive if the server keeps one. A new image is a new release: an open tab offers
-"Reload to use it" on the door, and a waiting release nobody clicks activates by itself
-once every old page has closed.
+then goes to the archive if the server keeps one. A new image is a new release, and a returning browser
+finds it by itself: the door installs it in the background and reloads once, with no click, while a
+game in play shows "A new version is ready. Reload to use it" and changes nothing until it is clicked.
+§9 says what each person sees when you update.
 
-## 8. Cleaning out old games by hand
+## 8. Cleaning out old games
 
-**No sweep runs on this server.** It reads no TTL: a table lives until its creator abandons it or you remove
-it, and `/api/health` says so (`table_ttl_days: null`). The Cloudflare host is the one with expiry
-(`worker/RUNBOOK.md` §3). A sweep here — a periodic job over the games directory that ends idle tables through
-the same delete the creator's Abandon uses, so a finished game's archive copy lands exactly once — is a
-potential feature if there is a desire for it; it is not built.
+**The sweep.** Set `YOKOHAMA_WEB_TABLE_TTL_DAYS`, and `YOKOHAMA_WEB_ARCHIVE_DIR` with it, and the server ends
+idle tables itself: one pass a minute after start, then one every hour. A table's last activity is the latest
+write to any of its three files (the table, the record and the chat, listed below): a seat taken, a keep, an
+applied move, a chat message. A pass ends:
+
+- a table still waiting for players, a seat empty, once it has stood idle `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`
+  (7 unless set), with the reason `waited`;
+- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`. A table at its
+  deal, every seat taken, waits this one.
+
+**Each pass lists before it ends anything.** It writes one `sweep-listed` line for every table it is about to
+end, and only then ends them, one `sweep-ended` line each: a pass that ends forty tables has written forty
+lines before the first one goes. Each ending is the creator's own **Abandon**. A finished game is already in
+the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`.
+A table where no move was played files nothing. If the archive cannot be written, the delete
+is refused, a `sweep-failed` line says why, and the table stays for the next pass. A table the sweep cannot
+read gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
+no marker in its place, and the log line is the record.
+
+**A sweep never throws a game away.** A TTL with no archive directory stops the server at start-up:
+
+```
+YOKOHAMA_WEB_TABLE_TTL_DAYS is set but YOKOHAMA_WEB_ARCHIVE_DIR is not — a sweep without an archive throws games away; set both or neither
+```
+
+A value that is not a whole number of days stops it too, naming the variable:
+
+```
+YOKOHAMA_WEB_TABLE_TTL_DAYS must be a whole number of days above zero — got "x"
+YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — got "x"
+```
+
+**The lines** are in the container's log (`docker logs <container>`), one JSON object each:
+
+```
+{"event":"sweep-listed","id":"<id>","idle_days":"91","reason":"expired","status":"playing"}
+{"event":"sweep-ended","id":"<id>","kept":"archive","reason":"expired"}
+{"event":"sweep-failed","error":"<the delete's reason>","id":"<id>","reason":"expired"}
+{"event":"sweep-unread","error":"<the reason>","id":"<id>"}
+```
+
+`kept` is `archive` when the game is in the archive, `nothing` when the table held no game, and `off` for a
+game with no archive to keep it, which a server that sweeps never has.
+
+**A move during a sweep.** A move can land in the seconds between a pass's listing and its delete, and the
+table is ended all the same, but the move is not lost. The delete lays its tombstone (its mark that the table is
+going) before it reads the game it files, under the lock a move's save holds from its check of that mark to its
+write. A move whose save began before the tombstone is filed with the game like every move before it. A move
+whose save begins after it is refused out loud. Every Abandon works the same way.
+
+**The sweep reads the files' modification times**, so a copy or a restore of the volume that resets them
+restarts every table's clock.
+
+**With no TTL set, no sweep runs.** A table lives until its creator abandons it or you remove it, and
+`/api/health` says so (`table_ttl_days: null`).
 
 **What is on disk.** Under `/data` (the volume §4's run command names, `yokohama-web-data`):
 
@@ -239,11 +313,9 @@ potential feature if there is a desire for it; it is not built.
 | `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
 | `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document |
 
-The table document's modification time is its last write — a keep, a status change, and every applied move
-refreshes it — so it is the "last activity" a sweep would read.
-
-**The preferred way** is the creator's **Abandon** in the lobby: it files the archive copy (once, even for a
-finished game), leaves a marker, and removes the table. Everything below is for tables nobody will abandon.
+**The preferred way** to end one table is the creator's **Abandon** in the lobby: it files the archive copy
+(once, even for a finished game) and removes the table, as the sweep does. Everything below is for a server
+with no TTL and tables nobody will abandon.
 
 **By hand, with any Docker.** The server keeps a running game's handle in memory and would write its record
 again on the next move, and a file removed under it is a cross-process conflict the server detects rather than
@@ -263,3 +335,83 @@ docker start <container>
 A table removed this way leaves the lobby at once and leaves no marker: its link answers "no such game". A game
 removed mid-play is NOT archived — only a game over and an Abandon file there — so step 2 is the only copy.
 The archive directory is never part of a sweep; it is the keep.
+
+## 9. Updating
+
+`deploy/update.sh` moves a running container to a release tag. From a checkout of this repository:
+
+```bash
+YOKOHAMA_WEB_BUILD_ENV=~/yokohama/build.env \
+YOKOHAMA_WEB_ENV=~/yokohama/run.env \
+  bash deploy/update.sh --dry-run <tag>     # print every command, run none
+YOKOHAMA_WEB_BUILD_ENV=~/yokohama/build.env \
+YOKOHAMA_WEB_ENV=~/yokohama/run.env \
+  bash deploy/update.sh <tag>
+```
+
+**What it does, in order**, stopping at the first failure:
+1. Refuses a working tree with uncommitted changes to tracked files, because the image is built from the tree and
+   an edit would ship under the tag's name.
+2. `git fetch --tags`, then `git checkout --detach refs/tags/<tag>`, so a branch of the same name is never built.
+3. `docker build --platform linux/amd64 -f deploy/Dockerfile`, with the build values from `YOKOHAMA_WEB_BUILD_ENV`
+   as `--build-arg`s (§3), tagged `yokohama-web:<tag>`.
+4. `deploy/smoke-image.sh` on that image (§5), **while the old container is still serving**.
+5. Only then the swap: `docker stop`, `docker rm`, and `docker run` with `--env-file "$YOKOHAMA_WEB_ENV"`, the
+   named volume at `/data`, and §4's other arguments.
+6. Reads the start rather than assuming it. `docker run -d` returns before the server has read its environment,
+   so the script polls the new container for up to 30 seconds, every 2: until `docker inspect` reads it running,
+   not restarting and never restarted, and its log holds the server's "listening on" line. Otherwise it prints the
+   container's last log lines, the rollback line naming the previous image, and **exits 1**.
+
+So **a build or a smoke that fails leaves the old container exactly as it was**, and the volume is never touched:
+the script removes only the stopped container, never a file or a directory. Every earlier image stays on the
+machine for a rollback. A container that does not come up is reported by that read, and the old one is already
+gone by then: the run file is the usual cause (a table TTL with no archive directory, a bad chat value), which the
+smoke cannot see, since it starts the image with its own environment.
+
+**The two files** are `NAME=value` lines, each value taken literally to the end of its line, with no quotes and no
+shell expansion; blank lines and lines starting `#` are skipped.
+- **`YOKOHAMA_WEB_BUILD_ENV`** may hold the six build values of §3 and nothing else: a name that is not one of them
+  is refused, naming it. An empty file builds with none. **It builds keyless images only:** a non-empty
+  `YOKOHAMA_TURNSTILE_SITEKEY` is refused up front, before the fetch, because the smoke starts every image under
+  `cf-access` and the server refuses to start a keyed build there (§2). A keyed image is a manual build for an
+  open-door host (§3).
+- **`YOKOHAMA_WEB_ENV`** is the container's environment, `YOKOHAMA_WEB_IDENTITY` first: the server refuses to start
+  without it, and §4's table is the rest.
+
+Both are required; a real run refuses without them before it runs anything. Four more variables are optional and
+default to §4's run command: `YOKOHAMA_WEB_CONTAINER` (`yokohama-web`), `YOKOHAMA_WEB_VOLUME`
+(`yokohama-web-data`), `YOKOHAMA_WEB_PUBLISH` (`127.0.0.1:8080:8080`; set it empty to publish no port) and
+`YOKOHAMA_WEB_NETWORK` (Docker's default network; §6's shared network for a tunnel). The script needs `git`,
+`docker`, `curl` and `python3`.
+
+**`--dry-run`** prints each command and runs none: no fetch, no checkout, no build, no container change, not even a
+read of Docker or git. Read it once before the first real run, and again after changing either file.
+
+**What people see when the container changes:**
+- **The door updates itself.** A browser that comes back finds the new release on its next visit, when a tab returns
+  into view or within 15 minutes of an open page. The door installs it in the background and reloads once, with no
+  click. The client is the same code on every host, and the update was read live on the Cloudflare host at cycle F's
+  revert: a plain reload to "Ready to play offline" on the new release in seven seconds.
+- **A game in play shows a line, and nothing reloads.** The lobby and a game screen draw "A new version is ready.
+  Reload to use it", and the click is the only switch. It is safe: a game against the bot resumes from the browser's
+  storage, and a table game rejoins by its link.
+- **The swap itself is short.** On `docker stop`'s SIGTERM the server stops taking connections and lets in-flight
+  requests finish, and a move the server has answered is already on `/data` (§4); a server-sent-events stream
+  reconnects by itself. The owner's NAS, swapped by its own script through Portainer, read 1.6 seconds from the old
+  container's stop to the new one's "listening" line (`RUNBOOK.md` §3.20).
+- **A game not yet over keeps its bot or is refused.** The server opens a game exactly when the new release can
+  reconstruct the bot recorded in it, and a game it cannot is refused with the reason, never played as another bot
+  ([`docs/web-lane.md`](../docs/web-lane.md#6-what-a-save-file-says) §6).
+
+**To roll back**, run the previous image again; the volume is the same:
+
+```bash
+docker image ls yokohama-web                     # every earlier tag is still here
+docker stop yokohama-web && docker rm yokohama-web
+docker run -d --name yokohama-web -p 127.0.0.1:8080:8080 -v yokohama-web-data:/data \
+  --env-file ~/yokohama/run.env --restart unless-stopped yokohama-web:<previous tag>
+```
+
+The script names the previous image when it swaps. [`RUNBOOK.md`](RUNBOOK.md) §5 lists what each release changed on
+the volume that an older binary cannot read.

@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { sourceDigest } from "./build-module.mjs";
-import { configFailures, configFrom, deployGuard, doorLine } from "./deploy-guard.mjs";
+import { parse } from "jsonc-parser";
+import { cacheBlock, configFailures, configFrom, deployGuard, doorLine } from "./deploy-guard.mjs";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -24,11 +25,22 @@ const RELEASE_FACTORY =
   "export function createModule(compiled) {\n  initSync({ module: compiled });\n" +
   '  return { init, debug_trap: typeof debug_trap === "function" ? debug_trap : undefined };\n}\n';
 
+/** The client build's stamp (R-FP3): six booleans naming which build values
+ *  were set, `turnstile_sitekey` as given. */
+const STAMP = (sitekey) =>
+  `${JSON.stringify(
+    { project_url: false, blurb: false, notice: false, release_feed: false, site_url: false, turnstile_sitekey: sitekey },
+    null,
+    2,
+  )}\n`;
+/** The static 404 page a browser's miss is answered with (spec §2.5). */
+const NOT_FOUND_PAGE = '<!doctype html><title>Nothing here</title><meta name="robots" content="noindex">\n';
+
 const ASSETS_BLOCK = (directory) => `"assets": {
     "directory": "${directory}",
     "binding": "ASSETS",
     "html_handling": "none",
-    "not_found_handling": "none",
+    "not_found_handling": "404-page",
     "run_worker_first": ["/api/*", "/enter"]
   }`;
 
@@ -77,6 +89,16 @@ const OPEN = PRODUCTION.replace(
     "YOKOHAMA_WEB_IDENTITY": "open"
   }`,
 );
+
+/** The open window's FILE (R-6.5c2.39) as cycle F commits it: the open door
+ *  with the Turnstile declaration `on` (R-FP4) — the one difference from
+ *  production its door adds (the guard's `OPEN_DIFFERS`). `OPEN` above is the
+ *  door's shape, which cells also deploy as production's file. */
+const OPEN_FILE = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open",\n    "YOKOHAMA_TURNSTILE": "on"');
+
+/** A tree whose client build carries a site key (R-FP3): what the open
+ *  file's `on` is held to (check 12). */
+const KEYED = { "assets/build-values.json": STAMP(true) };
 
 /** Production's configuration with the dev door shut (R-E10). */
 const GATE = PRODUCTION.replace(
@@ -143,9 +165,11 @@ function worker(changes = {}, since = {}) {
     "assets/index.html": INDEX,
     "assets/sw.js": SW,
     "assets/_headers": "/*\n  X-Content-Type-Options: nosniff\n",
+    "assets/404.html": NOT_FOUND_PAGE,
+    "assets/build-values.json": STAMP(false),
     "static/_headers": "/*\n  X-Content-Type-Options: nosniff\n",
     "wrangler.jsonc": PRODUCTION,
-    "wrangler.open.jsonc": OPEN,
+    "wrangler.open.jsonc": OPEN_FILE,
     "wrangler.gate.jsonc": GATE,
     "wrangler.test.jsonc": TEST_CONFIG,
     "wrangler.open.test.jsonc": OPEN_TEST_CONFIG,
@@ -272,9 +296,9 @@ describe("the deploy guard", () => {
   // wrangler.test.jsonc, and an asset-layer fallback answers without invoking
   // the Worker, so no pool cell can see production's block change; this can.
   it("refuses production's assets block when it is not spec §2.3's", () => {
-    const spa = PRODUCTION.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"');
+    const spa = PRODUCTION.replace('"not_found_handling": "404-page"', '"not_found_handling": "single-page-application"');
     expect(deployGuard(worker({ "wrangler.jsonc": spa }))).toEqual([
-      expect.stringMatching(/^wrangler\.jsonc's assets\.not_found_handling must be "none"/),
+      expect.stringMatching(/^wrangler\.jsonc's assets\.not_found_handling must be "404-page"/),
     ]);
   });
   it("refuses the pool's assets block when it drifts from production's", () => {
@@ -523,9 +547,9 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.open.test.jsonc": drift }))).toEqual([
       expect.stringMatching(/^wrangler\.open\.test\.jsonc's durable_objects differs from wrangler\.jsonc's/),
     ]);
-    const spa = OPEN_TEST_CONFIG.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"');
+    const spa = OPEN_TEST_CONFIG.replace('"not_found_handling": "404-page"', '"not_found_handling": "single-page-application"');
     expect(deployGuard(worker({ "wrangler.open.test.jsonc": spa }))).toEqual([
-      expect.stringMatching(/^wrangler\.open\.test\.jsonc's assets\.not_found_handling must be "none"/),
+      expect.stringMatching(/^wrangler\.open\.test\.jsonc's assets\.not_found_handling must be "404-page"/),
     ]);
     expect(deployGuard(worker({ "wrangler.open.test.jsonc": null }))).toEqual(["wrangler.open.test.jsonc is absent"]);
   });
@@ -534,7 +558,7 @@ describe("the deploy guard", () => {
   // Mutants: the named file ignored (production judged); the door line
   // reading production; the plain run judging the open file.
   it("judges the configuration it is given, and the plain run judges production", () => {
-    const at = (files) => deployGuard(worker(files), undefined, "wrangler.open.jsonc");
+    const at = (files) => deployGuard(worker({ ...KEYED, ...files }), undefined, "wrangler.open.jsonc");
     expect(at({})).toEqual([]);
     expect(doorLine(worker(), "wrangler.open.jsonc")).toBe(
       "wrangler.open.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
@@ -587,11 +611,11 @@ describe("the deploy guard", () => {
   // a deploy of either must ship the objects, migration and bucket the other
   // does. Mutants: the open file not read by check 5; not read by check 6.
   it("holds the open file to spec §2.3's assets block and production's object blocks", () => {
-    const spa = OPEN.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"');
+    const spa = OPEN.replace('"not_found_handling": "404-page"', '"not_found_handling": "single-page-application"');
     const drift = OPEN.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
     for (const config of [undefined, "wrangler.open.jsonc"]) {
       expect(deployGuard(worker({ "wrangler.open.jsonc": spa }), undefined, config), String(config)).toEqual(
-        naming(/^wrangler\.open\.jsonc's assets\.not_found_handling must be "none"/),
+        naming(/^wrangler\.open\.jsonc's assets\.not_found_handling must be "404-page"/),
       );
       expect(deployGuard(worker({ "wrangler.open.jsonc": drift }), undefined, config), String(config)).toEqual(
         naming(/^wrangler\.open\.jsonc's durable_objects differs from wrangler\.jsonc's/),
@@ -665,13 +689,304 @@ describe("the deploy guard", () => {
   // The named configuration is held to the assets and object blocks even when
   // it is no listed file (probe G2). Mutant: the named file left out of the loop.
   it("holds an unlisted --config file to the assets and object blocks", () => {
-    const extra = PRODUCTION.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"').replace(
+    const extra = PRODUCTION.replace('"not_found_handling": "404-page"', '"not_found_handling": "single-page-application"').replace(
       '{ "name": "ARCHIVER", "class_name": "Archive" }',
       '{ "name": "ARCHIVER", "class_name": "Archive" },\n      { "name": "OTHER", "class_name": "Other" }',
     );
     expect(deployGuard(worker({ "wrangler.extra.jsonc": extra }), undefined, "wrangler.extra.jsonc")).toEqual(
-      naming(/^wrangler\.extra\.jsonc's assets\.not_found_handling must be "none"/, /^wrangler\.extra\.jsonc's durable_objects differs from wrangler\.jsonc's/),
+      naming(/^wrangler\.extra\.jsonc's assets\.not_found_handling must be "404-page"/, /^wrangler\.extra\.jsonc's durable_objects differs from wrangler\.jsonc's/),
     );
+  });
+  // Check 10 (M6.5c2 cycle F, R-F3, R-FP13; spec §2.1): with Workers Cache on,
+  // "requests served from the Worker's cache are billed at the same
+  // per-request rate as requests that invoke the Worker. This includes
+  // requests to static assets" (Workers pricing, footnote 4) — the door would
+  // stop being free. The block is an opt-in, so no block is off; a block is
+  // refused unless its `enabled` is `false`, wherever a configuration can
+  // carry one: the top level, every environment, and EVERY named export, an
+  // environment's included. Read as values, so a comment is prose. Mutants:
+  // the check missing; the top level alone read; the exports walk stopping at
+  // the first name; `enabled: false` refused.
+  it("refuses Workers Cache at the top level, in any environment and under any export, and passes it off", () => {
+    const why =
+      " — with it on, static-asset requests are billed at the Worker request rate (Workers pricing, footnote 4); remove the block";
+    const refused = (where) => `wrangler.jsonc enables Workers Cache (${where}cache.enabled is not false)${why}`;
+    const at = (block) => ({ "wrangler.jsonc": PRODUCTION.replace('"main"', `${block},\n  "main"`) });
+
+    expect(deployGuard(worker(at('"cache": { "enabled": true }')))).toEqual([refused("")]);
+    expect(deployGuard(worker(at('"cache": {}'))), "a block with no enabled is not off").toEqual([refused("")]);
+    expect(deployGuard(worker(at('"env": { "staging": { "cache": { "enabled": true } } }')))).toEqual([
+      refused("env.staging."),
+    ]);
+    expect(
+      deployGuard(
+        worker(at('"exports": { "default": { "cache": { "enabled": false } }, "Table": { "cache": { "enabled": true } } }')),
+      ),
+      "any export, not only the first",
+    ).toEqual([refused("exports.Table.")]);
+    expect(
+      deployGuard(worker(at('"env": { "staging": { "exports": { "House": { "cache": { "enabled": "yes" } } } } }'))),
+    ).toEqual([refused("env.staging.exports.House.")]);
+
+    // Off, in every place: passes. And no block at all is the committed shape.
+    expect(deployGuard(worker(at('"cache": { "enabled": false }')))).toEqual([]);
+    expect(
+      deployGuard(
+        worker(at('"env": { "staging": { "cache": { "enabled": false } } }, "exports": { "Table": { "cache": { "enabled": false } } }')),
+      ),
+    ).toEqual([]);
+    const commented = PRODUCTION.replace("// production", '// production — never "cache": { "enabled": true }');
+    expect(deployGuard(worker({ "wrangler.jsonc": commented })), "a comment is prose").toEqual([]);
+
+    // The file the deploy ships is the one judged.
+    const open = OPEN.replace('"main"', '"cache": { "enabled": true },\n  "main"');
+    expect(deployGuard(worker({ "wrangler.open.jsonc": open }), undefined, "wrangler.open.jsonc")).toEqual(
+      naming(/^wrangler\.open\.jsonc enables Workers Cache \(cache\.enabled is not false\)/),
+    );
+  });
+  // **At ANY depth** (Task 1 fix round 1; spec §2.1, "read as text and as
+  // values", ruled a structural read that does not depend on the walk knowing
+  // the places): a `cache` block wherever Wrangler may read one — a placement
+  // it adds later, a nesting nobody listed — is refused, named by its whole
+  // path, an array's element by its index. Off at that depth passes. Mutants:
+  // the walk back to the three known places; the walk stopping at objects
+  // (arrays unread); the path losing its prefix.
+  it("refuses a cache block at any depth, named by its whole path, and passes one that is off", () => {
+    const why =
+      " — with it on, static-asset requests are billed at the Worker request rate (Workers pricing, footnote 4); remove the block";
+    const refused = (where) => `wrangler.jsonc enables Workers Cache (${where}cache.enabled is not false)${why}`;
+    const at = (block) => ({ "wrangler.jsonc": PRODUCTION.replace('"main"', `${block},\n  "main"`) });
+
+    expect(deployGuard(worker(at('"placement": { "cache": { "enabled": true } }')))).toEqual([refused("placement.")]);
+    expect(deployGuard(worker(at('"env": { "staging": { "placement": { "cache": { "enabled": true } } } }')))).toEqual([
+      refused("env.staging.placement."),
+    ]);
+    expect(
+      deployGuard(worker(at('"routes": [{ "pattern": "x.example", "cache": { "enabled": true } }]'))),
+      "an array's element, by its index",
+    ).toEqual([refused("routes.0.")]);
+    expect(
+      deployGuard(
+        worker(at('"placement": { "cache": { "enabled": true } }, "env": { "staging": { "limits": { "cache": {} } } }')),
+      ),
+      "every block, once each, in the file's order",
+    ).toEqual([refused("placement."), refused("env.staging.limits.")]);
+    expect(
+      deployGuard(worker(at('"cache": { "enabled": false, "placement": { "cache": { "enabled": true } } }'))),
+      "inside a block that is itself off",
+    ).toEqual([refused("cache.placement.")]);
+
+    expect(deployGuard(worker(at('"placement": { "cache": { "enabled": false } }')))).toEqual([]);
+    expect(
+      deployGuard(worker(at('"env": { "staging": { "placement": { "cache": { "enabled": false } } } }'))),
+    ).toEqual([]);
+  });
+  // Check 5's value since cycle F (R-F5; spec §2.5): `404-page`, so a
+  // browser's NAVIGATION miss is answered by the asset layer with the static
+  // page instead of a blank. `none` — the value spec §2.3 of M6.5c chose — is
+  // refused in each of the five files. Mutants: the constant left at `none`;
+  // one file left out of the read.
+  it("refuses not_found_handling none in any of the five files, naming the file", () => {
+    const back = (text) => text.replace('"not_found_handling": "404-page"', '"not_found_handling": "none"');
+    expect(deployGuard(worker({ "wrangler.jsonc": back(PRODUCTION) }))).toEqual(
+      naming(/^wrangler\.jsonc's assets\.not_found_handling must be "404-page" — got "none"$/),
+    );
+    for (const [name, text] of [
+      ["wrangler.open.jsonc", OPEN],
+      ["wrangler.gate.jsonc", GATE],
+      ["wrangler.test.jsonc", TEST_CONFIG],
+      ["wrangler.open.test.jsonc", OPEN_TEST_CONFIG],
+    ]) {
+      expect(deployGuard(worker({ [name]: back(text) })), name).toEqual([
+        `${name}'s assets.not_found_handling must be "404-page" — got "none"`,
+      ]);
+    }
+  });
+  // Check 11 (R-F5, R-FP13; spec §2.5): the page `404-page` answers with is IN
+  // the tree the deploy uploads — without it the asset layer has nothing to
+  // serve and a browser's miss is a blank again. Asked of the tree the judged
+  // configuration names, as checks 2 and 9 are, and only of an assembled one
+  // (check 2 names a tree with no sw.js). Mutants: the check missing; the
+  // existence read off web/dist instead of the tree; a directory of that name
+  // accepted.
+  it("refuses an assets tree without its 404 page, naming the file", () => {
+    const absent = "assets/404.html is absent — not_found_handling \"404-page\" answers a browser's miss with it: run npm run build in web/, then in worker/";
+    expect(deployGuard(worker({ "assets/404.html": null }))).toEqual([absent]);
+    expect(deployGuard(worker({ "assets/404.html": null, "assets/404.html/index.html": NOT_FOUND_PAGE })), "a directory is not the page").toEqual([absent]);
+    expect(deployGuard(worker({ "assets/404.html": null, "../web/dist/404.html": NOT_FOUND_PAGE })), "web/dist's copy is not the tree's").toEqual([absent]);
+    expect(deployGuard(worker({ "assets/404.html": null, ...KEYED }), undefined, "wrangler.open.jsonc"), "the open file's tree").toEqual([absent]);
+    // Not asked of a tree that was never assembled: check 2's sentence is the one.
+    expect(deployGuard(worker({ "assets/404.html": null, "assets/sw.js": null }))).toEqual([
+      expect.stringMatching(/^assets\/sw\.js is absent/),
+    ]);
+  });
+  // Check 12 (R-FP3, R-FP4; spec §2.6): the deploy's DECLARATION,
+  // `vars.YOKOHAMA_TURNSTILE` — `on`, `off`, or absent (off) — held to the
+  // build's stamp, the tree's `build-values.json`, whose `turnstile_sitekey`
+  // says whether the bundle carries a site key. `on` exactly when it does. Read
+  // at the OPEN door, deployed here as production's file: since Task 7's
+  // identity rule (below) the stamp is compared only where `on` may stand.
+  // Mutants: the check missing; absent read as on; the stamp read off
+  // web/dist; either refusal's direction swapped; a stamp that is not one read
+  // as `false`.
+  it("holds YOKOHAMA_TURNSTILE to the build's stamp, in all four combinations", () => {
+    const declared = (value) =>
+      OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_TURNSTILE": ${value}`);
+    const noKey =
+      "wrangler.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
+      "build the client with YOKOHAMA_TURNSTILE_SITEKEY set";
+    // At the open door, where this comparison is now the only one asked, so
+    // the sentence says nothing about Access (cycle F's fix wave; Task 7's
+    // review, Minor 2).
+    const keyed =
+      "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at " +
+      "the open door declares on: set the var on, or build the client without the key";
+
+    // The two that agree, and absent read as off.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared('"off"') })), "off, no key").toEqual([]);
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN })), "absent, no key").toEqual([]);
+    expect(deployGuard(worker({ "wrangler.jsonc": declared('"on"'), ...KEYED })), "on, a key").toEqual([]);
+    // The two that do not.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared('"on"') })), "on, no key").toEqual([noKey]);
+    expect(deployGuard(worker({ "wrangler.jsonc": declared('"off"'), ...KEYED })), "off, a key").toEqual([keyed]);
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN, ...KEYED })), "absent, a key").toEqual([keyed]);
+    // The stamp is the TREE's: web/dist's says nothing about what ships.
+    expect(
+      deployGuard(worker({ "wrangler.jsonc": declared('"on"'), "../web/dist/build-values.json": STAMP(true) })),
+      "web/dist's stamp is not the tree's",
+    ).toEqual([noKey]);
+    // The file judged is the one named.
+    expect(deployGuard(worker(), undefined, "wrangler.open.jsonc")).toEqual(
+      naming(/^wrangler\.open\.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key/),
+    );
+  });
+  // **The orchestrator's amendment (Task 7, from Task 6's re-review): check
+  // 12's IDENTITY rule.** The client infers the open door from the presence of
+  // a site key (`web/src/outbox.ts`'s keyed-build rule: a nameless visitor's
+  // game is written down signed-out, with no request), so a keyed build behind
+  // Access would silently never upload a nameless visitor's games. So `on`,
+  // and a keyed stamp, stand only beside `YOKOHAMA_WEB_IDENTITY` `open` (read
+  // as the shell reads the door: trimmed, matched exactly); under any other
+  // identity each is refused with ONE sentence naming the identity and the
+  // declaration, and the stamp comparison above is not asked — its advice
+  // ("set the var on", "build with the key") is wrong at a door that may hold
+  // neither. Mutants: the rule missing; the identity read raw (untrimmed);
+  // `on` refused at the open door; a keyed stamp under off let through; the
+  // comparison's sentence added beside the identity's.
+  it("accepts on and a keyed build only at the open door, and refuses either under any other identity, naming both", () => {
+    const onUnder = (file, id) =>
+      `${file} sets YOKOHAMA_TURNSTILE on under identity ${id} — a keyed build is the open door (R-FP4): the widget and ` +
+      "the client's keyed-build rule assume no Access in front of the API; deploy the key only with wrangler.open.jsonc";
+    const keyedUnder = (file, id) =>
+      `${file} leaves YOKOHAMA_TURNSTILE off under identity ${id} but the assets tree's build carries a site key — a ` +
+      "keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of " +
+      "the API; build the client without the key, and deploy the key only with wrangler.open.jsonc";
+    const declared = (text, value) =>
+      text.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_TURNSTILE": ${value}`);
+
+    // `on` with a key at the open door: the window's file passes.
+    expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc"), "on, a key, open").toEqual([]);
+    // `on` with a key at the worker door: refused, naming both.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"'), ...KEYED })), "on, a key, worker").toEqual([
+      onUnder("wrangler.jsonc", "worker"),
+    ]);
+    // The gate's file is the worker door too (its drift from production is named as well).
+    const gateOn = GATE.replace('"YOKOHAMA_DEV_DOOR": "off"', '"YOKOHAMA_DEV_DOOR": "off", "YOKOHAMA_TURNSTILE": "on"');
+    expect(deployGuard(worker({ "wrangler.gate.jsonc": gateOn, ...KEYED }), undefined, "wrangler.gate.jsonc"), "the gate").toEqual(
+      expect.arrayContaining([onUnder("wrangler.gate.jsonc", "worker")]),
+    );
+    // A keyed build under off, or absent, at the worker door.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"off"'), ...KEYED })), "off, a key, worker").toEqual([
+      keyedUnder("wrangler.jsonc", "worker"),
+    ]);
+    expect(deployGuard(worker(KEYED)), "absent, a key, worker").toEqual([keyedUnder("wrangler.jsonc", "worker")]);
+    // Two defects, ONE sentence: `on` over a keyless build at the worker door
+    // is the identity's to name, never "build the client with the key".
+    expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"') })), "on, no key, worker").toEqual([
+      onUnder("wrangler.jsonc", "worker"),
+    ]);
+    // And the order when the stamp is missing too: the identity first, then the stamp.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"'), "assets/build-values.json": null }))).toEqual([
+      onUnder("wrangler.jsonc", "worker"),
+      "assets/build-values.json is absent, so nothing says whether the build carries a Turnstile site key — " +
+        "run npm run build in web/, then in worker/",
+    ]);
+    // The committed production shape: off, keyless, worker.
+    expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"off"') })), "off, no key, worker").toEqual([]);
+    // The door is read as the shell reads it: trimmed, and matched exactly.
+    const spaced = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": " open ", "YOKOHAMA_TURNSTILE": "on"');
+    expect(deployGuard(worker({ "wrangler.jsonc": spaced, ...KEYED })), "trimmed").toEqual([]);
+    const shouted = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "Open", "YOKOHAMA_TURNSTILE": "on"');
+    expect(deployGuard(worker({ "wrangler.jsonc": shouted, ...KEYED })), "matched exactly").toEqual(
+      expect.arrayContaining([onUnder("wrangler.jsonc", "Open")]),
+    );
+    // No door at all: named as nothing (check 3 refuses it as well).
+    const doorless = declared(PRODUCTION, '"on"').replace('"YOKOHAMA_WEB_IDENTITY": "worker",', "");
+    expect(deployGuard(worker({ "wrangler.jsonc": doorless, ...KEYED })), "no door").toEqual(
+      expect.arrayContaining([onUnder("wrangler.jsonc", "nothing")]),
+    );
+  });
+  // The open file's allowed differences gain `YOKOHAMA_TURNSTILE: "on"` (T8-a):
+  // the window ships a keyed build, so its file says so, and `off` there is
+  // drift. The POOL never deploys, so never a keyed build: `on` in either pool
+  // file is refused whichever file is judged. Mutants: the allowed difference
+  // missing (the open file's `on` read as drift); the pool not read; the pool
+  // rule asked of production.
+  it("lets the open file differ from production by YOKOHAMA_TURNSTILE on, and refuses on in a pool file", () => {
+    expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc")).toEqual([]);
+    const openOff = OPEN_FILE.replace('"YOKOHAMA_TURNSTILE": "on"', '"YOKOHAMA_TURNSTILE": "off"');
+    expect(deployGuard(worker({ "wrangler.open.jsonc": openOff }), undefined, "wrangler.open.jsonc")).toEqual([
+      'wrangler.open.jsonc\'s vars.YOKOHAMA_TURNSTILE must be "on" — got "off"',
+    ]);
+    for (const [name, text] of [
+      ["wrangler.test.jsonc", TEST_CONFIG],
+      ["wrangler.open.test.jsonc", OPEN_TEST_CONFIG],
+    ]) {
+      const on = text.replace('"vars": {', '"vars": { "YOKOHAMA_TURNSTILE": "on",');
+      for (const [config, tree] of [
+        [undefined, {}],
+        ["wrangler.open.jsonc", KEYED],
+        ["wrangler.gate.jsonc", {}],
+      ]) {
+        expect(deployGuard(worker({ [name]: on, ...tree }), undefined, config), `${name} under ${config}`).toEqual([
+          `${name}'s vars.YOKOHAMA_TURNSTILE must be "off" (absent is off) — the pool never deploys, so it never ships a keyed build; got "on"`,
+        ]);
+      }
+      const off = text.replace('"vars": {', '"vars": { "YOKOHAMA_TURNSTILE": "off",');
+      expect(deployGuard(worker({ [name]: off })), `${name} off`).toEqual([]);
+    }
+  });
+  it("refuses a tree with no stamp, or one that is not the build's, naming the file", () => {
+    expect(deployGuard(worker({ "assets/build-values.json": null }))).toEqual([
+      "assets/build-values.json is absent, so nothing says whether the build carries a Turnstile site key — " +
+        "run npm run build in web/, then in worker/",
+    ]);
+    for (const [stamp, why] of [
+      ["not json", "it does not parse"],
+      ["[]\n", "it is not an object"],
+      ['{ "turnstile_sitekey": "true" }\n', "its turnstile_sitekey is not a boolean"],
+      ["{}\n", "its turnstile_sitekey is not a boolean"],
+    ]) {
+      expect(deployGuard(worker({ "assets/build-values.json": stamp })), stamp).toEqual([
+        `assets/build-values.json is not the client build's stamp (${why}) — run npm run build in web/, then in worker/`,
+      ]);
+    }
+  });
+  // A declaration the guard cannot read as one of the three is refused rather
+  // than read as off: a typo must not ship a door its smoke never checks.
+  // Read exactly, as Task 7 writes it. Mutant: anything but "on" read as off.
+  it("refuses a YOKOHAMA_TURNSTILE that is neither on nor off", () => {
+    for (const [value, shown] of [
+      ['"yes"', '"yes"'],
+      ['"On"', '"On"'],
+      ['" on"', '" on"'],
+      ["true", "true"],
+    ]) {
+      const text = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_TURNSTILE": ${value}`);
+      expect(deployGuard(worker({ "wrangler.jsonc": text, "assets/build-values.json": STAMP(true) })), value).toEqual([
+        `wrangler.jsonc's vars.YOKOHAMA_TURNSTILE must be "on" or "off" (absent is off) — got ${shown}`,
+      ]);
+    }
   });
   // The CLI takes exactly `--config wrangler<name>.jsonc`; anything else is
   // refused, so the guard cannot judge one file while a deploy ships another.
@@ -716,6 +1031,87 @@ describe("the committed configurations", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     expect(configFailures(root, "wrangler.gate.jsonc")).toEqual([]);
     expect(doorLine(root, "wrangler.gate.jsonc")).toBe("wrangler.gate.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+  });
+  // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the five
+  // committed files are held to it here, parsed as the guard parses them.
+  it("carry no Workers Cache block at any depth, each of the five", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    for (const name of [
+      "wrangler.jsonc",
+      "wrangler.open.jsonc",
+      "wrangler.gate.jsonc",
+      "wrangler.test.jsonc",
+      "wrangler.open.test.jsonc",
+    ]) {
+      const errors = [];
+      const value = parse(readFileSync(join(root, name), "utf8"), errors, { allowTrailingComma: true, disallowComments: false });
+      expect(errors, `${name} parses`).toEqual([]);
+      expect(typeof value?.name, `${name} is read: it has a name`).toBe("string");
+      const failures = [];
+      cacheBlock(name, value, failures);
+      expect(failures, name).toEqual([]);
+    }
+  });
+  // Cycle F (R-F5; spec §2.5): each of the five names `404-page`, read off
+  // the file rather than through check 5's constant, so the constant and the
+  // files cannot move back together unnoticed.
+  it("answer a browser's miss with the 404 page, each of the five", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    for (const name of [
+      "wrangler.jsonc",
+      "wrangler.open.jsonc",
+      "wrangler.gate.jsonc",
+      "wrangler.test.jsonc",
+      "wrangler.open.test.jsonc",
+    ]) {
+      const value = parse(readFileSync(join(root, name), "utf8"), [], { allowTrailingComma: true, disallowComments: false });
+      expect(value?.assets?.not_found_handling, name).toBe("404-page");
+      expect(value?.assets?.run_worker_first, name).toEqual(["/api/*", "/enter"]);
+    }
+  });
+  // Cycle F (R-FP2, R-FP4): the declaration in each of the five, read off the
+  // file — `on` in the open window's file alone.
+  it("declare YOKOHAMA_TURNSTILE off in four and on in the open file alone", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    for (const [name, want] of [
+      ["wrangler.jsonc", "off"],
+      ["wrangler.gate.jsonc", "off"],
+      ["wrangler.test.jsonc", "off"],
+      ["wrangler.open.test.jsonc", "off"],
+      ["wrangler.open.jsonc", "on"],
+    ]) {
+      const value = parse(readFileSync(join(root, name), "utf8"), [], { allowTrailingComma: true, disallowComments: false });
+      expect(value?.vars?.YOKOHAMA_TURNSTILE, name).toBe(want);
+    }
+  });
+  // The WHOLE guard over the five committed files, laid into a scratch package
+  // beside a tree of each kind (the amendment's cells): production and the
+  // gate pass over a keyless build, the open file over a keyed one — and the
+  // open file FAILS check 12 over a keyless tree, by design (the window builds
+  // a keyed client before `npm run deploy:open`), as production and the gate
+  // fail over a keyed one.
+  it("pass the whole guard: production and the gate over a keyless build, the open file over a keyed one", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const committed = Object.fromEntries(
+      ["wrangler.jsonc", "wrangler.open.jsonc", "wrangler.gate.jsonc", "wrangler.test.jsonc", "wrangler.open.test.jsonc"].map((name) => [
+        name,
+        readFileSync(join(root, name), "utf8"),
+      ]),
+    );
+    expect(deployGuard(worker(committed)), "production, keyless").toEqual([]);
+    expect(deployGuard(worker(committed), undefined, "wrangler.gate.jsonc"), "the gate, keyless").toEqual([]);
+    expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.open.jsonc"), "the open file, keyed").toEqual([]);
+    expect(deployGuard(worker(committed), undefined, "wrangler.open.jsonc"), "the open file, keyless").toEqual([
+      "wrangler.open.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
+        "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
+    ]);
+    for (const file of ["wrangler.jsonc", "wrangler.gate.jsonc"]) {
+      expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([
+        `${file} leaves YOKOHAMA_TURNSTILE off under identity worker but the assets tree's build carries a site key — a ` +
+          "keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of " +
+          "the API; build the client without the key, and deploy the key only with wrangler.open.jsonc",
+      ]);
+    }
   });
   // M6.5c2 (R-6.5c2.5): production's door is the worker door.
   it("name the worker door", () => {

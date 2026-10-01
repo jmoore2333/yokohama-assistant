@@ -17,6 +17,8 @@ use axum::body::Body;
 use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 
+use crate::identity::{IdentityMode, ENV_VAR as IDENTITY_VAR};
+
 /// Where the built client lives. `YOKOHAMA_WEB_DIST` overrides it; the default
 /// is the Vite output relative to the repo root, which is where it lands for
 /// anyone running the server from a checkout.
@@ -24,6 +26,87 @@ pub fn dist_dir() -> PathBuf {
     std::env::var_os("YOKOHAMA_WEB_DIST")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("web/dist"))
+}
+
+/// The client build's stamp (M6.5c2 cycle F, R-FP3): six booleans naming
+/// which build values the bundle was built with, never a value, which
+/// `web/vite.config.ts` writes beside it. The client never reads it and the
+/// service worker never precaches it; this host reads it once, at start
+/// ([`check_build_stamp`]).
+pub const BUILD_STAMP: &str = "build-values.json";
+
+/// What start found where the stamp would be: the keyed-build rule's one input
+/// besides the door ([`keyed_build_refusal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stamp<'a> {
+    /// No stamp: a `dist` built before cycle F, or no `dist` at all (a
+    /// development server, whose client Vite serves).
+    Absent,
+    /// The stamp's text, as read.
+    Text(&'a str),
+    /// A stamp that is there and could not be read, with the reason.
+    Unreadable(&'a str),
+}
+
+/// **The keyed-build rule at this host's door** (M6.5c2 cycle F's fix wave;
+/// the final review's Important 1): a client built with a Turnstile site key
+/// IS the open door (R-FP4). It reads the key as a door with no identity
+/// provider in front, so a visitor with no claimed name has each finished
+/// local game written "not signed in" and sent nowhere (`web/src/outbox.ts`'s
+/// keyed-build rule) — and behind `cf-access` or `worker` nobody has a claimed
+/// name, so such a build would upload nobody's games. The Worker's deploy
+/// guard refuses that pairing (`worker/scripts/deploy-guard.mjs`, check 12);
+/// this is the same rule for the self-host, asked once at start, where `main`
+/// exits 1 on the `Err` as on every other start refusal.
+///
+/// Pure: `shown` names the file in the sentence. At the `open` door nothing is
+/// asked. Behind any other, a stamp whose `turnstile_sitekey` is `true` is the
+/// refusal naming the key and the door; one that is `false`, or no stamp at all
+/// (a `dist` built before the stamp, or none), starts; and a stamp that does
+/// not read as one — not JSON, not an object, no boolean `turnstile_sitekey`,
+/// or a file that cannot be read — is refused naming the file, as check 12
+/// refuses it, since nothing then says whether the build carries a key.
+pub fn keyed_build_refusal(stamp: Stamp<'_>, shown: &str, identity: IdentityMode) -> Result<(), String> {
+    if identity == IdentityMode::Open {
+        return Ok(());
+    }
+    let unsure = "so nothing says whether the client was built with a Turnstile site key";
+    let text = match stamp {
+        Stamp::Absent => return Ok(()),
+        Stamp::Unreadable(why) => return Err(format!("{shown} cannot be read ({why}), {unsure}")),
+        Stamp::Text(text) => text,
+    };
+    let keyed = match serde_json::from_str::<serde_json::Value>(text) {
+        Err(_) => Err("it does not parse"),
+        Ok(serde_json::Value::Object(fields)) => match fields.get("turnstile_sitekey") {
+            Some(serde_json::Value::Bool(keyed)) => Ok(*keyed),
+            _ => Err("its turnstile_sitekey is not a boolean"),
+        },
+        Ok(_) => Err("it is not an object"),
+    };
+    match keyed {
+        Err(why) => Err(format!("{shown} is not the client build's stamp ({why}), {unsure} — rebuild the client, or the image")),
+        Ok(false) => Ok(()),
+        Ok(true) => Err(format!(
+            "{shown} says the client was built with a Turnstile site key (YOKOHAMA_TURNSTILE_SITEKEY), but \
+             {IDENTITY_VAR} is {} — a keyed build is the open door's: the client reads the key as a door with no \
+             identity provider in front, so here it would write every finished game \"not signed in\" and send none. \
+             Rebuild the client without YOKOHAMA_TURNSTILE_SITEKEY, or run it with {IDENTITY_VAR}=open.",
+            identity.name(),
+        )),
+    }
+}
+
+/// [`keyed_build_refusal`] over the stamp in `root` — the served root, the
+/// `dist` [`dist_dir`] names and [`serve`] answers from — read once, at start.
+pub fn check_build_stamp(root: &Path, identity: IdentityMode) -> Result<(), String> {
+    let path = root.join(BUILD_STAMP);
+    let shown = path.display().to_string();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => keyed_build_refusal(Stamp::Text(&text), &shown, identity),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => keyed_build_refusal(Stamp::Absent, &shown, identity),
+        Err(e) => keyed_build_refusal(Stamp::Unreadable(&e.to_string()), &shown, identity),
+    }
 }
 
 /// Resolve a request path to a file inside `root`, or `None`.
@@ -74,6 +157,12 @@ pub fn content_type(path: &Path) -> &'static str {
         // `precache.ts`'s mirror moves with this arm, because the install
         // compares what it computed against what the server answered.
         Some("txt") => "text/plain; charset=utf-8",
+        // Cycle F (R-F12; spec §2.7): the sitemap `presence.mjs` writes. A
+        // crawler's sitemap reader expects XML, and the default would serve it
+        // as an opaque download. It is never precached, so the install never
+        // meets it; `precache.ts`'s mirror carries the arm all the same, so the
+        // two tables stay equal arm for arm.
+        Some("xml") => "application/xml",
         _ => "application/octet-stream",
     }
 }
@@ -81,7 +170,7 @@ pub fn content_type(path: &Path) -> &'static str {
 /// How long a browser may keep what this map served, or `None` for no
 /// freshness header at all.
 ///
-/// **Only `assets/`, and that is the whole rule.** Vite writes a content hash
+/// **`assets/` is the rule that matters most.** Vite writes a content hash
 /// into every file name it emits there, so a changed byte is a changed name
 /// and a year with `immutable` is the truth about it. Everything else must
 /// stay uncached and for different reasons: `index.html` is the document that
@@ -110,21 +199,53 @@ pub fn content_type(path: &Path) -> &'static str {
 /// install in that window, each failing its digest. The worker's `cache:
 /// "reload"` goes past the browser's cache, not the edge's; `no-store` keeps
 /// either from holding a copy.
+///
+/// **Cycle F adds the web presence's three files the art's hour** (R-F12;
+/// spec §2.7): [`PRESENCE_FILES`], written by `web/scripts/presence.mjs` at
+/// build under stable names, so `immutable` would be a lie and `no-store`
+/// would make every crawl a fresh read. `worker/static/_headers` says the same
+/// of the same three paths for the other host, and
+/// `worker/scripts/assemble-assets.test.mjs` reads the two files against each
+/// other.
 fn cache_control(uri_path: &str) -> Option<&'static str> {
     if uri_path == "/sw.js" || uri_path == "/shell.bin" {
         return Some("no-store");
     }
+    if PRESENCE_FILES.contains(&uri_path) {
+        return Some("public, max-age=3600");
+    }
     uri_path.starts_with("/assets/").then_some("public, max-age=31536000, immutable")
 }
+
+/// The web presence's files (cycle F, R-F12): `robots.txt`, `llms.txt` and the
+/// sitemap, each at the root, each given the art's hour by [`cache_control`].
+/// Exact paths — never a prefix, which would catch a name that only resembles
+/// one.
+const PRESENCE_FILES: [&str; 3] = ["/robots.txt", "/llms.txt", "/sitemap.xml"];
+
+/// The page a miss with an extension is answered with, relative to the root
+/// (M6.5c2 cycle F, R-F5; spec §2.5): `web/public/404.html`, which the build
+/// copies into `dist`.
+const NOT_FOUND_PAGE: &str = "404.html";
 
 /// Everything the API did not claim.
 ///
 /// A miss falls back to `index.html` so client-side routes deep-link, which is
 /// the standard SPA contract — but **only for paths that could be a route**. A
 /// request for a missing `.js` or `.css` gets a 404, because answering it with
-/// HTML produces the error every SPA developer has debugged at least once: the
-/// browser reports a syntax error at `<!doctype`, and the real fault (a stale
-/// or missing build) is nowhere in the message.
+/// the shell and a 200 produces the error every SPA developer has debugged at
+/// least once: the browser reports a syntax error at `<!doctype`, and the real
+/// fault (a stale or missing build) is nowhere in the message.
+///
+/// **Since cycle F that 404 carries the build's own 404 page** (R-F5; spec
+/// §2.5), for parity with the Worker, whose asset layer answers a miss with
+/// the same file (read on 2026-10-01 in every request shape for a miss under
+/// an allowed prefix, with no Worker invocation): a person who types a wrong
+/// address sees words and a way home instead of a blank. Still a 404, so a script or
+/// an install that asked for the file fails as honestly as before. A dist
+/// with no `404.html` answers the bare 404 it always did. The page is no
+/// fence against a scanner, and this host needs none: it has no per-request
+/// meter.
 ///
 /// **The root is GIVEN since M6.5b2** (`AppState::dist`, read from
 /// [`dist_dir`] once at construction) rather than read from the environment per
@@ -159,7 +280,14 @@ fn serve_path(root: &Path, uri_path: &str) -> Response {
         return response;
     }
     if path.extension().is_some() {
-        let mut response = (StatusCode::NOT_FOUND, "no such asset").into_response();
+        let page = root.join(NOT_FOUND_PAGE);
+        let mut response = match std::fs::read(&page) {
+            Ok(bytes) => {
+                (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, content_type(&page))], Body::from(bytes))
+                    .into_response()
+            }
+            Err(_) => (StatusCode::NOT_FOUND, "no such asset").into_response(),
+        };
         // **A miss carries the same freshness rule the hit would have**
         // (M6.5b2, Task 1's deferred Minor). Production ships `sw.js`, so the
         // exposure is a deployment that removed it or served it from a root
@@ -223,6 +351,10 @@ mod tests {
         assert_eq!(content_type(Path::new("wasm/yokohama_wasm.wasm")), "application/wasm");
         // M6.5b2's fix wave: the OFL copies that ship under `dist/fonts/`.
         assert_eq!(content_type(Path::new("fonts/inter/OFL.txt")), "text/plain; charset=utf-8");
+        // Cycle F's sitemap (R-F12): an XML document is `application/xml`, which
+        // is what a crawler's sitemap reader expects of it; the default would
+        // hand it out as an opaque download.
+        assert_eq!(content_type(Path::new("sitemap.xml")), "application/xml");
     }
 
     /// The manifest's media type, which the installer checks (spec §2.4). Without
@@ -232,9 +364,11 @@ mod tests {
         assert_eq!(content_type(Path::new("manifest.webmanifest")), "application/manifest+json");
     }
 
-    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8) and by M6.5c2 cycle E
-    /// (R-6.5c2.41): Vite's hashed output is immutable, the service worker and
-    /// the shell it installs are `no-store`, and NOTHING else this map serves
+    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8), by M6.5c2 cycle E
+    /// (R-6.5c2.41) and by cycle F's web presence (R-F12; spec §2.7): Vite's
+    /// hashed output is immutable, the service worker and the shell it installs
+    /// are `no-store`, the three presence files (`/robots.txt`, `/llms.txt`,
+    /// `/sitemap.xml`) carry the art's hour, and NOTHING else this map serves
     /// carries a freshness header.
     ///
     /// The `assets/` half is what M6.5b needed — `OnThisDevice` mounts on
@@ -264,8 +398,21 @@ mod tests {
         // PREVIOUS release's copy for two hours after a deploy, and every
         // install in that window fails its digest.
         assert_eq!(cache_control("/shell.bin"), Some("no-store"));
+        // **The web presence** (cycle F, R-F12): the art's hour (`art.rs`), no
+        // `immutable` — the names are stable and the bytes change with the
+        // build values — and no `no-store`, which would make every crawl a
+        // fresh read. The same three paths `worker/static/_headers` names, and
+        // `assemble-assets.test.mjs` reads the two files against each other.
+        for path in ["/robots.txt", "/llms.txt", "/sitemap.xml"] {
+            assert_eq!(cache_control(path), Some("public, max-age=3600"), "{path} carries the art's hour");
+        }
         for path in ["/", "/index.html", "/manifest.webmanifest", "/art/manifest.json", "/help/screen.webp"] {
             assert_eq!(cache_control(path), None, "{path} carries no freshness header");
+        }
+        // EXACT paths: a name that only resembles one, or the same file under
+        // a directory, is no presence file.
+        for path in ["/robots.txt.bak", "/llms-full.txt", "/sitemap.xml.gz", "/help/robots.txt", "/robots.txt/"] {
+            assert_eq!(cache_control(path), None, "{path} is not a presence file");
         }
 
         let root =
@@ -277,6 +424,9 @@ mod tests {
         std::fs::write(root.join("index.html"), b"<!doctype html>").unwrap();
         std::fs::write(root.join("sw.js"), b"// the worker").unwrap();
         std::fs::write(root.join("shell.bin"), b"<!doctype html>").unwrap();
+        std::fs::write(root.join("robots.txt"), b"User-agent: *\n").unwrap();
+        std::fs::write(root.join("llms.txt"), b"# Yokohama\n").unwrap();
+        std::fs::write(root.join("sitemap.xml"), b"<urlset/>").unwrap();
 
         let cached = |uri: &str| -> Option<String> {
             serve_path(&root, uri)
@@ -292,6 +442,25 @@ mod tests {
         );
         assert_eq!(cached("/sw.js").as_deref(), Some("no-store"), "and it reaches the response");
         assert_eq!(cached("/shell.bin").as_deref(), Some("no-store"), "and so does the shell's");
+        for path in ["/robots.txt", "/llms.txt", "/sitemap.xml"] {
+            assert_eq!(cached(path).as_deref(), Some("public, max-age=3600"), "{path}: the hour reaches the response");
+        }
+        // And the types the files go out as: the two text files are plain text,
+        // which is what a crawler or a model reads them as, and the sitemap is
+        // XML (never the octet-stream default, which a sitemap reader may
+        // refuse).
+        for (path, kind) in [
+            ("/robots.txt", "text/plain; charset=utf-8"),
+            ("/llms.txt", "text/plain; charset=utf-8"),
+            ("/sitemap.xml", "application/xml"),
+        ] {
+            let response = serve_path(&root, path);
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap()),
+                Some(kind),
+                "{path} goes out as {kind}"
+            );
+        }
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");
         assert_eq!(cached("/lobby"), None, "the same document through the SPA fallback");
 
@@ -320,5 +489,197 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// One GET through the WHOLE router, which is what decides whether a path
+    /// reaches this map at all (`fallback` in `lib.rs` claims `/api/`,
+    /// `/enter` and `/art/` first): status, `content-type`, body.
+    async fn get(router: &axum::Router, path: &str) -> (StatusCode, String, Vec<u8>) {
+        use tower::ServiceExt;
+        let res = router
+            .clone()
+            .oneshot(axum::http::Request::get(path).body(Body::empty()).expect("a request"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let kind = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().expect("an ASCII content type").to_string())
+            .unwrap_or_default();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, kind, body.to_vec())
+    }
+
+    /// A scratch `dist` the ROUTER serves from (`AppState::dist`), holding a
+    /// shell and, when `page` is given, a `404.html` — never written through
+    /// `YOKOHAMA_WEB_DIST`, a process-global the cells beside it read.
+    fn router_over(name: &str, page: Option<&[u8]>) -> (axum::Router, PathBuf) {
+        let root = std::env::temp_dir().join(format!("yokohama-assets-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a dist directory");
+        std::fs::write(root.join("index.html"), SHELL).expect("a shell");
+        if let Some(page) = page {
+            std::fs::write(root.join("404.html"), page).expect("a 404 page");
+        }
+        let state = crate::AppState::in_memory().with_dist(&root);
+        (crate::app(std::sync::Arc::new(state)), root)
+    }
+
+    const SHELL: &[u8] = b"<!doctype html><title>Yokohama</title>";
+
+    /// **A miss with an extension answers the 404 page; a route still answers
+    /// the shell** (M6.5c2 cycle F, R-F5; spec §2.5; Review Focus 5). The
+    /// axum host has no edge, so this is its parity with the Worker's asset
+    /// layer, which answers a miss with the same file
+    /// (`not_found_handling: "404-page"`; every request shape under an allowed
+    /// prefix, read on 2026-10-01). The page's BYTES are read from the
+    /// dist — the body here is the scratch file's, which no hard-coded page
+    /// could match — served 404 as `text/html` the way the shell is. The
+    /// extension-less fallback stays the shell, since the client's routes are
+    /// hash-only and an old link or a typed path must still open the app.
+    /// Mutants: the page hard-coded; the page served 200; the miss arm left
+    /// bare; the fallback narrowed so a route answers the page.
+    #[tokio::test]
+    async fn a_miss_with_an_extension_answers_the_404_page_and_a_route_still_the_shell() {
+        let page: &[u8] = b"<!doctype html><title>Nothing here</title><p>the scratch page of the 404 cell</p>";
+        let (router, root) = router_over("404-page", Some(page));
+
+        for path in ["/nope.json", "/wp-login.php", "/.env.php", "/assets/index-gone.js"] {
+            let (status, kind, body) = get(&router, path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path} is a miss");
+            assert_eq!(kind, "text/html; charset=utf-8", "{path} answers the page as HTML");
+            assert_eq!(body, page, "{path} answers the 404 page's own bytes");
+        }
+        for path in ["/", "/t/abc", "/lobby"] {
+            let (status, kind, body) = get(&router, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} is a route");
+            assert_eq!(kind, "text/html; charset=utf-8");
+            assert_eq!(body, SHELL, "{path} still answers the shell");
+        }
+        // The page is a file of the build like any other: asked for by name,
+        // it is answered 200.
+        let (status, _, body) = get(&router, "/404.html").await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, page));
+
+        std::fs::remove_dir_all(&root).expect("the dist is removable");
+    }
+
+    /// **A dist with no `404.html` answers a miss as it did before cycle F**:
+    /// a bare 404 with no HTML in it — a self-host built before the page, or a
+    /// root someone arranged by hand, does not start answering misses with
+    /// the shell. Mutant: the fallback for a missing page made `index.html`.
+    #[tokio::test]
+    async fn without_a_404_page_a_miss_is_the_bare_404_it_was() {
+        let (router, root) = router_over("no-404-page", None);
+        let (status, kind, body) = get(&router, "/wp-login.php").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(kind, "text/plain; charset=utf-8");
+        assert_eq!(body, b"no such asset");
+        std::fs::remove_dir_all(&root).expect("the dist is removable");
+    }
+
+    /// A stamp as `web/vite.config.ts` writes it, `turnstile_sitekey` as given.
+    fn stamp(keyed: bool) -> String {
+        format!(
+            "{{\n  \"project_url\": false,\n  \"blurb\": false,\n  \"notice\": false,\n  \"release_feed\": false,\n  \
+             \"site_url\": true,\n  \"turnstile_sitekey\": {keyed}\n}}\n"
+        )
+    }
+
+    const SHOWN: &str = "/srv/dist/build-values.json";
+    const DOORS: [IdentityMode; 3] = [IdentityMode::Open, IdentityMode::CfAccess, IdentityMode::Worker];
+
+    /// The refusal for a keyed stamp behind `door`, in full.
+    fn keyed_behind(door: IdentityMode) -> String {
+        format!(
+            "{SHOWN} says the client was built with a Turnstile site key (YOKOHAMA_TURNSTILE_SITEKEY), but \
+             YOKOHAMA_WEB_IDENTITY is {} — a keyed build is the open door's: the client reads the key as a door with \
+             no identity provider in front, so here it would write every finished game \"not signed in\" and send \
+             none. Rebuild the client without YOKOHAMA_TURNSTILE_SITEKEY, or run it with YOKOHAMA_WEB_IDENTITY=open.",
+            door.name(),
+        )
+    }
+
+    /// **A keyed client build is the open door's, and this host's start holds
+    /// it there** (M6.5c2 cycle F's fix wave; the final review's Important 1:
+    /// the Worker's deploy guard, check 12, for the self-host). The client
+    /// reads a site key as a door with no identity provider in front
+    /// (`web/src/outbox.ts`'s keyed-build rule), so behind `cf-access` or
+    /// `worker`, where nobody has a claimed name, every finished game would be
+    /// written "not signed in" and none sent. Mutants: the rule missing; the
+    /// open door refused too; an unkeyed stamp refused; an absent stamp
+    /// refused; the sentence naming one of the two.
+    #[test]
+    fn a_keyed_build_starts_only_at_the_open_door_and_is_refused_behind_any_other_naming_both() {
+        assert_eq!(keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, IdentityMode::Open), Ok(()));
+        for door in [IdentityMode::CfAccess, IdentityMode::Worker] {
+            assert_eq!(keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, door), Err(keyed_behind(door)), "{door:?}");
+        }
+        // A build with no key runs behind every door; so does a dist with no
+        // stamp at all, built before the stamp existed.
+        for door in DOORS {
+            assert_eq!(keyed_build_refusal(Stamp::Text(&stamp(false)), SHOWN, door), Ok(()), "{door:?}, unkeyed");
+            assert_eq!(keyed_build_refusal(Stamp::Absent, SHOWN, door), Ok(()), "{door:?}, no stamp");
+        }
+    }
+
+    /// **A stamp that is not one is refused behind an identity provider,
+    /// naming the file** — as check 12 refuses it: nothing then says whether
+    /// the build carries a key, and the safe reading of nothing is not
+    /// "unkeyed". At the open door a stamp is asked nothing, so none is refused
+    /// there. Mutants: a stamp that does not parse read as unkeyed; a string
+    /// `"true"` read as a key, or as none; an unreadable stamp read as absent.
+    #[test]
+    fn a_stamp_that_is_not_one_is_refused_behind_an_identity_provider_and_asked_nothing_at_the_open_door() {
+        for (text, why) in [
+            ("not json", "it does not parse"),
+            ("[true]", "it is not an object"),
+            ("{\"turnstile_sitekey\": \"true\"}", "its turnstile_sitekey is not a boolean"),
+            ("{}", "its turnstile_sitekey is not a boolean"),
+        ] {
+            assert_eq!(
+                keyed_build_refusal(Stamp::Text(text), SHOWN, IdentityMode::CfAccess),
+                Err(format!(
+                    "{SHOWN} is not the client build's stamp ({why}), so nothing says whether the client was built \
+                     with a Turnstile site key — rebuild the client, or the image"
+                )),
+                "{text}",
+            );
+            assert_eq!(keyed_build_refusal(Stamp::Text(text), SHOWN, IdentityMode::Open), Ok(()), "{text}, open");
+        }
+        assert_eq!(
+            keyed_build_refusal(Stamp::Unreadable("permission denied"), SHOWN, IdentityMode::Worker),
+            Err(format!(
+                "{SHOWN} cannot be read (permission denied), so nothing says whether the client was built with a \
+                 Turnstile site key"
+            )),
+        );
+        assert_eq!(keyed_build_refusal(Stamp::Unreadable("permission denied"), SHOWN, IdentityMode::Open), Ok(()));
+    }
+
+    /// **The start reads the SERVED root's stamp** ([`check_build_stamp`]):
+    /// the file beside the shell this host serves; a root with none starts.
+    /// Mutants: the stamp read from another directory; an absent stamp
+    /// refused; the read's text not handed to the decision.
+    #[test]
+    fn the_start_reads_the_served_root_s_stamp_and_a_root_without_one_starts() {
+        let root = std::env::temp_dir().join(format!("yokohama-assets-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a dist directory");
+        for door in DOORS {
+            assert_eq!(check_build_stamp(&root, door), Ok(()), "{door:?}: no stamp");
+        }
+        std::fs::write(root.join(BUILD_STAMP), stamp(true)).expect("a keyed stamp");
+        assert_eq!(check_build_stamp(&root, IdentityMode::Open), Ok(()));
+        let refused = check_build_stamp(&root, IdentityMode::CfAccess).expect_err("refused behind Access");
+        let shown = root.join(BUILD_STAMP).display().to_string();
+        assert!(refused.starts_with(&format!("{shown} says the client was built with a Turnstile site key")), "{refused}");
+        assert!(refused.contains("YOKOHAMA_WEB_IDENTITY is cf-access"), "{refused}");
+        std::fs::write(root.join(BUILD_STAMP), stamp(false)).expect("an unkeyed stamp");
+        for door in DOORS {
+            assert_eq!(check_build_stamp(&root, door), Ok(()), "{door:?}: unkeyed");
+        }
+        std::fs::remove_dir_all(&root).expect("the dist is removable");
     }
 }

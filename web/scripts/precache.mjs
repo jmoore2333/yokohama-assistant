@@ -105,7 +105,17 @@ if (existsSync(join(dist, SHELL_SOURCE))) copyFileSync(join(dist, SHELL_SOURCE),
 // **Nor is the shell's copy walked**: `index.html` is listed AS `SHELL_PATH`,
 // so a walk that kept `shell.bin` would name it twice — and `offline.spec.ts`
 // re-runs this script over its own output, where the copy is already there.
-const distFiles = walk(dist).filter((f) => f !== "sw.js" && f !== shellFile);
+//
+// **Nor are the files no install needs** (cycle F, R-F5, R-FP3, R-F12; spec
+// §2.5, §2.7): the 404 page, the build-values stamp and the web presence's
+// three files sit in `dist` so both hosts serve them, but nothing offline reads
+// them, so listing one would only grow every install's download and move the
+// offline count — and the 404 page is HTML, which the edge rewrites. The 404
+// page (`public/`) and the stamp (`vite.config.ts`'s plugin) exist when this
+// runs; `presence.mjs` writes the other three after it, so their names here
+// hold for a build that ran out of order, or for `offline.spec.ts`'s re-run.
+const NOT_PRECACHED = new Set(["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json"]);
+const distFiles = walk(dist).filter((f) => f !== "sw.js" && f !== shellFile && !NOT_PRECACHED.has(f));
 const artManifest = JSON.parse(readFileSync(join(artDir, "manifest.json"), "utf8"));
 
 /** Bytes for a URL path: `/art/...` is the server's art directory, everything

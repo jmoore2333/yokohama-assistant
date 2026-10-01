@@ -462,10 +462,12 @@ test("two people at two browsers play to a winner and neither sees the other's h
       // `isDealAnswer`): two lines per 409, the response and Chromium's own.
       `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers}, ` +
       `c ${watchC.dealAnswers} times` +
-      // Live, how often the one allowed console error was spent.
+      // Live, how often each allowed console error was spent, each its own count.
       (LIVE
         ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, ` +
-          `b ${watchB.forgiven}, c ${watchC.forgiven} times`
+          `b ${watchB.forgiven}, c ${watchC.forgiven} times` +
+          `; the release feed's failure forgiven a ${watchA.feedForgiven}, ` +
+          `b ${watchB.feedForgiven}, c ${watchC.feedForgiven} times`
         : ""),
   );
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);

@@ -1860,14 +1860,16 @@ impl Games {
     /// besides, since finalizing a table on the way to deleting it only writes
     /// the record this function then has to remove.
     ///
-    /// **One window is by design** (M6.5c2 cycle D, row 128). The tombstone goes
-    /// down BEFORE the unlink (the order is argued inline below), so a
-    /// `persist` landing between the two — a move at this table while its
-    /// delete is in flight — is refused, "…was deleted while this move was in
-    /// flight", and evicts its handle. If the unlink then FAILS, the tombstone
-    /// is lifted and the table is still there: one move refused out loud, never
-    /// one lost in silence. Its reply says `APPLIED BUT NOT SAVED`, and the
-    /// next request rebuilds from the record the failed unlink left in place.
+    /// **One window is by design** (M6.5c2 cycle D, row 128; moved by cycle F,
+    /// Task 4b). The tombstone goes down FIRST, under the save lock and before
+    /// the record is read (the order is argued inline below), so a `persist`
+    /// that begins after it — a move at this table while its delete is in
+    /// flight — is refused, "…was deleted while this move was in flight", and
+    /// evicts its handle, while one that began before it has landed before the
+    /// record is read. If the put or the unlink then FAILS, the tombstone is
+    /// lifted and the table is still there: one move refused out loud, never
+    /// one lost in silence. Its reply says `APPLIED BUT NOT SAVED`, and the next
+    /// request rebuilds from the record the failed delete left in place.
     ///
     /// **A deleted table's lock entry is pruned on the way out** (M6.5c2 cycle
     /// D, row 128) — after this call has let go of its own clone, and only when
@@ -1899,30 +1901,93 @@ impl Games {
         if !doc.is_creator(user) {
             return Err(GameError::Forbidden("only the table's creator can delete this table".to_string()));
         }
+        // **The tombstone goes down FIRST: before the record is read, under the
+        // save lock. The order is the whole of it** (cycle F, Task 4b; spec
+        // §2.4). `persist` reads the set under that same lock and holds it
+        // across its record read and its write, so every save either landed
+        // before this insert, and so before the record is read below, or reads
+        // the tombstone and is refused out loud ("…was deleted while this move
+        // was in flight"). The old order read and filed first and tombstoned
+        // last: a save landing in between was answered saved, then unlinked,
+        // and was missing from the copy; one that read after the unlink created
+        // a record with no table. Both are reproduced against the old order in
+        // `a_save_landing_while_the_delete_files_its_copy_is_refused_never_lost`
+        // and `a_save_past_its_tombstone_check_is_filed_with_the_game_and_leaves_no_orphan`.
+        // The lock is let go before the read and the put, so no other game's
+        // save waits on the archive's disk.
+        //
+        // It stays BEFORE the unlink for `create`'s sake too. `create` CLEARS
+        // this id from the set, and since the lock split (R-2.9) `create` holds
+        // a different mutex from this one, so the two interleave: with the
+        // insert after the unlink, a create that slipped between found both
+        // documents absent, cleared a tombstone that was not there yet, wrote a
+        // brand-new table — and then THIS call tombstoned the id that now names
+        // it. `persist` reads the set, so every move at that new table answered
+        // `"…" was deleted while this move was in flight` and evicted its
+        // handle. With the insert first, `create`'s clear is strictly later in
+        // every interleaving. Arranged and measured in
+        // `a_delete_cannot_tombstone_the_table_a_create_put_in_its_place`.
+        {
+            let _saves = self.written.lock().expect("games lock");
+            self.deleted.lock().expect("games lock").insert(id.to_string());
+        }
+        if let Err(refused) = self.archive_on_abandon(id, &doc) {
+            // Nothing was unlinked, so the table stands and must stay playable:
+            // the tombstone comes back up, as after a failed unlink below, or
+            // every later move at a live game is refused as deleted. Pinned by
+            // `a_delete_whose_put_fails_lifts_its_tombstone_and_the_next_save_lands`.
+            self.deleted.lock().expect("games lock").remove(id);
+            return Err(refused);
+        }
+        if let Err(e) = self.store.delete(id) {
+            // Nothing was unlinked, so the table is still there and must still
+            // be playable: a tombstone left behind by a failed unlink refuses
+            // every move at a live game, naming a delete that did not happen.
+            self.deleted.lock().expect("games lock").remove(id);
+            return Err(GameError::Server(e));
+        }
+        self.written.lock().expect("games lock").remove(id);
+        self.live.lock().expect("games lock").remove(id);
+        // The store's own `delete` took the chat document with the record and
+        // the table; the COUNT is this process's cache and goes here, or a name
+        // reopened later numbers from above messages nobody can read.
+        self.chat_counts.lock().expect("games lock").remove(id);
+        // **`end`, not `bump`**: there is no state left for a woken subscriber
+        // to read, so every stream on this table has to close rather than
+        // fetch a 404. The house is bumped inside `end`, so a lobby drops the
+        // row.
+        self.signal.end(id);
+        Ok(())
+    }
+
+    /// The copy [`Games::delete`] files before it unlinks, with this table's
+    /// own lock held and the tombstone already down; an `Err` refuses the
+    /// delete, and the caller lifts the tombstone.
+    fn archive_on_abandon(&self, id: &str, doc: &TableDoc) -> Result<(), GameError> {
         // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): the rule
         // is [`saves_on_abandon`], asked here of the RECORD — the truth, never
         // the mirror's cache (cycle E, ruling P-3 as amended by T5-a) — and
         // asked of every `TableView` over the mirror's bit, so the lobby words
         // "Abandon and save" from the rule this applies. A saved table is
         // archived BEFORE anything is unlinked — and if the put fails the
-        // delete is REFUSED, nothing tombstoned, nothing removed, because the
-        // save is the point of the control and the creator can simply try
-        // again. A table already stamped (at game over, or by an earlier
-        // failed delete whose put landed) is deleted without a second put; an
-        // open or dealing table, or a playing one with no events, deletes as
-        // before. Since M6.5b (R-6.5b.13) a FINISHED game with no stamp lands
-        // under `over/`. The rule is asked FIRST as if the game had moved, so
-        // the record is read — and must parse — only where the rest of it
-        // could still say yes, exactly as before the factoring: a delete at an
-        // open table, or with the archive off, reads no record.
+        // delete is REFUSED, its tombstone lifted by the caller, nothing
+        // removed, because the save is the point of the control and the
+        // creator can simply try again. A table already stamped (at game over,
+        // or by an earlier failed delete whose put landed) is deleted without a
+        // second put; an open or dealing table, or a playing one with no
+        // events, deletes as before. Since M6.5b (R-6.5b.13) a FINISHED game
+        // with no stamp lands under `over/`. The rule is asked FIRST as if the
+        // game had moved, so the record is read — and must parse — only where
+        // the rest of it could still say yes, exactly as before the factoring:
+        // a delete at an open table, or with the archive off, reads no record.
         let archive_on = self.archive_on();
-        if saves_on_abandon(&doc, true, archive_on) {
+        if saves_on_abandon(doc, true, archive_on) {
             let record = self.store.read(Doc::Record, id).map_err(GameError::Server)?;
             if let Some((record_json, _)) = record {
                 let events = serde_json::from_str::<GameRecord>(&record_json)
                     .map(|r| r.events.len())
                     .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
-                if saves_on_abandon(&doc, events > 0, archive_on) {
+                if saves_on_abandon(doc, events > 0, archive_on) {
                     // R-6.5b.13: the leaf follows the MIRROR's truth. `turn` is a
                     // cache `mirror_turn` may leave one move stale when its write
                     // FAILS OR CONFLICTS — it swallows both — so in exactly that
@@ -1960,37 +2025,6 @@ impl Games {
                 }
             }
         }
-        // **The tombstone goes down BEFORE the unlink, and the order is the
-        // whole of it.** `create` CLEARS this id from the set, and since the
-        // lock split (R-2.9) `create` holds a different mutex from this one, so
-        // the two interleave: with the insert last, a create that slipped
-        // between the unlink and the insert found both documents absent,
-        // cleared a tombstone that was not there yet, wrote a brand-new table —
-        // and then THIS call tombstoned the id that now names it. `persist`
-        // reads the set, so every move at that new table answered `"…" was
-        // deleted while this move was in flight` and evicted its handle. With
-        // the insert first, `create`'s clear is strictly later in every
-        // interleaving. Arranged and measured in
-        // `a_delete_cannot_tombstone_the_table_a_create_put_in_its_place`.
-        self.deleted.lock().expect("games lock").insert(id.to_string());
-        if let Err(e) = self.store.delete(id) {
-            // Nothing was unlinked, so the table is still there and must still
-            // be playable: a tombstone left behind by a failed unlink refuses
-            // every move at a live game, naming a delete that did not happen.
-            self.deleted.lock().expect("games lock").remove(id);
-            return Err(GameError::Server(e));
-        }
-        self.written.lock().expect("games lock").remove(id);
-        self.live.lock().expect("games lock").remove(id);
-        // The store's own `delete` took the chat document with the record and
-        // the table; the COUNT is this process's cache and goes here, or a name
-        // reopened later numbers from above messages nobody can read.
-        self.chat_counts.lock().expect("games lock").remove(id);
-        // **`end`, not `bump`**: there is no state left for a woken subscriber
-        // to read, so every stream on this table has to close rather than
-        // fetch a 404. The house is bumped inside `end`, so a lobby drops the
-        // row.
-        self.signal.end(id);
         Ok(())
     }
 }
@@ -4215,9 +4249,10 @@ mod tests {
     ///    and writes a brand-new table;
     /// 3. `delete` inserts the id into `deleted`.
     ///
-    /// The new table is now tombstoned. `Games::persist` reads that set before
-    /// anything else, so EVERY move at a game the player just created answers
-    /// `"…" was deleted while this move was in flight` and evicts its handle —
+    /// The new table is now tombstoned. `Games::persist` reads that set under
+    /// its save lock, before it writes (cycle F, Task 4b), so EVERY move at a
+    /// game the player just created answers `"…" was deleted while this move
+    /// was in flight` and evicts its handle —
     /// a game that cannot be played and says something untrue about why. Under
     /// M6.1 both calls took the one global mutex and the interleaving did not
     /// exist; none of that cycle's four race cells is delete-versus-create.
@@ -4303,6 +4338,363 @@ mod tests {
         let handle = games.handle("dc").expect("the new table plays");
         let repl = handle.lock().expect("a game");
         games.persist("dc", &repl).expect("a move at the new table is not refused as deleted");
+    }
+
+    // ---------------------------------------------------------------------
+    // The delete-versus-save window (cycle F, Task 4b; spec §2.4).
+    // ---------------------------------------------------------------------
+
+    /// Where [`ParkedRead`] parks the one read it is armed for.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Park {
+        /// The read waits, THEN asks the store: it returns the store as it
+        /// stands at the release.
+        BeforeTheRead,
+        /// The read asks the store, THEN waits: what it returns is fixed before
+        /// the wait, whatever lands during it.
+        AfterTheRead,
+    }
+
+    /// A `MemStore` that parks ONE armed read and says each time it unlinks
+    /// (cycle F, Task 4b): the double the delete-versus-save cells drive.
+    ///
+    /// A delete and a save meet at two kinds of store call: the record READ
+    /// (the delete's fixes the bytes it files; the save's decides whether its
+    /// write replaces or creates) and the UNLINK. Parking one read on a chosen
+    /// side of the store, and hearing the unlink, is every interleaving these
+    /// cells force, and no sleep forces any of them. The arm is taken by the
+    /// first read it matches, so every other read, the other party's included,
+    /// passes straight through.
+    struct ParkedRead {
+        inner: MemStore,
+        armed: Mutex<Option<(Doc, &'static str, Park)>>,
+        at: Mutex<std::sync::mpsc::Sender<()>>,
+        go: Mutex<std::sync::mpsc::Receiver<()>>,
+        unlinked: Mutex<std::sync::mpsc::Sender<()>>,
+    }
+
+    /// The cell's ends of a [`ParkedRead`]'s gates: the parked read has
+    /// arrived, release it, and an unlink has happened.
+    struct ParkedReadGates {
+        at: std::sync::mpsc::Receiver<()>,
+        go: std::sync::mpsc::Sender<()>,
+        unlinked: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl ParkedRead {
+        fn new() -> (Arc<Self>, ParkedReadGates) {
+            use std::sync::mpsc::channel;
+            let (at_tx, at) = channel();
+            let (go, go_rx) = channel();
+            let (unlinked_tx, unlinked) = channel();
+            let store = Arc::new(Self {
+                inner: MemStore::default(),
+                armed: Mutex::new(None),
+                at: Mutex::new(at_tx),
+                go: Mutex::new(go_rx),
+                unlinked: Mutex::new(unlinked_tx),
+            });
+            (store, ParkedReadGates { at, go, unlinked })
+        }
+
+        fn arm(&self, doc: Doc, id: &'static str, park: Park) {
+            *self.armed.lock().expect("the arm") = Some((doc, id, park));
+        }
+
+        fn park(&self) {
+            let _ = self.at.lock().expect("the gate").send(());
+            let _ = self.go.lock().expect("the gate").recv();
+        }
+    }
+
+    impl Store for ParkedRead {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            let park = {
+                let mut armed = self.armed.lock().expect("the arm");
+                match *armed {
+                    Some((d, i, park)) if d == doc && i == id => {
+                        *armed = None;
+                        Some(park)
+                    }
+                    _ => None,
+                }
+            };
+            if park == Some(Park::BeforeTheRead) {
+                self.park();
+            }
+            let answer = self.inner.read(doc, id);
+            if park == Some(Park::AfterTheRead) {
+                self.park();
+            }
+            answer
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            let answer = self.inner.delete(id);
+            let _ = self.unlinked.lock().expect("the gate").send(());
+            answer
+        }
+    }
+
+    /// A `Games` over `store` with a recording archive, so a cell reads the
+    /// copy a delete filed.
+    fn archived_over(store: &Arc<ParkedRead>) -> (Arc<Games>, Arc<RecordingArchive>) {
+        let archive = RecordingArchive::recording();
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(store) as Arc<dyn Store>)
+            .with_archive(archive.clone());
+        (Arc::new(games), archive)
+    }
+
+    /// ONE move more on `repl`, applied and not saved, and the record's length
+    /// with it. The game is not over after it: a game's LAST move files under
+    /// `over/`, and these cells read `abandoned/`.
+    fn a_late_move(repl: &mut Repl) -> usize {
+        let mv = repl.session.legal().first().cloned().expect("a legal move");
+        repl.session.apply(mv, Vec::new()).expect("a legal move applies");
+        assert!(!repl.session.is_over(), "premise: the late move does not end the game");
+        repl.session.record().events.len()
+    }
+
+    /// Each copy the archive took: where it was filed and how many events it holds.
+    fn filed(archive: &RecordingArchive) -> Vec<(crate::archive::Why, usize)> {
+        archive
+            .puts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| (p.why, serde_json::from_str::<GameRecord>(&p.record).expect("the copy reads").events.len()))
+            .collect()
+    }
+
+    /// **A save that lands while the delete files its copy is REFUSED, never
+    /// lost** (cycle F, Task 4b; spec §2.4): variant 1 of the window Task 4's
+    /// review read in `Games::delete`.
+    ///
+    /// The old order: the delete read the record, put it to the archive (two
+    /// files, each flushed to disk), and only THEN laid the tombstone and
+    /// unlinked, while a save checked the tombstone once, at its top. So a save
+    /// whose check passed before the tombstone, and whose write landed after the
+    /// delete's read and before the unlink, was ANSWERED SAVED; the unlink then
+    /// removed it, and the copy under `abandoned/` lacked the move.
+    ///
+    /// The delete is parked AFTER its record read has answered: the bytes it
+    /// files are fixed, and nothing is unlinked yet. The save runs whole in that
+    /// gap, on its own thread, and is waited for with a bound, so a save that
+    /// blocked on the delete fails this cell instead of hanging it. The delete
+    /// holds the save lock only to lay its tombstone, never across its read or
+    /// its put, so no save waits on the archive's disk. With the tombstone laid
+    /// first, the save is refused out loud, in the sentence a save after a
+    /// finished delete has always had, and the copy is the game as the delete
+    /// read it.
+    ///
+    /// Measured against the old order: the save answers `Ok(())`, and the copy
+    /// holds one event fewer than the save wrote.
+    #[test]
+    fn a_save_landing_while_the_delete_files_its_copy_is_refused_never_lost() {
+        use std::time::Duration;
+        let (store, gates) = ParkedRead::new();
+        let (games, archive) = archived_over(&store);
+        let red = who("red@t.test");
+        let mut repl = one_move_in(&games, "late");
+        let read_by_the_delete = repl.session.record().events.len();
+        let saved_by_the_move = a_late_move(&mut repl);
+
+        store.arm(Doc::Record, "late", Park::AfterTheRead);
+        let deleter = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || games.delete("late", &red))
+        };
+        gates.at.recv_timeout(Duration::from_secs(10)).expect("the delete reads the record it will file");
+
+        let (answered_tx, answered_rx) = std::sync::mpsc::channel();
+        let saver = {
+            let games = Arc::clone(&games);
+            std::thread::spawn(move || {
+                let answer = games.persist("late", &repl);
+                let _ = answered_tx.send(answer.clone());
+                answer
+            })
+        };
+        let in_the_gap = answered_rx.recv_timeout(Duration::from_secs(10));
+        gates.go.send(()).expect("the parked delete is still listening");
+        let deleted = deleter.join().expect("the delete thread");
+        let saved = saver.join().expect("the save thread");
+
+        let copies = filed(&archive);
+        assert!(
+            saved.is_err(),
+            "the save was ANSWERED SAVED with {saved_by_the_move} events while the delete filed its copy, \
+             and the copies hold {copies:?}: the move is lost",
+        );
+        assert_eq!(saved, Err(format!("{:?} was deleted while this move was in flight", "late")));
+        assert_eq!(
+            in_the_gap,
+            Ok(saved.clone()),
+            "the save did not answer while the delete was parked between its read and its put: the \
+             delete holds the save lock across its archive work, and every save waits on the disk",
+        );
+        assert!(deleted.is_ok(), "{deleted:?}");
+        assert_eq!(copies, [(crate::archive::Why::Abandoned, read_by_the_delete)], "the copy is the game as the delete read it");
+        assert!(store.read(Doc::Record, "late").expect("a readable store").is_none(), "no record outlives its delete");
+        assert!(store.read(Doc::Table, "late").expect("a readable store").is_none());
+    }
+
+    /// **A save that passed its tombstone check is filed with the game, and
+    /// leaves no orphan** (cycle F, Task 4b; spec §2.4): variant 2 of the
+    /// window, the ORPHAN RECORD.
+    ///
+    /// The old order: a save checked the tombstone at its top and only then
+    /// took the save lock to read and write the record, and the delete took no
+    /// save lock before its unlink. So a save that passed its check and read the
+    /// store AFTER the unlink found no record and wrote as a create
+    /// (`expected: None`, which asks for exactly an absent document). A record
+    /// with no table then stood: unlisted, holding the name, and invisible to
+    /// the sweep, which lists tables. `mirror_turn` found no table, so nothing
+    /// repaired it.
+    ///
+    /// The save is parked INSIDE its record read, BEFORE the store answers:
+    /// past its tombstone check, holding the save lock, at the one point where
+    /// its read could still follow an unlink. With the tombstone laid under
+    /// that same lock, the delete cannot lay it, read or unlink until the save's
+    /// write has landed. A WAIT shows only as non-arrival, so the middle
+    /// assertion is the form this file's M6.2 race cells use
+    /// (`a_delete_cannot_interleave_with_the_keep_that_finalizes`,
+    /// `a_delete_cannot_interleave_with_the_join_that_fills_the_last_seat`):
+    /// the unlink does not arrive within 500 ms while the save is parked.
+    /// Correct code cannot produce it there at all, so the bound never decides
+    /// a pass. The copy the delete then files HOLDS the save's move. The cell
+    /// also catches a tombstone laid before the read but NOT under the save
+    /// lock: the delete then reads, files and unlinks around the parked save.
+    ///
+    /// Measured against the old order: the unlink arrives, and once both
+    /// threads finish the store holds a record and no table.
+    #[test]
+    fn a_save_past_its_tombstone_check_is_filed_with_the_game_and_leaves_no_orphan() {
+        use std::time::Duration;
+        let (store, gates) = ParkedRead::new();
+        let (games, archive) = archived_over(&store);
+        let red = who("red@t.test");
+        let mut repl = one_move_in(&games, "orphan");
+        let saved_by_the_move = a_late_move(&mut repl);
+
+        store.arm(Doc::Record, "orphan", Park::BeforeTheRead);
+        let saver = {
+            let games = Arc::clone(&games);
+            std::thread::spawn(move || games.persist("orphan", &repl))
+        };
+        gates
+            .at
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the save passes its tombstone check and reaches its record read");
+        let deleter = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || games.delete("orphan", &red))
+        };
+        let unlinked_while_parked = gates.unlinked.recv_timeout(Duration::from_millis(500)).is_ok();
+        gates.go.send(()).expect("the parked save is still listening");
+        let saved = saver.join().expect("the save thread");
+        let deleted = deleter.join().expect("the delete thread");
+
+        let record = store.read(Doc::Record, "orphan").expect("a readable store");
+        let table = store.read(Doc::Table, "orphan").expect("a readable store");
+        assert!(
+            !(record.is_some() && table.is_none()),
+            "a RECORD WITH NO TABLE: the save passed its check before the delete's tombstone, read the \
+             store after the unlink and created the record (unlisted, holding the name, invisible to the sweep)",
+        );
+        assert!(
+            !unlinked_while_parked,
+            "the delete unlinked the game while a save that had passed its tombstone check was mid-write",
+        );
+        assert_eq!(saved, Ok(()), "a save that began before the tombstone is saved");
+        assert!(deleted.is_ok(), "{deleted:?}");
+        assert!(record.is_none() && table.is_none(), "the delete removed both documents");
+        assert_eq!(
+            filed(&archive),
+            [(crate::archive::Why::Abandoned, saved_by_the_move)],
+            "the copy holds the save's move",
+        );
+    }
+
+    /// **A save reads the tombstone only while it holds the save lock** (cycle
+    /// F, Task 4b): the catcher that no race cell can be.
+    ///
+    /// With the check made BEFORE the lock, a save parked inside its read still
+    /// holds the lock, so
+    /// `a_save_past_its_tombstone_check_is_filed_with_the_game_and_leaves_no_orphan`
+    /// passes. Yet a save that passed its check and then WAITED for the lock,
+    /// behind another game's save, reads after any tombstone and unlink laid in
+    /// the meantime: variant 2 again, reached through a wait that no store
+    /// double can park.
+    ///
+    /// So the order is read off the locks themselves, with no thread and no
+    /// bound. The tombstone set is POISONED (a writer died holding it, as the
+    /// poisoned-lock cells in `games.rs` arrange), and the save panics where it
+    /// reads the set. A panic poisons only the mutexes held at that moment, so
+    /// the save lock is poisoned too exactly when the check ran under it.
+    /// Measured against the old order: the save lock is clean.
+    #[test]
+    fn a_save_reads_the_tombstone_only_while_it_holds_the_save_lock() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let games = games();
+        let repl = one_move_in(&games, "held");
+        let died = catch_unwind(AssertUnwindSafe(|| {
+            let _held = games.deleted.lock().unwrap();
+            panic!("a writer died holding the tombstone set");
+        }));
+        assert!(died.is_err() && games.deleted.is_poisoned(), "premise: the tombstone set is poisoned");
+        assert!(!games.written.is_poisoned(), "premise: the save lock is not");
+        let saved = catch_unwind(AssertUnwindSafe(|| games.persist("held", &repl)));
+        assert!(saved.is_err(), "premise: the save reads the tombstone set, and its poison panics the save");
+        assert!(
+            games.written.is_poisoned(),
+            "the save read the tombstone WITHOUT holding the save lock: a save past its check can still \
+             wait for the lock while a delete tombstones, reads and unlinks",
+        );
+    }
+
+    /// **A delete whose put fails LIFTS its tombstone** (cycle F, Task 4b).
+    /// With the tombstone laid before the record is read, a refused put must
+    /// take it back up, or every later save at a table still standing is
+    /// refused as deleted. The cell pins the pre-delete state exactly: the
+    /// tombstone absent, the table listed, and the next save accepted.
+    ///
+    /// Against the old order this held without any lift, because the tombstone
+    /// came after the put. It is red against the new order without the lift.
+    #[test]
+    fn a_delete_whose_put_fails_lifts_its_tombstone_and_the_next_save_lands() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let red = who("red@t.test");
+        let mut repl = one_move_in(&games, "lifted");
+        let err = games.delete("lifted", &red).unwrap_err();
+        assert!(
+            matches!(&err, GameError::Server(m) if m.ends_with("— the table was not deleted")),
+            "premise: the put failed and the delete was refused: {err}",
+        );
+        assert!(
+            !games.deleted.lock().expect("games lock").contains("lifted"),
+            "the refused delete left its tombstone down: every later save at this table is refused as deleted",
+        );
+        assert!(
+            games.list_for(&red).expect("a listing").iter().any(|t| t.id == "lifted"),
+            "the table is still listed",
+        );
+        let events = a_late_move(&mut repl);
+        games.persist("lifted", &repl).expect("a save after the refused delete is accepted");
+        let (stored, _) = games.store().read(Doc::Record, "lifted").unwrap().expect("the record");
+        let stored: GameRecord = serde_json::from_str(&stored).expect("the record reads");
+        assert_eq!(stored.events.len(), events, "the save landed");
     }
 
     /// **A refused join writes NOTHING**, read as the stored bytes and the

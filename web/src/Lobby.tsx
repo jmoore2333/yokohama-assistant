@@ -56,10 +56,13 @@ import { Padlock, PasswordTag, SeatChip } from "./Chips";
 import { projectLink } from "./buildValues";
 import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
+import { ReleaseNotice } from "./ReleaseNotice";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
+import type { ReadinessStatus } from "./swRegister";
 import { mayAbandon, rowAction, rowMeta, seatChips, type Section } from "./tables";
 import type { GamesList, TableView } from "./types";
+import { UpdateLine } from "./UpdateLine";
 
 /** The three listings, one per section. */
 type Scope = "mine" | "open" | "playing";
@@ -191,6 +194,7 @@ export function Lobby({
   serverUp,
   onReached,
   onRetry,
+  readiness,
 }: {
   /** Who this browser plays as, from the door — `null` when the door has not
    *  opened, which since M6.5b is a screen this component still draws.
@@ -249,6 +253,10 @@ export function Lobby({
   /** "Try again" on the card that says the server cannot be reached (state C):
    *  `App`'s `retry`, which asks both reads again. */
   onRetry?: () => void;
+  /** What the release's service worker is doing — `App`'s `useReadiness()`,
+   *  for the update line in the actions (M6.5c2 cycle F, R-FP9). Absent draws
+   *  no line. */
+  readiness?: ReadinessStatus;
 }) {
   const [lists, setLists] = useState<Lists>(NOTHING);
   /** Each section's own refusal from the last reading (dossier row 4). */
@@ -518,9 +526,12 @@ export function Lobby({
             </>
           )}
           {action.kind === "stranded" && (
+            /* Its title is the server's refusal's head (cycle F, spec §2.3);
+               the reason after it is the game screen's, from the 409, since a
+               listing's bot is only `{label, runs_here}`. */
             <span
               className="stranded"
-              title={t.bot ? `played against ${t.bot.label}, which this server does not run` : undefined}
+              title={t.bot ? `This game was played against ${t.bot.label}. This server can't continue it.` : undefined}
             >
               can&rsquo;t continue here
             </span>
@@ -623,6 +634,13 @@ export function Lobby({
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               )}
+              {/* **A newer release, told** (cycle F, R-F2, R-FP9): beside the
+                  repository link, drawn only where the feed names one. */}
+              <ReleaseNotice />
+              {/* **A new release, offered and never taken by itself** (M6.5c2
+                  cycle F, R-F3, R-FP9): the lobby is off the door, so the line
+                  is passive here and the click is the only switch. */}
+              {readiness && <UpdateLine status={readiness} />}
               {link !== "live" && (
                 <span className="meta link-word" role="status">
                   {link}&hellip;

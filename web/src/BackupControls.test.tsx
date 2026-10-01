@@ -20,6 +20,7 @@ import { DB_NAME, openDb, writeDocs } from "./local/db";
 import { resetLocalHostForTests } from "./local/client";
 import { resetFactsForTest } from "./local/facts";
 import { breakTheWorker, stubWorker } from "./test/fakeWorker";
+import { applyBusy, resetDoorAutoApplyForTests } from "./swRegister";
 import committed from "./wire-script/backup-envelope.json";
 
 const fixture = committed as unknown as Envelope;
@@ -240,6 +241,50 @@ describe("the restore report", () => {
     );
     expect(await screen.findByText(/version 2 backup/)).toBeInTheDocument();
     expect(screen.queryByText("local-x")).not.toBeInTheDocument();
+  });
+});
+
+// **A restore holds the door's own apply while it runs** (M6.5c2 cycle F,
+// R-FP14; spec §2.1): the door takes a waiting release by itself, and a
+// reload in the middle of a restore would lose its report. Read from INSIDE
+// the restore — the fake Worker's hook runs while it is in flight — and after
+// it, on both of its endings.
+describe("the door's apply, held by a restore", () => {
+  afterEach(() => resetDoorAutoApplyForTests());
+
+  it("is held while the restore runs, and released when it reports or is refused", async () => {
+    const during: boolean[] = [];
+    stubWorker({
+      restore: () => {
+        during.push(applyBusy());
+        return [{ id: "fresh", verdict: { kind: "accepted", players: 2, events: 595, over: true } }];
+      },
+    });
+    const { unmount } = render(<Restore />);
+    expect(applyBusy(), "nothing is held before the file is chosen").toBe(false);
+    await userEvent.upload(
+      screen.getByLabelText("Restore from a backup"),
+      fileOf(buildEnvelope([{ id: "fresh", record: RECORD_TEXT, table: tableFor("fresh") }])),
+    );
+    expect(await screen.findByText("fresh")).toBeInTheDocument();
+    expect(during, "held while the restore ran").toEqual([true]);
+    expect(applyBusy(), "released once it reported").toBe(false);
+    unmount();
+
+    stubWorker({
+      restore: () => {
+        during.push(applyBusy());
+        return { refused: "this is a version 2 backup; this build reads version 1" };
+      },
+    });
+    render(<Restore />);
+    await userEvent.upload(
+      screen.getByLabelText("Restore from a backup"),
+      fileOf(buildEnvelope([{ id: "local-x", record: RECORD_TEXT, table: tableFor("local-x") }])),
+    );
+    expect(await screen.findByText(/version 2 backup/)).toBeInTheDocument();
+    expect(during, "held while the refused one ran too").toEqual([true, true]);
+    expect(applyBusy(), "and released when it was refused").toBe(false);
   });
 });
 
