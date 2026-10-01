@@ -749,7 +749,11 @@ impl Games {
     /// window is the whole of `Repl::step`, bot pump included — measured at
     /// 0.16-0.30 s in a debug build — and without the check the file came back:
     /// `DELETE` answered 204, the file went, the in-flight input finished, and
-    /// `FsStore::write` re-created the parent directory and the record.
+    /// `FsStore::write` re-created the parent directory and the record. Since
+    /// cycle F (Task 4b) the check is made under the save lock, which the delete
+    /// takes to lay its tombstone, so a save either landed before the delete
+    /// read the record it files or is refused: never answered, then missing
+    /// from the copy.
     ///
     /// A record that is a DIFFERENT GAME under the same id is not overwritten —
     /// identity by seed, checked first, because a name is not a game.
@@ -778,13 +782,23 @@ impl Games {
     ///
     /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
+        // Held across the tombstone check, the read, the compare AND the write,
+        // so the swap is atomic within this process. Nothing takes this lock
+        // while holding `live`, so the `conflict` helper below (which does take
+        // `live`) cannot deadlock.
+        let mut written = self.written.lock().expect("games lock");
+        // **The tombstone is read UNDER the save lock** (cycle F, Task 4b; spec
+        // §2.4), and `Games::delete` lays it under the same lock before it
+        // reads the record it files. So this save either lands before the
+        // delete's read, and goes wherever the game goes, or sees the
+        // tombstone here and is refused out loud. Checked before the lock, as
+        // it was, a save could pass the check, wait for the lock behind another
+        // game's save, and then read after the unlink: no record, `expected:
+        // None`, and the write below CREATED a record with no table. Pinned by
+        // `a_save_reads_the_tombstone_only_while_it_holds_the_save_lock`.
         if self.deleted.lock().expect("games lock").contains(id) {
             return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
         }
-        // Held across the read, the compare AND the write, so the swap is atomic
-        // within this process. Nothing takes this lock while holding `live`, so
-        // the `conflict` helper below (which does take `live`) cannot deadlock.
-        let mut written = self.written.lock().expect("games lock");
 
         let record = repl.session.record();
         let events = record.events.len();

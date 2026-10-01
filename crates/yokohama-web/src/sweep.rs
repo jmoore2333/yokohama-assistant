@@ -34,17 +34,16 @@
 //! leaves it on this host; the log line is the record. The Worker's marker is
 //! its own.
 //!
-//! **A race, named** (spec §2.4, §9 F-25): the pass decides from the activity
-//! it read and then calls the delete, which re-checks the seat and the creator
-//! but not idleness. A move that lands in the seconds between is played, and
-//! the delete then files the game WITH it under `abandoned/`; a move whose save
-//! begins after the delete has tombstoned the table is refused out loud ("…was
-//! deleted while this move was in flight"). One window is not closed, and every
-//! Abandon shares it: a move whose save began before the delete's tombstone and
-//! writes while the delete is filing its copy is answered saved, then removed,
-//! and is missing from the copy under `abandoned/` — a window as wide as the
-//! archive's write to disk. A narrower variant of the same window can leave an
-//! unlisted record holding the game's name.
+//! **A race, and why it loses nothing** (spec §2.4, §9 F-25): the pass decides
+//! from the activity it read and then calls the delete, which re-checks the
+//! seat and the creator but not idleness, so a move can land in the seconds
+//! between and the table is ended all the same. The move is not lost. The
+//! delete lays its tombstone before it reads the record it files, under the
+//! lock a save holds from its tombstone check to its write: a move whose save
+//! began before the tombstone has landed by then and is filed with the game
+//! like every move before it, and a move whose save begins after it is refused
+//! out loud ("…was deleted while this move was in flight"). Every Abandon runs
+//! the same order.
 //!
 //! **Where it lives** (spec §2.4, §9 F-11): everything above the gated region
 //! makes no platform call — the decision is pure, and a pass reaches the disk

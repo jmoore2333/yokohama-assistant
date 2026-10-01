@@ -276,12 +276,11 @@ YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — g
 `kept` is `archive` when the game is in the archive, `nothing` when the table held no game, and `off` for a
 game with no archive to keep it, which a server that sweeps never has.
 
-**A move during a sweep.** A move that lands in the seconds between a pass's listing and its delete is played,
-and the delete files the game with it. A move whose save begins after the delete's tombstone (its mark that
-the table is going) is refused out loud. One window is not closed, and every Abandon shares it: a move whose
-save began before the delete's tombstone and writes while the delete is filing its copy is answered saved,
-then removed, and is missing from the copy under `abandoned/` — a window as wide as the archive's write to
-disk. A narrower variant of the same window can leave an unlisted record holding the game's name.
+**A move during a sweep.** A move can land in the seconds between a pass's listing and its delete, and the
+table is ended all the same, but the move is not lost. The delete lays its tombstone (its mark that the table is
+going) before it reads the game it files, under the lock a move's save holds from its check of that mark to its
+write. A move whose save began before the tombstone is filed with the game like every move before it. A move
+whose save begins after it is refused out loud. Every Abandon works the same way.
 
 **The sweep reads the files' modification times**, so a copy or a restore of the volume that resets them
 restarts every table's clock.
