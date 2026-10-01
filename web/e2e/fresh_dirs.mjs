@@ -13,13 +13,24 @@
 // It reads the two paths from the environment the config hands the server
 // (`YOKOHAMA_WEB_DIR`, `YOKOHAMA_WEB_ARCHIVE_DIR`) and empties exactly those. It
 // deletes nothing it was not handed, and REFUSES — exit 2, naming the variable
-// and the path — unless each is a directory directly inside the system temp
-// directory whose name starts `yokohama-e2e-`, resolved through symlinks. Both
-// are checked before either is emptied, so a refusal empties nothing.
+// and the path — unless each is, once resolved, a directory directly inside the
+// system temp directory whose name starts `yokohama-e2e-`.
+//
+// **It deletes the path it CHECKED, and only that** (fix round 1; the review of
+// `11c8b60c`, Important 1). The first version checked the value collapsed as
+// TEXT and deleted the RAW value, and the two disagree whenever a symlink comes
+// before a `..`: `<temp>/<link>/../yokohama-e2e-x` reads as a child of the temp
+// directory as text, while the operating system walks through the link and the
+// `..` lands in the link target's parent. So: a value with a `..` segment is
+// refused outright, before anything is resolved; every other value is resolved
+// with `realpathSync` (every symlink followed, the last one too; a value not
+// there yet through its parent), the check reads THAT path, and `rmSync` and
+// `mkdirSync` take THAT path. Both values are checked before either directory
+// is emptied, so a refusal empties nothing.
 
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const GAMES_ENV = "YOKOHAMA_WEB_DIR";
@@ -33,44 +44,61 @@ export function scratchDirs(port, root = tmpdir()) {
   return { games: join(root, `${PREFIX}${port}`), archive: join(root, `${PREFIX}archive-${port}`) };
 }
 
-/** Why `value` may not be emptied, or `null` when it may. */
-function refusal(value) {
-  if (value === undefined || value === "") return "it is not set";
-  const abs = resolve(value);
-  if (!basename(abs).startsWith(PREFIX)) return `its last segment must start with "${PREFIX}"`;
+/** The real path `value` names and may be emptied, as `{ real }`, or `{ why }`
+ *  it may not be. */
+function check(value) {
+  if (value === undefined || value === "") return { why: "it is not set" };
+  // Refused before anything is resolved: a `..` means one thing as text and
+  // another once a symlink comes before it, and nothing here needs one.
+  if (value.split(/[\\/]/).includes("..")) return { why: 'it contains a ".." segment' };
+  const abs = resolve(value); // no `..` is left for this to collapse
+  let real;
+  try {
+    real = realpathSync(abs);
+  } catch (e) {
+    if (e.code !== "ENOENT") return { why: `it cannot be resolved (${e.code})` };
+    if (isLink(abs)) return { why: "it is a symlink that points nowhere" };
+    // Not there yet: resolved through its parent, which has to be.
+    let parent;
+    try {
+      parent = realpathSync(dirname(abs));
+    } catch {
+      return { why: "its parent directory does not exist, so it is outside the temp directory" };
+    }
+    real = join(parent, basename(abs));
+  }
   const root = realpathSync(tmpdir());
-  const parent = dirname(abs);
-  if (!existsSync(parent)) return "its parent directory does not exist, so it is outside the temp directory";
-  // Resolved through symlinks: a link named like a walk's directory that points
-  // anywhere else resolves to the somewhere else, and is refused for it.
-  const real = existsSync(abs) ? realpathSync(abs) : join(realpathSync(parent), basename(abs));
   const rel = relative(root, real);
-  if (rel === "" || rel.startsWith("..") || resolve(root, rel) !== real) return `it resolves outside the temp directory (${root})`;
-  if (dirname(real) !== root) return `it must be directly inside the temp directory (${root})`;
-  return null;
+  if (rel.startsWith("..") || isAbsolute(rel)) return { why: `it resolves outside the temp directory (${root}): ${real}` };
+  if (!basename(real).startsWith(PREFIX)) return { why: `its last segment must start with "${PREFIX}": ${real}` };
+  if (dirname(real) !== root) return { why: `it must be directly inside the temp directory (${root}): ${real}` };
+  return { real };
+}
+
+/** Whether `path` is itself a symlink, followed or not. */
+function isLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /** Empties and recreates the two directories `env` names; the exit code. */
 function main(env) {
-  const named = [
-    [GAMES_ENV, env[GAMES_ENV]],
-    [ARCHIVE_ENV, env[ARCHIVE_ENV]],
-  ];
-  const refused = [];
-  for (const [name, value] of named) {
-    const why = refusal(value);
-    if (why !== null) refused.push(`fresh_dirs: refusing ${name}=${value ?? "(unset)"}: ${why}`);
-  }
-  if (refused.length === 0 && resolve(named[0][1]) === resolve(named[1][1])) {
-    refused.push(`fresh_dirs: refusing ${GAMES_ENV} and ${ARCHIVE_ENV}: they name the same directory (${named[0][1]})`);
+  const checked = [GAMES_ENV, ARCHIVE_ENV].map((name) => ({ name, value: env[name], ...check(env[name]) }));
+  const refused = checked.filter((c) => c.why !== undefined).map((c) => `fresh_dirs: refusing ${c.name}=${c.value ?? "(unset)"}: ${c.why}`);
+  if (refused.length === 0 && checked[0].real === checked[1].real) {
+    refused.push(`fresh_dirs: refusing ${GAMES_ENV} and ${ARCHIVE_ENV}: they name the same directory (${checked[0].value}, ${checked[1].value})`);
   }
   if (refused.length > 0) {
     for (const line of refused) console.error(line);
     return 2;
   }
-  for (const [, value] of named) {
-    rmSync(value, { recursive: true, force: true });
-    mkdirSync(value, { recursive: true });
+  // The CHECKED real paths, never the raw values.
+  for (const { real } of checked) {
+    rmSync(real, { recursive: true, force: true });
+    mkdirSync(real, { recursive: true });
   }
   return 0;
 }

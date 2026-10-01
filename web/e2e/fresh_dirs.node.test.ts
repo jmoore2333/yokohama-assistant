@@ -23,9 +23,9 @@
 // config's launch command and its imports, and does not depend on a browser.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { scratchDirs } from "./fresh_dirs.mjs";
@@ -114,9 +114,26 @@ describe("the script", () => {
     expect(readdirSync(archive)).toEqual([]);
   });
 
-  // Each refusal exits non-zero NAMING the path, and — the two paths are
-  // checked before either is emptied — leaves the good one's file in place, and
-  // the refused directory's own.
+  // The guard checks the path it DELETES: a symlink is followed before the
+  // check, and it is the checked real path that is emptied (fix round 1).
+  it("follows a symlink inside the temp directory to a yokohama-e2e-* directory also inside it, and empties only that one", () => {
+    const { games, archive } = scratchDirs(LOCAL_PORT, scratch);
+    const target = join(scratch, "yokohama-e2e-target");
+    plant(target);
+    symlinkSync(target, games);
+    plant(archive);
+    const neighbour = plant(join(scratch, "yokohama-e2e-other"));
+    const ran = runScript({ YOKOHAMA_WEB_DIR: games, YOKOHAMA_WEB_ARCHIVE_DIR: archive });
+    expect(ran.status, ran.stderr).toBe(0);
+    expect(readdirSync(target), "the link's target is the directory that was emptied").toEqual([]);
+    expect(lstatSync(games).isSymbolicLink(), "the link itself is still a link").toBe(true);
+    expect(readdirSync(archive)).toEqual([]);
+    expect(existsSync(neighbour), "and a neighbour is untouched").toBe(true);
+  });
+
+  // Each refusal exits 2 NAMING the path, and — the two paths are checked
+  // before either is emptied — leaves the good one's file in place, and the
+  // refused directory's own.
   describe("refuses, naming the path and emptying neither", () => {
     type Refusal = { value: string; why: RegExp; guarded: string[] };
     /** Made outside `scratch` (in the real temp directory), so removed by hand. */
@@ -138,11 +155,31 @@ describe("the script", () => {
         },
       ],
       [
-        "a `..` that climbs out of it",
+        // **The shape the first version let through** (the review of 11c8b60c,
+        // Important 1): a symlink BEFORE a `..`. Collapsed as text it reads
+        // `<temp>/yokohama-e2e-x`, but the operating system walks through the
+        // link, so the `..` lands in the link target's PARENT, outside the temp
+        // directory. Built as a STRING: `path.join` would collapse the `..`
+        // before the script ever saw it, which is what the cell that stood here
+        // did, so it never sent a `..` at all.
+        "a `..` after a symlink, which the operating system resolves outside the temp directory",
         () => {
-          const dir = join(outside(), "yokohama-e2e-x");
-          const climbing = join(scratch, "..", basename(dirname(dir)), "yokohama-e2e-x");
-          return { value: climbing, why: /outside the temp directory/, guarded: [plant(dir)] };
+          const parent = outside();
+          const target = join(parent, "inner");
+          mkdirSync(target);
+          const sentinel = join(target, "sentinel.txt");
+          writeFileSync(sentinel, "z");
+          symlinkSync(target, join(scratch, "yokohama-e2e-link"));
+          const victim = plant(join(parent, "yokohama-e2e-x"));
+          return { value: `${scratch}/yokohama-e2e-link/../yokohama-e2e-x`, why: /"\.\." segment/, guarded: [victim, sentinel] };
+        },
+      ],
+      [
+        // Belt and braces: any `..` is refused, even one that is harmless.
+        "a `..` that is harmless, refused anyway",
+        () => {
+          const dir = join(scratch, "yokohama-e2e-x");
+          return { value: `${scratch}/sub/../yokohama-e2e-x`, why: /"\.\." segment/, guarded: [plant(dir)] };
         },
       ],
       [
@@ -152,6 +189,16 @@ describe("the script", () => {
           const link = join(scratch, "yokohama-e2e-link");
           symlinkSync(away, link);
           return { value: link, why: /outside the temp directory/, guarded: [plant(away)] };
+        },
+      ],
+      [
+        // The check reads what is DELETED, which is the link's target.
+        "a symlink named like the walk's that points at a directory that is not",
+        () => {
+          const precious = join(scratch, "precious");
+          const file = plant(precious);
+          symlinkSync(precious, join(scratch, "yokohama-e2e-link2"));
+          return { value: join(scratch, "yokohama-e2e-link2"), why: /last segment/, guarded: [file] };
         },
       ],
       [
@@ -181,7 +228,7 @@ describe("the script", () => {
         const goodFile = plant(games);
         const { value, why, guarded } = build(games);
         const ran = runScript({ YOKOHAMA_WEB_DIR: games, YOKOHAMA_WEB_ARCHIVE_DIR: value });
-        expect(ran.status, "exits non-zero").not.toBe(0);
+        expect(ran.status, "exits 2").toBe(2);
         expect(ran.stderr, "names the path").toContain(value === "" ? "YOKOHAMA_WEB_ARCHIVE_DIR" : value);
         expect(ran.stderr, "and the reason").toMatch(why);
         expect(existsSync(goodFile), "the good directory was not emptied either").toBe(true);
