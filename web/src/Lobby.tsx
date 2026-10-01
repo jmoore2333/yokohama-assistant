@@ -8,12 +8,12 @@
 // shows — a screen where half the lobby is older than the other half.
 //
 // **The stream it listens to is the HOUSE channel**, `/api/stream`, and a frame
-// off it is a bare sequence number (M6.3 R-3.4): a `watch` channel coalesces,
-// so two bumps naming two different tables inside one wake would lose one, and
-// a frame naming a table would therefore sometimes name the wrong one. The
-// lobby re-reads ALL its lists on any bump instead, which is what `Source`'s
-// default `frames: "wake"` mode does — `once` is the answer and the frame is
-// only the wake-up.
+// off it is two counters and never a table (M6.3 R-3.4, M6.4 R-6.4.7): a
+// `watch` channel coalesces, so two bumps naming two different tables inside
+// one wake would lose one, and a frame naming a table would therefore sometimes
+// name the wrong one. The lobby re-reads ALL its lists on any bump instead,
+// which is what `Source`'s default `frames: "wake"` mode does — `once` is the
+// answer and the frame is only the wake-up, so neither counter is READ here.
 //
 // **The first load is this component's, not the hook's.** The house stream says
 // NOTHING on connect (deliberately: the lobby has just fetched its lists to
@@ -23,7 +23,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
-import { api, ApiError } from "./api";
+import { api, ApiError, clearDisplayName, displayName, lobbyChat, setDisplayName } from "./api";
+import { Chat } from "./Chat";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
@@ -101,10 +102,29 @@ export function Lobby({
    *  then the polled list's own. */
   const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
   const pageInFlight = useRef(false);
+  /** "Something on the server may have changed" (spec §6.2), counted.
+   *
+   *  The house frame carries two counters and names no table (M6.3 R-3.4, M6.4
+   *  R-6.4.7), and this screen is a `"wake"` consumer, so neither number
+   *  reaches here — the frame is dropped and the wake is the whole of it. The
+   *  panel is told to ask for its delta off the same wake the three listings
+   *  are refetched on, which is the only source it has. **The cost, stated**
+   *  (spec §6.2, §11): a house message is one more house wake, and every
+   *  visible lobby refetches its three listings on it. The second counter
+   *  exists so that a later `"value"` consumer could tell the two apart; this
+   *  one does not. */
+  const [tick, setTick] = useState(0);
+  /** The name this browser plays under, on ONE key with the door, the New table
+   *  form and the seat picker (R-6.4.3). Written as TYPED rather than on a
+   *  submit, because this screen has none — and an emptied field REMOVES the
+   *  key, so "leave it blank and your address is used" is true of the browser
+   *  as well as of the help. */
+  const [name, setName] = useState(() => displayName() ?? "");
 
   const take = useCallback((v: Lists) => {
     setLists(v);
     setError(null);
+    setTick((n) => n + 1);
   }, []);
   const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
 
@@ -203,6 +223,19 @@ export function Lobby({
       {who && (
         <div className="who-strip">
           {who}
+          <label className="your-name">
+            Your name
+            <input
+              value={name}
+              placeholder="optional"
+              onChange={(e) => {
+                setName(e.target.value);
+                const trimmed = e.target.value.trim();
+                if (trimmed) setDisplayName(trimmed);
+                else clearDisplayName();
+              }}
+            />
+          </label>
           {link !== "live" && (
             <span className="meta link" role="status">
               {link}&hellip;
@@ -268,6 +301,18 @@ export function Lobby({
           <ul>{lists.playing.games.map((t) => row(t, false))}</ul>
         )}
       </section>
+
+      {/* The house chat (R-6.4.5, R-6.4.6): a fourth section, folded by default —
+          opening it is entering the lobby chat — and absent when the server says
+          the lobby chat is off, because a panel whose every request is a 404 is
+          worse than no panel. The SECTION is this screen's and the panel keeps
+          its own root, so the lobby styles a component it did not write. Its
+          tick is this screen's own wake. */}
+      {lobbyChat() && (
+        <section className="saved lobby-chat">
+          <Chat scope={{ kind: "house" }} tick={tick} sendName heading="h3" />
+        </section>
+      )}
 
       {error && <div className="error">{error}</div>}
     </div>

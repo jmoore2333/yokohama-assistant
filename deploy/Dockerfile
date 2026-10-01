@@ -93,6 +93,11 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # (`RUNBOOK.md` §3, `claimed`); `modal_app.py` sets it on the image it builds
 # from this file (`worker`, because there the Worker is the thing that
 # authenticates).
+# The three chat variables (`YOKOHAMA_WEB_LOBBY_CHAT`, `YOKOHAMA_WEB_CHAT_KEEP`,
+# `YOKOHAMA_WEB_CHAT_TEXT`) are the other way round: each has a default, so an
+# image started without them runs the lobby chat on with a keep of 500
+# messages and 500 characters per message (M6.4, R-6.4.6, R-6.4.8); a bad value
+# still exits 1 naming the variable.
 ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
     YOKOHAMA_WEB_PORT=8080 \
     YOKOHAMA_WEB_DIST=/srv/web/dist \

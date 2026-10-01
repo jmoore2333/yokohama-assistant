@@ -7,11 +7,13 @@
 // that stubbed the open list would be handed the `mine` reply and pass while
 // asserting the wrong thing.
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
-import { isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { DISPLAY_NAME_KEY, setLobbyChat } from "./api";
+import { OPEN_KEY } from "./chatFold";
+import { fakeStream, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 
@@ -46,6 +48,14 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     // every cell in this file would have the lobby's open refused and its link
     // reading "reconnecting…" while the cell asserted about something else.
     if (call.path.endsWith("/api/stream")) return openStream();
+    // **The lobby draws a fourth section since M6.4**, and its panel asks for
+    // the house chat on mount whatever its fold state — so every cell in this
+    // file now makes that request whether or not it is about the chat. A lobby
+    // where nothing has been said, derived from the corpus's own page rather
+    // than typed out here (the `gamesNamed` rule), so a cell that is not about
+    // the chat has none of it in its DOM. A cell that IS answers first.
+    if (call.method === "GET" && call.path.startsWith("/api/chat"))
+      return { ...wire.houseChat, messages: [], last: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -302,5 +312,90 @@ describe("the lobby", () => {
     // setup screen's own list used to fail in: a swallowed refusal told a
     // signed-out player they had nothing.
     expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+});
+// ---- M6.4: the lobby chat and the name beside the address -----------------
+
+describe("the lobby's chat and its name field", () => {
+  // **A fourth section, and ABSENT rather than empty when the deployment has
+  // the house chat off (R-6.4.6).** The switch is a launch variable read once
+  // from `/api/health`, so what the client owes it is not to draw a panel whose
+  // every request would be a 404 — and the wrapper carries the section's own
+  // class while the panel keeps its own root, which is what lets the lobby
+  // style a section it did not write.
+  it("draws the lobby chat as a fourth section, folded, and not at all when the switch is off", async () => {
+    setLobbyChat(true);
+    show((call) =>
+      call.method === "GET" && call.path.startsWith("/api/chat") ? wire.houseChat : undefined,
+    );
+    // The heading by a PREFIX, because its accessible name is computed from
+    // everything inside it — the fold control lives in the header, so the exact
+    // name is "Lobby chat show" and an exact match would find nothing.
+    const heading = await screen.findByRole("heading", { name: /^Lobby chat/ });
+    // The panel's own root, INSIDE the lobby's section: two elements, because
+    // the panel is the same component the game screen draws and the section is
+    // this screen's.
+    const panel = heading.closest("section")!;
+    expect(panel).toHaveClass("chat");
+    expect(panel).toHaveClass("folded");
+    expect(panel.closest("section.saved.lobby-chat"), "wrapped by the lobby's own section").not.toBeNull();
+    expect(within(panel).getByRole("button", { name: "show" })).toBeInTheDocument();
+    cleanup();
+
+    setLobbyChat(false);
+    try {
+      show();
+      await screen.findByRole("heading", { name: "Lobby" });
+      expect(screen.queryByRole("heading", { name: /^Lobby chat/ })).toBeNull();
+      expect(document.querySelector("section.chat")).toBeNull();
+    } finally {
+      setLobbyChat(true);
+    }
+  });
+
+  // **The name is the LOBBY's, and it is one key (R-6.4.3).** The New table
+  // form and the open table's seat picker already read it; this is where a
+  // person who has not opened either can set it, and it is written as typed
+  // rather than on a submit this screen does not have. An emptied field REMOVES
+  // the key, so "leave it blank and your address is used" is true of the
+  // browser as well as of the sentence.
+  it("offers Your name beside the address and remembers it as typed", async () => {
+    const { user } = show();
+    const field = await screen.findByLabelText("Your name");
+    await user.type(field, "Captain Red");
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Captain Red");
+    await user.clear(field);
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+  });
+
+  // **The house frame is a WAKE, and the panel's tick is this screen's own**
+  // (spec §6.2). The house channel coalesces and carries no table, so the lobby
+  // refetches its lists on any frame; the chat is told to ask for its delta the
+  // same way, off the same wake, rather than being handed a count it cannot
+  // read from a frame that names no table.
+  it("asks the house chat for its delta on a house frame", async () => {
+    setLobbyChat(true);
+    // Remembered OPEN, because a folded count-driven panel fetches nothing —
+    // but a wake-driven one asks whatever its fold state, and this cell would
+    // pass for the wrong reason if the fold were the thing being read.
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) return wire.houseChat;
+        return undefined;
+      });
+      await until(() => stream.opens() > 0, "the house stream is open");
+      const before = stub.matching("GET", "/api/chat").length;
+      stream.push("house", { seq: 1, chat: 1 });
+      await until(
+        () => stub.matching("GET", "/api/chat").length > before,
+        "the chat delta was asked for",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

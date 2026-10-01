@@ -34,6 +34,7 @@
 
 pub mod art;
 pub mod assets;
+pub mod chat;
 pub mod client;
 pub mod explain;
 pub mod games;
@@ -264,12 +265,15 @@ pub struct AppState {
     /// the wire at all is to build a state whose cadence is 50 ms and read two
     /// of them off a body. Every production constructor sets [`HEARTBEAT`].
     pub heartbeat: std::time::Duration,
+    /// The lobby switch and the two retention caps (M6.4, R-6.4.6, R-6.4.8),
+    /// read once at start; each has a default.
+    pub chat: chat::ChatConfig,
 }
 
 impl AppState {
     /// Backed by a directory on disk.
-    pub fn new(identity: identity::IdentityMode) -> Self {
-        Self::with_store(Arc::new(FsStore::new(store::default_dir())), identity)
+    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Self {
+        Self::with_store_and_chat(Arc::new(FsStore::new(store::default_dir())), identity, chat)
     }
 
     /// Backed by memory, in `claimed` mode — the mode every test drives with a
@@ -287,13 +291,38 @@ impl AppState {
         Self { heartbeat, ..Self::in_memory() }
     }
 
+    /// In memory, with the chat configured rather than defaulted — how a cell
+    /// asks for the lobby off, or for a keep small enough to watch a trim.
+    pub fn in_memory_with_chat(chat: chat::ChatConfig) -> Self {
+        Self::with_store_and_chat(
+            Arc::new(MemStore::default()),
+            identity::IdentityMode::Claimed,
+            chat,
+        )
+    }
+
     pub fn with_store(store: Arc<dyn Store>, identity: identity::IdentityMode) -> Self {
+        Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
+    }
+
+    /// The one constructor that builds anything; every constructor above is
+    /// this one with a store, an identity or a chat chosen for it.
+    ///
+    /// The limits reach [`Games`] as well as this state, and the two are not a
+    /// duplicate: the appender enforces them and `/api/health` reports them,
+    /// and neither half can read the other's.
+    pub fn with_store_and_chat(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+    ) -> Self {
         let rules = Arc::new(Rules::standard());
         Self {
             rules: Arc::clone(&rules),
-            games: Games::new(rules, store),
+            games: Games::with_limits(rules, store, chat.limits),
             identity,
             heartbeat: HEARTBEAT,
+            chat,
         }
     }
 }
@@ -321,6 +350,14 @@ pub struct Health {
     /// hold a request against `…/events?wait=25`, and it cannot tell from a
     /// successful call to anything else.
     pub signal: &'static str,
+    /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
+    /// draws no lobby panel and asks nothing.
+    pub lobby_chat: bool,
+    /// Messages retained per chat document; `null` for `all` (R-6.4.8).
+    pub chat_keep: Option<u64>,
+    /// Characters per message, so the client sizes its input from the
+    /// server's rule and never from a copy (R-6.4.8).
+    pub chat_text: u64,
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
@@ -330,6 +367,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
         rules_hash: state.rules.content_hash(),
         identity: state.identity.name(),
         signal: SIGNAL_KIND,
+        lobby_chat: state.chat.lobby,
+        chat_keep: state.chat.limits.keep.map(|n| n as u64),
+        chat_text: state.chat.limits.text as u64,
     })
 }
 
@@ -419,15 +459,19 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
     })
 }
 
-// **`identity::Identity` is on all eighteen `/api/games` handlers**, and since
-// M6.1 §5.3 every one of them USES the `User` it carries: a game route resolves
-// the caller to a seat before it touches the `Repl`, and builds what it serves
-// for that seat. A caller with no seat here is a 403 (R-1.5) rather than a
-// payload, and a dealing table is a 409 carrying a status a client can branch
+// **`identity::Identity` is on all twenty-three `/api/games` handlers**, and
+// since M6.1 §5.3 every one of them USES the `User` it carries: a game route
+// resolves the caller to a seat before it touches the `Repl`, and builds what it
+// serves for that seat. A caller with no seat here is a 403 (R-1.5) rather than
+// a payload, and a dealing table is a 409 carrying a status a client can branch
 // on rather than a 404 it cannot.
 //
-// Eighteen handlers over sixteen bodies — `ports`, `labs` and `areas` are three
-// handlers from the one `surface!` macro below.
+// Twenty-three handlers over twenty-one bodies — `ports`, `labs` and `areas` are
+// three handlers from the one `surface!` macro below. **The number was stale
+// before M6.4 touched it** (it said eighteen, and M6.2's `join` and `unlock` and
+// M6.3's `stream` had already landed), which is what a count in a comment does;
+// it is recounted here rather than incremented. The HOUSE pair is not among
+// them: `/api/chat` is not a game route and has no table to scope.
 
 /// **Who is asking, and may they read this table at all** (M6.3, spec §3.5).
 ///
@@ -454,7 +498,11 @@ async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
 /// when the caller holds it" — which is what `seated` and `viewer_of`, the two
 /// functions this replaces, did between them. At `open` and `dealing` there is no session to ask, and every
 /// route that reaches a handle from there refuses with the status first, so the
-/// caller's lowest seat stands in for a value those routes never read.
+/// caller's lowest seat stands in — and since M6.4 the chat post READS it:
+/// before the deal a multi-seat caller posts as their lowest seat, and once the
+/// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
+/// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
+/// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
 fn admitted(
     state: &AppState,
     id: &str,
@@ -808,6 +856,164 @@ async fn unlock(
     JsonBody(req): JsonBody<Unlock>,
 ) -> ApiResult<crate::table::TableView> {
     Ok(Json(state.games.unlock(&id, &user, &req.password)?))
+}
+
+/// A message to post (M6.4, spec §3.2). `name` is a WATCHER's (and anyone's
+/// at the house); a seated caller sending one is a 400, because a seat's name
+/// is the seat's (R-6.4.2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatPost {
+    pub text: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// The cursor: messages numbered ABOVE it (spec §3.1). Typed, so a negative
+/// cursor is serde's 400.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatQuery {
+    #[serde(default)]
+    pub after: Option<u64>,
+}
+
+/// What the read answers: the retained messages above the cursor, and the
+/// newest number ever assigned — the client's next cursor.
+///
+/// **`last` is the DOCUMENT's and not the page's**, which is what makes a
+/// cursor survive a trim: a client that asks from a number the retention has
+/// already dropped is told where the room has got to rather than left to infer
+/// it from an empty page.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatPage {
+    pub messages: Vec<chat::Message>,
+    pub last: u64,
+}
+
+/// `GET /api/games/{id}/chat?after=N` — admitted exactly as a read is.
+///
+/// **The same [`admitted`] every projection takes, and deliberately not a rule
+/// of its own** (spec §3.2): a seat holder at every status, a watcher once the
+/// table admits them, and the lock's own sentence for the caller who has not
+/// knocked.
+///
+/// **Which is NARROWER than seeing the table, and the gap is the point.**
+/// `GET …/table` and `…/events` answer any signed-in caller at an OPEN table
+/// (R-2.7, R-4.3) so that someone who followed a join link can read the seat
+/// picker and watch for the seats to fill; the chat takes no such widening. A
+/// stranger on that screen reads the table and the message COUNT off the
+/// signal, and is 403 on the messages themselves — pinned by
+/// `events_carries_the_chat_count_at_open_dealing_and_playing`, which asserts
+/// both halves of that one caller in two adjacent lines. A room is readable by
+/// the people `admitted` admits, not by everyone who can see the door.
+async fn chat_read(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    QueryArgs(q): QueryArgs<ChatQuery>,
+) -> ApiResult<ChatPage> {
+    admitted(&state, &id, &user)?;
+    let (messages, last) = state.games.chat_page(&id, q.after.unwrap_or(0))?;
+    Ok(Json(ChatPage { messages, last }))
+}
+
+/// `POST /api/games/{id}/chat` — the one write a watcher may make (R-6.4.11).
+///
+/// The order is the spec's §3.2 and is pinned by adjacent-pair probes:
+/// admission, the text, the seat/name rule, the watcher's name, the append.
+/// Every step before the append is a refusal this caller can fix, and the text
+/// is checked before the APPEND takes the table's lock, so a message that will
+/// be refused never makes anyone wait behind another message. (Not "before any
+/// lock": `admitted` runs first, and on a dealing table where every human has
+/// kept it goes through `settle`, which takes that table's lock to finish the
+/// deal.)
+async fn chat_post(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<ChatPost>,
+) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
+    let (table, viewer) = admitted(&state, &id, &user)?;
+    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
+    let author = author_of(&table, viewer, &user, req.name.as_deref())?;
+    let message = state.games.chat_append(&id, author, &text)?;
+    Ok((StatusCode::CREATED, Json(message)))
+}
+
+/// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
+///
+/// **A seat's name is read off the TABLE and never off the body**, which is the
+/// whole of the rule: a name in a message is a claim about who is speaking, and
+/// at a seat the table has already settled that claim. A seated caller who
+/// sends one is refused rather than quietly overridden, because a client that
+/// believed it was setting a name and was answered 201 would go on sending it.
+fn author_of(
+    table: &crate::table::TableDoc,
+    viewer: client::Viewer,
+    user: &identity::User,
+    name: Option<&str>,
+) -> Result<chat::Author, ApiError> {
+    match viewer {
+        client::Viewer::Seat(seat) => {
+            if name.is_some() {
+                return Err(ApiError::bad_request("a seated caller is named by their seat"));
+            }
+            let stored = match table.seats.get(usize::from(seat.0)) {
+                Some(crate::table::SeatDoc::Human { name, .. }) => name.clone(),
+                _ => None,
+            };
+            Ok(chat::Author::Seat { seat: seat.0, user: user.as_str().to_string(), name: stored })
+        }
+        client::Viewer::Spectator => {
+            let name = name.map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
+            Ok(chat::Author::Watcher { user: user.as_str().to_string(), name })
+        }
+    }
+}
+
+/// The house switch (R-6.4.6): a 404 with a sentence, before anything else.
+///
+/// A 404 rather than a 403, because with the lobby chat off the route is not
+/// something this deployment refuses you — it is something this deployment does
+/// not have. The client reads the same fact off `/api/health` and draws no
+/// panel at all; the sentence is for whoever asks anyway.
+fn lobby_chat_on(state: &AppState) -> Result<(), ApiError> {
+    if state.chat.lobby {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("the lobby chat is off"))
+    }
+}
+
+/// `GET /api/chat?after=N` — the house. Any signed-in caller.
+async fn house_chat_read(
+    identity::Identity(_user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    QueryArgs(q): QueryArgs<ChatQuery>,
+) -> ApiResult<ChatPage> {
+    lobby_chat_on(&state)?;
+    let (messages, last) = state.games.house_page(q.after.unwrap_or(0))?;
+    Ok(Json(ChatPage { messages, last }))
+}
+
+/// `POST /api/chat` — the house. Every author is a `Watcher`: the house has
+/// no seats.
+///
+/// Which is not a simplification but the shape rule's own answer: the house
+/// document is checked with `players: None`, and a `Seat` author there is
+/// refused on write. There is nothing to be seated at.
+async fn house_chat_post(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    JsonBody(req): JsonBody<ChatPost>,
+) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
+    lobby_chat_on(&state)?;
+    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
+    let name = req.name.as_deref().map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
+    let author = chat::Author::Watcher { user: user.as_str().to_string(), name };
+    let message = state.games.house_append(author, &text)?;
+    Ok((StatusCode::CREATED, Json(message)))
 }
 
 async fn keep(
@@ -1467,8 +1673,8 @@ async fn log(
     Ok(Json(yokohama_cli::screen_model::build_log(total, described)))
 }
 
-/// How much of the game a poll gets: the SIGNAL, in four fields (room plan
-/// R-P9, spec §6).
+/// How much of the game a poll gets: the SIGNAL, in five fields (room plan
+/// R-P9, spec §6; the fifth is M6.4's).
 ///
 /// **A few bytes, and no frame is built.** This is the endpoint the client asks
 /// every three seconds while it is somebody else's turn, and the whole point of
@@ -1494,6 +1700,14 @@ pub struct Events {
     pub to_move: Option<yokohama_core::PlayerId>,
     pub status: &'static str,
     pub your_turn: bool,
+    /// The table's newest message number, 0 with none (M6.4, R-6.4.7) — the
+    /// fifth field, and the one that makes a message a count on the signal and
+    /// a fetch for the text.
+    ///
+    /// It is the DOCUMENT's `last` and never the number retained, so a trim
+    /// does not walk it backwards and a client comparing it against its own
+    /// cursor cannot be told to fetch a room that has not spoken.
+    pub chat: u64,
 }
 
 /// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
@@ -1599,7 +1813,7 @@ async fn events(
 /// stream's own cell asserts the first frame equals an `events` read BY VALUE,
 /// which is the property this function makes true by construction rather than
 /// by agreement between two bodies.
-fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer) -> Events {
+fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64) -> Events {
     let s = repl.session.state();
     let over = repl.session.is_over();
     Events {
@@ -1610,6 +1824,10 @@ fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer) -> Events 
         // the one the game is waiting for, and a poll consumer branching on
         // this boolean must never draw them a decision zone.
         your_turn: !over && matches!(viewer, client::Viewer::Seat(x) if s.current_player == x),
+        // A PARAMETER rather than a read, because this function holds a `Repl`
+        // and the count lives nowhere near one: a chat message is not an event
+        // and must never move the number a client re-fetches a board on.
+        chat,
     }
 }
 
@@ -1639,8 +1857,18 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
     let table = state.games.table_for_anyone(id, user)?;
+    // **Read ONCE, above all three arms**, because every one of them answers
+    // it: an open table where the seats are still filling is exactly where the
+    // people at it are talking. It sits AFTER the table read, which is as far
+    // as the guard goes and no further: an id that is not there, or a stranger
+    // at a DEAL, is refused by `table_for_anyone` above and never reaches the
+    // chat document. A stranger at a locked PLAYING table passes that read and
+    // does reach it — one read and, on a miss, a cache seed — and is then
+    // refused by `admitted` below. Nothing of it crosses the wire: the 403
+    // carries no count.
+    let chat = state.games.chat_last(id);
     if table.status == crate::table::TableStatus::Open {
-        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false });
+        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
     }
     let (table, viewer) = admitted(state, id, user)?;
     match table.status {
@@ -1648,15 +1876,15 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
         // collapsed into the fall-through: a status this function answers by
         // name is a status a reader can find.
         crate::table::TableStatus::Open => {
-            Ok(Events { events: 0, to_move: None, status: "open", your_turn: false })
+            Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat })
         }
         crate::table::TableStatus::Dealing => {
-            Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false })
+            Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
         }
         crate::table::TableStatus::Playing => {
             let handle = state.games.handle(id)?;
             let repl = handle.lock().expect("a game");
-            Ok(events_of(&repl, viewer))
+            Ok(events_of(&repl, viewer, chat))
         }
     }
 }
@@ -1721,7 +1949,7 @@ async fn stream(
             Ok(e) => Ok(Event::default()
                 .event("signal")
                 .json_data(e)
-                .expect("`Events` is four scalars and serializes")),
+                .expect("`Events` is five scalars and serializes")),
             // **A REFUSAL ends the stream; a failure does not** (final review
             // M-5). A 403 or a 404 is an answer about this table — the join
             // that filled the open seats without this caller, the delete that
@@ -1743,11 +1971,18 @@ async fn stream(
 
 /// `GET /api/stream` — the house channel (spec §3.2).
 ///
-/// **A sequence number and nothing else** (R-3.4). A `watch` channel coalesces,
-/// so two bumps naming two different tables inside one wake would lose one; a
-/// payload naming a table would therefore be a payload that is sometimes wrong.
-/// The lobby refetches all its lists on any bump instead, which is table
-/// documents and no session.
+/// **Two counters and never a per-table payload** (R-3.4, amended by M6.4
+/// R-6.4.7). A `watch` channel coalesces, so two bumps naming two different
+/// tables inside one wake would lose one; a payload naming a table would
+/// therefore be a payload that is sometimes wrong. The lobby refetches all its
+/// lists on any bump instead, which is table documents and no session.
+///
+/// A `chat` bump moves the second counter, and the lobby — a `wake` consumer —
+/// refetches all three of its listings on EITHER number moving. **That cost is
+/// real and is recorded rather than avoided** (spec §6.2, §11): a house message
+/// is one more house wake per visible lobby. The two numbers ride one channel
+/// so that a consumer reading the frame's VALUE could tell them apart; none
+/// does yet.
 ///
 /// **Nothing on connect**, which is what `from_changes` buys and `new` would
 /// lose: the lobby has just fetched its lists to render at all, and a frame at
@@ -1763,9 +1998,11 @@ async fn house_stream(
     use tokio_stream::StreamExt;
 
     let rx = state.games.signals().subscribe_house();
-    let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|seq| {
+    let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
         Ok::<_, std::convert::Infallible>(
-            Event::default().event("house").data(format!("{{\"seq\":{seq}}}")),
+            Event::default()
+                .event("house")
+                .data(format!("{{\"seq\":{},\"chat\":{}}}", h.seq, h.chat)),
         )
     });
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
@@ -1889,6 +2126,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/keep", post(keep))
         .route("/api/games/{id}/join", post(join))
         .route("/api/games/{id}/unlock", post(unlock))
+        .route("/api/games/{id}/chat", get(chat_read).post(chat_post))
         .route("/api/games/{id}/input", post(input))
         .route("/api/games/{id}/ports", get(ports))
         .route("/api/games/{id}/labs", get(labs))
@@ -1897,6 +2135,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/events", get(events))
         .route("/api/games/{id}/stream", get(stream))
         .route("/api/stream", get(house_stream))
+        .route("/api/chat", get(house_chat_read).post(house_chat_post))
         .route("/api/games/{id}/at/{k}", get(at_k))
         .route("/api/games/{id}/suggest", get(suggest))
         .route("/api/games/{id}/why", get(why))
@@ -2608,6 +2847,8 @@ mod tests {
             ("GET", "/why", None),
             ("GET", "/index/orders", None),
             ("GET", "/result", None),
+            ("GET", "/chat", None),
+            ("POST", "/chat", Some(serde_json::json!({ "text": "hello" }))),
             ("DELETE", "", None),
         ]
     }
@@ -2633,10 +2874,10 @@ mod tests {
     /// (so a lock is not their answer — the seat is), and `join` is
     /// deliberately left on M6.2's refusal order.
     ///
-    /// One cell over the whole table rather than seventeen, because a fence
+    /// One cell over the whole table rather than nineteen, because a fence
     /// applied to sixteen routes and forgotten on the seventeenth is exactly the
     /// shape that ships — and since M6.2 the claim is two-dimensional: the same
-    /// seventeen routes against an OPEN, a DEALING and a PLAYING table, since
+    /// nineteen routes against an OPEN, a DEALING and a PLAYING table, since
     /// R-2.7 widened two of them at one status only and a widening that leaked
     /// into the others is the defect this exists to catch.
     ///
@@ -2661,7 +2902,7 @@ mod tests {
     /// ABOVE the holder check — so a caller with no seat here was told WHICH
     /// status the table was in (409 "this table is still open" / "this table is
     /// playing") where every other route answered one sentence about seats and
-    /// nothing else. The check moved above them; all seventeen routes now
+    /// nothing else. The check moved above them; all nineteen routes now
     /// refuse a stranger alike, and the only thing `keep` still says
     /// differently is its own sentence, "seat N is not yours", which is
     /// deliberate and older than this cycle.
@@ -2740,7 +2981,14 @@ mod tests {
                     ("lockt", "DELETE", "") | ("lockt", _, "/deal") => NOT_SEATED,
                     // Everything that reads through `admitted` says what this
                     // caller can DO about it (M6.3) — which is the difference
-                    // between a watcher and a stranger.
+                    // between a watcher and a stranger. **M6.4's two chat rows
+                    // are answered HERE and by the arm below**, and are named
+                    // rather than given arms of their own: both halves of the
+                    // chat go through `admitted`, so the lock sentence at
+                    // `lockt` and the seat sentence at the other two are the
+                    // general answers and not a second statement of them. An
+                    // arm per route would be a copy that stops moving the day
+                    // the general one does.
                     ("lockt", _, _) => LOCKED,
                     _ => NOT_SEATED,
                 };
@@ -2788,8 +3036,29 @@ mod tests {
         let (status, at_open) = get_as(&state, "red@wire.test", "/api/games/opent/events").await;
         assert_eq!(status, StatusCode::OK, "{at_open}");
         assert_eq!(at_open["status"], "open", "{at_open}");
+        // **And `/chat` left it in M6.4**, for the same reason one layer along:
+        // a message needs no session, and the people waiting for a table to
+        // fill are exactly the people talking at it. The two halves are
+        // asserted here rather than skipped quietly, and the `dealt` and
+        // `lockt` rows of the stranger loop above are what keep this widening
+        // from having spread to callers with no seat.
+        let (status, said) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/opent/chat",
+            serde_json::json!({ "text": "waiting on a second" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{said}");
+        let (status, page) = get_as(&state, "red@wire.test", "/api/games/opent/chat").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["last"], 1, "{page}");
         for (method, suffix, body) in session_routes() {
-            if suffix == "/table" || suffix == "/join" || suffix == "/events" || method == "DELETE"
+            if suffix == "/table"
+                || suffix == "/join"
+                || suffix == "/events"
+                || suffix == "/chat"
+                || method == "DELETE"
             {
                 continue;
             }
@@ -3014,18 +3283,18 @@ mod tests {
     /// `deny_unknown_fields` through `QueryArgs` doing its job on this new
     /// struct rather than an assumption that it was wired up.
     #[tokio::test]
-    async fn events_answers_in_four_fields_at_every_status_and_fences_its_query() {
+    async fn events_answers_in_five_fields_at_every_status_and_fences_its_query() {
         let state = Arc::new(AppState::in_memory());
         let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig", "id": "sig",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }] });
         post_as(&state, "red@wire.test", "/api/games", body).await;
         let (status, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
         assert_eq!(status, StatusCode::OK, "{e}");
-        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": null, "status": "dealing", "your_turn": false }));
+        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": null, "status": "dealing", "your_turn": false, "chat": 0 }));
         post_as(&state, "red@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 0, "card": 1 })).await;
         post_as(&state, "blue@wire.test", "/api/games/sig/keep", serde_json::json!({ "seat": 1, "card": 1 })).await;
         let (_, e) = get_as(&state, "red@wire.test", "/api/games/sig/events?after=0").await;
-        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": 0, "status": "playing", "your_turn": true }));
+        assert_eq!(e, serde_json::json!({ "events": 0, "to_move": 0, "status": "playing", "your_turn": true, "chat": 0 }));
         let (_, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
         assert_eq!(e["your_turn"], false);
         let (status, err) = get_as(&state, "blue@wire.test", "/api/games/sig/events?afer=0").await;
@@ -3805,6 +4074,13 @@ mod tests {
         /// `join` and `unlock`, which keep their own status ladders (R-4.2 and
         /// §3.4) and are asserted by hand below.
         OwnLadder,
+        /// `GET …/chat` (M6.4): 200 to a seat holder at EVERY status and to a
+        /// watcher; 403 otherwise, with the lock sentence where the lock is
+        /// what shuts them out.
+        Chat,
+        /// `POST …/chat` (M6.4): the same admission and a 201 — the one write a
+        /// watcher may make (R-6.4.11).
+        ChatPost,
     }
 
     /// Every session route with the answer it owes. The bodies are
@@ -3829,6 +4105,8 @@ mod tests {
             ("GET", "/why", None, Kind::Read),
             ("GET", "/index/orders", None, Kind::Read),
             ("GET", "/result", None, Kind::Result),
+            ("GET", "/chat", None, Kind::Chat),
+            ("POST", "/chat", Some(serde_json::json!({ "text": "grid" })), Kind::ChatPost),
             ("DELETE", "", None, Kind::Write),
         ]
     }
@@ -4051,6 +4329,16 @@ mod tests {
                         // still refused, because nobody watches a deal.
                         Kind::Signal if seated || watches || word == "open" => StatusCode::OK,
                         Kind::Signal => StatusCode::FORBIDDEN,
+                        // **The chat is admitted exactly as a READ is, at every
+                        // status** (M6.4, spec §3.2): a seat holder always, a
+                        // watcher once the table admits them, and nobody else.
+                        // It never reaches the 409 arms below, because a
+                        // message needs no session — a table that is still
+                        // filling its seats is exactly where the people at it
+                        // are talking.
+                        Kind::Chat if seated || watches => StatusCode::OK,
+                        Kind::ChatPost if seated || watches => StatusCode::CREATED,
+                        Kind::Chat | Kind::ChatPost => StatusCode::FORBIDDEN,
                         _ if !seated && !watches => StatusCode::FORBIDDEN,
                         // A projection needs a session, and there is none
                         // before the last keep. Only a seat holder reaches
@@ -4079,6 +4367,20 @@ mod tests {
                         assert_eq!(
                             streamed, got,
                             "{who} at {table}: stream and events must be admitted alike",
+                        );
+                    }
+                    // **The chat's two halves are admitted alike** (spec §3.2).
+                    // A post is a WRITE and this is the one write a caller with
+                    // no seat may make, so the tempting mistake is to fence it
+                    // like the others — which would leave a watcher reading a
+                    // room they cannot answer in.
+                    if kind == Kind::ChatPost {
+                        let (read, _) = request_as(&state, who, "GET", &uri, None).await;
+                        let expect =
+                            if got == StatusCode::CREATED { StatusCode::OK } else { got };
+                        assert_eq!(
+                            read, expect,
+                            "{who} at {table}: the chat GET and POST are admitted alike",
                         );
                     }
                 }
@@ -4218,6 +4520,20 @@ mod tests {
                     request_as(&state, "grey@wire.test", method, &uri, body).await;
                 assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
             }
+            // **The ONE write a watcher may make, and it reads no record
+            // either** (R-6.4.11): behind the same panicking store, grey's post
+            // lands. The instrument is what makes that a claim rather than a
+            // hope — a chat append that reached for the session to resolve the
+            // poster would take this cell down by name.
+            let (status, m) = post_as(
+                &state,
+                "grey@wire.test",
+                &format!("/api/games/{table}/chat"),
+                serde_json::json!({ "text": "from the rail" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{table}: {m}");
+            assert_eq!(m["author"]["kind"], "watcher");
             // And the table is untouched: still there, still playing.
             let (status, view) =
                 get_as(&state, "red@wire.test", &format!("/api/games/{table}/table")).await;
@@ -5788,6 +6104,35 @@ mod tests {
         text.lines().filter(|l| l.starts_with(':')).count()
     }
 
+    /// **The house stream's frames while `act` runs**, as parsed `data:` bodies.
+    ///
+    /// The house channel is `from_changes` and therefore SILENT on connect, so
+    /// the first frame a reader here sees is the first bump `act` caused —
+    /// which is what makes "one action, one frame" readable at all. The reader
+    /// is spawned first and given a moment to reach its subscribe, exactly as
+    /// the table-stream cells do it: a bump sent before the subscribe lands is
+    /// a bump into a channel nobody is holding.
+    async fn house_frames_after<F, Fut>(state: &Arc<AppState>, act: F) -> Vec<serde_json::Value>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let s = Arc::clone(state);
+        let reader = tokio::spawn(async move {
+            stream_frames(s, "/api/stream", "grey@wire.test", std::time::Duration::from_secs(2))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        act().await;
+        let (status, text, ended) = reader.await.expect("the reader task");
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(!ended, "the house stream has no end and must stay open: {text:?}");
+        text.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .map(|d| serde_json::from_str(d).expect("a house frame's data is one line of JSON"))
+            .collect()
+    }
+
     /// **The table stream: the current `Events` on connect, a frame per bump,
     /// an `end` on delete — and the connection closes behind it** (spec §3.1).
     ///
@@ -6303,7 +6648,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{e}");
         assert_eq!(
             e,
-            serde_json::json!({ "events": 0, "to_move": null, "status": "open", "your_turn": false }),
+            serde_json::json!({ "events": 0, "to_move": null, "status": "open", "your_turn": false, "chat": 0 }),
         );
     }
 
@@ -6319,6 +6664,40 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["signal"], SIGNAL_KIND);
         assert_eq!(v["signal"], "sse");
+    }
+
+    /// **`/api/health` carries the lobby switch and the two caps** (M6.4,
+    /// R-6.4.6, R-6.4.8).
+    ///
+    /// The third and fourth deployment facts a client cannot infer from a
+    /// successful call, and the reason is the same as the signal's: with the
+    /// lobby chat off the client must draw no panel rather than ask and read a
+    /// 404, and it must size its input box from the SERVER's character rule
+    /// rather than from a copy that drifts the day the variable changes.
+    /// `chat_keep` is `null` for `all`, because a number would be a lie about a
+    /// document that is never trimmed.
+    #[tokio::test]
+    async fn health_carries_the_lobby_switch_and_the_two_caps() {
+        let (status, v) = get_json("/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["lobby_chat"], true);
+        assert_eq!(v["chat_keep"], 500);
+        assert_eq!(v["chat_text"], 500);
+
+        let configured = chat::ChatConfig { lobby: false, limits: chat::ChatLimits { keep: None, text: 140 } };
+        let off = Arc::new(AppState::in_memory_with_chat(configured));
+        assert_eq!(
+            off.games.limits(),
+            configured.limits,
+            "the numbers health reports are the ones the APPENDER holds — reported \
+             from this state and enforced from a defaulted `Games` would be a server \
+             truthfully naming a cap nothing applies",
+        );
+        let (status, v) = get_as(&off, WHO, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["lobby_chat"], false);
+        assert_eq!(v["chat_keep"], serde_json::Value::Null, "`all` is null on the wire");
+        assert_eq!(v["chat_text"], 140);
     }
 
     /// **`?wait` is accepted, bounded, and answers on a bump** (R-plan-5).
@@ -6367,5 +6746,635 @@ mod tests {
             get_as(&state, "red@wire.test", "/api/games/held/events?wait=26").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
         assert!(err["error"].as_str().unwrap_or_default().contains("25"), "{err}");
+    }
+
+    // ---------------------------------------------------------------------
+    // M6.4 Task 4 — the four chat routes (spec §3, §4, R-6.4.1, R-6.4.2,
+    // R-6.4.6, R-6.4.11). They sit at the end of the module beside the stream
+    // cells they extend, as M6.3's did.
+    // ---------------------------------------------------------------------
+
+    /// **Seats and watchers post, a seat is named by its seat, a watcher by its
+    /// body** (R-6.4.1, R-6.4.2), and the reply is the message.
+    ///
+    /// The read is asked by the OTHER seat, so the page is not this poster's
+    /// own memory of what it sent, and the cursor is walked three ways: from
+    /// zero, from inside the run, and from PAST the newest number — where an
+    /// empty page still carries `last`, which is the whole reason `last` is the
+    /// document's and not the page's.
+    #[tokio::test]
+    async fn a_seat_and_a_watcher_post_and_each_is_labelled_its_own_way() {
+        let state = Arc::new(AppState::in_memory());
+        start_locked_as(&state, "t", ENDED_SEED, &["red@wire.test", "blue@wire.test"], "sesame")
+            .await;
+        let (status, view) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/t/unlock",
+            serde_json::json!({ "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": " hi " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["seq"], 1);
+        assert_eq!(m["text"], "hi", "trimmed");
+        assert_eq!(m["author"]["kind"], "seat");
+        assert_eq!(m["author"]["seat"], 0);
+        assert_eq!(m["author"]["user"], "red@wire.test");
+
+        let (status, m) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "hello from the rail", "name": "Grey" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["kind"], "watcher");
+        assert_eq!(m["author"]["name"], "Grey");
+        assert!(m["author"].get("seat").is_none(), "a watcher has no seat: {m}");
+
+        let (status, page) = get_as(&state, "blue@wire.test", "/api/games/t/chat").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["messages"].as_array().map(Vec::len), Some(2));
+        assert_eq!(page["last"], 2);
+        let (_, delta) = get_as(&state, "blue@wire.test", "/api/games/t/chat?after=1").await;
+        assert_eq!(delta["messages"][0]["seq"], 2);
+        let (_, none) = get_as(&state, "blue@wire.test", "/api/games/t/chat?after=9").await;
+        assert_eq!(none["messages"].as_array().map(Vec::len), Some(0));
+        assert_eq!(none["last"], 2);
+    }
+
+    /// **A seat's name is the SEAT's stored name and a body name is refused**
+    /// (R-6.4.2, mutation 4) — by VALUE, over a seat whose stored name differs
+    /// from the one in the body.
+    ///
+    /// The value is what makes it a reading: a handler that took the body's
+    /// name for a seated caller would pass a cell that only checked the refusal,
+    /// and a handler that answered `null` would pass one that only checked that
+    /// the body's name did not come back.
+    #[tokio::test]
+    async fn a_seated_caller_is_named_by_the_seat_and_may_not_send_a_name() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, t) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+                "id": "named", "name": "named", "display_name": "Captain Red",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        let (status, refused) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/named/chat",
+            serde_json::json!({ "text": "hi", "name": "Somebody Else" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["error"], "a seated caller is named by their seat");
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/named/chat",
+            serde_json::json!({ "text": "hi" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["name"], "Captain Red", "the stored name, at a DEALING table (R-6.4.5)");
+    }
+
+    /// **The refusal order, by adjacent-pair probes** (spec §3.2): admission,
+    /// then the text, then the seat/name rule, then the watcher's name.
+    ///
+    /// **Adjacent PAIRS and not single defects**, which is the lesson three
+    /// M6.2 tasks relearned: a request carrying one fault pins nothing about
+    /// order, because every ordering refuses it the same way. Each probe here
+    /// carries two, and the sentence says which rule ran first.
+    #[tokio::test]
+    async fn the_post_refuses_in_the_spec_s_order() {
+        let state = Arc::new(AppState::in_memory());
+        start_locked_as(&state, "t", ENDED_SEED, &["red@wire.test", "blue@wire.test"], "sesame")
+            .await;
+        // admission before text: a shut-out stranger with an empty text is a
+        // 403, not a 400.
+        let (status, got) = post_as(
+            &state,
+            "green@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "" }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::FORBIDDEN, Some("this table is locked — unlock it first")),
+        );
+        // text before the seat/name rule: an empty text AND a name → the text
+        // sentence.
+        let (status, got) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "  ", "name": "X" }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a message needs some words")),
+        );
+        // text before the watcher's name: over the cap AND a bad name → the
+        // text sentence.
+        let (status, view) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/t/unlock",
+            serde_json::json!({ "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        let long = "x".repeat(501);
+        let (status, got) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": long, "name": "y".repeat(65) }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a message is at most 500 characters")),
+        );
+        // and the watcher's name alone is refused by `check_name`'s sentence.
+        let (status, got) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "ok", "name": "y".repeat(65) }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a name is 1 to 64 characters")),
+        );
+        // a control character
+        let (status, got) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "a\nb" }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a message is one line, with no control characters")),
+        );
+        // an unknown key is the fenced 400
+        let (status, _) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/t/chat",
+            serde_json::json!({ "text": "hi", "seat": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// **The house pair: any signed-in caller, 404 when off** (R-6.4.6).
+    ///
+    /// **The counter is subscribed BEFORE the two refused requests**, which is
+    /// what makes the last assertion a reading at all: a receiver taken
+    /// afterwards marks the channel's current value as seen and answers
+    /// `has_changed()` false whatever happened. Held from before, it is the
+    /// witness that a switched-off route appended nothing and announced
+    /// nothing.
+    #[tokio::test]
+    async fn the_house_chat_answers_anyone_signed_in_and_is_404_when_off() {
+        let on = Arc::new(AppState::in_memory());
+        let (status, m) = post_as(
+            &on,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "evening", "name": "Grey" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["kind"], "watcher");
+        let (status, page) = get_as(&on, "green@wire.test", "/api/chat?after=0").await;
+        assert_eq!((status, page["last"].as_u64()), (StatusCode::OK, Some(1)));
+        let (status, _) = request_as(&on, "", "GET", "/api/chat", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no identity, no house");
+
+        let off = Arc::new(AppState::in_memory_with_chat(chat::ChatConfig {
+            lobby: false,
+            ..chat::ChatConfig::default()
+        }));
+        // Not `mut`: this cell only asks `has_changed`, which borrows shared.
+        let house = off.games.signals().subscribe_house();
+        for (method, body) in [("GET", None), ("POST", Some(serde_json::json!({ "text": "x" })))] {
+            let (status, got) = request_as(&off, "grey@wire.test", method, "/api/chat", body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method}: {got}");
+            assert_eq!(got["error"], "the lobby chat is off");
+        }
+        assert!(!house.has_changed().unwrap(), "nothing moved the house counter");
+    }
+
+    /// **A caller holding TWO seats posts as their LOWEST before the deal and
+    /// as the ACTING seat after it** (spec §3.2, §9.1).
+    ///
+    /// The hot seat is the shape this rule was written for and nothing pinned
+    /// it: one person at both seats, which `start_as` cannot express and the
+    /// corrected `admitted` doc describes in two clauses nothing tried. The
+    /// table starts at seat ONE deliberately — at seat zero the lowest seat and
+    /// the acting seat are the same number and the cell would read the same
+    /// under either rule.
+    ///
+    /// The acting seat is READ off `events` rather than assumed, so the second
+    /// half is a comparison between two things the server said and not between
+    /// the server and this cell's arithmetic.
+    #[tokio::test]
+    async fn a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after() {
+        let state = Arc::new(AppState::in_memory());
+        let both = "red@wire.test";
+        let (status, t) = post_as(
+            &state,
+            both,
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
+                "seed": ENDED_SEED.to_string(),
+                "seats": [{ "user": both }, { "user": both }],
+                "id": "hotseat", "name": "hotseat",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        assert_eq!(t["status"], "dealing");
+
+        let (status, m) = post_as(
+            &state,
+            both,
+            "/api/games/hotseat/chat",
+            serde_json::json!({ "text": "before" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["seat"], 0, "at a deal there is no acting seat: the lowest stands in");
+
+        for seat in [0, 1] {
+            let (status, kept) = post_as(
+                &state,
+                both,
+                "/api/games/hotseat/keep",
+                serde_json::json!({ "seat": seat, "card": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+        }
+        let (status, e) = get_as(&state, both, "/api/games/hotseat/events").await;
+        assert_eq!((status, e["status"].as_str()), (StatusCode::OK, Some("playing")), "{e}");
+        let acting = e["to_move"].as_u64().expect("a playing table names its mover");
+        assert_eq!(acting, 1, "the table was started at seat one, which is what makes this a reading");
+
+        let (status, m) = post_as(
+            &state,
+            both,
+            "/api/games/hotseat/chat",
+            serde_json::json!({ "text": "after" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["seat"].as_u64(), Some(acting), "and once it is playing, the acting seat");
+    }
+
+    /// **A store conflict on the chat write is a 409, in this API's own error
+    /// shape** (spec §9.1).
+    ///
+    /// The one refusal on this route that is not the caller's fault: another
+    /// writer landed a message between this append's read and its swap. It has
+    /// to be a 409 and not a 500, because a 409 is a request worth sending
+    /// again and a 500 is not.
+    ///
+    /// The failure is armed for ONE chat write, and the spent arming is the
+    /// anti-vacuity: without it a cell whose conflict never fired would assert
+    /// the happy path and call it a refusal.
+    #[tokio::test]
+    async fn a_conflicting_chat_write_is_a_409() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A [`MemStore`] whose next `n` `Doc::Chat` writes come back
+        /// `Conflict`, and only those: a store that conflicted on everything
+        /// would refuse the `start_as` that makes the table.
+        struct Contended {
+            inner: MemStore,
+            conflict_chat_writes: AtomicUsize,
+        }
+        impl Store for Contended {
+            fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(
+                &self,
+                doc: Doc,
+                id: &str,
+            ) -> Result<Option<(String, crate::store::Version)>, String> {
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<crate::store::Version>,
+            ) -> Result<crate::store::Version, crate::store::WriteError> {
+                if doc == Doc::Chat
+                    && self
+                        .conflict_chat_writes
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok()
+                {
+                    return Err(crate::store::WriteError::Conflict { current: None });
+                }
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store = Arc::new(Contended {
+            inner: MemStore::default(),
+            conflict_chat_writes: AtomicUsize::new(0),
+        });
+        let state = Arc::new(AppState::with_store(
+            Arc::clone(&store) as Arc<dyn Store>,
+            identity::IdentityMode::Claimed,
+        ));
+        start_as(&state, "wire", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+
+        store.conflict_chat_writes.store(1, Ordering::SeqCst);
+        let (status, got) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/wire/chat",
+            serde_json::json!({ "text": "raced" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{got}");
+        assert!(
+            got["error"].as_str().is_some_and(|e| e.contains("in flight")),
+            "and says what happened: {got}",
+        );
+        assert_eq!(
+            store.conflict_chat_writes.load(Ordering::SeqCst),
+            0,
+            "the armed conflict never fired, so this cell watched the happy path",
+        );
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/wire/chat",
+            serde_json::json!({ "text": "again" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "a 409 is worth sending again: {m}");
+    }
+
+    /// **The chat's query struct is fenced like every other one** (spec §7):
+    /// `after` is the only key, and a misspelling is a 400 in this API's shape
+    /// rather than a silent read from zero.
+    ///
+    /// Which is the whole of why it matters here: an unfenced `?afer=0` would
+    /// answer 200 with the WHOLE retained page, and a client that had renamed
+    /// its cursor would redraw every message it already held on every tick,
+    /// with nothing in the reply saying so.
+    ///
+    /// Both routes, because they parse the same struct through the same
+    /// extractor and a fence shown on one of two is a fence shown on one.
+    #[tokio::test]
+    async fn an_unknown_key_on_a_chat_query_is_a_400_on_both_routes() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "wire", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        for uri in ["/api/games/wire/chat?afer=0", "/api/chat?afer=0"] {
+            let (status, got) = get_as(&state, "red@wire.test", uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {got}");
+            assert!(got["error"].is_string(), "{uri}: in this API's own shape — {got}");
+        }
+        // The anti-vacuity: the spelled key is answered, so the 400 above is
+        // about the NAME and not about the route.
+        for uri in ["/api/games/wire/chat?after=0", "/api/chat?after=0"] {
+            let (status, got) = get_as(&state, "red@wire.test", uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {got}");
+        }
+    }
+
+    /// **The house applies the name rule at the route, and the SWITCH runs
+    /// before the text** (spec §3.3, §9.1).
+    ///
+    /// Two things nothing pinned. The name: `POST /api/chat` is the one route
+    /// where a name is always the caller's own claim, so `check_name` has to
+    /// run on it — the house cell above posts a VALID name and would pass
+    /// against a route that never checked.
+    ///
+    /// And the ORDER, by a two-defect probe: a request that is BOTH sent to a
+    /// switched-off house AND carries an empty text is answered 404, not 400.
+    /// A single-defect probe pins nothing about order, which is the lesson
+    /// three M6.2 tasks relearned — and the order matters here because the 400
+    /// would tell a caller their message was the problem at a deployment that
+    /// has no house chat at all.
+    #[tokio::test]
+    async fn the_house_checks_the_name_and_reads_its_switch_before_the_text() {
+        let on = Arc::new(AppState::in_memory());
+        let (status, got) = post_as(
+            &on,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "hi", "name": "y".repeat(65) }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a name is 1 to 64 characters")),
+            "{got}",
+        );
+        let (status, got) = post_as(
+            &on,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "hi", "name": "ok\u{7}" }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("a name has no control characters")),
+            "{got}",
+        );
+        assert_eq!(on.games.house_page(0).expect("a page").1, 0, "and nothing was appended");
+
+        let off = Arc::new(AppState::in_memory_with_chat(chat::ChatConfig {
+            lobby: false,
+            ..chat::ChatConfig::default()
+        }));
+        let (status, got) = post_as(
+            &off,
+            "grey@wire.test",
+            "/api/chat",
+            serde_json::json!({ "text": "  " }),
+        )
+        .await;
+        assert_eq!(
+            (status, got["error"].as_str()),
+            (StatusCode::NOT_FOUND, Some("the lobby chat is off")),
+            "the switch is read before the text: {got}",
+        );
+    }
+
+    /// **`Events.chat` on all three arms, and the stream after a chat bump
+    /// carries the new count and an unmoved `events`** (spec §4, mutation 5).
+    ///
+    /// The fifth field is what makes a message a COUNT on the signal and a
+    /// fetch for the text, so it has to be answered at every status a table can
+    /// be read at — an open table where the seats are still filling, a dealing
+    /// one where nobody has a board yet, and a playing one.
+    ///
+    /// **The last third is the one that can fail for the interesting reason.**
+    /// A message must move `chat` and leave `events` alone: a bump wired to the
+    /// wrong counter, or a frame that rebuilt `events` from the chat document,
+    /// would send every browser at the table to re-fetch a board that had not
+    /// changed. The frames are read off the WIRE rather than from a second
+    /// `events` call, because the claim is about what the stream carries.
+    #[tokio::test]
+    async fn events_carries_the_chat_count_at_open_dealing_and_playing() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, opened) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "open": true }], "id": "opent",
+                "name": "opent",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{opened}");
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/opent/chat",
+            serde_json::json!({ "text": "anyone?" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "a seat holder talks at an open table: {m}");
+        let (_, e) = get_as(&state, "red@wire.test", "/api/games/opent/events").await;
+        assert_eq!((e["status"].as_str(), e["chat"].as_u64()), (Some("open"), Some(1)));
+        let (_, e) = get_as(&state, "green@wire.test", "/api/games/opent/events").await;
+        assert_eq!(e["chat"], 1, "a stranger at open reads the count (M6.3's R-4.3 arm)");
+        let (status, refused) = get_as(&state, "green@wire.test", "/api/games/opent/chat").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "and not the messages: {refused}");
+
+        let (status, dealt) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+                "id": "dealt", "name": "dealt",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{dealt}");
+        let (status, m) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/dealt/chat",
+            serde_json::json!({ "text": "choosing…" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        let (_, e) = get_as(&state, "red@wire.test", "/api/games/dealt/events").await;
+        assert_eq!((e["status"].as_str(), e["chat"].as_u64()), (Some("dealing"), Some(1)));
+
+        start_as(&state, "playt", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (_, before) = get_as(&state, "red@wire.test", "/api/games/playt/events").await;
+        assert_eq!(before["chat"], 0);
+
+        // The window is a fixed one because a chat bump — unlike a delete —
+        // closes nothing, so there is no early exit to have; 300 ms to reach
+        // the subscribe and the rest of the two seconds for the frame to
+        // arrive. `watch` coalesces, so the claim is about the LAST frame
+        // rather than about the second one.
+        let s = Arc::clone(&state);
+        let reader = tokio::spawn(async move {
+            stream_frames(
+                s,
+                "/api/games/playt/stream",
+                "blue@wire.test",
+                std::time::Duration::from_secs(2),
+            )
+            .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let (status, m) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/playt/chat",
+            serde_json::json!({ "text": "gl hf" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        let (status, text, _) = reader.await.expect("the reader task");
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let data: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .map(|d| serde_json::from_str(d).expect("a frame's data is one line of JSON"))
+            .collect();
+        assert!(data.len() >= 2, "the on-connect frame and the chat's: {text}");
+        assert_eq!(data[0]["chat"], 0, "the on-connect frame predates the message: {text}");
+        let last = data.last().expect("a frame");
+        assert_eq!(last["chat"], 1, "{text}");
+        assert_eq!(last["events"], before["events"], "a message moves no event");
+    }
+
+    /// **The house frame is two counters** (R-plan-2, R-6.4.7).
+    ///
+    /// One channel because a lobby holds ONE connection; two numbers because a
+    /// message must not send every lobby to refetch its lists. The second
+    /// assertion is the half that can fail: a `chat` bump that reached for
+    /// `seq`, or a frame that printed one number under both names, would make
+    /// the pair one counter wearing two hats.
+    #[tokio::test]
+    async fn the_house_frame_carries_seq_and_chat_independently() {
+        let state = Arc::new(AppState::in_memory());
+        let frames_after_chat = house_frames_after(&state, || async {
+            let (status, m) = post_as(
+                &state,
+                "grey@wire.test",
+                "/api/chat",
+                serde_json::json!({ "text": "hi" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{m}");
+        })
+        .await;
+        // **By COUNT as well as by value**: one message is one frame, and a
+        // missing bump would otherwise read as an index panic rather than as
+        // the claim this cell makes.
+        assert_eq!(frames_after_chat.len(), 1, "one message, one frame: {frames_after_chat:?}");
+        assert_eq!(frames_after_chat[0]["chat"], 1);
+        assert_eq!(frames_after_chat[0]["seq"], 0);
     }
 }

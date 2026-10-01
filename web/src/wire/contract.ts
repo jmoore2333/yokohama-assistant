@@ -52,6 +52,9 @@ import type {
   AreasPanel,
   ArtManifest,
   ApiErrorBody,
+  ChatAuthor,
+  ChatMessage,
+  ChatPage,
   ClientState,
   Counter,
   DealCard,
@@ -163,6 +166,17 @@ import why from "./why.json";
 import whyRefusals from "./why_refusals.json";
 import whyRefused from "./why_refused.json";
 import watching from "./watching.json";
+import chat from "./chat.json";
+import chatAfter from "./chat_after.json";
+import chatPost from "./chat_post.json";
+import chatPostWatcher from "./chat_post_watcher.json";
+import chat400Long from "./chat_400_long.json";
+import chat400SeatedName from "./chat_400_seated_name.json";
+import chat403NotSeated from "./chat_403_not_seated.json";
+import chat403Locked from "./chat_403_locked.json";
+import houseChat from "./house_chat.json";
+import houseChatPost from "./house_chat_post.json";
+import houseChatOff404 from "./house_chat_off_404.json";
 
 /** The declared type, widened exactly as importing it from JSON would widen it.
  *
@@ -285,6 +299,33 @@ const _notSeated403: Widen<ApiErrorBody> = notSeated403;
 // both the same way.
 const _wrongSeat403: Widen<ApiErrorBody> = wrongSeat403;
 const _undoRefused403: Widen<ApiErrorBody> = undoRefused403;
+// ---- M6.4: the chat -----------------------------------------------------
+//
+// A page and a page from a CURSOR, because the second is the read the client
+// actually makes once it is running — one message rather than three — and both
+// carry the document's own `last` rather than the page's, which is what makes a
+// cursor survive a trim.
+const _chat: Widen<ChatPage> = chat;
+const _chatAfter: Widen<ChatPage> = chatAfter;
+// The two posts' own replies, which are a MESSAGE and not a page: the client
+// renders the 201 straight into the room rather than re-reading it.
+const _chatPost: Widen<ChatMessage> = chatPost;
+const _chatPostWatcher: Widen<ChatMessage> = chatPostWatcher;
+// The house, whose every author is a watcher because the house has no seats.
+const _houseChat: Widen<ChatPage> = houseChat;
+const _houseChatPost: Widen<ChatMessage> = houseChatPost;
+// The five refusals. Plain `ApiErrorBody`, committed for the SENTENCES: a
+// message that is too long and a seated caller claiming a name are two different
+// things to fix, and the two 403s are the room's own pair — "you are not seated
+// at this table" at an OPEN table, where `…/table` answers and the chat does
+// not, against the lock's sentence, which names something the reader can do.
+// The 404 is not a refusal at all: with the lobby chat off the route is
+// something this deployment does not have.
+const _chat400Long: Widen<ApiErrorBody> = chat400Long;
+const _chat400SeatedName: Widen<ApiErrorBody> = chat400SeatedName;
+const _chat403NotSeated: Widen<ApiErrorBody> = chat403NotSeated;
+const _chat403Locked: Widen<ApiErrorBody> = chat403Locked;
+const _houseChatOff404: Widen<ApiErrorBody> = houseChatOff404;
 
 const _health: Widen<Health> = health;
 // Both sides of `/api/me`: signed in, and the payload a caller with no identity
@@ -372,6 +413,33 @@ const _pSpectator: PromptOf<"watching"> = spectator.prompt;
 const _pLocked: PromptOf<"locked"> = locked.prompt;
 // `reveal` has no fixture — live mode only; see `wire_fixtures.rs`'s exemption.
 
+// ## §1c. The chat author, per member
+//
+// `ChatAuthor` is `#[serde(tag = "kind")]` like `PromptState`, so
+// `Widen<ChatAuthor>` would accept `{kind: "nonsense"}`. What it genuinely
+// cannot do is tie a field set to its `kind`: `Widen` distributes over the
+// union, so an author only has to match SOME widened arm, and a `seat` author
+// that lost `user` passes by matching the widened `bot` one. Each fixture author
+// against its OWN member, where the non-discriminant fields are required again.
+//
+// **Which fixtures can carry that check is decided by the JSON, not by choice.**
+// TypeScript types an array by the UNION of its elements, so `chat.messages` —
+// two seats and a watcher — gives `chat.messages[0].author` the type "seat
+// author OR watcher author", and assigning that to either member is rejected
+// over the fields the other one lacks (the watcher arm has no `seat`). So the
+// per-member assertions are taken from the payloads that carry ONE author:
+// each post's own reply, the page from a cursor, and the house's single
+// message. The MIXED page's authors are checked by their own `kind` at RUN
+// TIME in `contract.test.ts`, which is the one half of this contract that can
+// branch on a value.
+const _cp: Widen<Extract<ChatAuthor, { kind: "seat" }>> = chatPost.author;
+const _cpw: Widen<Extract<ChatAuthor, { kind: "watcher" }>> = chatPostWatcher.author;
+const _ca: Widen<Extract<ChatAuthor, { kind: "watcher" }>> = chatAfter.messages[0]!.author;
+const _hc: Widen<Extract<ChatAuthor, { kind: "watcher" }>> = houseChat.messages[0]!.author;
+// `bot` has no fixture: no route produces one in this cycle. It is declared so
+// the arm that arrives later arrives as a payload and not as a shape change.
+void [_cp, _cpw, _ca, _hc];
+
 void [
   _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused,
   _pPick, _pRetreat, _pRetreatAnswered, _pPlaceA, _pPlaceASelected, _pPlaceB,
@@ -398,6 +466,8 @@ void [
   _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
   _terminal, _terminalStanding,
+  _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
+  _chat400Long, _chat400SeatedName, _chat403NotSeated, _chat403Locked, _houseChatOff404,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -473,7 +543,10 @@ const HISTORICAL_FRAME = [
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
-const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity", "signal"] as const;
+const HEALTH = [
+  "server_version", "semantics_rev", "rules_hash", "identity", "signal",
+  "lobby_chat", "chat_keep", "chat_text",
+] as const;
 const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
@@ -485,7 +558,7 @@ const GAMES_LIST = ["games", "next"] as const;
 // The open and dealing 409s are the ONLY refusals that carry a second key, and
 // the only ones this client branches on rather than displays.
 const DEALING_ERROR = ["error", "status"] as const;
-const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
@@ -516,6 +589,16 @@ const TERMINAL = ["rank", "seats", "viewer_total", "best_other_total", "value"] 
 const COUNTER = ["name", "value", "group"] as const;
 const INDEX_GROUP = ["key", "cards"] as const;
 const INDEX_CARD = ["face", "location", "selection"] as const;
+// M6.4. The two authors carry DIFFERENT key sets — a watcher holds no seat — so
+// the runtime half picks its list by the author's own `kind` rather than
+// checking both against one union of keys, which would accept either shape at
+// either arm. `bot` has no list because it has no fixture; the cell fails loudly
+// on an author kind it has no list for, which is what makes that absence
+// visible rather than silent.
+const CHAT_PAGE = ["messages", "last"] as const;
+const CHAT_MESSAGE = ["seq", "created_at", "author", "text"] as const;
+const CHAT_AUTHOR_SEAT = ["kind", "seat", "user", "name"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "user", "name"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -559,11 +642,18 @@ const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
+const _cg: KeysOf<ChatPage, typeof CHAT_PAGE> = CHAT_PAGE;
+const _cm: KeysOf<ChatMessage, typeof CHAT_MESSAGE> = CHAT_MESSAGE;
+const _as: KeysOf<Extract<ChatAuthor, { kind: "seat" }>, typeof CHAT_AUTHOR_SEAT> =
+  CHAT_AUTHOR_SEAT;
+const _aw: KeysOf<Extract<ChatAuthor, { kind: "watcher" }>, typeof CHAT_AUTHOR_WATCHER> =
+  CHAT_AUTHOR_WATCHER;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
-      _tl, _ct, _ig, _ic, _hf];
+      _tl, _ct, _ig, _ic, _hf,
+      _cg, _cm, _as, _aw];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -606,6 +696,10 @@ export const KEYS = {
   counter: COUNTER,
   indexGroup: INDEX_GROUP,
   indexCard: INDEX_CARD,
+  chatPage: CHAT_PAGE,
+  chatMessage: CHAT_MESSAGE,
+  chatAuthorSeat: CHAT_AUTHOR_SEAT,
+  chatAuthorWatcher: CHAT_AUTHOR_WATCHER,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -702,6 +796,18 @@ export const wire = {
   indexFiltered: as<IndexModel>(indexFiltered),
   result: as<Outcome>(result),
   explanationTerminal: as<Explanation>(explanationTerminal),
+  // ---- M6.4: the chat ---------------------------------------------------
+  chat: as<ChatPage>(chat),
+  chatAfter: as<ChatPage>(chatAfter),
+  chatPost: as<ChatMessage>(chatPost),
+  chatPostWatcher: as<ChatMessage>(chatPostWatcher),
+  houseChat: as<ChatPage>(houseChat),
+  houseChatPost: as<ChatMessage>(houseChatPost),
+  chat400Long: as<ApiErrorBody>(chat400Long),
+  chat400SeatedName: as<ApiErrorBody>(chat400SeatedName),
+  chat403NotSeated: as<ApiErrorBody>(chat403NotSeated),
+  chat403Locked: as<ApiErrorBody>(chat403Locked),
+  houseChatOff404: as<ApiErrorBody>(houseChatOff404),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.

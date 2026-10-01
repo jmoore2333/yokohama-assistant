@@ -13,7 +13,7 @@
 // `Red@Wire.TEST` and seated as `red@wire.test`.
 
 import { useState } from "react";
-import { setClaimedUser } from "./api";
+import { setClaimedUser, setDisplayName } from "./api";
 
 /** The server's own R-1.1 shape, restated so the refusal happens here rather
  *  than as a 400 on the first request. Deliberately the same crude rule and not
@@ -33,6 +33,12 @@ export function SignIn({
   notice?: string;
 }) {
   const [value, setValue] = useState("");
+  /** The name this person's messages and seats are labelled with (R-6.4.3) —
+   *  OPTIONAL, and on the same one key the lobby, the New table form and the
+   *  seat picker read. Blank leaves whatever is stored alone: clearing belongs
+   *  to the lobby's field, which has a value to clear, and a door that wrote an
+   *  empty string here would sign a returning player in under no name at all. */
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
     const normalized = value.trim().toLowerCase();
@@ -50,6 +56,9 @@ export function SignIn({
     // browser was still holding nobody, and the answer would send us straight
     // back to this screen.
     setClaimedUser(normalized);
+    // Trimmed the way the address is, and only when there is something to
+    // store — see `name`.
+    if (name.trim()) setDisplayName(name.trim());
     setError(null);
     onSignedIn(normalized);
   };
@@ -86,6 +95,10 @@ export function SignIn({
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
+        </div>
+        <div className="field">
+          <label htmlFor="sign-in-name">Your name (optional)</label>
+          <input id="sign-in-name" value={name} onChange={(e) => setName(e.target.value)} />
         </div>
         <button type="submit" className="primary">
           Sign in

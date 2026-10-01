@@ -1,0 +1,15 @@
+{
+  "last": 3,
+  "messages": [
+    {
+      "author": {
+        "kind": "watcher",
+        "name": "Green",
+        "user": "green@wire.test"
+      },
+      "created_at": 1789000000,
+      "seq": 3,
+      "text": "watching from the rail"
+    }
+  ]
+}

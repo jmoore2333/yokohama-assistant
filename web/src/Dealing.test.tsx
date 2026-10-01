@@ -14,7 +14,7 @@
 // what the DOM holds (my two faces and no other seat's), what the client posts
 // for one seat, and how this screen learns that the table has started.
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
@@ -62,6 +62,8 @@ const dealThen = (...replies: DealView[]) => {
   const queue = [...replies];
   return (call: ApiCall): Reply | undefined => {
     if (call.path.endsWith("/deal")) return queue.shift() ?? replies[replies.length - 1];
+    const q = quietChat(call);
+    if (q !== undefined) return q;
     // The signal is a stream since M6.3, and a cell that is not about it does
     // not answer one at all: `stubApi` holds an unscripted stream open and
     // silent, which is what a reachable server with nothing to report does.
@@ -77,9 +79,20 @@ const signalling = (onOpen?: (open: number) => Array<[string, unknown]>) => {
   return {
     stream,
     at: (call: ApiCall): Reply | undefined =>
-      call.path.endsWith("/stream") ? stream.reply(call) : undefined,
+      call.path.endsWith("/stream") ? stream.reply(call) : quietChat(call),
   };
 };
+
+/** **The side column draws a chat panel since M6.4 (spec §6.2)**, and it asks
+ *  for the table's messages on mount whatever its fold state — so every cell in
+ *  this file now makes that request whether or not it is about the chat. A
+ *  table where nothing has been said, derived from the corpus's own page rather
+ *  than typed out here, so a cell that is not about the chat has none of it in
+ *  its DOM. The one cell that IS answers the route itself. */
+const quietChat = (call: ApiCall): Reply | undefined =>
+  call.method === "GET" && call.path.includes("/chat")
+    ? { ...wire.chat, messages: [], last: 0 }
+    : undefined;
 
 /** Let a reply chain settle without moving the clock — the harness's own
  *  [`flush`]: a frame arrives over turns that are not all microtasks, and NOT
@@ -482,5 +495,26 @@ describe("the dealing screen", () => {
     );
     render(<Host />);
     expect(await screen.findByText(/you do not hold a seat/)).toBeInTheDocument();
+  });
+});
+// ---- M6.4: the chat on the dealing screen ---------------------------------
+
+describe("the dealing screen's chat", () => {
+  // **The table exists before the game does**, which is the whole reason this
+  // screen hosts a panel at all: the people at it are waiting on each other,
+  // and the count rides the same `useSignal` frame the screen already reads for
+  // its own hand-over. LAST in the side column and FOLDED (R-6.4.10), the game
+  // screen's own rule — and `sendName={false}`, because everyone here holds a
+  // seat and a seat is named by its seat (R-6.4.2).
+  it("draws the chat panel last in the side column, folded", async () => {
+    stubApi((call) =>
+      call.method === "GET" && call.path.includes("/chat") ? wire.chat : dealThen(wire.deal)(call),
+    );
+    render(<Host />);
+    await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    const side = document.querySelector("aside.side")!;
+    await waitFor(() => expect(side.lastElementChild).toHaveClass("chat"));
+    expect(side.lastElementChild).toHaveClass("folded");
+    expect(within(side as HTMLElement).getByRole("button", { name: "show" })).toBeInTheDocument();
   });
 });

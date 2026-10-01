@@ -367,6 +367,11 @@ export interface Events {
    *  for its own start exactly as the setup screen watches for `dealing`. */
   status: "open" | "dealing" | "playing" | "over";
   your_turn: boolean;
+  /** The table's newest message number, 0 with none (M6.4, R-6.4.7) — the
+   *  fifth field, and the one that makes a message a count on the signal and a
+   *  fetch for the text. It is the document's own `last`, so a trim never walks
+   *  it backwards past a cursor the client is holding. */
+  chat: number;
 }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
@@ -448,6 +453,14 @@ export interface Health {
   /** Which change transport `usePolled` reads: the stream, or the held
    *  request (M6.3). A deployment fact, not a preference. */
   signal: "sse" | "held";
+  /** Whether the house chat answers (M6.4). Off, this client draws no lobby
+   *  panel and asks for nothing. */
+  lobby_chat: boolean;
+  /** Messages retained per chat document; `null` when nothing is trimmed. */
+  chat_keep: number | null;
+  /** Characters per message. The input is sized from THIS and never from a
+   *  copy here, which would drift the day the server's number changed. */
+  chat_text: number;
 }
 
 /** Who the server thinks you are, and which header it reads to decide.
@@ -931,3 +944,39 @@ export interface Outcome {
   standings: Placing[];
   winner: PlayerId;
 }
+
+// ---- M6.4: the chat ------------------------------------------------------
+
+/** Who said it (M6.4, R-6.4.2, R-6.4.15). Tagged like `SeatDoc`, so an arm can be
+ *  added on both sides of the wire; `bot` is read and rendered and produced by
+ *  no route yet. */
+export type ChatAuthor =
+  | { kind: "seat"; seat: PlayerId; user: string; name: string | null }
+  | { kind: "watcher"; user: string; name: string | null }
+  | { kind: "bot"; seat: PlayerId; name: string | null };
+
+export interface ChatMessage {
+  seq: number;
+  /** Unix SECONDS; named as the table's clock is, because the corpus freezer
+   *  pins a clock by key name. */
+  created_at: number;
+  author: ChatAuthor;
+  text: string;
+}
+
+/** `GET …/chat?after=N`: the retained messages above N, and the newest number
+ *  ever assigned — the next cursor, which survives a trim. */
+export interface ChatPage {
+  messages: ChatMessage[];
+  last: number;
+}
+
+export interface ChatPost {
+  text: string;
+  /** A watcher's name, and anyone's at the house. A seated caller sends none:
+   *  a seat's name is the seat's, and the server refuses one with a 400. */
+  name?: string;
+}
+
+/** Where a chat panel is: one table, or the house. A client-side type. */
+export type ChatScope = { kind: "table"; id: string } | { kind: "house" };

@@ -384,6 +384,16 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
   // corpus reply marks no seat as a bot, so no walk starts from it.
   if (/\/at\/\d+$/.test(call.path)) return wire.atK;
   if (/\/log(\?|$)/.test(call.path)) return wire.log;
+  // **Every screen with a side column draws a chat panel since M6.4 (§6.2)**,
+  // and the panel asks for the table's messages on mount whatever its fold
+  // state — so every `renderApp` cell now makes this request whether or not it
+  // is about the chat, exactly as the three board panels joined this list at
+  // W5b. A table where nothing has been SAID, derived from the corpus's own
+  // page rather than typed out here (the `gamesNamed` rule), so a cell that is
+  // not about the chat has none of another room's messages in its DOM. A cell
+  // that IS about it answers the route itself — the caller is asked first.
+  if (call.method === "GET" && /\/chat(\?|$)/.test(call.path))
+    return { ...wire.chat, messages: [], last: 0 };
   return undefined;
 }
 

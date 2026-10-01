@@ -96,8 +96,27 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // which is the number to read rather than this one.
   test.setTimeout(20 * 60 * 1000);
   const started = Date.now();
+  // **This table's stream path — empty until the SERVER has named the table.**
+  // The players' listeners below are installed with their pages, long before
+  // there is an id, and read this variable at REQUEST time; an exact match on
+  // the whole path is also what keeps the lobby's own house channel
+  // (`/api/stream`) out of these counts, as it does for the watcher's.
+  let streamPath = "";
   const a = await (await browser.newContext()).newPage();
   const b = await (await browser.newContext()).newPage();
+  /** How many times each PLAYER opened this table's stream (R-6.4.4, R-plan-7).
+   *  The teardown that closed it at every turn boundary is gone, so this is a
+   *  count that stops growing once each screen is up — and a reopen mid-game
+   *  would show as one that never stops. Counted from the moment the id exists
+   *  rather than from the first move, so the figures the run prints are the
+   *  players' REAL opens and the comparison at the bottom is a reading rather
+   *  than two zeroes agreeing. */
+  const streamOpens = { a: 0, b: 0 };
+  for (const [k, p] of [["a", a], ["b", b]] as const) {
+    p.on("request", (r) => {
+      if (new URL(r.url()).pathname === streamPath) streamOpens[k] += 1;
+    });
+  }
   const watchA = watchForBreakage(a);
   const watchB = watchForBreakage(b);
 
@@ -106,7 +125,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // row's "another email" arm.
   await signIn(a, "a@e2e.test");
   // The lobby is the first screen since M6.2; the form is one click on.
-  await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
   await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
   // `exact: true`: switching this row to an email puts a "Seat 1 email" field
@@ -125,6 +144,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await a.getByRole("button", { name: "Deal" }).click();
   const id = String(((await (await created).json()) as { id: string }).id);
   expect(id, "the server named the table").toBeTruthy();
+  streamPath = `/api/games/${id}/stream`;
 
   // A chooses, and is then waiting: the table does not start until B has
   // chosen too, and A's screen says whom it is waiting on by name.
@@ -159,7 +179,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await c.goto(`/#/t/${id}`);
   // The unlock face, and it is the SERVER's answer that puts it there: a
   // playing table this caller holds no seat at, which has not been unlocked.
-  await expect(c.getByRole("heading", { name: "Lobby" })).toHaveCount(0);
+  // Exact, for the reason `harness.ts` gives: the lobby's own heading, not
+  // the chat panel's, which carries the word too.
+  await expect(c.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
   const watchButton = c.getByRole("button", { name: "Watch" });
   await expect(watchButton).toBeVisible();
 
@@ -174,7 +196,6 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // by the timing above, and a reading that rests on when a listener was
   // installed is a reading one navigation away from being about two pages.
   const eventsAsked: string[] = [];
-  const streamPath = `/api/games/${id}/stream`;
   let streams = 0;
   c.on("request", (r) => {
     const path = new URL(r.url()).pathname;
@@ -191,6 +212,60 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // asserted non-empty two lines above, which is what stops this being a
   // sentence about a selector that matches nothing anywhere.
   expect(await ownHand(c), "a watcher is dealt no hand").toEqual([]);
+
+  // ---- M6.4: the exit — two players talk, the watcher reads it and answers,
+  // and the MOVER reads the answer during their own turn (spec §9.4) --------
+  //
+  // Every line here arrives over the connection the screen already holds: a
+  // post bumps the table, the frame carries the new count, and the panel asks
+  // for the delta. Nothing below reloads a page, which is what makes "arrives"
+  // a claim about the transport rather than about a refresh.
+  const chatOf = (p: Page) => p.locator("aside.side section.chat");
+  const unfold = async (p: Page) => {
+    const fold = chatOf(p).getByRole("button", { name: "show" });
+    if (await fold.count()) await fold.click();
+    await expect(chatOf(p).getByRole("button", { name: "hide" })).toBeVisible();
+  };
+  const say = async (p: Page, text: string) => {
+    await unfold(p);
+    await chatOf(p).getByRole("textbox", { name: "Say something" }).fill(text);
+    await chatOf(p).getByRole("textbox", { name: "Say something" }).press("Enter");
+    await expect(chatOf(p).getByRole("listitem").filter({ hasText: text })).toBeVisible();
+  };
+  const reads = async (p: Page, text: string) => {
+    await unfold(p);
+    await expect(
+      chatOf(p).getByRole("listitem").filter({ hasText: text }),
+      `${text} arrives without a reload`,
+    ).toBeVisible({ timeout: 15_000 });
+  };
+  await say(a, "hello from a");
+  await reads(b, "hello from a");
+  await say(b, "and b");
+  await reads(c, "hello from a");
+  await reads(c, "and b");
+  await say(c, "watching you both");
+  // The watcher is MARKED as one, which is the label rule R-6.4.2 asks of a
+  // table. **The separator is in the needle, and that is the whole assertion:**
+  // the row is selected by a text that already contains the word, so a check
+  // for "watching" alone is implied by its own filter and could never fail —
+  // only the marker's own " · watching" distinguishes a labelled watcher from
+  // one who happened to say the word.
+  await expect(
+    chatOf(c).getByRole("listitem").filter({ hasText: "watching you both" }),
+  ).toContainText("· watching");
+  // **The mover reads it during their OWN turn** — the cell that must fail
+  // under the old `active` (R-6.4.4): whichever page shows a move, that page's
+  // panel receives the watcher's line while its prompt is on screen. The
+  // premise is asserted rather than assumed: a page with nothing to answer
+  // would make this a reading about an idle screen.
+  const mover = hasMove(await readScreen(a)) ? a : b;
+  expect(hasMove(await readScreen(mover)), "the premise: it is this page's turn").toBe(true);
+  await reads(mover, "watching you both");
+  // The players' game-screen streams, read once the game is on screen (R-plan-7)
+  // and AFTER the exchange, so every mount this walk causes is already paid for
+  // and what is compared at the bottom is the playing half alone.
+  const streamsAtStart = { a: streamOpens.a, b: streamOpens.b };
 
   /** How many events the game had when the watcher was last held to one. */
   let lastApplied = 0;
@@ -380,7 +455,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
       `${Math.round((Date.now() - started) / 1000)}s; largest hand seen ${mostHeld}; ` +
       `the watcher was held to ${watchChecks} applied moves, asked /events ` +
       `${eventsAsked.length} times and opened /stream ${streams} times ` +
-      `(${streamReads.join(",") || "no checkpoint"} at the checkpoints)`,
+      `(${streamReads.join(",") || "no checkpoint"} at the checkpoints); ` +
+      `the players opened this table's stream a ${streamOpens.a}, b ` +
+      `${streamOpens.b} times (a ${streamsAtStart.a}, b ${streamsAtStart.b} ` +
+      `before the first move)`,
   );
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);
   // The disjointness check above is vacuous against two empty hands, and a hand
@@ -406,4 +484,12 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // A second open is a FINDING and not a tolerance — something reconnected on
   // its own — and the checkpoint above names the move it started on.
   expect(streams, "the watcher held ONE open stream for the whole game").toBe(1);
+
+  // **No reopen for a player either** (R-6.4.4, R-plan-7): the per-turn
+  // teardown is gone, so the count read at the start is the count at the end.
+  // A player's screen is not the watcher's — it posts, it plays back the other
+  // seat's turn and it goes busy — and a per-turn teardown would leave these
+  // counts climbing with the game while the watcher's stayed at one.
+  expect(streamOpens.a, "a never reopened this table's stream").toBe(streamsAtStart.a);
+  expect(streamOpens.b, "b never reopened this table's stream").toBe(streamsAtStart.b);
 });

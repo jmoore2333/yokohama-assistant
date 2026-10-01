@@ -142,7 +142,17 @@ struct Api {
 
 impl Api {
     fn new() -> Self {
-        let state = Arc::new(AppState::in_memory());
+        Self::with_chat(yokohama_web::chat::ChatConfig::default())
+    }
+
+    /// The same router with the chat configured rather than defaulted (M6.4).
+    ///
+    /// One fixture in this corpus is the answer a deployment gives when the
+    /// house chat is OFF, and a switch read at startup cannot be flipped over
+    /// the wire — so that payload comes from a second state built here rather
+    /// than from an extra route on the first.
+    fn with_chat(chat: yokohama_web::chat::ChatConfig) -> Self {
+        let state = Arc::new(AppState::in_memory_with_chat(chat));
         Self { router: app(Arc::clone(&state)), state }
     }
 
@@ -334,7 +344,13 @@ const OTHER: &str = "blue@wire.test";
 /// it, is refused at the deal, is refused at the locked game, gets the password
 /// wrong, then gets it right and watches to the end. Keeping it one person is
 /// also what puts a NAME in the table document's `unlocked` list for
-/// [`no_payload_built_for_someone_else_carries_a_watchers_email`] to search for.
+/// [`a_silent_watcher_is_named_nowhere_and_a_posting_one_only_as_an_author`] to
+/// search for.
+///
+/// **From M6.4 they also SPEAK** (R-6.4.12), which is what narrowed that pin: a
+/// watcher who posts is named as the author of what they posted and nowhere
+/// else, and the two other identities below are the halves of that claim the
+/// allowance must not cover.
 const GREEN: &str = "green@wire.test";
 
 /// **A FOURTH identity, who never knocks** (M6.3).
@@ -346,6 +362,21 @@ const GREEN: &str = "green@wire.test";
 /// from that caller would describe the other half of the branch while being
 /// named after this one.
 const STRANGER: &str = "grey@wire.test";
+
+/// **A FIFTH identity, who knocks and then says NOTHING** (M6.4, R-6.4.12).
+///
+/// [`GREEN`] is now a watcher who POSTS, so its address is legitimately on this
+/// wire as the author of one message — which means green alone can no longer
+/// witness "a watcher is not named to the players". This one can: it presents
+/// the password, is written into the table document's `unlocked` list exactly
+/// as green is, and then makes no other request for the rest of the walk. Every
+/// payload captured after that point is built while this person is watching,
+/// and none of them may spell this address anywhere at all.
+///
+/// It is therefore the needle whose ABSENCE is the claim, and
+/// [`a_silent_watcher_is_named_nowhere_and_a_posting_one_only_as_an_author`]
+/// proves the search can find it by replaying an unlock of its own.
+const QUIET: &str = "quiet@wire.test";
 
 /// **An OPEN, LOCKED table with one seat still to fill** (M6.2, §7).
 ///
@@ -469,6 +500,19 @@ async fn walk() -> Vec<(String, Value)> {
         Some(0),
         "a stranger holds no seat here: {table_open}",
     );
+
+    // **The chat is NARROWER than the table** (M6.4, spec §3.2), captured at the
+    // one status where the two visibly part company. The same caller, one
+    // request later: `…/table` answers because a join link is an address and the
+    // person following one has to see what they are joining (R-2.7); `…/chat`
+    // takes no such widening, because a room is readable by the people
+    // `admitted` admits and not by everyone who can see the door. Committed for
+    // the SENTENCE — "you are not seated at this table" is a different thing to
+    // do next from the lock's, which the walk captures below from a caller who
+    // CAN knock.
+    let (status, chat_403_not_seated) =
+        api.call_as(Some(GREEN), "GET", "/api/games/wire/chat", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{chat_403_not_seated}");
 
     // **The signal at the table's FIRST status** (M6.3 §3.3). A seat holder
     // watching an open table for its seats to fill reads the same endpoint the
@@ -690,6 +734,39 @@ async fn walk() -> Vec<(String, Value)> {
         "and a watcher is still nobody's seat: {unlocked}",
     );
 
+    // **And a SECOND knock, from somebody who then says nothing** (M6.4,
+    // R-6.4.12). This is the only request [`QUIET`] ever makes: from here to the
+    // end of the walk there are two people on the rail, one of whom speaks, and
+    // every payload below is captured with both of them watching. The reply is
+    // not committed — it is the same `TableView` shape `unlocked` just asserted
+    // — because what this request exists to produce is a NAME in the table
+    // document that no payload may carry.
+    let (status, quiet_knock) = api
+        .call_as(
+            Some(QUIET),
+            "POST",
+            "/api/games/wire/unlock",
+            Some(json!({ "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "the silent watcher knocks: {quiet_knock}");
+    // **And it is on the roster of the table THIS corpus is cut from**, read off
+    // the store rather than inferred from the 200. Without this line the pin
+    // below would search every payload for somebody who might not be watching at
+    // all, and pass for that reason: its own partner proves the SEARCH can find
+    // the string, and only this proves the WALK put it there.
+    assert!(
+        api.state
+            .games
+            .store()
+            .read(yokohama_web::store::Doc::Table, "wire")
+            .expect("a readable store")
+            .expect("the walk's table document")
+            .0
+            .contains(QUIET),
+        "the silent watcher's knock did not reach the walk's own table document",
+    );
+
     // The lobby's THIRD list: every game under way, whoever made it (R-3.9),
     // read by the watcher who just got in.
     //
@@ -732,6 +809,8 @@ async fn walk() -> Vec<(String, Value)> {
         ("dealing_409".to_string(), dealing_409),
         ("games".to_string(), games_list),
         ("not_seated_403".to_string(), not_seated_403),
+        // ---- M6.4: the chat's own not-seated refusal, from the OPEN table ---
+        ("chat_403_not_seated".to_string(), chat_403_not_seated),
         ("events_open".to_string(), events_open),
         ("events_dealing".to_string(), events_dealing),
         ("health".to_string(), api.get("/api/health").await),
@@ -759,6 +838,112 @@ async fn walk() -> Vec<(String, Value)> {
     };
 
     let mut state = as_actor(&api, created).await;
+
+    // ---- M6.4: the table's chat, BEFORE the first move --------------------
+    //
+    // The order is the whole reason this block is here and not after the loop
+    // (R-plan-6): `events.json` is captured inside the walk, and its fifth field
+    // is the table's newest message number. Taken with nothing said yet it would
+    // read 0 — a constant a client could not tell from a stub — so the three
+    // posts go first and the signal fixture carries a real count.
+    //
+    // Three authors, because the arms are what the client branches on: two
+    // SEATED callers, whose names the table settles (R-6.4.2), and the WATCHER
+    // who knocked a few requests ago, who carries the name they sent.
+    let (status, chat_post) = api
+        .call_as(
+            Some(WALKER),
+            "POST",
+            "/api/games/wire/chat",
+            Some(json!({ "text": "good luck" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{chat_post}");
+    let (status, blue_post) = api
+        .call_as(Some(OTHER), "POST", "/api/games/wire/chat", Some(json!({ "text": "you too" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{blue_post}");
+    assert_eq!(blue_post["author"]["name"], "Blue", "the seat's stored name, from the join");
+    let (status, chat_post_watcher) = api
+        .call_as(
+            Some(GREEN),
+            "POST",
+            "/api/games/wire/chat",
+            Some(json!({ "text": "watching from the rail", "name": "Green" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{chat_post_watcher}");
+    assert_eq!(chat_post_watcher["author"]["kind"], "watcher");
+
+    // The page, and the same page from a cursor. `chat_after` is the delta the
+    // client actually fetches once it is running — one message rather than
+    // three — and a corpus with only the full page in it would leave that read
+    // rendered by nothing.
+    let chat = api.get("/api/games/wire/chat").await;
+    assert_eq!(chat["last"], 3, "{chat}");
+    let chat_after = api.get("/api/games/wire/chat?after=2").await;
+    assert_eq!(chat_after["messages"].as_array().map(Vec::len), Some(1), "{chat_after}");
+    assert_eq!(chat_after["last"], 3, "a cursor answers the DOCUMENT's last: {chat_after}");
+
+    // The two 400s, which are two different things to fix: a message that is too
+    // long, and a seated caller claiming a name their seat has already settled.
+    let (status, chat_400_long) = api
+        .call_as(
+            Some(WALKER),
+            "POST",
+            "/api/games/wire/chat",
+            Some(json!({ "text": "x".repeat(501) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{chat_400_long}");
+    let (status, chat_400_seated_name) = api
+        .call_as(
+            Some(WALKER),
+            "POST",
+            "/api/games/wire/chat",
+            Some(json!({ "text": "hi", "name": "Not Red" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{chat_400_seated_name}");
+
+    // The LOCK's refusal, from the one caller who has not knocked — the other
+    // half of the pair whose first is `chat_403_not_seated` at the open table.
+    // Same route, same status, a sentence that names something this reader can
+    // do about it.
+    let (status, chat_403_locked) =
+        api.call_as(Some(STRANGER), "GET", "/api/games/wire/chat", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{chat_403_locked}");
+
+    // **The house**: red posts, blue reads. Every author there is a watcher —
+    // the house has no seats — so this is also the only `Watcher` author in the
+    // corpus whose address is a PLAYER's, which is what keeps the client from
+    // reading the arm as "somebody with no seat at this table".
+    let (status, house_chat_post) = api
+        .call_as(
+            Some(WALKER),
+            "POST",
+            "/api/chat",
+            Some(json!({ "text": "anyone up for a second table?", "name": "Red" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{house_chat_post}");
+    let house_chat = api.get_as(OTHER, "/api/chat").await;
+    assert_eq!(house_chat["last"], 1, "{house_chat}");
+
+    for (name, v) in [
+        ("chat", chat),
+        ("chat_after", chat_after),
+        ("chat_post", chat_post),
+        ("chat_post_watcher", chat_post_watcher),
+        ("chat_400_long", chat_400_long),
+        ("chat_400_seated_name", chat_400_seated_name),
+        ("chat_403_locked", chat_403_locked),
+        ("house_chat", house_chat),
+        ("house_chat_post", house_chat_post),
+    ] {
+        out.push((name.to_string(), v));
+    }
+
     let mut rng = Rng(WALK_SEED);
     let mut steps = 0usize;
     // The area the server last accepted an assistant in, tried first next time.
@@ -1227,6 +1412,24 @@ async fn walk() -> Vec<(String, Value)> {
     assert_eq!(status, StatusCode::NOT_FOUND);
     out.push(("error".to_string(), err));
 
+    // **What a deployment with the house chat OFF answers** (M6.4, R-6.4.6),
+    // from a SECOND state, because the switch is read once at startup and
+    // nothing over the wire can flip it.
+    //
+    // A 404 and not a 403: with the lobby chat off the route is not something
+    // this deployment refuses you, it is something this deployment does not
+    // have. The client reads the same fact off `/api/health` and draws no panel
+    // at all — this is the sentence for whoever asks anyway, and the payload
+    // that says the answer is an ordinary `ApiErrorBody` rather than an empty
+    // page a client would render as a quiet room.
+    let off = Api::with_chat(yokohama_web::chat::ChatConfig {
+        lobby: false,
+        ..yokohama_web::chat::ChatConfig::default()
+    });
+    let (status, house_chat_off_404) = off.call("GET", "/api/chat", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{house_chat_off_404}");
+    out.push(("house_chat_off_404".to_string(), house_chat_off_404));
+
     out
 }
 
@@ -1686,47 +1889,145 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
     );
 }
 
-/// **No payload names a WATCHER** (M6.3 §8).
+/// **A silent watcher is named NOWHERE, and a posting one only as the author of
+/// what they posted** (M6.4, R-6.4.12; narrowing M6.3's pin).
 ///
 /// The third secret a table document holds, after the seed and the lock, is
 /// `unlocked` — the list of people who have presented this table's password.
 /// It is not a game secret and it is somebody's business all the same: it is
 /// the roster of who is looking over the players' shoulders, and the players
 /// did not invite them. `TableView` carries the one boolean the caller needs
-/// about THEMSELVES (`can_watch`) and the list itself never crosses (R-3.5), so
-/// a watcher is unnamed on every wire this API has.
+/// about THEMSELVES (`can_watch`) and the list itself never crosses (R-3.5).
 ///
-/// **The search is the whole corpus, not a subset, and that is stronger than
-/// the property strictly needs.** Neither [`GREEN`] nor [`STRANGER`] holds a
-/// seat at any table in this walk, so no payload has a legitimate reason to
-/// spell either address — not one built for a player, and not one built for
-/// them. A future fixture that genuinely has to (a `GET /api/me` taken as the
-/// watcher would) needs an owner's answer about what else it carries, not an
-/// exemption bolted on here.
+/// **M6.3 stated that as "no payload names a watcher", and M6.4 makes that
+/// sentence false in one place on purpose.** A watcher may now speak, and a
+/// message is signed — so [`GREEN`]'s address is legitimately on the wire, as
+/// `author.user` of the one message green sent. The narrowing is not "green is
+/// exempt": it is a PATH rule, checked per hit. An address may appear at
+/// `<…>.author.user` beside `kind: "watcher"`, and nowhere else, and only for
+/// the identity that actually posted.
 ///
-/// **Two needles for two different jobs.** GREEN is the one the server really
-/// does write down, so GREEN is what the anti-vacuity partner below proves the
-/// search can find. STRANGER is never written down anywhere and rides along as
-/// the second realistic leak on these routes: a view or a refusal that echoed
-/// its READER's address back — which is a shape no test above would have seen,
-/// since every other payload is read by somebody who is named in it anyway.
+/// **Which is why there are three needles and not two.** The claim M6.3 made
+/// needs a witness that still has no reason to be on the wire at all, so
+/// [`QUIET`] knocks at the same table, is written into the same `unlocked` list,
+/// and then says nothing for the rest of the walk: every payload after that
+/// point is built while it is watching, and none of them may spell it. [`GREEN`]
+/// exercises the allowance. [`STRANGER`] rides along as the second realistic
+/// leak on these routes — a view or a refusal that echoed its READER's address
+/// back, a shape no other test would see, since every other payload is read by
+/// somebody who is named in it anyway.
+///
+/// **The search walks the tree rather than the serialized text**, because the
+/// allowance is about WHERE a hit is and a text search has no position. It is
+/// no weaker for it: a string VALUE containing the address anywhere inside it is
+/// a hit, exactly as `contains` was, and an object KEY containing it is a hit
+/// too — which the text search also caught and a naive walk would not.
 #[tokio::test]
-async fn no_payload_built_for_someone_else_carries_a_watchers_email() {
+async fn a_silent_watcher_is_named_nowhere_and_a_posting_one_only_as_an_author() {
+    /// Every path at which `needle` appears — inside a string value, or as an
+    /// object key. The path is the steps taken to reach it, array indices
+    /// included, so the caller can read the hit's SIBLINGS back out.
+    fn find(v: &Value, path: &mut Vec<String>, needle: &str, hits: &mut Vec<Vec<String>>) {
+        match v {
+            Value::String(s) if s.contains(needle) => hits.push(path.clone()),
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    path.push(i.to_string());
+                    find(item, path, needle, hits);
+                    path.pop();
+                }
+            }
+            Value::Object(map) => {
+                for (k, item) in map {
+                    path.push(k.clone());
+                    // A KEY spelling the address is a hit at the key's own path.
+                    // It can never be `allowed` — the rule requires the last step
+                    // to be `user` — which is the answer a map keyed by email
+                    // should get.
+                    if k.contains(needle) {
+                        hits.push(path.clone());
+                    }
+                    find(item, path, needle, hits);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The value at a path [`find`] produced, so a hit can be checked against
+    /// its siblings. Every step exists by construction — the path was walked
+    /// out of this very value.
+    fn at_path<'a>(v: &'a Value, path: &[String]) -> &'a Value {
+        let mut here = v;
+        for step in path {
+            here = match here {
+                Value::Array(items) => {
+                    let i: usize = step.parse().expect("an array step is an index");
+                    &items[i]
+                }
+                _ => &here[step.as_str()],
+            };
+        }
+        here
+    }
+
     let mut offenders: Vec<String> = Vec::new();
+    let mut allowed_hits = 0usize;
     for (name, value) in corpus().await {
-        let text = serde_json::to_string(&value).expect("serializable");
-        for (who, needle) in [("the watcher", GREEN), ("a caller who never knocked", STRANGER)] {
-            if text.contains(needle) {
-                offenders.push(format!("{name} names {who}"));
+        for (who, needle, may_post) in [
+            ("the watcher", GREEN, true),
+            ("a watcher who never spoke", QUIET, false),
+            ("a caller who never knocked", STRANGER, false),
+        ] {
+            let mut hits: Vec<Vec<String>> = Vec::new();
+            find(&value, &mut Vec::new(), needle, &mut hits);
+            for path in hits {
+                let allowed = may_post
+                    && path.last().map(String::as_str) == Some("user")
+                    && path.len() >= 2
+                    && path[path.len() - 2] == "author";
+                if allowed {
+                    // **The sibling `kind` must say watcher.** A seat author
+                    // carrying this address would be a seat green does not hold
+                    // — a different and worse leak than the one the allowance
+                    // covers, and one that would otherwise pass on its path
+                    // alone.
+                    let author = at_path(&value, &path[..path.len() - 1]);
+                    assert_eq!(
+                        author["kind"],
+                        "watcher",
+                        "{name} names {who} as a {} author at {} — the allowance is for the \
+                         author of a message a watcher sent, not for a seat",
+                        author["kind"],
+                        path.join("."),
+                    );
+                    allowed_hits += 1;
+                } else {
+                    offenders.push(format!("{name} names {who} at {}", path.join(".")));
+                }
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "a watcher is named on the wire: {}\n\
+        "a watcher is named where they did not speak: {}\n\
          `unlocked` is the roster of everyone looking over these players' shoulders, and \
-         `can_watch` — one boolean, about the reader — is what crosses instead.",
+         `can_watch` — one boolean, about the reader — is what crosses instead. The ONE \
+         allowance is `author.user` beside `kind: \"watcher\"`, on a message that watcher \
+         actually sent.",
         offenders.join(", "),
+    );
+
+    // **Anti-vacuity, first half: the allowance is EXERCISED.** A path rule that
+    // nothing in the corpus ever satisfies is a rule that has not been read —
+    // green posted one message, and it is served back on the page, on the page
+    // from a cursor, and as the post's own reply.
+    assert!(
+        allowed_hits >= 2,
+        "green's post should appear at `author.user` in more than one payload; found \
+         {allowed_hits} — either the chat fixtures stopped carrying an author, or the \
+         allowance above is describing a shape this corpus does not have",
     );
 
     // **The anti-vacuity partner: the search cannot pass by searching for
@@ -1792,6 +2093,40 @@ async fn no_payload_built_for_someone_else_carries_a_watchers_email() {
     // And the unlock's own reply, which IS on the wire, does not name them.
     assert!(
         !serde_json::to_string(&unlocked).expect("serializable").contains(GREEN),
+        "the request that added a watcher to the roster answered with the roster in it",
+    );
+
+    // **Anti-vacuity for the SILENT watcher, which is the needle the whole
+    // narrowing rests on** (M6.4). Green's absence is no longer the claim —
+    // green is allowed to appear — so the partner above cannot carry this half.
+    //
+    // The same table, knocked at a second time, by the address the corpus search
+    // must find nothing of. It is replayed HERE rather than read off the walk's
+    // own store, which is unreachable from this test: the pin owns its premise
+    // or it has none.
+    let (status, quiet_reply) = api
+        .call_as(
+            Some(QUIET),
+            "POST",
+            "/api/games/watched/unlock",
+            Some(json!({ "password": WIRE_PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{quiet_reply}");
+    let (doc, _) = api
+        .state
+        .games
+        .store()
+        .read(yokohama_web::store::Doc::Table, "watched")
+        .expect("a readable store")
+        .expect("the table document the unlock wrote");
+    assert!(
+        doc.contains(QUIET),
+        "the silent watcher's knock did not write them down — so the search above was looking \
+         for a string nothing in this system records, and would pass however the wire behaved",
+    );
+    assert!(
+        !serde_json::to_string(&quiet_reply).expect("serializable").contains(QUIET),
         "the request that added a watcher to the roster answered with the roster in it",
     );
 }
@@ -1949,6 +2284,79 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     );
 
     assert!(!update, "UPDATE_WIRE_FIXTURES was set: fixtures were REWRITTEN, not checked");
+}
+
+/// **Every committed message carries the FROZEN clock, which is what proves the
+/// field is spelled right** (M6.4).
+///
+/// [`freeze_clock`] pins a clock by KEY NAME, and `chat::Message` names its
+/// stamp `created_at` for exactly that reason — a field called `at` would be a
+/// wall clock inside a committed golden, rewriting six files on every
+/// regeneration and failing the very next run with nothing having changed. That
+/// is a property of a NAME, so nothing about the type can hold it: this reads
+/// the files.
+///
+/// **Its anti-vacuity is the count.** A sweep that found no stamps at all would
+/// pass exactly as loudly, so the number of clocks read is asserted — EIGHT,
+/// which is the page's three, the one message a cursor leaves, the two posts'
+/// own replies and the house's pair. A regeneration that emptied the chat
+/// corpus fails here rather than going quiet, and so does one that stopped
+/// serving a message's author its own page.
+#[test]
+fn every_chat_message_carries_the_frozen_clock() {
+    assert!(
+        std::env::var_os("UPDATE_WIRE_FIXTURES").is_none(),
+        "regeneration run — re-run WITHOUT UPDATE_WIRE_FIXTURES to check the corpus",
+    );
+
+    fn stamps(v: &Value, found: &mut Vec<u64>) {
+        match v {
+            Value::Object(map) => {
+                for (k, item) in map {
+                    if k == "created_at" {
+                        found.push(item.as_u64().unwrap_or_else(|| {
+                            panic!("a message's clock is a unix timestamp: {item}")
+                        }));
+                    } else {
+                        stamps(item, found);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|i| stamps(i, found)),
+            _ => {}
+        }
+    }
+
+    let dir = wire_dir();
+    let mut found: Vec<u64> = Vec::new();
+    for name in
+        ["chat", "chat_after", "chat_post", "chat_post_watcher", "house_chat", "house_chat_post"]
+    {
+        let path = dir.join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e} — generate the corpus first with \
+                 `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`",
+                path.display()
+            )
+        });
+        let before = found.len();
+        stamps(&serde_json::from_str::<Value>(&text).expect("a committed fixture is JSON"), &mut found);
+        assert!(
+            found.len() > before,
+            "{name}.json carries no `created_at` at all — a message whose stamp is spelled \
+             something else is a wall clock inside a committed golden",
+        );
+    }
+
+    assert_eq!(found.len(), 8, "one clock per committed message: {found:?}");
+    for seen in &found {
+        assert_eq!(
+            *seen, FROZEN_CREATED_AT,
+            "a committed message carries a live clock: the freezer pins `created_at` by key \
+             name, so this reads as a field spelled something the walk does not normalize",
+        );
+    }
 }
 
 /// One value per `PromptState` variant, and the ONE place the variant list lives.

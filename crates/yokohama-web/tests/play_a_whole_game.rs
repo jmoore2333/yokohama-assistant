@@ -463,6 +463,29 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         .await;
     assert_eq!(status, StatusCode::OK, "the password buys the right to read: {unlocked}");
 
+    // ---- M6.4: the three of them talk before the first move (spec §9.4) ----
+    let (status, m) = api
+        .call_as(green, "POST", "/api/games/two/chat", Some(serde_json::json!({ "text": "hello from the rail", "name": "Green" })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "the watcher's one write: {m}");
+    assert_eq!(m["author"]["kind"], "watcher", "{m}");
+    for (user, seat, text) in [(red, 0, "gl"), (blue, 1, "hf")] {
+        let (status, m) = api
+            .call_as(user, "POST", "/api/games/two/chat", Some(serde_json::json!({ "text": text })))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!((m["author"]["kind"].as_str(), m["author"]["seat"].as_u64()), (Some("seat"), Some(seat)), "{m}");
+    }
+    let (_, m) = api.call_as(blue, "GET", "/api/games/two/chat?after=2", None).await;
+    assert_eq!(m["messages"][0]["author"]["name"], "Blue", "the seat's stored name from the join: {m}");
+    for who in [red, blue, green] {
+        let (status, page) = api.call_as(who, "GET", "/api/games/two/chat", None).await;
+        assert_eq!(status, StatusCode::OK, "{who}: {page}");
+        assert_eq!(page["messages"].as_array().map(Vec::len), Some(3), "{who} reads all three: {page}");
+        let (_, e) = api.call_as(who, "GET", "/api/games/two/events", None).await;
+        assert_eq!(e["chat"], 3, "{who}'s frame carries the count: {e}");
+    }
+
     // **Every payload this arm sees goes through here, and the seat it is
     // checked against is passed IN.**
     //

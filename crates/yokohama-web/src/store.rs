@@ -29,9 +29,9 @@ pub type GameId = String;
 
 /// Which document under a game id.
 ///
-/// The two are separate documents with separate versions, so a write to one is
-/// never a conflict on the other: a seat change and a move are different
-/// questions and land independently.
+/// They are separate documents with separate versions, so a write to one is
+/// never a conflict on the other: a seat change, a move and a message are
+/// different questions and land independently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Doc {
     /// The `GameRecord` JSON — `<id>.json`. What the engine replays; the only
@@ -42,6 +42,16 @@ pub enum Doc {
     /// what `GET /api/games` lists over, so a record with no table beside it is
     /// a game this API does not serve (R-P7).
     Table,
+    /// The table's chat — `<id>.chat.json` (M6.4, spec §2.1). Its own document
+    /// so a message and a move are different questions that land
+    /// independently, and so a message is never in the record: nothing the
+    /// engine replays, and nothing an undo can reach (R-6.4.9).
+    Chat,
+    /// The ONE house chat, at a file no game id can spell: `_house.chat.json`.
+    /// A leading underscore fails [`is_safe_id`]'s first-character rule, so it
+    /// needs no reservation of its own and `list(Doc::Record)` excludes it by
+    /// construction.
+    House,
 }
 
 impl Doc {
@@ -49,6 +59,10 @@ impl Doc {
         match self {
             Self::Record => ".json",
             Self::Table => ".table.json",
+            Self::Chat => ".chat.json",
+            // The same suffix as `Chat`: what sets the house apart is the
+            // underscore `FsStore::path` prepends, not what it ends with.
+            Self::House => ".chat.json",
         }
     }
 }
@@ -119,11 +133,13 @@ pub trait Store: Send + Sync {
         json: &str,
         expected: Option<Version>,
     ) -> Result<Version, WriteError>;
-    /// Both documents. An `Err` only when NEITHER was there.
+    /// Every document of the game — the record, the table and the chat; never
+    /// the house. An `Err` only when NONE of them was there.
     fn delete(&self, id: &str) -> Result<(), String>;
 }
 
-/// The id suffix [`Doc::Table`] reserves, which no game may end with.
+/// The id suffixes the non-record documents reserve, which no game may end
+/// with: [`Doc::Table`]'s `.table` and [`Doc::Chat`]'s `.chat`.
 ///
 /// `<id>.table.json` IS `<id>`'s table document, and a dot is a legal character
 /// in a name — `is_safe_id`'s own cell lists `A.b-c_d` as good — so without
@@ -132,12 +148,13 @@ pub trait Store: Send + Sync {
 /// merely confusion: `list(Doc::Record)` excludes the table suffix, so the game
 /// vanishes from the list, and `delete("mygame")` — for a `mygame` that never
 /// existed — removes the other game's record and answers `Ok`, which the route
-/// serves as a 200.
+/// serves as a 200. M6.4's chat document is the same hole under a second name,
+/// closed by adding to this list rather than by a second rule.
 ///
 /// `MemStore` keys `(Doc, GameId)` and has none of this. That the two
 /// implementations of one trait diverge is exactly why the guard lives HERE,
 /// above both, rather than in the store that has the problem.
-const RESERVED_ID_SUFFIX: &str = ".table";
+const RESERVED_ID_SUFFIXES: [&str; 2] = [".table", ".chat"];
 
 /// Whether `id` may be used as a storage key.
 ///
@@ -147,17 +164,17 @@ const RESERVED_ID_SUFFIX: &str = ".table";
 /// reasoning) as `yokohama_bridge::capture::safe_table_id`, which guards the
 /// one other place in this repo where an outside string becomes a filename.
 ///
-/// The one SUBTRACTION from that allowlist is [`RESERVED_ID_SUFFIX`] — read it
-/// for why a name may not end in `.table`.
+/// The one SUBTRACTION from that allowlist is [`RESERVED_ID_SUFFIXES`] — read
+/// it for why a name may not end in `.table` or `.chat`.
 pub fn is_safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-        && !spells_a_table_document(id)
+        && !spells_another_document(id)
 }
 
-/// Whether `id` would spell another game's table document.
+/// Whether `id` would spell another game's table or chat document.
 ///
 /// **Case-INSENSITIVE**, because the filesystems this is written and tested on
 /// are: on APFS and NTFS, `mygame.TABLE.json` and `mygame.table.json` are one
@@ -167,9 +184,24 @@ pub fn is_safe_id(id: &str) -> bool {
 /// The slice is safe because `is_safe_id` has already established that every
 /// character is ASCII by the time `&&` reaches this call — the checks are
 /// short-circuiting and ordered.
-fn spells_a_table_document(id: &str) -> bool {
-    id.len() >= RESERVED_ID_SUFFIX.len()
-        && id[id.len() - RESERVED_ID_SUFFIX.len()..].eq_ignore_ascii_case(RESERVED_ID_SUFFIX)
+fn spells_another_document(id: &str) -> bool {
+    RESERVED_ID_SUFFIXES
+        .iter()
+        .any(|s| id.len() >= s.len() && id[id.len() - s.len()..].eq_ignore_ascii_case(s))
+}
+
+/// The house document answers to exactly one id, on BOTH stores.
+///
+/// `FsStore` spells it `_house.chat.json` and would happily spell
+/// `_house2.chat.json` beside it; `MemStore` keys `(Doc, GameId)` and asks only
+/// `is_safe_id`, which `"house2"` passes. Either way a second house is a file
+/// nothing lists, nothing deletes and nobody reads, so the rule lives above
+/// both implementations, as the id guard does.
+fn check_house_id(doc: Doc, id: &str) -> Result<(), String> {
+    if doc == Doc::House && id != crate::chat::HOUSE {
+        return Err(format!("the house chat has one id, {:?}, not {id:?}", crate::chat::HOUSE));
+    }
+    Ok(())
 }
 
 /// The local implementation: one JSON file per document in a directory.
@@ -187,6 +219,13 @@ impl FsStore {
     }
 
     fn path(&self, doc: Doc, id: &str) -> Result<PathBuf, String> {
+        check_house_id(doc, id)?;
+        if doc == Doc::House {
+            // The leading underscore is the whole of the reservation: no id
+            // `is_safe_id` admits may start with one, so no game can reach this
+            // file and it needs no suffix of its own.
+            return Ok(self.dir.join(format!("_{id}{}", doc.suffix())));
+        }
         if !is_safe_id(id) {
             return Err(format!("{id:?} is not a usable game name"));
         }
@@ -263,6 +302,18 @@ impl FsStore {
 
 impl Store for FsStore {
     fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+        if doc == Doc::House {
+            // Not a scan: the house is one known path, so the answer is whether
+            // that file is there. An absent directory is still an empty answer,
+            // and an unreadable entry is an error rather than an absence — the
+            // same rule `read_locked` follows.
+            let path = self.path(Doc::House, crate::chat::HOUSE)?;
+            return match std::fs::metadata(&path) {
+                Ok(_) => Ok(vec![crate::chat::HOUSE.to_string()]),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(e) => Err(e.to_string()),
+            };
+        }
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(e) => e,
             // An absent directory is an empty store, not a failure: the first
@@ -275,14 +326,20 @@ impl Store for FsStore {
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let name = e.path().file_name()?.to_str()?.to_string();
-                // `<id>.table.json` ends with `.json` too, and stripping that
-                // suffix leaves `<id>.table` — which `is_safe_id` now REFUSES,
-                // by [`RESERVED_ID_SUFFIX`]. So this branch is redundant
-                // defence rather than the thing that keeps a table document out
-                // of a record listing, and it is kept as the second of two:
-                // the id guard closes the name at the way in, and this closes
-                // the listing even for a file some other writer left there.
-                if doc == Doc::Record && name.ends_with(Doc::Table.suffix()) {
+                // `<id>.table.json` and `<id>.chat.json` end with `.json` too,
+                // and stripping that suffix leaves `<id>.table` or
+                // `<id>.chat` — which `is_safe_id` now REFUSES, by
+                // [`RESERVED_ID_SUFFIXES`]. So this branch is redundant defence
+                // rather than the thing that keeps those documents out of a
+                // record listing, and it is kept as the second of two: the id
+                // guard closes the name at the way in, and this closes the
+                // listing even for a file some other writer left there. The
+                // house needs neither: `_house` fails the id guard's first
+                // character.
+                if doc == Doc::Record
+                    && (name.ends_with(Doc::Table.suffix())
+                        || name.ends_with(Doc::Chat.suffix()))
+                {
                     return None;
                 }
                 let id = name.strip_suffix(doc.suffix())?.to_string();
@@ -320,7 +377,7 @@ impl Store for FsStore {
 
     fn delete(&self, id: &str) -> Result<(), String> {
         let mut removed = false;
-        for doc in [Doc::Record, Doc::Table] {
+        for doc in [Doc::Record, Doc::Table, Doc::Chat] {
             let path = self.path(doc, id)?;
             match std::fs::remove_file(&path) {
                 Ok(()) => removed = true,
@@ -355,6 +412,7 @@ impl Store for MemStore {
     }
 
     fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+        check_house_id(doc, id)?;
         if !is_safe_id(id) {
             return Err(format!("{id:?} is not a usable game name"));
         }
@@ -373,6 +431,7 @@ impl Store for MemStore {
         json: &str,
         expected: Option<Version>,
     ) -> Result<Version, WriteError> {
+        check_house_id(doc, id).map_err(WriteError::Io)?;
         if !is_safe_id(id) {
             return Err(WriteError::Io(format!("{id:?} is not a usable game name")));
         }
@@ -392,7 +451,7 @@ impl Store for MemStore {
 
     fn delete(&self, id: &str) -> Result<(), String> {
         let mut docs = self.docs.lock().expect("store lock");
-        let removed = [Doc::Record, Doc::Table]
+        let removed = [Doc::Record, Doc::Table, Doc::Chat]
             .into_iter()
             .filter(|doc| docs.remove(&(*doc, id.to_string())).is_some())
             .count();
@@ -570,6 +629,103 @@ mod tests {
         }
     }
 
+    /// **Three kinds under one dotted id, on both stores** (M6.4 §2.1). The
+    /// M6.3-era cell above proved two; a store that separated two and confused
+    /// the third would pass it unchanged.
+    #[test]
+    fn the_three_kinds_are_separate_documents_under_one_id() {
+        for (name, store) in both("three-kinds") {
+            store.write_if_version(Doc::Record, "a.b", "{\"r\":0}", None).expect(name);
+            store.write_if_version(Doc::Table, "a.b", "{\"t\":0}", None).expect(name);
+            store.write_if_version(Doc::Chat, "a.b", "{\"c\":0}", None).expect(name);
+            assert_eq!(
+                store.read(Doc::Chat, "a.b").expect(name).expect("present").0,
+                "{\"c\":0}",
+                "{name}",
+            );
+            assert_eq!(
+                store.read(Doc::Record, "a.b").expect(name).expect("present").0,
+                "{\"r\":0}",
+                "{name}",
+            );
+            assert_eq!(
+                store.list(Doc::Record).expect(name),
+                vec!["a.b".to_string()],
+                "{name}: the chat file is not a record",
+            );
+            assert_eq!(store.list(Doc::Chat).expect(name), vec!["a.b".to_string()], "{name}");
+            store.delete("a.b").expect(name);
+            assert!(
+                store.read(Doc::Chat, "a.b").expect(name).is_none(),
+                "{name}: delete removes the chat document too",
+            );
+        }
+    }
+
+    /// **The house is one file nothing can spell, and delete never touches it.**
+    ///
+    /// A second house id would be a second file nothing lists and nothing
+    /// deletes, so both stores refuse one — `MemStore` too, where
+    /// `is_safe_id("house2")` is perfectly true and only this rule stands
+    /// between the two implementations disagreeing about what exists.
+    #[test]
+    fn the_house_document_is_one_fixed_file_outside_every_game() {
+        for (name, store) in both("house") {
+            assert!(
+                store.list(Doc::House).expect(name).is_empty(),
+                "{name}: no house before one is written",
+            );
+            store.write_if_version(Doc::House, crate::chat::HOUSE, "{\"h\":0}", None).expect(name);
+            assert_eq!(
+                store.list(Doc::House).expect(name),
+                vec![crate::chat::HOUSE.to_string()],
+                "{name}: and exactly one after",
+            );
+            assert_eq!(
+                store.read(Doc::House, crate::chat::HOUSE).expect(name).expect("present").0,
+                "{\"h\":0}",
+                "{name}",
+            );
+            assert!(
+                store.list(Doc::Record).expect(name).is_empty(),
+                "{name}: the house is no record",
+            );
+            assert!(store.list(Doc::Table).expect(name).is_empty(), "{name}: and no table");
+            assert!(store.read(Doc::House, "house2").is_err(), "{name}: the house has one id");
+            // **And the WRITE site, which is the one that could leave a file
+            // behind** (final review, minor 15). A refusal pinned through
+            // `read` alone would go on passing against a store that wrote
+            // `house2` happily and then declined to read it back — the exact
+            // shape `MemStore` had before this rule was hoisted above both
+            // implementations, since `is_safe_id("house2")` is perfectly true.
+            assert!(
+                store.write_if_version(Doc::House, "house2", "{}", None).is_err(),
+                "{name}: and a second house is never WRITTEN",
+            );
+            assert!(
+                store.list(Doc::House).expect(name).len() == 1,
+                "{name}: the refused write left nothing behind",
+            );
+            store.write_if_version(Doc::Record, "g", "{\"r\":1}", None).expect(name);
+            store.delete("g").expect(name);
+            assert!(
+                store.read(Doc::House, crate::chat::HOUSE).expect(name).is_some(),
+                "{name}: a game's delete leaves the house",
+            );
+        }
+    }
+
+    /// **`.chat` is reserved exactly as `.table` is, case-insensitively.**
+    #[test]
+    fn an_id_ending_in_chat_is_refused() {
+        for bad in ["mygame.chat", "mygame.CHAT", "x.Chat", ".chat"] {
+            assert!(!is_safe_id(bad), "{bad:?} would spell another game's chat document");
+        }
+        for good in ["chat", "chatter", "my.chatty", "a.b"] {
+            assert!(is_safe_id(good), "{good:?} is an ordinary name");
+        }
+    }
+
     /// Two writers of identical bytes agree, and different bytes do not.
     ///
     /// The property `Games::persist` rests on: a version is a statement about
@@ -617,19 +773,30 @@ mod tests {
         assert!(!is_safe_id(&"a".repeat(65)), "an unbounded name must be refused");
         assert!(is_safe_id(&"a".repeat(64)));
 
-        // The guard and the document have to reserve the SAME suffix, and a
+        // The guard and the documents have to reserve the SAME suffixes, and a
         // constant that merely looks right is how they drift apart. This
-        // derives one from the other: change either `Doc`'s suffixes or
-        // `RESERVED_ID_SUFFIX` alone and this fails.
+        // derives each one from its own arm: change either `Doc`'s suffixes or
+        // `RESERVED_ID_SUFFIXES` alone and this fails. A loop rather than one
+        // assertion per kind — with the LENGTHS asserted first, because `zip`
+        // stops at the shorter one and would otherwise let a third reserved
+        // suffix be added to the list and derived by nothing.
+        let derived = [Doc::Table, Doc::Chat];
         assert_eq!(
-            Doc::Table.suffix(),
-            format!("{RESERVED_ID_SUFFIX}{}", Doc::Record.suffix()),
-            "the id guard reserves exactly what the table document appends",
+            RESERVED_ID_SUFFIXES.len(),
+            derived.len(),
+            "every reserved suffix is derived from the document that appends it",
         );
+        for (suffix, doc) in RESERVED_ID_SUFFIXES.iter().zip(derived) {
+            assert_eq!(
+                doc.suffix(),
+                format!("{suffix}{}", Doc::Record.suffix()),
+                "the id guard reserves exactly what {doc:?} appends",
+            );
+        }
     }
 
-    /// Every door into the filesystem asks the id guard first — both documents,
-    /// and the refusal is an `Io` rather than a `Conflict`.
+    /// Every door into the filesystem asks the id guard first — every document
+    /// of a game, and the refusal is an `Io` rather than a `Conflict`.
     ///
     /// The distinction is not pedantry: `Games::persist` EVICTS the handle on a
     /// conflict and leaves it alone on an I/O failure, so a refused name
@@ -642,7 +809,8 @@ mod tests {
         let store = FsStore::new(std::env::temp_dir().join("yokohama-web-test-never-created"));
         assert!(store.read(Doc::Record, "../../etc/passwd").is_err());
         assert!(store.read(Doc::Table, "../../etc/passwd").is_err());
-        for doc in [Doc::Record, Doc::Table] {
+        assert!(store.read(Doc::Chat, "../../etc/passwd").is_err());
+        for doc in [Doc::Record, Doc::Table, Doc::Chat] {
             let refused = store.write_if_version(doc, "../../etc/passwd", "{}", None);
             match &refused {
                 Err(e @ WriteError::Io(_)) => assert!(

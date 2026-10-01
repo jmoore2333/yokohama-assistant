@@ -137,7 +137,12 @@ export async function signIn(page: Page, email: string = WALKER, url = "/"): Pro
  * the text.
  */
 export async function openFromList(page: Page, id: string): Promise<void> {
-  await expect(page.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  // **`exact: true`, because Playwright matches an accessible name by
+  // SUBSTRING** (unlike the component suite, which matches it whole). M6.4
+  // put a "Lobby chat" panel on this screen, whose header reads "Lobby chat
+  // show" with its fold control in it — so the loose name resolves to two
+  // headings and every walk in this directory fails in strict mode.
+  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await page.locator(".lobby .saved").first().getByRole("link", { name: id, exact: true }).click();
 }
 
@@ -150,7 +155,12 @@ export async function openFromList(page: Page, id: string): Promise<void> {
  */
 export async function newGameForm(page: Page, email: string = WALKER): Promise<void> {
   await signIn(page, email);
-  await expect(page.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  // **`exact: true`, because Playwright matches an accessible name by
+  // SUBSTRING** (unlike the component suite, which matches it whole). M6.4
+  // put a "Lobby chat" panel on this screen, whose header reads "Lobby chat
+  // show" with its fold control in it — so the loose name resolves to two
+  // headings and every walk in this directory fails in strict mode.
+  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "New table" }).click();
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
 }

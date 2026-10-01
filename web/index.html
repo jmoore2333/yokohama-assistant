@@ -4,6 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yokohama</title>
+    <!-- **A declared icon, so the browser stops asking for one it will not get**
+         (live review, M-4). With no `rel="icon"` a browser requests
+         `/favicon.ico` on every first load and this server answers 404 — the
+         ONLY console error of the whole three-browser walk, one per screen. It
+         is not a headless finding: headless Chromium never asks, which is why
+         M6.3's review read "zero console errors" and the first HEADED one did
+         not. An empty `data:` URL is the whole fix: it is a valid icon request
+         the browser answers itself, off the network, with nothing to serve and
+         nothing to commit. -->
+    <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

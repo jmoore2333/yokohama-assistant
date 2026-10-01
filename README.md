@@ -199,7 +199,7 @@ file locally.
 ## The browser client
 
 **Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections), with **M6.1 "identity and seats" live since 2026-09-15, M6.2 "the lobby" live since 2026-09-16 and M6.3 "transport and spectating" live since 2026-09-16** as `yokohama-web:0.5.0-m6.3`. The same engine, the same
+corrections), with **M6.1 "identity and seats" live since 2026-09-15, M6.2 "the lobby" live since 2026-09-16, M6.3 "transport and spectating" live since 2026-09-16 and M6.4 "chat" live since 2026-09-17** as `yokohama-web:0.5.0-m6.4`. The same engine, the same
 words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
@@ -288,12 +288,12 @@ run locally: you type a name and play under it.
 
 **Deployed since 2026-09-01: a container on the owner's Synology NAS behind Cloudflare Access at
 `yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The current build,
-`yokohama-web:0.5.0-m6.2.1`, has been live since 2026-09-16 and runs with
+`yokohama-web:0.5.0-m6.4`, has been live since 2026-09-17 and runs with
 `YOKOHAMA_WEB_IDENTITY=claimed`. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
 is the record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery
 as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
 §3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
-store, no port published to the LAN), §3.5–§3.8 every deployment so far with its numbers, §5
+store, no port published to the LAN), §3.5–§3.11 every deployment so far with its numbers, §5
 rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
 edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
 
@@ -359,12 +359,28 @@ same stream with the heartbeat disabled was cut by the edge at 125 s — so serv
 In the three-browser review of the live site a watcher asked the old polling route **zero** times
 and held **one** connection through a 1,471-event game.
 
-Chat and the hosting move are M6.4 and M6.5 of
+**What M6.4 built and shipped (2026-09-17):** people can talk. Two players talk during a game, a
+watcher reads what they said and answers, and the lobby has a chat of its own. A folded **Chat**
+panel sits at the foot of the column on the game screen, on the deal and on an open table you sit
+at, with an unread count in its header and the fold remembered per room; the lobby's fourth section
+is the house. Your line carries your seat's colour, or, if you are watching, your name and a
+"watching" marker — and the name is the one you type beside *You are*, the same string the table
+forms already remember. Nothing new is polled: messages live in their own files beside the record,
+never in it, and arrive as a COUNT on the connection the moves already ride, so the browser fetches
+only the lines it does not hold. The stream is now held through your OWN turn as well, so a line
+reaches you while you are thinking. Three optional variables, each with a default, are reported on
+`/api/health`: `YOKOHAMA_WEB_LOBBY_CHAT` (on), `YOKOHAMA_WEB_CHAT_KEEP` (500 messages a room, or
+`all`) and `YOKOHAMA_WEB_CHAT_TEXT` (500 characters a message). Three headed browsers reviewed it
+on the live site in both layouts and returned **ship with fixes** — one phone-width layout defect
+and four small ones, all fixed and redeployed as `0.5.0-m6.4.1` the same evening.
+
+The hosting move is M6.5 of
 [`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md);
 each cycle's own record is its close —
 [M6.1](docs/plans/2026-09-15-web-frontend-m6.1-close.md),
-[M6.2](docs/plans/2026-09-16-web-frontend-m6.2-close.md) and
-[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md).
+[M6.2](docs/plans/2026-09-16-web-frontend-m6.2-close.md),
+[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md) and
+[M6.4](docs/plans/2026-09-19-web-frontend-m6.4-close.md).
 
 ## Status (2026-08-30)
 

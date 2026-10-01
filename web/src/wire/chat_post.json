@@ -1,0 +1,11 @@
+{
+  "author": {
+    "kind": "seat",
+    "name": "Red",
+    "seat": 0,
+    "user": "red@wire.test"
+  },
+  "created_at": 1789000000,
+  "seq": 1,
+  "text": "good luck"
+}

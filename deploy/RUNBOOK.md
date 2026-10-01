@@ -799,6 +799,157 @@ holds a release, and **no point release was cut**.
   **Twelve tags now sit on the NAS** — the eleven of §3.8 plus `0.5.0-m6.3`
   (`-rc2` was removed from the NAS after reading B).
 
+### 3.10 M6.4 is live — the seventh deployment, 2026-09-17 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2) from the
+workstation, driven by the orchestrating session under the owner's in-session
+authorization given before the task was reached ("just note you've got
+authorization to build and deliver"), and — because API usage was about to run
+out — taken the moment the whole-branch review's fix wave came back green, BEFORE
+the mutation battery, the counts sequence and the close, which the resumed
+session owes (the SDD ledger's RESUME MAP carries the order). **The create body
+is unchanged and carries NO new variable**: M6.4's three chat variables each have
+a default, so an image started without them runs the lobby chat ON with a keep of
+500 messages and a cap of 500 characters — `YOKOHAMA_WEB_LOBBY_CHAT=on|off`,
+`YOKOHAMA_WEB_CHAT_KEEP=<n>|all`, `YOKOHAMA_WEB_CHAT_TEXT=<n>` are OPTIONAL on the
+container and `/api/health` reports what is in force (`lobby_chat`, `chat_keep`
+— `null` for `all` — and `chat_text`). Setting `off` makes the two house routes
+404 and the client draws no lobby panel; `all` keeps every message.
+
+- **Build:** `web-room-m6.4` at `571c446` (the fix wave's HEAD: sixteen execution
+  commits over `f53f6d7`, the branch pushed to origin as a backup with no PR yet).
+  The musl cross-compile per §1: `Finished release in 6.75s`; the binary is `ELF
+  64-bit LSB pie executable, x86-64, static-pie linked`, **6,796,984 bytes**
+  (M6.3's was 6,637,080: the chat documents, the four routes, the fifth `Events`
+  field and the two-counter house frame); `web/dist` carries the M6.4 client,
+  bundle `index-DbxlTsgc.js` (M6.3's was `index-BhDpWEFw.js`). Context tarball
+  **14,112,276 B** (sha256 prefix `74b2c61857fc0a02`), cut at **03:52:59Z** and
+  served by `python3 -m http.server 8899 --bind 0.0.0.0` on the workstation at
+  **192.168.1.16**; the NAS (192.168.1.173) fetched it in one GET at 23:53:12 local
+  and the file server was stopped at 03:53:35Z.
+- **Image:** `yokohama-web:0.5.0-m6.4`, Id
+  `sha256:51db5d1e0829d55e1afb67e1b934b334f170aae7d64c43b543f3cf81f8b69f27`,
+  **26,722,785 B** (was 26,553,575), created **03:53:23Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.4&dockerfile=Dockerfile&rm=true`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.3` container
+  (`f0c371c7…`, created 2026-09-16 19:20:47Z) → `DELETE /containers/yokohama-web`
+  → `POST /containers/create?name=yokohama-web` with §3's body (Image, `Env`
+  `YOKOHAMA_WEB_IDENTITY=claimed` alone, the two labels `maintainer`/`purpose`,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data`) → container Id
+  `f5db3dfead7a2a5a590adde0a50c220a21a16560552a3b3b51b136489fd9b474`, created
+  **03:53:42Z**, started **03:53:45Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so cloudflared was not restarted. The named volume rode across
+  untouched.
+- **Verified through the tunnel at 03:53:56Z** (WARP signed in; no re-auth):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","lobby_chat":true,"chat_keep":500,"chat_text":500}`
+    — the three chat keys are M6.4's.
+  - `GET /` serves `index-DbxlTsgc.js`, which exists only in this build.
+  - `POST /api/chat` as `deploy-verify-a@m64.test` with
+    `{"text":"release check 0.5.0-m6.4","name":"Deploy"}` → **201**
+    `{"seq":1,"created_at":1789617236,"author":{"kind":"watcher","user":"deploy-verify-a@m64.test","name":"Deploy"},"text":"release check 0.5.0-m6.4"}`;
+    `GET /api/chat` as `deploy-verify-b@m64.test` → that one message, `last: 1`;
+    `GET /api/chat` with no identity header → **401**. That release-check line
+    stays in the house chat — there is no delete (R-6.4.14).
+  - **A table's stream carries the count, and a held stream receives a message
+    (03:54Z):** table `sim-2a7e5dbb21cef3c2` (2P, both seats named, a password)
+    created 201; the on-connect `…/stream` frame at `dealing` read
+    `{"events":0,"to_move":null,"status":"dealing","your_turn":false,"chat":0}`;
+    the two keeps were refused 400 (a wrong body on the operator's side, not
+    re-tried), so the table stayed at `dealing`; seat A then held `…/stream` for
+    9 s while seat B posted at +3 s → B's post **201**, and A's held stream
+    received the frame with `"chat":1` **three seconds later** (03:54:24 →
+    03:54:27); A's `GET …/chat` read the line with `author.kind: "seat", seat: 1`.
+    Read at its real size: a HELD stream receiving a chat frame through the
+    tunnel at `dealing` (the game screen holds its stream at every status since
+    M6.4), not the acting seat during its own playing turn — that variant, and
+    every visual claim (the panel folded at the column's foot with its count, the
+    chips and names, the watching marker), is the owner's headed pass (spec
+    R-6.4.16, amended by the owner to be their own), noted for M6.5's entry. The
+    table was deleted by its creator (204).
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing.
+- **Rollback:** `yokohama-web:0.5.0-m6.3` stays on the NAS; recreate the
+  container from that tag with §3's body INCLUDING the `Env` line. **Both halves
+  roll or neither does:** the M6.4 client reads `Events.chat` and the `/api/chat`
+  routes, which the M6.3 server lacks; the chat documents this build writes
+  (`<id>.chat.json`, `_house.chat.json`) are files an M6.3 server never lists and
+  never deletes with a game, so a rollback leaves them inert on the volume.
+  **Thirteen tags now sit on the NAS** — the twelve of §3.9 plus `0.5.0-m6.4`.
+
+### 3.11 M6.4.1 is live — the eighth deployment, 2026-09-20 (a record, not a plan)
+
+A POINT RELEASE, cut the same evening the M6.4 close's headed live review returned
+SHIP WITH FIXES (0 Critical / 1 Important / 4 Minor) — the M6.2 precedent (§3.8's
+`.1`) — under the owner's standing authorization for the wrap-up session ("any
+changes made as part of the final review process here can be deployed to the NAS
+without additional authorization", 2026-09-19). What changed is the browser half
+and three server doc comments: at a panel narrower than 34rem a chat line's text
+takes its own row (the Important — a long label had left the message a column
+eight to eleven characters wide at 390 px, and the same squeeze was photographed in
+the DESKTOP side column, which is why the rule is a container query and not a
+viewport one); the identity strip wraps its name field onto its own line under
+480 px; an own post on an open count-driven panel no longer costs a delta GET; the
+setup screens' heading rules no longer leak into the panel; and `index.html`
+carries `<link rel="icon" href="data:,">`, which ends the one console error every
+HEADED browser had logged and every headless review had been blind to. The create
+body is §3.10's, unchanged. The close `docs/plans/2026-09-19-web-frontend-m6.4-close.md`
+§4.5 carries the review and its re-check.
+
+- **Build:** `web-room-m6.4` at `b16ccdd` (the second fix wave's head: `6f76b02`
+  the client, `b16ccdd` the server doc sentences, over `ebd9911`). The musl
+  cross-compile per §1: `Finished release in 13.06s`; the binary is `ELF 64-bit
+  LSB pie executable, x86-64, static-pie linked`, **6,796,984 bytes** — the same
+  size as §3.10's, the server half of the wave being comments; `web/dist` carries
+  the M6.4.1 client, bundle `index-CbONnoLE.js` (§3.10's was `index-DbxlTsgc.js`).
+  Context tarball **14,112,926 B** (sha256 prefix `96bb94fce12e4912`), cut at
+  **00:37:04Z** and served by `python3 -m http.server 8899 --bind 0.0.0.0` on the
+  workstation at **192.168.1.16**; the NAS (192.168.1.173) fetched it in one GET at
+  20:37:21 local and the file server was stopped at 00:37:49Z.
+- **Image:** `yokohama-web:0.5.0-m6.4.1`, Id
+  `sha256:1d23eec39a1cff37edaa4f0f6aa62aecdc0017d71fa5fd95f438b36630996c11`,
+  **26,723,904 B** (§3.10's 26,722,785), created **00:37:36Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.4.1&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2).
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.4` container
+  (`f5db3dfe…`, created 2026-09-17 03:53:42Z) at ~00:37:50Z → `DELETE
+  /containers/yokohama-web` → `POST /containers/create?name=yokohama-web` with §3's
+  body (Image, `Env` `YOKOHAMA_WEB_IDENTITY=claimed` alone, the two labels,
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data`) → container Id
+  `a62b17adfc2daa55aa0732ed61f85c74f0c0a7fefd30b0063130cd01b361182f`, created
+  **00:37:58Z**, started **00:38:01Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so cloudflared was not restarted; the named volume rode across.
+- **Verified through the tunnel at 00:38:28Z** (WARP on — it had been found
+  DISCONNECTED at the session's start and was reconnected with `warp-cli connect`
+  and `warp-cli debug access-reauth`, which is the door recipe R-6.4.16 assumes and
+  this workstation does not keep by itself):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","lobby_chat":true,"chat_keep":500,"chat_text":500}`.
+  - `GET /` serves `index-CbONnoLE.js`, which exists only in this build, and
+    carries `<link rel="icon" href="data:," />`.
+  - **Chat, at a throwaway table rather than in the house (00:40Z):** table
+    `sim-d61a6d99e20f73e5` (2P, `deploy-verify-a@m64.test` + the bot) created 201; a
+    `POST …/chat` that carried a `name` was refused **400 "a seated caller is named
+    by their seat"** — R-6.4.2's fence, live; without it **201**
+    `{"seq":1,"author":{"kind":"seat","seat":0,…,"name":null},"text":"release check 0.5.0-m6.4.1"}`;
+    a stream held from three seconds before the post received the on-connect frame
+    with `"chat":0` and then the frame with `"chat":1` inside the held window;
+    `GET …/chat` read the line with `last: 1`; the same read with no identity header
+    **401**; `DELETE` **204**, and the table's `table` route answered 404 after. No
+    house line was posted for this release; the house holds §3.10's release-check
+    line and the live review's three.
+  - The headed mobile re-check of the five fixes against this deployment is the
+    close's §4.5 (an addendum by the same reviewer, same scaffold).
+- **Downtime:** the seconds between `stop` and `start`; nobody was playing (the
+  owner's one bot table sat at its turn).
+- **Rollback:** `yokohama-web:0.5.0-m6.4` stays on the NAS; recreate from that tag
+  with §3's body INCLUDING the `Env` line. Both halves roll together as §3.10
+  says; rolling to m6.4 loses only the five review fixes and nothing on the
+  volume. **Fourteen tags now sit on the NAS.**
+
+---
+
 ## 4. Modal — the upgrade path, not yet deployed
 
 `deploy/modal_app.py` runs the same image with a Volume for the store,

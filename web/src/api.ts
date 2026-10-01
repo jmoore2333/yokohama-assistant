@@ -1,6 +1,10 @@
 import type {
   AreasPanel,
   ArtManifest,
+  ChatMessage,
+  ChatPage,
+  ChatPost,
+  ChatScope,
   ClientState,
   DealView,
   Events,
@@ -147,6 +151,18 @@ export function setDisplayName(name: string): void {
   }
 }
 
+/** Forget it. The `clearClaimedUser` idiom, and wanted for the same reason
+ *  signing out wants that one: what this browser calls itself is a convenience
+ *  attached to whoever was signed in, and leaving it behind would label the next
+ *  person's seats with the last person's name. */
+export function clearDisplayName(): void {
+  try {
+    localStorage.removeItem(DISPLAY_NAME_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
+
 /** The identity header this browser sends, as a plain object — `{}` where
  *  there is nothing to send.
  *
@@ -180,6 +196,38 @@ export const signalKind = (): "sse" | "held" => kind;
 
 export const setSignalKind = (k: "sse" | "held"): void => {
   kind = k;
+};
+
+/** Whether this DEPLOYMENT answers the house chat (M6.4, R-6.4.6), read once
+ *  from `GET /api/health` at boot.
+ *
+ *  Module-level for the reason `signalKind` is: one value for the life of the
+ *  page, read by components that must not re-render when it is set. The default
+ *  is ON, so a health that does not answer leaves the client asking for a panel
+ *  the server may refuse with a 404 it already renders — a wrong guess here
+ *  costs one refusal, never a screen that never appears. */
+let lobby = true;
+
+export const lobbyChat = (): boolean => lobby;
+
+export const setLobbyChat = (on: boolean): void => {
+  lobby = on;
+};
+
+/** Characters per message, from the same `/api/health` (R-6.4.8) — what the
+ *  input is sized with.
+ *
+ *  **Read from the server and never restated as a constant here.** The cap is
+ *  a launch variable, so a copy in this file is a number that can be wrong on
+ *  the day an operator changes it — and wrong in the direction where the box
+ *  accepts what the server will refuse. The default matches the server's own
+ *  only so a client that has not reached `/api/health` yet has a box. */
+let textCap = 500;
+
+export const chatText = (): number => textCap;
+
+export const setChatText = (n: number): void => {
+  textCap = n;
 };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -291,6 +339,14 @@ const query = (args: Record<string, number | undefined>): string => {
     .map(([k, v]) => `${k}=${v}`);
   return parts.length ? `?${parts.join("&")}` : "";
 };
+
+/** Where a chat panel reads and writes: one table, or the house.
+ *
+ *  **One path function and not two calls**, because the two scopes differ only
+ *  in their address and a client that branched at each call site would have the
+ *  branch in as many places as it has panels. */
+const chatPath = (scope: ChatScope, after?: number): string =>
+  (scope.kind === "house" ? "/api/chat" : `/api/games/${id(scope.id)}/chat`) + query({ after });
 
 export const api = {
   /** Who the server thinks we are, and which header it reads. Never refuses:
@@ -443,4 +499,26 @@ export const api = {
       "GET",
       `/api/games/${id(game)}/events${query({ after, wait })}`,
     ),
+
+  /** The retained messages above `after`, and the newest number ever assigned.
+   *
+   *  **`last` is the DOCUMENT's and not the page's**, which is what makes the
+   *  cursor survive a trim: a client asking from a number retention has already
+   *  dropped is told where the room has got to rather than left to infer it from
+   *  an empty page. Admitted exactly as a read is — a seat holder at any status,
+   *  a watcher once the table admits them — and NARROWER than seeing the table:
+   *  a stranger on the seat picker reads the table and is 403 here.
+   *
+   *  At the house it is any signed-in caller, and a 404 where the deployment has
+   *  the lobby chat off (see {@link lobbyChat}). */
+  chat: (scope: ChatScope, after = 0) => call<ChatPage>("GET", chatPath(scope, after)),
+
+  /** Say something. The reply is the MESSAGE, numbered, so the room can render
+   *  it without re-reading the page.
+   *
+   *  `name` is a WATCHER's, and anyone's at the house: a seated caller is named
+   *  by their seat and sending one is a 400 rather than a quiet override, so a
+   *  client that believed it was setting a name hears about it. */
+  postChat: (scope: ChatScope, body: ChatPost) =>
+    call<ChatMessage>("POST", chatPath(scope), body),
 };

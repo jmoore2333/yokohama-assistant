@@ -1,5 +1,8 @@
 {
+  "chat_keep": 500,
+  "chat_text": 500,
   "identity": "claimed",
+  "lobby_chat": true,
   "rules_hash": "d85445c479cb1ead",
   "semantics_rev": 7,
   "server_version": "0.5.0",
