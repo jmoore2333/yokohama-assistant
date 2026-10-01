@@ -991,13 +991,15 @@ ol.log li.at .num { color: var(--reachable); }
 /* The filled control's BOX, for the button and for the link drawn in it for a
    navigation (`a.primary-link`, the door's `/enter`): ONE block (cycle E, straw
    poll row 58), because the link's own padding drew it ~1.6px taller and
-   narrower than the button beside it. The link's layout stays its own rule. */
-button.primary, a.primary-link {
+   narrower than the button beside it. The link's layout stays its own rule.
+   **And the door's lobby BUTTON under a Turnstile key** (cycle F, R-F6), which
+   is that navigation behind the widget: the same box, from the same block. */
+button.primary, a.primary-link, button.primary-link {
   background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
   padding: 0.45rem 1.1rem; font: inherit; font-weight: 700;
 }
-button.primary { cursor: pointer; }
-button.primary:disabled { opacity: 0.45; cursor: default; }
+button.primary, button.primary-link { cursor: pointer; }
+button.primary:disabled, button.primary-link:disabled { opacity: 0.45; cursor: default; }
 
 .on-this-device .local-fault { color: var(--fg-dim); }
 
@@ -1889,9 +1891,31 @@ ol.account .mover { font-weight: 700; }
    and a LINK in `button.primary`'s box for a navigation (`/enter`) — the box is
    the one block both share (above); this is only how the link lays out. */
 button.primary.yen { background: var(--yen); color: var(--bg); }
-a.primary-link {
+a.primary-link, button.primary-link {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; text-decoration: none;
 }
+
+/* The door's lobby button's widget and its offline sentence (cycle F, R-F6):
+   the widget renders in the friends card under the button — Turnstile's
+   managed widget is 300 by 65 — and the offline door says one sentence. */
+.door-widget { margin-top: 0.7rem; min-height: 65px; max-width: 100%; overflow: hidden; }
+.door-offline { margin: 0.6rem 0 0; }
+
+/* The edge's check, as an overlay (cycle F, `Challenge.tsx`): one sentence,
+   the widget and a Cancel, centred over whatever screen met the challenge.
+   Above every other layer here — the account's popover is 40. */
+.challenge-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem; background: rgb(4 6 9 / 0.55);
+}
+.challenge {
+  display: flex; flex-direction: column; align-items: center; gap: 0.8rem;
+  max-width: 100%; padding: 1.2rem 1.4rem;
+}
+.challenge:focus { outline: none; }
+.challenge-title { margin: 0; font-weight: 700; }
+.challenge-widget { min-height: 65px; max-width: 100%; overflow: hidden; }
 
 /* The board mark: the door's drawing (`BoardMark.tsx`). One class per trade. */
 .board-mark { display: block; max-width: 100%; height: auto; }
@@ -2208,7 +2232,7 @@ a.primary-link {
   .door-hero .board-mark { width: 236px; }
   .door-title h1 { font-size: 54px; }
   .door-main { padding: 0 1rem 1.5rem; }
-  .door-card button.primary, .door-card a.primary-link {
+  .door-card button.primary, .door-card a.primary-link, .door-card button.primary-link {
     display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
   }
   .door-foot { justify-content: center; }

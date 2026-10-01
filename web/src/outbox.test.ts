@@ -20,11 +20,14 @@ import {
   serverFactsTakenAt,
 } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
+import { CLAIMED_USER_KEY } from "./api";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { DB_NAME, openDb, readOutboxRow } from "./local/db";
 import { STORAGE_BOUND_MS } from "./backup";
 import {
   archiveDisposition,
   drain,
+  drainVisible,
   enqueue,
   onArchived,
   noteGameOver,
@@ -108,11 +111,19 @@ beforeEach(() => {
   resetLocalHostForTests();
   resetOutboxForTests();
   resetFactsForTest();
+  // **A visitor who has CHOSEN A NAME** (cycle F, F-14): the corpus's health
+  // names the open door, and under it a nameless visitor's post is refused by
+  // the layer for certain — so the outbox no longer makes one (the cells at the
+  // end of this file). Every cell before them is about a send, so its visitor
+  // is the one the layer would answer.
+  localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 });
 afterEach(() => {
   resetLocalHostForTests();
   resetOutboxForTests();
   resetFactsForTest();
+  resetTurnstileForTests();
+  Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 });
 
 // ---- the three states an archive fact puts Abandon and the hook in ---------
@@ -718,5 +729,201 @@ describe("a deployment whose archive route answers 404", () => {
     await reconsiderAll();
     expect(off.posts, "ONE upload in the sweep as well").toHaveLength(1);
     expect(archiveAnswer()).toBe("off");
+  });
+});
+
+// ---- cycle F: the edge's challenge, and the nameless visitor (spec §2.6) ----
+//
+// **The outbox works when nobody is watching, and a challenge needs a person.**
+// So a pass that cannot show the widget — the browser's `online` event, a
+// launch in a hidden tab — sends with `interactive: false`, and the edge's
+// challenge, met by its health read OR a send, marks EVERY waiting row
+// "waiting for a human check" rather than one row at a time (F-15). Those rows
+// wait for a VISIBLE tab — the door's launch, or the row's own Check now —
+// where `drainVisible` shows the widget through the seam and sends again. The
+// challenge is the EDGE's shape, held beside these cells; every answer the
+// layer gives is the corpus's.
+describe("the edge's challenge (cycle F)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  const visibility = (state: "visible" | "hidden") =>
+    Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+  /** The archive is ON, remembered a minute ago — no health read is owed. */
+  const rememberedDir = () => rememberServerFacts({ ...wire.health, archive: "dir" }, Date.now() - 60_000);
+  /** Two games waiting, each for a reason that is not the edge's. */
+  const twoWaiting = async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "offline");
+    await enqueue(SECOND, "unknown");
+  };
+  const reasons = async () => (await pending()).map((r) => [r.id, r.reason]).sort();
+
+  // **F battery 28: a challenged health read marks nothing.** The health read is
+  // a fresh context's FIRST request, so it is the one the edge challenges first;
+  // an outbox that swallowed it as "nothing answered" left every row as it
+  // was, and the next `online` asked again — and was challenged again.
+  it("marks EVERY waiting row challenged when the background pass's HEALTH read meets the edge, and shows no widget (F battery 28)", async () => {
+    await twoWaiting();
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    await drain({ interactive: false });
+    expect(await reasons()).toEqual([
+      [GAME, "challenged"],
+      [SECOND, "challenged"],
+    ]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /api/health"]);
+  });
+
+  it("marks EVERY waiting row challenged when a SEND meets the edge, posting nothing after it", async () => {
+    await twoWaiting();
+    rememberedDir();
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await drain({ interactive: false });
+    expect(await reasons()).toEqual([
+      [GAME, "challenged"],
+      [SECOND, "challenged"],
+    ]);
+    expect(handler).not.toHaveBeenCalled();
+    // ONE post: the challenge answers for every row behind it.
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+  });
+
+  // **F battery 27: the non-interactive drain pops the widget.** The two
+  // background triggers — a launch in a hidden tab and the browser's `online`
+  // event — show nothing, and the second does not even ask: a challenged row
+  // waits for a person, and asking again for it is a request the edge refuses.
+  it("shows no widget from a hidden tab's launch, and the next online event retries no challenged row (F battery 27)", async () => {
+    await twoWaiting();
+    rememberedDir();
+    visibility("hidden");
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () =>
+      expect(await reasons()).toEqual([
+        [GAME, "challenged"],
+        [SECOND, "challenged"],
+      ]),
+    );
+    const asked = stub.calls.length;
+    window.dispatchEvent(new Event("online"));
+    await drain({ interactive: false }); // queued behind the event's own pass
+    expect(stub.calls, "the online event asked nothing").toHaveLength(asked);
+    expect(handler).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("retries the challenged rows through the widget at a VISIBLE tab's launch, and clears them when the sends land", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    await enqueue(SECOND, "challenged");
+    rememberedDir();
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return cleared ? wire.archivePost : challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () => expect(await pending()).toEqual([]));
+    // The widget ONCE, then the first send again and the second under the
+    // clearance.
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(3);
+    stop();
+  });
+
+  it("does the same on drainVisible itself — the row's Check now — and never from a hidden tab", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    rememberedDir();
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") return cleared ? wire.archivePost : challenged();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    // Hidden: nothing — a challenged row is not a background pass's.
+    visibility("hidden");
+    await drainVisible();
+    expect(stub.calls).toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    visibility("visible");
+    await drainVisible();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(await pending()).toEqual([]);
+  });
+
+  it("keeps a row challenged when the visible check is cancelled", async () => {
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    rememberedDir();
+    setChallengeHandler(() => Promise.reject(new Error("cancelled")));
+    stubApi(() => challenged());
+    await drainVisible();
+    expect(await reasons()).toEqual([[GAME, "challenged"]]);
+  });
+
+  it("says waiting for a human check", () => {
+    expect(reasonWords("challenged")).toBe("waiting for a human check");
+  });
+
+  // **F battery 29: the nameless visitor's game posted** (F-14). Under the open
+  // door a visitor who never chose a name finishes a bot game; the layer's
+  // refusal of their post is certain, so the post is not made — the row says
+  // "not signed in" (whose remedy names the name step) and nothing is sent.
+  it("marks a nameless visitor's finished game signed-out under the open door, with NO request (F battery 29)", async () => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, identity: "open", archive: "dir" }, Date.now() - 60_000);
+    const stub = stubApi((call) => {
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+    expect(stub.calls, "nothing was sent").toHaveLength(0);
+
+    // Anti-vacuity: the same visitor, NAMED, posts.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const named = stubApi((call) =>
+      call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+    );
+    await noteGameOver(SECOND);
+    expect(named.matching("POST", "/api/archive")).toHaveLength(1);
+  });
+
+  it("still posts a nameless visitor's game under any other door", async () => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    rememberServerFacts({ ...wire.health, identity: "cf-access", archive: "dir" }, Date.now() - 60_000);
+    const stub = stubApi((call) =>
+      call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+    );
+    await noteGameOver(GAME);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    expect(await pending()).toEqual([]);
   });
 });

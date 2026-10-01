@@ -28,6 +28,7 @@ import type { ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
 import { resetReleaseNoticeForTests } from "./releaseFeed";
 import { stubWorker } from "./test/fakeWorker";
+import { resetTurnstileForTests, type TurnstileApi, type TurnstileOptions } from "./turnstile";
 import productionBot from "./wire/production_bot.json";
 import { topLevelRules } from "./test/css";
 
@@ -267,6 +268,137 @@ describe("the front door", () => {
   });
 });
 
+
+// **The multiplayer button under a site key** (cycle F, R-F6; spec §2.6). With
+// a key in the build the friends card draws a BUTTON, and its click renders the
+// Turnstile widget in the card — pre-clearance, so the cookie the widget sets
+// carries every later request past the edge's rule — and then navigates to
+// `/enter` exactly as the link did. **Nothing is asked for at mount** (F battery
+// 26; the door-unmetered fence): the widget's script is Cloudflare's, and the
+// door injects it on the click and never before. Without a key the card keeps
+// the plain link and loads nothing at all. The widget is a FAKE held beside
+// these cells (a third party's shape, never a wire payload).
+describe("the door's lobby button under a site key (cycle F)", () => {
+  type Platform = Window & { turnstile?: TurnstileApi; __yokohamaTurnstile?: () => void };
+  const turnstileScripts = () =>
+    [...document.querySelectorAll("script")].filter((s) => s.src.startsWith("https://challenges.cloudflare.com/"));
+
+  /** `location`, standing in for jsdom's — whose `assign` is not implemented
+   *  and cannot be spied on — and counting every navigation it is asked for.
+   *  Every other read goes to jsdom's own. */
+  function countNavigations(): string[] {
+    const real = window.location;
+    const went: string[] = [];
+    vi.stubGlobal(
+      "location",
+      new Proxy(
+        {},
+        {
+          get(_t, key) {
+            if (key === "assign") return (url: string) => went.push(url);
+            const value = Reflect.get(real, key, real);
+            return typeof value === "function" ? value.bind(real) : value;
+          },
+        },
+      ),
+    );
+    return went;
+  }
+
+  /** The widget's script arriving, with a fake API that records what it is
+   *  asked. */
+  function arrive() {
+    const rendered: { container: HTMLElement; options: TurnstileOptions }[] = [];
+    const w = window as Platform;
+    w.turnstile = {
+      render: (container, options) => {
+        rendered.push({ container, options });
+        return `widget-${rendered.length}`;
+      },
+      remove: () => {},
+    };
+    w.__yokohamaTurnstile?.();
+    return rendered;
+  }
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+    resetTurnstileForTests();
+    stubWorker();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    resetTurnstileForTests();
+    for (const s of turnstileScripts()) s.remove();
+    delete (window as Platform).turnstile;
+  });
+
+  it("keeps the plain link and asks for no script where the build has no key", () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
+    render(<FrontDoor multiplayer />);
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
+    expect(screen.queryByRole("button", { name: "Go to the lobby" })).toBeNull();
+    expect(turnstileScripts()).toEqual([]);
+  });
+
+  it("draws a button, asks for nothing at mount, and on the click renders the widget in the card and then goes to /enter (F battery 26)", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    const button = screen.getByRole("button", { name: "Go to the lobby" });
+    expect(button).toHaveClass("primary-link");
+    expect(screen.queryByRole("link", { name: "Go to the lobby" })).toBeNull();
+    // At MOUNT: no script, no widget, no navigation.
+    expect(turnstileScripts(), "nothing loaded at mount").toEqual([]);
+
+    await userEvent.setup().click(button);
+    expect(turnstileScripts(), "the script, once, on the click").toHaveLength(1);
+    expect(went, "not before the widget has passed").toEqual([]);
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    const card = screen.getByRole("heading", { name: "Play with friends" }).closest("section")!;
+    expect(card.contains(rendered[0]!.container), "the widget is in the friends card").toBe(true);
+    expect(rendered[0]!.options.sitekey).toBe("site-key-fixture");
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    expect(turnstileScripts()).toHaveLength(1);
+  });
+
+  // The widget is how a person passes the edge in the page; where it cannot —
+  // a blocked script, a failed widget — the navigation still goes, and the
+  // edge's own interstitial (which a browser passes on its own) decides.
+  it("still goes to /enter when the widget fails, for the edge's own check to decide", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    rendered[0]!.options["error-callback"]("300030");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+  });
+
+  it("says the lobby needs a connection when offline, and asks for nothing", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    expect(screen.getByText("The lobby needs a connection.")).toBeInTheDocument();
+    expect(turnstileScripts()).toEqual([]);
+    expect(went).toEqual([]);
+  });
+
+  // Task 2's shape, under a key: the door's mount is still no same-origin call.
+  it("asks the server for nothing at mount with a key either", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const { asked } = feedAnswers();
+    render(<FrontDoor multiplayer />);
+    expect(await screen.findByText(/A newer release is available/), "the premise: the feed was read").toBeInTheDocument();
+    expect(asked).toEqual([FEED]);
+    expect(turnstileScripts()).toEqual([]);
+  });
+});
 
 // **What the door says about the release** (M6.5b2, spec §4's four sentences).
 //

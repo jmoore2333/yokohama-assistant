@@ -16,7 +16,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnThisDevice } from "./OnThisDevice";
-import { api, rememberServerFacts } from "./api";
+import { api, CLAIMED_USER_KEY, rememberServerFacts } from "./api";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { resetFactsForTest } from "./local/facts";
 import { enqueue, resetOutboxForTests } from "./outbox";
 import { isGamesList, stubApi } from "./test/harness";
@@ -655,11 +656,16 @@ describe("the games waiting to reach the archive", () => {
     resetLocalHostForTests();
     resetOutboxForTests();
     resetFactsForTest();
+    // **A visitor who has chosen a name** (cycle F, F-14): the corpus's health
+    // names the open door, under which the outbox no longer posts for a
+    // nameless visitor — and the sends below are a named visitor's.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
   });
   afterEach(() => {
     resetLocalHostForTests();
     resetOutboxForTests();
     resetFactsForTest();
+    resetTurnstileForTests();
   });
 
   /** The section, once its rows have been read out of the store.
@@ -812,6 +818,49 @@ describe("the games waiting to reach the archive", () => {
         expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
       );
       await waitFor(() => expect(applyBusy(), "released once the send settled").toBe(false));
+    } finally {
+      resetDoorAutoApplyForTests();
+    }
+  });
+
+  // **"Waiting for a human check"** (cycle F, spec §2.6): the edge asked for a
+  // person during a pass nobody was watching. The row says so and offers the
+  // check — Check now, which shows the widget through the overlay's seam and
+  // sends again — holding the door's own apply while it does (R-FP14).
+  it("says waiting for a human check, and Check now passes the widget and sends", async () => {
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const during: boolean[] = [];
+    stubWorker({ pair: () => ({ record: '{"seed":1,"events":[]}', table: "{}" }) });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") {
+        during.push(applyBusy());
+        return cleared
+          ? wire.archivePost
+          : new Response("<html>challenge</html>", { status: 403, headers: { "cf-mitigated": "challenge" } });
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    try {
+      await enqueue(LOCAL, "challenged");
+      render(<OnThisDevice />);
+      const box = await waiting();
+      expect(within(box).getByText("waiting for a human check")).toBeInTheDocument();
+      // The check is the remedy, and not the turnstile's link or a plain send.
+      expect(within(box).queryByRole("link", { name: /sign in at the door/i })).toBeNull();
+      expect(within(box).queryByRole("button", { name: /send .* now/i })).toBeNull();
+      await userEvent.setup().click(within(box).getByRole("button", { name: /check now/i }));
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "Waiting to reach the archive" })).toBeNull(),
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(during, "held while each post was in flight").toEqual([true, true]);
+      await waitFor(() => expect(applyBusy(), "released once the check settled").toBe(false));
     } finally {
       resetDoorAutoApplyForTests();
     }

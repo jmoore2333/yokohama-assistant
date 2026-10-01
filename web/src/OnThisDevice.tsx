@@ -22,7 +22,7 @@ import { unplayableIds } from "./backup";
 import { BackUpEverything, Restore, Unplayable } from "./BackupControls";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
-import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
+import { drainVisible, reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
 import { hashOf } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
 import { setApplyBusy, type ReadinessStatus } from "./swRegister";
@@ -431,6 +431,11 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
   // ever, so the row says what the server said and offers no button that would
   // only ask again.
   const retryable = row.reason !== "refused";
+  /** A row waiting for a human check is offered the CHECK (cycle F, spec
+   *  §2.6): `drainVisible` shows the widget through the overlay and sends
+   *  every challenged row again — one widget for all of them, not one per
+   *  row. */
+  const challenged = row.reason === "challenged";
   return (
     <li className={`outbox-row ${row.reason}`}>
       <span className="name">{row.id}</span>
@@ -440,7 +445,9 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
         <button
           type="button"
           className="ghost"
-          aria-label={`send ${row.id} to the archive now`}
+          aria-label={
+            challenged ? `check now, then send ${row.id} to the archive` : `send ${row.id} to the archive now`
+          }
           disabled={sending}
           onClick={() => {
             setSending(true);
@@ -448,13 +455,13 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
             // R-FP14): a reload in the middle of it would lose the row's
             // answer. Released when the send settles, whatever it did.
             setApplyBusy(true);
-            void sendNow(row.id).finally(() => {
+            void (challenged ? drainVisible() : sendNow(row.id)).finally(() => {
               setSending(false);
               setApplyBusy(false);
             });
           }}
         >
-          Send now
+          {challenged ? "Check now" : "Send now"}
         </button>
       ) : null}
     </li>

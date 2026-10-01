@@ -38,6 +38,7 @@ import {
   type Host,
 } from "./local/facts";
 import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
+import { EDGE_CHECK, EDGE_CHECK_REPEATED, isEdgeChallenge, passChallenge, passesSoFar } from "./turnstile";
 
 /** Which host a game belongs to, and what a local one is called (R-6.5b.12).
  *
@@ -93,6 +94,76 @@ export class ApiError extends Error {
 
 /** The server no longer knows who we are. See `ApiError.status`. */
 export const isSignedOut = (e: unknown): boolean => e instanceof ApiError && e.status === 401;
+
+/** The EDGE's challenge, not passed (cycle F, R-F6; spec §2.6): the request met
+ *  the no-Access door's Managed Challenge rule and no check was passed for it —
+ *  none could be shown ([`EDGE_CHECK`]), or the one shown did not pass, or the
+ *  retried request was challenged again ([`EDGE_CHECK_REPEATED`]).
+ *
+ *  **An `ApiError` with the edge's own status, 403**, so every reader that
+ *  branches on the status already reads it as the refusal it is — a held
+ *  signal ENDS on it (`signal.ts`) rather than climbing its ladder against a
+ *  check only a person can pass. Its own class, because one reader must tell
+ *  it from this API's 403s: the outbox marks a row "waiting for a human check"
+ *  for this and for nothing else. */
+export class EdgeRefusal extends ApiError {
+  constructor(message: string) {
+    super(message, 403, null);
+  }
+}
+
+/** Whether this refusal is the edge's challenge rather than anything this API
+ *  said — see [`EdgeRefusal`]. */
+export const isEdgeRefusal = (e: unknown): boolean => e instanceof EdgeRefusal;
+
+/** How a server request may meet the edge's challenge.
+ *
+ *  `interactive: false` is the outbox's background pass (the `online` event, a
+ *  launch in a hidden tab): the widget is never shown for it, and a challenge
+ *  is the refusal at once — which the outbox turns into its row's mark. The
+ *  default, `true`, is everything a person is looking at. */
+export interface CallOptions {
+  interactive?: boolean;
+}
+
+/**
+ * Send a request to the server, passing the edge's challenge ONCE if it meets
+ * one (cycle F, R-FP8; spec §2.6).
+ *
+ * **The one place a fetched response is asked [`isEdgeChallenge`]** for `call`
+ * and the record download, which both send through here — so the predicate,
+ * the widget and the retry cannot drift between them. The stream reader asks
+ * the same predicate of its own open (`sse.ts`), and the socket's probe is a
+ * `call`.
+ *
+ * **The retry is ONE.** A response that is the edge's challenge shows the
+ * widget through the seam ([`passChallenge`]) and sends the request again,
+ * whole; a second challenge on that request is the refusal it is, and nothing
+ * is sent a third time. Where no widget can be shown — a build with no site
+ * key mounts no overlay, and `interactive: false` must not show one — the
+ * challenge is the refusal at once, with no second request.
+ *
+ * **And the widget is not shown again for a challenge OLDER than a pass**: a
+ * screen's requests go out together, and one sent before the cookie existed
+ * can be answered with the challenge after another request's check has
+ * passed. That one is simply sent again — its one retry — under the clearance.
+ */
+async function pastTheEdge(send: () => Promise<Response>, opts?: CallOptions): Promise<Response> {
+  const before = passesSoFar();
+  const first = await send();
+  if (!isEdgeChallenge(first)) return first;
+  if (opts?.interactive === false) throw new EdgeRefusal(EDGE_CHECK);
+  if (passesSoFar() === before) {
+    try {
+      await passChallenge();
+    } catch (e) {
+      throw new EdgeRefusal(e instanceof Error && e.message === EDGE_CHECK ? EDGE_CHECK : EDGE_CHECK_REPEATED);
+    }
+  }
+  const again = await send();
+  if (isEdgeChallenge(again)) throw new EdgeRefusal(EDGE_CHECK_REPEATED);
+  return again;
+}
 
 /** The ONE handler for "the server no longer knows who you are", invoked by
  *  `call` on every 401 before the refusal is thrown.
@@ -354,8 +425,8 @@ let healthReadFailed = false;
 /** `GET /api/health`, with the server's read in flight kept where
  *  [`transportWait`] can find it. A local read is the module's, and says
  *  nothing about the server's transport. */
-function readHealth(host?: Host): Promise<Health> {
-  const read = call<Health>("GET", "/api/health", undefined, host);
+function readHealth(host?: Host, opts?: CallOptions): Promise<Health> {
+  const read = call<Health>("GET", "/api/health", undefined, host, opts);
   if (host === "local") return read;
   const asked = { read, at: Date.now() };
   healthRead = asked;
@@ -564,6 +635,10 @@ export async function ensureArchiveFact(opts?: {
   /** Read the server again however fresh the remembered answer is — what a
    *  delete that cannot be undone asks for. */
   force?: boolean;
+  /** `call`'s own option, for the health read (cycle F): the outbox's
+   *  background pass reads with `false`, so a challenge there shows no
+   *  widget. */
+  interactive?: boolean;
 }): Promise<ArchiveKind | "unknown"> {
   const at = serverFactsTakenAt();
   // **`Math.abs`, because a clock can move BACKWARDS** (review M-7). A
@@ -576,10 +651,19 @@ export async function ensureArchiveFact(opts?: {
     // **Through `api.health`, and bounded by the same number the words are**: a
     // read that hangs would otherwise leave a caller waiting for ever for an
     // answer it is about to act on.
-    const h = await bounded(api.health(), BOUND_MS);
+    const h = await bounded(
+      api.health(undefined, opts?.interactive === undefined ? undefined : { interactive: opts.interactive }),
+      BOUND_MS,
+    );
     rememberServerFacts(h);
     return h.archive;
-  } catch {
+  } catch (e) {
+    // **The EDGE's refusal is handed on, and it is the one failure that is**
+    // (cycle F, spec §2.6; F-15): it is not "nothing answered" — the edge
+    // answered, and asked for a person. The outbox marks its rows "waiting for
+    // a human check" on it, which a fallback to the remembered fact would hide
+    // behind a send the same edge refuses again.
+    if (isEdgeRefusal(e)) throw e;
     // Nothing answered. A stale answer is still the last thing this deployment
     // said; with nothing remembered at all there is nothing to say.
     return at === null ? "unknown" : facts("server").archive;
@@ -633,7 +717,15 @@ function withUnsaved<T>(out: T, reason: string | null): T {
   return out;
 }
 
-async function call<T>(method: string, path: string, body?: unknown, host?: Host): Promise<T> {
+async function call<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  host?: Host,
+  /** How a challenge at the EDGE is met (cycle F) — see [`CallOptions`]. A
+   *  LOCAL call never meets one: nothing stands in front of the module. */
+  opts?: CallOptions,
+): Promise<T> {
   // **The id decides, unless the caller says** (R-6.5b.12). Five routes carry
   // no id — the create, the listing, `/api/health`, `/api/me`, `/api/labels` —
   // and for those the caller passes its intent; everything else is answered by
@@ -650,11 +742,10 @@ async function call<T>(method: string, path: string, body?: unknown, host?: Host
   }
   const headers: Record<string, string> = { ...serverHeaders() };
   if (body !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const sent = body === undefined ? undefined : JSON.stringify(body);
+  // Through the edge's one predicate and its one retry (R-FP8): the request is
+  // built once and sent again WHOLE if the widget had to be shown.
+  const res = await pastTheEdge(() => fetch(path, { method, headers, body: sent }), opts);
   return settle<T>(res.status, res.statusText, await res.text(), isAccessChallenge(res));
 }
 
@@ -817,7 +908,12 @@ export async function recordText(game: string): Promise<string> {
     }
     return text;
   }
-  const res = await fetch(`/api/games/${id(game)}/record`, { headers: { ...serverHeaders() } });
+  // **A site of its own for the edge's challenge** (cycle F, R-FP8): this read
+  // builds its own request, so it goes through the same predicate and the same
+  // one retry `call` does, rather than a second copy of either.
+  const res = await pastTheEdge(() =>
+    fetch(`/api/games/${id(game)}/record`, { headers: { ...serverHeaders() } }),
+  );
   const text = await res.text();
   if (!res.ok) {
     // **`settle`'s refusal half, rather than a second copy of it** (M6.5b2).
@@ -848,7 +944,7 @@ export const api = {
    *  (`App`), wherever `ensureArchiveFact` must, and by a change signal's
    *  retry while the transport is not known ([`transportWait`]), which is also
    *  what the server's read in flight is kept for. */
-  health: (host?: Host) => readHealth(host),
+  health: (host?: Host, opts?: CallOptions) => readHealth(host, opts),
   /** The words on the cards.
    *
    *  **`host` is what makes them survive an unreachable API** (spec §2.3): the
@@ -887,8 +983,8 @@ export const api = {
    *  are sent exactly as the browser holds them. The server parses both,
    *  replays strictly and chooses the leaf from the replayed state — never
    *  from what this client says. */
-  archive: (record: string, table: string) =>
-    call<ArchiveReply>("POST", "/api/archive", { record, table }, "server"),
+  archive: (record: string, table: string, opts?: CallOptions) =>
+    call<ArchiveReply>("POST", "/api/archive", { record, table }, "server", opts),
   /** Who sits where, and how far the dealing has got.
    *
    *  **The one route widened to any signed-in caller at an OPEN table**
