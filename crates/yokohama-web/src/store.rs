@@ -140,6 +140,18 @@ pub trait Store: Send + Sync {
     /// Every document of the game — the record, the table and the chat; never
     /// the house. An `Err` only when NONE of them was there.
     fn delete(&self, id: &str) -> Result<(), String>;
+    /// When the game was last written, in unix seconds: the latest write among
+    /// its three documents — the record, the table and the chat; never the
+    /// house — or `None` when none of them is there (M6.5c2 cycle F, R-FP6; the
+    /// self-host's sweep reads it, `crate::sweep`).
+    ///
+    /// **The default answers `Ok(None)` — activity unknown: never a
+    /// candidate.** A store that cannot say when a game was written never has a
+    /// table ended for idleness, and every test double in the crate keeps
+    /// compiling without a word; `FsStore` and `MemStore` say.
+    fn last_written(&self, _id: &str) -> Result<Option<u64>, String> {
+        Ok(None)
+    }
 }
 
 /// The id suffixes the non-record documents reserve, which no game may end
@@ -428,6 +440,30 @@ impl Store for FsStore {
             Err(format!("no game named {id:?}"))
         }
     }
+
+    /// The latest modification time among the game's three files that are
+    /// there, in whole unix seconds; `None` when none is. Every write here is a
+    /// publish by rename, so a file's time is its last write — a keep, a status
+    /// change, an applied move, a chat message. An id `path` refuses — the
+    /// house's stored name among them — is refused here; a file that cannot be
+    /// read, or a time before 1970, is an `Err`, which the sweep reads as
+    /// activity it cannot tell, never as idle.
+    fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+        let mut latest: Option<u64> = None;
+        for doc in [Doc::Record, Doc::Table, Doc::Chat] {
+            let modified = match std::fs::metadata(self.path(doc, id)?) {
+                Ok(meta) => meta.modified().map_err(|e| e.to_string())?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            let secs = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| format!("{id:?}'s {doc:?} document was modified before 1970"))?
+                .as_secs();
+            latest = Some(latest.map_or(secs, |l| l.max(secs)));
+        }
+        Ok(latest)
+    }
 }
 
 // ---- end server ----
@@ -436,6 +472,23 @@ impl Store for FsStore {
 #[derive(Default)]
 pub struct MemStore {
     docs: std::sync::Mutex<std::collections::BTreeMap<(Doc, GameId), String>>,
+    /// Each game's activity ([`Store::last_written`]) — a COUNTER, not a
+    /// clock: every write of a game's record, table or chat moves it one
+    /// second on, [`MemStore::stamp_for_test`] sets it, and a delete clears
+    /// it. The house is never a game, so its writes stamp nothing — the plain
+    /// game id `house` shares the house document's id. Taken only after
+    /// `docs`, never before.
+    stamps: std::sync::Mutex<std::collections::BTreeMap<GameId, u64>>,
+}
+
+impl MemStore {
+    /// Set game `id`'s activity to `secs` unix seconds, as `FsStore` would
+    /// read a file last written then (M6.5c2 cycle F, R-FP6) — how a cell
+    /// makes a table idle without a clock. The game's next write moves it
+    /// one second on.
+    pub fn stamp_for_test(&self, id: &str, secs: u64) {
+        self.stamps.lock().expect("store lock").insert(id.to_string(), secs);
+    }
 }
 
 impl Store for MemStore {
@@ -485,6 +538,9 @@ impl Store for MemStore {
             (_, current) => return Err(WriteError::Conflict { current }),
         }
         docs.insert(key, json.to_string());
+        if doc != Doc::House {
+            *self.stamps.lock().expect("store lock").entry(id.to_string()).or_insert(0) += 1;
+        }
         Ok(version_of(json))
     }
 
@@ -494,11 +550,19 @@ impl Store for MemStore {
             .into_iter()
             .filter(|doc| docs.remove(&(*doc, id.to_string())).is_some())
             .count();
+        self.stamps.lock().expect("store lock").remove(id);
         if removed > 0 {
             Ok(())
         } else {
             Err(format!("no game named {id:?}"))
         }
+    }
+
+    fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+        if !is_safe_id(id) {
+            return Err(format!("{id:?} is not a usable game name"));
+        }
+        Ok(self.stamps.lock().expect("store lock").get(id).copied())
     }
 }
 
@@ -550,6 +614,12 @@ mod tests {
         }
         fn delete(&self, id: &str) -> Result<(), String> {
             self.0.delete(id)
+        }
+        // Forwarded, unlike the crate's other doubles: this one IS the file
+        // store, the `fs` arm of `both`, and with the default body every
+        // activity cell would read `None` there and pass for the wrong reason.
+        fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+            self.0.last_written(id)
         }
     }
 
@@ -1009,5 +1079,102 @@ mod tests {
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A game's activity on both stores** (M6.5c2 cycle F, R-FP6): unknown
+    /// for an id never written, known once a document is, unknown again once
+    /// the game is deleted; the house's stored name is refused as a game id,
+    /// as `FsStore::path` refuses it; and the house chat is never a game's
+    /// activity — not even the plain game id `house`'s, which `MemStore` keys
+    /// beside the house's own document.
+    /// Mutants: `delete` leaving a stamp behind; a house write stamped under
+    /// `house`; an unsafe id answered `None`.
+    #[test]
+    fn a_games_activity_is_known_once_written_and_unknown_once_deleted() {
+        for (name, store) in both("activity") {
+            assert_eq!(store.last_written("g"), Ok(None), "{name}: never written");
+            store.write_if_version(Doc::Record, "g", "{}", None).expect(name);
+            assert!(store.last_written("g").expect(name).is_some(), "{name}: a record write is activity");
+            store.write_if_version(Doc::Table, "t", "{}", None).expect(name);
+            assert!(store.last_written("t").expect(name).is_some(), "{name}: so is a table write alone");
+            store.delete("g").expect(name);
+            assert_eq!(store.last_written("g"), Ok(None), "{name}: deleted");
+            for refused in ["_house", "../x", ""] {
+                assert!(store.last_written(refused).is_err(), "{name}: {refused:?} is no game id");
+            }
+            store
+                .write_if_version(Doc::House, crate::chat::HOUSE, "{}", None)
+                .expect(name);
+            assert_eq!(store.last_written(crate::chat::HOUSE), Ok(None), "{name}: the house is never a game's activity");
+        }
+    }
+
+    /// **`MemStore` stamps writes as a counter, and a cell stamps a time**: a
+    /// write moves its game's activity one second on — the order of writes,
+    /// not a clock, as `Games::ticking_clock` is a counter — and
+    /// [`MemStore::stamp_for_test`] sets it to a time a cell chooses. A chat
+    /// write moves it; a delete clears it.
+    /// Mutants: the chat document left out of the stamps; a write that resets
+    /// the stamp instead of moving it; `stamp_for_test` a no-op.
+    #[test]
+    fn the_memory_store_moves_activity_on_every_write_and_takes_a_cells_time() {
+        let store = MemStore::default();
+        store.write_if_version(Doc::Record, "g", "{}", None).expect("a record");
+        store.write_if_version(Doc::Table, "g", "{}", None).expect("a table");
+        assert_eq!(store.last_written("g"), Ok(Some(2)), "two writes, two seconds");
+        store.stamp_for_test("g", 1_000);
+        assert_eq!(store.last_written("g"), Ok(Some(1_000)));
+        store.write_if_version(Doc::Chat, "g", "{}", None).expect("a chat");
+        assert_eq!(store.last_written("g"), Ok(Some(1_001)), "a chat write is activity");
+        store.delete("g").expect("deleted");
+        assert_eq!(store.last_written("g"), Ok(None));
+    }
+
+    /// **`FsStore` reads the LATEST modification time of the three documents**,
+    /// whichever it is — the record, the table or the chat — in whole unix
+    /// seconds, skipping one that is not there; a fresh chat write moves it to
+    /// now.
+    /// Mutants: the first file's time; the last file's; the chat left out; a
+    /// missing document an error.
+    #[test]
+    fn the_file_store_reads_the_latest_of_the_three_modification_times() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!("yokohama-store-{}-mtimes", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fs = TempFs(FsStore::new(&dir), dir.clone());
+        let at = |file: &str, secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(file))
+                .and_then(|f| f.set_modified(UNIX_EPOCH + Duration::from_secs(secs)))
+                .expect("a modification time set");
+        };
+        fs.write_if_version(Doc::Table, "g", "{}", None).expect("a table");
+        at("g.table.json", 1_000);
+        assert_eq!(fs.last_written("g"), Ok(Some(1_000)), "one document: its time");
+        fs.write_if_version(Doc::Record, "g", "{}", None).expect("a record");
+        fs.write_if_version(Doc::Chat, "g", "{}", None).expect("a chat");
+        at("g.json", 3_000);
+        at("g.chat.json", 2_000);
+        assert_eq!(fs.last_written("g"), Ok(Some(3_000)), "the record is the latest");
+        at("g.json", 500);
+        assert_eq!(fs.last_written("g"), Ok(Some(2_000)), "the chat is the latest");
+        let before = SystemTime::now().duration_since(UNIX_EPOCH).expect("after 1970").as_secs();
+        let (_, v) = fs.read(Doc::Chat, "g").expect("read").expect("present");
+        fs.write_if_version(Doc::Chat, "g", "{\"m\":1}", Some(v)).expect("a second chat write");
+        let moved = fs.last_written("g").expect("read").expect("present");
+        assert!(moved >= before, "a chat write is activity now: {moved} < {before}");
+    }
+
+    /// **A store that does not say answers "activity unknown"** — the trait's
+    /// default body — even over documents that are there: the shape of every
+    /// test double that forwards the four methods and not this one.
+    /// Mutant: a default that answers anything but `Ok(None)`.
+    #[test]
+    fn a_store_that_does_not_say_answers_activity_unknown() {
+        let double = crate::games::test_support::ConflictingRecordWrites::default();
+        double.write_if_version(Doc::Record, "g", "{}", None).expect("a record");
+        assert!(double.inner.last_written("g").expect("read").is_some(), "premise: the store under it knows");
+        assert_eq!(double.last_written("g"), Ok(None));
     }
 }

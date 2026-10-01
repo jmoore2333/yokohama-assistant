@@ -355,7 +355,7 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 **One table layer, three hosts, and a guide and a runbook for each server.**
 
-- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** No table expires there (the Worker's TTLs are its own); cleaning out old games by hand, and the sweep that could be built, is its §8. One image
+- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** Set the Worker's two TTL variables there and an hourly sweep ends idle tables, refusing to start without an archive; the sweep, and the by-hand recipe for a server with no TTL, are its §8. One image
   carries the server and the client.
   - The guide leads with Access: `cf-access` behind a Cloudflare Access application, this repository's
     default.

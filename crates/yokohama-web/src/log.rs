@@ -83,6 +83,28 @@ pub const LISTING_SKIPPED: &str = "listing-skipped";
 /// (D's close §5, ruling 49); a restart re-seeds. Every house route refuses
 /// the same document out loud.
 pub const HOUSE_SEED_UNREAD: &str = "house-seed-unread";
+/// The self-host's sweep will end this table (M6.5c2 cycle F, R-F9) —
+/// `{id, status, idle_days, reason}`: `status` the table's (`open`,
+/// `dealing`, `playing`), `idle_days` the whole days since its last write,
+/// `reason` `expired` or `waited`. A pass logs one for EVERY table it will
+/// end before it ends any (`crate::sweep::pass`).
+pub const SWEEP_LISTED: &str = "sweep-listed";
+/// The sweep ended a table through its creator's delete — `{id, reason,
+/// kept}`: `kept` is the Worker's word for what was kept — `archive` (the
+/// game is in the archive: stamped at game over, or filed by this delete),
+/// `nothing` (no game: an open, dealing or moveless table), or `off` (a game
+/// and no archive, which a self-host that sweeps never has: it refuses to
+/// start without one).
+pub const SWEEP_ENDED: &str = "sweep-ended";
+/// The sweep's delete was refused — `{id, reason, error}`, the delete's own
+/// sentence. A failed archive put refuses it; the table stays, and the next
+/// pass tries again.
+pub const SWEEP_FAILED: &str = "sweep-failed";
+/// The sweep could not read a table's document or its activity, so the table
+/// is not a candidate this pass — `{id, error}`; `{error}` alone when the
+/// table listing itself failed. Without it a table nobody can read would
+/// stand forever without a word.
+pub const SWEEP_UNREAD: &str = "sweep-unread";
 
 /// The NAS's log (M6.5c2): each line on stderr, beside `main.rs`'s own — the
 /// container log an operator reads.
@@ -115,13 +137,13 @@ mod tests {
         assert_eq!(render(OVER_TABLE_GONE, &Value::Null), r#"{"event":"archive-over-table-gone"}"#);
     }
 
-    /// Six events, six names — and none is a line the Worker's shell writes
+    /// Ten events, ten names — and none is a line the Worker's shell writes
     /// ITSELF (`archive-${outcome}` in `worker/src/r2.ts`'s `logOutcome`,
     /// `archive-stamped` and `archive-owed-*` in `worker/src/table.ts`). The
     /// pool reads its archive lines as exact lists, so a layer line under a
     /// shell's name would read as the shell's.
     #[test]
-    fn the_events_are_six_names_and_none_is_the_shells() {
+    fn the_events_are_ten_names_and_none_is_the_shells() {
         let events = [
             OVER_PUT_REFUSED,
             OVER_UNSTAMPED,
@@ -129,6 +151,10 @@ mod tests {
             KEPT_EARLIER_COMPLETION,
             LISTING_SKIPPED,
             HOUSE_SEED_UNREAD,
+            SWEEP_LISTED,
+            SWEEP_ENDED,
+            SWEEP_FAILED,
+            SWEEP_UNREAD,
         ];
         let mut unique = events.to_vec();
         unique.sort_unstable();

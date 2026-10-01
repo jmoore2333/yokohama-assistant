@@ -67,11 +67,13 @@ pub struct Host {
     /// working the moment a deployment said it had no multiplayer.
     pub multiplayer_offered: bool,
     /// The host's two table TTLs in whole days (M6.5c2 cycle E, R-6.5c2.42),
-    /// which [`Health`] reports and nothing in this layer applies: on the
-    /// Worker an idle table expires after `table_ttl_days`, and one still
-    /// waiting for players after `open_table_ttl_days`, by the shell's alarm.
-    /// `None` on a host that expires no table — the NAS (R-6.5c2.2) and the
-    /// browser — and both `None` on a Worker configured to keep every table.
+    /// which [`Health`] reports and nothing in this layer's routes applies:
+    /// on the Worker an idle table expires after `table_ttl_days`, and one
+    /// still waiting for players after `open_table_ttl_days`, by the shell's
+    /// alarm; on the NAS, by its hourly sweep (cycle F, R-F9;
+    /// [`crate::sweep`]). `None` on a host that expires no table — the
+    /// browser — and both `None` on a NAS or a Worker configured to keep every
+    /// table.
     pub table_ttl_days: Option<u64>,
     pub open_table_ttl_days: Option<u64>,
 }
@@ -366,8 +368,9 @@ pub struct Health {
     pub multiplayer: bool,
     /// How many days an idle table stands before it expires (M6.5c2 cycle E,
     /// R-6.5c2.42): [`Host::table_ttl_days`]. `null` where no table expires —
-    /// the NAS keeps no TTL (R-6.5c2.2) — sent as `null` rather than left out,
-    /// so a client reads "no TTL", never "a server too old to say".
+    /// the browser, and a NAS or a Worker with no TTL set — sent as `null`
+    /// rather than left out, so a client reads "no TTL", never "a server too
+    /// old to say".
     pub table_ttl_days: Option<u64>,
     /// How many days a table still WAITING for players stands before it is
     /// closed (R-6.5c2.42): [`Host::open_table_ttl_days`]; `null` as above.

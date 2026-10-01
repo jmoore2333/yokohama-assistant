@@ -176,14 +176,16 @@ docker run -d --name yokohama-web \
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document |
+| `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
 | `YOKOHAMA_WEB_CHAT_KEEP` | a positive number of messages, or `all` | 500 a room |
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
 
-A bad value stops the server at start-up, naming the variable. `/api/health` reports the door, the
-transport, the archive and the chat limits, so a client sizes itself from the server's rules. No
-table expires on this server: it reads no TTL, and `/api/health` reports `table_ttl_days` and
-`open_table_ttl_days` as `null` (the Worker's two TTLs are its own, `worker/RUNBOOK.md` §3).
+A bad value stops the server at start-up, naming the variable, and so does a table TTL with no archive
+directory. `/api/health` reports the door, the transport, the archive, the chat limits and the two TTLs, so
+a client sizes itself from the server's rules; `table_ttl_days` and `open_table_ttl_days` read `null` while
+no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`worker/RUNBOOK.md` §3).
 
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
@@ -228,13 +230,59 @@ then goes to the archive if the server keeps one. A new image is a new release: 
 "Reload to use it" on the door, and a waiting release nobody clicks activates by itself
 once every old page has closed.
 
-## 8. Cleaning out old games by hand
+## 8. Cleaning out old games
 
-**No sweep runs on this server.** It reads no TTL: a table lives until its creator abandons it or you remove
-it, and `/api/health` says so (`table_ttl_days: null`). The Cloudflare host is the one with expiry
-(`worker/RUNBOOK.md` §3). A sweep here — a periodic job over the games directory that ends idle tables through
-the same delete the creator's Abandon uses, so a finished game's archive copy lands exactly once — is a
-potential feature if there is a desire for it; it is not built.
+**The sweep.** Set `YOKOHAMA_WEB_TABLE_TTL_DAYS`, and `YOKOHAMA_WEB_ARCHIVE_DIR` with it, and the server ends
+idle tables itself: one pass a minute after start, then one every hour. A table's last activity is the latest
+write to any of its three files (the table, the record and the chat, listed below): a seat taken, a keep, an
+applied move, a chat message. A pass ends:
+
+- a table still waiting for players, a seat empty, once it has stood idle `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`
+  (7 unless set), with the reason `waited`;
+- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`. A table at its
+  deal, every seat taken, waits this one.
+
+**Each pass lists before it ends anything.** It writes one `sweep-listed` line for every table it is about to
+end, and only then ends them, one `sweep-ended` line each: a pass that ends forty tables has written forty
+lines before the first one goes. Each ending is the creator's own **Abandon**. A finished game is already in
+the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`
+with every move. A table where no move was played files nothing. If the archive cannot be written, the delete
+is refused, a `sweep-failed` line says why, and the table stays for the next pass. A table the sweep cannot
+read gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
+no marker in its place, and the log line is the record.
+
+**A sweep never throws a game away.** A TTL with no archive directory stops the server at start-up:
+
+```
+YOKOHAMA_WEB_TABLE_TTL_DAYS is set but YOKOHAMA_WEB_ARCHIVE_DIR is not — a sweep without an archive throws games away; set both or neither
+```
+
+A value that is not a whole number of days stops it too, naming the variable:
+
+```
+YOKOHAMA_WEB_TABLE_TTL_DAYS must be a whole number of days above zero — got "x"
+YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS must be a whole number of days above zero — got "x"
+```
+
+**The lines** are in the container's log (`docker logs <container>`), one JSON object each:
+
+```
+{"event":"sweep-listed","id":"<id>","idle_days":"91","reason":"expired","status":"playing"}
+{"event":"sweep-ended","id":"<id>","kept":"archive","reason":"expired"}
+{"event":"sweep-failed","error":"<the delete's reason>","id":"<id>","reason":"expired"}
+{"event":"sweep-unread","error":"<the reason>","id":"<id>"}
+```
+
+`kept` is `archive` when the game is in the archive, `nothing` when the table held no game, and `off` for a
+game with no archive to keep it, which a server that sweeps never has. A move that lands in the seconds
+between a pass's listing and its delete is filed with its game, or refused if its save arrives while the
+delete is unlinking; either way the archive has the game.
+
+**The sweep reads the files' modification times**, so a copy or a restore of the volume that resets them
+restarts every table's clock.
+
+**With no TTL set, no sweep runs.** A table lives until its creator abandons it or you remove it, and
+`/api/health` says so (`table_ttl_days: null`).
 
 **What is on disk.** Under `/data` (the volume §4's run command names, `yokohama-web-data`):
 
@@ -246,11 +294,9 @@ potential feature if there is a desire for it; it is not built.
 | `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
 | `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document |
 
-The table document's modification time is its last write — a keep, a status change, and every applied move
-refreshes it — so it is the "last activity" a sweep would read.
-
-**The preferred way** is the creator's **Abandon** in the lobby: it files the archive copy (once, even for a
-finished game), leaves a marker, and removes the table. Everything below is for tables nobody will abandon.
+**The preferred way** to end one table is the creator's **Abandon** in the lobby: it files the archive copy
+(once, even for a finished game) and removes the table, as the sweep does. Everything below is for a server
+with no TTL and tables nobody will abandon.
 
 **By hand, with any Docker.** The server keeps a running game's handle in memory and would write its record
 again on the next move, and a file removed under it is a cross-process conflict the server detects rather than
