@@ -526,9 +526,12 @@ export function Lobby({
             </>
           )}
           {action.kind === "stranded" && (
+            /* Its title is the server's refusal's head (cycle F, spec §2.3);
+               the reason after it is the game screen's, from the 409, since a
+               listing's bot is only `{label, runs_here}`. */
             <span
               className="stranded"
-              title={t.bot ? `played against ${t.bot.label}, which this server does not run` : undefined}
+              title={t.bot ? `This game was played against ${t.bot.label}. This server can't continue it.` : undefined}
             >
               can&rsquo;t continue here
             </span>

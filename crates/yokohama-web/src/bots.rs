@@ -1,5 +1,5 @@
-//! **Which bot played a game, in the words a person reads** (M6.5c2,
-//! R-6.5c2.10).
+//! **Which bot played a game, in the words a person reads, and whether this
+//! build plays it on** (M6.5c2, R-6.5c2.10; cycle F, R-F4).
 //!
 //! A bot seat's identity is the RECORD's: every `SeatProvenance` carries its
 //! controller's name, that controller's version and every knob, and
@@ -7,6 +7,21 @@
 //! back. This module adds the two things a record cannot say for itself: a
 //! SHORT LABEL for each identity (`v4-step9-draft1` is "V4"), and whether THIS
 //! build runs it.
+//!
+//! **Whether this build runs it is the CLI's resume's answer, never this
+//! module's** (cycle F, R-F4 amending R-6.5c2.10 forward; spec §2.3; R-FP12).
+//! [`bots::runs_here`] calls `BotSeats::from_provenance` — the public resume every
+//! `Repl` seats its bots through — ONCE per record, and a recorded bot seat
+//! runs here exactly when that resume seats a contestant there and says
+//! nothing about the seat: no conversion to a human (a controller the CLI's
+//! `eligible` refuses, or one `Contestant::from_parts` cannot read), no drift
+//! (a controller version or ANY knob, the weights digest included, that
+//! differs from what this build derives), no second stream seed. So the web
+//! and the `Repl` cannot disagree about a seat, and the web never widens the
+//! CLI's rule: the day the CLI admits an identity, a game played against it
+//! opens here with no web change, and until then it is refused in the CLI's
+//! own words. A seat that does not run carries that reason, cut to its clause
+//! and never reworded ([`bots::Runs::No`]).
 //!
 //! **The labels are the layer's own words**, like `suggest`'s four authored
 //! refusals, and they are total by CONSTRUCTION: [`bots::label`] reads a
@@ -25,8 +40,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use yokohama_cli::bga::CONTROLLER_BGA_HUMAN;
-use yokohama_cli::bot::PROVISIONAL_DEFAULT_BOT;
-use yokohama_core::{Contestant, GameRecord, NamedIdentity, RolloutPolicy, CONTROLLER_HUMAN};
+use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+use yokohama_core::{
+    Contestant, GameRecord, NamedIdentity, PlayerId, RolloutPolicy, RunProvenance, SeatProvenance,
+    CONTROLLER_HUMAN, OBSERVATION_VIEW, RUN_PROVENANCE_SCHEMA,
+};
 
 use crate::table::{SeatDoc, TableDoc, TableStatus};
 
@@ -35,8 +53,8 @@ use crate::table::{SeatDoc, TableDoc, TableStatus};
 /// game, not about the bot) and the observation channel.
 ///
 /// **The triple, not the name** (review m12): one name can ship at two
-/// controller versions or two knob sets, and [`TableBot::runs_here`] compares
-/// what a record would have to match to resume under this build.
+/// controller versions or two knob sets, and the CLI's resume, which
+/// [`runs_here`] asks, holds a record to the version and to every knob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotDescriptor {
     pub controller: String,
@@ -50,7 +68,8 @@ pub struct BotDescriptor {
 pub struct TableBot {
     /// [`label`]'s answer.
     pub label: String,
-    /// Whether this build runs that bot: the descriptor equals [`production`].
+    /// Whether this build runs that bot: [`runs_here`]'s predicate, over the
+    /// descriptor alone (`descriptor_runs`).
     pub runs_here: bool,
 }
 
@@ -221,6 +240,12 @@ pub(crate) fn seat_disagreement(doc: &TableDoc, record: &GameRecord) -> Option<S
 /// - dealt: the mirror's descriptor — the record's, cached — or `None` for a
 ///   table whose mirror was last written before the field existed (its row
 ///   reads "the bot" with no version; review m7).
+///
+/// `runs_here` is the game route's own predicate (cycle F, spec §2.3), asked
+/// of the mirror's descriptor ([`descriptor_runs`]), so a row reads "runs
+/// here" exactly when its game opens: a table dealt a bot this build's CLI
+/// resumes exactly — the production bot or a grandfathered one — reads its
+/// label and opens.
 pub(crate) fn table_bot(doc: &TableDoc) -> Option<TableBot> {
     if !doc.seats.iter().any(|s| matches!(s, SeatDoc::Bot)) {
         return None;
@@ -229,7 +254,8 @@ pub(crate) fn table_bot(doc: &TableDoc) -> Option<TableBot> {
         TableStatus::Open | TableStatus::Dealing => production(),
         TableStatus::Playing => doc.turn.as_ref()?.bot.clone()?,
     };
-    Some(TableBot { label: label(&bot), runs_here: bot == production() })
+    let runs_here = descriptor_runs(&bot) == Runs::Yes;
+    Some(TableBot { label: label(&bot), runs_here })
 }
 
 /// `ClientState.bots`: every bot seat the record names, labelled.
@@ -237,12 +263,150 @@ pub(crate) fn seat_bots(record: &GameRecord) -> Vec<SeatBot> {
     recorded(record).into_iter().map(|(seat, d)| SeatBot { seat, label: label(&d) }).collect()
 }
 
-/// The FOREIGN bot seats of `record` (M6.5c2, R-6.5c2.10): every seat whose
-/// recorded `(controller, version, params)` is not [`production`]'s. Empty for
-/// an all-human game and for every game this build dealt.
-pub fn foreign(record: &GameRecord) -> Vec<(u8, BotDescriptor)> {
-    let running = production();
-    recorded(record).into_iter().filter(|(_, d)| *d != running).collect()
+/// Whether THIS build plays a recorded bot seat on (cycle F, R-F4; R-FP12):
+/// the CLI's resume, asked ([`runs_here`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Runs {
+    /// The CLI's resume seats the exact bot the record names, and says nothing
+    /// about the seat.
+    Yes,
+    /// It does not, and this is why: the CLI's own warning about the seat,
+    /// cut to its clause (`reason_of`) — never reworded.
+    No(String),
+}
+
+/// Every bot seat `record` names ([`recorded`]), in seat order, with whether
+/// THIS build plays it on (cycle F, R-F4; R-FP12) — decided by ONE call of
+/// the CLI's public resume, `BotSeats::from_provenance(record.run)`:
+///
+/// - [`Runs::Yes`] when the resume seats a contestant there
+///   (`contestant_at(seat)` is `Some`) and NO warning names the seat — no line
+///   beginning `warning: seat {i} `, the stream-seed line included, which
+///   makes a record carrying two bot seeds foreign (no web table deals two);
+/// - [`Runs::No`] otherwise, carrying every warning that names the seat, each
+///   cut to its clause (`reason_of`), joined by `; ` in the CLI's order.
+///
+/// The CLI pushes a warning on both of its conversion arms, so a seat it
+/// seats no bot at always has one; were one ever missing, the seat still does
+/// not run, and its reason says only that.
+pub fn runs_here(record: &GameRecord) -> Vec<(u8, BotDescriptor, Runs)> {
+    resumed(record.run.as_ref(), recorded(record))
+}
+
+/// [`runs_here`]'s answer for ONE descriptor: a record naming `d` at a seat,
+/// resumed. A table carries its bot in the turn mirror rather than its
+/// record, so this is what the lobby row's `TableBot.runs_here` reads — and
+/// the row and the game route answer from one predicate.
+pub(crate) fn descriptor_runs(d: &BotDescriptor) -> Runs {
+    let run = RunProvenance {
+        schema: RUN_PROVENANCE_SCHEMA,
+        master_seed: None,
+        run_id: None,
+        seats: vec![SeatProvenance {
+            controller: d.controller.clone(),
+            version: d.version,
+            params: d.params.clone(),
+            agent_seed: None,
+            observation: OBSERVATION_VIEW.to_string(),
+        }],
+    };
+    let (seats, warnings) = BotSeats::from_provenance(Some(&run));
+    verdict(0, &d.controller, &seats, &warnings)
+}
+
+/// The CLI's resume, asked ONCE of `run`, and each of `bots` — seats of that
+/// run — answered from what it said ([`verdict`]).
+fn resumed(run: Option<&RunProvenance>, bots: Vec<(u8, BotDescriptor)>) -> Vec<(u8, BotDescriptor, Runs)> {
+    let (seats, warnings) = BotSeats::from_provenance(run);
+    bots.into_iter()
+        .map(|(seat, d)| {
+            let runs = verdict(seat, &d.controller, &seats, &warnings);
+            (seat, d, runs)
+        })
+        .collect()
+}
+
+/// [`runs_here`]'s rule for one recorded bot `seat` named `controller`, over
+/// what ONE resume answered: the `seats` it built and the `warnings` it said.
+fn verdict(seat: u8, controller: &str, seats: &BotSeats, warnings: &[String]) -> Runs {
+    // The CLI's own prefix, space included, so seat 1 never reads seat 10's
+    // lines.
+    let prefix = format!("warning: seat {seat} ");
+    let reasons: Vec<String> = warnings
+        .iter()
+        .filter_map(|w| w.strip_prefix(prefix.as_str()))
+        .map(|said| reason_of(said, controller))
+        .collect();
+    match (seats.contestant_at(PlayerId::new(seat)), reasons.is_empty()) {
+        (Some(_), true) => Runs::Yes,
+        (_, false) => Runs::No(reasons.join("; ")),
+        (None, true) => Runs::No(format!("the CLI's resume seats no bot at seat {seat}")),
+    }
+}
+
+/// The tail of the CLI's line for a seat it converts to a human — both
+/// conversion arms of `BotSeats::from_provenance` — which is false on the web:
+/// nothing here converts a seat, and nobody is now playing it.
+const CONVERTED_TAIL: &str = " — it resumes as a HUMAN seat, so you are now playing it";
+/// The tail of the CLI's drift line (`identity_drift_warnings`): the CLI plays
+/// the seat on under the current build; the web does not.
+const DRIFT_TAIL: &str = " — the seat still plays, under the CURRENT build";
+/// The head of the tail of the CLI's stream-seed line: what the CLI then does
+/// about a second seed.
+const SEED_TAIL: &str = " — this driver plays every bot seat off one stream";
+
+/// One CLI warning about a seat — `said`, after its `warning: seat {i} ` —
+/// cut to its clause: the CLI's reason, never reworded (cycle F, R-FP12).
+/// Four shapes, each held whole with its cut by
+/// `the_cli_s_sentence_shapes_and_their_cuts_are_held_verbatim`:
+///
+/// - a drift line, `records … — the seat still plays, under the CURRENT
+///   build`: the tail cut — "records weights=A, but this build derives
+///   weights=B", or `records controller "…" at version A, but this build
+///   runs version B`;
+/// - the stream-seed line: cut at its tail — "records bot stream seed A, but
+///   an earlier bot seat records B";
+/// - `eligible`'s refusal, `was played by controller "{c}", but {why} — it
+///   resumes as a HUMAN seat, …`: `{why}`, `eligible`'s own sentence;
+/// - a controller `from_parts` cannot read, `was played by controller "{c}",
+///   which this build does not know how to run — it resumes as a HUMAN seat,
+///   … ({why})`: the tail and `was played by ` cut, so the relative clause
+///   keeps the noun it hangs on — `controller "{c}", which this build does
+///   not know how to run ({why})`, `{why}` being `from_parts`' sentence.
+///
+/// A line in no shape it knows is answered after its prefix, whole: a CLI
+/// rewording still refuses, in the CLI's words, and the pin cell fails first.
+fn reason_of(said: &str, controller: &str) -> String {
+    if let Some(drift) = said.strip_suffix(DRIFT_TAIL) {
+        return drift.to_string();
+    }
+    if let Some((seed, _)) = said.split_once(SEED_TAIL) {
+        return seed.to_string();
+    }
+    let converted = said.replacen(CONVERTED_TAIL, "", 1);
+    let refused = format!("was played by controller \"{controller}\", but ");
+    if let Some(why) = converted.strip_prefix(refused.as_str()) {
+        return why.to_string();
+    }
+    match converted.strip_prefix("was played by ") {
+        Some(unread) => unread.to_string(),
+        None => converted,
+    }
+}
+
+/// The FOREIGN bot seats of `record` (M6.5c2, R-6.5c2.10; cycle F, R-F4):
+/// [`runs_here`]'s [`Runs::No`] seats, each with the CLI's reason. Empty for
+/// an all-human game, for every game this build dealt, and for a game against
+/// any bot this build's CLI resumes exactly — a grandfathered `lookahead-v1`
+/// among them.
+pub fn foreign(record: &GameRecord) -> Vec<(u8, BotDescriptor, String)> {
+    runs_here(record)
+        .into_iter()
+        .filter_map(|(seat, d, runs)| match runs {
+            Runs::Yes => None,
+            Runs::No(why) => Some((seat, d, why)),
+        })
+        .collect()
 }
 
 /// The pair a foreign-bot refusal names beside its sentence
@@ -265,8 +429,9 @@ pub struct ForeignBot {
 /// re-point — `v4-step9-draft1` shipped at a new controller version — labels
 /// both bots "V4", and a knobbed controller at two knob sets labels both alike
 /// (`lookahead-v1` at `b=4` and at `b=8` are both "V2 lookahead"). Named by
-/// its labels alone, the refusal would read "This game was played against V4.
-/// This server now runs V4 and can't continue it." So, in order:
+/// its labels alone, the refusal's pair would read `played: "V4"`, `runs:
+/// "V4"`, and `why` would say "This move was made by V4" on a server that
+/// runs V4. So, in order:
 ///
 /// - the two labels differ: they stand as they are (`V2`, `V4`);
 /// - they tie: each gains its controller version, `{label}.{version}`
@@ -284,8 +449,9 @@ pub struct ForeignBot {
 /// `=` or `,` — and the parameters that differ print differently. Between two
 /// ARBITRARY descriptors that does not hold: crafted keys can render two maps
 /// alike (`{a: 1, b: 2}` and `{"a=1,b": 2}` both print `a=1,b=2`). Equal
-/// descriptors are one bot, which no refusal names ([`foreign`] is every seat
-/// that is not [`production`]).
+/// descriptors are one bot, and a refusal names production's own descriptor
+/// only for a record whose second bot seat carries another stream seed — the
+/// CLI's seed line ([`runs_here`]) — which no web table deals.
 ///
 /// **The screens keep [`label`]**: the lobby's row, the Players panel and
 /// `ClientState.bots` name one bot each, and "V4" is its name there. Only a
@@ -311,16 +477,25 @@ pub fn distinguishing_labels(played: &BotDescriptor, runs: &BotDescriptor) -> (S
     (knobbed(&played_label, played), knobbed(&runs_label, runs))
 }
 
-/// The sentence a not-over game against a foreign bot is refused with — the
-/// layer's own words (spec §2.4), not the CLI's.
-pub fn cannot_continue(played: &str, runs: &str) -> String {
-    format!("This game was played against {played}. This server now runs {runs} and can't continue it.")
+/// The sentence a not-over game against a foreign bot is refused with (cycle
+/// F, spec §2.3): the layer's own head, naming the bot the game was played
+/// against, and after the colon the CLI's own reason — [`Runs::No`]'s clause —
+/// `This game was played against {played}. This server can't continue it:
+/// {why}`.
+///
+/// **`_runs` is in the signature and not in the sentence.** Every caller hands
+/// in the pair the wire carries beside the sentence (`"foreign_bot": {"played",
+/// "runs"}`, which keeps both), but the sentence no longer names the bot this
+/// build deals: a build now plays on every bot its CLI resumes exactly, so
+/// "now runs V4" would offer one of them as the reason, and the reason is the
+/// CLI's.
+pub fn cannot_continue(played: &str, _runs: &str, why: &str) -> String {
+    format!("This game was played against {played}. This server can't continue it: {why}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yokohama_cli::bot::BotSeats;
 
     fn descriptor_of(c: Contestant) -> BotDescriptor {
         let (controller, version, params) = c.descriptor();
@@ -539,5 +714,308 @@ mod tests {
         assert_eq!(repl.session.state().current_player, PlayerId::new(1), "premise: seat 1 to move");
         let ada = ClientState::of(PLAYED_ID, &repl, Viewer::Seat(PlayerId::new(1)), Vec::new());
         assert!(ada.your_turn, "seat 1's holder, {BGA_SEAT_HOLDER}, is the one to move it");
+    }
+
+    // ---- Cycle F (R-F4; spec §2.3; R-FP12): the CLI's resume decides -------
+
+    /// A record of `players` seats — a person at seat 0, and every other seat
+    /// the bot this build deals, as `finalize` stamps it — handed to `edit`
+    /// to rename, re-version or re-knob a bot seat the way a record written by
+    /// ANOTHER build would carry it.
+    fn record_of(players: u8, edit: impl FnOnce(&mut [SeatProvenance])) -> GameRecord {
+        use yokohama_core::{GameConfig, Rules, StartingOrderChoice};
+        let mut record = GameRecord::new(
+            7,
+            GameConfig::for_player_count(players),
+            vec![StartingOrderChoice::Keep(0); usize::from(players)],
+            &Rules::standard(),
+        );
+        let mut table = vec![None];
+        table.resize(usize::from(players), Some(PROVISIONAL_DEFAULT_BOT));
+        let mut seats = BotSeats::new(table, 7).seat_provenance();
+        edit(seats.as_mut_slice());
+        record.set_run_seats(seats);
+        record
+    }
+
+    /// A two-seat record whose seat 1 carries `d`, all three halves.
+    fn against(d: &BotDescriptor) -> GameRecord {
+        record_of(2, |seats| {
+            seats[1].controller = d.controller.clone();
+            seats[1].version = d.version;
+            seats[1].params = d.params.clone();
+        })
+    }
+
+    /// [`runs_here`]'s answer for seat 1 of a two-seat record, the only bot.
+    fn seat_1(record: &GameRecord) -> Runs {
+        match runs_here(record).as_slice() {
+            [(1, _, runs)] => runs.clone(),
+            other => panic!("premise: one bot, at seat 1 — {other:?}"),
+        }
+    }
+
+    /// **A bot the CLI resumes exactly plays on, whatever this build deals**
+    /// (cycle F, R-F4; Review Focus 2; the catcher for `runs_here` comparing
+    /// to production again). A genuine `lookahead-v1` record — the contestant's
+    /// OWN descriptor, all three halves — runs here though production is V4,
+    /// as does every arm the CLI's `eligible` admits; and production, as ever.
+    #[test]
+    fn a_genuine_lookahead_v1_seat_runs_here_while_production_is_v4() {
+        let genuine = descriptor_of(Contestant::LOOKAHEAD_V1_DEFAULT);
+        assert_ne!(genuine, production(), "premise: not the bot this build deals");
+        let record = against(&genuine);
+        assert_eq!(seat_1(&record), Runs::Yes, "the genuine record runs here");
+        assert_eq!(foreign(&record), Vec::new(), "and so it is not foreign");
+        for c in [
+            Contestant::PRODUCTION,
+            Contestant::GREEDY_V1_DEFAULT,
+            Contestant::Policy(RolloutPolicy::Uniform),
+            Contestant::Policy(RolloutPolicy::RetreatAverse),
+            Contestant::Policy(RolloutPolicy::FAMILY_WEIGHTED_DEFAULT),
+        ] {
+            assert_eq!(seat_1(&against(&descriptor_of(c))), Runs::Yes, "{}", c.echo());
+        }
+    }
+
+    /// **An identity the CLI's `eligible` refuses is refused in `eligible`'s
+    /// own words** (cycle F, Review Focus 2 — the V5 shape: the day V5 ships,
+    /// V4 is a non-production named identity like these; the catcher for
+    /// `runs_here` admitting one). Its seat is reported with the reason, and
+    /// the same code admits it the day the CLI does.
+    #[test]
+    fn an_ineligible_named_identity_is_refused_in_eligible_s_own_words() {
+        let v2 = against(&descriptor_of(Contestant::NamedTable(NamedIdentity::V2Padded)));
+        assert_eq!(
+            seat_1(&v2),
+            Runs::No(
+                "v2-padded is a named research identity for arena weight comparisons, not available as a CLI bot"
+                    .to_string()
+            ),
+        );
+        let refit = descriptor_of(Contestant::NamedTable(NamedIdentity::V2RefitPadded));
+        assert_eq!(
+            seat_1(&against(&refit)),
+            Runs::No(format!(
+                "{} is a named research identity for arena weight comparisons, not available as a CLI bot",
+                refit.controller,
+            )),
+        );
+        let (seat, d, why) = foreign(&v2).pop().expect("the seat is foreign");
+        assert_eq!((seat, d.controller.as_str()), (1, "v2-padded"));
+        assert!(why.starts_with("v2-padded is a named research identity"), "{why}");
+    }
+
+    /// **A drift the CLI only WARNS about does not run here** (cycle F, review
+    /// F-5; the catcher for `runs_here` ignoring a drift warning): the CLI plays
+    /// a moved weights digest on "under the CURRENT build" — a different bot
+    /// under the recorded name — so the web refuses it, naming the key. Two
+    /// rows: production's own name and version with its digest moved by one,
+    /// and the MONGREL `games.rs` fixture shape — `lookahead-v1`'s name over
+    /// V4's knobs, whose digest is V4's.
+    #[test]
+    fn a_weights_drift_under_the_same_name_and_version_does_not_run_here() {
+        let running = production();
+        let digest = running.params["weights"];
+        let mut moved = running.clone();
+        moved.params.insert("weights".to_string(), digest.wrapping_add(1));
+        assert_eq!(
+            seat_1(&against(&moved)),
+            Runs::No(format!(
+                "records weights={}, but this build derives weights={digest}",
+                digest.wrapping_add(1)
+            )),
+        );
+        let mongrel = BotDescriptor { controller: "lookahead-v1".to_string(), ..running.clone() };
+        let lookahead = descriptor_of(Contestant::LOOKAHEAD_V1_DEFAULT).params["weights"];
+        assert_ne!(lookahead, digest, "premise: the two tables differ");
+        assert_eq!(
+            seat_1(&against(&mongrel)),
+            Runs::No(format!("records weights={digest}, but this build derives weights={lookahead}")),
+        );
+    }
+
+    /// A controller version this build does not run is drift too, naming both
+    /// versions.
+    #[test]
+    fn a_version_drift_does_not_run_here_naming_both_versions() {
+        let running = production();
+        let next = BotDescriptor { version: running.version + 1, ..running.clone() };
+        assert_eq!(
+            seat_1(&against(&next)),
+            Runs::No(format!(
+                "records controller \"{}\" at version {}, but this build runs version {}",
+                running.controller,
+                running.version + 1,
+                running.version,
+            )),
+        );
+    }
+
+    /// A named identity at knobs it never had is refused by `from_parts`, and
+    /// the reason is `from_parts`' own sentence, after the CLI's clause.
+    #[test]
+    fn a_named_identity_at_knobs_it_never_had_is_refused_in_from_parts_words() {
+        let running = production();
+        let mut wider = running.clone();
+        wider.params.insert("b".to_string(), 8);
+        let refusal = Contestant::from_parts(&wider.controller, &wider.params).expect_err("premise: refused");
+        assert!(refusal.contains("knobless named identity"), "premise: from_parts' sentence — {refusal}");
+        assert_eq!(
+            seat_1(&against(&wider)),
+            Runs::No(format!(
+                "controller \"{}\", which this build does not know how to run ({refusal})",
+                running.controller
+            )),
+        );
+    }
+
+    /// A controller this build does not know, and a diagnostic, are refused
+    /// with the CLI's reason: `from_parts`' sentence, and `eligible`'s.
+    #[test]
+    fn an_unknown_controller_and_a_diagnostic_are_refused_with_the_cli_s_reason() {
+        let unknown = BotDescriptor { controller: "nope-v9".to_string(), version: 1, params: BTreeMap::new() };
+        let refusal = Contestant::from_parts("nope-v9", &BTreeMap::new()).expect_err("premise: unknown");
+        assert_eq!(
+            seat_1(&against(&unknown)),
+            Runs::No(format!("controller \"nope-v9\", which this build does not know how to run ({refusal})")),
+        );
+        for diagnostic in [Contestant::ATOMIC_DIAG_DEFAULT, Contestant::MCTS_V1_DEFAULT] {
+            let d = descriptor_of(diagnostic);
+            assert_eq!(
+                seat_1(&against(&d)),
+                Runs::No(format!("{} is a diagnostic contestant, not available as a CLI bot", d.controller)),
+                "{}",
+                diagnostic.echo(),
+            );
+        }
+    }
+
+    /// **The CLI's sentence shapes, held verbatim, and their cuts** (cycle F,
+    /// R-FP12; the catcher for a tail cut from the wrong sentence). Every
+    /// warning `BotSeats::from_provenance` writes about a seat — both
+    /// conversion arms, both drift lines, the stream-seed line — is asserted
+    /// WHOLE, so a CLI rewording fails here first rather than quietly changing
+    /// a refusal; and beside each, the clause [`runs_here`] cuts from it: the
+    /// `warning: seat {i} ` prefix gone, and the tail — " — it resumes as a
+    /// HUMAN seat, so you are now playing it", " — the seat still plays, under
+    /// the CURRENT build", or " — this driver plays every bot seat off one
+    /// stream, …" — gone with it.
+    #[test]
+    fn the_cli_s_sentence_shapes_and_their_cuts_are_held_verbatim() {
+        /// A shape's name, its record, the CLI's warnings whole, and the cut
+        /// per bot seat.
+        type Shape = (&'static str, GameRecord, Vec<String>, Vec<(u8, Runs)>);
+        let running = production();
+        let digest = running.params["weights"];
+        let unknown = Contestant::from_parts("nope-v9", &BTreeMap::new()).expect_err("premise: unknown");
+        let shapes: Vec<Shape> = vec![
+            (
+                "eligible refuses: converted, eligible's sentence",
+                against(&descriptor_of(Contestant::NamedTable(NamedIdentity::V2Padded))),
+                vec![
+                    "warning: seat 1 was played by controller \"v2-padded\", but v2-padded is a named research \
+                     identity for arena weight comparisons, not available as a CLI bot — it resumes as a HUMAN \
+                     seat, so you are now playing it"
+                        .to_string(),
+                ],
+                vec![(
+                    1,
+                    Runs::No(
+                        "v2-padded is a named research identity for arena weight comparisons, not available as a \
+                         CLI bot"
+                            .to_string(),
+                    ),
+                )],
+            ),
+            (
+                "from_parts refuses: converted, from_parts' sentence",
+                against(&BotDescriptor { controller: "nope-v9".to_string(), version: 1, params: BTreeMap::new() }),
+                vec![format!(
+                    "warning: seat 1 was played by controller \"nope-v9\", which this build does not know how to \
+                     run — it resumes as a HUMAN seat, so you are now playing it ({unknown})"
+                )],
+                vec![(
+                    1,
+                    Runs::No(format!(
+                        "controller \"nope-v9\", which this build does not know how to run ({unknown})"
+                    )),
+                )],
+            ),
+            (
+                "a version drift and a knob drift on one seat: both, in the CLI's order",
+                against(&BotDescriptor {
+                    version: running.version + 1,
+                    params: {
+                        let mut p = running.params.clone();
+                        p.insert("weights".to_string(), digest.wrapping_add(1));
+                        p
+                    },
+                    ..running.clone()
+                }),
+                vec![
+                    format!(
+                        "warning: seat 1 records controller \"{}\" at version {}, but this build runs version {} \
+                         — the seat still plays, under the CURRENT build",
+                        running.controller,
+                        running.version + 1,
+                        running.version,
+                    ),
+                    format!(
+                        "warning: seat 1 records weights={}, but this build derives weights={digest} — the seat \
+                         still plays, under the CURRENT build",
+                        digest.wrapping_add(1),
+                    ),
+                ],
+                vec![(
+                    1,
+                    Runs::No(format!(
+                        "records controller \"{}\" at version {}, but this build runs version {}; records \
+                         weights={}, but this build derives weights={digest}",
+                        running.controller,
+                        running.version + 1,
+                        running.version,
+                        digest.wrapping_add(1),
+                    )),
+                )],
+            ),
+            (
+                "a second stream seed: the later seat is foreign, the earlier one runs",
+                record_of(3, |seats| seats[2].agent_seed = Some(8)),
+                vec![
+                    "warning: seat 2 records bot stream seed 8, but an earlier bot seat records 7 — this driver \
+                     plays every bot seat off one stream, so it keeps 7 and seat 2 will not reproduce its \
+                     recorded line"
+                        .to_string(),
+                ],
+                vec![
+                    (1, Runs::Yes),
+                    (2, Runs::No("records bot stream seed 8, but an earlier bot seat records 7".to_string())),
+                ],
+            ),
+        ];
+        for (shape, record, said, want) in shapes {
+            let (_, warnings) = BotSeats::from_provenance(record.run.as_ref());
+            assert_eq!(warnings, said, "{shape}: the CLI's words, whole");
+            let got: Vec<(u8, Runs)> = runs_here(&record).into_iter().map(|(seat, _, runs)| (seat, runs)).collect();
+            assert_eq!(got, want, "{shape}: the cut");
+        }
+    }
+
+    /// **The lobby row's `runs_here` is the same predicate** (cycle F, spec
+    /// §2.3): asked of one descriptor, it answers as the record would.
+    #[test]
+    fn a_descriptor_runs_here_exactly_when_a_record_naming_it_would() {
+        for d in [
+            production(),
+            descriptor_of(Contestant::LOOKAHEAD_V1_DEFAULT),
+            descriptor_of(Contestant::NamedTable(NamedIdentity::V2Padded)),
+            BotDescriptor { version: production().version + 1, ..production() },
+            BotDescriptor { controller: "lookahead-v1".to_string(), ..production() },
+            BotDescriptor { controller: "nope-v9".to_string(), version: 1, params: BTreeMap::new() },
+        ] {
+            assert_eq!(descriptor_runs(&d), seat_1(&against(&d)), "{d:?}");
+        }
+        assert_eq!(descriptor_runs(&descriptor_of(Contestant::LOOKAHEAD_V1_DEFAULT)), Runs::Yes);
     }
 }

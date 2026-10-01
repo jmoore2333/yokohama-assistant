@@ -516,6 +516,12 @@ describe("the lobby", () => {
     // and its creator can still abandon it.
     expect(row(foreign.id)).toHaveTextContent("can\u2019t continue here");
     expect(row(foreign.id).querySelector("span.stranded")).not.toBeNull();
+    // Its title is the server's refusal's head (cycle F, spec §2.3), naming
+    // the bot by the row's own label.
+    expect(row(foreign.id).querySelector("span.stranded")).toHaveAttribute(
+      "title",
+      `This game was played against ${foreign.bot!.label}. This server can't continue it.`,
+    );
     expect(within(row(foreign.id)).queryByRole("button", { name: /^(Play|View):/ })).toBeNull();
     // "and save", in its NAME (ruling 4a-1): the server says its delete saves
     // this game — playing, moves in it, an archive (cycle E, R-E5).

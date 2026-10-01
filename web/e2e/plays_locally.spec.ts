@@ -1197,6 +1197,11 @@ test("without Web Locks, a tab whose game was opened elsewhere exports the new o
 // in the table's mirror, both by text so the two u64s in them are never parsed —
 // and the module then reads a save it can no longer continue.
 //
+// **It stays foreign under the resume rule** (cycle F, spec §2.3): the module
+// asks the CLI's own resume, which refuses `v2-padded` as a non-production named
+// identity (`eligible`) before it compares a single knob, so the V4 knobs the
+// renamed seat keeps do not matter — an ineligible identity, not a drift.
+//
 // **What this does NOT reach, and says so.** The four identity states of the
 // door (A, an expired Access, and B, a door that named nobody, need a server
 // that answers as Access does, which the `open` door cannot) and the
@@ -1253,8 +1258,14 @@ test("a game dealt a bot this build does not run: the door lists it under Will n
 
   // ---- Its screen: the server's own sentence, Abandon, the way back; no game.
   await page.goto(`/#/t/${game.id}`);
+  // The server's sentence names the bot and the CLI's reason (cycle F, spec
+  // §2.3): `v2-padded` is a non-production named identity, which the CLI's
+  // `eligible` refuses — the shape V4 takes the day a V5 bot ships.
   await expect(
-    page.getByText("This game was played against V2. This server now runs V4 and can't continue it."),
+    page.getByText(
+      "This game was played against V2. This server can't continue it: v2-padded is a named research " +
+        "identity for arena weight comparisons, not available as a CLI bot",
+    ),
   ).toBeVisible();
   // "and save" in its NAME (cycle E, ruling 4a-1): the server keeps an
   // archive, and the game has moves in it — the bit this browser's own host

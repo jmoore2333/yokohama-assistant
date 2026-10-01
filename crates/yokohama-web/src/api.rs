@@ -726,10 +726,11 @@ pub(crate) fn undo_allowed(
     // pops back to the last human move, would pop the BOT's final move and
     // leave a game nobody can play. The bot is named by the `played` half of
     // the refusal's pair (R-C5), so a same-name re-point reads "V4.2", never
-    // "V4" on a server that runs V4.
-    if let Some((_, played)) = crate::bots::foreign(repl.session.record()).first() {
+    // "V4" on a server that runs V4; and the CLI's reason follows it, as on
+    // every foreign-bot refusal (cycle F, spec §2.3).
+    if let Some((_, played, why)) = crate::bots::foreign(repl.session.record()).first() {
         return Err(UndoRefusal::Refused(format!(
-            "undo is not offered on a game played against {}, which this server doesn't run",
+            "undo is not offered on a game played against {}, which this server doesn't run: {why}",
             crate::bots::distinguishing_labels(played, &crate::bots::production()).0,
         )));
     }
@@ -2546,6 +2547,7 @@ mod tests {
         let e: ApiError = crate::games::GameError::ForeignBot {
             played: "V2 lookahead".to_string(),
             runs: crate::bots::label(&crate::bots::production()),
+            why: mongrel_drift(),
         }
         .into();
         assert_eq!((res.status, res.body.clone()), (409, error_body(&e)));
@@ -2696,6 +2698,15 @@ mod tests {
         (res.status, serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null))
     }
 
+    /// The CLI's reason for [`crate::games::test_support::foreign_pair`]'s
+    /// MONGREL `lookahead-v1` — the name over V4's knobs — which the CLI's
+    /// resume seats with a drift warning on `weights` (cycle F, spec §2.3).
+    fn mongrel_drift() -> String {
+        let v4 = crate::bots::production().params["weights"];
+        let lookahead = yokohama_core::Contestant::LOOKAHEAD_V1_DEFAULT.descriptor().2["weights"];
+        format!("records weights={v4}, but this build derives weights={lookahead}")
+    }
+
     /// A `Games` holding the committed pair as a game against `controller`,
     /// cut at `cut` events when given.
     fn holding_foreign(controller: &str, cut: Option<usize>) -> Games {
@@ -2707,16 +2718,18 @@ mod tests {
     }
 
     /// **Every game route refuses a game not over against a foreign bot, in
-    /// one typed 409** (M6.5c2, R-6.5c2.10) — the sentence naming both labels,
-    /// and the pair beside it for the client to branch on. The table still
-    /// reads (the lobby row says `runs_here: false`), and Abandon, which never
-    /// rebuilds, still deletes it.
+    /// one typed 409** (M6.5c2, R-6.5c2.10; cycle F, R-F4) — the sentence
+    /// naming the bot and the CLI's reason, and the pair beside it for the
+    /// client to branch on, still exactly `{played, runs}`. The foreign bot is
+    /// the MONGREL `lookahead-v1`, refused as drift on `weights`. The table
+    /// still reads (the lobby row says `runs_here: false`), and Abandon, which
+    /// never rebuilds, still deletes it.
     #[test]
     fn every_game_route_refuses_an_unfinished_foreign_game_in_one_typed_409() {
         let games = holding_foreign("lookahead-v1", Some(crate::games::test_support::BOT_TO_MOVE_AT));
         let runs = crate::bots::label(&crate::bots::production());
         let want = serde_json::json!({
-            "error": format!("This game was played against V2 lookahead. This server now runs {runs} and can't continue it."),
+            "error": format!("This game was played against V2 lookahead. This server can't continue it: {}", mongrel_drift()),
             "foreign_bot": { "played": "V2 lookahead", "runs": runs },
         });
         let base = format!("/api/games/{PLAYED_ID}");
@@ -2744,6 +2757,54 @@ mod tests {
         assert_eq!(v["bot"], serde_json::json!({ "label": "V2 lookahead", "runs_here": false }));
         let (status, v) = ask(&games, "local@browser", "DELETE", &base, "", "");
         assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+    }
+
+    /// **`why` reconstructs a move by a runnable bot that is not the production
+    /// one, by replay, and refuses a foreign bot's move with the CLI's reason**
+    /// (cycle F, spec §2.3; the thirteenth refusal shape kept).
+    ///
+    /// A GENUINE `lookahead-v1` game cut where its bot is to move: the route's
+    /// rebuild seats `lookahead-v1` and pumps its move, and `why` at that event
+    /// — and bare `why`, its most recent move — reconstructs the decision, its
+    /// provenance naming `lookahead-v1` at seat 1: no refusal. A finished game
+    /// against `v2-padded`, which the CLI's `eligible` refuses: the authored
+    /// refusal, bare and at a bot move, naming the bot and `eligible`'s
+    /// sentence.
+    #[test]
+    fn why_reconstructs_a_runnable_non_production_bot_and_refuses_a_foreign_one_with_its_reason() {
+        use crate::games::test_support::{genuine_pair, BOT_TO_MOVE_AT};
+        use yokohama_core::Contestant;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let (record, table) = genuine_pair(Contestant::LOOKAHEAD_V1_DEFAULT, Some(BOT_TO_MOVE_AT));
+        games.load_document(crate::store::Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(crate::store::Doc::Table, PLAYED_ID, &table).unwrap();
+        let base = format!("/api/games/{PLAYED_ID}");
+        let query = format!("event={BOT_TO_MOVE_AT}");
+        let (status, v) = ask(&games, "local@browser", "GET", &format!("{base}/why"), &query, "");
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["refusal"], serde_json::Value::Null, "no refusal: {v}");
+        let provenance = &v["ok"]["provenance"];
+        assert_eq!(provenance["contestant"], Contestant::LOOKAHEAD_V1_DEFAULT.echo(), "{v}");
+        assert_eq!((provenance["index"].as_u64(), provenance["seat"].as_u64()), (Some(BOT_TO_MOVE_AT as u64), Some(1)));
+        let (status, bare) = ask(&games, "local@browser", "GET", &format!("{base}/why"), "", "");
+        assert_eq!(status, 200, "{bare}");
+        assert_eq!(bare["refusal"], serde_json::Value::Null, "bare `why` reconstructs too: {bare}");
+        assert_eq!(bare["ok"]["provenance"]["contestant"], Contestant::LOOKAHEAD_V1_DEFAULT.echo());
+
+        let foreign = holding_foreign("v2-padded", None);
+        let refused = serde_json::json!({
+            "ok": null,
+            "refusal": {
+                "kind": "foreign_bot",
+                "message": "This move was made by V2, which this server doesn't run: v2-padded is a named research \
+                            identity for arena weight comparisons, not available as a CLI bot",
+            },
+        });
+        // Event 4 is a move seat 1 made (the same-name re-point cell in
+        // `games.rs` reads it so over the same pair).
+        for query in ["", "event=4"] {
+            assert_eq!(ask(&foreign, "local@browser", "GET", &format!("{base}/why"), query, ""), (200, refused.clone()), "why?{query}");
+        }
     }
 
     /// **A pair whose table and record disagree about which seats are bots is
@@ -2846,7 +2907,11 @@ mod tests {
         // never "a human's move"; a human's own move (event 0) is still the CLI's.
         let foreign = serde_json::json!({
             "ok": null,
-            "refusal": { "kind": "foreign_bot", "message": "This move was made by V2, which this server doesn't run." },
+            "refusal": {
+                "kind": "foreign_bot",
+                "message": "This move was made by V2, which this server doesn't run: v2-padded is a named research \
+                            identity for arena weight comparisons, not available as a CLI bot",
+            },
         });
         for query in ["", "event=4"] {
             let (status, v) = ask(&games, "local@browser", "GET", &format!("{base}/why"), query, "");
@@ -2857,7 +2922,11 @@ mod tests {
         // 3. undo: refused at this one-human table, and the game stays finished.
         let (status, v) = ask(&games, "local@browser", "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
         assert_eq!(status, 403, "{v}");
-        assert_eq!(v["error"], "undo is not offered on a game played against V2, which this server doesn't run");
+        assert_eq!(
+            v["error"],
+            "undo is not offered on a game played against V2, which this server doesn't run: v2-padded is a named \
+             research identity for arena weight comparisons, not available as a CLI bot"
+        );
         let (_, after) = ask(&games, "local@browser", "GET", &base, "", "");
         assert_eq!((after["over"].clone(), after["events"].clone()), (serde_json::json!(true), state["events"].clone()));
     }
@@ -2884,7 +2953,11 @@ mod tests {
         assert_eq!(players["players"][1]["is_bot"], true, "the panel says the bot played seat 1");
         let (_, why) = ask(&games, "grey@t.test", "GET", &format!("{base}/why"), "", "");
         assert_eq!(why["refusal"]["kind"], "foreign_bot", "{why}");
-        assert_eq!(why["refusal"]["message"], "This move was made by V2, which this server doesn't run.");
+        assert_eq!(
+            why["refusal"]["message"],
+            "This move was made by V2, which this server doesn't run: v2-padded is a named research identity for \
+             arena weight comparisons, not available as a CLI bot"
+        );
         let (status, v) = ask(&games, "grey@t.test", "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
         assert_eq!((status, v["error"].as_str()), (403, Some(NOT_SEATED)), "a watcher writes nothing: {v}");
         for route in ["/result", "/log", "/at/0", "/ports", "/labs", "/areas", "/index/orders"] {

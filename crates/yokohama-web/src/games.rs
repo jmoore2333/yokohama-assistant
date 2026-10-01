@@ -61,13 +61,16 @@ pub enum GameError {
     /// This process failed at something the caller asked for correctly.
     Server(String),
     /// A game NOT OVER whose recorded bot this build does not run (M6.5c2,
-    /// R-6.5c2.10): the labels of the bot it was played against and of the one
-    /// this build deals, told apart where they tie
-    /// ([`crate::bots::distinguishing_labels`], R-C5). Typed rather than a
-    /// `Conflict` for `Dealing`'s reason — a client BRANCHES on it, drawing the
-    /// reason rather than a banner — so the pair rides beside the sentence as
-    /// `"foreign_bot"`.
-    ForeignBot { played: String, runs: String },
+    /// R-6.5c2.10; cycle F, R-F4: the CLI's resume decides,
+    /// [`crate::bots::runs_here`]): the labels of the bot it was played
+    /// against and of the one this build deals, told apart where they tie
+    /// ([`crate::bots::distinguishing_labels`], R-C5), and `why`, the CLI's
+    /// reason. Typed rather than a `Conflict` for `Dealing`'s reason — a client
+    /// BRANCHES on it, drawing the reason rather than a banner — so the pair
+    /// rides beside the sentence as `"foreign_bot"`; `why` rides the sentence
+    /// only ([`crate::bots::cannot_continue`]), and the wire's pair keeps
+    /// exactly `{played, runs}`.
+    ForeignBot { played: String, runs: String, why: String },
 }
 
 impl std::fmt::Display for GameError {
@@ -81,7 +84,9 @@ impl std::fmt::Display for GameError {
             Self::Dealing => f.write_str(DEALING_SENTENCE),
             Self::Open => f.write_str(OPEN_SENTENCE),
             Self::Playing => f.write_str(PLAYING_SENTENCE),
-            Self::ForeignBot { played, runs } => f.write_str(&crate::bots::cannot_continue(played, runs)),
+            Self::ForeignBot { played, runs, why } => {
+                f.write_str(&crate::bots::cannot_continue(played, runs, why))
+            }
         }
     }
 }
@@ -693,23 +698,27 @@ impl Games {
                 "the table document does not agree with the record: {why}"
             )));
         }
-        // **The foreign-bot rule's one site** (M6.5c2, R-6.5c2.10), on every
-        // host, for every rebuild. The descriptors are compared off the parsed
-        // record; "not over" is a fact about the replayed state, so it is read
-        // off the session — and the refusal returns BEFORE `Repl::new`, whose
-        // `BotSeats::from_provenance` is what would turn the foreign seat into
-        // a human one, and before `bring_alive`, which would let a foreign bot
-        // this CLI can still run move again. No `Repl` is built, so a converted
-        // seat never exists and nothing is persisted.
+        // **The foreign-bot rule's one site** (M6.5c2, R-6.5c2.10; cycle F,
+        // R-F4), on every host, for every rebuild. Which seats are foreign is
+        // the CLI's resume's answer, asked of the parsed record
+        // ([`crate::bots::foreign`] over `BotSeats::from_provenance`): a bot
+        // the CLI seats exactly plays on, whatever this build deals, and every
+        // other is refused with the CLI's own reason. "Not over" is a fact
+        // about the replayed state, so it is read off the session — and the
+        // refusal returns BEFORE `Repl::new`, whose `from_provenance` is what
+        // would turn a converted seat into a human one, and before
+        // `bring_alive`, which would let a drifted bot the CLI still seats move
+        // under the current build. No `Repl` is built, so a converted seat
+        // never exists and nothing is persisted.
         let foreign = crate::bots::foreign(&record).into_iter().next();
         let session =
             Session::from_record(record, (*self.rules).clone()).map_err(GameError::Server)?;
-        if let Some((_, played)) = &foreign {
+        if let Some((_, played, why)) = foreign {
             if !session.is_over() {
                 // Told apart where the two labels tie (R-C5), so a same-name
-                // re-point never reads "played against V4 … now runs V4".
-                let (played, runs) = crate::bots::distinguishing_labels(played, &crate::bots::production());
-                return Err(GameError::ForeignBot { played, runs });
+                // re-point's pair never reads `played: "V4"`, `runs: "V4"`.
+                let (played, runs) = crate::bots::distinguishing_labels(&played, &crate::bots::production());
+                return Err(GameError::ForeignBot { played, runs, why });
             }
         }
         let mut repl = Repl::new(session);
@@ -1335,14 +1344,19 @@ mod tests {
     }
 
     /// **The foreign-bot rule, at its one site** (M6.5c2, R-6.5c2.10; review
-    /// M2): a game NOT over whose recorded bot is not the one this build deals
-    /// refuses with the two labels — and refuses BEFORE a `Repl` exists.
+    /// M2; cycle F, R-F4): a game NOT over whose recorded bot the CLI's resume
+    /// does not seat exactly refuses with the two labels and the CLI's reason —
+    /// and refuses BEFORE a `Repl` exists.
     ///
-    /// The foreign bot is `lookahead-v1`, which this CLI CAN run, at a cut where
-    /// it is to move: a rebuild that got as far as `Repl::new` would pump it and
+    /// The foreign bot is the MONGREL `lookahead-v1` ([`foreign_pair`]: the
+    /// name over V4's knobs), which this CLI CAN run and would resume with a
+    /// drift warning naming `weights` — "the seat still plays, under the
+    /// CURRENT build", a different bot under the recorded name — so the web
+    /// refuses it as drift, `why` naming the key (review F-6). At a cut where it
+    /// is to move, a rebuild that got as far as `Repl::new` would pump it and
     /// persist the move. So the untouched write count is the measurement — and
-    /// the same cut under THIS build's bot, which does pump and persist, is what
-    /// says the count could have moved.
+    /// the same cut under THIS build's bot, which does pump and persist, is
+    /// what says the count could have moved.
     #[test]
     fn a_game_not_over_against_a_bot_this_build_does_not_run_refuses_before_any_rebuild() {
         let store = Arc::new(CountingStore::default());
@@ -1351,10 +1365,13 @@ mod tests {
         games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
         games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
         let loaded = store.writes();
+        let v4 = crate::bots::production().params["weights"];
+        let lookahead = yokohama_core::Contestant::LOOKAHEAD_V1_DEFAULT.descriptor().2["weights"];
         match games.handle(PLAYED_ID) {
-            Err(GameError::ForeignBot { played, runs }) => {
+            Err(GameError::ForeignBot { played, runs, why }) => {
                 assert_eq!(played, "V2 lookahead", "the recorded bot's label");
                 assert_eq!(runs, crate::bots::label(&crate::bots::production()), "this build's");
+                assert_eq!(why, format!("records weights={v4}, but this build derives weights={lookahead}"));
             }
             other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a handle")),
         }
@@ -1384,6 +1401,135 @@ mod tests {
         games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
         let handle = games.handle(PLAYED_ID).expect("a finished game opens");
         assert!(handle.lock().unwrap().session.is_over());
+    }
+
+    /// **A game against a bot this build's CLI resumes exactly plays on under
+    /// the production build** (cycle F, R-F4; spec §2.3; Review Focus 2): a
+    /// GENUINE `lookahead-v1` record ([`genuine_pair`]) at a cut where its bot
+    /// is to move opens, the `Repl` seats `lookahead-v1` itself, and the bot
+    /// makes the next move — read through the applied event's seat, the CLI's
+    /// own attribution (`state_at(record, n).current_player` made event `n`) —
+    /// persisted; its lobby row reads "runs here". Under R-6.5c2.10 this record
+    /// was refused for not being the bot this build deals.
+    #[test]
+    fn a_genuine_lookahead_v1_game_opens_under_the_production_build_and_its_bot_moves() {
+        use yokohama_core::{state_at, Contestant, RecordedEvent};
+        let rules = Rules::standard();
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(rules.clone()), Arc::clone(&store) as Arc<dyn Store>);
+        let (record, table) = genuine_pair(Contestant::LOOKAHEAD_V1_DEFAULT, Some(BOT_TO_MOVE_AT));
+        let parsed: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let recorded = crate::bots::recorded(&parsed);
+        assert_eq!(recorded.len(), 1, "premise: one bot");
+        assert_ne!(recorded[0].1, crate::bots::production(), "premise: not the bot this build deals");
+        let to_move = state_at(&parsed, BOT_TO_MOVE_AT, &rules).expect("the cut replays").current_player;
+        assert_eq!(to_move, PlayerId::new(1), "premise: the bot's seat to move");
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let loaded = store.writes();
+
+        let handle = games.handle(PLAYED_ID).expect("a genuine lookahead-v1 game opens");
+        {
+            let repl = handle.lock().unwrap();
+            assert_eq!(
+                repl.bots().contestant_at(PlayerId::new(1)),
+                Some(Contestant::LOOKAHEAD_V1_DEFAULT),
+                "seated as itself",
+            );
+            let after = repl.session.record();
+            assert!(after.events.len() > BOT_TO_MOVE_AT, "the bot moved");
+            assert!(matches!(after.events[BOT_TO_MOVE_AT], RecordedEvent::Move(_)), "the applied event is a move");
+            let mover = state_at(after, BOT_TO_MOVE_AT, &rules).expect("replays").current_player;
+            assert_eq!(mover, PlayerId::new(1), "made by seat 1, the bot's");
+        }
+        assert!(store.writes() > loaded, "and persisted");
+        let Ok(view) = crate::api::get_table(&games, &who("local@browser"), PLAYED_ID) else {
+            panic!("the table reads")
+        };
+        assert_eq!(
+            view.bot,
+            Some(crate::bots::TableBot { label: "V2 lookahead".to_string(), runs_here: true }),
+            "the lobby row says it runs here",
+        );
+    }
+
+    /// **An unfinished game against an identity the CLI's `eligible` refuses is
+    /// refused in `eligible`'s own words** (cycle F, Review Focus 2 — the V5
+    /// shape: V4's place the day a V5 bot ships, until the V5 ship admits V4 in
+    /// the CLI). `v2-padded` is a non-production named identity; the CLI would
+    /// resume its seat as a human, and the web refuses the game naming why.
+    #[test]
+    fn an_unfinished_game_against_an_ineligible_named_identity_is_refused_in_eligible_s_words() {
+        let games = games();
+        let (record, table) = foreign_pair("v2-padded", Some(BOT_TO_MOVE_AT));
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let eligible = "v2-padded is a named research identity for arena weight comparisons, not available as a CLI bot";
+        match games.handle(PLAYED_ID) {
+            Err(e @ GameError::ForeignBot { .. }) => {
+                let GameError::ForeignBot { played, runs, why } = &e else { unreachable!() };
+                assert_eq!((played.as_str(), runs.as_str(), why.as_str()), ("V2", "V4", eligible));
+                assert_eq!(
+                    e.to_string(),
+                    format!("This game was played against V2. This server can't continue it: {eligible}"),
+                );
+            }
+            other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a handle")),
+        }
+    }
+
+    /// **A version drift and a knob a named identity never had are refused at
+    /// the site with their reasons** (cycle F, spec §2.3's cells), beside the
+    /// mongrel's weights drift and `v2-padded`'s eligibility above. Each is
+    /// unfinished with the bot to move: production's own name and knobs at the
+    /// NEXT controller version ([`same_name_repoint`]), which the CLI's resume
+    /// seats with a drift warning; and production at `b=8`, which `from_parts`
+    /// refuses, so the resume converts the seat.
+    #[test]
+    fn a_version_drift_and_a_knob_mismatch_are_refused_at_the_site_with_their_reasons() {
+        let running = crate::bots::production();
+        let mut wider = running.params.clone();
+        wider.insert("b".to_string(), 8);
+        let refusal = yokohama_core::Contestant::from_parts(&running.controller, &wider).expect_err("premise: refused");
+        let widened = {
+            let (record, table) = foreign_pair(&running.controller, Some(BOT_TO_MOVE_AT));
+            let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+            record.run.as_mut().expect("run provenance").seats[1].params = wider.clone();
+            let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+            table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").params = wider;
+            (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+        };
+        let rows = [
+            (
+                "version drift",
+                same_name_repoint(Some(BOT_TO_MOVE_AT)),
+                format!("{}.{}", crate::bots::label(&running), running.version + 1),
+                format!(
+                    "records controller \"{}\" at version {}, but this build runs version {}",
+                    running.controller,
+                    running.version + 1,
+                    running.version,
+                ),
+            ),
+            (
+                "knob mismatch",
+                widened,
+                // Unparsed, its label is its controller's name.
+                running.controller.clone(),
+                format!("controller \"{}\", which this build does not know how to run ({refusal})", running.controller),
+            ),
+        ];
+        for (row, (record, table), want_played, want_why) in rows {
+            let games = games();
+            games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+            match games.handle(PLAYED_ID) {
+                Err(GameError::ForeignBot { played, why, .. }) => {
+                    assert_eq!((played, why), (want_played, want_why), "{row}")
+                }
+                other => panic!("{row}: expected the foreign-bot refusal, got {:?}", other.map(|_| "a handle")),
+            }
+        }
     }
 
     /// **(Review Focus 4) R2-o1: an owed game-over upload that was undone and
@@ -1434,6 +1580,11 @@ mod tests {
         let next = running.version + 1;
         let label = crate::bots::label(&running);
         let (played, runs) = (format!("{label}.{next}"), format!("{label}.{}", running.version));
+        // The CLI's reason: a version drift, naming both versions.
+        let why = format!(
+            "records controller \"{}\" at version {next}, but this build runs version {}",
+            running.controller, running.version,
+        );
         let repointed = |cut: Option<usize>| -> Games {
             let (record, table) = same_name_repoint(cut);
             let foreign = crate::bots::foreign(&serde_json::from_str(&record).expect("the pair's record"));
@@ -1470,12 +1621,14 @@ mod tests {
         // Unfinished, the bot to move: the 409 on the wire, the pair beside it.
         let unfinished = repointed(Some(BOT_TO_MOVE_AT));
         let want = serde_json::json!({
-            "error": format!("This game was played against {played}. This server now runs {runs} and can't continue it."),
+            "error": format!("This game was played against {played}. This server can't continue it: {why}"),
             "foreign_bot": { "played": played, "runs": runs },
         });
         assert_eq!(ask(&unfinished, "GET", &base, "", ""), (409, want), "the 409 names the two versions");
         match unfinished.archive_over_retry(PLAYED_ID) {
-            Err(GameError::ForeignBot { played: p, runs: r }) => assert_eq!((p, r), (played.clone(), runs.clone())),
+            Err(GameError::ForeignBot { played: p, runs: r, why: w }) => {
+                assert_eq!((p, r, w), (played.clone(), runs.clone(), why.clone()))
+            }
             other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a stamp")),
         }
         let (status, table) = ask(&unfinished, "GET", &format!("{base}/table"), "", "");
@@ -1500,7 +1653,7 @@ mod tests {
         assert_eq!(is_bot, [false, true], "the panel's badge sits on the seat `bots` labels");
         let foreign_why = serde_json::json!({
             "ok": null,
-            "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run.") },
+            "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run: {why}") },
         });
         // Event 4 is a move seat 1 made (`a_finished_foreign_game_opens_scores_
         // downloads_and_masks_the_conversion` reads it so over the same pair);
@@ -1510,7 +1663,7 @@ mod tests {
         }
         let (status, v) = ask(&finished, "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
         assert_eq!(status, 403, "{v}");
-        assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run"));
+        assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run: {why}"));
     }
 
     /// **A FINISHED same-name re-point opens with no warning at all** (M6.5c2
@@ -3382,6 +3535,31 @@ pub(crate) mod test_support {
                 bot: mirror.bot.take(),
             };
         }
+        (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+    }
+
+    /// The committed pair re-seated as a game played against `contestant`,
+    /// GENUINELY (cycle F, spec §2.3; review F-6): seat 1 carries that
+    /// contestant's own descriptor — controller, version and every knob,
+    /// `Contestant::descriptor`'s three halves, as a build that dealt it would
+    /// stamp them — in the record's seat and the table mirror's copy alike.
+    /// [`foreign_pair`] renames the seat and KEEPS V4's version and knobs, so
+    /// its `lookahead-v1` is a MONGREL whose weights digest is V4's; this is
+    /// the record a `lookahead-v1` game actually leaves. The moves before the
+    /// cut were V4's: what is genuine is the seat, which is all a resume reads.
+    /// `cut` as [`foreign_pair`]'s. Answers `(record, table)` as JSON.
+    pub(crate) fn genuine_pair(contestant: yokohama_core::Contestant, cut: Option<usize>) -> (String, String) {
+        use yokohama_core::GameRecord;
+        let (controller, version, params) = contestant.descriptor();
+        let (record, table) = foreign_pair(&controller, cut);
+        let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let seat = &mut record.run.as_mut().expect("run provenance").seats[1];
+        seat.version = version;
+        seat.params = params.clone();
+        let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+        let bot = table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot");
+        bot.version = version;
+        bot.params = params;
         (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
     }
 

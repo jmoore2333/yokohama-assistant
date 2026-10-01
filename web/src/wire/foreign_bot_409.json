@@ -1,5 +1,5 @@
 {
-  "error": "This game was played against V2. This server now runs V4 and can't continue it.",
+  "error": "This game was played against V2. This server can't continue it: v2-padded is a named research identity for arena weight comparisons, not available as a CLI bot",
   "foreign_bot": {
     "played": "V2",
     "runs": "V4"

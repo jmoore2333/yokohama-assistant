@@ -206,9 +206,11 @@ impl From<games::GameError> for ApiError {
             E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
-            E::ForeignBot { played, runs } => Self {
+            // `why` rides the sentence only: the pair beside it keeps exactly
+            // `{played, runs}` (cycle F, spec §2.3).
+            E::ForeignBot { played, runs, why } => Self {
                 status: StatusCode::CONFLICT,
-                message: bots::cannot_continue(&played, &runs),
+                message: bots::cannot_continue(&played, &runs, &why),
                 table_status: None,
                 foreign_bot: Some(bots::ForeignBot { played, runs }),
             },

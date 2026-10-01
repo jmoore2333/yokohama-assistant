@@ -174,7 +174,11 @@ describe("On this device", () => {
         ".unplayable",
       )!;
       expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
-      expect(within(block as HTMLElement).getByText(new RegExp(`played against ${played}`))).toBeInTheDocument();
+      // The server's refusal's head, worded for a game on this device (cycle
+      // F, spec §2.3): the bot, and that this server can't continue it.
+      expect(
+        within(block as HTMLElement).getByText(`played against ${played}; this server can't continue it`),
+      ).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "Back up" })).toBeInTheDocument();
       expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
       expect(screen.queryByRole("link", { name: "local-9" })).toBeNull();
