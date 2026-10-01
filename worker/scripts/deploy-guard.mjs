@@ -44,11 +44,14 @@
 //    `ASSETS`, and no key beyond those and `directory`. Battery rows 13 and 14
 //    (plan review M5): the asset layer answers what it answers WITHOUT
 //    invoking the Worker, and the pool reads only its own two files, so no
-//    pool cell can see production's block drift. `404-page` answers a
-//    browser's NAVIGATION miss with the static `404.html` instead of a blank;
-//    a miss that is not a navigation still invokes the Worker whatever this
-//    says (Cloudflare's routing diagram, spec §2.5), so the page is a
-//    courtesy and the fence against a scanner is the edge rule, never this.
+//    pool cell can see production's block drift. `404-page` answers a miss
+//    with the static `404.html` instead of a blank — read on 2026-10-01 in
+//    every request shape for a miss under an allowed prefix, with no Worker
+//    invocation (`worker/RUNBOOK.md` §20); a miss outside the allowed set is
+//    the edge rule's to refuse, and what answers one without the rule was not
+//    counted (the design expects the Worker for a request that is not a
+//    navigation, spec §2.5) — so the page is a courtesy and the fence against
+//    a scanner is the edge rule, never this.
 //    `single-page-application` stays refused: it answered `index.html` with a
 //    200 for a missing script, which a precache would store as the script.
 // 6. The `durable_objects`, `migrations` and `r2_buckets` blocks are present

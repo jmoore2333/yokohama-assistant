@@ -12,21 +12,22 @@
 //     proves the count counts;
 //   - **`--under-prefix`, the residual**: misses UNDER the rule's allowed
 //     prefixes, `/assets/<hex>.js` and `/art/<hex>.png`. The rule lets an allowed
-//     prefix through by design, so the expected reading is NOT zero: every row
-//     404 with no `cf-mitigated`, the Worker's own miss answer, and the minute's
-//     invocations EQUAL the request count — save that a `navigate` row may be
-//     answered by the asset layer's 404 page instead (`text/html`, the page's
-//     bytes) with no invocation, which is the open question spec §2.5 leaves to
-//     this very reading: each such row is one fewer. The window READS this
-//     cost; it is the prefix allow-list's residual, not a failure.
+//     prefix through by design. The reading, taken in cycle F's window on
+//     2026-10-01 and twice (ruling D-1): every row 404 with no `cf-mitigated`,
+//     in EVERY shape, `text/html` — the asset layer's cached 404 page, the
+//     page's bytes — and the minute's invocations ZERO, 200 rows each time. The
+//     design had expected the Worker's own miss answer and an invocation per
+//     request, a navigate row excepted (spec §2.5's open question); a nonzero
+//     count here would mean that reading changed. The window READS this cost;
+//     it is the prefix allow-list's residual, and it is free.
 //
 //   node scripts/probe-burst.mjs <origin> [--under-prefix | --paths a,b,c] [--count N] [--pace ms]
 //
 // The window's two commands (Task 11.G.a), from `worker/`, each in its own
-// minute:
+// minute, as cycle F ran them (off WARP, then again over it):
 //
 //   node scripts/probe-burst.mjs https://yokohama.moore.nyc --count 200 --pace 500 > probe/burst.tsv
-//   node scripts/probe-burst.mjs https://yokohama.moore.nyc --under-prefix --count 30 --pace 500 > probe/under-prefix.tsv
+//   node scripts/probe-burst.mjs https://yokohama.moore.nyc --under-prefix --count 200 --pace 500 > probe/under-prefix.tsv
 //
 // `--paths` names paths of the caller's own, for which no reading is stated;
 // it does not mix with `--under-prefix`.
@@ -43,7 +44,8 @@
 //     socket's own `Host` and `Connection`;
 //   - `navigate`: a browser's User-Agent with `Sec-Fetch-Mode: navigate` and
 //     `Accept: text/html` — a browser's document load, the shape the asset
-//     layer's 404 page answers;
+//     layer's 404 page was expected to answer ALONE (under an allowed prefix
+//     it answers every shape);
 //   - `no-cors`: a browser's User-Agent with `Sec-Fetch-Mode: no-cors` and
 //     `Accept: */*` — a scanner impersonating a browser, and the shape Bot
 //     Fight Mode's answer cannot be confused with.
@@ -52,9 +54,9 @@
 // **The default paths** are the scanner's five — `/.env`, `/wp-login.php`,
 // `/admin`, `/xmlrpc.php` and a random `/<hex>.json` — none under an allowed
 // prefix; **`--under-prefix`'s** are the two prefix misses alone (Task 7's
-// review: a miss there passes the rule and invokes the Worker's own miss
-// answer). `<hex>` is sixteen random hex digits, one per run, printed on stderr
-// with the paths.
+// review: a miss there passes the rule; it reads the asset layer's 404 page
+// with no invocation, above). `<hex>` is sixteen random hex digits, one per
+// run, printed on stderr with the paths.
 //
 // **`node:http`, never `fetch`, and no redirect is ever followed.** MEASURED
 // (Node 26.10, a loopback server): Node's `fetch` sends `sec-fetch-mode: cors`
@@ -86,9 +88,9 @@ export const USAGE = "usage: node scripts/probe-burst.mjs <origin> [--under-pref
 const READING = {
   scanner: "the pass: every row 403 cf-mitigated: challenge, and the minute's invocations ZERO",
   "under-prefix":
-    "the residual's reading: every row 404 with no cf-mitigated, the Worker's own miss answer; the minute's " +
-    "invocations equal the request count, one fewer for each navigate row the asset layer's 404 page answers " +
-    "(text/html) — the open question spec §2.5 leaves to this reading",
+    "the residual's reading: every row 404 with no cf-mitigated, the asset layer's cached 404 page in every " +
+    "shape (text/html), not the Worker's answer; the minute's invocations ZERO (read 2026-10-01, cycle F's " +
+    "window: 200 of 200 rows, twice) — a nonzero count means a miss reached the Worker",
   paths: "the caller's own paths: no reading is stated",
 };
 

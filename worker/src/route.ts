@@ -3,8 +3,11 @@
  * alone. What each target then does is `handle`'s (`index.ts`): a create's
  * object name comes from its body, which this function never sees.
  *
- * The asset layer hands the Worker only `/api/*`, `/enter` (its
- * `run_worker_first`) and a path it has no file for, so every other path is
+ * The asset layer hands the Worker `/api/*` and `/enter` (its
+ * `run_worker_first`), and answers a path it has no file for with its own 404
+ * page (`not_found_handling: "404-page"`; read in every request shape for a
+ * miss under an allowed prefix, with no Worker invocation, on 2026-10-01 —
+ * `worker/RUNBOOK.md` §20). Any other path that does reach the Worker is
  * `missing`.
  */
 export type Target =

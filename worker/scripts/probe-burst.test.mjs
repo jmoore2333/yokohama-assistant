@@ -278,7 +278,7 @@ describe("probeBurst — the whole run, over a fake transport", () => {
       "the pass: every row 403 cf-mitigated: challenge, and the minute's invocations ZERO",
     );
   });
-  it("states the under-prefix mode's own reading, never the zero", async () => {
+  it("states the under-prefix mode's own reading, the 404 page and not the scanner mode's 403", async () => {
     const fake = fakeRequest(() => ({ status: 404, headers: {}, body: "" }));
     const said = [];
     await probeBurst(
@@ -287,7 +287,11 @@ describe("probeBurst — the whole run, over a fake transport", () => {
     );
     const text = said.join("\n");
     expect(text).toContain("the residual's reading: every row 404 with no cf-mitigated");
-    expect(text).not.toContain("invocations ZERO");
+    expect(text, "the measured reading: the asset layer's page in every shape, no invocation").toContain(
+      "the asset layer's cached 404 page in every shape (text/html), not the Worker's answer; the minute's invocations ZERO",
+    );
+    expect(text, "the retired expectation: an invocation per request").not.toContain("equal the request count");
+    expect(text, "the scanner mode's pass is not this mode's").not.toContain("403");
   });
   it("prints a failed request as an error row, names it on stderr, and counts it", async () => {
     const fake = fakeRequest(() => new Error("getaddrinfo ENOTFOUND"));

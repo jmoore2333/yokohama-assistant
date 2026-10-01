@@ -238,9 +238,10 @@ const NOT_FOUND_PAGE: &str = "404.html";
 /// fault (a stale or missing build) is nowhere in the message.
 ///
 /// **Since cycle F that 404 carries the build's own 404 page** (R-F5; spec
-/// §2.5), for parity with the Worker, whose asset layer answers a browser's
-/// navigation miss with the same file: a person who types a wrong address
-/// sees words and a way home instead of a blank. Still a 404, so a script or
+/// §2.5), for parity with the Worker, whose asset layer answers a miss with
+/// the same file (read on 2026-10-01 in every request shape for a miss under
+/// an allowed prefix, with no Worker invocation): a person who types a wrong
+/// address sees words and a way home instead of a blank. Still a 404, so a script or
 /// an install that asked for the file fails as honestly as before. A dist
 /// with no `404.html` answers the bare 404 it always did. The page is no
 /// fence against a scanner, and this host needs none: it has no per-request
@@ -530,8 +531,9 @@ mod tests {
     /// **A miss with an extension answers the 404 page; a route still answers
     /// the shell** (M6.5c2 cycle F, R-F5; spec §2.5; Review Focus 5). The
     /// axum host has no edge, so this is its parity with the Worker's asset
-    /// layer, which answers a browser's navigation miss with the same file
-    /// (`not_found_handling: "404-page"`). The page's BYTES are read from the
+    /// layer, which answers a miss with the same file
+    /// (`not_found_handling: "404-page"`; every request shape under an allowed
+    /// prefix, read on 2026-10-01). The page's BYTES are read from the
     /// dist — the body here is the scratch file's, which no hard-coded page
     /// could match — served 404 as `text/html` the way the shell is. The
     /// extension-less fallback stays the shell, since the client's routes are

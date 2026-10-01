@@ -6,14 +6,16 @@
     <meta name="robots" content="noindex" />
     <title>Nothing here</title>
     <!-- **The page a browser's miss is answered with** (M6.5c2 cycle F,
-         R-F5; spec §2.5). The Worker's asset layer serves it for a NAVIGATION
-         to a path no file answers (`not_found_handling: "404-page"`), and the
-         axum host for a miss that carries an extension (`assets.rs`). It is a
-         courtesy, not a fence: a request that is not a navigation still
-         reaches the Worker, and the edge rule is what keeps a scanner off it.
-         The release never lists it (`scripts/precache.mjs`), so a controlled
-         browser never sees it: its worker answers every navigation from the
-         shell.
+         R-F5; spec §2.5). The Worker's asset layer serves it for a path no
+         file answers (`not_found_handling: "404-page"`): read on 2026-10-01,
+         for a miss under an allowed prefix (`/assets/…`, `/art/…`) in EVERY
+         request shape, with no Worker invocation; and the axum host serves it
+         for a miss that carries an extension (`assets.rs`). It is a
+         courtesy, not a fence: a miss OUTSIDE the allowed set is the edge
+         rule's to refuse, and what answers one without the rule was not
+         counted. The release never lists it (`scripts/precache.mjs`), so a
+         controlled browser never sees it: its worker answers every navigation
+         from the shell.
 
          Self-contained: no script, no stylesheet, no font. The one request
          it makes is the icon, declared so the browser does not ask for
