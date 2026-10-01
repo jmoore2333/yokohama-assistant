@@ -60,8 +60,11 @@
 //    held until it has. The read past the wait is bounded too (M6.5c I-86: a
 //    read that never settles is a state, not a delay): any pass in progress is
 //    waited out (the overlay's own 90 s ends it), then the transport's
-//    `BOUND_MS`; past that the hold goes and the rows read "waiting for a human
-//    check", as a late refusal leaves them.
+//    `BOUND_MS`; past that the hold goes — released by the bound's own timer,
+//    never behind work queued in the meantime — and the rows stay AS THEY ARE.
+//    Only a challenge actually SEEN (a late refusal) writes "waiting for a
+//    human check" (fix round 3). The pass a late answer starts carries the
+//    same bound on its own posts, so none can hang the queue past it.
 // 7. **Every entry point ANSWERS, with ONE named exception.** Each is called
 //    with `void` from a render or an event handler, so a browser with no usable
 //    IndexedDB — a private window, a blocked site — has no outbox rather than
@@ -101,7 +104,7 @@ import {
 } from "./local/facts";
 import { setApplyBusy } from "./swRegister";
 import { turnstileSiteKey } from "./buildValues";
-import { passInProgress } from "./turnstile";
+import { passesSoFar, passInProgress } from "./turnstile";
 
 export type { PendingReason };
 
@@ -363,9 +366,13 @@ async function offer(
   id: string,
   pair: { record: string; table: string },
   interactive: boolean,
+  /** The late answer's pass (rule 6c): the post carries the transport's
+   *  bound, so it cannot hang the queue. */
+  bounded = false,
 ): Promise<Outcome> {
   try {
-    const reply = await api.archive(pair.record, pair.table, { interactive });
+    const post = api.archive(pair.record, pair.table, { interactive });
+    const reply = bounded ? await withinBound(post) : await post;
     await putReceipt(db, id, pair.record);
     announceLanded(id, reply.path);
   } catch (e) {
@@ -430,6 +437,7 @@ async function attempt(
   id: string,
   kind: ArchiveKind | "unknown",
   interactive = false,
+  bounded = false,
 ): Promise<Outcome> {
   try {
     const pair = await localPair(id);
@@ -471,7 +479,7 @@ async function attempt(
       await putPending(db, id, "signed-out");
       return undefined;
     }
-    return await offer(db, id, { record: pair.record, table: pair.table }, interactive);
+    return await offer(db, id, { record: pair.record, table: pair.table }, interactive, bounded);
   } catch (e) {
     // The row records the attempt — which is what `lastTried` means — and the
     // loop above goes on.
@@ -509,10 +517,15 @@ async function markChallenged(ids: readonly string[]): Promise<void> {
 
 /** Try `ids` in order and stop at the first the edge challenged, marking it and
  *  every row after it (rule 6a). The caller holds the queue. */
-async function attemptAll(ids: readonly string[], kind: ArchiveKind, interactive: boolean): Promise<void> {
+async function attemptAll(
+  ids: readonly string[],
+  kind: ArchiveKind,
+  interactive: boolean,
+  bounded = false,
+): Promise<void> {
   await withStore(async (db) => {
     for (let i = 0; i < ids.length; i += 1) {
-      if ((await attempt(db, ids[i]!, kind, interactive)) === "challenged") {
+      if ((await attempt(db, ids[i]!, kind, interactive, bounded)) === "challenged") {
         for (const rest of ids.slice(i + 1)) await putPending(db, rest, "challenged");
         return;
       }
@@ -552,39 +565,80 @@ async function archiveFactFor(
  * the rows it was for "waiting for a human check", as an answer inside the
  * wait would have.
  *
- * **And the read is BOUNDED** (Task 6 fix round 2; M6.5c I-86): a read that
- * never answers would otherwise hold the door's apply for as long as it is
- * out. [`lateBound`] waits out any pass in progress, then `BOUND_MS`; when it
- * elapses first, the hold goes and the rows are marked as a late refusal marks
- * them.
+ * **And the read is BOUNDED** (Task 6 fix rounds 2 and 3; M6.5c I-86): a read
+ * that never answers would otherwise hold the door's apply for as long as it
+ * is out. [`passAwareBound`] waits out any pass in progress, then `BOUND_MS`.
+ *
+ * - **The hold is released by that bound's own timer**, directly, whatever is
+ *   still running. A release queued behind the pass that waited would wait
+ *   with it: that pass may be sitting on a post that never answers, holding
+ *   the serial queue (the r2 re-review's Q1, 600 s and more).
+ * - **Only a challenge SEEN writes the mark.** A late refusal (Cancel, a second
+ *   challenge) marks the rows it was for "waiting for a human check". Running
+ *   out of time, or a read that failed, leaves every row exactly as it was —
+ *   `offline`, `unknown`, landed or dropped meanwhile — so the `online` retry
+ *   still sends them, and a game that landed or was dropped during the bound
+ *   is not written back.
+ * - **The pass a late answer starts is bounded too**: its posts carry the same
+ *   bound (`bounded: true`), so none can hang the queue past it.
  */
 function followLate(landed: Promise<unknown>, interactive: boolean, ids: readonly string[]): void {
   setApplyBusy(true);
-  const bound = lateBound();
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    setApplyBusy(false);
+  };
+  const bound = passAwareBound();
+  void bound.elapsed.then(release);
   const settled = landed.then(
     () => "landed" as const,
     (e: unknown) => (isEdgeRefusal(e) ? ("refused" as const) : ("failed" as const)),
   );
   void Promise.race([settled, bound.elapsed.then(() => "out of time" as const)])
     .then((how) => {
-      bound.stop();
-      if (how === "landed") return interactive ? drainVisible() : drain({ interactive: false });
-      if (how === "refused" || how === "out of time") return serial(() => markChallenged(ids));
+      if (how === "landed") return drain({ interactive: interactive && visible(), bounded: true });
+      if (how === "refused") return serial(() => markChallenged(ids));
       return undefined;
     })
     .catch(() => undefined)
-    .finally(() => setApplyBusy(false));
+    .finally(() => {
+      bound.stop();
+      release();
+    });
+}
+
+/** `p`, or a refusal once [`passAwareBound`] has elapsed — the bound a late
+ *  answer's pass puts on each of its posts (rule 6c). The post itself is not
+ *  aborted: one that lands later is answered `identical` on the next send. */
+async function withinBound<T>(p: Promise<T>): Promise<T> {
+  const bound = passAwareBound();
+  try {
+    return await Promise.race([
+      p,
+      bound.elapsed.then((): never => {
+        throw new Error("the server did not answer in time");
+      }),
+    ]);
+  } finally {
+    bound.stop();
+  }
 }
 
 /**
- * How long a late read is given (Task 6 fix round 2): every pass in progress
- * waited out first — the overlay's widget ends by its own 90 s, so a person
- * mid-check is never cut off — and then `BOUND_MS`, the transport's own bound,
- * with no pass running. A pass that starts during that wait (a read answered
- * with the challenge late) is waited out in turn. `stop` clears what is armed
- * once the read has settled first.
+ * The transport's bound, made safe for a person mid-check (Task 6 fix rounds 2
+ * and 3): every pass in progress waited out first — the overlay's widget ends
+ * by its own 90 s, so a person mid-check is never cut off — and then
+ * `BOUND_MS` with no pass running. **A pass that ends during that sleep earns
+ * the request after it a full `BOUND_MS` of its own**: one still running at
+ * the wake is waited out, and one that began AND ended inside the sleep is read
+ * from `passesSoFar()` (a pass that landed moves it), so the retry it sends is
+ * never left the sleep's last moments (the r2 re-review's Q3). A pass that
+ * FAILED moves nothing: its request is the edge's refusal, settled already.
+ * `elapsed` resolves at the bound, or at `stop`, which clears what is armed.
  */
-function lateBound(): { elapsed: Promise<void>; stop: () => void } {
+function passAwareBound(): { elapsed: Promise<void>; stop: () => void } {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let wake: (() => void) | undefined;
@@ -598,11 +652,12 @@ function lateBound(): { elapsed: Promise<void>; stop: () => void } {
         );
         continue;
       }
+      const before = passesSoFar();
       await new Promise<void>((resolve) => {
         wake = resolve;
         timer = setTimeout(resolve, BOUND_MS);
       });
-      if (!stopped && !passInProgress()) return;
+      if (!stopped && !passInProgress() && passesSoFar() === before) return;
     }
   })();
   return {
@@ -674,7 +729,14 @@ export async function noteGameOver(id: string): Promise<void> {
  * still waiting and stops. The default is the background pass; a visible tab's
  * is [`drainVisible`].
  */
-export async function drain(opts: { interactive?: boolean } = {}): Promise<void> {
+export async function drain(
+  opts: {
+    interactive?: boolean;
+    /** The pass a late archive-fact answer starts (rule 6c): each post carries
+     *  the transport's bound. Internal to this module's `followLate`. */
+    bounded?: boolean;
+  } = {},
+): Promise<void> {
   const interactive = opts.interactive ?? false;
   await serial(async () => {
     // **Rule 6b**: a `signed-out` row under a keyed build with no name stored
@@ -728,6 +790,7 @@ export async function drain(opts: { interactive?: boolean } = {}): Promise<void>
         waiting.map((r) => r.id),
         kind,
         interactive,
+        opts.bounded ?? false,
       );
     } finally {
       setApplyBusy(false);
