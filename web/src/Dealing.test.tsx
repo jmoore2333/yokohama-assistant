@@ -20,7 +20,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
 import { ApiError, DISPLAY_NAME_KEY } from "./api";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { BACKOFF_MS, endSentence } from "./signal";
+import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 import type { DealView } from "./types";
@@ -61,10 +62,29 @@ const dealThen = (...replies: DealView[]) => {
   const queue = [...replies];
   return (call: ApiCall): Reply | undefined => {
     if (call.path.endsWith("/deal")) return queue.shift() ?? replies[replies.length - 1];
-    if (call.path.endsWith("/events")) return wire.eventsDealing;
+    // The signal is a stream since M6.3, and a cell that is not about it does
+    // not answer one at all: `stubApi` holds an unscripted stream open and
+    // silent, which is what a reachable server with nothing to report does.
     return undefined;
   };
 };
+
+/** The table's change stream, and the frames a cell writes on it. `Dealing`
+ *  declares `frames: "value"`, so the frame's own body IS the `Events` this
+ *  screen reads — there is no second request behind it (R-7.1). */
+const signalling = (onOpen?: (open: number) => Array<[string, unknown]>) => {
+  const stream = fakeStream(onOpen);
+  return {
+    stream,
+    at: (call: ApiCall): Reply | undefined =>
+      call.path.endsWith("/stream") ? stream.reply(call) : undefined,
+  };
+};
+
+/** Let a reply chain settle without moving the clock — the harness's own
+ *  [`flush`]: a frame arrives over turns that are not all microtasks, and NOT
+ *  after an interval. */
+const settle = flush;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -107,36 +127,36 @@ describe("the dealing screen", () => {
     expect(stub.matching("GET", "/deal")).toHaveLength(2);
   });
 
-  // **The poll, and it is the only way a browser learns that SOMEBODY ELSE
+  // **The signal, and it is the only way a browser learns that SOMEBODY ELSE
   // finished the dealing.** A keep of my own answers with the table (the cell
   // below); a keep at another browser does not reach this one at all, so the
-  // screen asks. Task 9 replaces this `setInterval` with the shared hook; the
-  // contract it holds — open the game when `status` leaves `dealing` — is the
-  // same one.
+  // screen listens. M6.3 replaced the transport under it and the contract it
+  // holds — open the game when `status` leaves `dealing` — is the same one.
   it("opens the game when the signal says playing", async () => {
     vi.useFakeTimers();
     const onPlaying = vi.fn();
-    let status = "dealing";
+    const { stream, at } = signalling();
     stubApi((call) => {
       if (call.path.endsWith("/deal")) return wire.dealWaiting;
-      if (call.path.endsWith("/events")) return { ...wire.eventsDealing, status };
-      return undefined;
+      return at(call);
     });
     render(<Host onPlaying={onPlaying} />);
+    // **Connected first**, gated on the fact: a frame written to a body nobody
+    // has opened reaches nobody, and nothing re-delivers it.
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", wire.eventsDealing);
+    await settle();
     expect(onPlaying).not.toHaveBeenCalled();
 
-    status = "playing";
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", { ...wire.eventsDealing, status: "playing" });
+    await settle();
     expect(onPlaying).toHaveBeenCalledTimes(1);
 
     // Once, and then never again: the screen this component is on is being
     // replaced, and a second call would open the game a second time.
+    stream.push("signal", { ...wire.eventsDealing, status: "playing" });
+    await settle();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9000);
     });
@@ -160,23 +180,22 @@ describe("the dealing screen", () => {
       // refusal is thrown, so that case never reaches this screen at all.
       .mockRejectedValueOnce(new ApiError("the game could not be read", 500))
       .mockResolvedValue(undefined);
+    const { stream, at } = signalling();
     stubApi((call) => {
       if (call.path.endsWith("/deal")) return wire.dealWaiting;
-      if (call.path.endsWith("/events")) return { ...wire.eventsDealing, status: "playing" };
-      return undefined;
+      return at(call);
     });
     render(<Host onPlaying={onPlaying} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", { ...wire.eventsDealing, status: "playing" });
+    await settle();
     expect(onPlaying).toHaveBeenCalledTimes(1);
     // The player is told, rather than left on a screen that has quietly given up.
     expect(screen.getByText(/could not be read/)).toBeInTheDocument();
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", { ...wire.eventsDealing, status: "playing" });
+    await settle();
     expect(onPlaying).toHaveBeenCalledTimes(2);
 
     // And now it stops: the game is open, and a third attempt would open it
@@ -321,41 +340,80 @@ describe("the dealing screen", () => {
   // silently and the deal sits there until the next click 404s. `App` and
   // `OpenTable` already carried these three lines; this consumer did not.
   //
-  // The SENTENCE is the point, not merely the leave: it is the server's, and it
-  // is what the lobby then shows about a screen that went by itself.
-  it("leaves with the server's sentence when the table is abandoned under it", async () => {
+  // **This cell drives a DROPPED CONNECTION and a 404 on the reopen** — a
+  // server restart, not a delete (final review I-2). The abandon itself writes
+  // an `end` FRAME, which is the cell below; the title used to claim that path
+  // and this one never took it. The sentence here is the server's own, off the
+  // refusal that ends the ladder.
+  it("leaves with the refusal's sentence when the reopen finds the table gone", async () => {
     vi.useFakeTimers();
     const onLeave = vi.fn();
+    // **The SERVER's sentence, over the stream's own refusal.** A table
+    // abandoned under this screen refuses the open with a 404, and the reason
+    // and the sentence both come off that refusal.
     let gone = false;
-    stubApi((call) => {
+    const { stream, at } = signalling();
+    const stub = stubApi((call) => {
       if (call.path.endsWith("/deal")) return wire.dealWaiting;
-      if (call.path.endsWith("/events"))
-        return gone
-          ? { status: 404, body: { error: "no such game" } }
-          : wire.eventsDealing;
-      return undefined;
+      if (gone && call.path.endsWith("/stream"))
+        return { status: 404, body: { error: "no such game" } };
+      return at(call);
     });
     render(<Host onLeave={onLeave} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", wire.eventsDealing);
+    await settle();
     // Anti-vacuity: a live table is still being waited on.
     expect(onLeave).not.toHaveBeenCalled();
 
+    // The table goes, and the connection this screen is holding ends with it.
     gone = true;
+    stream.close();
+    await settle();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! + 100);
     });
+    await settle();
     expect(onLeave).toHaveBeenCalledTimes(1);
     expect(onLeave.mock.calls[0]![0]).toBe("no such game");
 
-    // And the poll is over: a permanent 404 asked again is a client waiting for
-    // an answer it already has.
+    // And it is over: a permanent 404 asked again is a client waiting for an
+    // answer it already has.
+    const opens = stub.matching("GET", "/stream").length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000);
+      await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(stub.matching("GET", "/stream")).toHaveLength(opens);
+  });
+
+  // **A REAL abandon, which is an `end` frame and carries no words** (final
+  // review I-2). `Signals::end` writes `{"reason":"deleted"}` and nothing else,
+  // and this screen hands `end.sentence` straight to `onLeave` — so before the
+  // fix the creator abandoning a table took everyone else's dealing screen to
+  // the lobby in SILENCE, while the cell above claimed otherwise about a path
+  // it did not drive. The words are `signal.ts`'s `endSentence`, one place for
+  // all four consumers.
+  it("leaves with a sentence when the abandon arrives as an end frame", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    const { stream, at } = signalling();
+    stubApi((call) => {
+      if (call.path.endsWith("/deal")) return wire.dealWaiting;
+      return at(call);
+    });
+    render(<Host onLeave={onLeave} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    expect(onLeave).not.toHaveBeenCalled();
+
+    stream.push("end", { reason: "deleted" });
+    await settle();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0], "the lobby is told WHY, not nothing at all").toBe(
+      endSentence("deleted"),
+    );
+    expect(onLeave.mock.calls[0]![0]).toMatch(/abandoned/);
   });
 
   // ---- the name on the keep (spec §5.6) ------------------------------------

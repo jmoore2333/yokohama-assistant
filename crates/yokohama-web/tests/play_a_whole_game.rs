@@ -226,6 +226,98 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
 }
 
 
+/// **What a watcher's payload must be, wherever it came from** (M6.3 §9.4).
+///
+/// A spectator holds no seat, so there is no seat to unmask: `seat` is null,
+/// every Players row says its hand is hidden, and there is no `Hand` panel on
+/// the frame at all. The three statements are checked separately because a
+/// server could make any two of them true and leak through the third.
+fn assert_watching(payload: &Value, at: &str) {
+    assert_eq!(payload["seat"], Value::Null, "a watcher holds no seat ({at}): {payload}");
+    let panels = payload["frame"]["dashboard"].as_array().expect("a dashboard");
+    let players = panels.iter().find_map(|p| p.get("Players")).expect("a Players panel");
+    let rows = players["players"].as_array().expect("one row per seat");
+    assert_eq!(rows.len(), 2, "both seats are on a watcher's panel ({at}): {players}");
+    for p in rows {
+        assert_eq!(p["hand_hidden"], true, "every hand is hidden from a watcher ({at}): {p}");
+    }
+    assert!(
+        panels.iter().all(|p| p.get("Hand").is_none()),
+        "a watcher is handed no Hand panel ({at}): {payload}",
+    );
+}
+
+/// **The public half of a frame: what a watcher and a player must AGREE on.**
+///
+/// The `Hand` panels come out because a watcher has none — that is
+/// [`assert_watching`]'s claim, not this one. `hand_hidden` is normalised for
+/// the same reason and no other: it is the masking statement itself, asserted
+/// on both sides already, so leaving it in would make this compare re-state a
+/// difference it knows about while hiding every difference it does not. What is
+/// left is the game.
+fn public_dashboard(frame: &Value) -> Vec<Value> {
+    frame["frame"]["dashboard"]
+        .as_array()
+        .expect("a dashboard")
+        .iter()
+        .filter(|p| p.get("Hand").is_none())
+        .map(|p| {
+            let mut p = p.clone();
+            if let Some(rows) = p.pointer_mut("/Players/players").and_then(Value::as_array_mut) {
+                for r in rows.iter_mut() {
+                    r["hand_hidden"] = Value::Bool(true);
+                }
+            }
+            p
+        })
+        .collect()
+}
+
+/// One position, read by the watcher and by a player, and compared.
+///
+/// `open_hands` counts the player's frames that carried a hand with cards in it
+/// BEFORE the strip — the anti-vacuity partner for the compare, without which
+/// "the two dashboards agree once the hands are taken out" is a sentence about
+/// payloads that may never have differed.
+async fn watch_position(api: &Api, green: &str, player: &str, k: u64, open_hands: &mut usize) {
+    let (status, live) = api.call_as(green, "GET", "/api/games/two", None).await;
+    assert_eq!(status, StatusCode::OK, "{live}");
+    assert_watching(&live, &format!("live, {k} events"));
+
+    let (status, watched) = api.call_as(green, "GET", &format!("/api/games/two/at/{k}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{watched}");
+    assert_watching(&watched, &format!("at {k}"));
+
+    let (status, played) = api.call_as(player, "GET", &format!("/api/games/two/at/{k}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{played}");
+    if played["frame"]["dashboard"]
+        .as_array()
+        .expect("a dashboard")
+        .iter()
+        .filter_map(|p| p.get("Hand"))
+        .any(|h| h["cards"].as_array().is_some_and(|c| !c.is_empty()))
+    {
+        *open_hands += 1;
+    }
+
+    // **The same GAME, and `decision` is excluded by construction**: the
+    // player's is built for the player's seat and the watcher has none, which is
+    // a difference the spec names rather than a finding.
+    assert_eq!(
+        watched["frame"]["board"], played["frame"]["board"],
+        "a watcher and a player see the same board at {k}",
+    );
+    assert_eq!(
+        watched["frame"]["title"], played["frame"]["title"],
+        "a watcher and a player see the same title at {k}",
+    );
+    assert_eq!(
+        public_dashboard(&watched),
+        public_dashboard(&played),
+        "a watcher and a player see the same dashboard at {k}, once the hands are out",
+    );
+}
+
 /// **The gate's second arm: two PEOPLE play to a winner, and neither one is ever
 /// handed the other's hand.**
 ///
@@ -253,6 +345,17 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
 /// whole `ClientState` built for its caller (§5.1) — it is the payload the
 /// client renders next — so leaving it unread would have left the busiest
 /// surface on this route unasserted.
+///
+/// **And a THIRD identity watches the whole thing** (M6.3 §9.4). Green holds no
+/// seat at this table and was never named at it: the table is locked, so its
+/// first read is refused, `unlock` buys it the right to read, and from there it
+/// is served every position the two players are — `GET …/{id}` live and
+/// `at/{k}` at each `k` — with `seat: null`, every hand hidden and no `Hand`
+/// panel at all. The two halves of that are one sentence read from both ends:
+/// what a watcher sees is the same GAME (`board`, `title` and the dashboards
+/// with the hands taken out are EQUAL to a player's at the same position) and
+/// none of the hands. A single-identity arm cannot say either, and neither can
+/// the two-player arm alone: both of its callers hold a seat.
 ///
 /// **It probes a placement, and it has to.** [`choose`] answers every placement
 /// picker with `confirm` on an empty selection, which is legal and keeps the
@@ -334,6 +437,32 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         assert_eq!(status, StatusCode::OK, "{kept}");
     }
 
+    // **The watcher arrives.** Green was told nothing about this table and holds
+    // no seat at it. A locked table refuses its read outright — and the refusal
+    // is about the TABLE, not about which seat is asking — so `unlock` is the
+    // whole of the ladder between a link and a game somebody is here to watch.
+    let green = "green@wire.test";
+    let (status, refused) = api.call_as(green, "GET", "/api/games/two", None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a locked table refuses a stranger's read before the password: {refused}",
+    );
+    // **The SENTENCE, because the status alone does not witness the lock**
+    // (final review M-3). An UNLOCKED playing table refuses a stranger with the
+    // same 403 until they are admitted, so a cell that read only the number
+    // would pass against a table that had no password at all — and the `unlock`
+    // below answers 200 at such a table too. This is the one assertion in the
+    // arm that can tell the two apart.
+    assert_eq!(
+        refused["error"], "this table is locked — unlock it first",
+        "the refusal is about the LOCK, not about which seat is asking: {refused}",
+    );
+    let (status, unlocked) = api
+        .call_as(green, "POST", "/api/games/two/unlock", Some(serde_json::json!({ "password": "sesame" })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "the password buys the right to read: {unlocked}");
+
     // **Every payload this arm sees goes through here, and the seat it is
     // checked against is passed IN.**
     //
@@ -393,6 +522,14 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // as `wire_fixtures.rs`'s walk.
     let mut stuck = 0usize;
     let mut last_prompt = Value::Null;
+    // The position green has already been read at, so the watcher's reads are
+    // one per APPLIED MOVE rather than one per loop pass — see below.
+    let mut watched_position: Option<u64> = None;
+    let mut positions_watched = 0usize;
+    // How many of red's replay frames carried an OPEN hand before the strip.
+    // Without it "the dashboards agree once the hands are taken out" is a claim
+    // about two payloads that may never have differed.
+    let mut open_hands_seen = 0usize;
     let (_, mut state) = api.call_as(red, "GET", "/api/games/two", None).await;
 
     while state["over"] != Value::Bool(true) {
@@ -401,6 +538,23 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         let seat = state["to_move"].as_u64().expect("a seat to move");
         let (mover, watcher, watcher_seat) =
             if seat == 0 { (red, blue, 1) } else { (blue, red, 0) };
+
+        // **Green reads the same position the players are at, every time one is
+        // reached.**
+        //
+        // Keyed on the EVENT COUNT and not on the loop pass, for a reason that
+        // is about cost rather than about the claim: a picker step applies no
+        // event, and `at/{k}` replays `k` events from setup, so a read per pass
+        // would re-replay the same position several times a turn for the whole
+        // game. Every position both players pass through is still read — this
+        // loop cannot advance the count without coming back round — and the
+        // last one is read after the loop, where the game is over.
+        let k = state["events"].as_u64().expect("an event count");
+        if watched_position != Some(k) {
+            watched_position = Some(k);
+            positions_watched += 1;
+            watch_position(&api, green, red, k, &mut open_hands_seen).await;
+        }
         let (status, mine) = api.call_as(mover, "GET", "/api/games/two", None).await;
         assert_eq!(status, StatusCode::OK, "{mine}");
         assert_built_for(&mine, mover, seat);
@@ -506,6 +660,22 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // time — without this the paragraph above about a game that never places
     // would be describing something this arm does not do.
     assert!(selections > 0, "the arm never selected an area, so it never exercised a placement picker");
+
+    // **The last position, where the game is over.** The loop reads a position
+    // on its way round and so cannot read the one it leaves on; this is that
+    // one, and it is also the only read here taken at a FINISHED table, which
+    // is a state a watcher is admitted to for its own reasons.
+    let last = state["events"].as_u64().expect("an event count");
+    watch_position(&api, green, blue, last, &mut open_hands_seen).await;
+    assert!(
+        positions_watched > 1,
+        "the watcher read {positions_watched} positions, so it never followed a game",
+    );
+    assert!(
+        open_hands_seen > 0,
+        "no player frame in the whole game carried an open hand, so stripping the hands \
+         out of the compare above proved nothing",
+    );
 
     // **`events.status` reads `over`, and nothing else in this crate asserts
     // that** — the client's poll branches on it to stop walking, and until this

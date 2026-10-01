@@ -11,13 +11,21 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Lobby } from "./Lobby";
-import { isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 
-/** Both scopes, from the corpus's own two listings. */
+/** All three scopes, from the corpus's own listings.
+ *
+ *  **`playing` answers EMPTY by default, and that is deliberate.** The corpus's
+ *  playing listing carries the same `wire` table the other two do, so answering
+ *  it here would put that row in a THIRD section and every unscoped read in this
+ *  file would fail on an ambiguity that has nothing to do with the cell. The
+ *  section's own cell supplies the listing, which is the shape `renderApp`'s
+ *  stub already uses for the open scope. */
 const lists = (call: ApiCall): Reply | undefined => {
   if (isGamesList(call, "open")) return wire.gamesOpen;
+  if (isGamesList(call, "playing")) return { ...wire.gamesPlaying, games: [] };
   if (isGamesList(call, "mine")) return wire.games;
   return undefined;
 };
@@ -33,6 +41,11 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     if (mine !== undefined) return mine;
     const l = lists(call);
     if (l !== undefined) return l;
+    // The lobby listens to the HOUSE stream (M6.3 R-3.4). A cell about that
+    // scripts its own; this is the resting answer for the rest, and without it
+    // every cell in this file would have the lobby's open refused and its link
+    // reading "reconnecting…" while the cell asserted about something else.
+    if (call.path.endsWith("/api/stream")) return openStream();
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -64,6 +77,40 @@ describe("the lobby", () => {
     expect(within(open).getAllByRole("listitem")).toHaveLength(wire.gamesOpen.games.length);
     expect(within(mine).getByRole("link", { name: "wire" })).toBeInTheDocument();
     expect(within(open).getByRole("link", { name: "wire2" })).toBeInTheDocument();
+  });
+
+  // **The third section (R-3.9): a game you can WATCH, found without a link.**
+  // The rows are the other two sections' — `tableWord` says "waiting on <name>"
+  // or names the winner, the lock marker says a password will be wanted — and
+  // the one thing this section must NOT carry is the Abandon control, which is
+  // the creator's and belongs to Your games alone (M6.2 ruling #13).
+  it("lists the games in progress, with no abandon control on them", async () => {
+    const { stub } = show((call) =>
+      isGamesList(call, "playing") ? wire.gamesPlaying : undefined,
+    );
+    const playing = section("Games in progress");
+    const row = (await within(playing).findByRole("link", { name: "wire" })).closest("li")!;
+    // The scope was really asked for, alongside the other two.
+    expect(stub.calls.filter((c) => isGamesList(c, "playing"))).toHaveLength(1);
+    expect(within(playing).getAllByRole("listitem")).toHaveLength(
+      wire.gamesPlaying.games.length,
+    );
+    // The row is a LINK to the table, which is what makes it openable in a new
+    // tab and readable as a destination.
+    expect(within(playing).getByRole("link", { name: "wire" })).toHaveAttribute(
+      "href",
+      "#/t/wire",
+    );
+    expect(row).toHaveTextContent("2P ·");
+    // The corpus's playing table is locked, so the mark a watcher needs before
+    // they click is on the row.
+    expect(wire.gamesPlaying.games[0]!.locked).toBe(true);
+    expect(within(row).getByLabelText("password required")).toBeInTheDocument();
+    // **Not yours to abandon.** `created_by` on the corpus row is this browser's
+    // own address, so the control would be drawn by a `created_by === me` test
+    // alone — the section is what withholds it.
+    expect(wire.gamesPlaying.games[0]!.created_by).toBe(ME);
+    expect(within(playing).queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
   it("says what each table is doing, and who is at it", async () => {

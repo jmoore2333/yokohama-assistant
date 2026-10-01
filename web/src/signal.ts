@@ -1,32 +1,41 @@
-// The polled change signal (M6.1 §6, room plan §1), and since M6.2 the polling
-// rule ITSELF (spec §5.5).
+// The change signal (M6.1 §6, room plan §1), and since M6.3 the TRANSPORT
+// itself (spec §5.1).
 //
 // **One hook, four consumers.** `usePolled` owns the visibility rule (R-P8),
-// the three-second cadence, the backoff and the two refusals that end a poll
-// rather than slowing it down; `useSignal` is the instance whose resource is a
-// game's `GET …/events`, and the dealing screen, the lobby and the open table
-// are the other three. The generalization is what makes M6.3 one change: the
-// transport under this hook is replaced — a held request, then a stream — and
-// nothing downstream of a consumer's callback knows how the answer arrived.
+// the connection, the backoff and the three refusals that end a signal rather
+// than slowing it down; `useSignal` is the instance whose resource is a game's
+// stream, and the dealing screen, the lobby and the open table are the other
+// three. That generalization is what made M6.3 one change: the reader under
+// this hook was replaced and nothing downstream of a consumer's callback knows
+// how the answer arrived.
 //
-// **The signal is deliberately separate from the fetch** (ruling R-P9).
-// `GET …/events` answers four fields and builds no frame, so a client learns
-// "this game now has N events" for a few bytes and goes and gets a board only
-// when that moved.
+// **There is no interval any more** (R-3.2). A connected reader is a promise
+// waiting on a body, so a visible tab holds ONE open request per resource and
+// arms NOTHING; the server writes a frame when something moves. The timer that
+// is left serves only the two cases where there is no connection to wait on:
+// the ladder after a failure, and the held-request arm's re-ask.
 //
-// **Nothing is asked from a hidden tab** (ruling R-P8). A browser with eight
-// backgrounded games is otherwise eight requests every three seconds for as
-// long as it is open, for boards nobody is looking at. On return the client
-// asks ONCE, at once, and resumes — and says "refreshing" while it does,
-// because the board on screen is as old as the tab was hidden and "live" would
-// be a claim it cannot make yet.
+// **The reader is a `fetch`, not an `EventSource`** (spec §0.1) — `sse.ts` says
+// why in one line: `EventSource` cannot carry a header, and the `claimed` door
+// is one. It is also the reason a hidden tab can let go at all, since an
+// `AbortController` comes with the `fetch` and not with the other.
+//
+// **The signal is deliberately separate from the fetch** (ruling R-P9). A
+// `signal` frame is four fields and no frame built, so a client learns "this
+// table now has N events" for a few bytes and goes and gets a board only when
+// that moved.
+//
+// **Nothing is read from a hidden tab** (ruling R-P8). A browser with eight
+// backgrounded games is otherwise eight held connections for as long as it is
+// open, for boards nobody is looking at. On return the reader is opened again
+// and the server's ON-CONNECT frame is the ask — and the hook says "refreshing"
+// meanwhile, because the board on screen is as old as the tab was hidden and
+// "live" would be a claim it cannot make yet.
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, signalKind } from "./api";
+import { readStream } from "./sse";
 import type { Events } from "./types";
-
-/** How often a visible, active tab asks. */
-export const VISIBLE_MS = 3000;
 
 /** The wait after the 1st, 2nd, … consecutive failure, and then forever.
  *
@@ -37,7 +46,36 @@ export const VISIBLE_MS = 3000;
  *  it hardest exactly while it was least able to answer. */
 export const BACKOFF_MS = [2000, 4000, 8000, 16000, 30000] as const;
 
-/** What the poll can currently say for itself.
+/** How long the HELD arm waits before asking again after an answer — for a
+ *  `"wake"` source ONLY.
+ *
+ *  **It is not one value for both arms, and the correction is the final
+ *  review's I-3.** R-pre-5 set a single 3 s because reopening at zero is a hot
+ *  loop against three table listings; that is true of the lobby and the open
+ *  table, whose `once` answers immediately, and false of the game's and the
+ *  dealing screen's, which is `GET …/events?wait=25` and HOLDS on the server.
+ *  Worse than merely wasteful: `?wait` subscribes and waits for a NEW bump and
+ *  nothing compares the caller's count (R-3.14), so a bump landing inside the
+ *  3 s gap was not seen until the NEXT request's 25 s deadline — a 27–28 s
+ *  latency where the poll this replaces had 3 s, under a hook whose whole claim
+ *  is to be faster. A source whose `once` holds is therefore re-asked at 0 and
+ *  only a `"wake"` source waits this long.
+ *
+ *  **The residual, which re-asking at zero does not close.** A bump that lands
+ *  inside one request's own round trip — after the server answered and before
+ *  the next subscribe — still waits for the bump after it, or for the 25 s
+ *  deadline. Closing that needs the server to answer at once when `after`
+ *  differs from the current count, which is a route change and not a reader
+ *  one. Recorded here because R-plan-5's "the fallback is a one-line change in
+ *  the client's reader" is the sentence this limit belongs to; the arm is
+ *  dormant while `signalKind()` is `"sse"`. */
+export const HELD_REASK_MS = 3000;
+
+/** How long the game's held request asks the server to wait, in seconds. The
+ *  server's own ceiling is 25 (spec §3.3); asking for more is refused. */
+const HELD_WAIT_S = 25;
+
+/** What the signal can currently say for itself.
  *
  *  `live` is the resting state and shows NOTHING on screen — a permanent green
  *  dot is a thing people stop seeing. The other two are worth a word each. */
@@ -49,30 +87,57 @@ export function nextDelay(failures: number): number {
   return BACKOFF_MS[Math.min(Math.max(failures, 0), BACKOFF_MS.length - 1)]!;
 }
 
-/** The resource a poll watches (spec §5.5).
+/** The resource a signal watches (spec §5.5, §5.1).
  *
  *  **`key` is the effect's ONLY dependency beside `active`**: a stable string
- *  for the resource — a game id, the literal `"lobby"` — while `once` and every
- *  callback ride in refs. A consumer's closure is a new function on every
- *  render (see `usePolled` below), so a `Source` object is rebuilt each time and
- *  its identity must not matter.
+ *  for the resource — a game id, the literal `"lobby"` — while `once`, `stream`
+ *  and every callback ride in refs. A consumer's closure is a new function on
+ *  every render, so a `Source` object is rebuilt each time and its identity must
+ *  not matter.
  *
- *  **`stream` is carried and UNUSED in M6.2.** M6.3 reads it (its spec §5.1),
- *  which is why the shape is fixed here rather than there: a field added later
- *  is a field every consumer has to be revisited for. */
+ *  **`stream` is what the SSE arm reads and `once` is what the held arm reads**,
+ *  and both are declared because a deployment decides which (see `signalKind`).
+ *  A `"wake"` source reads `once` under BOTH arms — see `frames`. */
 export interface Source<T> {
   key: string;
   once: () => Promise<T>;
   /** The resource's stream URL. */
   stream: string;
+  /** What a frame off that stream MEANS, and it is not the same question for
+   *  all four consumers (ruling R-7.1).
+   *
+   *  `"value"` — the frame's `data` IS a `T`, parsed and handed straight to
+   *  `onValue`. The game and the dealing screen declare this, and it is what
+   *  makes R-3.2 true for them: the whole answer arrives on the stream and
+   *  `GET …/events` is never called at all.
+   *
+   *  `"wake"` (the default) — the frame is a wake-up and `once()` is the
+   *  answer. The open table's value is a `TableView` and the lobby's is two
+   *  listings, while the frames they receive are an `Events` and a bare
+   *  sequence number (R-3.4, and deliberately so: a `watch` channel coalesces,
+   *  so a frame naming a table would sometimes name the wrong one). Handing
+   *  such a frame over as a `T` would have the lobby render `{seq: 4}`. */
+  frames?: "value" | "wake";
 }
 
-/** Why a poll STOPPED, as opposed to failing and backing off.
+/** What the LOBBY is told about a signal that ended on a FRAME.
  *
- *  A 404 is permanent — the game was deleted, the table abandoned — and a 403
- *  is a refusal about who is asking, not about whether the server is reachable.
- *  Retrying either is a client asking a question that already has its final
- *  answer, while the screen goes on saying "reconnecting…" about something that
+ *  **The frame carries a reason and no words** — `{"reason":"deleted"}` is the
+ *  whole of what `Signals::end` writes — and each consumer hands `end.sentence`
+ *  to its own leave. Only the game screen had a fallback, so a real abandon
+ *  took the dealing screen and the open table to the lobby in silence, and so
+ *  did an open table filling its last seat without the stranger watching it
+ *  (a 403 read as `gone`). The two refusals that END a signal already carry the
+ *  server's own message and are not routed through here; these two are the
+ *  frames, and the words are the client's because the frame has none. */
+export const endSentence = (reason: "deleted" | "gone"): string =>
+  reason === "deleted" ? "this table was abandoned" : "this table is no longer available";
+
+/** Why a signal STOPPED, as opposed to failing and backing off.
+ *
+ *  The server said this stream is over (`deleted`), the resource is gone (404)
+ *  or it is not ours to read (403). None of the three changes by being asked
+ *  again, while the screen goes on saying "reconnecting…" about something that
  *  is not coming back. */
 export interface End {
   reason: "deleted" | "gone" | "refused";
@@ -80,31 +145,27 @@ export interface End {
 }
 
 /**
- * Ask `source.once()` on a timer while the tab is VISIBLE and `active`, and
- * hand each answer to `onValue`.
+ * Watch `source` while the tab is VISIBLE and `active`, and hand every answer
+ * to `onValue`.
  *
  * `active` is the caller's "there is something to wait for": a screen holding
- * the prompt has nothing to ask about, and a finished game has nothing to wait
+ * the prompt has nothing to wait on, and a finished game has nothing to wait
  * for at all. A `source` of `null` is the same answer for "no resource on
  * screen".
  *
- * **`once`, `onValue` and `onEnd` are read through refs, so the effect installs
- * ONCE.** Every consumer's callback closes over state and is therefore a new
- * function on every render; an effect that depended on one would tear the timer
- * down and arm a new one each time, and a poll re-armed faster than its own
- * interval never reaches its first tick. The refs are written during render,
- * which is the idiom `Dealing`'s own hand-over callback already uses.
+ * **`source`, `onValue` and `onEnd` are read through refs, so the effect
+ * installs ONCE.** Every consumer's callback closes over state and is therefore
+ * a new function on every render; an effect that depended on one would abort
+ * its reader and open another each time — a connection per render. The refs are
+ * written during render, which is the idiom `Dealing`'s own hand-over callback
+ * already uses.
  *
  * **There is no 401 handling here and there must not be.** `api.ts` routes
- * every 401 to the door from inside `call` (ruling R-7.1), so a signed-out poll
- * unmounts the screen it was polling for; a second handler here would be a
- * second thing racing to decide which screen this is.
- *
- * **This hook does NOT ask on arm.** The first request is one interval away,
- * because every consumer already holds the thing it is watching — the game was
- * fetched to be drawn, the deal to be chosen from. A consumer that arms the
- * poll over nothing (the lobby) fetches once itself; making the hook ask at
- * zero instead would double every other consumer's opening request.
+ * every 401 to the door from inside `call` (ruling R-7.1 of M6.1), so a
+ * signed-out screen unmounts; a second handler here would be a second thing
+ * racing to decide which screen this is. The STREAM's own 401 is not routed
+ * there — `readStream` does not go through `call` — and does not need to be: it
+ * lands on the ladder, and the next ordinary call takes the player to the door.
  */
 export function usePolled<T>(
   source: Source<T> | null,
@@ -115,10 +176,10 @@ export function usePolled<T>(
   const [link, setLink] = useState<Link>("live");
   /** Consecutive failures, as a REF: it is read by the next attempt and shown
    *  by nothing, so a state variable would only re-render the whole consumer
-   *  once per failed request. */
+   *  once per failed open. */
   const failures = useRef(0);
-  const once = useRef(source?.once ?? null);
-  once.current = source?.once ?? null;
+  const src = useRef(source);
+  src.current = source;
   const latest = useRef(onValue);
   latest.current = onValue;
   const ended = useRef(onEnd);
@@ -126,75 +187,214 @@ export function usePolled<T>(
   const key = source?.key ?? null;
 
   useEffect(() => {
-    // **The link describes a poll that is RUNNING, so a poll that stops stops
+    // **The link describes a signal that is RUNNING, so one that stops stops
     // saying anything.** Without this the last word stands after the effect is
     // torn down and nothing is left to clear it: switch games from the menu
     // while the server is unreachable and the new game's banner opens reading
-    // "reconnecting…" about a request nobody made. A no-op on mount and on
+    // "reconnecting…" about a connection nobody opened. A no-op on mount and on
     // every re-run that was already live — React bails on an identical value.
     setLink("live");
     if (!key || !active) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    // **The cleanup's flag, and it is what makes a request in flight harmless.**
-    // Clearing the timer stops the NEXT ask; it does nothing about the one
-    // already awaiting a response, which would otherwise land after the screen
-    // is gone, set state on an unmounted tree and — worse — schedule a
-    // successor that no cleanup is left to cancel.
+    // **The cleanup's flag, and it is what makes a read in flight harmless.**
+    // Aborting stops the reader; it does nothing about a frame already being
+    // handed over or a `once` already awaiting its answer, which would
+    // otherwise land after the screen is gone and set state on an unmounted
+    // tree.
     let stopped = false;
+    let controller: AbortController | null = null;
     const visible = () => document.visibilityState === "visible";
 
     const schedule = (ms: number) => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => void ask(), ms);
+      timer = setTimeout(() => void open(), ms);
     };
 
-    const ask = async () => {
-      if (stopped || !visible() || !once.current) return;
+    // ---- the `"wake"` arm's re-read ----------------------------------------
+    //
+    // **Coalesced, because a frame is cheap and the read behind it is not.**
+    // The lobby's `once` is three table listings, and a game under way bumps the
+    // house on every move; without this a burst of frames would queue a listing
+    // each. One read at a time, and a frame that arrives during one is not lost
+    // — it sets `again`, and the read is repeated once the first has landed.
+    let reading = false;
+    let again = false;
+    const reread = async () => {
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
       try {
-        const v = await once.current();
-        if (stopped) return;
-        failures.current = 0;
-        setLink("live");
-        latest.current(v);
-        schedule(VISIBLE_MS);
+        for (;;) {
+          again = false;
+          const v = await src.current!.once();
+          if (stopped) return;
+          failures.current = 0;
+          setLink("live");
+          latest.current(v);
+          if (!again) return;
+        }
       } catch (e) {
         if (stopped) return;
-        // **The two refusals that END this rather than slowing it down.** The
-        // resource is gone (404) or is not ours to read (403); neither changes
-        // by being asked again, and nothing is scheduled after this line.
         if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
-          ended.current?.({ reason: e.status === 404 ? "gone" : "refused", sentence: e.message });
+          // The resource this stream is about is gone, or is not ours. The
+          // reader goes with it: a connection kept open to a table we may not
+          // read would deliver frames nothing can act on.
+          controller?.abort();
+          ended.current?.({
+            reason: e.status === 404 ? "gone" : "refused",
+            sentence: e.message,
+          });
           return;
         }
-        // **A poll that cannot reach the server is not a refusal to show the
+        // The STREAM is still good and the re-read is what failed, so this is
+        // not a trip round the ladder — the next frame tries again. The word on
+        // screen is the true one meanwhile.
+        setLink("reconnecting");
+      } finally {
+        reading = false;
+      }
+    };
+
+    const open = async () => {
+      if (stopped || !visible() || !src.current) return;
+      // **The controller this attempt owns**, held locally as well as in
+      // `controller`: by the time the catch runs, a visibility change may
+      // already have replaced the shared one, and "was I the one aborted?" is a
+      // question only this attempt's own signal can answer.
+      const mine = new AbortController();
+      controller = mine;
+      const frames = src.current.frames ?? "wake";
+      try {
+        if (signalKind() === "held") {
+          // R-plan-5: the same answer, one request at a time. The game's `once`
+          // holds on the server for up to 25 s; the others answer at once and
+          // are re-asked on the clock.
+          //
+          // **This one is not aborted by a hidden tab, and does not need to
+          // be.** `once` goes through `api.ts`'s `call`, which takes no signal,
+          // so a held request in flight runs to its deadline; what R-P8 forbids
+          // is ASKING from a hidden tab, and the next ask is the one `open`
+          // refuses at its first line. That is what the poll this replaces did
+          // with a reply in flight, for the same reason.
+          const v = await src.current.once();
+          if (stopped) return;
+          failures.current = 0;
+          setLink("live");
+          latest.current(v);
+          // **At ONCE for a source whose `once` holds** — see
+          // [`HELD_REASK_MS`], which is the `"wake"` sources' wait and the
+          // reason the two cannot share a number.
+          schedule(frames === "value" ? 0 : HELD_REASK_MS);
+          return;
+        }
+        const outcome = await readStream(
+          src.current.stream,
+          mine.signal,
+          (f) => {
+          if (stopped) return;
+          if (f.event === "end") {
+            // The server's own reason rides the frame: `deleted` for a table
+            // that was abandoned, `gone` for one that stopped being readable
+            // under a live connection.
+            // **And it is given WORDS here, once, for all four consumers**
+            // (final review I-2). A server-supplied sentence is kept if one
+            // ever arrives; today none does, and defaulting in the consumers
+            // instead would be three copies of the same two strings with one
+            // of them already missing.
+            const { reason, sentence } = JSON.parse(f.data) as {
+              reason: "deleted" | "gone";
+              sentence?: string;
+            };
+            ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
+            return;
+          }
+          if (f.event !== "signal" && f.event !== "house") return;
+          if (frames === "value") latest.current(JSON.parse(f.data) as T);
+          else void reread();
+          },
+          // **The CONNECTION, and it is what both of these hang on.**
+          //
+          // The word first: a `fetch` that has been issued is not a link, so
+          // saying "live" above this call said it when the request went out.
+          // During an outage that made the word blink off at every rung of the
+          // ladder, and against a server that accepts a connection and then
+          // hangs it read "live" for ever while nothing was connected. Spec
+          // §5.1 ties the word to Connected, and this is that moment.
+          //
+          // The failure count for the same reason, and the house channel is
+          // why it cannot be reset on a frame instead: `/api/stream` writes
+          // NOTHING on connect (R-3.4), so a lobby reconnecting to a quiet
+          // server would climb 2 s, 4 s, 8 s to the ceiling while every one of
+          // those connections was made perfectly well. A 200 with a stream body
+          // IS the connection — and a server that accepts and closes at once is
+          // still bounded, by the first rung.
+          () => {
+            if (stopped) return;
+            failures.current = 0;
+            setLink("live");
+          },
+        );
+        if (stopped || outcome === "ended") return;
+        // The body ended with nothing said: a dropped connection, and the
+        // ladder is what that is for.
+        throw new Error("the stream closed");
+      } catch (e) {
+        if (stopped || mine.signal.aborted) return;
+        // **The two refusals that END this rather than slowing it down.** See
+        // `End`; nothing is scheduled after either line.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+          ended.current?.({
+            reason: e.status === 404 ? "gone" : "refused",
+            sentence: e.message,
+          });
+          return;
+        }
+        // **A client that cannot reach the server is not a refusal to show the
         // player.** The board on screen is still the last true thing this
-        // client was told; what is wrong is the link, and that is what the
-        // word says. The error itself is deliberately not carried up — a
-        // sentence in the error strip every few seconds would bury the
-        // refusals that are about a move the player actually made.
+        // client was told; what is wrong is the link, and that is what the word
+        // says. The error itself is deliberately not carried up — a sentence in
+        // the error strip every few seconds would bury the refusals that are
+        // about a move the player actually made.
         setLink("reconnecting");
         const wait = nextDelay(failures.current);
         failures.current += 1;
         schedule(wait);
+      } finally {
+        // **One reader per hook instance, on every way out of this function.**
+        // A throw out of `onFrame` — a consumer's own callback — rejects
+        // `readStream` and ABANDONS the body without letting it go, so the
+        // ladder would open a second reader while the first still held its
+        // connection, once per failure. Aborting here is a no-op on the paths
+        // that already ended (the stream said `end`, the tab hid, the effect
+        // was torn down) and runs after the catch's own `mine.signal.aborted`
+        // test, which is what tells "I was aborted" from "I failed".
+        mine.abort();
       }
     };
 
     const onVisibility = () => {
       if (visible()) {
         setLink("refreshing");
-        // At once, and not on the next tick: the whole point of stopping while
+        // At once, and not on a delay: the whole point of letting go while
         // hidden is that coming back is when you want to know.
         schedule(0);
-      } else if (timer) {
-        clearTimeout(timer);
-        timer = null;
+      } else {
+        controller?.abort();
+        controller = null;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
       }
     };
 
     document.addEventListener("visibilitychange", onVisibility);
-    if (visible()) schedule(VISIBLE_MS);
+    if (visible()) schedule(0);
     return () => {
       stopped = true;
+      controller?.abort();
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -204,13 +404,20 @@ export function usePolled<T>(
 }
 
 /**
- * The game's change signal — `GET …/events` — as ONE INSTANCE of [`usePolled`].
+ * The game's change signal — `GET …/{id}/stream` — as ONE INSTANCE of
+ * [`usePolled`].
  *
  * Its contract is unchanged and its cells are the same cells: what moved is
- * where the visibility rule, the cadence and the backoff live, so the lobby and
- * the open table get them without a second copy.
+ * where the visibility rule, the connection and the backoff live, so the lobby
+ * and the open table get them without a second copy.
  *
- * `onEnd` is how a deleted game stops being polled: the game screen navigates
+ * **`frames: "value"`** (R-7.1): a `signal` frame's body IS the `Events` this
+ * consumer wants, so the answer arrives whole and `GET …/events` is not called
+ * at all. `once` is therefore reached only under the held arm — which is why it
+ * asks the server to WAIT, since an immediate read there would be the poll
+ * again under another name.
+ *
+ * `onEnd` is how a deleted game stops being watched: the game screen navigates
  * to the lobby with the sentence rather than reading "reconnecting…" forever.
  */
 export function useSignal(
@@ -223,8 +430,9 @@ export function useSignal(
     game
       ? {
           key: game,
-          once: () => api.events(game),
+          once: () => api.events(game, undefined, HELD_WAIT_S),
           stream: `/api/games/${encodeURIComponent(game)}/stream`,
+          frames: "value",
         }
       : null,
     active,

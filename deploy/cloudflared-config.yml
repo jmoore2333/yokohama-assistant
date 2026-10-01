@@ -45,6 +45,20 @@ ingress:
   # it from this hostname makes the store readable by anyone who sends a header.
   # This tunnel is also the one path to the container's port 8080, which is
   # published nowhere; that is the other half of why the arrangement holds.
+  #
+  # SINCE M6.3 THIS HOSTNAME CARRIES A LONG-LIVED STREAM. The browser client
+  # holds one server-sent-event connection per visible tab on
+  # `/api/games/<id>/stream` (and one on `/api/stream`) instead of polling, and
+  # what keeps it alive through the edge is the SERVER's 25s comment heartbeat,
+  # under the same ~100s idle close the ttyd block below names. Nothing here
+  # configures that: `keepAliveTimeout` in `originRequest` above is the
+  # cloudflared-to-origin connection POOL's idle timeout, not this stream's, so
+  # raising it would not save a silent stream. MEASURED through this tunnel on
+  # 2026-09-16 (`deploy/RUNBOOK.md` §3.9): with the heartbeat, a stream held ten
+  # minutes -- 23 comments at 25s -- and a move made at minute nine arrived on
+  # it in under a second; with the heartbeat disabled in a throwaway build, the
+  # idle stream was reset at 125s. If that 25s constant ever moves, it moves
+  # against this number.
   - hostname: yokohama.moore.nyc
     service: http://yokohama-web:8080
 

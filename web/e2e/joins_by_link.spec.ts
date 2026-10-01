@@ -229,10 +229,14 @@ test("a person holding only a link joins a locked open table and plays", async (
   await a.locator("details.game-menu > summary").click();
   await a.getByRole("button", { name: "Lobby" }).click();
   await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
-  // Scoped to YOUR GAMES by the section that is not the open one: a table can
-  // be listed in both while it is still filling, and this one is not any more.
+  // **Scoped to YOUR GAMES by NAME, and it used to be by exclusion.** A table
+  // can be listed in more than one section — in Open tables while it is still
+  // filling, and since M6.3 in Games in progress once it is not — so
+  // `:not(.open-tables)` stopped meaning "yours" the moment a third section
+  // arrived and resolved two rows for one table. The section says which one it
+  // is instead.
   const row = a
-    .locator("section.saved:not(.open-tables) li")
+    .locator("section.your-games li")
     .filter({ has: a.getByRole("link", { name: "Link test", exact: true }) });
   await expect(row).toBeVisible();
   await expect(row, "the row names the person who followed the link").toContainText("Bob");

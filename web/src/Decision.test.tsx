@@ -12,7 +12,7 @@ import type { ClientState, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
-function show(state: ClientState, busy = false) {
+function show(state: ClientState, busy = false, spectating = false) {
   const onSend = vi.fn();
   const { container } = render(
     <Decision
@@ -20,6 +20,7 @@ function show(state: ClientState, busy = false) {
       labels={wire.labels}
       colors={COLORS}
       busy={busy}
+      spectating={spectating}
       onSend={onSend}
     />,
   );
@@ -215,6 +216,62 @@ describe("the prompts that answer nothing", () => {
     show(state);
     expect(screen.getByText(/Nothing here is yours to answer/)).toBeInTheDocument();
     expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  // ---- the SPECTATOR, who holds no seat at all (spec §5.2) ---------------
+  //
+  // **`seat: null` is the whole selector**, and it is a different fact from
+  // "it is not your turn": a watcher never gets a turn, so nothing here is ever
+  // theirs to answer and the screen must not carry a control that would be a
+  // 403. The words are the `watching` arm's own, unchanged — a watcher and a
+  // player waiting on somebody else are looking at the same table.
+  it("a watcher is offered nothing and reads the seat that is deciding", () => {
+    const state = wire.spectator;
+    if (state.prompt.kind !== "watching") throw new Error("fixture moved");
+    expect(state.seat).toBeNull();
+    show(state, false, true);
+    // `:390`'s line, which is the spectator's asking line (spec §5.2).
+    expect(screen.getByText(`Seat ${state.prompt.to_move} is deciding.`)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing here is yours to answer/)).toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+  });
+
+  // **The fence is real and not merely unreached.** A watcher's payload carries
+  // `watching` today, so the cell above would pass over a `Decision` that had
+  // never heard of spectating. Handed a payload WITH rows — the same one a
+  // player answers — the spectator arm must still offer nothing, which is the
+  // assertion that a fence rather than a fixture is doing the work.
+  it("offers no answer to a watcher even over a payload that carries rows", () => {
+    const state = wire.optionsMany;
+    if (state.prompt.kind !== "options") throw new Error("fixture moved");
+    expect(state.prompt.rows.length).toBeGreaterThan(1);
+    // The same payload, first as a player: the rows and Undo are both there.
+    const player = show(state);
+    expect(player.container.querySelectorAll("button.option").length).toBe(
+      state.prompt.rows.length,
+    );
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    cleanup();
+    // And then as a watcher.
+    const watcher = show(state, false, true);
+    expect(watcher.container.querySelectorAll("button.option")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  // **The finished game is the one thing a watcher still SEES** (spec §5.2:
+  // the result works as it does for a player). Suppressing every block under
+  // `spectating` would leave a watcher at a game that had ended with the words
+  // "The game is over." and no standing — the one screen they came for.
+  it("still shows a watcher the standing when the game is over", () => {
+    const state = wire.spectatorOver;
+    expect(state.seat).toBeNull();
+    show(state, false, true);
+    expect(screen.getByText("The game is over.")).toBeInTheDocument();
+    for (const row of state.scores ?? []) {
+      expect(screen.getByText(`${row.total} VP`)).toBeInTheDocument();
+    }
   });
 
   it("a finished game lists the scores instead of a move", () => {

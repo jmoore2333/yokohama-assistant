@@ -71,6 +71,27 @@ export const hasBotStep = (run: Run): boolean => run.steps.some((s) => s.moverIs
 /** The run contains a step this viewer did not play — the gate on a walk that
  *  arrived through the SIGNAL (ruling R-9.1, M6.1 §6 and §7.5).
  *
+ *  **`viewer` is nullable, and `null` makes EVERY step an opponent's** (spec
+ *  §5.2). A spectator holds no seat, so there is no seat to compare against and
+ *  nothing on the table was played by them — which is the whole of what a
+ *  watcher is. Every run they are handed is therefore walked, at the cadence
+ *  they set, and that is the only picture a spectator screen has to offer.
+ *
+ *  **It is NOT the same `null` `landed` used to take.** That one meant "this
+ *  did not arrive through the signal" and selected {@link hasBotStep}; the two
+ *  facts are now carried apart, because a spectator's arrival is a signal
+ *  arrival whose viewer is genuinely absent (`App`'s `Arrival`).
+ *
+ *  **The `viewer === null` arm is REDUNDANT, deliberately, and measured.**
+ *  `s.mover !== viewer` is already true of every step when `viewer` is `null` —
+ *  a seat number is never equal to it — so removing the arm changes no answer
+ *  and no cell here can tell the two apart (probed: the spectator cell below
+ *  stays green without it). It is written because the rule is "a watcher holds
+ *  no seat", not "a seat number compares unequal to null", and the next person
+ *  narrowing this predicate should have to delete a sentence rather than
+ *  discover one. What the widening really costs is the TYPE, and the thing that
+ *  fails without it is `tsc`, not a test.
+ *
  *  **`hasBotStep` is the wrong question at a human table, and that is the whole
  *  reason this exists.** A room is people: no seat at a table of players is a
  *  bot, so a gate on `moverIsBot` never fires for a person's turn and the
@@ -86,8 +107,8 @@ export const hasBotStep = (run: Run): boolean => run.steps.some((s) => s.moverIs
  *
  *  Takes the steps rather than the `Run` its sibling takes, as the ruling
  *  states it: one question about a list, asked by a caller that has the list. */
-export const hasOpponentStep = (steps: Step[], viewer: PlayerId): boolean =>
-  steps.some((s) => s.moverIsBot || s.mover !== viewer);
+export const hasOpponentStep = (steps: Step[], viewer: PlayerId | null): boolean =>
+  steps.some((s) => s.moverIsBot || viewer === null || s.mover !== viewer);
 
 /** How long a step stays on the table. */
 export const dwellFor = (step: Step, cadence: number): number =>

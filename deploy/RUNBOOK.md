@@ -637,6 +637,168 @@ itself is a browser matter and is witnessed by the new assertion in
 screen), not by a shell read. **Eleven tags now sit on the NAS.** Rollback to
 `0.5.0-m6.2` is the same recipe with the earlier tag.
 
+### 3.9 M6.3 is live — the sixth deployment, 2026-09-16 (a record, not a plan)
+
+The §3.5 recipe again, through the Portainer Docker proxy (environment 2) from
+the workstation, driven by the orchestrating session under the owner's
+in-session authorization ("push the branch, PR against 6.2, and the current
+deployment is unused now so go ahead and feel free to redeploy"). Nothing in
+the recipe changed: the create body is §3.7's, `YOKOHAMA_WEB_IDENTITY=claimed`
+included. **The plan's rc step was FOLDED INTO the release** — HEAD itself was
+deployed and the R-3.1 measurement below was taken against the deployed stream,
+so there is no `-rc1` image; the only extra image this deployment cut is the
+`-rc2` reading B needed, and that one is gone again.
+
+- **Build:** `web-room-m6.3` at `74a0e80` (the doc-pass HEAD; the server half of
+  the final fix wave is `9214661` and the client half `9f70aa2`; the three commits
+  after them change documentation and source comments only). PR #33 against `web-room-m6.2`,
+  https://github.com/jmoore2333/yokohama-assistant/pull/33. The musl
+  cross-compile per §1: `Finished release in 10.15s`; the binary is `ELF 64-bit
+  LSB pie executable, x86-64, static-pie linked`, **6,637,080 bytes** (M6.2.1's
+  was 6,496,616: one watch channel per table plus the house channel, the two
+  SSE routes, the admission table, `unlock` and the spectator projection);
+  `web/dist` carries the M6.3 client, bundle `index-BhDpWEFw.js` (M6.2.1's was
+  `index-_UNINWWV.js`). Context tarball **14,067,814 B** (sha256 prefix
+  `e19003d7defbd922`), holding `yokohama-web`, `dist/`, `art/` and `Dockerfile`,
+  cut at **19:03:14Z** and served by `python3 -m http.server 8899 --bind
+  0.0.0.0` on the workstation at **192.168.1.16** (read from `ifconfig`, as §3.7
+  says to); the NAS (192.168.1.173) fetched it in one GET at 15:03:24 local and
+  the file server was stopped at 19:03:52Z.
+- **Image:** `yokohama-web:0.5.0-m6.3`, Id
+  `sha256:2c6d45f02825882f5e9499dd46b53b97d690e4959a35fe279d1e6b3e53e5600f`,
+  **26,553,575 B** (was 26,407,161), created **19:03:36Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.3&dockerfile=Dockerfile&rm=true`.
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.2.1` container
+  (`584b2f96fc22…`, created 2026-09-16 02:47:39Z) at 19:03:52Z → `DELETE
+  /containers/yokohama-web` → `POST /containers/create?name=yokohama-web` with
+  §3's body (Image, `Env` `YOKOHAMA_WEB_IDENTITY=claimed`, the two labels
+  `maintainer`/`purpose`, `NetworkMode: cf-internal`, `RestartPolicy:
+  unless-stopped`, the named volume `yokohama-web-data` → `/data`) → new
+  container Id
+  `4f37b4bb7099c9211f6647386925893db6350cb1ea6936b481b247a6da29edf3`, created
+  **19:04:01Z**, started **19:04:04Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so cloudflared was not restarted. The named volume rode
+  across untouched. **That container is NOT the one running now** — reading B
+  below replaced it twice; see the closing paragraph of the measurement.
+- **Verified through the tunnel at 19:04:26Z** (WARP signed in; no re-auth was
+  needed this time):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse"}`
+    — the `signal` field is M6.3's, and it is how a shell reader learns which
+    transport this build serves.
+  - `GET /api/games` with no header → **401**.
+  - `?scope=open`, `?scope=playing` (the M6.3 scope) and `?scope=mine` with the
+    owner's header → **`{"games":[],"next":null}`**.
+  - `GET /` serves `index-BhDpWEFw.js`, which exists only in this build.
+- **The milestone's own verification (spec §10), from 19:05:16Z:** `POST
+  /api/games` as `deploy-verify-a@m63.test` with both seats named
+  (`deploy-verify-b@m63.test`) and the password `sesame` → **201**
+  `sim-f68b6accb83c4073`, `status: "dealing"`. Each seat then `GET …/deal` and
+  `POST …/keep` — a first attempt with `"card": 0` was refused
+  `"keep 0 — the dealt cards are numbered 1 and 2"`, the CLI's own numbering
+  reaching the wire — and after the second keep the table read `status:
+  "playing"`, `to_move: 0`; `GET …/events` as A → `{"events":0,"to_move":0,"status":"playing","your_turn":true}`.
+  **The stream through the tunnel:** `curl -sN` as B on `…/stream` printed the
+  on-connect frame
+  `event: signal` / `data: {"events":0,"to_move":null,"status":"dealing","your_turn":false}`
+  at +0 s and a heartbeat comment `:` at **+25 s**, over a 35 s hold taken while
+  the table was still dealing.
+
+#### The R-3.1 measurement — taken through the tunnel, both ways
+
+The spec held `SIGNAL_KIND` to a reading rather than an argument: SSE ships if a
+heartbeated stream survives the edge for ten minutes with a frame arriving in
+it, and the dark held-request arm ships if it does not. Both readings were taken
+on the live site, on the measurement table above, with WARP on.
+
+**Reading A — with the 25 s heartbeat (19:06:29Z–19:16:29Z, `reading-a.log`).**
+B (seat 1, not the acting seat) held `…/stream` for 600 s. The on-connect frame
+arrived at 19:06:30.3Z:
+
+```
+[19:06:30.3N] event: signal
+[19:06:30.3N] data: {"events":0,"to_move":0,"status":"playing","your_turn":false}
+```
+
+(the lines are quoted verbatim; the trailing `N` is an artifact of the log's own
+timestamp format). Then **23 heartbeat comments at 25 s intervals** — twenty-one
+before the move (19:06:55.3, 19:07:20.3, 19:07:45.3 … 19:15:15.3) and two after
+it — with A posting `1` (EndAdditionalPhase) at **19:15:29Z, 540 s in**, and the
+frame
+
+```
+[19:15:30.3N] event: signal
+[19:15:30.3N] data: {"events":1,"to_move":0,"status":"playing","your_turn":false}
+```
+
+arrived **under one second later**. The next comment came at 19:15:55.3 rather
+than 19:15:40.3 — axum resets the keep-alive on a message, so the interval
+restarts from the frame (the last comment was 19:16:20.3). The connection was
+**still open at 600 s** and was ended by `curl`'s own `--max-time` (exit 0), not
+by the edge.
+
+**Reading B — without the heartbeat (19:18:05Z–19:20:10Z, `reading-b.log`).**
+The edge's behaviour on an idle stream cannot be reached except through the
+tunnel, so `HEARTBEAT` was set to 3600 s in a WORKING COPY only (musl build
+`Finished release in 5.39s`, then reverted; `git status` clean), and that image
+was deployed for the reading alone: context `ctx-rc2.tar.gz` **14,067,865 B**
+(sha256 prefix `b0bbd4a20e08f966`) served 19:16:59Z and fetched 19:17:05Z →
+`yokohama-web:0.5.0-m6.3-rc2`, Id
+`sha256:da2de00578f6a2d33de1ff1adcce4a0e0c00ffc292434e53110105afd72cae90`,
+**26,553,855 B**, created **19:17:24Z**; container
+`33021c62493c3319ecf52d21e18a43a123bf60c3d23cc78f07a1a966c2c23bbc` created and
+started ~19:17:5xZ, health through the tunnel reading the same payload. B then
+held the IDLE stream from **19:18:05Z**: the on-connect frame at +0 s and
+nothing after it, and
+
+```
+[+125s 19:20:10] 
+[+125s 19:20:10] --- curl done: http 200, 125.166883s, exit 92
+```
+
+— **the edge reset the connection at +125 s**, `curl` exit 92 being an HTTP/2
+stream error, which is the origin-idle close this file's ingress comment expects
+near 100 s. Beside reading A's ten minutes, the 25 s comment is what carries the
+stream.
+
+**Decision: SSE SHIPS. `SIGNAL_KIND` stays `"sse"`** (spec R-3.1), and the
+held-request arm stays built, dark and one constant away.
+
+**The swap back, and the container that is live.** The rc2 container was stopped
+and deleted ~19:20:3xZ and `POST /containers/create` ran again with the same
+body and the tag `yokohama-web:0.5.0-m6.3` → container
+`f0c371c76584156bbfa2aafaeec46c3a085995fd45bb0dc97cb53577c5679b86`, created
+**19:20:47Z**, started **19:20:51Z**, same address 172.21.0.4, healthy at
+19:21:21 local. Verified through the tunnel at **19:21:05Z**: health with
+`"signal":"sse"`, bundle `index-BhDpWEFw.js`, and a 30 s hold showing the
+on-connect frame at +0 s and the heartbeat comment at +25 s again. **LIVE =
+`yokohama-web:0.5.0-m6.3` in container `f0c371c7…` since 19:20:51Z**; the first
+container, `4f37b4bb…`, served 19:04:04Z until the rc2 reading. The rc2 image
+was removed from the NAS afterwards and the measurement table was deleted by its
+creator, so the house is empty.
+
+**The live review (2026-09-16, the close's §4.5).** A clean Fable subagent drove
+three browsers as three people against the live site — two playing, one arriving
+by link and watching — in both layouts, and returned **SHIP: 0 Critical, 0
+Important, 3 Minor**, with 25 claims tried and found true and zero console errors
+on all three screens. The M6.3 exit criterion is shown on the NAS: the watcher
+asked `GET …/events` **zero** times and held **one** `…/stream` through two full
+turns, through a 444 s game of 1,471 events and through a whole game against the
+bot. The three Minors are in the close's §4 and its LEAVE list; none of them
+holds a release, and **no point release was cut**.
+
+- **Downtime:** the seconds between `stop` and `start`, twice (the release and
+  the swap back); nobody was playing either time.
+- **Rollback:** `yokohama-web:0.5.0-m6.2.1` stays on the NAS; recreate the
+  container from that tag with §3's body INCLUDING the `Env` line. **Both halves
+  roll or neither does:** the M6.3 client opens `…/stream`, the M6.2 server has
+  no such route, and the client's ladder would meet a 404 and end the source
+  rather than fall back to polling — so a partial rollback leaves a screen that
+  never learns anything. The table documents this build writes are schema 2 plus
+  an additive `unlocked` list, which an M6.2 server reads at its default.
+  **Twelve tags now sit on the NAS** — the eleven of §3.8 plus `0.5.0-m6.3`
+  (`-rc2` was removed from the NAS after reading B).
+
 ## 4. Modal — the upgrade path, not yet deployed
 
 `deploy/modal_app.py` runs the same image with a Volume for the store,
@@ -667,8 +829,8 @@ measurement says it should go on doing so.
   `cloudflared-nas`. One file, one restart.
 - **The container:** `docker stop yokohama-web`. The tunnel then 502s that
   hostname until the ingress is pointed back.
-- **The previous build:** every earlier tag is still an image on the NAS (§3.7
-  lists the nine). Stop and remove the running container and recreate it from
+- **The previous build:** every earlier tag is still an image on the NAS (§3.9
+  counts twelve). Stop and remove the running container and recreate it from
   the tag you want with §3's body — the volume is the same, so the records
   carry over.
 - **Across M6.1 that is a WHOLE-IMAGE rollback, not a partial one.** Before

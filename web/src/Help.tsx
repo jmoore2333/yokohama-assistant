@@ -216,6 +216,28 @@ export function Help() {
         itself the moment the last of them does.
       </p>
 
+      <h3>Watching a game</h3>
+      <p>
+        You can watch a game you are not playing in. The lobby&rsquo;s third list,{" "}
+        <em>Games in progress</em>, is every game on the server still being played or
+        already finished, and pressing one opens it &mdash; as does a{" "}
+        <strong>link</strong> to the table, from whoever is at it. If the table was
+        opened with a password, you are asked for it once, on a screen that names the
+        table and who is sitting at it; after that the game opens and stays open to you.
+      </p>
+      <p>
+        The screen is the same table the players are looking at, with one difference:
+        the strip in the banner reads <strong>You are watching</strong>, and there is no
+        answer bar. Every hand on it is a <em>count</em> rather than cards &mdash; a
+        watcher is never shown anybody&rsquo;s hand, exactly as the players are never
+        shown each other&rsquo;s &mdash; and moves arrive and walk across the table{" "}
+        <em>as they happen</em>, one step at a time, at whatever cadence you set. You
+        cannot play, you cannot undo, and Suggest is not offered, because it runs on a
+        seat and you have none. Everything you can read still reads: the log and its
+        replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
+        played, and the final score once there is one.
+      </p>
+
       <h3>Saving, and coming back</h3>
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save

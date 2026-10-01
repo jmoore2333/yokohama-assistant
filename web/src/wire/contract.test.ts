@@ -21,7 +21,10 @@ const listed = (l: readonly string[]): string[] => [...l].sort();
 
 describe("the payload roots carry exactly the fields the client declares", () => {
   it.each(
-    EVERY_STATE.map((state) => [state.prompt.kind, state] as const),
+    EVERY_STATE.map(
+      (state) =>
+        [`${state.prompt.kind}${state.seat === null ? " · watcher" : ""}`, state] as const,
+    ),
   )("ClientState (%s)", (_kind, state) => {
     expect(keys(state)).toEqual(listed(KEYS.clientState));
   });
@@ -98,6 +101,17 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["join_403_locked", wire.join403Locked, KEYS.apiError],
     ["join_403_password", wire.join403Password, KEYS.apiError],
     ["join_409_taken", wire.join409Taken, KEYS.apiError],
+    // M6.3's six that are not `ClientState`s (those ride the row above, which
+    // runs over EVERY_STATE): the signal at the table's first status, a replay
+    // stop read by a watcher, the third lobby list, the table the unlock face
+    // is drawn from, and the two refusals a would-be watcher meets.
+    ["events_open", wire.eventsOpen, KEYS.events],
+    ["spectator_at_k", wire.spectatorAtK, KEYS.historicalFrame],
+    ["games_playing", wire.gamesPlaying, KEYS.gamesList],
+    ["table_watchable", wire.tableWatchable, KEYS.table],
+    ["watch_403_locked", wire.watch403Locked, KEYS.apiError],
+    ["unlock_403", wire.unlock403, KEYS.apiError],
+    ["unlock_409_open", wire.unlock409Open, KEYS.dealingError],
     // And the two a SEATED caller meets by acting out of turn (spec §8): an
     // ordinary line from the seat that is not to move, and `undo` after that
     // seat's turn has passed. One root key each, which is the whole of the
@@ -221,14 +235,27 @@ describe("what the corpus itself has to be true of", () => {
   // It replaces a cell over `hidden_hand`, the `privacy`-toggle payload, which
   // is retired: the server no longer reads that flag, so no fixture carries a
   // masked Hand panel and the mask lives entirely on the Players rows.
+  //
+  // **A WATCHER is the same rule read at zero** (M6.3, R-3.7). `seat` is null,
+  // so the seat this payload unmasks is no seat: there is no Hand panel at all,
+  // every row on the Players panel is hidden, and the starting-order mark —
+  // which appears only inside a viewer's own panel — appears nowhere. Written
+  // as a branch of this loop rather than as a cell of its own, because it is
+  // one property (`p.hand_hidden === (p.seat !== state.seat)` is already TRUE
+  // at every seat when `state.seat` is null) and a separate cell would let a
+  // spectator fixture be dropped from `EVERY_STATE` without anything saying so.
   it("every payload unmasks its own seat and no other", () => {
     for (const state of EVERY_STATE) {
       const hands = state.frame.dashboard.filter(
         (p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p,
       );
-      expect(hands.length, `${state.id}: one hand panel`).toBe(1);
-      expect(hands[0]!.Hand.seat).toBe(state.seat);
-      expect(hands[0]!.Hand.hidden).toBe(false);
+      expect(hands.length, `${state.id}: hand panels for seat ${state.seat}`).toBe(
+        state.seat === null ? 0 : 1,
+      );
+      if (state.seat !== null) {
+        expect(hands[0]!.Hand.seat).toBe(state.seat);
+        expect(hands[0]!.Hand.hidden).toBe(false);
+      }
 
       const players = state.frame.dashboard.find(
         (p): p is Extract<Panel, { Players: unknown }> => "Players" in p,
@@ -242,9 +269,113 @@ describe("what the corpus itself has to be true of", () => {
       // The mask is a property of the MODEL, not of the renderer: a masked hand
       // has no `cards` to leak, so the one card-level secret — which order was
       // dealt as a starting order — appears only inside the viewer's own panel.
+      // A watcher has no panel, so the count on both sides is zero.
       const marks = JSON.stringify(state).split('"is_starting_order"').length - 1;
-      expect(marks, `${state.seat}'s payload`).toBe(hands[0]!.Hand.cards.length);
+      expect(marks, `${state.seat}'s payload`).toBe(hands[0]?.Hand.cards.length ?? 0);
     }
+  });
+
+  // **The watcher, stated once as its own claim** (M6.3, spec §6).
+  //
+  // The loop above proves the corpus-wide rule and this proves the fixtures are
+  // really the shape the rule is being read at: a property that holds VACUOUSLY
+  // over payloads that turned out to be ordinary seated ones would look exactly
+  // the same from there. So this asserts the three watcher payloads are
+  // watchers — `seat` null on the live frame, the finished one and a REPLAY
+  // stop — and that a watcher's `cards` are nowhere at any seat.
+  //
+  // **`spectator_at_k` is the one that could not be covered above**, because
+  // `EVERY_STATE` is `ClientState`s and a replay frame is not one. It is the
+  // payload M4's sweep argument is about: a watcher walking `0..=total` harvests
+  // nothing at any stop, and `seat: null` is how the wire says so.
+  it("a watcher holds no seat, and no seat's hand is open to one", () => {
+    expect(wire.spectator.seat).toBeNull();
+    expect(wire.spectatorOver.seat).toBeNull();
+    expect(wire.spectatorAtK.seat).toBeNull();
+    // ...and the seated fixtures beside them are not, or the three above are
+    // satisfied by a corpus in which nothing is ever built for a seat.
+    expect(wire.options.seat).not.toBeNull();
+    expect(wire.atK.seat).not.toBeNull();
+
+    for (const [name, frame] of [
+      ["spectator", wire.spectator.frame],
+      ["spectator_over", wire.spectatorOver.frame],
+      ["spectator_at_k", wire.spectatorAtK.frame],
+    ] as const) {
+      expect(frame.dashboard.filter((p) => "Hand" in p), `${name}: no hand panel`).toHaveLength(0);
+      const players = frame.dashboard.find(
+        (p): p is Extract<Panel, { Players: unknown }> => "Players" in p,
+      );
+      expect(players).toBeDefined();
+      for (const p of players!.Players.players) {
+        expect(p.hand_hidden, `${name}: seat ${p.seat}`).toBe(true);
+      }
+      // The identities, not just the flag: a hidden hand is a COUNT and no
+      // cards, so the mark that names a dealt starting order is absent from the
+      // whole payload rather than merely unrendered.
+      expect(JSON.stringify(frame), name).not.toContain('"is_starting_order"');
+    }
+
+    // The two things a watcher's live frame says about the reader rather than
+    // about the game: nobody's turn is theirs, and the prompt carries no
+    // answerable list — `watching` while it runs, `game_over` once it is over.
+    expect(wire.spectator.your_turn).toBe(false);
+    expect(wire.spectator.prompt.kind).toBe("watching");
+    expect(wire.spectatorOver.your_turn).toBe(false);
+    expect(wire.spectatorOver.prompt.kind).toBe("game_over");
+    expect(wire.spectatorOver.scores).not.toBeNull();
+  });
+
+  // **The room's own refusals, and the table they are drawn beside** (M6.3).
+  //
+  // Four sentences for four different things to do next, which is the same
+  // reason the join refusals are committed: a watcher who is shut out of a
+  // locked table can knock, a watcher who typed the password wrong can try
+  // again, a caller at a table that has not started has to wait, and a caller
+  // with no business at the table at all can do nothing. A server that answered
+  // any two of these with one sentence would fail here.
+  it("a would-be watcher is turned away in four distinguishable ways", () => {
+    const said = [
+      wire.watch403Locked.error,
+      wire.unlock403.error,
+      wire.unlock409Open.error,
+      wire.notSeated403.error,
+    ];
+    expect(new Set(said).size, said.join(" | ")).toBe(4);
+    expect(wire.watch403Locked.error).toContain("unlock");
+    expect(wire.unlock403.error).toContain("password");
+    expect(wire.unlock409Open.status).toBe("open");
+
+    // The payload the unlock face is drawn from: a table this caller can SEE
+    // and may not watch. Both flags, because each is the other's anti-vacuity —
+    // a screen that asked for a password at an unlocked table, or one that drew
+    // the game at a locked one, reads the same single field and gets it wrong
+    // in opposite directions.
+    expect(wire.tableWatchable.locked).toBe(true);
+    expect(wire.tableWatchable.can_watch).toBe(false);
+    expect(wire.tableWatchable.my_seats).toEqual([]);
+    expect(wire.tableWatchable.status).toBe("playing");
+    // ...against a row of the same type in the watcher's own lobby list, read
+    // after the knock: same table, same lock, and the boolean turned over. It is
+    // a fact about the READER and not about the table, and one payload alone
+    // cannot show that.
+    const row = wire.gamesPlaying.games[0]!;
+    expect(row.id).toBe(wire.tableWatchable.id);
+    expect(row.locked).toBe(true);
+    expect(row.can_watch).toBe(true);
+    expect(row.my_seats).toEqual([]);
+  });
+
+  // The signal at the table's FIRST status, which is the one screen that polls
+  // before there is a game to poll: a joiner watching an open table's seats
+  // fill. `to_move` is null there, and `status` is what the client branches on.
+  it("the signal reads at open, at dealing and in play", () => {
+    expect(wire.eventsOpen.status).toBe("open");
+    expect(wire.eventsOpen.to_move).toBeNull();
+    expect(wire.eventsOpen.events).toBe(0);
+    expect(wire.eventsDealing.status).toBe("dealing");
+    expect(wire.events.status).toBe("playing");
+    expect(wire.events.events).toBeGreaterThan(0);
   });
 
   // **A seat only ever sees its own deal (2026-09-06, R-C1), and since M6.1 §8

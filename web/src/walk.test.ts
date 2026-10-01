@@ -118,6 +118,31 @@ describe("buildRun", () => {
     expect(hasOpponentStep(buildRun(10, mine.frames, mine.log).steps, 0)).toBe(true);
   });
 
+  // **A WATCHER has no seat, so every step is somebody else's** (spec §5.2).
+  //
+  // The fixture is the hardest shape for it: a run whose every step is played
+  // by ONE human mover, and no bot anywhere. From that mover's own chair there
+  // is nothing to watch — the cell above pins exactly that, `false` — so a
+  // spectator answered by comparing against a seat would be handed the one
+  // answer that leaves the table snapping instead of walking. `null` is not a
+  // seat, and the run is theirs to watch whoever played it.
+  it("walks every step for a viewer holding no seat", () => {
+    const mine = fixture();
+    mine.frames.forEach((f) => (f.to_move = 0));
+    const own = buildRun(10, mine.frames, mine.log).steps;
+    expect(own.map((s) => s.mover)).toEqual([0, 0]);
+    expect(own.some((s) => s.moverIsBot)).toBe(false);
+    // The same steps, read from the two chairs: the mover's, and nobody's.
+    expect(hasOpponentStep(own, 0)).toBe(false);
+    expect(hasOpponentStep(own, null)).toBe(true);
+    // **And this cell cannot see the `viewer === null` arm, which is worth
+    // saying out loud.** `0 !== null` is already true, so the arm is redundant
+    // and dropping it leaves this green — probed. What the ARM buys is the
+    // stated rule; what the widening buys is the type. The mutation that has a
+    // witness is at the CALL SITE, where a spectator's arrival could still take
+    // the bot branch, and `App.test.tsx` is where it is caught.
+  });
+
   it("dwells the cadence on a changed frame and the short dwell on an unchanged one", () => {
     const { frames, log } = fixture();
     const run = buildRun(10, frames, log);

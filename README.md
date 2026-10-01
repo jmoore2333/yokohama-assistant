@@ -199,7 +199,7 @@ file locally.
 ## The browser client
 
 **Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections), with **M6.1 "identity and seats" live since 2026-09-15 and M6.2 "the lobby" live since 2026-09-16**. The same engine, the same
+corrections), with **M6.1 "identity and seats" live since 2026-09-15, M6.2 "the lobby" live since 2026-09-16 and M6.3 "transport and spectating" live since 2026-09-16** as `yokohama-web:0.5.0-m6.3`. The same engine, the same
 words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
@@ -341,11 +341,30 @@ password (a salted SHA-256, never served); its address is a link, `#/t/<id>`, an
 only that link signs in, types the password if the table asks, takes a seat, and the join that
 fills the last seat deals. `GET /api/games?scope=mine|open` pages with a cursor over table
 documents alone; `POST …/{id}/join` is the one new route; an open table is the only thing a
-non-seated caller can read. The transport for a shared room and the store are the questions still
-open; live transport, spectating, chat and the hosting move are M6.3–M6.5 of
-[`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md),
-and M6.1's own record is
-[`docs/plans/2026-09-15-web-frontend-m6.1-close.md`](docs/plans/2026-09-15-web-frontend-m6.1-close.md).
+non-seated caller can read.
+
+**What M6.3 built and shipped (2026-09-16):** nothing polls. The browser holds one
+connection per visible tab — server-sent events over an in-process channel that every write bumps
+after it lands — and the opponent's move arrives on it and walks across the table; the strip that
+used to count down a three-second tick now says "live", "refreshing" or "reconnecting…" about a
+connection. And a person who is not playing can **watch**: the lobby gains a third section, *Games
+in progress*, a `#/t/<id>` link opens a table with no password straight onto the game, a locked one
+asks for its password once, and then the strip reads "You are watching" — every hand a count, no
+answer bar, no undo and no suggest, with the log, the replay, the boards, the card indexes, *why*
+and the final score all reading as they do for a player whose turn it is not. A watcher can send
+nothing: the write routes refuse before the record is even read. **It is live**, and the
+measurement it was held for was taken through the tunnel: with the server's 25 s heartbeat a
+stream held ten minutes and a move made at minute nine arrived on it in under a second, while the
+same stream with the heartbeat disabled was cut by the edge at 125 s — so server-sent events ship.
+In the three-browser review of the live site a watcher asked the old polling route **zero** times
+and held **one** connection through a 1,471-event game.
+
+Chat and the hosting move are M6.4 and M6.5 of
+[`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md);
+each cycle's own record is its close —
+[M6.1](docs/plans/2026-09-15-web-frontend-m6.1-close.md),
+[M6.2](docs/plans/2026-09-16-web-frontend-m6.2-close.md) and
+[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md).
 
 ## Status (2026-08-30)
 

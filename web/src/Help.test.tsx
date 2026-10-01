@@ -123,6 +123,59 @@ describe("the help panel and the lobby", () => {
   });
 });
 
+describe("the help panel and watching (R-8.1)", () => {
+  /** The whole "Watching a game" SECTION, bounded by the next heading — the
+   *  same reading `startingSection` takes, and for the same reason: a helper
+   *  that took the first paragraph would go on passing for whatever it found
+   *  there after the section grew. */
+  function watchingSection(): string {
+    const heading = screen.getByRole("heading", { name: "Watching a game" });
+    let text = "";
+    for (let el = heading.nextElementSibling; el; el = el.nextElementSibling) {
+      if (/^H[1-6]$/.test(el.tagName)) break;
+      text += ` ${el.textContent ?? ""}`;
+    }
+    if (!text.trim()) throw new Error("nothing follows the 'Watching a game' heading");
+    return text;
+  }
+
+  // **The two ways in.** A player who wonders how to watch somebody else's
+  // game should find both here: the lobby's third list, and a link somebody
+  // sent them. The list's heading is quoted exactly, so a rename of the section
+  // fails here rather than leaving the page pointing at a heading that is gone.
+  it("names the lobby's third list and the link as the two ways in", () => {
+    render(<Help />);
+    const text = watchingSection();
+    expect(text).toContain("Games in progress");
+    expect(text).toMatch(/link/i);
+  });
+
+  // The password, asked ONCE — which is what a watcher needs to know before
+  // they decide the lock marker means the table is shut to them.
+  it("says a locked table asks for its password once", () => {
+    render(<Help />);
+    const text = watchingSection();
+    expect(text).toMatch(/password/i);
+    expect(text).toContain("once");
+  });
+
+  // **What the screen is, and what it is not.** The three facts a watcher would
+  // otherwise have to discover by trying: the strip, the hidden hands, and that
+  // there is nothing to press.
+  it("says what watching looks like and what it does not offer", () => {
+    render(<Help />);
+    const text = watchingSection();
+    expect(text).toContain("You are watching");
+    // Every hand is a COUNT — the one thing a spectator must not be able to
+    // read, stated so nobody wonders whether the screen is merely folded.
+    expect(text).toMatch(/count/i);
+    expect(text).toContain("as they happen");
+    expect(text).toMatch(/cannot play/i);
+    expect(text).toMatch(/undo/i);
+    expect(text).toMatch(/suggest/i);
+  });
+});
+
 describe("the help panel's prose", () => {
   // Every emphasis in the panel, not just the one that broke. A tag preceded by
   // a letter and beginning with a letter is a missing `{" "}` — the JSX

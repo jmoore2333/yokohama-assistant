@@ -1,17 +1,25 @@
 // The first screen after the door (spec §5.2): the tables you sit at, and the
 // tables waiting for someone to sit down.
 //
-// **Two scopes, ONE poll** (R-plan-4). `mine` and `open` are two questions
+// **Two scopes, ONE signal** (R-plan-4). `mine` and `open` are two questions
 // about the same store and a player reads them together, so one `usePolled`
 // asks both in one `Promise.all` and hands over one object. Two hooks would be
-// two timers drifting apart, two "reconnecting" words for one link, and — the
-// half that shows — a screen where half the lobby is three seconds older than
-// the other half.
+// two connections, two "reconnecting" words for one link, and — the half that
+// shows — a screen where half the lobby is older than the other half.
 //
-// **The first load is this component's, not the hook's.** `usePolled` asks one
-// interval after it arms, which is right for every other consumer: each already
-// holds the thing it is watching. The lobby holds nothing, so an unaided poll
-// would show "loading…" for three seconds on every visit.
+// **The stream it listens to is the HOUSE channel**, `/api/stream`, and a frame
+// off it is a bare sequence number (M6.3 R-3.4): a `watch` channel coalesces,
+// so two bumps naming two different tables inside one wake would lose one, and
+// a frame naming a table would therefore sometimes name the wrong one. The
+// lobby re-reads ALL its lists on any bump instead, which is what `Source`'s
+// default `frames: "wake"` mode does — `once` is the answer and the frame is
+// only the wake-up.
+//
+// **The first load is this component's, not the hook's.** The house stream says
+// NOTHING on connect (deliberately: the lobby has just fetched its lists to
+// render at all, and a frame at connect would make it fetch them again on every
+// navigation), so an unaided hook would show "loading…" until somebody else
+// moved.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Abandon } from "./Abandon";
@@ -21,15 +29,23 @@ import { usePolled } from "./signal";
 import { TableFacts } from "./TableFacts";
 import type { GamesList, TableView } from "./types";
 
-/** Both lists, as one answer. */
-type Lists = { mine: GamesList; open: GamesList };
+/** All three lists, as one answer. */
+type Lists = { mine: GamesList; open: GamesList; playing: GamesList };
 
 /** Outside the component because it closes over nothing: `api` is a module, so
  *  a definition inside would be a new function on every render and the poll's
- *  own doc explains why that matters. */
+ *  own doc explains why that matters.
+ *
+ *  **Three scopes in ONE `Promise.all`**, for the reason two were: a player
+ *  reads the lobby as one screen, and three hooks would be three connections
+ *  and a screen where one third of it is older than the rest. */
 const fetchLists = async (): Promise<Lists> => {
-  const [mine, open] = await Promise.all([api.list("mine"), api.list("open")]);
-  return { mine, open };
+  const [mine, open, playing] = await Promise.all([
+    api.list("mine"),
+    api.list("open"),
+    api.list("playing"),
+  ]);
+  return { mine, open, playing };
 };
 
 /** The rows, with a table listed once however many pages it arrived on.
@@ -200,7 +216,12 @@ export function Lobby({
         New table
       </button>
 
-      <section className="saved">
+      {/* **`your-games` is a NAME and not decoration.** Until M6.3 this was the
+          one section that was not `.open-tables`, and a browser cell scoped its
+          reads that way — which a third section silently made ambiguous
+          (measured: the join-by-link walk resolved two rows for one table).
+          Every section on this screen now says which one it is. */}
+      <section className="saved your-games">
         <h3>Your games</h3>
         {lists === null ? (
           <p className="muted">loading&hellip;</p>
@@ -225,6 +246,26 @@ export function Lobby({
           <p className="muted">no table is waiting for players.</p>
         ) : (
           <ul>{lists.open.games.map((t) => row(t, false))}</ul>
+        )}
+      </section>
+
+      {/* **Every game still being played, so a watcher can find one without a
+          link** (R-3.9). A row here opens `#/t/<id>` exactly as the other two
+          do, and what that lands on is the spectator screen — or, at a locked
+          table, the face that asks for its password, which is what the lock
+          marker on the row is warning about.
+
+          **No Abandon control, and that is the section rather than the test**
+          (M6.2 ruling #13): abandoning is the creator's, on the Your-games
+          rows, and a table of yours that is playing is listed in BOTH — two
+          buttons with one accessible name on one screen. `row(t, false)` is how
+          Open tables withholds it too. */}
+      <section className="saved playing-tables">
+        <h3>Games in progress</h3>
+        {lists === null ? null : lists.playing.games.length === 0 ? (
+          <p className="muted">nothing is being played right now.</p>
+        ) : (
+          <ul>{lists.playing.games.map((t) => row(t, false))}</ul>
         )}
       </section>
 

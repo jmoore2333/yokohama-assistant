@@ -16,8 +16,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+import { endSentence } from "./signal";
 import type { TableView } from "./types";
 
 /** The table this caller SITS at, still filling its seats — `wire2`, the
@@ -45,6 +46,10 @@ function show(
   const stub = stubApi((call) => {
     const mine = handler(call);
     if (mine !== undefined) return mine;
+    // This screen watches the table's stream (M6.3). A cell about the watch
+    // scripts its own; the rest get one that opens and says nothing, which is
+    // what a reachable server with nothing to report does.
+    if (call.path.endsWith("/stream")) return openStream();
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
@@ -298,60 +303,114 @@ describe("the open table, to somebody sitting at it", () => {
   });
 });
 
-describe("the open table's poll", () => {
-  it("hands over when a tick reads a table that is no longer open", async () => {
+describe("the open table's watch", () => {
+  /** Let a reply chain settle without moving the clock — the harness's own
+   *  [`flush`]: this screen is woken by a frame and answers with a read, which
+   *  is a chain of turns and not an interval. */
+  const settle = flush;
+
+  it("hands over when a frame wakes a read of a table that is no longer open", async () => {
+    // **A `"wake"` consumer** (M6.3 R-7.1): the frame off `…/{id}/stream` is an
+    // `Events` and this screen's value is a `TableView`, so what a frame buys is
+    // one `GET …/table` — and the hand-over is decided on THAT, exactly as it
+    // was decided on a tick's read before.
     vi.useFakeTimers();
     let status: "open" | "dealing" = "open";
     const onStarted = vi.fn();
-    stubApi((call) =>
-      call.path.endsWith("/table")
+    const stream = fakeStream();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      return call.path.endsWith("/table")
         ? status === "open"
           ? wire.tableOpen
           : wire.tableDealing
-        : undefined,
-    );
+        : undefined;
+    });
     render(
       <OpenTable game="wire" me="red@wire.test" onStarted={onStarted} onLeave={() => {}} />,
     );
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onStarted).not.toHaveBeenCalled();
+    // The opening read is this screen's own, and the frame below is what buys
+    // the second one.
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
 
     status = "dealing";
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    expect(stub.matching("GET", "/table")).toHaveLength(2);
     expect(onStarted).toHaveBeenCalled();
   });
 
-  it("leaves for the lobby, with the sentence, when the table is gone", async () => {
+  // **This cell drives a WAKE whose re-read 404s** — the table was deleted and
+  // this screen learned it from its own `once`, not from an end frame (final
+  // review I-2). The sentence is the refusal's. The real abandon is the cell
+  // below, and the title used to claim that path without taking it.
+  it("leaves for the lobby with the refusal's sentence when the re-read 404s", async () => {
     vi.useFakeTimers();
     const onLeave = vi.fn();
     let tables = 0;
+    const stream = fakeStream();
     stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
       if (!call.path.endsWith("/table")) return undefined;
       tables += 1;
-      // The opening read succeeds and the poll then finds it deleted, which is
-      // the reachable case: somebody abandoned it while this screen was open.
+      // The opening read succeeds and the woken read then finds it deleted,
+      // which is the reachable case: somebody abandoned it while this screen
+      // was open.
       return tables === 1
         ? wire.tableOpen
         : { status: 404, body: { error: "no such game" } };
     });
     render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
-    // Asserted straight after the advance, not through `waitFor`: under fake
-    // timers `waitFor` polls on a timer nothing is advancing, and would wait
-    // out the whole test budget on a screen that is already right.
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    // Asserted straight after, not through `waitFor`: under fake timers
+    // `waitFor` polls on a timer nothing is advancing, and would wait out the
+    // whole test budget on a screen that is already right.
     expect(onLeave).toHaveBeenCalledTimes(1);
     expect(onLeave.mock.calls[0]![0]).toBe("no such game");
-    // And it STOPS. A 404 is permanent; a poll that went on asking would leave
+    // And it STOPS. A 404 is permanent; a watch that went on asking would leave
     // the lobby being navigated to over and over.
+    stream.push("signal", wire.eventsDealing);
+    await settle();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000);
+      await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // **A REAL abandon, which is an `end` frame and carries no words** (final
+  // review I-2). `Signals::end` writes `{"reason":"deleted"}` and nothing else,
+  // and this screen hands `end.sentence` straight to its leave — so before the
+  // fix the creator abandoning an open table took every waiting joiner to the
+  // lobby in SILENCE. The same gap caught the stranger on a table that FILLED
+  // without them: the bump's read is then a 403, which the server reports as
+  // `gone` and which has no sentence either.
+  it("leaves with a sentence when the abandon arrives as an end frame", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    const stream = fakeStream();
+    stubApi((call) => {
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      return call.path.endsWith("/table") ? wire.tableOpen : undefined;
+    });
+    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    expect(onLeave).not.toHaveBeenCalled();
+
+    stream.push("end", { reason: "deleted" });
+    await settle();
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0], "the lobby is told WHY, not nothing at all").toBe(
+      endSentence("deleted"),
+    );
+    expect(onLeave.mock.calls[0]![0]).toMatch(/abandoned/);
+
+    // And the OTHER reason a frame can end this screen — the table filled
+    // without this caller, which the server reads as a 403 and reports as
+    // `gone` — has words of its own rather than none.
+    expect(endSentence("gone")).toMatch(/no longer available/);
   });
 });

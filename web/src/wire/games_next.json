@@ -1,6 +1,7 @@
 {
   "games": [
     {
+      "can_watch": true,
       "chosen": [
         false,
         false

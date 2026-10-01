@@ -325,7 +325,12 @@ export type PromptState =
 export interface ClientState {
   id: string;
   mode: "sim" | "live";
-  seat: PlayerId;
+  /** The seat this payload was built FOR — whose hand is unmasked.
+   *
+   *  **`null` for a spectator (M6.3)**: a watcher holds no seat, every hand on
+   *  the board is hidden from them, and there is no Hand panel in the
+   *  dashboard at all. A seated payload is unchanged. */
+  seat: PlayerId | null;
   to_move: PlayerId;
   your_turn: boolean;
   frame: FrameModel;
@@ -357,7 +362,10 @@ export interface ClientState {
 export interface Events {
   events: number;
   to_move: PlayerId | null;
-  status: "dealing" | "playing" | "over";
+  /** `open` joined the union in M6.3 (R-3.3): a table whose seats are still
+   *  filling has no record, and the open-table screen watches this endpoint
+   *  for its own start exactly as the setup screen watches for `dealing`. */
+  status: "open" | "dealing" | "playing" | "over";
   your_turn: boolean;
 }
 
@@ -391,8 +399,11 @@ export interface HistoricalFrame {
    *  lowest (R-4.2). It never names a seat somebody else holds, which is what
    *  stops a sweep over every `k` from harvesting another player's whole hand
    *  history in one pass. At a hot seat, where one person holds several, it
-   *  does follow the mover among those. */
-  seat: PlayerId;
+   *  does follow the mover among those.
+   *
+   *  **`null` for a spectator (M6.3)**: a watcher holds no seat, so a sweep
+   *  over every `k` harvests nothing at any stop. */
+  seat: PlayerId | null;
   /** Whose turn it was at `k`. */
   to_move: PlayerId;
   frame: FrameModel;
@@ -434,6 +445,9 @@ export interface Health {
   rules_hash: string;
   /** Which identity source this deployment reads, by name. */
   identity: string;
+  /** Which change transport `usePolled` reads: the stream, or the held
+   *  request (M6.3). A deployment fact, not a preference. */
+  signal: "sse" | "held";
 }
 
 /** Who the server thinks you are, and which header it reads to decide.
@@ -520,6 +534,12 @@ export interface TableView {
   /** Who won, once `over`. `null` at every other moment, a table that is still
    *  open or dealing included. */
   winner: PlayerId | null;
+  /** Whether THIS caller may watch: true for a seat holder, for anyone at an
+   *  unlocked table, or for a caller on the table's unlocked list — someone
+   *  who has presented the password through `POST …/{id}/unlock`
+   *  (M6.3, R-3.5). A fact about the reader, so two people reading one table
+   *  get two different answers. */
+  can_watch: boolean;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.
