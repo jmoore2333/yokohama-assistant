@@ -9,13 +9,14 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
 import * as values from "./buildValues";
 import { setLobbyChat, setSignalKind } from "./api";
 import { BACKOFF_MS } from "./signal";
 import { FakeSocket } from "./test/fakeSocket";
 import { OPEN_KEY } from "./chatFold";
+import { resetReleaseNoticeForTests } from "./releaseFeed";
 import { fakeStream, flush, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
@@ -42,6 +43,12 @@ const lists = (call: ApiCall): Reply | undefined => {
  *  that row's reader, and the corpus's `mine` rows are the walk's creator's
  *  readings (`wire.games`, `wire.tableForeign`). */
 const ME = "red@wire.test";
+
+// The page's release answer is the MODULE's (`releaseFeed.ts`): a cell that
+// drew the notice must not leave it for the next.
+afterEach(() => {
+  resetReleaseNoticeForTests();
+});
 
 function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
   const stub = stubApi((call) => {
@@ -376,6 +383,36 @@ describe("the lobby", () => {
     show();
     await screen.findByRole("heading", { name: "Your tables" });
     expect(document.querySelector("a.quiet-link")).toBeNull();
+  });
+
+  // **The release notice** (cycle F, R-F2, R-FP9): in the signed-in actions, right
+  // after the repository link it sits beside, where the feed names a newer
+  // release — and nowhere where the build has no feed. The feed is another
+  // host's, answered through the same stub as the API (a third party's payload
+  // is not a wire payload; see `releaseFeed.test.ts`).
+  it("draws the release notice among the actions, beside the project link", async () => {
+    const FEED = "https://api.github.com/repos/you/yokohama-assistant/releases/latest";
+    const PAGE = "https://github.com/you/yokohama-assistant/releases/tag/v0.7.0";
+    vi.stubGlobal("__YOKOHAMA_RELEASE_FEED__", FEED);
+    vi.stubGlobal("__YOKOHAMA_VERSION__", "0.6.0");
+    resetReleaseNoticeForTests();
+    vi.spyOn(values, "projectLink").mockReturnValue(values.linkFor("https://github.com/you/yokohama-assistant"));
+    const { stub } = show((call) => (call.path === FEED ? { tag_name: "v0.7.0", html_url: PAGE } : undefined));
+    const notice = await waitFor(() => {
+      const p = document.querySelector(".lobby-actions p.release-notice");
+      expect(p).not.toBeNull();
+      return p as HTMLElement;
+    });
+    expect(notice.textContent).toBe("A newer release is available: v0.7.0. This site runs 0.6.0");
+    expect(within(notice).getByRole("link", { name: "v0.7.0" })).toHaveAttribute("href", PAGE);
+    expect(document.querySelector(".lobby-actions a.quiet-link")?.nextElementSibling).toBe(notice);
+    expect(stub.matching("GET", FEED), "the feed was asked once").toHaveLength(1);
+  });
+
+  it("draws no release notice where the build has no feed", async () => {
+    show();
+    await screen.findByRole("heading", { name: "Your tables" });
+    expect(document.querySelector(".release-notice")).toBeNull();
   });
 
   // **The row is a LINK, and the hash is what it sets** (spec §5.1, R-14).

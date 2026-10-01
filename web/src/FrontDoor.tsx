@@ -6,7 +6,9 @@
 // invocations. Everything it draws comes from the BUILD or from this browser:
 // whether the friends card is drawn (`VITE_MULTIPLAYER`), the project link
 // and the blurb under the title (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`,
-// `buildValues.ts`), the bot's version (the committed
+// `buildValues.ts`), the newer release the feed names, if any (`ReleaseNotice`
+// — **the ONE request this screen makes, to another origin**: a cell asserts no
+// same-origin call), the bot's version (the committed
 // contract file `wire/production_bot.json`, which `wire_fixtures` refuses when
 // it is stale), and the games in this browser (the local host's own listing).
 // The runtime switch (`YOKOHAMA_WEB_MULTIPLAYER`) is what ENFORCES; this only
@@ -30,6 +32,7 @@ import { Help } from "./Help";
 import { OnThisDevice } from "./OnThisDevice";
 import { siteBlurb, type ProjectLink } from "./buildValues";
 import { Refusal } from "./Refusal";
+import { ReleaseNotice } from "./ReleaseNotice";
 import { navigate } from "./route";
 import type { ReadinessStatus } from "./swRegister";
 import productionBot from "./wire/production_bot.json";
@@ -94,6 +97,12 @@ export function FrontDoor({
           <div className="door-title">
             <h1>Yokohama</h1>
             {blurb && <p className="blurb">{blurb}</p>}
+            {/* **A newer release, told and never taken** (cycle F, R-F2,
+                R-FP9): one quiet line under the blurb, above the link, which
+                draws nothing until the feed has answered and nothing for an
+                answer that is not newer. The one request this screen makes is
+                its feed's, and that is another origin. */}
+            <ReleaseNotice />
             {link && (
               <a className="project-link" href={link.href} target="_blank" rel="noopener noreferrer">
                 {link.text}

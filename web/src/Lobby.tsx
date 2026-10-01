@@ -56,6 +56,7 @@ import { Padlock, PasswordTag, SeatChip } from "./Chips";
 import { projectLink } from "./buildValues";
 import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
+import { ReleaseNotice } from "./ReleaseNotice";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
 import type { ReadinessStatus } from "./swRegister";
@@ -630,6 +631,9 @@ export function Lobby({
                   <span className="sr-only"> (opens in a new tab)</span>
                 </a>
               )}
+              {/* **A newer release, told** (cycle F, R-F2, R-FP9): beside the
+                  repository link, drawn only where the feed names one. */}
+              <ReleaseNotice />
               {/* **A new release, offered and never taken by itself** (M6.5c2
                   cycle F, R-F3, R-FP9): the lobby is off the door, so the line
                   is passive here and the click is the only switch. */}

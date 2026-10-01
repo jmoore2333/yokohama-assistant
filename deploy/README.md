@@ -116,7 +116,8 @@ cached took 230 s, and `docker images` read the image's content as 42.4 MB (151.
 a reading of 2026-09-28 (M6.5c2).
 `deploy/Dockerfile.dockerignore` decides what the build sees.
 
-**The three build values** are build arguments. Each is optional, and each is checked by the build:
+**The build values** are build arguments: the door's three, and the release feed and the Turnstile site key
+beside them. Each is optional, and each is checked by the build:
 
 ```bash
 docker build --platform linux/amd64 -f deploy/Dockerfile \
@@ -131,12 +132,17 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_PROJECT_URL` | 200 characters | A link under the title on the first screen, and a quiet link among the lobby's actions. An absolute `https://` or `http://` URL with a host, holding no whitespace or control character. |
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
+| `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. |
 
-- **Omit an argument, or leave it empty, for none of that value.**
+- **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
+  are the derived default and only `off` is none.
+- **The release feed is read in the visitor's browser**, once per page and, after an answer, not again in that
+  browser for an hour. Your server never sees the request; the feed's host sees it, from the visitor's address.
 - The blurb and the notice must hold words and no control character (a line break, a zero-width character or a bidirectional control all count). A value the build
   refuses stops the build with a message naming the variable.
 
-**Why the three are fixed at build time and not at run time:** the whole release is precached for offline
+**Why these are fixed at build time and not at run time:** the whole release is precached for offline
 play under a name that is a digest of its own bytes, and every browser checks each file against that
 digest when it installs. A server that rewrote `index.html` at start-up would fail that check in every
 browser. So each value is baked into the release, and changing one is a rebuild.

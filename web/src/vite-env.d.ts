@@ -41,3 +41,16 @@ declare const __YOKOHAMA_SITE_BLURB__: string | null;
 /** The footer's one-line notice: the checked `YOKOHAMA_SITE_NOTICE`, or
  *  `null` — read by `buildValues.ts` alone. */
 declare const __YOKOHAMA_SITE_NOTICE__: string | null;
+/** The release feed the door and the lobby read for the latest release (cycle
+ *  F, R-F2): the checked `YOKOHAMA_RELEASE_FEED` — a URL, or one derived from a
+ *  GitHub project link — or `null` for `off` and for no feed. Read by
+ *  `buildValues.ts` alone. */
+declare const __YOKOHAMA_RELEASE_FEED__: string | null;
+/** The Turnstile site key (cycle F, R-F6): the checked
+ *  `YOKOHAMA_TURNSTILE_SITEKEY`, or `null` — blank draws the plain link. Read
+ *  by `buildValues.ts` alone. */
+declare const __YOKOHAMA_TURNSTILE_SITEKEY__: string | null;
+/** This build's own version: `web/package.json`'s `version`, the number the
+ *  release notice compares the feed's tag against. Read by `buildValues.ts`
+ *  alone. */
+declare const __YOKOHAMA_VERSION__: string;

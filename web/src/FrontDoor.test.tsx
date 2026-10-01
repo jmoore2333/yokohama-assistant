@@ -11,10 +11,14 @@
 // (R-6.5b2.7): the friends card is a build value, the project link is a build
 // value, the bot's version is the committed contract file, and the games are
 // the local host's. The door asks the server nothing, and a cell below says so
-// with `fetch` as the setup file's throwing stub.
+// with `fetch` as the setup file's throwing stub — **except the one request it
+// MAY make, the release notice's (cycle F, R-F2): a cross-origin read of the
+// release feed, which the service worker leaves alone and the Worker never
+// sees.** The cell therefore answers that one URL and asserts that no SAME-
+// origin call was made.
 
 import { readFileSync } from "node:fs";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
@@ -22,6 +26,7 @@ import * as values from "./buildValues";
 import { linkFor } from "./buildValues";
 import type { ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
+import { resetReleaseNoticeForTests } from "./releaseFeed";
 import { stubWorker } from "./test/fakeWorker";
 import productionBot from "./wire/production_bot.json";
 import { topLevelRules } from "./test/css";
@@ -30,6 +35,32 @@ import { topLevelRules } from "./test/css";
  *  this device (`fakeWorker.ts`'s one permitted edit). */
 const LOCAL = "local-1";
 
+/** The release feed a cell points the build at — ANOTHER host's, like the real
+ *  one — and GitHub's shape for what it answers (a third party's payload is not
+ *  a wire payload; see `releaseFeed.test.ts`). */
+const FEED = "https://api.github.com/repos/you/yokohama-assistant/releases/latest";
+const RELEASE_PAGE = "https://github.com/you/yokohama-assistant/releases/tag/v0.7.0";
+
+/** Point the build at `FEED`, running 0.6.0, and install a `fetch` that answers
+ *  the feed with a newer release and REFUSES everything else by recording it:
+ *  the recorded list is what the cells read, because a refusal thrown inside the
+ *  notice's own request is caught there and would pass unseen. */
+function feedAnswers(): { asked: string[] } {
+  vi.stubGlobal("__YOKOHAMA_RELEASE_FEED__", FEED);
+  vi.stubGlobal("__YOKOHAMA_VERSION__", "0.6.0");
+  resetReleaseNoticeForTests();
+  const asked: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      if (String(input) !== FEED) throw new Error(`the door asked the server: ${String(input)}`);
+      return new Response(JSON.stringify({ tag_name: "v0.7.0", html_url: RELEASE_PAGE }), { status: 200 });
+    }),
+  );
+  return { asked };
+}
+
 describe("the front door", () => {
   beforeEach(() => {
     resetLocalHostForTests();
@@ -37,6 +68,7 @@ describe("the front door", () => {
   });
   afterEach(() => {
     resetLocalHostForTests();
+    resetReleaseNoticeForTests();
   });
 
   it("offers multiplayer as a navigation to the turnstile", () => {
@@ -79,14 +111,51 @@ describe("the front door", () => {
     expect(grid.querySelectorAll(":scope > .door-card")).toHaveLength(2);
   });
 
-  // **The door asks the server NOTHING** (R-6.5b2.7): `fetch` is the setup
-  // file's throwing stub, so a door that asked the server for any part of
-  // itself — the bot's label included — fails here rather than being slower.
+  // **The door asks the server NOTHING** (R-6.5b2.7): every call but the feed's
+  // is refused, so a door that asked the server for any part of itself — the
+  // bot's label included — fails here rather than being slower. **The feed is
+  // the one request the door may make (cycle F, R-F2), and it is cross-origin**:
+  // the cell points the build at one and proves it WAS asked — without that the
+  // "no same-origin call" below would be true of a door that never looked — and
+  // that nothing else was.
   it("draws the games on this device, and asks the server for nothing", async () => {
+    const { asked } = feedAnswers();
     render(<FrontDoor multiplayer />);
     expect(await screen.findByRole("link", { name: LOCAL })).toHaveAttribute("href", `#/t/${LOCAL}`);
     expect(screen.getByRole("button", { name: "New game" })).toBeInTheDocument();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(await screen.findByText(/A newer release is available/), "the premise: the feed was read").toBeInTheDocument();
+    expect(asked).toEqual([FEED]);
+    const sameOrigin = asked.filter((u) => new URL(u, window.location.href).origin === window.location.origin);
+    expect(sameOrigin, "no same-origin call").toEqual([]);
+  });
+
+  // **The release notice's place** (cycle F, R-F2, R-FP9): under the blurb and
+  // above the project link, inside the title's block; with no blurb, straight
+  // after the title.
+  it("draws the release notice under the blurb and above the project link", async () => {
+    feedAnswers();
+    vi.spyOn(values, "siteBlurb").mockReturnValue("First sentence. Second sentence.");
+    const { container, unmount } = render(
+      <FrontDoor multiplayer link={linkFor("https://github.com/you/yokohama-assistant")} />,
+    );
+    const notice = await waitFor(() => {
+      const p = container.querySelector("p.release-notice");
+      expect(p).not.toBeNull();
+      return p as HTMLElement;
+    });
+    expect(notice.parentElement).toHaveClass("door-title");
+    expect(container.querySelector("p.blurb")?.nextElementSibling).toBe(notice);
+    expect(notice.nextElementSibling).toHaveClass("project-link");
+    expect(within(notice).getByRole("link", { name: "v0.7.0" })).toHaveAttribute("href", RELEASE_PAGE);
+    unmount();
+    vi.spyOn(values, "siteBlurb").mockReturnValue(null);
+    const bare = render(<FrontDoor multiplayer />);
+    expect(bare.container.querySelector("h1 + p.release-notice"), "with no blurb it follows the title").not.toBeNull();
+  });
+
+  it("draws no release notice where the build has no feed", () => {
+    const { container } = render(<FrontDoor multiplayer />);
+    expect(container.querySelector(".release-notice")).toBeNull();
   });
 
   it("opens the local form from New game, which needs no door", async () => {
