@@ -10,18 +10,25 @@
 // Chromium.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   afterClickChecks,
   afterReloadChecks,
+  awaitGo,
   doorReadiness,
+  GO_CHECK,
+  GO_WAIT_MS,
+  pin,
+  PIN_CHECK,
   pinnedArgs,
   SENTENCES,
   USAGE,
   verdictOf,
+  writeVerdict,
   type Check,
   type AfterClick,
   type AfterReload,
@@ -190,6 +197,75 @@ const GOOD_CLICK: AfterClick = {
   release: "yokohama-release-2222222222222222",
   eventsAfterAMove: 12,
 };
+
+// **The run ends with a verdict, never a browser left open** (cycle F's fix
+// wave; Task 8's review, Minors 1 and 2 — before the window). Two decisions
+// the browser half takes, read here over a scratch state directory and a fake
+// door text: `PINNED` — the orchestrator's word to deploy — only over a door
+// that read "Ready to play offline", and the wait for `go` bounded, its
+// timeout a failed check `verdict.json` names. Neither launches anything.
+describe("the pin and the wait for go", () => {
+  const made: string[] = [];
+  afterEach(() => {
+    for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const stateDir = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "pinned-cell-"));
+    made.push(dir);
+    return dir;
+  };
+
+  // Mutant: PINNED written whatever the door read.
+  it.each<[string, string[]]>([
+    ["still installing", [SENTENCES.installing]],
+    ["failed", ["Could not prepare to play offline — the install did not finish. Try again"]],
+    ["drawing no line", []],
+    ["drawing a line it does not know", ["Ready to play offline."]],
+  ])("writes no PINNED over a door %s, and answers the failed check naming what it read", (_what, lines) => {
+    const dir = stateDir();
+    expect(pin(dir, lines)).toEqual({ check: PIN_CHECK, ok: false, saw: lines });
+    expect(existsSync(join(dir, "PINNED")), "no PINNED").toBe(false);
+  });
+  it("writes PINNED over a door that reads Ready to play offline, and answers no check", () => {
+    const dir = stateDir();
+    expect(pin(dir, [SENTENCES.ready], () => new Date("2026-10-01T12:00:00.000Z"))).toBeNull();
+    expect(readFileSync(join(dir, "PINNED"), "utf8")).toBe("2026-10-01T12:00:00.000Z\n");
+  });
+
+  it("waits thirty minutes for go, by default", () => {
+    expect(GO_WAIT_MS).toBe(30 * 60_000);
+    expect(GO_CHECK).toBe("go was touched within 30 minutes of PINNED");
+  });
+  // Mutant: the wait unbounded — this cell then never ends, and vitest's own
+  // timeout fails it.
+  it("gives up on a go that never comes at its bound, answering the failed check", async () => {
+    const dir = stateDir();
+    const late = await awaitGo(dir, 60, 10);
+    expect(late).toEqual({ check: GO_CHECK, ok: false, saw: `no go in ${dir} within 60 ms: the deploy's reading never began` });
+  }, 2_000);
+  it("answers no check for a go that is there", async () => {
+    const dir = stateDir();
+    writeFileSync(join(dir, "go"), "");
+    expect(await awaitGo(dir, 60, 10)).toBeNull();
+  });
+  // What the run then does with either: `verdict.json` names it, and the
+  // verdict fails — which is the instrument's exit 1.
+  it("writes verdict.json naming the timeout, failed", async () => {
+    const dir = stateDir();
+    const late = await awaitGo(dir, 60, 10);
+    const verdict = writeVerdict(dir, { label: "worker", origin: "https://h.example", secondTab: true }, [late!]);
+    expect(verdict.ok, "the instrument exits 1").toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, "verdict.json"), "utf8"))).toEqual({
+      label: "worker",
+      origin: "https://h.example",
+      secondTab: true,
+      ok: false,
+      complete: true,
+      summary: "1 checks: 0 held, 1 failed, 0 not run",
+      checks: [late],
+    });
+  }, 2_000);
+});
 
 const clickFailed = (r: AfterClick) => afterClickChecks(r).filter((c) => !c.ok).map((c) => c.check);
 

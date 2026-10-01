@@ -219,7 +219,7 @@ describe("send — one request, through node:http, never following a redirect", 
     expect(a.headers.get("location")).toBe("https://elsewhere.example/");
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].url).toBe("https://yokohama.moore.nyc/wp-login.php");
-    expect(fake.calls[0].options).toMatchObject({ method: "GET", headers: {} });
+    expect(fake.calls[0].options).toEqual({ method: "GET", headers: {} });
   });
   it("counts the body's bytes and reads its headers", async () => {
     const fake = fakeRequest(() => ({

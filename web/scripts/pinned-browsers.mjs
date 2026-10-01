@@ -19,15 +19,20 @@
 // play offline" (or the failure's sentence), snapshots `pinned-before-clear.json`,
 // clears the `cf_clearance` cookie and snapshots `pinned.json`. Then it opens a
 // SECOND TAB on the door, starts a local game against the bot, keeps through
-// the deal and makes a few moves (`tab.json`), and writes `PINNED`. Both tabs
-// stay open. **The second tab is the reading's stale-tab half, so a tab that
+// the deal and makes a few moves (`tab.json`), and writes `PINNED` — ONLY over
+// a door that reads "Ready to play offline" (cycle F's fix wave): a door
+// still installing, failed, or drawing a line it does not know ends the run
+// there, no `PINNED` written, `verdict.json` naming what the door read, exit
+// 1. Both tabs stay open. **The second tab is the reading's stale-tab half, so a tab that
 // does not open FAILS the verdict** ("the second tab holds a local game"), its
 // three checks not run — unless the run was started with `--no-second-tab`,
 // the one way to read the door alone: its three checks are then NOT RUN, none
 // fails, and the verdict never says every check held (Task 8's review,
 // Important 2).
 //
-// **Phase 2, on `<state-dir>/go` — after the deploy.** `before-go.json`, then
+// **Phase 2, on `<state-dir>/go` — after the deploy.** The wait for `go` is
+// thirty minutes at most (cycle F's fix wave): without one the run ends,
+// `verdict.json` naming the wait, exit 1. On `go`: `before-go.json`, then
 // ONE plain reload of the door. **Touch `go` as soon as the deploy's smoke
 // passes**: from the deploy on, any check either tab makes — a tab coming into
 // view, a navigation, the 15-minute interval (R-F3) — finds the release, and
@@ -244,15 +249,64 @@ export function afterClickChecks(r) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** The first of `files` to exist, polled every five seconds: the
- *  orchestrator's trigger. */
-async function firstOf(files) {
+/** The first of `files` to exist, polled every `pollMs`: the orchestrator's
+ *  trigger — or `null` once `boundMs` has passed with none (no bound by
+ *  default). */
+async function firstOf(files, boundMs = Infinity, pollMs = 5000) {
+  const until = Date.now() + boundMs;
   for (;;) {
     const found = files.find((f) => fs.existsSync(f));
     if (found) return found;
-    await sleep(5000);
+    if (Date.now() >= until) return null;
+    await sleep(Math.min(pollMs, Math.max(0, until - Date.now())));
   }
 }
+
+/** How long phase 2 waits for `<state-dir>/go` (cycle F's fix wave; Task 8's
+ *  review, Minor 1): thirty minutes from `PINNED`. A deploy that failed, or
+ *  was never made, then ends the run with a `verdict.json` naming the wait
+ *  and exit 1 — never a browser left open that only a kill could close. */
+export const GO_WAIT_MS = 30 * 60_000;
+
+/** The check a `go` that never came fails. */
+export const GO_CHECK = "go was touched within 30 minutes of PINNED";
+
+/** The check a door that never read ready fails, with no `PINNED` written. */
+export const PIN_CHECK = "the door read Ready to play offline before PINNED";
+
+/** Wait for `<stateDir>/go`, polled every `pollMs`, at most `boundMs`:
+ *  `null` once it is there, else the failed check naming the wait. */
+export async function awaitGo(stateDir, boundMs = GO_WAIT_MS, pollMs = 5000) {
+  const found = await firstOf([path.join(stateDir, "go")], boundMs, pollMs);
+  if (found !== null) return null;
+  return check(GO_CHECK, false, `no go in ${stateDir} within ${boundMs} ms: the deploy's reading never began`);
+}
+
+/** **`PINNED` only over a ready door** (cycle F's fix wave; Task 8's review,
+ *  Minor 2). `PINNED` is the orchestrator's word to deploy, and a door still
+ *  installing, failed, or drawing a line this instrument does not know holds
+ *  no pinned release to read an update from. So it is written ONLY when
+ *  `doorLines` read exactly "Ready to play offline": `null` then, else the
+ *  failed check naming what the door read, and nothing written. */
+export function pin(stateDir, doorLines, now = () => new Date()) {
+  if (doorReadiness(doorLines) !== "ready") return check(PIN_CHECK, false, doorLines);
+  fs.writeFileSync(path.join(stateDir, "PINNED"), `${now().toISOString()}\n`);
+  return null;
+}
+
+/** Write `verdict.json` in `stateDir` over `checks`, under `head`
+ *  (`{ label, origin, secondTab }`): the verdict, whose `ok` is the
+ *  instrument's exit. */
+export function writeVerdict(stateDir, head, checks) {
+  const verdict = verdictOf(checks);
+  fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ ...head, ...verdict, checks }, null, 2)}\n`);
+  return verdict;
+}
+
+/** Thrown to end the run early with its checks already recorded (a door that
+ *  never read ready, a `go` that never came): the context still closes and
+ *  `verdict.json` is still written — what a bare exit would lose. */
+class Stop extends Error {}
 
 /**
  * A page's main-document loads since its last mark, counted by the main
@@ -485,10 +539,21 @@ async function run({ label, origin, stateDir, secondTab }) {
       log("phase 1: no second tab, by --no-second-tab — its checks will read NOT RUN");
     }
     await snapshot("tab.json", { game });
-    fs.writeFileSync(path.join(stateDir, "PINNED"), `${new Date().toISOString()}\n`);
+    const doorRead = await linesOf(door, ".offline-state p");
+    const unpinned = pin(stateDir, doorRead);
+    if (unpinned !== null) {
+      record([unpinned]);
+      log(`phase 1: NO PINNED — the door reads ${JSON.stringify(doorRead)}, not Ready to play offline`);
+      throw new Stop();
+    }
 
-    log("phase 2: waiting for go");
-    await firstOf([path.join(stateDir, "go")]);
+    log(`phase 2: waiting for go, at most ${GO_WAIT_MS / 60_000} minutes`);
+    const late = await awaitGo(stateDir);
+    if (late !== null) {
+      record([late]);
+      log("phase 2: no go — closing with the verdict");
+      throw new Stop();
+    }
     const beforeGo = await snapshot("before-go.json");
     netMark = netLines().length;
     doorLoads.mark();
@@ -555,12 +620,14 @@ async function run({ label, origin, stateDir, secondTab }) {
       await firstOf([path.join(stateDir, "done")]);
     }
   } catch (e) {
-    checks.push(check("the run finished", false, e instanceof Error ? e.message : String(e)));
-    log(`BROKE: ${e instanceof Error ? e.stack : String(e)}`);
+    // A Stop has recorded its own failed check; anything else is the run breaking.
+    if (!(e instanceof Stop)) {
+      checks.push(check("the run finished", false, e instanceof Error ? e.message : String(e)));
+      log(`BROKE: ${e instanceof Error ? e.stack : String(e)}`);
+    }
   }
   await context.close();
-  const verdict = verdictOf(checks);
-  fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ label, origin, secondTab, ...verdict, checks }, null, 2)}\n`);
+  const verdict = writeVerdict(stateDir, { label, origin, secondTab }, checks);
   log(`closed: ${verdict.summary}`);
   return verdict.ok;
 }

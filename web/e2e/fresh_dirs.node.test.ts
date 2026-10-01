@@ -131,6 +131,26 @@ describe("the script", () => {
     expect(existsSync(neighbour), "and a neighbour is untouched").toBe(true);
   });
 
+  // **Started through a symlinked path, it still runs** (cycle F's fix wave;
+  // the final review, which tried it): node resolves the main module's
+  // symlinks before it sets `import.meta.url`, so an entry guard comparing the
+  // path as given exited 0 having emptied nothing. Mutant: the guard comparing
+  // `resolve(process.argv[1])`.
+  it("empties the two directories when it is started through a symlink to the script", () => {
+    const { games, archive } = scratchDirs(LOCAL_PORT, scratch);
+    const planted = [plant(games), plant(archive)];
+    const link = join(scratch, "linked-fresh_dirs.mjs");
+    symlinkSync(SCRIPT, link);
+    const ran = spawnSync(process.execPath, [link], {
+      env: { ...process.env, TMPDIR: scratch, YOKOHAMA_WEB_DIR: games, YOKOHAMA_WEB_ARCHIVE_DIR: archive },
+      encoding: "utf8",
+    });
+    expect(ran.status, ran.stderr).toBe(0);
+    for (const file of planted) expect(existsSync(file), `${file} is gone`).toBe(false);
+    expect(readdirSync(games)).toEqual([]);
+    expect(readdirSync(archive)).toEqual([]);
+  });
+
   // Each refusal exits 2 NAMING the path, and — the two paths are checked
   // before either is emptied — leaves the good one's file in place, and the
   // refused directory's own.

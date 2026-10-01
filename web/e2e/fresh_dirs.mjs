@@ -103,6 +103,21 @@ function main(env) {
   return 0;
 }
 
-if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/** Whether `argv1` — the path node was started with — is this module,
+ *  compared by REAL path (cycle F's fix wave; the final review, which tried
+ *  it): node resolves the main module's symlinks before it sets
+ *  `import.meta.url`, so a script started through a symlinked path, compared
+ *  as given, never ran its `main` and exited 0 having emptied nothing — and
+ *  the launch's `&& cargo run` went on over stale directories. */
+function isMain(argv1) {
+  if (argv1 === undefined) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isMain(process.argv[1])) {
   process.exit(main(process.env));
 }

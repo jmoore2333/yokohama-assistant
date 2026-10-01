@@ -65,3 +65,25 @@ export interface AfterClick {
 }
 
 export declare function afterClickChecks(reading: AfterClick): Check[];
+
+/** How long phase 2 waits for `<state-dir>/go`, in milliseconds. */
+export declare const GO_WAIT_MS: number;
+
+/** The check a `go` that never came fails. */
+export declare const GO_CHECK: string;
+
+/** The check a door that never read ready fails, with no `PINNED` written. */
+export declare const PIN_CHECK: string;
+
+/** Wait for `<stateDir>/go`, at most `boundMs`: `null` when it came, else the failed check. */
+export declare function awaitGo(stateDir: string, boundMs?: number, pollMs?: number): Promise<Check | null>;
+
+/** Write `PINNED` only over a door that reads ready: `null` when written, else the failed check. */
+export declare function pin(stateDir: string, doorLines: string[], now?: () => Date): Check | null;
+
+/** Write `verdict.json` over `checks`, under `head`; the verdict. */
+export declare function writeVerdict(
+  stateDir: string,
+  head: { label: string; origin: string; secondTab: boolean },
+  checks: Check[],
+): { ok: boolean; complete: boolean; summary: string };
