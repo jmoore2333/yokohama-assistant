@@ -6,9 +6,10 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-30, M6.5c2 cycle E "the finish" CLOSED on `web-room-m6.5c2e` (the code head `c39da5a1`; the final reviewed head `3107eb8b`; the record [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), its §7 what the cycle does NOT claim). Both hosts run E's release; the door was vetted in two states and reverted; PR #43 is open against `web-room-m6.5c2d`. **By your word at the close (2026-09-30), the stack is NOT merged now: cycle F "the clean finish" follows, from [its handover](plans/2026-09-30-web-frontend-m6.5c2f-handover.md) — the door's update path unmetered, the self-host's table TTL sweep, Turnstile as a brainstorm item; the merge #31 → #43 → F's PR and the `v0.6.0` tag are F's last step, on your word again** (Track 3). After them the project refocuses on the computer player (Track 1).
+**Updated:** 2026-10-01, M6.5c2 cycle F "the clean finish" CLOSED on `web-room-m6.5c2f` (the code head `7670d5fa`; the final reviewed head in the close; the record [close](plans/2026-10-01-web-frontend-m6.5c2f-close.md), its §7 what the cycle does NOT claim). Both hosts run F's release; the no-Access door was vetted in F's public window (2026-10-01, 13:13–13:57 UTC) and reverted, Access back. **By your word (R-OWN-F2), F ends at the push and F's PR: the stack #31 → #43 → F's PR is reviewed outside the session, the GitHub workflows stay disabled, and the merge and the `v0.6.0` tag follow on your word, entered from [the wrap brainstorm's handover](plans/2026-10-01-web-frontend-wrap-brainstorm-handover.md)** (Track 3). After them the project refocuses on the computer player (Track 1).
 
 **History, by record.** This board keeps no running history; each session's account is its record of record:
+- 2026-10-01 — cycle F "the clean finish" closed ([close](plans/2026-10-01-web-frontend-m6.5c2f-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-30-web-frontend-m6.5c2f-plan.md`](plans/2026-09-30-web-frontend-m6.5c2f-plan.md)); the public window vetted the no-Access door and reverted it.
 - 2026-09-30 — cycle E "the finish" closed ([close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
 - 2026-09-29 — cycle D "the code" closed and live ([close](plans/2026-09-29-web-frontend-m6.5c2d-close.md)); cycle E planned (spec §10.11 in [the spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md), [the plan](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
 - 2026-09-28 — cycle C "the hosts and the close" closed and live ([close](plans/2026-09-28-web-frontend-m6.5c2c-close.md)); cycle D planned ([plan](plans/2026-09-28-web-frontend-m6.5c2d-plan.md)); cycle B "the screens" closed ([C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) §1 restates what it shipped).
@@ -32,7 +33,7 @@ session close: rewrite the stale lines, do not append history (the decision log 
   GO/WAIT — still HOLD. **The games are now PLAYED AND SCRIBED (three of them, 370 bot events
   reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
   artifact, then the findings document, then the two rulings together (Track 1).
-- **The web client** is live on two hosts behind one Cloudflare Access application at E's release `0.6.0`: the Worker at `yokohama.moore.nyc` and the NAS at `yokohama-nas.moore.nyc`. Single player runs in the browser with no server. The lane is finished at cycle E and its record is [`web-lane.md`](web-lane.md) §11; the merge of its stack of pull requests waits on your word (Track 3).
+- **The web client** is live on two hosts behind one Cloudflare Access application at F's release `0.6.0`: the Worker at `yokohama.moore.nyc` and the NAS at `yokohama-nas.moore.nyc`. Single player runs in the browser with no server. The lane is finished at cycle F; its public window vetted the no-Access door on 2026-10-01 and reverted it, Access back. Its record is [`web-lane.md`](web-lane.md) §11; the merge of its stack of pull requests waits on your review and your word (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`, and the web lane's in [`web-lane.md`](web-lane.md) §2); the fifteen gates last ran at E's close, `2881 s` on the Mac beside D's 446 s.
@@ -100,6 +101,12 @@ and the scribe tooling are parked in `docs/temp/owner-games/ledger/` (README ins
    sign, then ONE confirmatory battery) → OD-8 acceptance play → OD-11, the bar. A weight change
    is a DIFFERENT contestant (D1), never a tune.
 
+**Owed by the V5 ship (R-F4, cycle F, 2026-10-01):** a V5 build plays V4 games on the web exactly
+when the V5 ship (a) admits `v4-step9-draft1` in the CLI's `eligible` AND (b) still derives V4's
+exact descriptor, `LOOKAHEAD_IMPL_VERSION` and `EVAL_IMPL_VERSION` unmoved — a weights-only V5.
+Until then the web refuses V4 games with `eligible`'s own sentence, as the CLI does (the re-entry
+handover §5, item 12; [`web-lane.md`](web-lane.md) §15).
+
 **You decide:** D3 · W6 · OD-6 (restate the ≤420s roster target — the M5 read 492.17s) · OD-8's
 format (game count, rubric — its inherited "brake behind" line contradicts canon ruling 15).
 
@@ -115,12 +122,12 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5c2 cycle E "the finish", the lane's last cycle
+## Track 3 — The web client: M6.5c2 cycle F "the clean finish", the lane's last cycle
 
-**State:** E's code is on `web-room-m6.5c2e` (E's PR, to be opened at the close), on top of a stack of pull requests, #31 against master through #42, none merged. Both hosts run E's release `0.6.0` behind the hostname-wide Access application: the Worker at `yokohama.moore.nyc` (`worker/RUNBOOK.md` §19) and the NAS at `yokohama-nas.moore.nyc` (`deploy/RUNBOOK.md` §3.19). The public door was vetted in two states on 2026-09-30 and reverted the same hour. What the lane is and how it runs (the hosts, the suites, the testing strategy, what a save file says, the release-version rule, the public door's preconditions, how to pull a game, §10) is [`web-lane.md`](web-lane.md); its records are §11.
+**State:** F's code is on `web-room-m6.5c2f` (F's PR, opened at the close, R-F7), on top of a stack of pull requests, #31 against master through E's #43, none merged. Both hosts run F's release `0.6.0` behind the hostname-wide Access application: the Worker at `yokohama.moore.nyc` (`worker/RUNBOOK.md` §20, the thirty-first deployment) and the NAS at `yokohama-nas.moore.nyc` (`deploy/RUNBOOK.md` §3.20). The no-Access door — the edge rule in front, Turnstile on — was vetted in F's public window on 2026-10-01 (13:13:51–13:57:31 UTC) and reverted; the edge rule is kept disabled by its id for the public end state. What the lane is and how it runs (the hosts, the suites, the testing strategy, what a save file says, the release-version rule, the public door's preconditions, how to pull a game, §10) is [`web-lane.md`](web-lane.md); its records are §11.
 
 **What wants YOU, shortest first.**
-1. **The merge and the tag**: the stack #31 → E's PR in order with merge commits, and the `v0.6.0` tag on master, on your word (R-6.5c2.37). CI stays disabled on GitHub through the merge.
+1. **The stack's review, then the merge and the tag** (R-OWN-F2): you review the stack #31 → #43 → F's PR outside the session; then the merge in order with merge commits and the `v0.6.0` tag on master, on your word. The GitHub workflows stay disabled until then. The entry is [the wrap brainstorm's handover](plans/2026-10-01-web-frontend-wrap-brainstorm-handover.md): the stack's shape and order, the merge recipe, the tag, the workflows to re-enable, the release line, the residuals and the AI lane's re-entry. W-3 is among its questions: under the no-Access door with Bot Fight Mode on, a controlled browser whose clearance has lapsed cannot install a new release until something re-issues a clearance ([`web-lane.md`](web-lane.md) §15).
 2. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 3. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
@@ -143,13 +150,14 @@ After the merge the project refocuses on the computer player (Track 1).
 10. **M6.2 ruling #13** — the creator's Abandon on the lobby's Your-games rows: DONE, approved at M6.3; nothing outstanding.
 11. **The refinish rule** — RULED (R-6.5c2.11) and LIVE since cycle C (2026-09-28): a same-game conflict stamps, every other conflict is final.
 12. **The `test/` prefix's lifecycle** — RULED (R-6.5c2.12) and SET at cycle C's close (2026-09-28): the R2 rule `expire-test-after-30-days` on `test/`.
+13. **The merge stack's review and `v0.6.0`** (R-OWN-F2) — the stack #31 → #43 → F's PR reviewed outside the session, then the merge and the tag on your word (Track 3).
 
 ## Entry artifacts by lane
 
-- **F's brainstorm, then its spec and plan** — the six items of [the F handover](plans/2026-09-30-web-frontend-m6.5c2f-handover.md) §7 (Turnstile's place and cost; the wording path; the NAS marker; the sweep's first run). The merge and the tag moved to F's end.
+- **The wrap's brainstorm** — [the wrap brainstorm's handover](plans/2026-10-01-web-frontend-wrap-brainstorm-handover.md) (R-OWN-F2): the stack's shape and order, the merge recipe, the tag, the workflows to re-enable, the release line, the residuals and the AI lane's re-entry.
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle E's plan [`plans/2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md) and E's close (the last row of `web-lane.md` §11, written at the close); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
+- Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle F's plan [`plans/2026-09-30-web-frontend-m6.5c2f-plan.md`](plans/2026-09-30-web-frontend-m6.5c2f-plan.md) and F's close [`plans/2026-10-01-web-frontend-m6.5c2f-close.md`](plans/2026-10-01-web-frontend-m6.5c2f-close.md), beside E's [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md) (the last two rows of `web-lane.md` §11); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
 - Bridge (BGA capture → import): `docs/bridge-setup.md`; ledger
   `docs/plans/2026-08-08-phase3.5b-execution-ledger.md`.
 - Everything: `CLAUDE.md`, then `guidingpath.md`'s Current state and the decision log's tail.
