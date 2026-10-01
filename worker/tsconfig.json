@@ -1,0 +1,34 @@
+{
+  // The WORKERD half of `worker/`: the shell under `src/` and the pool's cells
+  // under `test/`, which run inside the Workers runtime. The globals are
+  // `@cloudflare/workers-types`' (an explicit devDependency: wrangler only
+  // names it as an optional peer), and `cloudflare:test` is the pool's own
+  // declaration. `Env` is written by hand in `src/env.ts`; `wrangler types` is
+  // not used.
+  //
+  // `src/*.unit.test.ts` is checked here too although node runs it
+  // (`vitest.scripts.config.ts`): it calls no Workers API at run time, but the
+  // types it is checked against — `Env`'s bindings — are this project's.
+  //
+  // It reads the GENERATED module: the factory's declarations and the compiled
+  // module under `gen/` are imported by `src/module.ts` and by the pool's
+  // cells, so a checkout that has not run `npm run build:module:debug` fails
+  // here with a resolution error naming `../gen/…`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["src", "test"]
+}

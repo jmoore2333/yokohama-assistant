@@ -3,6 +3,12 @@ target/
 *.swo
 .DS_Store
 
+# Secrets for local tooling — wrangler's own convention (`.dev.vars` is what
+# `wrangler dev` reads) and the Access service credential the live tests present.
+# Never committed: a credential in history is a credential rotated.
+.dev.vars
+.dev.vars.*
+
 # Phase-2.9 differential-harness divergence artifacts (generated repros;
 # never committed - the seed/players/policy/step in each filename is the
 # provenance, the state snapshot inside is the repro)
@@ -76,3 +82,18 @@ docs/tools/__pycache__/
 # ship beside the WebP cut from it. Same reasoning as the two rows above, one
 # step longer.
 web/help-shots/
+
+# M6.5c: the Worker package's generated trees. `gen/` is the module build's
+# output (`npm run build:module` or `build:module:debug`: the glue, the factory,
+# the module), `assets/` the asset assembly's (`npm run build:assets`), and
+# `.test-assets/` with `test/fixtures.gen.ts` and `test/corpus.gen.ts` the
+# pool's pre-hook's (`scripts/test-assets.mjs`). Each regenerates from a
+# committed command — the reasoning `web/dist` gives. `package-lock.json` IS
+# committed.
+worker/gen/
+worker/assets/
+worker/.test-assets/
+worker/node_modules/
+worker/.wrangler/
+worker/test/fixtures.gen.ts
+worker/test/corpus.gen.ts

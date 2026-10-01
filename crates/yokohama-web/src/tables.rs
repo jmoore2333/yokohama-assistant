@@ -351,15 +351,24 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// numbers the two dealt cards from 1, and `cards_of`'s doc is the join. A
 /// stored `3` indexes a third card that does not exist.
 ///
-/// Only this server writes these files, so failing here means a hand-edited or
-/// truncated one — which is exactly when a typed 500 naming the file beats a
-/// dropped socket and a dead lock.
+/// A file in this server's store is written only by this server, so failing on
+/// one means a hand-edited or truncated file — which is exactly when a typed
+/// 500 naming the file beats a dropped socket and a dead lock. A document a
+/// browser SENDS is not one of those files, and failing on it refuses what was
+/// sent.
 ///
-/// Checked at the two places a document ENTERS this process: [`Games::read_table`],
-/// which refuses, and [`Games::list_for`], which skips and says so. Both, because
-/// the listing deliberately does not go through `read_table` — one unreadable
-/// file must not take the other nineteen tables off the lobby.
-pub(crate) fn check_shape(doc: &TableDoc) -> Result<(), String> {
+/// Checked wherever a document ENTERS this process. From the store:
+/// [`Games::read_table`], which refuses, and [`Games::list_for`], which skips
+/// and says so — both, because the listing deliberately does not go through
+/// `read_table`, and one unreadable file must not take the other nineteen
+/// tables off the lobby. From a browser: the backup module's pair check
+/// ([`crate::backup::check_pair`]), over a pair the archive route receives or
+/// a backup restores, and its `check_table_alone`, over a restored table still
+/// at the deal.
+///
+/// `pub` since M6.5c (R-6.5c.8): a host that cannot hear the layer's
+/// `eprintln!` refuses a copy its lobby would drop.
+pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     if doc.schema > TABLE_SCHEMA {
         return Err(format!(
             "schema {} — this server reads up to {TABLE_SCHEMA}; a newer server wrote it",

@@ -1,0 +1,71 @@
+// **The POOL's Worker** (spec §5.2): the configuration `vitest.config.ts`
+// hands `cloudflareTest`. It is never deployed — `npm run deploy` reads
+// `wrangler.jsonc` — and it carries a name of its own, with no `workers.dev`
+// URL and no preview URLs, so a mistaken `wrangler deploy -c` of this file
+// could not replace the real Worker, and would leave one no URL reaches.
+{
+  "name": "yokohama-web-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  // The module is imported as a compiled `WebAssembly.Module`, which the
+  // factory instantiates anew on every call (spec §2.2).
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // Spec §2.3's handling, exactly as `wrangler.jsonc` has it. The pool reads
+  // only this file, so production's block could drift with every pool cell
+  // green, and this one could drift from production's: `scripts/deploy-guard.mjs`
+  // holds both to spec §2.3, and its cells run that check over the committed
+  // files. The directory is `scripts/test-assets.mjs`'s: a one-line
+  // `index.html` and a copy of the art manifest.
+  "assets": {
+    "directory": "./.test-assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*", "/enter"]
+  },
+  // The three object classes, bound and migrated EXACTLY as `wrangler.jsonc`
+  // has them — the deploy guard refuses the two files when either block
+  // differs, so the pool never tests a class, a binding or a migration
+  // production does not ship (the orchestrator's ruling I-30, and its ruling
+  // at Task 9's review).
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The bucket, bound EXACTLY as `wrangler.jsonc` binds it — the deploy guard
+  // refuses the two files when their blocks differ. The pool serves it from
+  // its own local R2: nothing here reaches the account, and each test FILE
+  // meets an empty bucket (pool fact 5), which `archive-walk.json`'s first
+  // send assumes (spec §0.2).
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
+    "ACCESS_AUD": "test-aud",
+    "DEV_DOOR_CLIENT_ID": "test-client.access",
+    "YOKOHAMA_DEV_DOOR": "on",
+    // On, as production's (spec §2.6): the pool's archive cells and the corpus
+    // replay's archive walk need the receipt archive. The switch's `off` half
+    // is its cells' module-scope patch (`test/archive.test.ts`).
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
+    // Production's value (the owner's, spec §3.1), so an expiry cell backdates
+    // a table's last activity past it rather than configuring a TTL of its own
+    // (the orchestrator's ruling I-34).
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    // The node replay's reading (the plan's ruling P-2). This variable is set
+    // HERE and nowhere else; the deploy guard refuses `wrangler.jsonc` if it
+    // names it.
+    "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000",
+    // On in the pool (plan review M2). A wake cell evicts its object, and an
+    // eviction discards anything set on the live instance (the plan's pool
+    // fact 4), so the cells read the switch from here. A probe still writes
+    // nothing with it on: a wake is counted only where the object already
+    // holds a table (spec §2.4).
+    "YOKOHAMA_WEB_COUNT_WAKES": "on"
+  }
+}

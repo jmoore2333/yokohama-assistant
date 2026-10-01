@@ -677,6 +677,9 @@ impl Games {
     /// which is also what keeps a vs-bot game undone past its end and finished
     /// a second time at its FIRST completion in the archive (spec §10).
     ///
+    /// Since M6.5c a host is a third retrier: [`Games::archive_over_retry`] runs
+    /// this again once the host's deferred put has landed (R-6.5c.9).
+    ///
     /// `record_json` is the text the store write above took, so the archived
     /// bytes ARE the stored bytes — never a re-serialization.
     fn archive_if_over(&self, id: &str, repl: &Repl, record_json: &str) {
@@ -723,6 +726,34 @@ impl Games {
             }
             Err(e) => eprintln!("archive of {id:?} at game over failed: {e}"),
         }
+    }
+
+    /// The game-over site's retry as a public door (M6.5c, R-6.5c.4, R-6.5c.9).
+    ///
+    /// A host whose archive put is ASYNCHRONOUS — a Durable Object uploads to R2
+    /// after the move's reply — cannot complete it inside [`Games::persist`], so
+    /// it calls this once the upload has landed. The stamp and its retry on a
+    /// version conflict stay [`Games::archive_if_over`]'s own code, never a
+    /// host's copy. Idempotent: a stamped, unfinished or archive-off table puts
+    /// nothing. `Ok(())` means the retry RAN, not that a stamp landed: a refused
+    /// put or a failed stamp is the layer's own log line, which a host that
+    /// cannot hear `eprintln!` learns by reading `archived_at` afterwards.
+    ///
+    /// "Unfinished" means a PLAYING game that is not yet over: `Ok(())`, and no
+    /// put. A table that has no game at all answers what [`Games::handle`]
+    /// answers it — `Err(GameError::Open)` while its seats are filling,
+    /// `Err(GameError::Dealing)` while it deals, and `Err(GameError::NotFound)`
+    /// for an id with no table — and that is the right answer rather than a
+    /// quiet `Ok`: a host asks this only for a game whose game-over put it
+    /// deferred, and no such put can exist before there is a record.
+    pub fn archive_over_retry(&self, id: &str) -> Result<(), GameError> {
+        let handle = self.handle(id)?;
+        let repl = handle.lock().expect("a game");
+        let Some((record_json, _)) = self.store.read(Doc::Record, id).map_err(GameError::Server)? else {
+            return Err(GameError::NotFound(format!("no game named {id:?}")));
+        };
+        self.archive_if_over(id, &repl, &record_json);
+        Ok(())
     }
 
     /// Refresh the list's two mirrored integers (R-plan-3).
@@ -1721,6 +1752,110 @@ mod tests {
             None,
             "absent is None, and a table is not a record",
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // The game-over archive's retry as a public door (M6.5c, R-6.5c.4,
+    // R-6.5c.9, spec §2.6 and §5.1).
+    // ---------------------------------------------------------------------
+
+    /// R-6.5c.9: a host whose put was DEFERRED completes the game-over archive
+    /// later, and the stamp is the layer's own — one put, the stored bytes, and
+    /// idempotent once stamped.
+    #[test]
+    fn archive_over_retry_completes_a_game_over_put_that_failed() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let (_, repl) = play_to_the_end(&games, "late");
+        assert!(repl.session.is_over(), "premise: the game is over");
+        let (doc, _) = games.read_table("late").unwrap().unwrap();
+        assert_eq!(doc.archived_at, None, "premise: the failed put left the stamp unset");
+
+        let archive = RecordingArchive::recording();
+        let games = games.with_archive(archive.clone());
+        // `play_to_the_end` drives a SECOND, bot-seated `Repl`: the table's own
+        // resident handle is still at the opening, so without this eviction the
+        // retry reads a game that is not over and the cell fails even though the
+        // code is right (measured by the plan's review). In production the
+        // resident handle IS the game, so the function itself must not evict.
+        games.evict_for_test("late");
+        games.archive_over_retry("late").expect("the retry");
+        let stored = games.store().read(Doc::Record, "late").unwrap().unwrap().0;
+        {
+            let puts = archive.puts.lock().unwrap();
+            assert_eq!(puts.len(), 1, "one put");
+            assert_eq!(puts[0].why, crate::archive::Why::Over);
+            assert_eq!(puts[0].prefix, "", "a server's own game carries the empty prefix");
+            assert_eq!(puts[0].record, stored, "the archived bytes ARE the stored bytes");
+        }
+        let (doc, _) = games.read_table("late").unwrap().unwrap();
+        assert!(doc.archived_at.is_some(), "the stamp landed");
+        games.archive_over_retry("late").expect("a second retry");
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "a stamped game is not put again");
+    }
+
+    /// Nothing owed, nothing put: an unfinished game, an archive that is off.
+    #[test]
+    fn archive_over_retry_does_nothing_for_an_unfinished_game_or_an_archive_that_is_off() {
+        let archive = RecordingArchive::recording();
+        let running = games().with_archive(archive.clone());
+        one_move_in(&running, "mid");
+        // NO eviction here (re-review N3): `both_seats_as_bots` writes BOT
+        // provenance for BOTH seats, so a rebuild's `bring_alive` would pump up
+        // to 200 bot moves. Measured at this seed: `one_move_in` stops at the
+        // 200-move cap, the rebuild's one pump plays the remaining 157 to game
+        // over (357 events), and the rebuild's own persist archives the game.
+        // Evict only a game that is ALREADY over.
+        running.archive_over_retry("mid").expect("an unfinished game is not an error");
+        assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
+
+        // NoArchive, at a game that IS over: the eviction makes the retry rebuild
+        // from the finished record. With the archive-off guard in place,
+        // `archive_if_over` returns on that guard before it reads "over" at
+        // all. Without the eviction the not-over reading would stop the retry
+        // even with the archive-off guard gone, so the assert on `archived_at`
+        // would say nothing about the archive. What this half does NOT catch,
+        // measured: a mutant that drops the `is_on` check from
+        // `archive_if_over` stays green, because `NoArchive::put` refuses and no
+        // stamp lands either way.
+        let off = games();
+        play_to_the_end(&off, "off");
+        off.evict_for_test("off");
+        off.archive_over_retry("off").expect("an archive that is off is not an error");
+        assert_eq!(off.read_table("off").unwrap().unwrap().0.archived_at, None);
+        assert!(matches!(off.archive_over_retry("nobody"), Err(GameError::NotFound(_))));
+    }
+
+    /// The stamp's version-conflict retry is the layer's code, and this is the one
+    /// cell that reaches it: an archive whose put WRITES the table document — the
+    /// shape of an `unlock` landing in the same instant — so `archive_if_over`'s
+    /// compare-and-swap meets a version it did not read, re-reads, and stamps over
+    /// the newer document without losing it.
+    #[test]
+    fn archive_over_retry_stamps_through_a_concurrent_table_write_and_keeps_it() {
+        struct Meddling {
+            store: Arc<dyn Store>,
+        }
+        impl crate::archive::Archive for Meddling {
+            fn put(&self, _: &str, _: crate::archive::Why, id: &str, _: &str, _: &str)
+                -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+                let (text, version) = self.store.read(Doc::Table, id).unwrap().unwrap();
+                let mut doc: crate::table::TableDoc = serde_json::from_str(&text).unwrap();
+                doc.unlocked.push("meddler@t.test".to_string());
+                let json = serde_json::to_string(&doc).unwrap();
+                self.store.write_if_version(Doc::Table, id, &json, Some(version)).unwrap();
+                Ok(crate::archive::PutOutcome::Landed)
+            }
+            fn kind(&self) -> &'static str { "meddling" }
+        }
+        let games = games().with_archive(RecordingArchive::failing());
+        play_to_the_end(&games, "raced");
+        let store = Arc::clone(games.store());
+        let games = games.with_archive(Arc::new(Meddling { store }));
+        games.evict_for_test("raced"); // the resident handle is the opening's — see the first cell
+        games.archive_over_retry("raced").expect("the retry");
+        let (doc, _) = games.read_table("raced").unwrap().unwrap();
+        assert!(doc.archived_at.is_some(), "the stamp was retried over the concurrent write");
+        assert!(doc.unlocked.iter().any(|u| u == "meddler@t.test"), "and the concurrent write was kept");
     }
 }
 

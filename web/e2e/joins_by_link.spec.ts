@@ -28,13 +28,34 @@
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
 // keeps that from being a convention anybody has to remember.
+import type { Page } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
-import { haveBrowser } from "../playwright.config";
+import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
-import type { Screen } from "./harness";
+import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
+// Whether a screen has a move on it — read from what can actually be pressed,
+// so a walk in flight reads as "not yet" rather than as a dead end. One
+// predicate for every walk that shares a table; its doc carries the
+// measurement (`shared_table.ts`).
+import { hasMove } from "./shared_table";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
+
+/** The table this walk opened, and the page of the person who opened it. */
+let opened: { page: Page; id: string } | null = null;
+
+// **Live, the walk abandons the table it opened**, as its creator — in an
+// `afterEach` rather than a `finally`, for the measured reason
+// `two_browsers.spec.ts` gives: a timed-out body's `finally` runs only after
+// its pages are closed. Locally it sends nothing: the local server's games are
+// scratch, and its archive directory — which an abandon's save writes into —
+// is read by other specs (`offline.spec.ts`, `plays_locally.spec.ts`).
+test.afterEach(async () => {
+  const table = opened;
+  opened = null;
+  if (LIVE && table) await abandonAsCreator(table.page, table.id);
+});
 
 /** How many moves the two of them play between them. Enough to say the table
  *  really is a game and that both browsers can answer it; deliberately not a
@@ -47,24 +68,13 @@ const MOVES = 6;
  *  moving. */
 const IDLE_LIMIT = 60;
 
-/**
- * Whether this screen has a move on it, which is NOT the same as "not inert".
- *
- * `two_browsers.spec.ts` carries the same predicate and its doc carries the
- * measurement: a screen playing back the other seat's turn is neither watching
- * nor locked, so `inert` is `null` there while there is nothing to click. Read
- * from what can actually be pressed, so a walk in flight reads as "not yet"
- * rather than as a dead end.
- */
-function hasMove(s: Screen): boolean {
-  return s.inert === null && (s.options > 0 || s.tiles > 0 || s.counts > 0 || s.confirm || s.only);
-}
-
 test("a person holding only a link joins a locked open table and plays", async ({ browser }) => {
   test.setTimeout(5 * 60 * 1000);
   const started = Date.now();
-  const a = await (await newContextWithoutWorker(browser)).newPage();
-  const b = await (await newContextWithoutWorker(browser)).newPage();
+  // Live, each context is its person (`live.ts`); locally a context is the
+  // plain one it always was, and the sign-in form names them.
+  const a = await (await newContextWithoutWorker(browser, await liveContextOptions("a@e2e.test"))).newPage();
+  const b = await (await newContextWithoutWorker(browser, await liveContextOptions("b@e2e.test"))).newPage();
   const watchA = watchForBreakage(a);
   // **B's wrong password is a 403 BY DESIGN**, and the watch counts every 4xx
   // from this origin as breakage — so this one refusal is opted into by name,
@@ -95,12 +105,14 @@ test("a person holding only a link joins a locked open table and plays", async (
     const parts = () =>
       strip.evaluate((el) => {
         const who = el.querySelector(".who")!;
-        const out = el.querySelector("button")!;
+        // `null` where the strip draws no sign-out — which is the edge's door,
+        // live (asserted below).
+        const out = el.querySelector("button");
         const name = el.querySelector(".your-name input")!;
         const box = (n: Element) => Math.round(n.getBoundingClientRect().height);
         return {
           who: box(who),
-          out: box(out),
+          out: out ? box(out) : null,
           name: Math.round(name.getBoundingClientRect().width),
           nameTop: Math.round(name.getBoundingClientRect().top),
           whoBottom: Math.round(who.getBoundingClientRect().bottom),
@@ -124,10 +136,20 @@ test("a person holding only a link joins a locked open table and plays", async (
       narrow.who,
       `the address wraps at 390px: ${narrow.who}px against ${wide.who}px at ${desktop.width}`,
     ).toBeLessThanOrEqual(wide.who);
-    expect(
-      narrow.out,
-      `"sign out" wraps at 390px: ${narrow.out}px against ${wide.out}px at ${desktop.width}`,
-    ).toBeLessThanOrEqual(wide.out);
+    if (LIVE) {
+      // **The edge's door draws no sign-out**: the Worker's door is
+      // `cf-access`, and `App.tsx` draws the button under `claimed` ONLY. So
+      // live there is none to measure — and its absence is the reading: a
+      // sign-out under Access would look like it logged you out while Access
+      // kept letting you in.
+      expect(wide.out, "no sign-out under the edge's door").toBeNull();
+      expect(narrow.out, "no sign-out under the edge's door").toBeNull();
+    } else {
+      expect(
+        narrow.out,
+        `"sign out" wraps at 390px: ${narrow.out}px against ${wide.out}px at ${desktop.width}`,
+      ).toBeLessThanOrEqual(wide.out!);
+    }
     // And the field is on its OWN line rather than sharing one — the other half
     // of the fix, and the half that says the row wrapped where it was told to.
     // A field that lands beside a short address on one screen and under it on
@@ -146,7 +168,7 @@ test("a person holding only a link joins a locked open table and plays", async (
     // eslint-disable-next-line no-console
     console.log(
       `who-strip at 390px: address ${narrow.who}px (desktop ${wide.who}) · ` +
-        `sign out ${narrow.out}px (desktop ${wide.out}) · strip ${narrow.strip}px ` +
+        `${narrow.out === null ? "no sign out" : `sign out ${narrow.out}px (desktop ${wide.out})`} · strip ${narrow.strip}px ` +
         `(desktop ${wide.strip}) · flex-wrap ${narrow.wrap} · name field ${narrow.name}px`,
     );
 
@@ -177,6 +199,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   await a.getByRole("button", { name: "Open table" }).click();
   const id = String(((await (await created).json()) as { id: string }).id);
   expect(id, "the server named the table").toBeTruthy();
+  opened = { page: a, id };
   await expect(a).toHaveURL(new RegExp(`#/t/${id}$`));
   // The link A would send somebody, read off A's own screen — and then followed
   // below, which is what says the field holds an address and not a sentence.
@@ -458,7 +481,12 @@ test("a person holding only a link joins a locked open table and plays", async (
   // eslint-disable-next-line no-console
   console.log(
     `join-by-link table ${id}: ${moves} moves across two browsers in ` +
-      `${Math.round((Date.now() - started) / 1000)}s`,
+      `${Math.round((Date.now() - started) / 1000)}s` +
+      // The dealing screen's designed 409, forgiven in both modes (`harness.ts`,
+      // `isDealAnswer`): two lines per 409, the response and Chromium's own.
+      `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers} times` +
+      // Live, how often the one allowed console error was spent.
+      (LIVE ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, b ${watchB.forgiven} times` : ""),
   );
   expect(watchA.failures, "a's page reported no errors").toEqual([]);
   expect(watchB.failures, "b's page reported no errors").toEqual([]);

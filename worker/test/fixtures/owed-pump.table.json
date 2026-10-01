@@ -1,0 +1,37 @@
+{
+  "schema": 3,
+  "id": "owed",
+  "name": null,
+  "created_by": "red@t.test",
+  "created_at": 1789000000,
+  "players": 2,
+  "colors": [
+    "Red",
+    "Blue"
+  ],
+  "start_seat": 0,
+  "seats": [
+    {
+      "kind": "human",
+      "user": "red@t.test",
+      "name": null
+    },
+    {
+      "kind": "bot"
+    }
+  ],
+  "keeps": [
+    1,
+    null
+  ],
+  "seed": 20260831,
+  "status": "playing",
+  "turn": {
+    "to_move": 0,
+    "over": false,
+    "winner": null
+  },
+  "lock": null,
+  "unlocked": [],
+  "archived_at": null
+}

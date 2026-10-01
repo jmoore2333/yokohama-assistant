@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 // **The wasm corpus replay, and it is its OWN project** (M6.5b, spec §6.3).
 //
-// Environment `node`, no `setupFiles`, and one file in the glob. Every one of
+// Environment `node`, no `setupFiles`, and globs of its own. Every one of
 // those is a difference from `vitest.config.ts` rather than a preference:
 //
 // - `node`, because the module is loaded through `createRequire` and there is
@@ -14,10 +14,15 @@ import { defineConfig } from "vitest/config";
 // - Every `src/**/*.node.test.ts`, which `vitest.config.ts` EXCLUDES by the
 //   same suffix. So `npm test` keeps its meaning and its count, and the module
 //   built by `npm run build:wasm` is a dependency of ONE command rather than of
-//   a per-edit gate. Three files since M6.5b2: the wasm corpus replay, the
-//   real-build precache cell (a real `vite build`) and the driven service
-//   worker (esbuild, which refuses to run under jsdom at all) — so this
-//   project's wall is now seconds rather than under one.
+//   a per-edit gate. Since M6.5b2 that is the wasm corpus replay, the
+//   real-build precache cell (a real `vite build`), the driven service worker
+//   (esbuild, which refuses to run under jsdom at all) and the restore
+//   validator through the module — so this project's wall is seconds rather
+//   than under one.
+// - And every `e2e/**/*.node.test.ts` (M6.5c): the live tier's node cells —
+//   the one console error it forgives, and the credential's path into a
+//   browser — which drive `e2e/`'s helpers through fakes, with no browser.
+//   `vitest.config.ts` never sees `e2e/`: its `include` is `src`.
 //
 // It does NOT merge `vite.config.ts`, unlike its sibling: there is no React
 // plugin, no alias and no browser resolution in play, and merging the build
@@ -28,6 +33,6 @@ export default defineConfig({
     // The real-build cell runs `vite build`, which on a cold cache is tens of
     // seconds — well past vitest's 5 s default.
     testTimeout: 180_000,
-    include: ["src/**/*.node.test.ts"],
+    include: ["src/**/*.node.test.ts", "e2e/**/*.node.test.ts"],
   },
 });

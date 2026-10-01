@@ -171,6 +171,24 @@ struct ScriptRow {
     digest: [u8; 32],
 }
 
+/// **One request only a HOST serves, positioned in `walk.json`** (M6.5c, spec
+/// §5.3) — a row of `web/src/wire-script/walk-host.json`.
+///
+/// `walk.json` cannot hold these: the browser host has no `/events` and no
+/// `/api/art`, so [`corpus`] drops every [`hosts_own`] row from it. A Worker
+/// host DOES serve them, and replays them at the point in the walk where they
+/// were made — which `after` says without restating the walk: the index in
+/// `walk.json` of the last row kept before this one, or `-1` for none.
+///
+/// Serialized FLAT, `after` beside the [`ScriptRow`]'s own fields, so a reader
+/// of either file reads one row shape.
+#[derive(serde::Serialize)]
+struct HostRow {
+    after: i64,
+    #[serde(flatten)]
+    row: ScriptRow,
+}
+
 /// A payload's identity for the binding: SHA-256 over `serde_json`'s own
 /// serialization of it.
 ///
@@ -717,8 +735,8 @@ fn art_dir() -> PathBuf {
 ///    pressed Confirm and paid a yen no surface had stated.
 async fn walk() -> Walk {
     let api = Api::new();
-    let (payloads, aside) = walk_with(&api).await;
-    Walk { payloads, script: api.script.take(), aside }
+    let (payloads, aside, archive) = walk_with(&api).await;
+    Walk { payloads, script: api.script.take(), aside, archive }
 }
 
 /// What one walk produced: its payloads, and the requests behind them.
@@ -737,13 +755,22 @@ struct Walk {
     /// payload that slipped into the walk from a construction, and it is a hard
     /// failure rather than a quiet widening of the third column.
     aside: Vec<ScriptRow>,
+    /// The archive `Api`'s calls, in order, KEPT APART as well (M6.5c, spec
+    /// §5.3) — the rows of `web/src/wire-script/archive-walk.json`, which a
+    /// Worker host replays against its own archive.
+    ///
+    /// They are ALSO in [`Walk::aside`], whose job is unchanged: that list says
+    /// a payload came from SOME request this walk made, and this one says which
+    /// requests a host with an archive can be asked to make again.
+    archive: Vec<ScriptRow>,
 }
 
 /// The walk over a caller's [`Api`], so a cell can read what the walk counted.
 ///
-/// Answers the payloads and the rows of the two SECOND `Api`s it builds along
-/// the way — see [`Walk::aside`].
-async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
+/// Answers the payloads, the rows of the two SECOND `Api`s it builds along the
+/// way — see [`Walk::aside`] — and the archive `Api`'s rows again on their own
+/// ([`Walk::archive`]).
+async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<ScriptRow>) {
 
     // **The opening sequence, and every payload it produces** (M6.1 §4). A
     // create opens a DEALING table; each seat fetches its own two cards and
@@ -1736,8 +1763,8 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
     out.extend(archived);
 
     let mut aside = off.script.take();
-    aside.extend(archive_script);
-    (out, aside)
+    aside.extend(archive_script.iter().cloned());
+    (out, aside, archive_script)
 }
 
 /// **What the archive route answers a browser** (M6.5b, R-6.5b.6), captured
@@ -1745,13 +1772,43 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
 ///
 /// The record and the table document are this walk's own — read off the primary
 /// state's store, which is where a finished game's bytes are — so the body is a
-/// real pair and not a construction, and the path in the reply is a function of
-/// the walk's id and the walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
+/// real pair, the table less its lock (see the strip below), and not a
+/// construction. The path in the reply is a function of the walk's id and the
+/// walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
 async fn archive_payloads(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
     use yokohama_web::store::Doc;
     let store = api.state.games.store();
     let (record_text, _) = store.read(Doc::Record, "wire").expect("a store").expect("the record");
     let (table_text, _) = store.read(Doc::Table, "wire").expect("a store").expect("the table");
+    // **The table document WITHOUT its lock** (M6.5c, spec §5.3; ruled in the
+    // Task 1 ledger). Three facts, each measured:
+    //
+    // 1. A lock's salt is 16 bytes of OS ENTROPY (`Lock::new` -> `draw_seed()`),
+    //    and the walk's table has a password. So a request body carrying the
+    //    lock could never be byte-stable, and these requests are committed byte
+    //    for byte as `archive-walk.json`. With the lock, a regeneration's very
+    //    next run failed the writer test; without it, two runs emit the same
+    //    bytes.
+    // 2. No reply of the archive route depends on a well-formed lock.
+    //    `check_pair` runs `check_shape`, which accepts an absent lock and checks
+    //    only a present one's hex shape, and the archive keeps
+    //    `strip_for_archive`'s copy, which drops the lock. The eight `archive_*`
+    //    payloads are byte-identical either way.
+    // 3. A side effect: no salt or hash is committed anywhere.
+    //
+    // The strip changes the request the walk MAKES, so `archive-walk.json`
+    // still describes requests the walk really made. `lock: null` is what the
+    // store writes for a table with no password, re-serialized as `write_table`
+    // serializes it. What it gives up: this walk no longer sends the route a
+    // lock to check and strip. The lib's archive cells (`finished_local_pair`)
+    // still do.
+    let table_text = {
+        let mut doc: yokohama_web::table::TableDoc =
+            serde_json::from_str(&table_text).expect("the table document");
+        assert!(doc.lock.is_some(), "anti-vacuity: the walk's table is locked, so this removes something");
+        doc.lock = None;
+        serde_json::to_string_pretty(&doc).expect("a table document")
+    };
 
     let dir = archive_tempdir();
     let archived = Api::with_archive(&dir);
@@ -2063,13 +2120,21 @@ struct Corpus {
     /// The primary `Api`'s calls, in order, each one that produced a committed
     /// payload carrying its name — see [`ScriptRow`] and [`corpus`].
     script: Vec<ScriptRow>,
+    /// `walk-host.json` (M6.5c, spec §5.3): the primary `Api`'s HOST-OWNED
+    /// calls, which `script` drops, each positioned by the kept row it follows,
+    /// behind the one `GET /api/art` row [`corpus`] synthesizes — see
+    /// [`HostRow`].
+    host_script: Vec<HostRow>,
+    /// `archive-walk.json` (M6.5c, spec §5.3): the archive `Api`'s calls, in
+    /// order, each named by value like the primary's — see [`Walk::archive`].
+    archive_script: Vec<ScriptRow>,
 }
 
 /// The whole committed corpus, in one place, so the tests below cannot
 /// disagree about what it contains — and the walk's request script beside it,
 /// bound to the payloads it produced.
 async fn corpus() -> Corpus {
-    let Walk { payloads: mut all, mut script, aside } = walk().await;
+    let Walk { payloads: mut all, mut script, aside, archive: mut archive_script } = walk().await;
     // Everything above this line came from the walk, and everything below it
     // did not: the binding below reads exactly this prefix.
     let from_the_walk = all.len();
@@ -2124,6 +2189,61 @@ async fn corpus() -> Corpus {
              `constructed()`, where the browser host's replay reads it as not served.",
         );
     }
+
+    // **The archive `Api`'s rows, bound the same way** (M6.5c, spec §5.3): each
+    // of the eight `archive_*` payloads finds the FIRST unbound archive row
+    // whose frozen response equals it, by [`digest_of`]. The loop above has
+    // already classified these payloads as a second `Api`'s, which stays true;
+    // this names the rows a host with an archive replays. A payload with no
+    // row is a hard failure, for the reason the binding above is one.
+    for (name, value) in all[..from_the_walk].iter().filter(|(n, _)| n.starts_with("archive_")) {
+        let want = digest_of(value);
+        let row = archive_script
+            .iter_mut()
+            .find(|r| r.fixture.is_none() && r.digest == want)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name}.json is the answer to no request the archive `Api` made — \
+                     `archive-walk.json` would not name it, and a Worker host's replay would \
+                     move it into the third column with nothing saying so"
+                )
+            });
+        row.fixture = Some(name.clone());
+    }
+
+    // **The host rows, split out BEFORE the retain below drops them** (M6.5c,
+    // spec §5.3). A Worker host serves `/events` and `/api/art`, so it can be
+    // asked these — at the point in the walk where each was made, which a
+    // running count of KEPT rows gives as an index into `walk.json` (see
+    // [`HostRow`]).
+    //
+    // **The art row is SYNTHESIZED**, because the walk never requested it:
+    // `art_manifest.json` is built from the art directory above, and a host
+    // that serves the art answers `GET /api/art` with it. It carries a zero
+    // digest because nothing binds it by value: its name is written here, the
+    // one row in the three scripts named by hand rather than by value.
+    let mut host_script = vec![HostRow {
+        after: -1,
+        row: ScriptRow {
+            who: None,
+            method: "GET".to_string(),
+            path: "/api/art".to_string(),
+            query: String::new(),
+            body: None,
+            status: 200,
+            fixture: Some("art_manifest".to_string()),
+            digest: [0; 32],
+        },
+    }];
+    let mut kept: i64 = 0;
+    for row in &script {
+        if hosts_own(&row.path) {
+            host_script.push(HostRow { after: kept - 1, row: row.clone() });
+        } else {
+            kept += 1;
+        }
+    }
+
     // The HOST's own routes leave the script with the rows that named them: the
     // browser host has no `/events`, no `/stream` and no `/api/art`, so those
     // requests are not askable of it and the payloads they produced fall into
@@ -2134,7 +2254,7 @@ async fn corpus() -> Corpus {
     // walk. (The names, not the payloads — payload key order is serde's.) The
     // SCRIPT keeps the walk's order, which is the only order it replays in.
     all.sort_by(|a, b| a.0.cmp(&b.0));
-    Corpus { payloads: all, script }
+    Corpus { payloads: all, script, host_script, archive_script }
 }
 
 /// **The terminal's own words for every printed building-site space.**
@@ -2744,7 +2864,7 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 
     let mut drifted: Vec<String> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    let Corpus { payloads, script } = corpus().await;
+    let Corpus { payloads, script, host_script, archive_script } = corpus().await;
     for (name, value) in payloads {
         names.push(name.clone());
         let path = dir.join(format!("{name}.json"));
@@ -2807,6 +2927,38 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
     }
 
+    // **The two scripts a Worker host replays beside it** (M6.5c, spec §5.3),
+    // written under the same variable and checked byte for byte the same way —
+    // see [`the_host_scripts_name_the_payloads_only_a_host_or_an_archive_serves`]
+    // for what each one holds. Beside `walk.json` and outside the corpus, for
+    // `walk.json`'s reason: an archive row's body is a whole record and table
+    // document, seed and all.
+    for (file, emitted) in [
+        (
+            "walk-host.json",
+            format!("{}\n", serde_json::to_string_pretty(&host_script).expect("pretty JSON")),
+        ),
+        (
+            "archive-walk.json",
+            format!("{}\n", serde_json::to_string_pretty(&archive_script).expect("pretty JSON")),
+        ),
+    ] {
+        let path = wire_script_dir().join(file);
+        if update {
+            std::fs::write(&path, &emitted).expect("writing a script");
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(committed) if committed == emitted => {}
+            Ok(committed) => drifted.push(format!(
+                "  wire-script/{file} — committed {} bytes, the walk makes {} bytes",
+                committed.len(),
+                emitted.len(),
+            )),
+            Err(e) => drifted.push(format!("  wire-script/{file} — {e}")),
+        }
+    }
+
     assert!(
         drifted.is_empty(),
         "the wire contract moved:\n{}\n\nIf the change is intended, regenerate and READ THE DIFF:\n  \
@@ -2836,6 +2988,46 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     assert!(!update, "UPDATE_WIRE_FIXTURES was set: fixtures were REWRITTEN, not checked");
 }
 
+/// **The two scripts a Worker host replays beside `walk.json`** (M6.5c, spec
+/// §5.3). Each is DERIVED from the walk and named by value, never written
+/// down, except the synthesized `GET /api/art` row (see [`corpus`]): a script
+/// that stopped naming a payload would move that payload into the Worker
+/// replay's third column with nothing saying so.
+#[tokio::test]
+async fn the_host_scripts_name_the_payloads_only_a_host_or_an_archive_serves() {
+    let Corpus { script, host_script, archive_script, .. } = corpus().await;
+    // walk-host.json: every row is a host-owned route, ordered by `after`,
+    // `after` indexes a real walk row, and the four host payloads are each
+    // named exactly once — the three `events*` and the synthesized art row.
+    let mut last = -1i64;
+    for h in &host_script {
+        assert!(hosts_own(&h.row.path), "{} is not host-owned", h.row.path);
+        assert!(h.after >= last, "host rows keep the walk's order");
+        assert!(h.after >= -1 && h.after < script.len() as i64, "after={} indexes no walk row", h.after);
+        last = h.after;
+    }
+    let named = |rows: &[&ScriptRow]| {
+        let mut n: Vec<String> = rows.iter().filter_map(|r| r.fixture.clone()).collect();
+        n.sort();
+        n
+    };
+    assert_eq!(
+        named(&host_script.iter().map(|h| &h.row).collect::<Vec<_>>()),
+        ["art_manifest", "events", "events_dealing", "events_open"],
+    );
+    let art = &host_script[0];
+    assert_eq!((art.after, art.row.path.as_str(), art.row.who.as_deref()), (-1, "/api/art", None));
+    // archive-walk.json: the archive `Api`'s calls, the eight each named once.
+    assert!(archive_script.iter().all(|r| r.method == "POST" && r.path == "/api/archive"));
+    assert_eq!(
+        named(&archive_script.iter().collect::<Vec<_>>()),
+        [
+            "archive_400_digest", "archive_400_replay", "archive_400_rev", "archive_400_table",
+            "archive_409", "archive_post", "archive_post_abandoned", "archive_post_identical",
+        ],
+    );
+}
+
 /// R-6.5a.14: the layer's dispatcher answers what the router answers, for every
 /// committed non-transport READ and REFUSAL. **What that pins is the axum
 /// ADAPTER's conversion** — both sides of every pair are the same `dispatch`
@@ -2848,7 +3040,7 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 #[tokio::test]
 async fn the_dispatcher_answers_what_the_router_answers() {
     let api = Api::new();
-    let (payloads, _aside) = walk_with(&api).await;
+    let (payloads, _aside, _archive) = walk_with(&api).await;
     let compared = api.compared.get();
     // Measured 2026-09-20 at the M6.5a Task 6 head: 234 pairs over a walk of 74
     // payloads (every read and refusal, some payloads several reads), all equal.

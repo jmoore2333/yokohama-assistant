@@ -2,6 +2,7 @@
 
 import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
+import { LIVE } from "./live";
 
 /** A deterministic PRNG, so a failing walk reproduces from its seed alone.
  *  SplitMix64's shape, in the 32 bits JS can multiply exactly. */
@@ -51,12 +52,23 @@ export function rng(seed: number): () => number {
  * Deliberately a per-call opt-in and not a global allowlist: a 409 from
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
+ *
+ * **Under `LIVE`, and only there, ONE more error is forgiven** — the Web
+ * Analytics beacon's CORS block ([`isBeaconCorsError`]) — and COUNTED in
+ * `forgiven`, so a live run says how often the allow-list was spent. Locally
+ * the switch is off and the line below it never runs.
+ *
+ * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
+ * M6.5c's live tier, finding 3): both of its lines — the response and
+ * Chromium's console line — counted apart, in `dealAnswers`, so a run says
+ * which forgiveness it spent.
  */
 export function watchForBreakage(
   page: Page,
   expected: { status: number; urlIncludes: string }[] = [],
-): { failures: string[] } {
+): { failures: string[]; forgiven: number; dealAnswers: number } {
   const failures: string[] = [];
+  const watch = { failures, forgiven: 0, dealAnswers: 0 };
   const allowed = (status: number, url: string) =>
     expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
@@ -66,15 +78,122 @@ export function watchForBreakage(
     if (m.type() !== "error") return;
     const text = m.text();
     if (expected.some((e) => text.includes(String(e.status)))) return;
+    // The CONSOLE arm is the only one the beacon reaches: its load fails
+    // cross-origin, so nothing under `BASE_URL` answers it and the response
+    // arm below never sees it.
+    if (LIVE && isBeaconCorsError(text, m.location().url)) {
+      watch.forgiven += 1;
+      return;
+    }
+    if (isDealAnswerLine(text, m.location().url, BASE_URL)) {
+      watch.dealAnswers += 1;
+      return;
+    }
     failures.push(`console.error: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
     if (r.status() >= 400 && r.url().startsWith(BASE_URL) && !allowed(r.status(), r.url())) {
+      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL)) {
+        watch.dealAnswers += 1;
+        return;
+      }
       failures.push(`${r.status()} ${r.url()}`);
     }
   });
-  return { failures };
+  return watch;
+}
+
+/** A table's deal route on `base`'s origin: `/api/games/<id>/deal` and
+ *  nothing after it. */
+function isDealRoute(url: string, base: string): boolean {
+  let at: URL;
+  try {
+    at = new URL(url);
+  } catch {
+    return false;
+  }
+  return at.origin === new URL(base).origin && /^\/api\/games\/[^/]+\/deal$/.test(at.pathname);
+}
+
+/**
+ * **The dealing screen's designed 409** (M6.5c Task 15, the live tier's finding
+ * 3; ruling I-81): a `GET …/api/games/<id>/deal` answered 409 on `base`.
+ *
+ * `Dealing.tsx`'s own doc: "A 409 here is an ANSWER, not a failure" — the
+ * typed refusal of a table that flipped to playing between two of the
+ * browser's requests, which the client answers by going to the board. The live
+ * run met it on the join spec's first page; locally the race falls the other
+ * way. So it is forgiven in BOTH modes — the race is the product's on every
+ * host — and nothing broader is: no other status, no other method, no other
+ * path (`/deal2`, `/deals`, `/deal/x`), no other origin. Pure, so its cells are
+ * node cells (`harness.node.test.ts`).
+ */
+export function isDealAnswer(status: number, method: string, url: string, base: string): boolean {
+  return status === 409 && method === "GET" && isDealRoute(url, base);
+}
+
+/** Chromium's console line for that response — "Failed to load resource: the
+ *  server responded with a status of 409 (<reason>)", the reason empty over
+ *  HTTP/2 — matched only where Chromium LOCATES it at a deal route. */
+const DEAL_409_LINE = /^Failed to load resource: the server responded with a status of 409 \([^)]*\)$/;
+
+/** The console half of [`isDealAnswer`]: its line, at a deal route on
+ *  `base`. */
+export function isDealAnswerLine(text: string, url: string, base: string): boolean {
+  return DEAL_409_LINE.test(text) && isDealRoute(url, base);
+}
+
+/**
+ * The Web Analytics beacon's STABLE address: every release is served below
+ * it, at a versioned path (`…/beacon.min.js/v<hash>`) the next release will
+ * change.
+ */
+export const BEACON_PREFIX = "https://static.cloudflareinsights.com/beacon.min.js";
+
+/** Chromium's CORS sentence — "Access to <kind> at '<address>' from origin
+ *  '<origin>' has been blocked by CORS policy: <reason>" — and the address it
+ *  names as BLOCKED. */
+const CORS_BLOCKED = /^Access to .+? at '([^']+)' from origin '[^']*' has been blocked by CORS policy\b/;
+
+/** What Chromium logs for the same load a line later. */
+const LOAD_FAILED = "Failed to load resource: net::ERR_FAILED";
+
+/**
+ * **Whether a console error is the live tier's one known error** (the
+ * orchestrator's ruling I-75): the Web Analytics beacon, which the zone's edge
+ * injects into every page, refused by CORS.
+ *
+ * Why it happens, and only live: the live contexts carry the claimed header
+ * as `extraHTTPHeaders` (`live.ts` says why), which Chromium adds to the
+ * beacon's cross-origin script load as well; a custom header makes that load
+ * ask a CORS preflight, and the beacon's host does not grant it (Task 11's
+ * diagnosis). A real player sends no such header and sees no error. The zone
+ * stays as it is, by the owner's ruling.
+ *
+ * MEASURED (pinned Chromium, a local page and a local "beacon"): ONE blocked
+ * load logs TWO errors, so both are this error —
+ *
+ *   1. the CORS sentence, located at the PAGE, naming the blocked address:
+ *      matched by the CLASS (any resource kind, any reason after its colon),
+ *      and the address it names as BLOCKED must be the beacon's;
+ *   2. `Failed to load resource: net::ERR_FAILED`, whose text names neither
+ *      the beacon nor CORS: matched only where Chromium LOCATES it at the
+ *      beacon's address.
+ *
+ * "The beacon's address" is the stable prefix itself or anything below it
+ * (`/`) or on it (`?`): never another host, a lookalike host, another path, or
+ * a longer name. A pure function, so its cells are node cells
+ * (`harness.node.test.ts`).
+ */
+export function isBeaconCorsError(text: string, url: string): boolean {
+  const blocked = CORS_BLOCKED.exec(text)?.[1];
+  if (blocked !== undefined) return fromTheBeacon(blocked);
+  return text === LOAD_FAILED && fromTheBeacon(url);
+}
+
+function fromTheBeacon(url: string): boolean {
+  return url === BEACON_PREFIX || url.startsWith(`${BEACON_PREFIX}/`) || url.startsWith(`${BEACON_PREFIX}?`);
 }
 
 /**

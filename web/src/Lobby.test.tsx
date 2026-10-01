@@ -177,6 +177,11 @@ describe("the lobby", () => {
     // Anti-vacuity: the two rows differ in exactly the field under test.
     expect(locked.locked).toBe(true);
     expect(unlocked.locked).toBe(false);
+    // **The LISTING, awaited before any row is read.** The heading above is
+    // drawn before the three scopes land — it is static, and "loading…" sits
+    // under it until they do — so the synchronous reads below raced the
+    // listing and lost under load (the whole-branch review's L-12).
+    await within(open).findByRole("link", { name: locked.id });
     const row = (id: string) => within(open).getByRole("link", { name: id }).closest("li")!;
     expect(
       within(row(locked.id)).getByLabelText("password required"),

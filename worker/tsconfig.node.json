@@ -1,0 +1,27 @@
+{
+  // The NODE half: the two vitest configs, which vitest loads in node.
+  //
+  // A second project rather than more `include` in `tsconfig.json`, because
+  // the two halves have different globals: this one has no Workers runtime in
+  // scope, and the Workers project has no node in scope. `npm run typecheck`
+  // runs both, so the pool's configuration — `cloudflareTest()`'s options
+  // are typed — is checked rather than only exercised.
+  //
+  // The build scripts under `scripts/` are JavaScript and no project checks
+  // them; their cells under `npm run test:scripts` are what holds them.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["vitest.config.ts", "vitest.scripts.config.ts"]
+}

@@ -1,15 +1,16 @@
 # The Yokohama browser client and its API, as one image.
 #
-# **One artifact, two targets.** This is what runs under Portainer on the NAS
-# today and what Modal runs later; the deployment decision is where to point a
-# tunnel, not what to build. Nothing in here is host-specific — every path the
-# server needs is an environment variable with a default that resolves inside
-# the image.
+# **One artifact, two places it runs.** This is what runs under Portainer on the
+# NAS, and what anyone self-hosting runs under a local Docker; the deployment
+# decision is where to point a tunnel, not what to build. Nothing in here is
+# host-specific — every path the server needs is an environment variable with a
+# default that resolves inside the image. (Hosted multiplayer on Cloudflare is
+# the Worker in `worker/`, which runs no image — RUNBOOK §6.)
 #
 # Built for `linux/amd64` deliberately. The DS1517+ is an Intel Atom C2538, so
-# amd64 is right for it AND for Modal — but the build happens on a workstation,
-# because compiling this workspace on that Atom is where the plan would fall
-# over rather than where it would be tested.
+# amd64 is right for it — but the build happens on a workstation, because
+# compiling this workspace on that Atom is where the plan would fall over rather
+# than where it would be tested.
 
 # ---------------------------------------------------------------------------
 # 1. The server, AND the browser host's WebAssembly module. `rust-toolchain.toml`
@@ -58,8 +59,9 @@ RUN apt-get update \
 # replaced asset stops the build instead of optimizing the module with whatever
 # arrived. The hash was measured on 2026-09-21 over 117,057,408 bytes, by two
 # independent downloads on this workstation and a third elsewhere, all three
-# agreeing. `.github/workflows/test.yml` pins the same hash for the same file;
-# a binaryen bump changes BOTH.
+# agreeing. `.github/workflows/test.yml` pinned the same file until the M6.5c
+# close, when CI moved to 133, the version every Worker module was deployed
+# with; this image stays on 132 until the cleanup cycle aligns the two.
 #
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
 # With the SAME `wasm-opt 132` on both hosts, this stage's module and the
@@ -200,16 +202,13 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # same as being safe to expose: `cf-access` and `worker` trust a header only
 # their own edge can set, and `claimed` authenticates the door and not the seat.
 # Binding wide is still a statement that something in FRONT of this container is
-# doing identity — a Cloudflare Tunnel with an Access policy, or Modal's
-# proxy-auth layer plus the edge Worker — and it belongs in the deployment
-# artifact where that is true, not in the program.
+# doing identity — a Cloudflare Tunnel with an Access policy — and it belongs in
+# the deployment artifact where that is true, not in the program.
 #
 # **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here either**, for the same
 # reason: there is no default mode, and an image started without it exits 1
 # naming the three accepted values. The NAS sets it on the container
-# (`RUNBOOK.md` §3, `claimed`); `modal_app.py` sets it on the image it builds
-# from this file (`worker`, because there the Worker is the thing that
-# authenticates).
+# (`RUNBOOK.md` §3, `claimed`).
 # The three chat variables (`YOKOHAMA_WEB_LOBBY_CHAT`, `YOKOHAMA_WEB_CHAT_KEEP`,
 # `YOKOHAMA_WEB_CHAT_TEXT`) are the other way round: each has a default, so an
 # image started without them runs the lobby chat on with a keep of 500

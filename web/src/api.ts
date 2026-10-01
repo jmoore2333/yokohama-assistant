@@ -277,7 +277,9 @@ export const isSessionExpired = (e: unknown): boolean =>
  *
  *  **Here rather than in `App`, since M6.5b2**, because the facts read below
  *  is bounded by the same number the words on the cards are — two reads, one
- *  deadline, and a second constant would be a second thing to keep in step. */
+ *  deadline, and a second constant would be a second thing to keep in step.
+ *  A change signal's wait for its transport is bounded by it too (M6.5c,
+ *  ruling I-86; [`transportWait`]): that wait is on the same health read. */
 export const BOUND_MS = 5_000;
 
 /** `p`, or a rejection once `ms` has passed.
@@ -302,15 +304,148 @@ export const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
  *  a wrong guess here costs a failed open and one trip round the ladder, not a
  *  screen that never updates.
  *
+ *  **`"ws"` is the Worker's (M6.5c, R-6.5c.6; spec §2.7)**: the stream's own
+ *  frames over a hibernatable WebSocket. The NAS goes on answering `"sse"`.
+ *
  *  **Per SOURCE since M6.5b** (spec §2.3): the value lives in
  *  `local/facts.ts`, keyed by server or local, and this reads the SERVER's.
- *  Its `"sse" | "held"` union is untouched — the transport arm never asks this
- *  about a local game, because it reads `Source.host` instead. */
-export const signalKind = (): "sse" | "held" => serverFacts().signal;
+ *  Its union never holds the local `"none"` — the transport arm never asks
+ *  this about a local game, because it reads `Source.host` instead. */
+export const signalKind = (): "sse" | "held" | "ws" => serverFacts().signal;
 
-export const setSignalKind = (k: "sse" | "held"): void => {
+export const setSignalKind = (k: "sse" | "held" | "ws"): void => {
   patchServerFacts({ signal: k });
 };
+
+/** The SERVER's health read in flight — with the moment it was ASKED, which
+ *  [`transportWait`]'s bound is measured from — and whether the last one to
+ *  settle failed (M6.5c's live tier, finding 1; rulings I-81 and I-86). */
+let healthRead: { read: Promise<Health>; at: number } | null = null;
+let healthReadFailed = false;
+
+/** `GET /api/health`, with the server's read in flight kept where
+ *  [`transportWait`] can find it. A local read is the module's, and says
+ *  nothing about the server's transport. */
+function readHealth(host?: Host): Promise<Health> {
+  const read = call<Health>("GET", "/api/health", undefined, host);
+  if (host === "local") return read;
+  const asked = { read, at: Date.now() };
+  healthRead = asked;
+  read
+    .then(
+      () => {
+        healthReadFailed = false;
+      },
+      () => {
+        healthReadFailed = true;
+      },
+    )
+    .finally(() => {
+      if (healthRead === asked) healthRead = null;
+    });
+  return read;
+}
+
+/** Forget the server's health read, as a fresh page load has asked nothing
+ *  (the whole-branch review's L-8): a cell that leaves a read hanging would
+ *  otherwise be waited on by the next cell's signal. `resetFactsForTest` cannot
+ *  do this — `local/facts.ts` is imported by this module and does not import
+ *  it back. */
+export function resetHealthReadForTest(): void {
+  healthRead = null;
+  healthReadFailed = false;
+}
+
+/**
+ * What a change signal waits for before it picks its transport (M6.5c Task 15,
+ * the live tier's finding 1; rulings I-81 and I-86): `null` — pick now — or a
+ * wait that ends when the health answer lands, or when that read has had
+ * [`BOUND_MS`] since it was ASKED, whichever comes first. A read that FAILS
+ * inside its bound rejects the wait.
+ *
+ * The live run's lobby asked `/api/stream` as a STREAM and the Worker answered
+ * 426: the facts' default is the stream until `GET /api/health` has answered,
+ * and the lobby mounts while the read App makes on entering the multiplayer
+ * channel is still out. So:
+ *
+ * - **Known** — a health answer landed, on this page or a visit before it —
+ *   is `null`: the transport is read at once, exactly as it always was.
+ * - **Being asked** is that read, awaited for what is left of its bound —
+ *   App's own number for the same read. **The bound is ruling I-86**: a read
+ *   that HANGS never rejects, and an unbounded wait on one opened nothing at
+ *   all where the default was right — the NAS serves the stream, and its
+ *   stream opened at once before this wait existed. Past the bound the
+ *   transport this page HAS is used, the remembered one or the default: on the
+ *   NAS its old behaviour, delayed by the bound at most; on the Worker one
+ *   refused stream (426) per rung while health hangs, the price the ruling
+ *   accepted.
+ * - **Asked, and past its bound** is never waited on again: a first attempt
+ *   uses the transport it has at once, and a `retrying` caller asks a NEW read
+ *   rather than re-await the old one.
+ * - **Asked and FAILED** is the ladder's business, never a guess (I-81): a
+ *   caller's first attempt fails without a request of its own — the entry read
+ *   is App's, and one that just failed is not asked again at once — and a
+ *   `retrying` caller asks again itself, under the same bound.
+ * - **Nothing out and nothing failed** is `null` too: the transport this page
+ *   has. A screen reaches it only after an answer that carried nothing this
+ *   client could make facts of — never UNASKED: a hook's first open waits a
+ *   zero-delay timer, which runs only once the commit that mounted it has run
+ *   its effects, App's among them, and App asks on entering the multiplayer
+ *   channel. (Not the ORDER of those effects: React runs App's after its
+ *   children's, so it is the timer that guarantees it.) The cells reach it by
+ *   setting the transport themselves.
+ *
+ * **Whatever answer the waited read gives is written down when it lands, even
+ * after the wait has stopped waiting for it**: the handler below stays on the
+ * read for its whole life. A server that answers late is still a server that
+ * answered, and a read a retry asked that answered after its wait gave up
+ * would otherwise leave nothing out and nothing known — so every later open
+ * would take the default for ever.
+ */
+export function transportWait(retrying: boolean): Promise<void> | null {
+  if (serverFactsTakenAt() !== null) return null;
+  const asked = healthRead;
+  // How long it has been out, floored at nothing: a clock stepped back reads
+  // as a read just asked, and `left` below caps the wait at the bound
+  // whatever the clock did.
+  const young = asked !== null && Math.max(0, Date.now() - asked.at) < BOUND_MS;
+  let waitOn: { read: Promise<Health>; at: number };
+  if (asked !== null && young) {
+    waitOn = asked;
+  } else if (retrying && (asked !== null || healthReadFailed)) {
+    const read = api.health();
+    waitOn = healthRead?.read === read ? healthRead : { read, at: Date.now() };
+  } else if (asked !== null) {
+    return null;
+  } else if (healthReadFailed) {
+    return Promise.reject(new Error("the transport is not known: the health read failed"));
+  } else {
+    return null;
+  }
+  const left = Math.min(BOUND_MS, Math.max(0, waitOn.at + BOUND_MS - Date.now()));
+  const { read } = waitOn;
+  return new Promise<void>((resolve, reject) => {
+    // Cleared when the read settles first, so a wait that is over holds no
+    // timer. When the timer wins, the read's settling later still writes its
+    // answer down; the `resolve` and `reject` it calls then do nothing.
+    const timer = setTimeout(resolve, left);
+    read.then(
+      (h) => {
+        clearTimeout(timer);
+        try {
+          rememberServerFacts(h);
+        } catch {
+          /* nothing this client can make facts of: the transport it has stands */
+        }
+        resolve();
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 
 /** Whether this DEPLOYMENT answers the house chat (M6.4, R-6.4.6), read once
  *  from the same `GET /api/health` the transport above comes from.
@@ -675,8 +810,11 @@ export const api = {
    *  `user: null` is the answer, not an error. */
   me: (host?: Host) => call<Me>("GET", "/api/me", undefined, host),
   /** The engine's compatibility keys, the identity mode, and — since M6.3 —
-   *  which change transport to read. Fetched once at boot. */
-  health: (host?: Host) => call<Health>("GET", "/api/health", undefined, host),
+   *  which change transport to read. Asked on entering the multiplayer channel
+   *  (`App`), wherever `ensureArchiveFact` must, and by a change signal's
+   *  retry while the transport is not known ([`transportWait`]), which is also
+   *  what the server's read in flight is kept for. */
+  health: (host?: Host) => readHealth(host),
   /** The words on the cards.
    *
    *  **`host` is what makes them survive an unreachable API** (spec §2.3): the

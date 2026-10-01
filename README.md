@@ -199,11 +199,15 @@ file locally.
 ## The browser client
 
 **Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections), with **M6.1 "identity and seats" live since 2026-09-15, M6.2 "the lobby" live since 2026-09-16, M6.3 "transport and spectating" live since 2026-09-16 and M6.4 "chat" live since 2026-09-17** as `yokohama-web:0.5.0-m6.4`. The same engine, the same
-words, and the same legal-move gate —
-served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
-engine*, never a second engine: the server routes, scopes and serializes and computes nothing
-about the game, so the terminal and the browser cannot disagree about a rule.
+corrections), with the M6 "room" cycles since, each live from its own stacked branch: **M6.1
+"identity and seats" (2026-09-15), M6.2 "the lobby" and M6.3 "transport and spectating"
+(2026-09-16), M6.4 "chat" (2026-09-17)**, and the hosting cycles **M6.5a–M6.5c (2026-09-20 to
+2026-09-26)**, which run the client three ways: hosted multiplayer on Cloudflare at
+`yokohama.moore.nyc`, the NAS container at `yokohama-nas.moore.nyc`, and single player entirely
+inside the browser (see [Hosting](#hosting)). The same engine, the same words, and the same
+legal-move gate — served over HTTP and drawn in a browser instead of a terminal. It is a *second
+frontend over one engine*, never a second engine: the server routes, scopes and serializes and
+computes nothing about the game, so the terminal and the browser cannot disagree about a rule.
 
 **Starting a game.** You sign in first — the server reads one identity header, and which header
 it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
@@ -219,10 +223,11 @@ them, the record knows which, and you never see it. When the last person has kep
 starts.
 
 While it runs, each browser is served **its own seat**: your hand is open, every other seat is a
-count. Your opponent's turn arrives on its own — the client asks a small endpoint every three
-seconds from a visible tab, and a turn that landed elsewhere plays back step by step across your
-table rather than snapping into place. Undo works as it always has against the bot; at a table
-with more than one person you can take back your own move only while your turn has not passed.
+count. Your opponent's turn arrives on its own — pushed to each visible tab over one held
+connection, server-sent events on the NAS and a WebSocket on Cloudflare — and a turn that landed
+elsewhere plays back step by step across your table rather than snapping into place. Undo works as
+it always has against the bot; at a table with more than one person you can take back your own
+move only while your turn has not passed.
 
 ![The browser client at two players: the banner with the Boards menu and the reference buttons
 along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
@@ -264,7 +269,8 @@ live, historical, the card indexes, the explanations — is built for the seat t
 so walking every position of the replay returns your own hands and no other's and the history
 cannot be harvested in a single pass. Before M6.1 that was a fence around whoever happened to be
 moving; it is now a fence around a named person, resolved from the identity header on every
-request. It is still **not** a claim that the identity was verified — see
+request. On the NAS it is still **not** a claim that the identity was verified; on Cloudflare the
+Worker verifies Access's signed assertion before anything else reads the request — see
 [Hosting](#hosting) below.
 
 **Asking the bot.** `Suggest` runs the production bot on your seat and shows the move, the line
@@ -286,16 +292,41 @@ run locally: you type a name and play under it.
 
 ## Hosting
 
-**Deployed since 2026-09-01: a container on the owner's Synology NAS behind Cloudflare Access at
-`yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The current build,
-`yokohama-web:0.5.0-m6.4`, has been live since 2026-09-17 and runs with
-`YOKOHAMA_WEB_IDENTITY=claimed`. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
-is the record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery
-as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
-§3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
-store, no port published to the LAN), §3.5–§3.11 every deployment so far with its numbers, §5
-rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
-edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
+**One table layer, three hosts** (M6.5a's seam). The same `yokohama-web` layer runs in three
+places, and the first two each serve the client, with its service worker, behind the same
+Cloudflare Access application.
+
+- **Cloudflare, at `yokohama.moore.nyc`, live since 2026-09-23: hosted multiplayer** (M6.5c). A
+  stateless Worker verifies Access's signed assertion and forwards each request by name to a
+  Durable Object: one per table, which keeps that table's documents in its own SQLite and runs the
+  layer as its own WebAssembly instance; one for the lobby; and one per player for browser saves.
+  Moves reach the other screens over hibernatable WebSockets, finished and abandoned games are
+  archived to an R2 bucket in the NAS archive's own layout, and a table idle for 90 days is saved
+  and expires. **[`worker/README.md`](worker/README.md) explains the design, its reasoning and its
+  mechanics in detail, for readers new to Cloudflare** — start with
+  [what a Durable Object is](worker/README.md#2-what-a-durable-object-is-and-what-serverless-means-here),
+  [Free vs Paid](worker/README.md#3-free-vs-paid-and-how-this-was-optimized-for-free),
+  [the 10 ms CPU budget](worker/README.md#4-lessons-from-the-10-ms-cpu-budget-and-how-the-core-crates-run-inside-it)
+  and [what a game costs](worker/README.md#5-estimates-for-concurrent-and-ongoing-games).
+  [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) §6 is how it is built, deployed and read. The cycle's
+  record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md), and the cleanup cycle
+  after it starts from [its handover](docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md).
+- **The NAS, at `yokohama-nas.moore.nyc`: the self-host path.** A container on the owner's Synology
+  NAS since 2026-09-01, reached only through the existing cloudflared tunnel; it moved to this
+  hostname on 2026-09-21, leaving `yokohama.moore.nyc` to the Worker. The current build,
+  `yokohama-web:0.5.0-m6.5b2.1`, has been live since 2026-09-22 and runs with
+  `YOKOHAMA_WEB_IDENTITY=claimed`, server-sent events and a directory archive. The RUNBOOK is its
+  record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery as a
+  context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`), §3 the
+  container (network `cf-internal`, the named volume `yokohama-web-data` holding the game store, no
+  port published to the LAN), §3.5–§3.16 every deployment with its numbers, §5 rollback (every
+  earlier image tag is still on the NAS).
+- **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in
+  a Web Worker, so a game against the bot needs no server: it is kept in the browser's own storage,
+  the release installs whole for offline play, and a finished game is sent to the host's archive
+  when there is one. On either hostname a local game makes no server call until it ends.
+
+The Modal path and its edge proxy were retired unused (RUNBOOK §4).
 
 What the code already does right:
 
@@ -327,7 +358,9 @@ What the code already does right:
   spoofing — the JWT signature has to be verified at the origin. **That verification does not
   exist in this crate today**, which is why the `worker` mode is the stronger shape: an Access
   policy attached to a Worker hands the identity to the Worker directly, and the origin trusts
-  only what that Worker sets.
+  only what that Worker sets. Since M6.5c the Cloudflare host is that shape, with the verification
+  added: its Worker checks the assertion's signature before it sets the one header the objects
+  trust ([`worker/README.md`](worker/README.md) §3.6).
 - **So the identity gate is still the proxy, and it still has to be in front of everything.** An
   origin reachable without going through Access is an origin whose identity header anyone can
   write.
@@ -379,8 +412,12 @@ The hosting move is M6.5 of
 each cycle's own record is its close —
 [M6.1](docs/plans/2026-09-15-web-frontend-m6.1-close.md),
 [M6.2](docs/plans/2026-09-16-web-frontend-m6.2-close.md),
-[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md) and
-[M6.4](docs/plans/2026-09-19-web-frontend-m6.4-close.md).
+[M6.3](docs/plans/2026-09-16-web-frontend-m6.3-close.md),
+[M6.4](docs/plans/2026-09-19-web-frontend-m6.4-close.md),
+[M6.5a](docs/plans/2026-09-20-web-frontend-m6.5a-close.md),
+[M6.5b](docs/plans/2026-09-21-web-frontend-m6.5b-close.md),
+[M6.5b2](docs/plans/2026-09-22-web-frontend-m6.5b2-close.md) and
+[M6.5c](docs/plans/2026-09-26-web-frontend-m6.5c-close.md).
 
 ## Status (2026-08-30)
 
@@ -539,6 +576,8 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
 | `yokohama-web` | **Merged 2026-09-11** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no payload anywhere carries the setup seed. Since M6.1 it reads one identity header per configured mode and builds every payload for the caller's own seat |
+| `yokohama-wasm` | The browser host (M6.5b): the same table layer compiled to WebAssembly and run in a Web Worker by `web/src/local/`, so a single-player game needs no server |
+| `yokohama-worker` | The Cloudflare host (M6.5c): the same table layer compiled to WebAssembly, one instance per Durable Object, under the TypeScript shell in `worker/`; [`worker/README.md`](worker/README.md) explains it |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
 ## Download and run

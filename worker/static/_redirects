@@ -1,0 +1,2 @@
+# worker/static/_redirects — "/" is index.html WITHOUT a redirect (html_handling "none", spec §0.3 row 7)
+/ /index.html 200

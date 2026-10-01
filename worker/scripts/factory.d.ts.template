@@ -1,0 +1,43 @@
+// The declarations of `gen/factory.js`. The source is
+// worker/scripts/factory.d.ts.template, which scripts/factory-glue.mjs copies
+// to gen/factory.d.ts beside the factory it writes — edit the template.
+//
+// Every member but one is wasm-bindgen's OWN declaration of the export, read
+// from the generated `yokohama_worker.d.ts` rather than restated here (the
+// orchestrator's ruling I-22): a signature that changes in Rust changes in this
+// type, so a `u64` that became a `bigint` fails `npm run typecheck` at the
+// caller. The member list is EXPECTED in `factory-glue.mjs`, and a cell in
+// `factory-glue.test.mjs` holds the two to one list.
+
+import type * as G from "./yokohama_worker";
+
+/** A reply, as the glue declares it. The shell reads it through `readReply`
+ *  (`src/module.ts`), which frees it. */
+export type Reply = G.Reply;
+
+/** One instance's exports: what `createModule` answers. */
+export interface Exports {
+  init: typeof G.init;
+  dispatch: typeof G.dispatch;
+  create: typeof G.create;
+  events: typeof G.events;
+  identity: typeof G.identity;
+  load: typeof G.load;
+  read: typeof G.read;
+  set_clock: typeof G.set_clock;
+  house_copy: typeof G.house_copy;
+  put_copy: typeof G.put_copy;
+  remove_copy: typeof G.remove_copy;
+  house_frame: typeof G.house_frame;
+  restore_picker: typeof G.restore_picker;
+  receipt: typeof G.receipt;
+  stamp_archive: typeof G.stamp_archive;
+  expire: typeof G.expire;
+  /** The battery's trap (spec §2.2): present only in a module built with
+   *  `--features debug` (`npm run build:module:debug`). It never returns — it
+   *  traps, and the instance it trapped is gone. */
+  debug_trap?: () => never;
+}
+
+/** A NEW instance of the module, over its own memory and its own `Games`. */
+export function createModule(compiled: WebAssembly.Module): Exports;

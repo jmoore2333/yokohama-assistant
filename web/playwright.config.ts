@@ -15,6 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -27,9 +28,21 @@ import { join } from "node:path";
  * directory it does not own. So: an unusual port, and reuse is OFF, so a
  * collision is a loud bind failure rather than a silent conversation with a
  * stranger.
+ *
+ * The number itself is `e2e/live.ts`'s `LOCAL_PORT`, beside `baseUrlFor`, so
+ * the origin a walk reads has one definition.
  */
-const PORT = 8479;
-export const BASE_URL = `http://127.0.0.1:${PORT}`;
+const PORT = LOCAL_PORT;
+/**
+ * The origin every walk is played at — and under `LIVE` the deployed Worker's
+ * (M6.5c, spec §5.4; `e2e/live.ts`). It is THIS constant that changes and not
+ * only `use.baseURL` below: `watchForBreakage` flags failed responses whose
+ * address starts with it, and `two_browsers.spec.ts` asks it for the event
+ * count, so a live run with a local `BASE_URL` would watch nothing and ask a
+ * port nobody is listening on (plan review M9). A node cell reads this line
+ * (`e2e/harness.node.test.ts`).
+ */
+export const BASE_URL = baseUrlFor(LIVE);
 
 /**
  * A browser has to be INSTALLED, and absence is loud by default.
@@ -137,11 +150,31 @@ export default defineConfig({
   // has to satisfy. Ignored from the RUN, still checked as a file.
   //
   //     cd web && npm run build && YOKOHAMA_WEB_SHOTS=1 npx playwright test shots.spec.ts
+  //
+  // **The node cells beside the specs are vitest's, never Playwright's**
+  // (M6.5c): `e2e/*.node.test.ts` runs under `npm run test:wasm`, and its name
+  // matches Playwright's default `*.test.ts` glob — loaded here it calls
+  // `vi.mock` with no vitest around it, and the whole run collects nothing.
+  //
+  // **The exit's headed game is opt-in the same way** (ruling I-88): ignored
+  // from every run unless `YOKOHAMA_WEB_EXIT=1`, and still checked as a file by
+  // the two structural specs. With the switch and no live target it is listed
+  // and skips itself, saying why.
   testIgnore: [
+    "**/*.node.test.ts",
     ...(process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"]),
     ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
+    ...(EXIT ? [] : [`**/${EXIT_SPEC}`]),
   ],
+  // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks —
+  // `LIVE_SPECS`, the one list — and the exit's game beside them when it is
+  // asked for. Every other spec stays on the local binary, and these keep
+  // their local run as well.
+  ...(LIVE ? { testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : [])].map((f) => `**/${f}`) } : {}),
   fullyParallel: false,
+  // One at a time, live as locally — which also makes the live run present
+  // the credential once per worker process: once per green run, since
+  // Playwright restarts the worker after a failing test (`e2e/live.ts`).
   workers: 1,
   // A whole game is hundreds of clicks against a real server. The default 30s
   // is a per-test timeout, not a per-action one.
@@ -157,10 +190,30 @@ export default defineConfig({
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
     ...devices["Desktop Chrome"],
-    trace: "retain-on-failure",
+    // **No trace live.** MEASURED (Playwright 1.62.1): a retained trace keeps
+    // an `APIRequestContext`'s headers — which is why the credential never
+    // goes through one (`e2e/live.ts`) — and every page request's cookies, and
+    // a live context's `CF_Authorization` cookie IS the Service Auth
+    // credential's session. So a failing live run keeps NO trace. It still
+    // keeps its screenshot (below — pixels, no header), the lines the specs
+    // print, and its error — of which a thrown API call's would list the
+    // cookie in its call log, so every live `request.*` call goes through
+    // `liveRequest`, which withholds that log (`e2e/live.ts`).
+    trace: LIVE ? "off" : "retain-on-failure",
     screenshot: "only-on-failure",
+    // **The exit's headed windows, meant to stay VISIBLE when stacked** (R3's
+    // R-N6; ruling I-91): the two switches `EXIT_LAUNCH_ARGS` names
+    // (`e2e/live.ts`), which Playwright 1.62.1 already passes to every
+    // Chromium — named here so the exit's precondition does not rest on a
+    // default. On macOS they do not keep a covered window visible (the exit's
+    // first headed run), so the spec lays its windows out so that none covers
+    // another as well.
+    // Every spec of an exit run is launched with them; no other run changes.
+    ...(EXIT ? { launchOptions: { args: [...EXIT_LAUNCH_ARGS] } } : {}),
   },
-  ...(haveBrowser
+  // **No server live**: the Worker is the server, and nothing local is
+  // started, built or emptied.
+  ...(haveBrowser && !LIVE
     ? {
         webServer: {
           // Run from the REPO ROOT, where the server's own defaults resolve:

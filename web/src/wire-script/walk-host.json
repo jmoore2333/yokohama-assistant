@@ -1,0 +1,42 @@
+[
+  {
+    "after": -1,
+    "who": null,
+    "method": "GET",
+    "path": "/api/art",
+    "query": "",
+    "body": null,
+    "status": 200,
+    "fixture": "art_manifest"
+  },
+  {
+    "after": 3,
+    "who": "red@wire.test",
+    "method": "GET",
+    "path": "/api/games/wire/events",
+    "query": "",
+    "body": null,
+    "status": 200,
+    "fixture": "events_open"
+  },
+  {
+    "after": 13,
+    "who": "red@wire.test",
+    "method": "GET",
+    "path": "/api/games/wire/events",
+    "query": "",
+    "body": null,
+    "status": 200,
+    "fixture": "events_dealing"
+  },
+  {
+    "after": 48,
+    "who": "blue@wire.test",
+    "method": "GET",
+    "path": "/api/games/wire/events",
+    "query": "",
+    "body": null,
+    "status": 200,
+    "fixture": "events"
+  }
+]

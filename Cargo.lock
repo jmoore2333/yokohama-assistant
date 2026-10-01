@@ -961,6 +961,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "yokohama-worker"
+version = "0.5.0"
+dependencies = [
+ "http",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "sha2",
+ "wasm-bindgen",
+ "yokohama-cli",
+ "yokohama-core",
+ "yokohama-web",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"

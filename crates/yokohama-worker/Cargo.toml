@@ -1,0 +1,55 @@
+[package]
+name = "yokohama-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+# Bundles nothing third-party, but the layer it wraps is `publish = false` for
+# ASSETS.md's reason, and a package that cannot be published is not a dependency
+# anyone outside this workspace can build — `yokohama-wasm`'s reason, carried.
+publish = false
+
+[lib]
+# `cdylib` is the module `wasm-bindgen` reads (spec §2.2), and nothing else: the
+# crate's own cells are unit tests, which cargo compiles from this same lib
+# target with `--test` regardless of its crate type, and no other crate in the
+# workspace links this one: the built module is for the Durable Objects to
+# load, not for a crate to `use`.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The layer WITHOUT its server half, as the browser host takes it (R-6.5b.9):
+# axum, tokio and tokio-stream never enter this graph. This crate is the
+# layer's third host, and changes nothing in it.
+yokohama-web = { path = "../yokohama-web", default-features = false }
+yokohama-core = { path = "../yokohama-core" }
+# The CLI's library half, already in this graph through the layer. The cells
+# read `session::Session` to build the owed-pump fixture, and spec §2.4's picker
+# needs `repl::SubPrompt`.
+yokohama-cli = { path = "../yokohama-cli" }
+# The lock's version, pinned with `=` for `yokohama-wasm`'s reason: the
+# installed `wasm-bindgen-cli` must match it exactly.
+wasm-bindgen = "=0.2.128"
+# The clock, and nothing else: `js_sys::Date::now` is this crate's ONE platform
+# call and its own scan says so.
+js-sys = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+# The header map `identity::resolve` reads — the module hands the layer the
+# `worker` mode's one header rather than restating its rule.
+http = "1"
+# SHA-256: the picker row's record digest (spec §2.4), and the receipt
+# archive's plan key (spec §2.6: a SHA-256 over the plan's four parts).
+sha2 = "0.10"
+
+[build-dependencies]
+# `build.rs` digests the engine's, the CLI's and the layer's sources into the
+# picker row's code identity (the orchestrator's ruling I-85) — the same
+# SHA-256 crate the module itself uses, compiled for the build host.
+sha2 = "0.10"
+
+[features]
+# The battery's trap hook (spec §2.2): `debug_trap`, a panic inside a held
+# lock. Only a build that passes `--features debug` has it; the per-edit gate's
+# `release-wasm` build does not.
+debug = []
