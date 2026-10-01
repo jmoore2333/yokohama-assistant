@@ -1,5 +1,6 @@
 {
   "chat": 0,
+  "chat_rev": 0,
   "events": 0,
   "status": "open",
   "to_move": null,

@@ -13,9 +13,10 @@
     "Blue"
   ],
   "created_at": 1789000000,
-  "created_by": "red@wire.test",
+  "creator": null,
   "id": "wire-bot",
   "locked": false,
+  "mine": true,
   "my_seats": [
     0
   ],
@@ -24,9 +25,10 @@
   "players": 2,
   "seats": [
     {
+      "invited": "red@wire.test",
       "kind": "human",
       "name": null,
-      "user": "red@wire.test"
+      "you": true
     },
     {
       "kind": "bot"

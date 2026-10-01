@@ -703,7 +703,9 @@ describe("the house, first cut (spec §2.5)", () => {
 
   // Spec §2.5: the lobby socket is admitted by `identity`, accepted under the
   // tag `lobby` with `{ user }`, silent on connect, and framed on every house
-  // chat post with `chat` = the house chat's `last`. The house is evicted
+  // chat post with `chat` = the house chat's `last` and (M6.5c2 cycle D) `rev`
+  // = its revision, both off the stored document — read back here through the
+  // page, which carries the document's `rev` too. The house is evicted
   // after a first post, so a count kept in memory would read 1 where `last`
   // reads more. Mutants: a frame on connect (the first message would be it);
   // an in-memory chat count; no frame; lobby sockets under another tag.
@@ -721,7 +723,10 @@ describe("the house, first cut (spec §2.5)", () => {
     expect(posted.status).toBe(201);
     const { seq } = JSON.parse(posted.text) as { seq: number };
     expect(seq, "premise: the post follows another").toBeGreaterThan(1);
-    const want = `{"event":"house","data":{"seq":0,"chat":${seq}}}`;
+    const page = await worker("/api/chat", { token: await person(BLUE) });
+    const { last, rev } = JSON.parse(page.text) as { last: number; rev: number };
+    expect([last, rev], "premise: nothing deleted in this house, so the revision is the count").toEqual([seq, seq]);
+    const want = `{"event":"house","data":{"seq":0,"chat":${seq},"rev":${rev}}}`;
     expect(await red.until(1)).toEqual([want]);
     expect(await blue.until(1)).toEqual([want]);
     const attached = await runInDurableObject(houseStub(), (_o, state) =>

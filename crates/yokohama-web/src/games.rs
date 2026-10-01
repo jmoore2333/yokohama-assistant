@@ -15,17 +15,17 @@
 //! `playing`. Until then there is nothing for `Session::from_record` to rebuild
 //! and every route that needs a session answers 409. The two writes are not one
 //! transaction, so both crash windows are repaired on the next read
-//! ([`Games::settle`]) rather than left to a human.
+//! (`Games::settle`) rather than left to a human.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
 use crate::archive::{Archive, NoArchive};
-use crate::chat::{ChatConfig, ChatLimits};
+use crate::chat::{ChatConfig, ChatCounts, ChatLimits};
 use crate::log::{Log, NoLog};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
@@ -101,6 +101,30 @@ pub const OPEN_SENTENCE: &str = "this table is still open";
 /// Beside it rides `"status": "playing"`.
 pub const PLAYING_SENTENCE: &str = "this table is playing";
 
+/// What a request answers, as a 500, when the game's lock is poisoned
+/// ([`Games::lock_game`], M6.5c2 cycle D, R-D8).
+pub const POISONED_SENTENCE: &str = "the game's handle was poisoned; the next request rebuilds it";
+
+/// Enter one of this layer's `Mutex<()>` locks, poisoned or not (M6.5c2 cycle
+/// D, row 128): a table's own ([`Games::lock_for`]), the id space's
+/// ([`Games::table_lock`]) and the house's ([`Games::house_lock`]).
+///
+/// **Sound because none of them guards any DATA.** Each is a turnstile for
+/// the writers of documents that live in the STORE, and whoever enters re-reads
+/// what it writes, under the lock, and writes it back by version. A writer that
+/// panicked inside left nothing half-made in memory for the next one to find: a
+/// write it never finished is the store's to refuse, and a crash between two
+/// writes is `settle`'s to repair, exactly as after a process that died there.
+/// `expect` on a poisoned turnstile, by contrast, turned one panic into a table
+/// nobody could join, keep, chat at, unlock or delete — and at the id space,
+/// into a process that could open no table at all — until it restarted.
+///
+/// The game's own `Mutex<Repl>` is the one lock this does NOT fit: it guards
+/// a `Repl`, and a poisoned one is evicted instead ([`Games::lock_game`]).
+pub(crate) fn enter(lock: &Mutex<()>) -> MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The facts the list mirrors off a live session (R-plan-3).
 ///
 /// The winner is read from `final_result` — the engine's own ranking with the
@@ -143,7 +167,7 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// [`HostClock::now`]: `Date.now()` on the target, and [`HostClock::tick`]
 /// natively, where the crate's own cells and the lint gate compile and a
 /// `js_sys` call is a stub that panics. The ticking shape is
-/// [`Games::ticking_clock`]'s, for its reason: a constant would make every
+/// `Games::ticking_clock`'s, for its reason: a constant would make every
 /// table's `created_at` a tie. `const`-constructed, so a host holds one in a
 /// `static`.
 pub struct HostClock {
@@ -254,6 +278,10 @@ pub struct Games {
     /// A dedicated lock rather than holding `live`: `live` is taken by every
     /// `handle`, and blocking ordinary reads for the length of a game setup to
     /// serialize an operation a user performs by hand is the wrong trade.
+    ///
+    /// **It guards no data** — a turnstile for `create`'s check-then-write,
+    /// whose documents live in the store — so it is entered through [`enter`],
+    /// poisoned or not (M6.5c2 cycle D, row 128).
     pub(crate) table_lock: Mutex<()>,
     /// One lock PER TABLE (M6.2, R-2.9), created on first use and kept.
     ///
@@ -267,9 +295,16 @@ pub struct Games {
     ///
     /// The outer mutex is held only long enough to hand back the `Arc`, never
     /// across the table's own lock, so the two can never be taken in two orders.
-    /// The map is not pruned: an entry is a pointer and a mutex, and a delete
-    /// that removed one would drop it while a blocked writer was about to take
-    /// it and hand the next writer a DIFFERENT lock for the same table.
+    ///
+    /// **A delete prunes its table's entry, and only an UNSHARED one** (M6.5c2
+    /// cycle D, row 128; [`Games::prune_lock`]). The map used to grow by one
+    /// entry per table ever written and never shrink, by design, because a
+    /// delete that removed an entry while a blocked writer held a clone of it
+    /// would hand the NEXT writer a different lock for the same table. That
+    /// hazard is exactly the entry whose `Arc` someone else holds, so the prune
+    /// takes an entry only when the map's reference is the last one — read
+    /// under this mutex, the only place a clone is made — and leaves any other
+    /// to the writer holding it.
     pub(crate) locks: Mutex<HashMap<GameId, Arc<Mutex<()>>>>,
     /// Ids deleted since this process started, so a request that was already
     /// holding a handle cannot write the record back after `DELETE` removed it.
@@ -291,9 +326,10 @@ pub struct Games {
     /// them apart, and that is the point: what a write site owes is the CALL,
     /// and what becomes of it is the transport's.
     pub(crate) signal: Arc<dyn Signal>,
-    /// The newest chat number per table this process has seen (M6.4, R-plan-5):
-    /// seeded from the document on a miss, advanced by every append, dropped by
-    /// a delete and by a create.
+    /// The newest chat number and revision per table this process has seen
+    /// (M6.4, R-plan-5; the revision since M6.5c2 cycle D, R-D4): seeded from
+    /// the document on a miss, advanced by every append and every message
+    /// deleted, dropped by a table's delete and by a create.
     ///
     /// It exists so the count a signal frame carries costs no document parse
     /// per bump per connection — a stream's per-bump closure reads it, and with
@@ -303,7 +339,7 @@ pub struct Games {
     /// **Per PROCESS.** A second process's appends are invisible here until the
     /// store is a database (M6.5); the DOCUMENT is always the authority and
     /// every page is served from it.
-    pub(crate) chat_last: Mutex<HashMap<GameId, u64>>,
+    pub(crate) chat_counts: Mutex<HashMap<GameId, ChatCounts>>,
     /// Serializes the house's appends against each other.
     ///
     /// Its own mutex because the house is not a table: it has no `lock_for`
@@ -311,6 +347,10 @@ pub struct Games {
     /// enter. Two people talking in the lobby are otherwise a lost message —
     /// both read `last`, both write `last + 1`, and the compare-and-swap saves
     /// only whichever of them the store sees second.
+    ///
+    /// **It guards no data** — a turnstile for the house document's
+    /// read-then-write, and the document lives in the store — so it is entered
+    /// through [`enter`], poisoned or not (M6.5c2 cycle D, row 128).
     pub(crate) house_lock: Mutex<()>,
     /// The lobby switch and the retention numbers (R-6.4.6, R-6.4.8), from the
     /// launch variables — on the layer rather than on the host's state since
@@ -367,7 +407,7 @@ impl Games {
     /// defaulted — how a test asks for a keep small enough to watch a trim
     /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
     /// calls [`Games::with_parts`] and keeps the handle it passed; **its clock
-    /// ticks** — 1, 2, 3, one per reading, see [`Games::ticking_clock`] — so a
+    /// ticks** — 1, 2, 3, one per reading, see `Games::ticking_clock` — so a
     /// cell that pins a stamp by VALUE reaches for [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
         Self::with_parts(
@@ -425,7 +465,7 @@ impl Games {
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
             signal,
-            chat_last: Mutex::new(HashMap::new()),
+            chat_counts: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
             chat,
             clock,
@@ -511,12 +551,69 @@ impl Games {
     /// is the id space and not one document.
     ///
     /// The entry is created on first use, so a table nobody has written costs
-    /// nothing, and it is never removed — see [`Games::locks`] for why a delete
-    /// that pruned the map would hand two writers two different locks for one
-    /// table.
+    /// nothing, and a DELETE prunes it once nobody else holds it — see
+    /// [`Games::locks`] for why only then ([`Games::prune_lock`]).
+    ///
+    /// Taken through [`enter`], never `expect`: the mutex guards no data.
     pub(crate) fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().expect("games lock");
         Arc::clone(locks.entry(id.to_string()).or_insert_with(|| Arc::new(Mutex::new(()))))
+    }
+
+    /// Drop `id`'s entry from [`Games::locks`] if the map's is the ONLY
+    /// reference to it (M6.5c2 cycle D, row 128) — `delete` calls it after it
+    /// has let go of its own.
+    ///
+    /// Every clone of an entry is made by [`Games::lock_for`] under the map's
+    /// own mutex, and this reads the count under that same mutex, so a count of
+    /// one cannot become two while the entry is being removed. A count above
+    /// one is a writer that took the lock before the delete finished — blocked
+    /// on it, or about to be — and the entry stays, so that writer and the next
+    /// one serialize on the SAME lock.
+    pub(crate) fn prune_lock(&self, id: &str) {
+        let mut locks = self.locks.lock().expect("games lock");
+        if locks.get(id).is_some_and(|lock| Arc::strong_count(lock) == 1) {
+            locks.remove(id);
+        }
+    }
+
+    /// **Take a game's own lock — the ONE way this layer does** (M6.5c2 cycle
+    /// D, R-D8). Every site that locks a live `Repl` goes through here, and a
+    /// new one must: a bare `expect` on this mutex is the defect it replaced.
+    ///
+    /// A request that panics while it holds the guard POISONS the mutex, part
+    /// way through a step, a pump or a persist, with no telling what the `Repl`
+    /// now holds. `expect` then panicked on every later request for the game,
+    /// so one panic was one dead table until the process restarted. The handle
+    /// is a cache and never the record (this module's first paragraph), so a
+    /// poisoned one gets what a refused write gets (`Games::conflict`): it is
+    /// EVICTED. This request answers [`POISONED_SENTENCE`] as a 500 — it asked
+    /// for a game this process can no longer vouch for — and the next one
+    /// rebuilds through `Session::from_record`, from what the store holds. A
+    /// move the panicking request applied and never persisted goes with the
+    /// handle: it was never saved, which is all "persist after every applied
+    /// move" promises.
+    ///
+    /// **Only THIS mutex is evicted**, never a newer handle for the same id: a
+    /// request that rebuilt the game after the first eviction put a different
+    /// `Arc` in `live`, and a late holder of the poisoned one must not drop it.
+    /// The address is the identity, as the `Arc` is not in hand here.
+    ///
+    /// A method rather than a free function because the eviction is `live`'s.
+    /// The poisoned guard is dropped before `live` is taken, so this holds no
+    /// two locks at once.
+    pub fn lock_game<'a>(&self, lock: &'a Mutex<Repl>, id: &str) -> Result<MutexGuard<'a, Repl>, GameError> {
+        match lock.lock() {
+            Ok(repl) => Ok(repl),
+            Err(poisoned) => {
+                drop(poisoned);
+                let mut live = self.live.lock().expect("games lock");
+                if live.get(id).is_some_and(|h| std::ptr::eq(Arc::as_ptr(h), lock)) {
+                    live.remove(id);
+                }
+                Err(GameError::Server(POISONED_SENTENCE.to_string()))
+            }
+        }
     }
 
     /// The live handle for `id`, rebuilt from the store if it is not resident.
@@ -535,16 +632,19 @@ impl Games {
             // which of the two it is looking at.
             Some((doc, _)) if doc.status == TableStatus::Open => Err(GameError::Open),
             Some((doc, _)) if doc.status == TableStatus::Dealing => Err(GameError::Dealing),
-            Some(_) => self.live_handle(id),
+            Some((doc, _)) => self.live_handle(id, &doc),
         }
     }
 
     /// The handle alone: resident, or rebuilt from the RECORD.
     ///
-    /// Deliberately does not consult the table document — [`Games::handle`] has
-    /// already done that, and `settle`'s repair arm calls this to read the turn
-    /// off a game whose table is mid-flip.
-    pub(crate) fn live_handle(&self, id: &str) -> Result<Arc<Mutex<Repl>>, GameError> {
+    /// Deliberately READS no table document — [`Games::handle`] has already
+    /// done that, and `settle`'s repair arm calls this to read the turn off a
+    /// game whose table is mid-flip. Each of its three callers ([`Games::handle`],
+    /// `settle_locked`, `finalize`'s conflict arm) hands in the `table` it read,
+    /// for the ONE thing a rebuild asks of it: whether the two documents agree
+    /// about which seats are bots ([`crate::bots::seat_disagreement`]).
+    pub(crate) fn live_handle(&self, id: &str, table: &TableDoc) -> Result<Arc<Mutex<Repl>>, GameError> {
         if let Some(h) = self.live.lock().expect("games lock").get(id) {
             return Ok(Arc::clone(h));
         }
@@ -560,6 +660,28 @@ impl Games {
         self.written.lock().expect("games lock").insert(id.to_string(), version);
         let record: GameRecord =
             serde_json::from_str(&json).map_err(|e| GameError::Server(e.to_string()))?;
+        // **A pair whose table and record disagree about which seats are bots
+        // is refused before anything is replayed** (M6.5c2 cycle D, the review
+        // of Task 4), on every host, for every rebuild, finished or not — a
+        // 409 naming the lowest such seat, in `check_pair`'s words for a pair
+        // that does not agree. Every pair this layer writes agrees
+        // (`finalize` stamps the run seats from the table's own seats, and has
+        // since the first table document), so only a hand-made pair reaches
+        // it. The measured shape: a record naming seat 1 `bga-human` beside a
+        // table that seats a bot there opened at seat 1's turn and nothing ever
+        // moved it — the CLI resumes the seat as a human, so no bot runs, and
+        // the acting-seat fence refuses the only person at the table.
+        //
+        // HERE rather than in `TableDoc::agrees_with`, which reads only a pair
+        // ARRIVING through `check_pair` (the archive route, a restore): a pair
+        // already in a store — a NAS directory, a Worker object, a browser's
+        // database — is read by this function and nothing else. Abandon never
+        // rebuilds, so such a pair can still be deleted.
+        if let Some(why) = crate::bots::seat_disagreement(table, &record) {
+            return Err(GameError::Conflict(format!(
+                "the table document does not agree with the record: {why}"
+            )));
+        }
         // **The foreign-bot rule's one site** (M6.5c2, R-6.5c2.10), on every
         // host, for every rebuild. The descriptors are compared off the parsed
         // record; "not over" is a fact about the replayed state, so it is read
@@ -632,7 +754,7 @@ impl Games {
     ///
     /// **A FOURTH write rides along and is not a guard**: the table document's
     /// turn mirror (R-plan-3), refreshed after the record lands and IGNORED if
-    /// it conflicts. See [`Games::mirror_turn`].
+    /// it conflicts. See `Games::mirror_turn`.
     ///
     /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
@@ -792,12 +914,17 @@ impl Games {
         // distinction `conflict`'s doc draws and `WriteError` now carries in
         // its type.
         //
-        // **NO CELL DRIVES THE CONFLICT ARM**, and saying so is worth the line.
-        // Within one process the guards above have already read the store under
-        // the same `written` lock, so the only way to reach it is a SECOND
-        // PROCESS writing between that read and this write — which no test here
-        // can arrange. It is defence in depth against a window the old code
-        // could not see at all, not a covered invariant.
+        // **`a_conflict_at_the_swap_evicts_the_handle_and_names_the_change`
+        // DRIVES THIS ARM** through a store double that answers `Conflict` on a
+        // record write, and `api.rs`'s
+        // `a_move_whose_write_conflicted_is_answered_applied_but_not_saved`
+        // reads the reply. Within one process the guards above have already read
+        // the store under the same `written` lock, so a real conflict here
+        // still needs a SECOND PROCESS writing between that read and this
+        // write; the double stands in for that process, which proves what the
+        // arm DOES (evict, and say so on the reply) and not that the window is
+        // reachable. It is defence in depth against a window the old code could
+        // not see at all.
         let version = match self.store.write_if_version(Doc::Record, id, &json, expected) {
             Ok(v) => v,
             Err(WriteError::Conflict { .. }) => {
@@ -881,12 +1008,20 @@ impl Games {
 
     /// The game-over stamp, after a landed put or a same-game conflict.
     ///
-    /// The stamp is what keeps this game to ONE archive copy: the next abandon
-    /// puts under `abandoned/`, a DIFFERENT path, so a put that landed without
-    /// its stamp would be archived a second time there rather than refused
-    /// (`archive::paths` is per reason). Retried once on a version conflict — an
-    /// `unlock` or a `join` writing the document in the same instant is the only
-    /// other writer left at game over — and every other outcome is a line,
+    /// The stamp is what keeps this game to one archive copy WITHOUT help. An
+    /// unstamped game is put again at its next abandon: under `over/` when the
+    /// table's mirror says over (R-6.5b.13), where the copy that landed here
+    /// answers `Identical` and nothing is added — but under `abandoned/`, a
+    /// DIFFERENT path (`archive::paths` is per reason), when the mirror no
+    /// longer says over. So a lost stamp is a second copy only beside a STALE
+    /// mirror, or after an undo past game over at a one-person table, where the
+    /// CLI's undo applies (M6.5c2 cycle D, row 11, measured as its close
+    /// records, `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`;
+    /// `Games::delete` names that residual).
+    ///
+    /// Retried once on a version conflict — an `unlock` or a `join` writing the
+    /// document in the same instant is the only other writer left at game over
+    /// — and every other outcome is a line,
     /// because a landed copy with no stamp is the case an operator most needs to
     /// hear.
     fn stamp_over(&self, id: &str, doc: TableDoc, version: Version) {
@@ -915,7 +1050,7 @@ impl Games {
     /// A host whose archive put is ASYNCHRONOUS — a Durable Object uploads to R2
     /// after the move's reply — cannot complete it inside [`Games::persist`], so
     /// it calls this once the upload has landed. The stamp and its retry on a
-    /// version conflict stay [`Games::archive_if_over`]'s own code, never a
+    /// version conflict stay `Games::archive_if_over`'s own code, never a
     /// host's copy. Idempotent: a stamped, unfinished or archive-off table puts
     /// nothing. `Ok(())` means the retry RAN, not that a stamp landed: a refused
     /// put or a failed stamp is a [`crate::log`] line — which since M6.5c2
@@ -932,7 +1067,7 @@ impl Games {
     /// deferred, and no such put can exist before there is a record.
     pub fn archive_over_retry(&self, id: &str) -> Result<(), GameError> {
         let handle = self.handle(id)?;
-        let repl = handle.lock().expect("a game");
+        let repl = self.lock_game(&handle, id)?;
         let Some((record_json, _)) = self.store.read(Doc::Record, id).map_err(GameError::Server)? else {
             return Err(GameError::NotFound(format!("no game named {id:?}")));
         };
@@ -1042,36 +1177,45 @@ mod tests {
     /// **Every bump site answers under [`NoSignal`]** (M6.5a, R-6.5a.8, spec
     /// §2.4).
     ///
-    /// The premise, and it is a premise rather than an assertion: the layer is
-    /// built by [`test_support::games`], which installs `NoSignal` because
-    /// `Games::new` defaults to it. Nothing here can check that at run time — a
-    /// `dyn Signal` does not say which one it is — so the dependence is written
-    /// down at that helper as well, where a change to the default would be
-    /// made.
+    /// **The layer is built here through [`Games::with_parts`] with `NoSignal`
+    /// passed explicitly** (cycle D, straw poll row 40), so the signal under
+    /// test is the one the cell names and not whichever one `Games::new`
+    /// happens to default to.
     ///
     /// The walk drives one write of every kind that bumps and REQUIRES each to
     /// answer `Ok`: `create`, the finalize's `flip_to_playing` and `persist`
-    /// reach `bump`, `keep` and `chat_append` reach `bump_table`,
-    /// `house_append` reaches `bump_house_chat`, and `delete` reaches `end` —
-    /// **all four trait methods, on the implementation that does nothing**.
+    /// reach `bump`, `keep`, `chat_append` and `delete_chat` reach
+    /// `bump_table`, `house_append` reaches `bump_house_chat`,
+    /// `delete_house_chat` reaches `bump_house_chat_rev` (M6.5c2 cycle D), and
+    /// `delete` reaches `end` — **all five trait methods, on the implementation
+    /// that does nothing**.
     ///
     /// **What it adds over the cells beside it.** Many cells in this binary
     /// build with `games()` and so cross some of these sites under `NoSignal`
     /// on their way to asserting something else; a bump site that had kept a
     /// `Signals`-shaped assumption would break one of them and be reported as
     /// whatever that cell was about. This one exists for the crossing itself.
-    /// It is the only `NoSignal` cell that drives all four methods THROUGH
-    /// this type's write sites — measured, the nearest other reaches three
+    /// It is the `NoSignal` cell that drives every method THROUGH this type's
+    /// write sites — measured at M6.5a, the nearest other reached three
     /// (`a_delete_removes_the_chat_and_its_count`, which sends no house
-    /// message) — so a failure here names the signal rather than a symptom.
-    /// Mutation-proven: each of `NoSignal`'s four bodies was made to panic in
-    /// turn, and this cell failed on all four.
+    /// message), and the count of others is not maintained here — so a failure
+    /// here names the signal rather than a symptom.
+    /// Mutation-proven at M6.5a: each of `NoSignal`'s then four bodies was
+    /// made to panic in turn, and this cell failed on all four.
     ///
     /// It is not a claim about what a bump DOES: under `NoSignal` there is
     /// nothing to observe, which is the point.
     #[test]
     fn every_bump_site_answers_under_no_signal() {
-        let games = games();
+        let games = Games::with_parts(
+            Arc::new(Rules::standard()),
+            Arc::new(MemStore::default()),
+            ChatConfig::default(),
+            Arc::new(NoSignal),
+            Games::ticking_clock(),
+            Arc::new(NoArchive),
+            RunHost::Server,
+        );
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
 
         // `create` — the bump at the end of its success arm.
@@ -1100,6 +1244,10 @@ mod tests {
         games
             .house_append(Author::Watcher { user: "red@t.test".into(), name: None }, "hi all")
             .expect("a house message");
+        // `delete_chat` — `bump_table`; `delete_house_chat` —
+        // `bump_house_chat_rev` (M6.5c2 cycle D, R-D4).
+        games.delete_chat(&id, 1, &red).expect("red deletes her table message");
+        games.delete_house_chat(1, &red).expect("and her house message");
 
         // `delete` — `end`, the one method the others cannot reach.
         games.delete(&id, &red).expect("the creator's delete");
@@ -1276,17 +1424,14 @@ mod tests {
         let label = crate::bots::label(&running);
         let (played, runs) = (format!("{label}.{next}"), format!("{label}.{}", running.version));
         let repointed = |cut: Option<usize>| -> Games {
-            let (record, table) = foreign_pair(&running.controller, cut);
-            let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
-            record.run.as_mut().expect("run provenance").seats[1].version = next;
-            let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
-            table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
-            let foreign = crate::bots::foreign(&record);
+            let (record, table) = same_name_repoint(cut);
+            let foreign = crate::bots::foreign(&serde_json::from_str(&record).expect("the pair's record"));
             assert_eq!(foreign.len(), 1, "premise: the bot seat is foreign");
+            assert_eq!(foreign[0].1.version, next, "premise: at the next version");
             assert_eq!(crate::bots::label(&foreign[0].1), label, "premise: its label ties with production's");
             let games = games();
-            games.load_document(Doc::Record, PLAYED_ID, &serde_json::to_string(&record).unwrap()).unwrap();
-            games.load_document(Doc::Table, PLAYED_ID, &serde_json::to_string(&table).unwrap()).unwrap();
+            games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
             games
         };
         const HOST: crate::api::Host = crate::api::Host {
@@ -1353,6 +1498,47 @@ mod tests {
         let (status, v) = ask(&finished, "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
         assert_eq!(status, 403, "{v}");
         assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run"));
+    }
+
+    /// **A FINISHED same-name re-point opens with no warning at all** (M6.5c2
+    /// cycle D, straw poll row 143 — R-C18's choice reversed). The CLI resumes
+    /// the re-pointed seat under the current build and says so, `warning: seat
+    /// 1 records controller "v4-step9-draft1" at version N, but this build runs
+    /// version M — the seat still plays, under the CURRENT build`; on the web no
+    /// build plays that seat again (unfinished, the game is the 409 "can't
+    /// continue it"), so the line contradicted the refusals beside it. The
+    /// CLI's line is asserted as a PREMISE on the resident `Repl` the route
+    /// reads, so the cell cannot pass by the CLI going quiet; the payload is
+    /// built exactly as `api::get_game` builds it, and its WHOLE array is
+    /// asserted, so a reworded CLI line fails here.
+    #[test]
+    fn a_finished_same_name_re_point_shows_no_drift_warning() {
+        let running = crate::bots::production();
+        let (record, table) = same_name_repoint(None);
+        let games = games();
+        games.load_document(Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(Doc::Table, PLAYED_ID, &table).unwrap();
+        let handle = games.handle(PLAYED_ID).expect("a finished re-point opens");
+        let repl = handle.lock().unwrap();
+        assert!(repl.session.is_over(), "premise: finished");
+        let said = format!(
+            "warning: seat 1 records controller \"{}\" at version {}, but this build runs version {}",
+            running.controller,
+            running.version + 1,
+            running.version,
+        );
+        assert!(
+            repl.session.load_warnings.iter().any(|w| w.starts_with(&said)),
+            "premise: the CLI says it — {:?}",
+            repl.session.load_warnings,
+        );
+        let state = crate::client::ClientState::of(
+            PLAYED_ID,
+            &repl,
+            crate::client::Viewer::Seat(PlayerId::new(0)),
+            Vec::new(),
+        );
+        assert_eq!(state.warnings, Vec::<String>::new(), "no drift line, and nothing else");
     }
 
     /// **Every game this layer deals names the host it was played on** (M6.5c2,
@@ -2085,6 +2271,37 @@ mod tests {
         assert!(!house.has_changed().expect("the house channel is open"));
     }
 
+    /// **The swap's CONFLICT arm, driven** (M6.5c2 cycle D, straw poll row 31):
+    /// a store that answers `Conflict` at the record write — the second process
+    /// the arm exists for — makes `persist` refuse, name the change and EVICT
+    /// the handle, so the next request replays the store rather than go on
+    /// answering from a `Repl` whose line diverged. The catcher for battery row
+    /// 25. The Io arm (`a_write_the_store_refuses_bumps_nothing`) evicts
+    /// nothing; the last assertion here is what tells the two apart. The reply
+    /// a player reads is `api.rs`'s
+    /// `a_move_whose_write_conflicted_is_answered_applied_but_not_saved`.
+    #[test]
+    fn a_conflict_at_the_swap_evicts_the_handle_and_names_the_change() {
+        use std::sync::atomic::Ordering;
+        let (games, store) = conflicting_games();
+        let id = "cswap".to_string();
+        let handle = playing(&games, &req("cswap"), &["red@t.test"]);
+        store.armed.store(true, Ordering::SeqCst);
+
+        let mut repl = handle.lock().expect("the handle");
+        repl.step("1");
+        let err = games.persist(&id, &repl).expect_err("the store answered a conflict");
+        assert!(err.contains("changed under this handle"), "the arm's own sentence: {err}");
+        drop(repl);
+
+        store.armed.store(false, Ordering::SeqCst);
+        let rebuilt = games.handle(&id).expect("a rebuild off the store");
+        assert!(
+            !Arc::ptr_eq(&rebuilt, &handle),
+            "a conflict evicts the handle; an Io failure would have kept it",
+        );
+    }
+
     /// **`persist`'s bump follows the MIRROR write, not merely the record
     /// write** (spec §2: "`persist`, after the record write and `mirror_turn`
     /// → `bump`").
@@ -2291,12 +2508,14 @@ mod tests {
         let archive = RecordingArchive::recording();
         let running = games().with_archive(archive.clone());
         one_move_in(&running, "mid");
-        // NO eviction here (re-review N3): `both_seats_as_bots` writes BOT
-        // provenance for BOTH seats, so a rebuild's `bring_alive` would pump up
-        // to 200 bot moves. Measured at this seed: `one_move_in` stops at the
-        // 200-move cap, the rebuild's one pump plays the remaining 157 to game
-        // over (357 events), and the rebuild's own persist archives the game.
-        // Evict only a game that is ALREADY over.
+        // No eviction here, and none is needed: `both_seats_as_bots` stamps
+        // both seats as PEOPLE on every record it persists (M6.5c2 cycle D, the
+        // review of Task 4), so a rebuild reads the seats human/human and pumps
+        // nothing — the re-review measured 200 events before a rebuild and 200
+        // after. Before that re-stamp the record named both seats bots, and a
+        // rebuild's `bring_alive` played the remaining 157 moves to game over
+        // (357 events) and archived the game from its own persist (re-review
+        // N3), which is why this half evicted nothing then.
         running.archive_over_retry("mid").expect("an unfinished game is not an error");
         assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 
@@ -2593,6 +2812,111 @@ mod tests {
         assert_eq!(clock.now(|| 7), 7);
         assert_eq!((clock.tick(), clock.tick(), clock.tick()), (1, 2, 3));
     }
+
+    /// **A poisoned game lock evicts the handle, and the game rebuilds from the
+    /// store** (M6.5c2 cycle D, R-D8) — the catcher for a lock site that went
+    /// back to `expect`.
+    ///
+    /// A request that panics while it holds a game's `Repl` poisons that mutex.
+    /// `expect` on it then panicked on EVERY later request for the game, so one
+    /// panic was one dead table until the process restarted. The handle is a
+    /// cache and never the record: the next request drops it and answers the
+    /// sentence, and the one after that rebuilds through `Session::from_record`.
+    ///
+    /// Driven through a ROUTE, inside `catch_unwind`, so that a panic on the
+    /// poisoned lock is this cell's failure rather than the test binary's — and
+    /// so the assertions after it run in a process the poison did not take out.
+    #[test]
+    fn a_poisoned_game_lock_evicts_the_handle_and_the_next_request_rebuilds_it() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let games = games();
+        let handle = playing(&games, &two_people("poisoned", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let red = who("red@t.test");
+        let stored = handle.lock().unwrap().session.record().events.len();
+        let died = catch_unwind(AssertUnwindSafe(|| {
+            let _repl = handle.lock().unwrap();
+            panic!("a request died holding the game");
+        }));
+        assert!(died.is_err() && handle.is_poisoned(), "premise: the game's lock is poisoned");
+
+        let first = catch_unwind(AssertUnwindSafe(|| crate::api::get_game(&games, &red, "poisoned")))
+            .unwrap_or_else(|_| panic!("the route PANICKED on the poisoned lock: one panic is one dead table"));
+        let Err(refused) = first else { panic!("the poisoned handle is not served") };
+        assert_eq!(
+            (refused.status.as_u16(), refused.message.as_str()),
+            (500, "the game's handle was poisoned; the next request rebuilds it"),
+        );
+        assert!(!games.live.lock().unwrap().contains_key("poisoned"), "the poisoned handle is EVICTED");
+
+        if let Err(e) = crate::api::get_game(&games, &red, "poisoned") {
+            panic!("the next request rebuilds from the store, not {} {}", e.status, e.message);
+        }
+        let rebuilt = games.handle("poisoned").expect("resident again");
+        assert!(!Arc::ptr_eq(&rebuilt, &handle), "a new handle, not the poisoned one");
+        let rebuilt = rebuilt.lock().expect("the rebuilt handle is not poisoned");
+        assert_eq!(rebuilt.session.record().events.len(), stored, "rebuilt from what the store holds");
+    }
+
+    /// **A poisoned table lock is ENTERED, not panicked on** (M6.5c2 cycle D,
+    /// R-D8's second half, straw poll row 128) — the catcher for `enter` gone
+    /// back to `expect`.
+    ///
+    /// A `Mutex<()>` guards no data, so a writer that died inside one leaves
+    /// nothing for the next to distrust. `expect` made that one panic a table
+    /// nobody could join, keep, chat at, unlock or delete — and at the id
+    /// space's lock, a process that could open no table at all. Both arms run
+    /// inside `catch_unwind`, so the failure is this cell's and the process
+    /// the next assertion runs in is the one the poison was meant to spare.
+    #[test]
+    fn a_poisoned_table_lock_is_entered_and_the_table_keeps_answering() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let games = games();
+        let red = who("red@t.test");
+        let poison = |lock: &Mutex<()>| {
+            let died = catch_unwind(AssertUnwindSafe(|| {
+                let _held = lock.lock().unwrap();
+                panic!("a writer died inside the lock");
+            }));
+            assert!(died.is_err() && lock.is_poisoned(), "premise: the lock is poisoned");
+        };
+        let id = games.create(&two_people("poisoned-table", CORPUS_SEED), &red).expect("a table").id;
+        poison(&games.lock_for(&id));
+        let kept = catch_unwind(AssertUnwindSafe(|| games.keep(&id, &red, PlayerId::new(0), 1, None)))
+            .unwrap_or_else(|_| panic!("the keep PANICKED on the table's poisoned lock"));
+        assert!(kept.is_ok(), "the keep answers through the table's poisoned lock");
+
+        poison(&games.table_lock);
+        let created = catch_unwind(AssertUnwindSafe(|| games.create(&two_people("after", CORPUS_SEED), &red)))
+            .unwrap_or_else(|_| panic!("the create PANICKED on the id space's poisoned lock"));
+        assert!(created.is_ok(), "a table still opens through the id space's poisoned lock");
+    }
+
+    /// **A deleted table's lock is pruned, and a lock another writer holds is
+    /// not** (M6.5c2 cycle D, row 128) — the map grew by one entry per table
+    /// ever written and shrank never.
+    ///
+    /// The second half is the reason the map USED to be left alone, kept true:
+    /// an entry some writer still holds a clone of is a writer blocked on it,
+    /// and dropping it would hand the next writer a DIFFERENT lock for the same
+    /// table. So the prune takes only an entry whose `Arc` nobody shares.
+    #[test]
+    fn a_deleted_tables_lock_is_pruned() {
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&two_people("pruned", CORPUS_SEED), &red).expect("a table").id;
+        drop(games.lock_for(&id));
+        assert!(games.locks.lock().unwrap().contains_key(&id), "premise: the table has a lock entry");
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(!games.locks.lock().unwrap().contains_key(&id), "a deleted table's lock is pruned");
+
+        let id = games.create(&two_people("held", CORPUS_SEED), &red).expect("a table").id;
+        let held = games.lock_for(&id);
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(
+            Arc::ptr_eq(&games.lock_for(&id), &held),
+            "a lock another writer holds is kept, so the next writer takes the same one",
+        );
+    }
 }
 
 /// The helpers both halves of this crate's game tests share.
@@ -2618,7 +2942,8 @@ pub(crate) mod test_support {
     /// defaults to it (M6.5a, R-6.5a.8). That is a premise
     /// `every_bump_site_answers_under_no_signal` rests on and cannot assert —
     /// a `dyn Signal` does not say which one it is — so a change to the
-    /// default belongs with a re-read of that cell. Every cell in THIS module that watches a
+    /// default no longer touches that cell, which builds its own through
+    /// `with_parts`. Every cell in THIS module that watches a
     /// bump uses [`watched_games`] instead (the route cells watch through
     /// `AppState`'s own `signals`).
     pub(crate) fn games() -> Games {
@@ -2645,6 +2970,48 @@ pub(crate) mod test_support {
             super::RunHost::Server,
         );
         (games, signals)
+    }
+
+    /// A [`Store`] that answers `WriteError::Conflict` on every RECORD write
+    /// once armed, and behaves as [`MemStore`] otherwise — the stand-in for a
+    /// second process that wrote between `persist`'s read and its swap. Table
+    /// and chat writes always pass, so `create` and `keep` are ordinary.
+    #[derive(Default)]
+    pub(crate) struct ConflictingRecordWrites {
+        pub inner: MemStore,
+        pub armed: std::sync::atomic::AtomicBool,
+    }
+
+    impl Store for ConflictingRecordWrites {
+        fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, crate::store::Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<crate::store::Version>,
+        ) -> Result<crate::store::Version, crate::store::WriteError> {
+            if doc == Doc::Record && self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::store::WriteError::Conflict { current: None });
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// A [`Games`] over a fresh [`ConflictingRecordWrites`], NOT yet armed,
+    /// and the store to arm.
+    pub(crate) fn conflicting_games() -> (Games, Arc<ConflictingRecordWrites>) {
+        let store = Arc::new(ConflictingRecordWrites::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        (games, store)
     }
 
     /// The corpus seed. **At this seed seat 1's argmax is card 1** (57 against
@@ -2863,6 +3230,13 @@ pub(crate) mod test_support {
     /// the session's run provenance and `Session` is not `Clone`, which is why
     /// the table's own handle cannot simply be told to play itself; `persist`
     /// compares record identity by SEED, so this one persists in its place.
+    ///
+    /// **Its RECORD then names the two people the table seats** (M6.5c2 cycle
+    /// D, the review of Task 4): a rebuild refuses a pair whose record and
+    /// table disagree about which seats are bots (`bots::seat_disagreement`),
+    /// and this pair is two people at the table. The re-stamp comes AFTER
+    /// `Repl::new`, which reads the bots once, so the pump still drives both
+    /// seats while every persist writes a record the table agrees with.
     fn both_seats_as_bots(games: &Games, id: &str) -> Repl {
         use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
         use yokohama_cli::session::Session;
@@ -2886,7 +3260,9 @@ pub(crate) mod test_support {
         let bots =
             BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], CORPUS_SEED);
         session.set_run_seats(bots.seat_provenance());
-        Repl::new(session)
+        let mut repl = Repl::new(session);
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], CORPUS_SEED).seat_provenance());
+        repl
     }
 
     /// A [`MemStore`] that COUNTS its writes.
@@ -2896,15 +3272,24 @@ pub(crate) mod test_support {
     /// `MemStore` does. A cell that asks "how many writes did this take" cannot
     /// read the answer off the stored document — both a one-write and a
     /// two-write implementation leave the same bytes.
+    ///
+    /// It counts the TABLE document's reads too (M6.5c2 cycle D, Task 5): "how
+    /// many times did this route read the table" has the same property — two
+    /// reads and one serve the same document.
     #[derive(Default)]
     pub(crate) struct CountingStore {
         inner: MemStore,
         writes: std::sync::atomic::AtomicUsize,
+        table_reads: std::sync::atomic::AtomicUsize,
     }
 
     impl CountingStore {
         pub(crate) fn writes(&self) -> usize {
             self.writes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        /// How many `Doc::Table` reads this store has answered.
+        pub(crate) fn table_reads(&self) -> usize {
+            self.table_reads.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -2917,6 +3302,9 @@ pub(crate) mod test_support {
             doc: Doc,
             id: &str,
         ) -> Result<Option<(String, crate::store::Version)>, String> {
+            if doc == Doc::Table {
+                self.table_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             self.inner.read(doc, id)
         }
         fn write_if_version(
@@ -2980,6 +3368,49 @@ pub(crate) mod test_support {
         }
         (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
     }
+
+    /// [`foreign_pair`] re-pointed to THIS build's bot at the NEXT controller
+    /// version (M6.5c2, R-C5's same-name re-point): seat 1 names production's
+    /// controller and knobs, the record's seat and the table mirror's copy
+    /// alike, so the bot is foreign while its label ties with production's.
+    /// `cut` as [`foreign_pair`]'s. Answers `(record, table)` as JSON.
+    pub(crate) fn same_name_repoint(cut: Option<usize>) -> (String, String) {
+        use yokohama_core::GameRecord;
+        let running = crate::bots::production();
+        let next = running.version + 1;
+        let (record, table) = foreign_pair(&running.controller, cut);
+        let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        record.run.as_mut().expect("run provenance").seats[1].version = next;
+        let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+        table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
+        (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+    }
+
+    /// The seat-1 person of a `bga-human` pair: `Ada Bell`, who holds seat 1
+    /// in [`bga_human_pair`]'s table.
+    pub(crate) const BGA_SEAT_HOLDER: &str = "ada@t.test";
+
+    /// The committed pair as a game whose seat 1 a PERSON played on BGA, and
+    /// CONSISTENT (M6.5c2 cycle D, the review of Task 4): the record names seat
+    /// 1 `bga-human` ([`foreign_pair`]'s re-seat), and the table seats a person
+    /// there — [`BGA_SEAT_HOLDER`], keeping the card the record says seat 1
+    /// kept — with no bot on the mirror, as a persist would write it. `cut` as
+    /// [`foreign_pair`]'s. Answers `(record, table)` as JSON.
+    pub(crate) fn bga_human_pair(cut: Option<usize>) -> (String, String) {
+        use yokohama_core::{GameRecord, StartingOrderChoice};
+        let (record, table) = foreign_pair(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, cut);
+        let parsed: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+        let StartingOrderChoice::Keep(kept) = parsed.choices[1] else { panic!("premise: seat 1 kept a card") };
+        table.seats[1] = crate::table::SeatDoc::Human {
+            user: BGA_SEAT_HOLDER.to_string(),
+            name: Some("Ada Bell".to_string()),
+        };
+        table.keeps[1] = Some(kept + 1);
+        table.turn.as_mut().expect("a mirror").bot = None;
+        (record, serde_json::to_string(&table).expect("a table"))
+    }
+
     /// The record `id` is stored as, as bytes.
     ///
     /// `expect` twice, and the two are different questions: the store failed,

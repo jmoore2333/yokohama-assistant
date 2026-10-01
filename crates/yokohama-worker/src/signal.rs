@@ -13,14 +13,16 @@ use yokohama_web::signal::Signal;
 
 /// One call the layer made, tagged by the method it called — the list the
 /// shell reads out of `Reply.bumps`: `{"bump": id}`, `{"bump_table": id}`,
-/// `{"bump_house_chat": null}` and `{"end": id}`.
+/// `{"bump_house_chat": null}`, `{"bump_house_chat_rev": null}` (M6.5c2 cycle
+/// D, R-D4: a house message deleted) and `{"end": id}`.
 ///
-/// **`BumpHouseChat` carries `()`**, which is what serializes it as
-/// `{"bump_house_chat":null}`: a unit variant would be the bare string
-/// `"bump_house_chat"`, and every entry of the list is an object with one key,
-/// so the shell reads all four the same way.
+/// **`BumpHouseChat` and `BumpHouseChatRev` carry `()`**, which is what
+/// serializes them as `{"bump_house_chat":null}` and
+/// `{"bump_house_chat_rev":null}`: a unit variant would be the bare string, and
+/// every entry of the list is an object with one key, so the shell reads all
+/// five the same way.
 ///
-/// The variants are named for the trait's four methods, because the names ARE
+/// The variants are named for the trait's five methods, because the names ARE
 /// the wire's tags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +33,9 @@ pub enum Bump {
     BumpTable(String),
     /// `Signal::bump_house_chat`: the house's chat counter only.
     BumpHouseChat(()),
+    /// `Signal::bump_house_chat_rev`: the house's chat revision only — a
+    /// message deleted.
+    BumpHouseChatRev(()),
     /// `Signal::end`: the table is gone and every socket on it ends.
     End(String),
 }
@@ -65,6 +70,10 @@ impl Signal for RecordingSignal {
 
     fn bump_house_chat(&self) {
         self.push(Bump::BumpHouseChat(()));
+    }
+
+    fn bump_house_chat_rev(&self) {
+        self.push(Bump::BumpHouseChatRev(()));
     }
 
     fn end(&self, id: &str) {

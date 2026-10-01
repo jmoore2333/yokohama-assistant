@@ -87,6 +87,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["table", wire.table, KEYS.table],
     ["deal", wire.deal, KEYS.dealView],
     ["deal_waiting", wire.dealWaiting, KEYS.dealView],
+    ["deal_bot_table", wire.dealBotTable, KEYS.dealView],
     ["games", wire.games, KEYS.gamesList],
     ["dealing_409", wire.dealing409, KEYS.dealingError],
     ["not_seated_403", wire.notSeated403, KEYS.apiError],
@@ -94,6 +95,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     // seat at it; the lobby's other list and its paged form; and the four ways
     // a caller is turned away from a table it may not open or sit at.
     ["table_open", wire.tableOpen, KEYS.table],
+    ["table_two_open", wire.tableTwoOpen, KEYS.table],
     ["games_open", wire.gamesOpen, KEYS.gamesList],
     ["games_next", wire.gamesNext, KEYS.gamesList],
     ["open_409", wire.open409, KEYS.dealingError],
@@ -128,6 +130,8 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["chat_403_not_seated", wire.chat403NotSeated, KEYS.apiError],
     ["chat_403_locked", wire.chat403Locked, KEYS.apiError],
     ["house_chat_off_404", wire.houseChatOff404, KEYS.apiError],
+    // M6.5c2 cycle D (R-D4): the delete's one refusal.
+    ["chat_delete_403", wire.chatDelete403, KEYS.apiError],
     // M6.5b's five archive refusals, each one root key, here for the same
     // reason M6.4's five are: the sentences are asserted below, and this is
     // what would see a key the server grew on one of them.
@@ -196,7 +200,7 @@ describe("the payload roots carry exactly the fields the client declares", () =>
   // keeps `bot`, which is declared and has no fixture, from arriving unnoticed.
   it("ChatPage, ChatMessage and each author by its kind", () => {
     const byKind = { seat: KEYS.chatAuthorSeat, watcher: KEYS.chatAuthorWatcher } as const;
-    for (const page of [wire.chat, wire.chatAfter, wire.houseChat]) {
+    for (const page of [wire.chat, wire.chatAfter, wire.houseChat, wire.chatDeleted]) {
       expect(keys(page)).toEqual(listed(KEYS.chatPage));
       for (const m of page.messages) {
         expect(keys(m)).toEqual(listed(KEYS.chatMessage));
@@ -207,7 +211,60 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     }
     for (const m of [wire.chatPost, wire.chatPostWatcher]) {
       expect(keys(m)).toEqual(listed(KEYS.chatMessage));
+      // The post's own reply is the message as its POSTER reads it (M6.5c2
+      // cycle D, R-6.5c2.35), so its author is checked by kind too — the
+      // reply is where an author re-gaining `user` would show first.
+      expect(keys(m.author)).toEqual(listed(byKind[m.author.kind as keyof typeof byKind]));
+      expect(m.author.kind !== "bot" && m.author.you, "a post's reply is the poster's own").toBe(true);
     }
+  });
+
+  // **A delete answers with nothing** (M6.5c2 cycle D, R-D4): an empty 204,
+  // which the walk records — and every host reads — as `null`, at a table and
+  // at the house alike. A body here would be a second statement of the
+  // tombstone the next page read carries.
+  it("a delete's answer is empty, at a table and at the house", () => {
+    expect([wire.chatDelete, wire.houseChatDelete]).toEqual([null, null]);
+    expect(wire.chatDelete403.error).toBe("only the message's author or the table's creator may delete it");
+  });
+
+  // **The tombstone, as the server emits it** (M6.5c2 cycle D, R-D4): the one
+  // committed message whose `deleted` reads true — so the key set above is
+  // checked against a tombstone too — with its text the empty string (never
+  // null), its author and number kept, and the page's `rev` one past its
+  // `last`, where every page before the delete held them equal.
+  it("the page after the delete carries one tombstone, and a revision one past its count", () => {
+    const [gone, ...kept] = wire.chatDeleted.messages;
+    expect(gone).toMatchObject({ seq: 1, text: "", deleted: true, author: wire.chat.messages[0]!.author });
+    expect(kept.every((m) => !m.deleted)).toBe(true);
+    expect(wire.chatDeleted.rev - wire.chatDeleted.last).toBe(1);
+    expect(wire.chat.rev - wire.chat.last, "before the delete").toBe(0);
+    expect(wire.events.chat_rev - wire.events.chat, "the signal says the same").toBe(1);
+  });
+
+  // **Every HUMAN seat in the corpus carries exactly four keys, and no
+  // address** (M6.5c2 cycle D, R-6.5c2.35). `Widen<TableView>` distributes
+  // over the seat union, so a human seat that re-gained `user` would still
+  // match its widened arm at compile time: only this can see it. The seats
+  // are FOUND, by walking every typed fixture for a `seats` array, rather than
+  // listed, so a table payload added later is covered without an edit here.
+  it("every human seat in the corpus is a name, a you and an invited", () => {
+    const humans: unknown[] = [];
+    const walk = (v: unknown, key: string): void => {
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (key === "seats" && (item as { kind?: unknown } | null)?.kind === "human") humans.push(item);
+          walk(item, "");
+        }
+      } else if (v !== null && typeof v === "object") {
+        for (const [k, item] of Object.entries(v)) walk(item, k);
+      }
+    };
+    walk(wire, "");
+    // Anti-vacuity: the corpus's tables hold human seats, named and not.
+    expect(humans.length).toBeGreaterThan(10);
+    for (const seat of humans) expect(keys(seat)).toEqual(listed(KEYS.seatHuman));
+    expect(humans.some((h) => (h as { name: unknown }).name === null)).toBe(true);
   });
 
   // **`why`'s thirteenth refusal is the LAYER's** (M6.5c2, review R2-m5): a
@@ -561,9 +618,15 @@ describe("what the corpus itself has to be true of", () => {
     expect(wire.tableOpen.seats.map((s) => s.kind)).toEqual(["human", "open"]);
     const held = wire.tableOpen.seats[0]!;
     if (held.kind !== "human") throw new Error("fixture moved");
-    expect(held.user).toBe("red@wire.test");
-    // The display name the creator gave, beside the email it can never replace.
+    // The display name the creator gave — and, since M6.5c2 cycle D
+    // (R-6.5c2.35), nothing else about them: the reader is a stranger, so the
+    // seat is not theirs and no address crosses.
     expect(held.name).toBe("Red");
+    expect(held.you).toBe(false);
+    expect(held.invited).toBeNull();
+    expect(wire.tableOpen.mine).toBe(false);
+    expect(wire.tableOpen.creator).toBe("Red");
+    expect(JSON.stringify(wire.tableOpen)).not.toContain("@");
     // `locked` is the boolean that crosses in the password's place: the salt
     // and the hash stay on the server, and `wire_fixtures.rs` searches every
     // payload of the run for all three.
@@ -655,6 +718,9 @@ describe("what the corpus itself has to be true of", () => {
     // Whose turn it is, named — a bare "403" leaves a player with nothing to
     // do next.
     expect(wire.wrongSeat403.error).toMatch(/seat \d+'s turn/);
+    // By the seat's NAME, never its holder's address (M6.5c2 cycle D,
+    // R-6.5c2.35): this sentence goes to every other seated caller.
+    expect(wire.wrongSeat403.error).toBe("it is seat 1's turn (Blue)");
     expect(wire.undoRefused403.error).toContain("undo");
   });
 

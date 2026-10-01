@@ -409,18 +409,19 @@ export type RestoreOutcome = "restored" | "already-here" | "clash";
  * Put one restored game on this device — **the check and BOTH writes in ONE
  * `readwrite` transaction** (spec §2.5).
  *
- * **A NOTE FOR THE NEXT `SEMANTICS_REV` BUMP** (whole-branch review, Minor 1),
- * because this is the function it will be about. `already-here` answers on
- * identical bytes and writes NOTHING, so a game restored at rev N as
- * "unplayable" — its record being a rev N+1 one — keeps its compatibility row
- * after this device moves to rev N+1: the module opens the game happily, and
- * `OnThisDevice` still hides it from the playable list and lists it under "Will
- * not open here" with a reason that has stopped being true. Only "Remove" and a
- * fresh restore clear it. The fix, when that bump comes, is one of two: delete
- * the compat row inside this transaction on an `already-here` whose verdict is
- * not `unplayable`, or have the listing re-derive the verdict rather than trust
- * the row. It is deliberately NOT done now — today no rev N+1 record exists to
- * restore, so there is no way to reach the state and no way to test the fix.
+ * **The compatibility row is RE-DERIVED here, at every restore** (M6.5c2 cycle
+ * D, straw poll row 16; whole-branch review, Minor 1). A game restored at rev N
+ * as "unplayable" — its record a rev N+1 one — keeps its row after this device
+ * moves to rev N+1, and the row goes on hiding a game the module now opens,
+ * under a reason that has stopped being true. The caller hands `compat` only
+ * for a game the validator still calls unplayable against THIS build's
+ * `SEMANTICS_REV` (`backup.rs`'s `verdict_of`), so identical bytes with no
+ * `compat` beside a row that IS here mean the row is stale: it is deleted in
+ * this same transaction and the answer is `restored`, because the game opens
+ * here now and the running tab must be told. The reachable state is a row that
+ * names this build's own rev, which is what `db.test.ts` stages. The listing
+ * still TRUSTS every row (`unplayableIds`): between the bump and the next
+ * restore, "Remove" or a restore is what clears one.
  *
  * Reading for absence and writing afterwards is two operations, and two tabs
  * restoring at once fall between them; IndexedDB serialises overlapping
@@ -431,7 +432,8 @@ export type RestoreOutcome = "restored" | "already-here" | "clash";
  *
  * - **present and byte-identical** on both halves → `already-here`, nothing
  *   written. This is what makes a restore safe to run twice when you are not
- *   sure the first one worked.
+ *   sure the first one worked. The one exception is the stale compatibility
+ *   row above: it alone is deleted, and the answer is `restored`.
  * - **present and different, or HALF present** → `clash`, nothing written. A
  *   half-present pair is a clash and NOT an empty slot: writing the missing
  *   half beside someone else's would produce a pair that agrees with nothing.
@@ -474,6 +476,12 @@ export function restoreOne(
         here.record !== undefined || here.table !== undefined || decide.result !== undefined;
       if (present) {
         const same = here.table === docs.table && here.record === docs.record;
+        if (same && docs.compat === undefined && decide.result !== undefined) {
+          // The row outlived its reason (see above): the pair is untouched.
+          store.delete(["compat", id]);
+          outcome = "restored";
+          return;
+        }
         outcome = same ? "already-here" : "clash";
         return;
       }

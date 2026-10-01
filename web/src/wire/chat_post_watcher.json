@@ -2,9 +2,10 @@
   "author": {
     "kind": "watcher",
     "name": "Green",
-    "user": "green@wire.test"
+    "you": true
   },
   "created_at": 1789000000,
+  "deleted": false,
   "seq": 3,
   "text": "watching from the rail"
 }

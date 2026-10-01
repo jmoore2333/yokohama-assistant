@@ -29,6 +29,11 @@
 // read that fails rejects as [`StoreUnreadable`], which the Worker answers as
 // an ordinary reply. Only a throw from the module itself goes the trap's way.
 //
+// **Since M6.5c2 cycle D that is the rule for every storage read the Worker
+// makes**, not the export's alone (dossier row 14): [`fromStorage`] names the
+// failure and [`failureReply`] answers it, and both live here for the reason
+// this file does — the Worker cannot be loaded in a cell.
+//
 // **The generation decides, not `held` alone.** With Web Locks, `held` is
 // cleared by the steal's `AbortError`, which arrives asynchronously. Under the
 // no-Web-Locks fallback a steal NEVER clears it — nothing tells a tab without
@@ -105,6 +110,51 @@ export interface UnreadableReply {
 /** The reply for a [`StoreUnreadable`], as the Worker posts it (beside `seq`). */
 export const unreadableReply = (e: StoreUnreadable): UnreadableReply => ({ unreadable: e.message });
 
+/**
+ * One call on this browser's storage, with its failure NAMED as
+ * [`StoreUnreadable`] (M6.5c2 cycle D, dossier row 14).
+ *
+ * **What the Worker wraps its IndexedDB calls in** — the startup's open and
+ * read, a game's acquisition (its generation, then the rebuild's read of every
+ * pair), a restore's `adopt`, and [`exportPair`]'s own committed read — so a
+ * failure there reaches [`failureReply`] as the storage's, and is answered as
+ * an ordinary reply rather than as the trap it was. Two calls are not wrapped,
+ * each for its own answer: `persist`'s writes, whose refusal is `unsaved` (a
+ * different remedy), and the export arm's generation read, which answers from
+ * memory ([`pairSource`]'s `null`). A refusal it is handed is passed on
+ * untouched, never wrapped twice.
+ */
+export async function fromStorage<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (e) {
+    throw e instanceof StoreUnreadable ? e : new StoreUnreadable(e);
+  }
+}
+
+/**
+ * How the actor answers a request that FAILED — the one place the Worker
+ * decides between the two (M6.5c2 cycle D, dossier row 14).
+ *
+ * - [`StoreUnreadable`]: an ORDINARY reply carrying its sentence, the export
+ *   arm's own [`unreadableReply`]. The page draws it — the broken-store face
+ *   for a hold, a refusal for everything else — and restarts nothing: a fresh
+ *   Worker would meet the same store, and the old one may be holding the only
+ *   copy of a move that store refused.
+ * - anything else: the TRAP, which the page recovers from by starting a fresh
+ *   Worker (`worker.ts`'s rule 6). A trapped module holds its own mutex and
+ *   traps again on `init()`, so there is nothing to recover in place.
+ */
+export function failureReply(seq: number, err: unknown): Record<string, unknown> {
+  if (err instanceof StoreUnreadable) return { seq, ...unreadableReply(err) };
+  return {
+    seq,
+    status: 500,
+    body: JSON.stringify({ error: `the local host stopped: ${String(err)}` }),
+    trapped: true,
+  };
+}
+
 /** The sentence an unreadable reply carries, or `null` for any other reply —
  *  a pair included, which is why it takes any object. */
 export function unreadableOf(reply: object): string | null {
@@ -138,13 +188,7 @@ export async function exportPair(
   memory: () => Pair,
   committed: () => Promise<Pair>,
 ): Promise<Pair> {
-  const fromStore = async (): Promise<Pair> => {
-    try {
-      return await committed();
-    } catch (e) {
-      throw new StoreUnreadable(e);
-    }
-  };
+  const fromStore = (): Promise<Pair> => fromStorage(committed);
   if (held === undefined) return fromStore();
   let stored: number | null;
   try {

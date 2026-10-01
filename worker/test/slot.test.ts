@@ -1105,7 +1105,7 @@ describe("the durable slot (spec §2.5)", () => {
 
   // Spec §2.5: the lobby socket is silent on connect, as the SSE lobby stream
   // is, and hears every copy the house applies — ONE frame per applied copy,
-  // `{"event":"house","data":<house_frame(seq, chat)>}`. A house chat post is
+  // `{"event":"house","data":<house_frame(seq, chat, rev)>}`. A house chat post is
   // the positive control (ruling R-10): its frame arrives right after, so an
   // extra frame would have arrived between. Mutants: a frame on connect; no
   // frame for an applied copy; a frame for the push AND for the flush's
@@ -1118,14 +1118,49 @@ describe("the durable slot (spec §2.5)", () => {
     expect((await create(id)).status).toBe(201);
     await runInDurableObject(tableStub(id), (table: Table) => table.deliverSlot());
     const [first] = await tab.until(1);
-    const { event, data } = JSON.parse(first!) as { event: string; data: { seq: number; chat: number } };
+    const { event, data } = JSON.parse(first!) as { event: string; data: { seq: number; chat: number; rev: number } };
     expect(event).toBe("house");
     expect(data.seq, "an applied copy raised seq").toBeGreaterThan(0);
-    expect(first).toBe(`{"event":"house","data":${referenceModule().house_frame(data.seq, data.chat)}}`);
+    expect(first).toBe(`{"event":"house","data":${referenceModule().house_frame(data.seq, data.chat, data.rev)}}`);
     const posted = await toHouse(BLUE, "POST", "/api/chat", '{"text":"a table is up"}');
     expect(posted.status).toBe(201);
     const chat = (JSON.parse(posted.text) as { seq: number }).seq;
-    expect(await tab.until(2)).toEqual([first, `{"event":"house","data":${referenceModule().house_frame(data.seq, chat)}}`]);
+    expect(await tab.until(2)).toEqual([
+      first,
+      `{"event":"house","data":${referenceModule().house_frame(data.seq, chat, data.rev + 1)}}`,
+    ]);
+    tab.ws.close(1000, "done");
+  });
+
+  // M6.5c2 cycle D (R-D4): a house message's DELETE is framed like a post,
+  // ONE frame per lobby socket — with `rev` moved and `chat` NOT, since a
+  // delete adds no message — and read off the STORED document, so the
+  // tombstone is committed before the frame goes. The author alone: the house
+  // has no creator, so another caller's delete is the 403, framed nowhere —
+  // the author's own delete is the positive control whose frame arrives next
+  // (ruling R-10). Mutants: the rev bump not framed (`bump_house_chat_rev`
+  // left out of the house's check); `rev` read as `last`; `chat` moved by the
+  // delete.
+  it("a house message's delete frames every lobby with the revision moved and the count not", async () => {
+    const tab = await lobbySocket(RED);
+    const posted = await toHouse(BLUE, "POST", "/api/chat", '{"text":"soon gone"}');
+    expect(posted.status, posted.text).toBe(201);
+    const seq = (JSON.parse(posted.text) as { seq: number }).seq;
+    const [first] = await tab.until(1);
+    const { data } = JSON.parse(first!) as { data: { seq: number; chat: number; rev: number } };
+    expect(data.chat, "premise: the post's own frame").toBe(seq);
+    const refused = await toHouse(RED, "DELETE", `/api/chat/${seq}`);
+    expect([refused.status, refused.text]).toEqual([403, '{"error":"only the message\'s author or the table\'s creator may delete it"}']);
+    const deleted = await toHouse(BLUE, "DELETE", `/api/chat/${seq}`);
+    expect([deleted.status, deleted.text]).toEqual([204, ""]);
+    expect(await tab.until(2)).toEqual([
+      first,
+      `{"event":"house","data":${referenceModule().house_frame(data.seq, data.chat, data.rev + 1)}}`,
+    ]);
+    const page = JSON.parse((await toHouse(RED, "GET", `/api/chat?after=${seq - 1}`)).text) as {
+      messages: { seq: number; text: string; deleted: boolean }[];
+    };
+    expect(page.messages.map((m) => [m.seq, m.text, m.deleted])).toEqual([[seq, "", true]]);
     tab.ws.close(1000, "done");
   });
 });

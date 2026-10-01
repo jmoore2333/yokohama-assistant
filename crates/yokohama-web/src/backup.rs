@@ -3,13 +3,13 @@
 //!
 //! **One envelope, one game or all of them**, so there is a single format
 //! rather than two, and **one function decides what a valid game is** — the
-//! archive route calls [`check_pair`] and so does a restore, because a backup
+//! archive route calls [`backup::check_pair`] and so does a restore, because a backup
 //! and an upload that disagreed would mean a game you could send to the server
 //! but not put back on your own device.
 //!
 //! ## Why this module is not behind the `server` feature
 //!
-//! The browser host calls it. `crates/yokohama-wasm` wraps [`restore_report_json`]
+//! The browser host calls it. `crates/yokohama-wasm` wraps [`backup::restore_report_json`]
 //! as its one new export, so this file makes no platform call at all — no
 //! clock, no filesystem, no environment — and the layer's own
 //! `platform_calls_stay_behind_the_server_feature` scan is what holds that
@@ -18,7 +18,7 @@
 //!
 //! ## The three answers, and why there are three and not two
 //!
-//! [`Verdict`] separates **rejected** from **unplayable** because refusing a
+//! [`backup::Verdict`] separates **rejected** from **unplayable** because refusing a
 //! record at another `SEMANTICS_REV` outright would strand the only copy of a
 //! game (R-6.5b2.12). A cross-rev pair RESTORES, lists with its reason, and can
 //! be exported again; the bytes are never rewritten, which is what "never
@@ -29,7 +29,7 @@
 //! ## What is checked HERE and what is checked by the page
 //!
 //! This module decides whether a game is *valid* and whether it is
-//! *addressable* — [`check_pair`] and the id contract in [`restore_read`],
+//! *addressable* — [`backup::check_pair`] and the id contract in [`backup::restore_read`],
 //! which `TableDoc::agrees_with` cannot supply because it compares SETUP fields
 //! and knows nothing about the id or who may play. The **clash rule** is the
 //! page's, because it is about what is already in this browser's IndexedDB and
@@ -161,19 +161,29 @@ pub struct RestoreRow {
 ///
 /// The checks are `archive_post`'s own, in `archive_post`'s own order and its
 /// own words — a `semantics_rev` present and equal to this build's, a terminal
-/// digest present, `replay_strict` clean, the table document parsing, passing
-/// [`tables::check_shape`](crate::tables) and AGREEING with the record, and the
+/// digest present, the table document parsing, passing
+/// [`tables::check_shape`](crate::tables) and AGREEING with the record, the
 /// document's id being `is_safe_id`'s, because there it becomes a path
-/// component. The ORDER is pinned through the real route by
+/// component, and LAST `replay_strict` clean. The ORDER is pinned through the
+/// real route by
 /// `api::tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
 /// which was written and run BEFORE these checks moved here.
+///
+/// **The table's four checks run BEFORE the replay since M6.5c2 cycle D**
+/// (straw poll row 81). A replay rebuilds the game's setup from the record's
+/// own configuration — its player count, colours and start seat, which the
+/// engine bounds by `debug_assert!` alone — and the table's `agrees_with` is
+/// what holds those against a document this layer has shape-checked. So an
+/// untrusted record reaches setup only beside a table that agrees with it.
+/// (The one replay above the table's checks is the unknown-provenance arm's,
+/// which the engine refuses at its provenance check, before any setup.)
 ///
 /// **It builds a [`Rules`](yokohama_core::Rules) for the caller that has none.**
 /// `AppState`'s own doc states this crate's discipline — "`Rules::standard()` is
 /// not cheap and is immutable once built, so it is constructed once per process
 /// and shared by reference" — and an earlier draft departed from it, paying one
 /// per archive POST and one per record-carrying game in a restore (review M-4).
-/// So [`check_pair_with`] is the body and takes the rules; this is the ONE
+/// So `check_pair_with` is the body and takes the rules; this is the ONE
 /// public entry, for a caller that has no `Games` to borrow them from. The two
 /// in-crate callers pass what they already hold: `archive_post` the process's
 /// shared rules, `restore_read` one built per ENVELOPE rather than per game.
@@ -226,9 +236,6 @@ pub(crate) fn check_pair_with(
     if rec.terminal_digest.is_none() {
         return Err("the record carries no terminal digest".to_string());
     }
-    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
-        format!("the record does not replay: at event {}, {}", e.event_index, e.message)
-    })?;
     let doc: crate::table::TableDoc = serde_json::from_str(table)
         .map_err(|e| format!("the table document does not parse: {e}"))?;
     crate::tables::check_shape(&doc)
@@ -238,6 +245,10 @@ pub(crate) fn check_pair_with(
     if !crate::store::is_safe_id(&doc.id) {
         return Err("the table's id is not a safe name".to_string());
     }
+    // LAST, behind a table that agrees with the record (the doc above).
+    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
+        format!("the record does not replay: at event {}, {}", e.event_index, e.message)
+    })?;
     Ok(PairFacts {
         players: doc.players,
         events: rec.events.len(),
@@ -340,32 +351,70 @@ fn verdict_of(game: &BackupGame, rules: &yokohama_core::Rules) -> Verdict {
     }
 }
 
+/// The two fields every version of the envelope keeps where this one has
+/// them — its `kind` and its `envelope` number — and nothing else.
+///
+/// **Deliberately WITHOUT `deny_unknown_fields`**, the one place in this file
+/// that reads a file leniently: a later version is later because it says
+/// something this build does not know, and the whole point of reading the head
+/// first is to answer that file by its version rather than by the key.
+#[derive(Deserialize)]
+struct Head {
+    kind: String,
+    envelope: u32,
+}
+
+/// The version a BACKUP file says it is, read before anything else in it is
+/// (M6.5c2 cycle D, straw poll row 15).
+///
+/// **Before the whole parse, because the whole parse is version 1's.**
+/// [`Envelope`] denies unknown fields, so a version-2 file that adds one was
+/// answered with serde's "unknown field …" — a key the player never chose,
+/// hiding the one fact they can act on. [`restore_read`] asks this first and
+/// refuses another version as `this is a version N backup; this build reads
+/// version 1`.
+///
+/// **Its own refusals are about a file that is not a backup at all**: text
+/// that is not an object carrying a string `kind` and a whole `envelope`
+/// number, and a `kind` that is something else. The kind is read here, before
+/// the version, so a file of another kind is never told it is "a version N
+/// backup".
+pub fn envelope_version_of(text: &str) -> Result<u32, String> {
+    let head: Head = serde_json::from_str(text)
+        .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
+    if head.kind != ENVELOPE_KIND {
+        return Err(format!(
+            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
+            head.kind
+        ));
+    }
+    Ok(head.envelope)
+}
+
 /// Read a backup file and say what each game in it is.
 ///
 /// **The envelope's own shape is checked before any game is**, and a refusal
 /// here is about the FILE: nothing is written and no per-game verdict is
 /// reported, because a file this build cannot read is not a file it can half
-/// apply.
+/// apply. **Its version is checked before its shape** ([`envelope_version_of`]),
+/// because version 1's shape is the question only a version-1 file can answer.
 ///
 /// Duplicate ids are refused here too. The page refuses them as well and does
 /// so before it asks — deliberately two statements of one rule, because the
 /// page must be able to refuse a file with the module dead, and this function
 /// is a public validator that has to be total on its own.
 pub fn restore_read(envelope: &str) -> Result<Vec<(String, Verdict)>, String> {
+    let version = envelope_version_of(envelope)?;
+    if version != ENVELOPE_VERSION {
+        return Err(format!(
+            "this is a version {version} backup; this build reads version {ENVELOPE_VERSION}"
+        ));
+    }
+    // The `kind` was read with the version, and a second, differing `kind` in
+    // the same object is serde's "duplicate field", so the two reads cannot
+    // disagree about it.
     let env: Envelope = serde_json::from_str(envelope)
         .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
-    if env.kind != ENVELOPE_KIND {
-        return Err(format!(
-            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
-            env.kind
-        ));
-    }
-    if env.envelope != ENVELOPE_VERSION {
-        return Err(format!(
-            "this is envelope version {}; this build reads version {ENVELOPE_VERSION}",
-            env.envelope
-        ));
-    }
     let mut seen = std::collections::BTreeSet::new();
     for g in &env.games {
         if !seen.insert(g.id.as_str()) {
@@ -471,6 +520,35 @@ mod tests {
         assert!(!crate::api::archive_would_accept(&record, &mangled));
     }
 
+    /// **The table is checked BEFORE the record is replayed** (M6.5c2 cycle D,
+    /// straw poll row 81) — the catcher for "the table checks after the
+    /// replay", on the function both callers share.
+    ///
+    /// A replay rebuilds the game's setup from the record's OWN configuration,
+    /// which nothing else here bounds — the engine checks its player count by
+    /// `debug_assert!` alone — and it is the table's checks that hold
+    /// `players`, `colors` and `start_seat` against it. So a pair whose record
+    /// would fail LATER, in its replay, and whose table disagrees about the
+    /// player count is refused on the TABLE: the replay is never reached. The
+    /// premise line shows the record really does fail its replay beside a
+    /// table that agrees.
+    #[test]
+    fn the_table_is_checked_before_the_record_is_replayed() {
+        let (record, table) = committed_browser_played_pair();
+        let mut v: serde_json::Value = serde_json::from_str(&record).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        assert!(events.len() > 1, "anti-vacuity: a one-event record cannot be re-ordered");
+        events[0] = events[1].clone();
+        let broken = v.to_string();
+        let said = check_pair(&broken, &table).expect_err("premise: this record does not replay");
+        assert!(said.starts_with("the record does not replay"), "{said}");
+
+        let wrong = table.replace("\"players\": 2", "\"players\": 3");
+        assert_ne!(wrong, table, "the mutation must actually change the fixture");
+        let said = check_pair(&broken, &wrong).expect_err("refused");
+        assert!(said.starts_with("the table document"), "the table's sentence, not the replay's: {said}");
+    }
+
     /// R-6.5b2.12: REJECTED and UNPLAYABLE are different answers. Refusing a
     /// foreign-rev record outright would strand the only copy of a game.
     #[test]
@@ -508,14 +586,72 @@ mod tests {
     }
 
     /// The envelope's own shape is checked before any game is. A future version
-    /// is refused as a whole rather than half-read.
+    /// is refused as a whole rather than half-read — and **refused BY ITS
+    /// VERSION** (M6.5c2 cycle D, straw poll row 15; the catcher for "the
+    /// envelope parsed whole first").
+    ///
+    /// A newer envelope is newer because it says something this build does
+    /// not know, so the realistic version-2 file carries a key version 1 does
+    /// not have. Parsed whole first, `deny_unknown_fields` answered that file
+    /// with serde's "unknown field …", which names a key the player never
+    /// chose and hides the one fact they can act on: which build reads it.
     #[test]
     fn an_envelope_of_another_version_is_refused_whole() {
         let original = envelope_of(&[]);
-        let env = original.replace("\"envelope\":1", "\"envelope\":2");
-        assert_ne!(env, original, "the mutation must actually change the envelope");
+        let env = original
+            .replace("\"envelope\":1", "\"envelope\":2")
+            .replace("{\"kind\"", "{\"added_in_version_2\":true,\"kind\"");
+        assert!(
+            env.contains("\"envelope\":2") && env.contains("added_in_version_2"),
+            "the mutation must actually change the envelope: {env}",
+        );
         let err = restore_read(&env).expect_err("a version this build does not know");
-        assert!(err.contains("envelope"), "{err}");
+        assert_eq!(err, "this is a version 2 backup; this build reads version 1");
+        assert!(!err.contains("added_in_version_2"), "by its version, not by its key: {err}");
+    }
+
+    /// **The version is read from the file's HEAD, before anything else in it
+    /// is**: [`envelope_version_of`] answers for a version-2 file that carries
+    /// a key version 1 lacks AND lacks a field version 1 requires — the two
+    /// ways a later format can differ — because it reads only the two fields
+    /// every version has to keep in place to be refusable at all.
+    ///
+    /// Its refusals are about a file that is not a BACKUP, and neither is
+    /// worded as a version: a file of another kind never reaches the version
+    /// question, so it is never told it is "a version 2 backup".
+    #[test]
+    fn the_version_is_read_before_the_rest_of_the_file() {
+        let v1 = envelope_of(&[]);
+        assert_eq!(envelope_version_of(&v1), Ok(ENVELOPE_VERSION), "the control: this build's own file");
+
+        let v2 = v1
+            .replace("\"envelope\":1", "\"envelope\":2")
+            .replace("{\"kind\"", "{\"added_in_version_2\":true,\"kind\"")
+            .replace(",\"games\":[]", "");
+        assert!(
+            v2.contains("\"envelope\":2") && v2.contains("added_in_version_2") && !v2.contains("\"games\""),
+            "the mutation must actually change the envelope: {v2}",
+        );
+        assert!(
+            serde_json::from_str::<Envelope>(&v2).is_err(),
+            "the premise: this file does not parse as a version-1 envelope",
+        );
+        assert_eq!(envelope_version_of(&v2), Ok(2));
+
+        let err = envelope_version_of("this is a photograph").expect_err("not JSON");
+        assert!(err.starts_with("this is not a backup envelope this build reads"), "{err}");
+        let other = v2.replace("\"yokohama-backup\"", "\"something-else\"");
+        assert_ne!(other, v2, "the mutation must actually change the envelope");
+        let err = envelope_version_of(&other).expect_err("another file's kind");
+        assert!(err.contains("\"something-else\"") && !err.contains("version 2"), "{err}");
+
+        // The head reads the `kind` that the whole parse reads, because a
+        // second `kind` in one object is refused rather than taken: the two
+        // reads of one file cannot disagree about what it is.
+        let doubled = v1.replace("{\"kind\"", "{\"kind\":\"something-else\",\"kind\"");
+        assert_ne!(doubled, v1, "the mutation must actually change the envelope");
+        let err = envelope_version_of(&doubled).expect_err("two kinds in one file");
+        assert!(err.contains("duplicate field"), "{err}");
     }
 
     /// The other two whole-file refusals, and the one that is not about a

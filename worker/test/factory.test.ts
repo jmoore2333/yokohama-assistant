@@ -112,7 +112,7 @@ describe("readReply (the plan's names table)", () => {
     const reply = {
       status: 200,
       body: "{}",
-      bumps: '[{"bump":"t"},{"bump_table":"t"},{"bump_house_chat":null},{"end":"t"}]',
+      bumps: '[{"bump":"t"},{"bump_table":"t"},{"bump_house_chat":null},{"bump_house_chat_rev":null},{"end":"t"}]',
       archive: '{"key":"k"}',
       picker: "[]",
       logs: "[]",
@@ -123,7 +123,7 @@ describe("readReply (the plan's names table)", () => {
     expect(readReply(reply)).toStrictEqual({
       status: 200,
       body: "{}",
-      bumps: [{ bump: "t" }, { bump_table: "t" }, { bump_house_chat: null }, { end: "t" }],
+      bumps: [{ bump: "t" }, { bump_table: "t" }, { bump_house_chat: null }, { bump_house_chat_rev: null }, { end: "t" }],
       archive: '{"key":"k"}',
       picker: "[]",
     });

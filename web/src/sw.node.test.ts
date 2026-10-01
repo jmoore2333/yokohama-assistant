@@ -34,7 +34,9 @@
 // `web-server` job, rather than under `npm test`.
 
 import { createHash, webcrypto } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { FETCH_TIMEOUT_MS, INSTALL_DEADLINE_MS } from "./swInstall";
 
 const CACHE_NAME = "yokohama-release-driventest01";
 const META_PATH = "/__release__";
@@ -54,26 +56,34 @@ const ENTRIES = Object.entries(BODIES).map(([path, { body, type }]) => ({
   type: type.split(";")[0]!.trim(),
 }));
 
-/** `src/sw.ts`, bundled once for the whole file. */
-let bundled: Promise<string> | null = null;
-function workerSource(): Promise<string> {
-  bundled ??= (async () => {
-    const { build } = await import("esbuild");
-    const out = await build({
-      entryPoints: [new URL("./sw.ts", import.meta.url).pathname],
-      bundle: true,
-      write: false,
-      format: "iife",
-      platform: "browser",
-      target: "es2022",
-      define: {
-        __CACHE_NAME__: JSON.stringify(CACHE_NAME),
-        __PRECACHE__: JSON.stringify(ENTRIES),
-      },
-    });
-    return out.outputFiles![0]!.text;
-  })();
-  return bundled;
+type Entry = { path: string; digest: string; type: string };
+
+/** `src/sw.ts`, bundled once per release list for the whole file. */
+const bundled = new Map<string, Promise<string>>();
+function workerSource(entries: readonly Entry[] = ENTRIES): Promise<string> {
+  const key = JSON.stringify(entries);
+  if (!bundled.has(key)) {
+    bundled.set(
+      key,
+      (async () => {
+        const { build } = await import("esbuild");
+        const out = await build({
+          entryPoints: [new URL("./sw.ts", import.meta.url).pathname],
+          bundle: true,
+          write: false,
+          format: "iife",
+          platform: "browser",
+          target: "es2022",
+          define: {
+            __CACHE_NAME__: JSON.stringify(CACHE_NAME),
+            __PRECACHE__: JSON.stringify(entries),
+          },
+        });
+        return out.outputFiles![0]!.text;
+      })(),
+    );
+  }
+  return bundled.get(key)!;
 }
 
 class FakeCache {
@@ -148,6 +158,8 @@ interface Harness {
   posted: unknown[];
   /** Every fetch the worker makes, at install or at fetch time, as (path, init). */
   asked: { path: string; init: RequestInit }[];
+  /** The options of every `clients.matchAll` the worker made. */
+  matched: unknown[];
   install(): Promise<void>;
   activate(): Promise<void>;
   message(data: unknown): void;
@@ -178,8 +190,12 @@ async function boot(
       : { status: 404, body: NOT_ON_THE_ORIGIN, type: "text/plain" };
   },
   hold?: string,
+  /** `entries`: a different release list (the deadline cell needs more than a
+   *  lane's worth). `delayMs`: every answer arrives that long after it is
+   *  asked, on the clock the cell has faked, and is refused on abort. */
+  options: { entries?: readonly Entry[]; delayMs?: number } = {},
 ): Promise<Harness> {
-  const code = await workerSource();
+  const code = await workerSource(options.entries);
   const handlers = new Map<string, (event: never) => void>();
   const harness = {
     caches: new FakeCaches(),
@@ -187,6 +203,7 @@ async function boot(
     claim: vi.fn(),
     posted: [] as unknown[],
     asked: [] as { path: string; init: RequestInit }[],
+    matched: [] as unknown[],
   };
 
   const self = {
@@ -195,9 +212,10 @@ async function boot(
     location: { origin: "https://yokohama.test" },
     clients: {
       claim: harness.claim,
-      matchAll: async () => [
-        { postMessage: (message: unknown) => harness.posted.push(message) },
-      ],
+      matchAll: async (matchOptions?: unknown) => {
+        harness.matched.push(matchOptions);
+        return [{ postMessage: (message: unknown) => harness.posted.push(message) }];
+      },
     },
   };
 
@@ -211,6 +229,18 @@ async function boot(
       return new Promise<Response>((_resolve, reject) => {
         const signal = init.signal as AbortSignal | undefined;
         signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    }
+    if (options.delayMs !== undefined) {
+      await new Promise<void>((resolve, reject) => {
+        const signal = init.signal as AbortSignal | undefined;
+        const timer = setTimeout(resolve, options.delayMs);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
           const error = new Error("aborted");
           error.name = "AbortError";
           reject(error);
@@ -364,6 +394,144 @@ describe("the worker's install", () => {
     await worker.activate();
     worker.message({ yokohama: "skip-waiting" });
     expect(worker.claim).not.toHaveBeenCalled();
+  });
+});
+
+// **The install's clocks and its small decisions** (M6.5c2 cycle D; `sw.ts`'s
+// header listed these as "pinned by NO cell" — each is a mutation every cell
+// survived). Fake timers for the CLOCK only (`setTimeout` and `Date`), so the
+// digest and the cache writes still run for real and `setImmediate` is left
+// alone. Every clock cell asserts BEFORE it moves the clock too: a deadline is
+// read at its edge, not after it.
+describe("the worker's install: its clocks and its small decisions", () => {
+  const realSetTimeout = globalThis.setTimeout;
+  const sleep = (ms: number) => new Promise<void>((r) => realSetTimeout(r, ms));
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.useRealTimers());
+
+  /** Start an install and report whether it has settled, and how. */
+  const start = (worker: Harness) => {
+    const state: { settled: boolean; outcome: "resolved" | { error: Error } | null } = {
+      settled: false,
+      outcome: null,
+    };
+    const done = worker.install().then(
+      () => {
+        state.settled = true;
+        state.outcome = "resolved";
+      },
+      (error: Error) => {
+        state.settled = true;
+        state.outcome = { error };
+      },
+    );
+    return { state, done };
+  };
+  /** Wait, in REAL time, up to `ms` for the install to settle. */
+  const settles = async (state: { settled: boolean }, ms = 1_000) => {
+    for (let waited = 0; waited < ms && !state.settled; waited += 5) await sleep(5);
+    return state.settled;
+  };
+  /** Give real async work (digests, cache writes) a moment to run. */
+  const quiet = () => sleep(60);
+
+  it("aborts the entries in flight the moment one fails, and does not wait for their own timeout", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const worker = await boot(
+      (path) =>
+        path === "/index.html"
+          ? { status: 500, body: "down", type: "text/plain" }
+          : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type },
+      "/art/orders/O01.webp",
+    );
+    const { state } = start(worker);
+    // **No clock is moved.** The per-fetch timeout is fifteen seconds off, so
+    // an install that settles here was ended by the ABORT alone; a worker that
+    // dropped the abort would sit on the held lane until that timer.
+    expect(await settles(state), "the install did not end without the clock moving").toBe(true);
+    expect(state.outcome).toMatchObject({ error: expect.objectContaining({ message: expect.stringMatching(/answered 500/) }) });
+    expect(worker.caches.generations.has(CACHE_NAME), "and the failed generation is deleted after the wait").toBe(false);
+  });
+
+  it("times one fetch out at the per-fetch bound, naming the file and saying it took too long", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const worker = await boot(undefined, "/art/orders/O01.webp");
+    const { state } = start(worker);
+    await quiet();
+    expect(state.settled, "one fetch is held, so the install is still going").toBe(false);
+    await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS - 1);
+    await quiet();
+    expect(state.settled, "one millisecond inside the bound").toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await settles(state), "and at the bound it ends").toBe(true);
+    const message = (state.outcome as { error: Error }).error.message;
+    expect(message).toBe("/art/orders/O01.webp: took too long");
+    expect(message, "the FETCH's clock ended it, not the install's").not.toMatch(/did not finish/);
+    // And the page that is watching is told the same words.
+    expect(worker.posted).toEqual([
+      { yokohama: "install-failed", reason: "/art/orders/O01.webp: took too long" },
+    ]);
+  });
+
+  it("ends the whole install at its deadline, though no single fetch was late", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // Fifty-four entries on six lanes: nine rounds, each answered 14 s after it
+    // is asked, one second inside the per-fetch bound — 126 s of install in all,
+    // past the two-minute deadline that the last round is inside.
+    const body = BODIES["/art/orders/O01.webp"]!;
+    const many: Entry[] = Array.from({ length: 54 }, (_, i) => ({
+      path: `/art/many/${i}.webp`,
+      digest: createHash("sha256").update(body.body).digest("hex"),
+      type: "image/webp",
+    }));
+    const worker = await boot(() => ({ status: 200, body: body.body, type: body.type }), undefined, {
+      entries: many,
+      delayMs: 14_000,
+    });
+    const { state } = start(worker);
+    let elapsed = 0;
+    const step = async () => {
+      await quiet();
+      await vi.advanceTimersByTimeAsync(14_000);
+      elapsed += 14_000;
+    };
+    for (let round = 0; round < 8; round += 1) await step();
+    await quiet();
+    expect(elapsed, "the clock is inside the deadline").toBeLessThan(INSTALL_DEADLINE_MS);
+    expect(state.settled, "eight rounds in, nothing has failed").toBe(false);
+    for (let round = 0; round < 3 && !state.settled; round += 1) await step();
+    expect(await settles(state), "past the deadline the install ends").toBe(true);
+    const message = (state.outcome as { error: Error }).error.message;
+    expect(message).toBe(`the install did not finish inside ${INSTALL_DEADLINE_MS} ms`);
+    expect(worker.caches.generations.has(CACHE_NAME)).toBe(false);
+  });
+
+  it("fetches every entry with same-origin credentials", async () => {
+    const worker = await boot();
+    await worker.install();
+    expect(worker.asked.length).toBe(ENTRIES.length);
+    for (const { path, init } of worker.asked) {
+      expect(init.credentials, `${path} must send the site's own cookies and no one else's`).toBe("same-origin");
+    }
+  });
+
+  it("writes the generation's stamp before any entry", async () => {
+    const worker = await boot();
+    await worker.install();
+    expect(worker.caches.puts[0], "the first write into the cache is the stamp").toBe(`${CACHE_NAME} ${META_PATH}`);
+    expect(worker.caches.puts.length, "and the entries follow it").toBe(ENTRIES.length + 1);
+  });
+
+  it("tells uncontrolled pages too when the install fails", async () => {
+    const worker = await boot((path) =>
+      path === "/art/orders/O01.webp"
+        ? { status: 404, body: "no such art", type: "text/plain" }
+        : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type },
+    );
+    await expect(worker.install()).rejects.toThrow(/answered 404/);
+    expect(worker.matched, "asked once, for windows, uncontrolled ones included").toEqual([
+      { includeUncontrolled: true, type: "window" },
+    ]);
   });
 });
 

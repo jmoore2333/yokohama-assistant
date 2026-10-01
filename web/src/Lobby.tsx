@@ -12,16 +12,23 @@
 //
 // **Three scopes, ONE signal** (R-plan-4). `mine`, `open` and `playing` are
 // three questions about the same store and a player reads them together, so
-// one `usePolled` asks all three in one `Promise.all` and hands over one
-// object. Three hooks would be three connections and a screen where part of
-// the lobby is older than the rest.
+// one `usePolled` asks all three at once and hands over one reading. Three
+// hooks would be three connections and a screen where part of the lobby is
+// older than the rest. **Each scope's answer is its own** (M6.5c2 cycle D,
+// dossier row 4): one refused listing blanked all three while they were one
+// `Promise.all`, so the reading settles each apart, a section draws the list
+// it last received, and a refusal is said in the section it is about.
 //
 // **The stream it listens to is the HOUSE channel**, `/api/stream`, and a frame
 // off it is two counters and never a table (M6.3 R-3.4, M6.4 R-6.4.7): a
 // `watch` channel coalesces, so a frame naming a table would sometimes name the
 // wrong one. The lobby re-reads ALL its lists on any bump instead, which is
 // what `Source`'s default `frames: "wake"` mode does; `once` is the answer and
-// the frame is only the wake-up, so neither counter is READ here.
+// the frame is the wake-up. **Its chat counters are read, for the chat panel
+// alone** (M6.5c2 cycle D, row 130): `chat` and `rev` are true of the moment
+// the frame was written, so the panel is a COUNT host here as it is beside a
+// game, and asks for its delta only when the house chat has moved — not on
+// every table's move, and not for its own post.
 //
 // **The first load is this component's, not the hook's.** The house stream says
 // NOTHING on connect (deliberately: the lobby has just fetched its lists to
@@ -50,26 +57,60 @@ import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
 import { usePolled } from "./signal";
-import { rowAction, rowMeta, seatChips, type Section } from "./tables";
+import { mayAbandon, rowAction, rowMeta, seatChips, type Section } from "./tables";
 import type { GamesList, TableView } from "./types";
 
-/** All three lists, as one answer. */
-type Lists = { mine: GamesList; open: GamesList; playing: GamesList };
+/** The three listings, one per section. */
+type Scope = "mine" | "open" | "playing";
+const SCOPES: readonly Scope[] = ["mine", "open", "playing"];
+
+/** One reading of the three listings: each scope's answer or its refusal,
+ *  apart (dossier row 4). */
+type Reading = Record<Scope, PromiseSettledResult<GamesList>>;
+
+/** What the screen holds: each scope's last list that LANDED, or `null`
+ *  before one has. */
+type Lists = Record<Scope, GamesList | null>;
+
+/** Each scope's refusal from the last reading, or `null` where it answered. */
+type Refusals = Record<Scope, string | null>;
+
+const NOTHING: Lists = { mine: null, open: null, playing: null };
+const NO_REFUSALS: Refusals = { mine: null, open: null, playing: null };
 
 /** Outside the component because it closes over nothing: `api` is a module, so
  *  a definition inside would be a new function on every render and the poll's
  *  own doc explains why that matters.
  *
- *  **Three scopes in ONE `Promise.all`**, for the reason two were: a player
- *  reads the lobby as one screen, and three hooks would be three connections
- *  and a screen where one third of it is older than the rest. */
-const fetchLists = async (): Promise<Lists> => {
-  const [mine, open, playing] = await Promise.all([
+ *  **Three scopes at once, settled APART** (M6.5c2 cycle D, dossier row 4). They
+ *  are asked together for the reason two were — a player reads the lobby as
+ *  one screen — and each answer stands on its own, so a refusal of one leaves
+ *  the other two drawn. **Every scope refused is a failed READ and throws**
+ *  (the first refusal): that is what the poll's ladder and the "Can't reach
+ *  the server" strip are for, and one sentence says it rather than three. */
+const fetchLists = async (): Promise<Reading> => {
+  const [mine, open, playing] = await Promise.allSettled([
     api.list("mine"),
     api.list("open"),
     api.list("playing"),
   ]);
+  if (mine.status === "rejected" && open.status === "rejected" && playing.status === "rejected") {
+    throw mine.reason;
+  }
   return { mine, open, playing };
+};
+
+/** The house frame's two chat counters (`{seq, chat, rev}` on both hosts), or
+ *  `null` for a frame that does not carry a `chat` number — the panel then
+ *  keeps the count it had. Read defensively: it is a frame off the wire. */
+const houseCounts = (data: string): { chat: number; rev?: number } | null => {
+  try {
+    const f = JSON.parse(data) as { chat?: unknown; rev?: unknown };
+    if (typeof f.chat !== "number") return null;
+    return { chat: f.chat, ...(typeof f.rev === "number" ? { rev: f.rev } : {}) };
+  } catch {
+    return null;
+  }
 };
 
 /** The rows, with a table listed once however many pages it arrived on.
@@ -97,6 +138,10 @@ const notMine = (t: TableView): boolean => t.my_seats.length === 0;
  *  on asking, and the first read that lands clears the strip (`take`). */
 const UNREACHED = "Can't reach the server. The lists come back as soon as it answers.";
 
+/** A refusal in the player's words: the server's own sentence, or
+ *  [`UNREACHED`] where nothing answered. */
+const said = (e: unknown) => (e instanceof ApiError ? e.message : UNREACHED);
+
 export function Lobby({
   me,
   corner,
@@ -109,11 +154,12 @@ export function Lobby({
   /** Who this browser plays as, from the door — `null` when the door has not
    *  opened, which since M6.5b is a screen this component still draws.
    *
-   *  **Only one row control needs the address, and it is the destructive one**
-   *  (R-13): a table is abandoned by the person who OPENED it, so the control
-   *  is drawn from `created_by === me` rather than from "you sit here". Passed
-   *  down rather than read from `/api/me` again, because `App` has already
-   *  asked and a second answer is a second thing that can disagree.
+   *  **No row control reads the address any more** (M6.5c2 cycle D,
+   *  R-6.5c2.35): the destructive one (R-13) is the table's CREATOR's, and the
+   *  row says so itself — `TableView.mine`, a fact about this reader — rather
+   *  than handing every reader the creator's address to compare. Passed down
+   *  rather than read from `/api/me` again, because `App` has already asked
+   *  and a second answer is a second thing that can disagree.
    *
    *  **`null` also stops every request this screen makes.** Every
    *  `/api/games` route is a 401 without an identity, so a lobby that listed
@@ -163,7 +209,11 @@ export function Lobby({
    *  `App`'s `retry`, which asks both reads again. */
   onRetry?: () => void;
 }) {
-  const [lists, setLists] = useState<Lists | null>(null);
+  const [lists, setLists] = useState<Lists>(NOTHING);
+  /** Each section's own refusal from the last reading (dossier row 4). */
+  const [refusals, setRefusals] = useState<Refusals>(NO_REFUSALS);
+  /** The lobby's own strip, at the foot: a reading where every scope was
+   *  refused, the pager's, a copy the browser refused, and Abandon's. */
   const [error, setError] = useState<string | null>(null);
   /** The pages after the first, and the cursor after THEM.
    *
@@ -174,18 +224,28 @@ export function Lobby({
    *  then the polled list's own. */
   const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
   const pageInFlight = useRef(false);
-  /** "Something on the server may have changed" (spec §6.2), counted.
-   *
-   *  The house frame carries two counters and names no table (M6.3 R-3.4, M6.4
-   *  R-6.4.7), and this screen is a `"wake"` consumer, so neither number
-   *  reaches here — the frame is dropped and the wake is the whole of it. The
-   *  panel is told to ask for its delta off the same wake the three listings
-   *  are refetched on, which is the only source it has. **The cost, stated**
-   *  (spec §6.2, §11): a house message is one more house wake, and every
-   *  visible lobby refetches its three listings on it. The second counter
-   *  exists so that a later `"value"` consumer could tell the two apart; this
-   *  one does not. */
-  const [tick, setTick] = useState(0);
+  /** The house chat's newest message number and revision, off the house frame
+   *  itself (`Source.peek`; M6.5c2 cycle D, row 130) — the lobby chat's
+   *  `count` and `rev`. The frame names no table (M6.3 R-3.4) and is still only
+   *  a wake for the listings, but its counters are the house's own, so the
+   *  panel beside them is a count host: it reads its delta when `chat` passes
+   *  what it holds, and not on the house wake every table's move sends — nor
+   *  for its own post, whose 201 has already moved the cursor. **`null` until
+   *  the first frame**: the house stream says nothing on connect, so a panel
+   *  holds its mount read alone until the house next moves. **A message
+   *  whose frame this browser never got** — sent while the socket was down
+   *  (its one reconnect probe re-reads the listings, which carry no chat
+   *  count; the tick used to turn that into a chat read too), or while the
+   *  stream was reconnecting or the tab was hidden (the house says nothing on
+   *  connect, on either host) — **is read at the next house frame**, whatever
+   *  moved: every house frame carries the house chat's count. Until then it
+   *  waits, for as long as the house is quiet. And if the next thing is the
+   *  reader's OWN post, its 201's number shows the gap and the panel reads
+   *  the page rather than stepping past it (`Chat`'s gap check; the Task 11
+   *  re-review). **The cost that is left, stated** (spec §6.2, §11): a house
+   *  message is one more house wake, and every visible lobby refetches its
+   *  three listings on it. */
+  const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);
   /** The row whose link was just copied, for the two seconds its button says
    *  so. */
   const [copied, setCopied] = useState<string | null>(null);
@@ -210,18 +270,42 @@ export function Lobby({
    *  screen made four listing reads. A ref costs nothing and asks nothing of
    *  the caller. */
   const reached = useRef(onReached);
-  reached.current = onReached;
+  // **Kept current in an effect, never during render** (M6.5c2 cycle D,
+  // dossier row 56): a render may be thrown away before it commits, and a ref
+  // written there would hand `take` a callback from a render that never
+  // happened. Declared BEFORE the opening read's effect, so it has run by the
+  // time any read can land.
+  useEffect(() => {
+    reached.current = onReached;
+  });
 
-  const take = useCallback((v: Lists) => {
-    setLists(v);
+  /** One reading, taken scope by scope: a listing that answered replaces its
+   *  section's and clears its strip; one that was refused keeps the section's
+   *  last list and says why beside it (dossier row 4). At least one answered —
+   *  `fetchLists` throws when none did. */
+  const take = useCallback((v: Reading) => {
+    setLists((old) => {
+      const next = { ...old };
+      for (const s of SCOPES) {
+        const r = v[s];
+        if (r.status === "fulfilled") next[s] = r.value;
+      }
+      return next;
+    });
+    setRefusals(() => {
+      const next = { ...NO_REFUSALS };
+      for (const s of SCOPES) {
+        const r = v[s];
+        if (r.status === "rejected") next[s] = said(r.reason);
+      }
+      return next;
+    });
     setError(null);
-    setTick((n) => n + 1);
     // A listing landed, so the server is reachable — whatever the boot's one
     // health read concluded. This is what brings the four sections back for a
     // player who opened the page while the API was down.
     reached.current?.();
   }, []);
-  const said = (e: unknown) => (e instanceof ApiError ? e.message : UNREACHED);
 
   // The opening read. The poll takes it from here — see the note at the top of
   // the file for why this is not the hook's job.
@@ -241,8 +325,16 @@ export function Lobby({
     };
   }, [take, me]);
 
-  const link = usePolled<Lists>(
-    { key: "lobby", once: fetchLists, stream: "/api/stream" },
+  const link = usePolled<Reading>(
+    {
+      key: "lobby",
+      once: fetchLists,
+      stream: "/api/stream",
+      peek: (data) => {
+        const counts = houseCounts(data);
+        if (counts) setHouse(counts);
+      },
+    },
     me !== null,
     take,
   );
@@ -303,16 +395,18 @@ export function Lobby({
   /** One row: the name (the row's one LINK) with the password tag, the line
    *  under it, a chip per seat, and the one action.
    *
-   *  **Abandoning is the CREATOR's, on the Your-tables rows** (R-13), in a
-   *  cell of its own under the action (`.row-abandon`) and quieter than it: in
-   *  the action's cell it moved the action off the row's line. A table you sit
-   *  at is listed under Your tables alone (`notMine`), so the control is never
-   *  drawn twice. The action and Abandon both NAME the table in their
+   *  **Abandoning is the CREATOR's, SEATED** (R-13), in a cell of its own
+   *  under the action (`.row-abandon`) and quieter than it: in the action's
+   *  cell it moved the action off the row's line. The rule is the layer's
+   *  (`mayAbandon`, M6.5c2 cycle D): its delete refuses a caller who holds no
+   *  seat before it asks who created the table. A table you sit at is listed
+   *  under Your tables alone (`notMine`), so the control is only ever drawn
+   *  there, and once. The action and Abandon both NAME the table in their
    *  accessible names, so a control can never be about another row. */
   const row = (t: TableView, section: Section) => {
     const action = rowAction(t, section);
     const name = t.name ?? t.id;
-    const yours = section === "mine" && t.created_by === me;
+    const yours = mayAbandon(t);
     return (
       <li key={t.id} className={section === "mine" ? "lobby-row mine" : "lobby-row"}>
         <div className="row-title">
@@ -371,15 +465,20 @@ export function Lobby({
     );
   };
 
-  const mine = lists ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
-  const open = lists ? lists.open.games.filter(notMine) : [];
+  const mine = lists.mine ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
+  const open = lists.open ? lists.open.games.filter(notMine) : [];
   /** The `playing` scope, split (R-6.5c2.22): it lists finished games too,
    *  because "over" is not a table STATUS (`tables.rs`), so Being played takes
    *  the games still under way and Finished the rest — in the listing's own
    *  order, which is newest first. */
-  const playing = lists ? lists.playing.games.filter(notMine).filter((t) => !t.over) : [];
-  const finished = lists ? lists.playing.games.filter(notMine).filter((t) => t.over) : [];
-  const nextCursor = paged ? paged.next : (lists?.mine.next ?? null);
+  const playing = lists.playing ? lists.playing.games.filter(notMine).filter((t) => !t.over) : [];
+  const finished = lists.playing ? lists.playing.games.filter(notMine).filter((t) => t.over) : [];
+  const nextCursor = paged ? paged.next : (lists.mine?.next ?? null);
+  /** A section's own refusal, drawn under its heading (dossier row 4). */
+  const strip = (s: Scope) => {
+    const refused = refusals[s];
+    return refused !== null && <Refusal sentence={refused} />;
+  };
   /** Whether this deployment answers the house chat (R-6.4.6): the rail, or
    *  one column with no rail at all. */
   const rail = lobbyChat();
@@ -437,11 +536,12 @@ export function Lobby({
                   <header className="section-head">
                     <h3>Your tables</h3>
                   </header>
-                  {lists === null ? (
+                  {strip("mine")}
+                  {lists.mine === null ? (
                     // The lobby's own wait (the header comment). A read that
-                    // REFUSED says so in the strip below instead, never
+                    // REFUSED says so in its strip instead, never
                     // "loading..." over it.
-                    error === null && (
+                    error === null && refusals.mine === null && (
                       <>
                         <p className="muted">loading&hellip;</p>
                         <div className="skeleton-rows" aria-hidden="true">
@@ -470,7 +570,8 @@ export function Lobby({
                     <h3>Open tables</h3>
                     <span className="section-hint">take a free seat</span>
                   </header>
-                  {lists === null ? null : open.length === 0 ? (
+                  {strip("open")}
+                  {lists.open === null ? null : open.length === 0 ? (
                     <p className="muted">no table is waiting for players.</p>
                   ) : (
                     <ul className="lobby-rows">{open.map((t) => row(t, "open"))}</ul>
@@ -482,14 +583,15 @@ export function Lobby({
                     `#/t/<id>` as the other two do, and what that lands on is
                     the spectator screen, or at a locked table the face that
                     asks for its password, which the padlock on Spectate is
-                    warning about. No Abandon: that is the creator's, under
-                    Your tables. */}
+                    warning about. No Abandon: that is the creator's,
+                    seated, under Your tables (`mayAbandon`). */}
                 <section className="lobby-section playing-tables">
                   <header className="section-head">
                     <h3>Being played</h3>
                     <span className="section-hint">spectate a game</span>
                   </header>
-                  {lists === null ? null : playing.length === 0 ? (
+                  {strip("playing")}
+                  {lists.playing === null ? null : playing.length === 0 ? (
                     <p className="muted">nothing is being played right now.</p>
                   ) : (
                     <ul className="lobby-rows">{playing.map((t) => row(t, "playing"))}</ul>
@@ -524,19 +626,20 @@ export function Lobby({
                   default (opening it is entering the lobby chat) and absent
                   when the server says the lobby chat is off, because a panel
                   whose every request is a 404 is worse than no panel. The rail
-                  is this screen's and the panel keeps its own root. Its tick
-                  is this screen's own wake. */}
+                  is this screen's and the panel keeps its own root. Its count
+                  is the house frame's own (`house`). */}
               {rail && (
                 <section className="lobby-rail lobby-chat">
-                  <Chat scope={{ kind: "house" }} tick={tick} sendName heading="h3" />
+                  <Chat scope={{ kind: "house" }} count={house?.chat} rev={house?.rev} sendName heading="h3" />
                 </section>
               )}
             </div>
             </>
         )}
 
-        {/* The lobby's own strip: its listings' refusals, a copy the browser
-            refused, and Abandon's. **Not a second "Can't reach the server"
+        {/* The lobby's own strip: a reading where EVERY listing was refused
+            (one refused listing is said in its own section, `strip`), the
+            pager's, a copy the browser refused, and Abandon's. **Not a second "Can't reach the server"
             under state C's card**, which says it already. */}
         {error && !(serverUp === false && error === UNREACHED) && <Refusal sentence={error} />}
       </div>

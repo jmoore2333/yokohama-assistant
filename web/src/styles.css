@@ -270,6 +270,12 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   .table.replaying .board { outline: 1px solid var(--reachable); outline-offset: 4px; }
 }
 @media (min-width: 1600px) { .app { --side: 30rem; } }
+/* **--side: 36rem is COUPLED to the chat's `@container (max-width: 34rem)`
+ * rule below** (cycle D, straw poll row 39): the side column's chat row must
+ * stay narrower than 34rem, which it is at 514px of the 576px column here, so
+ * a --side raised past about 38rem lets the column outgrow the rule and the
+ * stacked layout stops applying to it. No instrument sees CSS; this comment
+ * is the only thing that ties the two numbers. */
 @media (min-width: 1900px) { .app { --side: 36rem; } }
 
 /* ---- board ------------------------------------------------------------- */
@@ -1023,7 +1029,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   background: none; border: 1px solid transparent; border-radius: 6px;
   padding: 0.2rem; cursor: pointer; font: inherit; color: inherit;
 }
-.deal-pick.chosen { border-color: var(--vp); box-shadow: 0 0 0 1px var(--vp); }
 .deal-pick:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
 
 /* ---- the door (M6.1) ---------------------------------------------------- */
@@ -1448,7 +1453,12 @@ ol.account .mover { font-weight: 700; }
 .chat .messages { margin-top: 0.3rem; display: flex; flex-direction: column; max-height: 16rem; container-type: inline-size; }
 .chat .messages.folded { max-height: 0; overflow: hidden; margin-top: 0; }
 .chat-lines { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; max-height: 12rem; overflow: auto; scrollbar-width: thin; }
-.chat-lines li { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.chat-lines li { display: grid; grid-template-columns: auto auto 1fr auto; align-items: baseline; gap: 0.4rem; font-size: 11.5px; padding: 0.15rem 0.2rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+/* M6.5c2 cycle D (R-D4): the Delete control sits last on the row, the fold's
+ * quiet size, and a TOMBSTONE's words are the faint italic of a note rather
+ * than a line somebody said. A row without the control leaves its track empty. */
+.chat-lines .chat-delete { font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
+.chat-lines .chat-text.removed { color: var(--fg-faint); font-style: italic; }
 .chat-lines time { color: var(--fg-faint); font-family: var(--mono); font-size: 10px; }
 .chat-who { white-space: nowrap; }
 .chat-who .meta { color: var(--fg-faint); }
@@ -1471,10 +1481,15 @@ ol.account .mover { font-weight: 700; }
  * **34rem is chosen to leave the WIDE hosts alone**: the side column is 322px
  * of row at 1280 and 514px at 1900, so it is always narrow; the open table's
  * and the lobby's panels are ~800px, so they keep the one-row layout they have
- * today, at every viewport above the phone. */
+ * today, at every viewport above the phone.
+ *
+ * **34rem is COUPLED to `--side: 36rem` at >= 1900px, above**: the side
+ * column's chat row (514px there) must stay under it. Change either and read
+ * the other; nothing checks them against each other. */
 @container (max-width: 34rem) {
-  .chat-lines li { grid-template-columns: auto 1fr; }
-  .chat-lines li .chat-text { grid-column: 1 / -1; }
+  .chat-lines li { grid-template-columns: auto 1fr auto; }
+  .chat-lines li .chat-text { grid-column: 1 / -1; grid-row: 2; }
+  .chat-lines li .chat-delete { grid-column: 3; grid-row: 1; }
 }
 /* **The refusal reads as one.** `.error` is a single class and it sits inside
  * a `.messages` box, where `.messages div` (`:706`) is the more specific rule
@@ -1669,7 +1684,11 @@ ol.account .mover { font-weight: 700; }
  * §3.2.2's own words are "Blue is playing · skip". Wrapping is allowed because
  * a narrow deck has to put the way out somewhere; nothing below 1201px changes,
  * the strip staying inside the sticky deck as it already did. */
-.decision.walking {
+/* ONE rule for the walk's strip and the lock's (M6.5c2 cycle D, dossier row
+ * 56): the lock's strip below is the same row for the same reason, and it used
+ * to restate these six declarations rule for rule. */
+.decision.walking,
+.decision.locked-out {
   display: flex; flex-direction: row; flex-wrap: wrap;
   align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
   font-family: var(--display); font-size: 1.05rem;
@@ -1681,16 +1700,12 @@ ol.account .mover { font-weight: 700; }
  * The strip that REPLACES the answer bar when another tab takes the game is a
  * row, exactly as the walk's strip is one and for the same reason: `.decision`
  * is a column, and a sentence sitting over a full-width button is not the
- * shape either of them wants.
+ * shape either of them wants — so it shares the walk's rule above.
  *
- * The two standalone screens — the lock's, and a game that will not open —
- * are each a `.notice-card` under the band since M6.5c2 (the latter since
- * cycle C), with a row of their own. */
-.decision.locked-out {
-  display: flex; flex-direction: row; flex-wrap: wrap;
-  align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
-  font-family: var(--display); font-size: 1.05rem;
-}
+ * The standalone screens — the lock's, a game that will not open, and (since
+ * M6.5c2 cycle D) a store this browser cannot read — are each a `.notice-card`
+ * under the band since M6.5c2 (the second since cycle C), with a row of their
+ * own. */
 .decision.locked-out .primary { margin-left: auto; }
 
 /* ---- M5.5: the set table ------------------------------------------------

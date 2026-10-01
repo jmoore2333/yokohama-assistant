@@ -1,19 +1,33 @@
 // The chat panel (M6.4 spec §6.1): ONE component, four hosts. It owns its
 // list, its fetch and its post; a host tells it only WHERE it is (a table or
-// the house) and WHEN to look — a `count` where the host's frame carries the
-// server's number, a `tick` where the host's hook drops the frame.
+// the house) and WHEN to look — a `count`, the server's newest message number
+// off the host's own frame. **Every host is a count host since M6.5c2 cycle D**
+// (row 130): the lobby and the open table dropped their frames and passed a
+// `tick`, so the panel asked for a delta on every wake — every move of every
+// game, at the house — and one for its own post; both now read the counters
+// off the frame (`Source.peek`), and the tick is gone.
 //
 // **Folded by default everywhere (R-6.4.10).** The panel is a bonus and play is
 // the main attraction, so it sits LAST in the side column and opens only when
-// somebody opens it; the fold is remembered per browser per scope. Folded, a
-// count-driven host fetches nothing and the header's number is the count
-// minus what is held; a wake-driven host still asks the delta on each tick,
-// because the delta is the only source it has (spec §6.1 says so).
+// somebody opens it; the fold is remembered per browser per scope. Folded, the
+// panel fetches nothing and the header's number is the count minus what is
+// held.
 //
 // **The label is the lobby's rule** (R-6.4.2): a seat's colour chip and its name
 // or email; a watcher's name or email under a "spectating" marker at a table
 // (not in the house, where everyone is one); a bot's chip and its name — an
 // arm no route produces yet, drawn defensively (R-6.4.15).
+//
+// **A message can be deleted** (M6.5c2 cycle D, R-D4): by its author, and at a
+// table by the table's creator (`canModerate`, the host's `table.mine`). The
+// server keeps it as a TOMBSTONE — its number, clock and author, `text: ""`,
+// `deleted: true` — drawn here as "message removed" in its author's row. The
+// Delete reply changes nothing on screen by itself: every page carries the
+// document's `rev` beside its `last`, and **`rev - last` is constant under
+// appends and grows by one per delete** — so when a page (or, on a count host,
+// the frame's `chat_rev` against its `chat`) shows it moved, the panel re-reads
+// everything it holds from 0 and replaces its list. Every reader who held the
+// message, the one who deleted it included, learns it the same way.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, ApiError, chatText, displayName } from "./api";
@@ -27,9 +41,14 @@ export interface ChatProps {
   /** The server's newest message number, where the host holds it (the game
    *  and the dealing screen read it off every frame). */
   count?: number;
-  /** "Something may have changed", where the host's hook runs in wake mode
-   *  and drops the frame (the open table, the lobby). */
-  tick?: number;
+  /** The table's chat REVISION off the same frame (`Events.chat_rev`), where
+   *  the host holds `count`: moved further than `count`, a message was
+   *  deleted, and the panel re-reads what it holds (M6.5c2 cycle D, R-D4). */
+  rev?: number;
+  /** The reader created this table (`TableView.mine`), so every message has a
+   *  Delete control, not only their own. Never at the house, which nobody
+   *  created. */
+  canModerate?: boolean;
   /** The table's colours; absent at the house. */
   colors?: PlayerColor[];
   /** Send the browser's remembered name with a post: a watcher, and anyone at
@@ -73,11 +92,21 @@ export function isoStamp(at: number): string | undefined {
 
 const scopeKey = (scope: ChatScope): string => (scope.kind === "house" ? "house" : scope.id);
 
-/** Why a read was asked for — and, where one was asked for while another was
- *  still in flight, what to re-check when it lands (see `read`). */
-type Why = "mount" | "count" | "tick";
+/** The most reads one call of `read` makes — its own, and the re-asks that
+ *  triggers arriving mid-read owe (see `read`). */
+export const CHAT_READ_BOUND = 8;
 
-export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: ChatProps) {
+/** Why a read was asked for — and, where one was asked for while another was
+ *  still in flight, what to re-check when it lands (see `read`). `rev` is the
+ *  re-read of everything held, after a delete (M6.5c2 cycle D). */
+type Why = "mount" | "count" | "rev";
+
+/** Two triggers parked behind one read, as one: a re-read of everything held
+ *  answers a delta too, so it wins. */
+const merged = (a: Exclude<Why, "mount"> | null, b: Exclude<Why, "mount">): Exclude<Why, "mount"> =>
+  a === "rev" || b === "rev" ? "rev" : b;
+
+export function Chat({ scope, count, rev, canModerate = false, colors, sendName, heading = "h2" }: ChatProps) {
   const key = scopeKey(scope);
   const Heading = heading;
   const scopeRef = useRef(scope);
@@ -91,7 +120,14 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   foldedNow.current = folded;
   const countNow = useRef(count);
   countNow.current = count;
-  const [unread, setUnread] = useState(0);
+  const revNow = useRef(rev);
+  revNow.current = rev;
+  /** The held `rev - last`, from the last page taken, or `null` before the
+   *  first one — see the file's note on the delete. */
+  const shape = useRef<number | null>(null);
+  /** The messages whose delete is out, or answered and waiting for the
+   *  frame that shows the tombstone: their controls stay disabled. */
+  const [removing, setRemoving] = useState<ReadonlySet<number>>(() => new Set());
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,23 +146,34 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
   /** One answer, from wherever it came: a mount read, a delta, a 201. Filters
    *  what is already held, so a message is never drawn twice; and records
    *  whether the reader was at the foot of the box, which only a read taken
-   *  BEFORE the append can tell.
-   *
-   *  **`counts` is false for the MOUNT read, and that is a rule about what
-   *  "new" means** (final review, Important 3). Spec §6.1 defines the badge as
-   *  what arrived WHILE FOLDED; the retained history did not arrive, it was
-   *  already there. On a count-driven host the badge is `count - last` and
-   *  history has always read 0 — so a wake host that counted its mount read
-   *  made the same folded panel say "N new" on every visit, up to the whole
-   *  retention, and the two kinds of host disagreed about the first screen. */
-  const take = useCallback((page: ChatPage, counts = true) => {
+   *  BEFORE the append can tell. **It counts nothing**: the folded header's
+   *  number is `count - last` (the badge below), so history read at mount has
+   *  always read 0 new — the rule a wake host's own tally once broke (final
+   *  review, Important 3), gone with the wake hosts. */
+  const take = useCallback((page: Pick<ChatPage, "messages" | "last">) => {
     const fresh = page.messages.filter((m) => m.seq > last.current);
     last.current = Math.max(last.current, page.last, ...fresh.map((m) => m.seq));
     if (fresh.length === 0) return;
     const el = box.current;
     follow.current = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 8;
     setMessages((old) => [...old, ...fresh]);
-    if (counts && foldedNow.current) setUnread((n) => n + fresh.length);
+  }, []);
+
+  /** A re-read of everything held (M6.5c2 cycle D, R-D4): the page REPLACES
+   *  the list, so a message deleted since it was drawn is drawn as its
+   *  tombstone.
+   *
+   *  **A held message numbered above the page's `last` is KEPT**: it landed
+   *  after the server built this page — the reader's own post, whose 201
+   *  came back while the re-read was out — and a list replaced without it
+   *  would lose it for good, since the count its frame brings is one the
+   *  cursor has already passed. */
+  const replace = useCallback((page: ChatPage) => {
+    const fresh = page.messages.filter((m) => m.seq > last.current);
+    last.current = Math.max(last.current, page.last, ...fresh.map((m) => m.seq));
+    const el = box.current;
+    follow.current = fresh.length > 0 && (!el || el.scrollHeight - el.scrollTop - el.clientHeight < 8);
+    setMessages((old) => [...page.messages, ...old.filter((m) => m.seq > page.last)]);
   }, []);
 
   /**
@@ -161,6 +208,19 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     [],
   );
 
+  /** Does the REVISION rule want a re-read — a count host's frame whose
+   *  `chat_rev - chat` is not the `rev - last` the panel holds? Only once a
+   *  page has been taken, only from a frame at least as new as what is held
+   *  (a host's reset count of 0 is not news), and not while folded, as the
+   *  count rule waits. */
+  const revWants = useCallback(() => {
+    const c = countNow.current;
+    const r = revNow.current;
+    return (
+      c !== undefined && r !== undefined && shape.current !== null && c >= last.current && r - c !== shape.current && !foldedNow.current
+    );
+  }, []);
+
   /**
    * Ask for the delta above what is held — and **at most ONE request at a
    * time** (ruling R-pre-4).
@@ -170,8 +230,7 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
    * remembered-open panel, and both are true of a panel holding nothing. So a
    * trigger arriving mid-flight is not dropped and not sent — it is REMEMBERED,
    * and re-asked when the answer lands, which for the mount case it no longer
-   * is. A tick's re-ask is unconditional (the delta is that host's only
-   * source); a count's is the count rule read again against the cursor the
+   * is. A count's re-ask is the count rule read again against the cursor the
    * answer just moved.
    *
    * **A MOUNT read is never coalesced away, and an answer for a scope this
@@ -186,41 +245,74 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
    * in-flight flag (the newer read owns it), and asks for nothing more.
    */
   const read = useCallback(
-    async function read(why: Why): Promise<void> {
-      const mine = generation.current;
-      // **A post in flight PARKS a count trigger** (live review, M-2): the
-      // 201 about to land is the answer to that very count, and asking for the
-      // delta first spends a request to be told what the reply already holds.
-      // Re-checked in `send`'s `finally`, where the cursor has moved.
-      if (why === "count" && inFlight.current) {
-        wanted.current = "count";
-        return;
+    async (first: Why): Promise<void> => {
+      // **A LOOP, with a bound** (M6.5c2 cycle D; row 130, M6.4's Task 6
+      // LEAVE). The re-ask a trigger arriving mid-read owes was `await
+      // read(again)` from inside this function — one nested call per read for
+      // as long as a room kept a trigger landing during every read. Each turn
+      // here is one read; after `CHAT_READ_BOUND` of them the call stops and
+      // leaves what is still owed PARKED in `wanted`, which the next trigger's
+      // read takes up when it lands (and `send` re-checks a parked count). A
+      // room busier than that sends its next frame soon enough.
+      let why: Why = first;
+      for (let reads = 1; ; reads += 1) {
+        const mine = generation.current;
+        // **A post in flight PARKS a count trigger** (live review, M-2): the
+        // 201 about to land is the answer to that very count, and asking for
+        // the delta first spends a request to be told what the reply already
+        // holds. Re-checked in `send`'s `finally`, where the cursor has moved.
+        if (why === "count" && inFlight.current) {
+          wanted.current = merged(wanted.current, "count");
+          return;
+        }
+        // A mount read falls through a read that is already out, and the two
+        // answers are told apart by the generation rather than by arrival order.
+        if (reading.current && why !== "mount") {
+          wanted.current = merged(wanted.current, why);
+          return;
+        }
+        reading.current = true;
+        let page: ChatPage | null = null;
+        let refused: string | null = null;
+        try {
+          // A re-read asks from the start; everything else from the cursor
+          // (which a mount's is, at 0).
+          page = await api.chat(scopeRef.current, why === "rev" ? 0 : last.current);
+        } catch (e) {
+          refused = e instanceof ApiError ? e.message : String(e);
+        }
+        if (mine !== generation.current) return;
+        reading.current = false;
+        // **The revision rule** (M6.5c2 cycle D): a delta whose `rev - last` is
+        // not the held one says a message the panel holds was deleted, and a
+        // re-read from 0 is owed. A mount or a re-read IS that read.
+        let moved = false;
+        if (page) {
+          if (why === "rev") replace(page);
+          else take(page);
+          const held = page.rev - page.last;
+          moved = why !== "mount" && why !== "rev" && shape.current !== null && held !== shape.current;
+          shape.current = held;
+          setError(null);
+        } else setError(refused);
+        const again = moved ? merged(wanted.current, "rev") : wanted.current;
+        wanted.current = null;
+        // The frame's half is asked again only after a read that was not itself
+        // the re-read: the server writes before it signals, so a re-read is
+        // never behind the frame that asked for it, and one that somehow were
+        // would otherwise ask again at once, for as long as it stayed behind.
+        let next: Exclude<Why, "mount"> | null = null;
+        if (again === "rev" || (why !== "rev" && revWants())) next = "rev";
+        else if (again === "count" && countWants()) next = again;
+        if (next === null) return;
+        if (reads >= CHAT_READ_BOUND) {
+          wanted.current = merged(wanted.current, next);
+          return;
+        }
+        why = next;
       }
-      // A mount read falls through a read that is already out, and the two
-      // answers are told apart by the generation rather than by arrival order.
-      if (reading.current && why !== "mount") {
-        wanted.current = why;
-        return;
-      }
-      reading.current = true;
-      let page: ChatPage | null = null;
-      let refused: string | null = null;
-      try {
-        page = await api.chat(scopeRef.current, last.current);
-      } catch (e) {
-        refused = e instanceof ApiError ? e.message : String(e);
-      }
-      if (mine !== generation.current) return;
-      reading.current = false;
-      if (page) {
-        take(page, why !== "mount");
-        setError(null);
-      } else setError(refused);
-      const again = wanted.current;
-      wanted.current = null;
-      if (again === "tick" || (again === "count" && countWants())) await read(again);
     },
-    [take, countWants],
+    [take, replace, countWants, revWants],
   );
 
   // The mount read — everything retained — and a reset when the scope changes.
@@ -230,8 +322,9 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     generation.current += 1;
     wanted.current = null;
     last.current = 0;
+    shape.current = null;
     setMessages([]);
-    setUnread(0);
+    setRemoving(new Set());
     setFolded(loadFolded(key));
     void read("mount");
   }, [key, read]);
@@ -254,23 +347,18 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     if (count > last.current && !folded) void read("count");
   }, [count, folded, read]);
 
-  // A tick: the delta, folded or not. The FIRST one is the mount's own frame,
-  // which the mount read has already covered.
-  const firstTick = useRef(true);
+  // The revision rule's frame half (M6.5c2 cycle D): on a count host, a
+  // `rev` that has moved further than `count` since the page the panel holds
+  // is a delete, and the panel re-reads what it holds — unless folded, when it
+  // waits for the unfold exactly as the count rule does.
   useEffect(() => {
-    if (tick === undefined) return;
-    if (firstTick.current) {
-      firstTick.current = false;
-      return;
-    }
-    void read("tick");
-  }, [tick, read]);
+    if (revWants()) void read("rev");
+  }, [rev, count, folded, read, revWants]);
 
   const toggle = () => {
     const next = !folded;
     setFolded(next);
     saveFolded(key, next);
-    if (!next) setUnread(0);
   };
 
   /** Post, and **drop the reply if the panel has moved rooms while it was in
@@ -294,11 +382,28 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     inFlight.current = true;
     setSending(true);
     setError(null);
+    /** The 201's number showed messages this panel never read (below). */
+    let gap = false;
     try {
       const name = sendName ? displayName()?.trim() : undefined;
       const m = await api.postChat(scopeRef.current, { text, ...(name ? { name } : {}) });
       if (mine !== generation.current) return;
-      take({ messages: [m], last: m.seq });
+      // **A GAP CHECK on the 201's number** (the Task 11 re-review's
+      // lost-message finding). Numbers are contiguous — a trim drops the
+      // oldest end and never reuses one, and a delete keeps its tombstone — so
+      // a post numbered past `last + 1` says the messages between were never
+      // read: their frame was lost (a socket's reconnect probe reads the
+      // lobby's listings, which carry no chat count; neither a stream
+      // reconnect nor a tab's return brings a house frame). Taking the 201
+      // would move the cursor past them for good — the post's own frame then
+      // counts nothing new — so the cursor stays where it is and the page is
+      // READ instead, from 0 (the revision rule's re-read), which draws the
+      // missed messages and this post in order. **The cursor never advances
+      // past an unread message**: a re-read that fails leaves it here, and
+      // the next count asks again from it.
+      if (m.seq > last.current + 1) gap = true;
+      // A post moves `rev` and `last` together, so the held shape stands.
+      else take({ messages: [m], last: m.seq });
       setDraft("");
     } catch (e) {
       if (mine !== generation.current) return;
@@ -306,29 +411,65 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     } finally {
       inFlight.current = false;
       setSending(false);
-      // The parked count, re-asked against the cursor the 201 has just moved —
-      // so an own post asks for nothing and a message that arrived from
-      // somebody else while this one was out is still fetched. **Only when no
-      // read is out**: a count parked behind a READ is that read's tail's to
-      // consume, and clearing it here would drop the re-ask.
-      if (wanted.current === "count" && !reading.current) {
+      if (gap) {
+        // Behind a read already out it is parked as `rev`, which outranks
+        // whatever else is owed, and that read's tail asks it.
+        void read("rev");
+      } else if (wanted.current === "count" && !reading.current) {
+        // The parked count, re-asked against the cursor the 201 has just
+        // moved — so an own post asks for nothing and a message that arrived
+        // from somebody else while this one was out is still fetched. **Only
+        // when no read is out**: a count parked behind a READ is that read's
+        // tail's to consume, and clearing it here would drop the re-ask.
         wanted.current = null;
         if (countWants()) void read("count");
       }
     }
   };
 
-  const badge = count !== undefined ? Math.max(0, count - last.current) : unread;
+  /** Take message `seq` down (M6.5c2 cycle D, R-D4). **The reply changes
+   *  nothing on screen**: the server bumps the table (or the house) after its
+   *  write, and the frame's revision — or the next page's — is what re-reads
+   *  the list and draws the tombstone. The control stays disabled meanwhile;
+   *  a refusal puts the server's sentence up and the control back. */
+  const remove = async (seq: number) => {
+    const mine = generation.current;
+    setRemoving((old) => new Set(old).add(seq));
+    setError(null);
+    try {
+      const at = scopeRef.current;
+      if (at.kind === "house") await api.deleteHouseChat(seq);
+      else await api.deleteChat(at.id, seq);
+    } catch (e) {
+      if (mine !== generation.current) return;
+      setError(e instanceof ApiError ? e.message : String(e));
+      setRemoving((old) => {
+        const next = new Set(old);
+        next.delete(seq);
+        return next;
+      });
+    }
+  };
+
+  /** The server's rule, drawn: the reader's own message, or any at a table the
+   *  reader created — never a tombstone, and never a bot's for anyone else. */
+  const mayDelete = (m: ChatMessage) => !m.deleted && (canModerate || (m.author.kind !== "bot" && m.author.you));
+
+  const badge = count !== undefined ? Math.max(0, count - last.current) : 0;
   const title = scope.kind === "house" ? "Lobby chat" : "Chat";
   const label = (m: ChatMessage) => {
     const a = m.author;
+    // A name, else "you" for the reader's own, else the seat or "someone":
+    // no author carries an address (M6.5c2 cycle D, R-6.5c2.35).
     if (a.kind === "seat")
-      return <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? a.user}</span>;
+      return (
+        <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? (a.you ? "you" : `seat ${a.seat}`)}</span>
+      );
     if (a.kind === "bot")
       return <span className={`chat-who ${seatClass(colors?.[a.seat])}`}>{a.name ?? "bot"}</span>;
     return (
       <span className={`chat-who${scope.kind === "table" ? " watching" : ""}`}>
-        {a.name ?? a.user}
+        {a.name ?? (a.you ? "you" : "someone")}
         {scope.kind === "table" && <span className="meta"> &middot; spectating</span>}
       </span>
     );
@@ -366,10 +507,26 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
       >
         <ol className="chat-lines" ref={box}>
           {messages.map((m) => (
-            <li key={m.seq}>
+            <li key={m.seq} className={m.deleted ? "removed" : undefined}>
               {label(m)}
               <time dateTime={isoStamp(m.created_at)}>{when(m.created_at)}</time>
-              <span className="chat-text">{m.text}</span>
+              {m.deleted ? (
+                <span className="chat-text removed">message removed</span>
+              ) : (
+                <span className="chat-text">{m.text}</span>
+              )}
+              {mayDelete(m) && (
+                <button
+                  type="button"
+                  className="ghost chat-delete"
+                  aria-label="Delete this message"
+                  disabled={removing.has(m.seq)}
+                  tabIndex={folded ? -1 : 0}
+                  onClick={() => void remove(m.seq)}
+                >
+                  delete
+                </button>
+              )}
             </li>
           ))}
         </ol>

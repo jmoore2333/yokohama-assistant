@@ -100,10 +100,17 @@ export function hashOf(route: Route): string {
  *  micro-optimization: an unconditional write pushes a duplicate history entry,
  *  so Back would step through the same screen twice — and `open()` calls this
  *  on every way into a table, including the one the route effect itself
- *  started. */
-export function navigate(route: Route): void {
+ *  started.
+ *
+ *  **`replace` takes the current entry's place instead of adding one**
+ *  (M6.5c2 cycle D): what `open` uses to put the address back after a refused
+ *  switch, so Back does not lead to the table that refused. It still fires
+ *  `hashchange`, so the route follows it as it follows any other move. */
+export function navigate(route: Route, how: { replace?: boolean } = {}): void {
   const next = hashOf(route);
-  if (window.location.hash !== next) window.location.hash = next;
+  if (window.location.hash === next) return;
+  if (how.replace) window.location.replace(next);
+  else window.location.hash = next;
 }
 
 /** Two routes are the same screen.

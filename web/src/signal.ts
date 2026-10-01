@@ -13,12 +13,15 @@
 // waiting on a body, so a visible tab holds ONE open request per resource and
 // arms NOTHING; the server writes a frame when something moves. The timers
 // that are left serve only the cases where there is no connection to wait on:
-// the ladder after a failure, the held-request arm's re-ask, and — before this
-// page knows its transport — the bound on the health read an open waits for
-// (`transportWait`, ruling I-86). **The socket arm (M6.5c) is one connection
-// per resource too, and holds ONE timer while it is connected — a keep-alive
-// that asks nothing**: a `ping` every 30 s (`ws.ts`), answered without waking
-// the server's object, which keeps the edge from cutting a quiet connection.
+// the ladder after a failure and — before this page knows its transport — the
+// bound on the health read an open waits for (`transportWait`, ruling I-86).
+// **There is no held-request arm** (M6.5c2 cycle D, R-D5): M6.3 built one
+// beside the stream, no host ever named it as its transport, and it is retired
+// on every host — the NAS no longer holds a `?wait` either. **The socket arm
+// (M6.5c) is one connection per resource too, and holds ONE timer while it is
+// connected — a keep-alive that asks nothing**: a `ping` every 30 s
+// (`ws.ts`), answered without waking the server's object, which keeps the
+// edge from cutting a quiet connection.
 //
 // **The stream's reader is a `fetch`, not an `EventSource`** (spec §0.1) —
 // `sse.ts` says why in one line: `EventSource` cannot carry a header, and the
@@ -58,35 +61,6 @@ import type { Events } from "./types";
  *  it hardest exactly while it was least able to answer. */
 export const BACKOFF_MS = [2000, 4000, 8000, 16000, 30000] as const;
 
-/** How long the HELD arm waits before asking again after an answer — for a
- *  `"wake"` source ONLY.
- *
- *  **It is not one value for both arms, and the correction is the final
- *  review's I-3.** R-pre-5 set a single 3 s because reopening at zero is a hot
- *  loop against three table listings; that is true of the lobby and the open
- *  table, whose `once` answers immediately, and false of the game's and the
- *  dealing screen's, which is `GET …/events?wait=25` and HOLDS on the server.
- *  Worse than merely wasteful: `?wait` subscribes and waits for a NEW bump and
- *  nothing compares the caller's count (R-3.14), so a bump landing inside the
- *  3 s gap was not seen until the NEXT request's 25 s deadline — a 27–28 s
- *  latency where the poll this replaces had 3 s, under a hook whose whole claim
- *  is to be faster. A source whose `once` holds is therefore re-asked at 0 and
- *  only a `"wake"` source waits this long.
- *
- *  **The residual, which re-asking at zero does not close.** A bump that lands
- *  inside one request's own round trip — after the server answered and before
- *  the next subscribe — still waits for the bump after it, or for the 25 s
- *  deadline. Closing that needs the server to answer at once when `after`
- *  differs from the current count, which is a route change and not a reader
- *  one. Recorded here because R-plan-5's "the fallback is a one-line change in
- *  the client's reader" is the sentence this limit belongs to; the arm is
- *  dormant while `signalKind()` is `"sse"`. */
-export const HELD_REASK_MS = 3000;
-
-/** How long the game's held request asks the server to wait, in seconds. The
- *  server's own ceiling is 25 (spec §3.3); asking for more is refused. */
-const HELD_WAIT_S = 25;
-
 /** What the signal can currently say for itself.
  *
  *  `live` is the resting state and shows NOTHING on screen — a permanent green
@@ -111,11 +85,11 @@ export function nextDelay(failures: number): number {
  *  every render, so a `Source` object is rebuilt each time and its identity must
  *  not matter.
  *
- *  **`stream` is what the SSE arm reads and `once` is what the held arm reads**,
- *  and both are declared because a deployment decides which (see `signalKind`).
- *  The socket arm (M6.5c) opens `stream` as a socket, and asks `once` as its one
- *  probe after a close nobody explained. A `"wake"` source reads `once` under
- *  EVERY arm — see `frames`. */
+ *  **`stream` is what both arms open and `once` is what the socket arm asks as
+ *  its one probe** after a close nobody explained: the SSE arm reads `stream`
+ *  as a stream and the socket arm (M6.5c) as a socket, as the deployment says
+ *  (see `signalKind`). A `"wake"` source also reads `once` on every frame,
+ *  under either arm — see `frames`. */
 export interface Source<T> {
   key: string;
   once: () => Promise<T>;
@@ -136,6 +110,15 @@ export interface Source<T> {
    *  so a frame naming a table would sometimes name the wrong one). Handing
    *  such a frame over as a `T` would have the lobby render `{seq: 4}`. */
   frames?: "value" | "wake";
+  /** A `"wake"` source's look at the FRAME itself, handed its `data` unparsed
+   *  just before the re-read it causes (M6.5c2 cycle D, row 130). The frame is
+   *  still not the value — a `watch` channel coalesces, so it names no table —
+   *  but its COUNTERS are true of the moment it was written: the lobby reads
+   *  the house chat's `chat`/`rev` off the house frame, and the open table its
+   *  own off the table's `Events`, and hands them to the chat panel as its
+   *  count. Never called for a `"value"` source, whose frame IS the value, nor
+   *  for the socket arm's probe, which reads no frame. */
+  peek?: (data: string) => void;
   /** `"local"` for a game the module in this browser's own Worker answers
    *  (M6.5b, R-6.5b.12): there is NOTHING to wait for, because the bot's
    *  trailing run returns inside the reply that caused it and nobody else sits
@@ -185,6 +168,14 @@ export interface End {
 /**
  * Watch `source` while the tab is VISIBLE and `active`, and hand every answer
  * to `onValue`.
+ *
+ * **Named for the poll it replaced** (M6.5c2 cycle D, dossier row 55). Until
+ * M6.3 this was an interval asking `once()` every few seconds; since then it
+ * holds a stream or a socket and asks only when a frame says to (the file's
+ * note); on the stream arm it arms no timer while connected, and the socket
+ * arm's one timer is its keep-alive (`ws.ts`). The name stayed because every
+ * consumer, its cells and `CLAUDE.md` say it, and a rename would move all of
+ * them for no change in behaviour.
  *
  * `active` is the caller's "there is something to wait for": a screen holding
  * the prompt has nothing to wait on, and a finished game has nothing to wait
@@ -242,7 +233,7 @@ export function usePolled<T>(
     setLink("live");
     if (!key || !active) return;
     // **A LOCAL game has no signal at all** (M6.5b, R-6.5b.12; spec §2.3) —
-    // no stream, no held request and NO TIMER. The word stays "live", which
+    // no stream, no socket and NO TIMER. The word stays "live", which
     // is true: the module answering this game is in this tab.
     //
     // **Here and not inside `open()`**, which is where a first draft put it:
@@ -293,7 +284,12 @@ export function usePolled<T>(
       try {
         for (;;) {
           again = false;
-          const v = await src.current!.once();
+          // A source that has gone to `null` (the screen dropped its resource
+          // while a frame was being handed over) has nothing to re-read, and
+          // the teardown of this run is already on its way.
+          const source = src.current;
+          if (!source) return;
+          const v = await source.once();
           if (stopped) return;
           failures.current = 0;
           setLink("live");
@@ -356,7 +352,10 @@ export function usePolled<T>(
         }
         if (f.event !== "signal" && f.event !== "house") return;
         if (frames === "value") latest.current(JSON.parse(f.data) as T);
-        else void reread();
+        else {
+          src.current?.peek?.(f.data);
+          void reread();
+        }
       };
       // **The CONNECTION, and it is what both of these hang on.**
       //
@@ -405,29 +404,6 @@ export function usePolled<T>(
           await pending;
           if (stopped || mine.signal.aborted) return;
         }
-        if (signalKind() === "held") {
-          // R-plan-5: the same answer, one request at a time. The game's `once`
-          // holds on the server for up to 25 s; the others answer at once and
-          // are re-asked on the clock.
-          //
-          // **This one is not aborted by a hidden tab, and does not need to
-          // be.** `once` goes through `api.ts`'s `call`, which takes no signal,
-          // so a held request in flight runs to its deadline; what R-P8 forbids
-          // is ASKING from a hidden tab, and the next ask is the one `open`
-          // refuses at its first line. That is what the poll this replaces did
-          // with a reply in flight, for the same reason.
-          const v = await src.current.once();
-          if (stopped) return;
-          connected = true;
-          failures.current = 0;
-          setLink("live");
-          latest.current(v);
-          // **At ONCE for a source whose `once` holds** — see
-          // [`HELD_REASK_MS`], which is the `"wake"` sources' wait and the
-          // reason the two cannot share a number.
-          schedule(frames === "value" ? 0 : HELD_REASK_MS);
-          return;
-        }
         if (signalKind() === "ws") {
           // **The socket arm** (M6.5c, spec §2.7): the same frames to the same
           // handler, and "live" at the same moment — the socket's `open`.
@@ -447,7 +423,7 @@ export function usePolled<T>(
           // catch below ends the source with the `/enter` remedy); an answer is
           // a free resync, delivered.
           //
-          // **Bounded, unlike the two other `once()` reads above** (M6.5c2; M6.5c Task
+          // **Bounded, unlike the `"wake"` re-read's `once()` above** (M6.5c2; M6.5c Task
           // 8's escalation 5): a probe that never answers is a failure, and
           // the ladder below is what a failure climbs. **And dropped when its
           // attempt was aborted while it was out** (M6.5c Task 8's Minor 1):
@@ -549,11 +525,10 @@ export function usePolled<T>(
  *
  * **`frames: "value"`** (R-7.1): a `signal` frame's body IS the `Events` this
  * consumer wants, so the answer arrives whole and no frame costs a
- * `GET …/events`. `once` is therefore reached only under the held arm and by the
- * socket arm's one probe — and it asks the server to WAIT for the held arm's
- * sake, since an immediate read there would be the poll again under another
- * name. The Worker, the one host that serves the socket, answers `wait` at once
- * (spec §2.3), which is what a probe needs.
+ * `GET …/events`. `once` is therefore reached only by the socket arm's one
+ * probe, and it asks for the reading NOW: a plain `GET …/events`, with no
+ * `wait` (M6.5c2 cycle D, R-D5). An older release's probe sent `wait=25` for
+ * the held arm's sake, which every host still parses and ignores.
  *
  * `onEnd` is how a deleted game stops being watched: the game screen navigates
  * to the lobby with the sentence rather than reading "reconnecting…" forever.
@@ -568,7 +543,7 @@ export function useSignal(
     game
       ? {
           key: game,
-          once: () => api.events(game, undefined, HELD_WAIT_S),
+          once: () => api.events(game),
           stream: `/api/games/${encodeURIComponent(game)}/stream`,
           frames: "value",
           // **The game screen is the one consumer that can be local**

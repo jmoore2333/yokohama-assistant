@@ -45,10 +45,11 @@ const FIXTURE = /import\s*\{[^}]*\btest\b[^}]*\}\s*from\s*"\.\/sw"/;
 const MARKER = /@yokohama-service-worker:\s*(on|none)\b/;
 
 /** A context built by the spec itself, which the fixture cannot reach.
+ *  `browser.newPage(` builds one implicitly, so it is flagged the same way.
  *
  *  `newContextWithoutWorker(browser)` does not contain this text, so the
  *  helper's callers are not flagged by it. */
-const OWN_CONTEXT = /browser\.newContext\(/;
+const OWN_CONTEXT = /browser\.(?:newContext|newPage)\(/;
 
 const self = fileURLToPath(import.meta.url);
 const here = dirname(self);
@@ -101,7 +102,7 @@ test("every browser spec says what it does about the service worker", () => {
   const ownContext = checked.filter(([, src]) => OWN_CONTEXT.test(src)).map(([f]) => f);
   expect(
     ownContext,
-    "these specs build their own context with `browser.newContext(`, which the `context` fixture " +
+    "these specs build their own context with `browser.newContext(` or `browser.newPage(`, which the `context` fixture " +
       "cannot reach — use `newContextWithoutWorker(browser)` from \"./sw\" instead",
   ).toEqual([]);
   // Anti-vacuity for that half: the helper it points at has to exist and has to

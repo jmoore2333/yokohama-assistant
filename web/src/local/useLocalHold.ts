@@ -12,16 +12,21 @@
 // navigating to the lobby or to another table frees the game for the other tab
 // without closing anything.
 
-import { useCallback, useEffect, useState } from "react";
-import { hold, onLost, release, takeover } from "./client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { hold, LocalStoreUnreadable, onLost, onStoreUnreadable, release, takeover } from "./client";
 import { isLocal } from "./ids";
 
 /** What this tab may do with the game the route names.
  *
  *  `"none"` is every screen that is not a local game — and also the instant
  *  before the lock has answered, which is why the page waits for `"held"`
- *  rather than for "not elsewhere". */
-export type LockState = "none" | "held" | "elsewhere" | "lost";
+ *  rather than for "not elsewhere".
+ *
+ *  `"unreadable"` is an acquisition that could not read this browser's
+ *  storage (M6.5c2 cycle D, dossier row 14): the Worker answers it in the
+ *  storage's own words, [`Hold.sentence`], and `App` draws the broken-store
+ *  face with Reload. Nothing of the game has been read, as with `"elsewhere"`. */
+export type LockState = "none" | "held" | "elsewhere" | "lost" | "unreadable";
 
 export interface Hold {
   /** The game the `state` beside it is ABOUT — `null` where there is none.
@@ -38,6 +43,9 @@ export interface Hold {
    *  asking for. */
   id: string | null;
   state: LockState;
+  /** What the storage said, where `state` is `"unreadable"`; `null` for every
+   *  other state. */
+  sentence: string | null;
   /** Take it anyway — Take over from the second tab, Take back from the one
    *  that lost it. One message and one state: the lock is STOLEN, and the
    *  Worker rebuilds its store from IndexedDB before it answers a call for the
@@ -45,55 +53,118 @@ export interface Hold {
   takeover: () => Promise<void>;
 }
 
+/** One answer: the game it is about, the state, and the storage's sentence. */
+interface Answer {
+  id: string | null;
+  state: LockState;
+  sentence: string | null;
+}
+
+const NONE: Answer = { id: null, state: "none", sentence: null };
+
 export function useLocalHold(id: string | null): Hold {
   /** The answer and the game it is about, as ONE value — never two states that
    *  a render could catch disagreeing. */
-  const [answer, setAnswer] = useState<{ id: string | null; state: LockState }>({
-    id: null,
-    state: "none",
-  });
+  const [answer, setAnswer] = useState<Answer>(NONE);
+  /** The game the MOUNTED effect is about — `null` between an effect's cleanup
+   *  and the next one's start. What `take` checks before it answers, so a
+   *  takeover that lands after the route has moved on changes nothing (M6.5c2
+   *  cycle D, dossier row 56: `take` had no `live` guard). */
+  const current = useRef<string | null>(null);
+  /** The game whose hold was REFUSED — open elsewhere, or not acquired at all —
+   *  so its cleanup releases nothing (M6.5c2 cycle D, dossier row 56). A
+   *  granted hold is released, and so is a hold or a Take over still IN FLIGHT
+   *  when the screen goes: the release is what clears the Worker's own record
+   *  of what the page wants, and that record is what drops a lock that lands
+   *  after the page has left. */
+  const refused = useRef<string | null>(null);
 
   useEffect(() => {
     if (id === null || !isLocal(id)) {
-      setAnswer({ id: null, state: "none" });
+      setAnswer(NONE);
       return;
     }
     // **The previous game's answer is not this one's.** This is not what makes
     // a stale read impossible — the id on the answer is (see `Hold.id`) — but
     // it is what keeps the hook's own value honest between the route changing
     // and the lock answering.
-    setAnswer({ id, state: "none" });
+    setAnswer({ id, state: "none", sentence: null });
+    current.current = id;
+    refused.current = null;
     let live = true;
     void hold(id)
       .then((ok) => {
-        if (live) setAnswer({ id, state: ok ? "held" : "elsewhere" });
+        if (!live) return;
+        if (!ok) refused.current = id;
+        setAnswer({ id, state: ok ? "held" : "elsewhere", sentence: null });
       })
-      .catch(() => {
+      .catch((e: unknown) => {
+        if (!live) return;
+        refused.current = id;
+        // **This browser's storage could not be read** (dossier row 14): the
+        // Worker answered in the storage's own words, and the screen draws
+        // them with Reload.
+        if (e instanceof LocalStoreUnreadable) {
+          setAnswer({ id, state: "unreadable", sentence: e.message });
+          return;
+        }
         // The local host could not be asked at all — a Worker that will not
         // start, a module that will not load. `client.ts` has already told
         // every fault listener in its own words, and the first screen is what
         // shows them; leaving this at `"none"` is what keeps the page from
         // reading a game it was never given.
-        if (live) setAnswer({ id, state: "none" });
+        setAnswer({ id, state: "none", sentence: null });
       });
     const off = onLost((lost) => {
-      if (lost === id && live) setAnswer({ id, state: "lost" });
+      if (lost === id && live) setAnswer({ id, state: "lost", sentence: null });
+    });
+    // **A restart that could not acquire this game again** (fix round 1,
+    // review Minor 1): the fresh Worker's store could not be read. The same
+    // face as a hold refused that way, and nothing to release — the fresh
+    // Worker does not hold the game.
+    const offStore = onStoreUnreadable((gone, sentence) => {
+      if (gone !== id || !live) return;
+      refused.current = id;
+      setAnswer({ id, state: "unreadable", sentence });
     });
     return () => {
       live = false;
+      current.current = null;
       off();
-      // **The release is fire-and-forget on purpose**: a screen being torn
-      // down has nothing to do with the answer, and an await here would be an
-      // unhandled rejection whenever the Worker is already gone.
-      void release(id).catch(() => undefined);
+      offStore();
+      // **Only what this screen may be holding** (dossier row 56): nothing for
+      // a hold that was refused. **And fire-and-forget on purpose**: a screen
+      // being torn down has nothing to do with the answer, and an await here
+      // would be an unhandled rejection whenever the Worker is already gone.
+      if (refused.current !== id) void release(id).catch(() => undefined);
     };
   }, [id]);
 
   const take = useCallback(async () => {
     if (id === null) return;
-    await takeover(id);
-    setAnswer({ id, state: "held" });
+    // From the moment the steal is SENT this screen may be holding the game,
+    // so a cleanup that runs while it is in flight releases it.
+    if (current.current === id) refused.current = null;
+    try {
+      await takeover(id);
+    } catch (e) {
+      if (current.current === id) {
+        refused.current = id;
+        // **A steal the STORE refused is the broken-store face** (fix round
+        // 1, review Minor 3), as a hold refused that way is — not the lock
+        // screen's refusal line, which drew the sentence without Reload.
+        if (e instanceof LocalStoreUnreadable) {
+          setAnswer({ id, state: "unreadable", sentence: e.message });
+          return;
+        }
+      }
+      throw e;
+    }
+    // The route may have moved on while the steal was in flight: this answer
+    // is about the game being LEFT, whose cleanup has already released it.
+    if (current.current !== id) return;
+    setAnswer({ id, state: "held", sentence: null });
   }, [id]);
 
-  return { id: answer.id, state: answer.state, takeover: take };
+  return { id: answer.id, state: answer.state, sentence: answer.sentence, takeover: take };
 }

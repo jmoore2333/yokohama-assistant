@@ -16,6 +16,7 @@
 import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
+import { isCreate, isGamesList } from "./matchers";
 import { openDb, readPair } from "../local/db";
 import type { UnreadableReply } from "../local/exportPair";
 import type { Envelope, ReportRow } from "../backup";
@@ -53,11 +54,21 @@ export interface FakePair {
 export interface FakeWorkerHooks {
   /** `"pending"` answers NOTHING and leaves the call in flight — how a cell
    *  arranges a waiting request for the trap to settle. */
-  call?: (req: Extract<Req, { kind: "call" }>) => CallReply | "pending" | undefined;
+  call?: (req: Extract<Req, { kind: "call" }>) => CallReply | UnreadableReply | "pending" | undefined;
   /** `"pending"` leaves the ACQUISITION unanswered — how a cell arranges the
    *  window in which a Worker has been asked for a game and does not yet hold
-   *  it. */
-  hold?: (id: string, steal: boolean) => boolean | "pending";
+   *  it.
+   *
+   *  `{ unreadable }` is the Worker's answer when IndexedDB would not be read
+   *  or written during the acquisition — its generation, or the rebuild's read
+   *  (M6.5c2 cycle D, dossier row 14): an ordinary reply, never a trap. The
+   *  same answer on `call` is a call made while the Worker's startup could not
+   *  read the store (its `ready`), and on `adopt` a restore's reconciliation
+   *  that could not read the pairs it was told about. */
+  hold?: (id: string, steal: boolean) => boolean | "pending" | UnreadableReply;
+  /** What `adopt` answers — how many games it took, or `{ unreadable }`.
+   *  Omitted: every id it was given. */
+  adopt?: (ids: string[]) => number | UnreadableReply;
   /** Both documents of one game, as the `pair` message answers them.
    *
    *  `undefined` falls through to the COMMITTED pair in this page's
@@ -75,7 +86,7 @@ export interface FakeWorkerHooks {
   /** What the module's `restore_read` says about a file — the rows, or a
    *  refusal about the FILE. A cell that is about ONE verdict sets this and
    *  says so; everything else falls through to [`fakeVerdicts`]. */
-  restore?: (envelope: string) => ReportRow[] | { refused: string } | undefined;
+  restore?: (envelope: string) => ReportRow[] | { refused: string } | UnreadableReply | undefined;
 }
 
 /**
@@ -152,7 +163,9 @@ function corpusReply(req: Extract<Req, { kind: "call" }>): CallReply | undefined
   if (path === "/api/health") return { status: 200, body: wire.health };
   if (path === "/api/me") return { status: 200, body: wire.me };
   if (path === "/api/labels") return { status: 200, body: wire.labels };
-  if (path === "/api/games" && method === "GET") {
+  // The one listing the local host is asked for: this browser's own, `mine`.
+  // Any other scope falls through to the throw a cell would want to see.
+  if (isGamesList(req, "mine")) {
     // The lobby row shape, re-addressed and with the corpus row's own NAME
     // cleared — the `gamesNamed` rule: a row is listed as `name ?? id`, so a
     // row that kept `wire` would be found by no cell that looks for its id.
@@ -161,7 +174,7 @@ function corpusReply(req: Extract<Req, { kind: "call" }>): CallReply | undefined
       body: { games: [{ ...named(wire.games.games[0]!, "local-1"), name: null }], next: null },
     };
   }
-  if (path === "/api/games" && method === "POST") {
+  if (isCreate(req)) {
     return { status: 201, body: named(wire.tableDealing, "local-1") };
   }
   if (game === undefined || rest === null) return undefined;
@@ -192,6 +205,8 @@ export class FakeWorker {
   static hooks: FakeWorkerHooks = {};
   /** Every instance dies as soon as it is built (see the constructor). */
   static broken = false;
+  /** `new Worker(…)` itself THROWS with this message ([`refuseToStart`]). */
+  static refusal: string | null = null;
 
   readonly posted: Req[] = [];
   terminated = false;
@@ -200,6 +215,9 @@ export class FakeWorker {
   onmessageerror: ((e: MessageEvent<unknown>) => void) | null = null;
 
   constructor(readonly url?: unknown) {
+    // **Before anything is built**, as a browser refuses the constructor: no
+    // instance exists to count, to post to or to terminate.
+    if (FakeWorker.refusal !== null) throw new Error(FakeWorker.refusal);
     FakeWorker.instances.push(this);
     // **The module will not load** ([`breakTheWorker`]). Raised on a
     // microtask, because `client.ts`'s `start()` assigns `onerror` on the
@@ -220,6 +238,12 @@ export class FakeWorker {
           // Loud, and at the CALL SITE: `ask` runs this inside its promise
           // executor, so the throw rejects the very call that asked.
           throw new Error(`the fake local host was not told about ${req.method} ${req.path}`);
+        }
+        // Told apart by the reply's own key, for `pair`'s reason below: the
+        // refusal's key is spelled once, in `exportPair.ts`.
+        if (!("status" in answer)) {
+          reply = { ...answer };
+          break;
         }
         reply = {
           status: answer.status,
@@ -260,7 +284,7 @@ export class FakeWorker {
       case "takeover": {
         const held = hooks.hold?.(req.id, req.kind === "takeover") ?? true;
         if (held === "pending") return;
-        reply = { held };
+        reply = typeof held === "boolean" ? { held } : { ...held };
         break;
       }
       case "release":
@@ -268,14 +292,21 @@ export class FakeWorker {
         break;
       case "restore_read": {
         const answer = hooks.restore?.(req.envelope) ?? fakeVerdicts(req.envelope);
+        // `{ unreadable }` is the Worker's startup failing to read the store
+        // before the validator was ever asked (its `ready`), which is not an
+        // answer about the FILE.
         reply = Array.isArray(answer)
           ? { report: JSON.stringify(answer) }
-          : { refused: answer.refused };
+          : "refused" in answer
+            ? { refused: answer.refused }
+            : { ...answer };
         break;
       }
-      case "adopt":
-        reply = { adopted: req.ids.length };
+      case "adopt": {
+        const adopted = hooks.adopt?.(req.ids) ?? req.ids.length;
+        reply = typeof adopted === "number" ? { adopted } : { ...adopted };
         break;
+      }
     }
     queueMicrotask(() => this.deliver({ seq: req.seq, ...reply }));
   }
@@ -310,6 +341,7 @@ export function stubWorker(hooks: FakeWorkerHooks = {}): typeof FakeWorker {
   FakeWorker.instances = [];
   FakeWorker.hooks = hooks;
   FakeWorker.broken = false;
+  FakeWorker.refusal = null;
   vi.stubGlobal("Worker", FakeWorker);
   return FakeWorker;
 }
@@ -320,6 +352,16 @@ export function stubWorker(hooks: FakeWorkerHooks = {}): typeof FakeWorker {
  *  Called after [`stubWorker`], which clears the flag. */
 export function breakTheWorker(): void {
   FakeWorker.broken = true;
+}
+
+/** **The browser will not even BUILD the Worker** — `new Worker(…)` throws
+ *  `message` from now on, which is a `SecurityError` or a script the page may
+ *  not load, and is not the same failure as [`breakTheWorker`]'s: that one
+ *  builds and then dies, this one never exists (M6.5c2 cycle D, dossier row 56).
+ *
+ *  Called after [`stubWorker`], which clears it. */
+export function refuseToStart(message: string): void {
+  FakeWorker.refusal = message;
 }
 
 /** What the Worker's `pair` message answers for ONE game — standing for THIS

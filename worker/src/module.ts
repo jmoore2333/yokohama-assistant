@@ -4,7 +4,12 @@ import { log } from "./respond";
 
 /** One call the layer made on its signal, as `Reply.bumps` lists them (the
  *  plan's names table; `crates/yokohama-worker/src/signal.rs`). */
-export type Bump = { bump: string } | { bump_table: string } | { bump_house_chat: null } | { end: string };
+export type Bump =
+  | { bump: string }
+  | { bump_table: string }
+  | { bump_house_chat: null }
+  | { bump_house_chat_rev: null }
+  | { end: string };
 
 /** A reply as plain data. `archive` (the deferred archive plan), `picker`
  *  (the picker row) and `dropped` (the codes of a picker row `restore_picker`
@@ -81,7 +86,7 @@ export function pinnedTo(mod: Exports, at: number, f: (mod: Exports) => Reply): 
 }
 
 /** Every key a bump carries, and what its value is. */
-const BUMP_VALUES = { bump: "id", bump_table: "id", bump_house_chat: "null", end: "id" } as const;
+const BUMP_VALUES = { bump: "id", bump_table: "id", bump_house_chat: "null", bump_house_chat_rev: "null", end: "id" } as const;
 
 /**
  * A reply as plain data — how the shell takes every `Reply` (the plan's names

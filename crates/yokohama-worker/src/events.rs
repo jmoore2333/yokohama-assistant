@@ -4,15 +4,15 @@
 //! is no row of the layer's route table, and `dispatch` would answer it 404.
 //! This module restates that handler, in its order.
 //!
-//! **`wait` is validated and never held** (spec §2.3) — safe only because this
-//! host reports `signal: "ws"` (`host()` in `lib.rs`). No client runs the held
-//! arm against it: that arm re-asks a value source at once
-//! (`web/src/signal.ts`), so an immediate answer to it would spin against the
-//! object. What asks with `wait` here is spec §2.7's probe, which Task 8 adds to
-//! the client: after a socket that fails to open, or one that closes when the
-//! arm did not close it and no `end` frame came before the close, it calls the
-//! source's own `once()` one time — `wait=25` for a game — and needs an
-//! immediate answer. A held request would keep an object invocation open for
+//! **`after` and `wait` are parsed and IGNORED** (spec §2.3; M6.5c2 cycle D,
+//! R-D5): the held arm is retired on every host, so this route answers at
+//! once, as axum's handler now does too, and no host reports `held`. The keys
+//! stay for an older precached release: its close probe (spec §2.7 — after a
+//! socket that fails to open, or one that closes when the arm did not close it
+//! and no `end` frame came before the close, the source's own `once()`, one
+//! time) sends `wait=25` for a game, and `EventsQuery`'s `deny_unknown_fields`
+//! would otherwise answer it a 400. The current client's probe sends no
+//! `wait`. A held request here would keep an object invocation open for
 //! nothing.
 
 use http::StatusCode;

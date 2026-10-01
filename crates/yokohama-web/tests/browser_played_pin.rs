@@ -224,10 +224,87 @@ fn a_rules_hash_drift_reaches_the_wire_as_a_warning() {
     );
 }
 
+/// What one `why` answer over the pair says about its event.
+enum Account {
+    /// A bot move, re-run and matched, with its fifteen counters.
+    Reconstructed,
+    /// The human's own move, which `why` does not account for.
+    Human,
+}
+
+/// Read one `why` answer: a granted reconstruction (its fifteen counters and
+/// the `placement_cap_binds` scope partner checked), or the one refusal this
+/// pin excuses — and every other refusal as the failure it is, in words that
+/// name the event.
+fn account(e: usize, body: &str) -> Result<Account, String> {
+    let v: serde_json::Value = serde_json::from_str(body).expect("why answers JSON");
+    match v["refusal"].as_object() {
+        None => {
+            let counters = v["ok"]["counters"]
+                .as_array()
+                .unwrap_or_else(|| panic!("event {e}: a granted why carries its counters"));
+            let row = counters
+                .iter()
+                .find(|c| c["name"] == "placement_cap_binds")
+                .unwrap_or_else(|| panic!("event {e}: no placement_cap_binds counter"));
+            assert_eq!(row["value"], 0, "event {e}: the scope partner");
+            assert_eq!(counters.len(), 15, "event {e}: the fifteen counters");
+            Ok(Account::Reconstructed)
+        }
+        // The ONE refusal a healthy browser-played record may carry: the
+        // human's own move. Every other refusal fails here — a mismatch above
+        // all, which is the one that would mean the browser's bot and this
+        // one disagree, and `not_a_move` too: a simulation record holds no
+        // reveal for it to be about (see the cell below).
+        Some(r) => match r["kind"].as_str() {
+            Some("human_seat") => Ok(Account::Human),
+            _ => Err(format!("event {e} was REFUSED: {body}")),
+        },
+    }
+}
+
+/// **The one refusal this pin excuses is the human's own move** (M6.5c2 cycle
+/// D, dossier row 56). The reconstruction used to excuse a second — the
+/// `not_a_move` refusal `why` gives a setup reveal — and it never fired (0 of
+/// 595 events, the M6.5b Task 8 review's reading): the
+/// pair is a SIMULATION record, played in a browser against the module's bot,
+/// and a simulation deals from its own seeded decks, so it records no reveal
+/// at all (reveals are how a LIVE game learns a physical card). An excuse for
+/// an event the record cannot hold is an arm that could only ever hide
+/// something. So the premise is asserted — every event is a move — and the
+/// classification is read over every refusal the wire can carry, from the
+/// corpus's own twelve (`why_refusals.json`, built by the layer from the
+/// CLI's own refusals): `human_seat` is excused and the other eleven fail the
+/// reconstruction, `not_a_move` among them.
+#[test]
+fn the_pair_holds_only_moves_so_the_one_refusal_excused_is_a_human_seat() {
+    let record: yokohama_core::GameRecord =
+        serde_json::from_str(RECORD).expect("the committed record parses");
+    let reveals = record
+        .events
+        .iter()
+        .filter(|e| !matches!(e, yokohama_core::RecordedEvent::Move(_)))
+        .count();
+    assert_eq!(reveals, 0, "a simulation record carries moves only");
+
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../../web/src/wire/why_refusals.json"))
+            .expect("the corpus's refusal samples parse");
+    let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().expect("a kind")).collect();
+    assert!(kinds.contains(&"not_a_move"), "anti-vacuity: the samples carry the refusal in question");
+    assert_eq!(rows.len(), 12, "every refusal `why` can give");
+    let excused: Vec<&str> = rows
+        .iter()
+        .filter(|r| account(0, &serde_json::json!({ "ok": null, "refusal": r }).to_string()).is_ok())
+        .map(|r| r["kind"].as_str().expect("a kind"))
+        .collect();
+    assert_eq!(excused, ["human_seat"], "the one refusal a browser-played record may carry");
+}
+
 /// **Every event of a browser-played game is ACCOUNTED FOR by the native
 /// `why`**: each one is either a bot move this build reconstructs, or the
-/// route's own typed refusal saying the mover was a human seat (or that the
-/// event was not a move at all).
+/// route's own typed refusal saying the mover was a human seat — the one
+/// refusal [`account`] excuses (see the cell above for why there is no other).
 ///
 /// A reconstruction that does not equal the recorded move REFUSES — that is
 /// `why`'s honesty gate, and it is what makes this a determinism claim rather
@@ -262,7 +339,6 @@ fn the_browser_played_pair_reconstructs_under_the_native_why() {
 
     let mut reconstructed = 0usize;
     let mut human = 0usize;
-    let mut not_moves = 0usize;
     for e in 0..record.events.len() {
         let path = format!("/api/games/{id}/why");
         let query = format!("event={e}");
@@ -275,36 +351,16 @@ fn the_browser_played_pair_reconstructs_under_the_native_why() {
         };
         let res = dispatch(&games, &HOST, Ok(&user), &req);
         assert_eq!(res.status, 200, "event {e}: {}", res.body);
-        let v: serde_json::Value = serde_json::from_str(&res.body).expect("why answers JSON");
-        match v["refusal"].as_object() {
-            None => {
-                let counters = v["ok"]["counters"]
-                    .as_array()
-                    .unwrap_or_else(|| panic!("event {e}: a granted why carries its counters"));
-                let row = counters
-                    .iter()
-                    .find(|c| c["name"] == "placement_cap_binds")
-                    .unwrap_or_else(|| panic!("event {e}: no placement_cap_binds counter"));
-                assert_eq!(row["value"], 0, "event {e}: the scope partner");
-                assert_eq!(counters.len(), 15, "event {e}: the fifteen counters");
-                reconstructed += 1;
-            }
-            // The two refusals a healthy record MAY carry, each named: the
-            // human's own moves, and the setup reveals that are not moves at
-            // all. Every other refusal — a mismatch above all, which is the
-            // one that would mean the browser's bot and this one disagree —
-            // fails here.
-            Some(r) => match r["kind"].as_str() {
-                Some("human_seat") => human += 1,
-                Some("not_a_move") => not_moves += 1,
-                _ => panic!("event {e} was REFUSED: {}", res.body),
-            },
+        match account(e, &res.body) {
+            Ok(Account::Reconstructed) => reconstructed += 1,
+            Ok(Account::Human) => human += 1,
+            Err(why) => panic!("{why}"),
         }
     }
 
     eprintln!(
         "the browser-played pair: {reconstructed} bot events reconstructed, \
-         {human} human, {not_moves} not moves, of {} in {:?}",
+         {human} human, of {} in {:?}",
         record.events.len(),
         t.elapsed()
     );
@@ -314,7 +370,7 @@ fn the_browser_played_pair_reconstructs_under_the_native_why() {
     assert!(reconstructed > 50, "only {reconstructed} bot events reconstructed");
     assert!(human > 50, "only {human} human events — is this the pair that was played?");
     assert_eq!(
-        reconstructed + human + not_moves,
+        reconstructed + human,
         record.events.len(),
         "every event is accounted for"
     );

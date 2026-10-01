@@ -892,9 +892,11 @@ rather than to `dispatch`:
   turning a duplicate-key 400 into a 201.
 - **`events`** (`src/events.rs`), `GET /api/games/{id}/events`, restates axum's handler in its
   order: the caller, the query through the layer's own parser, then a `wait` above 25 s refused with
-  the handler's own sentence. Then it answers AT ONCE: `wait` is validated and never held. A held
-  request would keep an object invocation open for nothing, and the only client that asks with
-  `wait` on this host is the socket arm's one probe (§8), which wants an immediate answer.
+  the handler's own sentence. Then it answers AT ONCE: `after` and `wait` are parsed and ignored, as
+  axum's handler does too since M6.5c2 cycle D retired the held arm on every host (R-D5). A held
+  request would keep an object invocation open for nothing. The keys stay for an older precached
+  release, whose socket arm's one probe (§8) sends `wait=25`; the current client's probe sends no
+  query. *(Corrected 2026-09-29: until then the probe of every release sent `wait=25`.)*
 
 A refusal the module writes itself is built by the layer's own `api::error_body`, which the layer
 exports since M6.5c2; the lobby socket's 401 (`identity_inner`) still writes its `{"error": …}` by
@@ -1641,7 +1643,7 @@ returns to an earlier version, but never across a Durable Object migration, nor 
 to a bucket that no longer exists.
 
 **A rollback across the M6.5c fix wave**, to the eighteenth deployment or earlier, has two known
-consequences (RUNBOOK §6). Rolling forward again needs nothing.
+consequences (`worker/RUNBOOK.md` §6). Rolling forward again needs nothing.
 
 1. **Generation order.** The older code draws a table's generation in SECONDS, and every seconds
    generation orders before every retired MILLISECONDS one. So a table forced under the newer code
@@ -1732,8 +1734,11 @@ What a run leaves on the account:
   (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
 - the replay's own first-send saves under `test/browser/red_at_wire.test/`, kept for good by the
   owner's direction;
-- a PERMANENT lobby chat post per replay run ("anyone up for a second table?", from `red@wire.test`)
-  and two per exit run, which real people see until 500 newer messages trim them;
+- no lobby chat post: each replay run deletes the house post it made ("anyone up for a second
+  table?", from `red@wire.test`), and each exit run the two its players made, before it ends
+  (M6.5c2 cycle D). A deleted post stays in the house chat as a "message removed" tombstone
+  under its number until 500 newer messages trim it — the text is gone at once. A run that stops
+  before its delete row leaves its post, as before;
 - while a run lasts, its tables in the live lobby.
 
 ### 10.5 The `test/` root and the replay's reset

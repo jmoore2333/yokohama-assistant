@@ -6,7 +6,8 @@
 //
 //   node scripts/module-figures.mjs gen/yokohama_worker_bg.wasm
 //
-// It prints the module's bytes and its `gzip -9` size, the pages its linear
+// It prints the module's bytes and its gzip size at level 9 (Node's `gzipSync`,
+// whose header names no file: 24 B less than the `gzip -9` command's), the pages its linear
 // memory starts at — which every instance pays, a table object's second
 // instance for one house copy (`copyOf`, `src/table.ts`) among them — and its
 // data: the segments, their bytes, and the data section's encoded size.
@@ -16,7 +17,8 @@ import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
 /** The figures of the module `input` holds (WebAssembly core spec, binary
- *  format §5.5): its size and its `gzip -9` size, its one memory's initial
+ *  format §5.5): its size and its gzip size at level 9 (`gzipSync`, not the
+ *  `gzip -9` command: its header is 24 B smaller), its one memory's initial
  *  pages, and its data segments' count and bytes and the data section's
  *  size. */
 export function moduleFigures(input) {
@@ -25,6 +27,9 @@ export function moduleFigures(input) {
     throw new Error("not a WebAssembly module: it does not open with \\0asm");
   }
   let at = 8;
+  // A LEB128 `u32`, read as a JavaScript number with NO five-byte bound on the
+  // shift: a module this script reads is one `wasm-bindgen` and `wasm-opt`
+  // just wrote, so a malformed run is refused only by running off the end.
   const u32 = () => {
     let value = 0;
     let shift = 0;
@@ -55,6 +60,18 @@ export function moduleFigures(input) {
   while (at < b.length) {
     const id = b[at++];
     const size = u32();
+    // `end` is never checked against the module's length, so a truncated module
+    // is never refused AS truncated: a limit of this reading script, recorded.
+    // Two cuts end the walk SILENTLY and figures are still printed — a section
+    // after the memory section cut short (`segments 0` when the cut came before
+    // the data section), and the last data segment's bytes cut short (a
+    // `dataBytes` larger than the bytes present). Every other cut throws, but
+    // under another name, by the read that runs off the end: a section before
+    // the memory section as "the module declares no memory"; the memory section
+    // itself, a section header, or a data section cut before or inside a later
+    // segment's header as a LEB128 number running past the end; a cut inside
+    // an active segment's offset as that offset not being a single constant (a
+    // `TypeError` when the cut falls before its opcode).
     const end = at + size;
     if (id === 5) {
       if (u32() !== 1) throw new Error("the module declares more than one memory");

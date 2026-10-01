@@ -174,11 +174,13 @@ struct ScriptRow {
 /// **One request only a HOST serves, positioned in `walk.json`** (M6.5c, spec
 /// §5.3) — a row of `web/src/wire-script/walk-host.json`.
 ///
-/// `walk.json` cannot hold these: the browser host has no `/events` and no
-/// `/api/art`, so [`corpus`] drops every [`hosts_own`] row from it. A Worker
-/// host DOES serve them, and replays them at the point in the walk where they
-/// were made — which `after` says without restating the walk: the index in
-/// `walk.json` of the last row kept before this one, or `-1` for none.
+/// `walk.json` cannot hold these: the browser host has no `/events` at all,
+/// and answers `/api/art` with the layer's own 404 ("art is served by the
+/// host") where the corpus froze the axum host's manifest — so [`corpus`]
+/// drops every [`hosts_own`] row from it. A Worker host DOES serve them, and
+/// replays them at the point in the walk where they were made — which `after`
+/// says without restating the walk: the index in `walk.json` of the last row
+/// kept before this one, or `-1` for none.
 ///
 /// Serialized FLAT, `after` beside the [`ScriptRow`]'s own fields, so a reader
 /// of either file reads one row shape.
@@ -221,15 +223,23 @@ fn digest_of(value: &Value) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// The routes the HOST serves and the layer does not — the three transport
-/// routes and the art.
+/// The routes whose answer is the HOST's own and not `dispatch`'s — the three
+/// transport routes, which `dispatch` has no row for, and the art.
 ///
-/// Single-sourced because two callers ask the same question for the same
-/// reason: [`Api::compare_with_dispatch`] cannot compare a route `dispatch`
-/// does not have, and the script cannot ask a second host to replay one. A
-/// payload captured from one of these is therefore in the third column of spec
-/// §5's table — not served by that host — by construction rather than by a
-/// list.
+/// **The art is the one `dispatch` DOES route** (M6.5c2 cycle D, dossier row
+/// 56, correcting a reason that said otherwise): `/api/art` is in
+/// `api::routes()` so the 405/404 arithmetic is one table, and `dispatch`
+/// answers it with a typed 404 — "art is served by the host" — because the
+/// manifest lives behind the server feature and the axum adapter answers the
+/// route before calling it. So its answer on this router is not `dispatch`'s
+/// by design, for the same consequence as the transport routes' absence.
+///
+/// Single-sourced because two callers ask the same question for that reason:
+/// [`Api::compare_with_dispatch`] cannot compare the router's answer with
+/// `dispatch`'s where the two differ by design, and the script cannot ask a
+/// second host to replay what only a host answers. A payload captured from one
+/// of these is therefore in the third column of spec §5's table — not served
+/// by that host — by construction rather than by a list.
 fn hosts_own(path: &str) -> bool {
     path.ends_with("/events")
         || path.ends_with("/stream")
@@ -521,9 +531,16 @@ fn frozen_clock() -> yokohama_web::games::Clock {
 /// stopped carrying one fails here rather than being normalized away. The ID
 /// half is left alone — it is the row the page ended at, which is the whole
 /// content of the field.
+///
+/// **A cursor is known by the PAGE it belongs to, not by its name** (M6.5c2
+/// cycle D, dossier row 38): `next` is read as one only on an object that IS a
+/// listing ([`is_page`]), so a field named `next` on any other payload is
+/// walked like every other field rather than parsed — and refused — as a
+/// cursor. [`freeze_clock_reads_a_cursor_only_on_a_page`] holds both halves.
 fn freeze_clock(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            let page = is_page(map);
             for (key, v) in map.iter_mut() {
                 if key == "created_at" {
                     let seen = v.as_u64().unwrap_or_else(|| {
@@ -535,7 +552,7 @@ fn freeze_clock(value: &mut Value) {
                          a field that has stopped being stamped",
                     );
                     *v = json!(FROZEN_CREATED_AT);
-                } else if key == "next" {
+                } else if page && key == "next" {
                     // `null` is the last page and carries no clock at all.
                     if let Some(cursor) = v.as_str() {
                         let (at, id) = cursor.split_once(',').unwrap_or_else(|| {
@@ -559,6 +576,27 @@ fn freeze_clock(value: &mut Value) {
         Value::Array(items) => items.iter_mut().for_each(freeze_clock),
         _ => {}
     }
+}
+
+/// Is this object a LISTING page — `GamesList`, exactly `games` (a list) and
+/// `next` — the one shape whose `next` is a cursor ([`freeze_clock`])?
+fn is_page(map: &serde_json::Map<String, Value>) -> bool {
+    map.len() == 2 && map.get("games").is_some_and(Value::is_array) && map.contains_key("next")
+}
+
+/// [`freeze_clock`]'s cursor rule, both halves: a page's cursor has its clock
+/// frozen and its row kept; a `next` on anything that is not a page is walked
+/// like any field — a string left as it is, where the name-keyed arm refused
+/// it as a cursor with no clock in it.
+#[test]
+fn freeze_clock_reads_a_cursor_only_on_a_page() {
+    let mut page = json!({ "games": [], "next": "1790000000,wire" });
+    freeze_clock(&mut page);
+    assert_eq!(page["next"], json!(format!("{FROZEN_CREATED_AT},wire")));
+
+    let mut other = json!({ "next": "the next seat", "players": 2 });
+    freeze_clock(&mut other);
+    assert_eq!(other, json!({ "next": "the next seat", "players": 2 }));
 }
 
 /// Which of the walk's two people holds the seat that is to move.
@@ -1235,6 +1273,33 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     let house_chat = api.get_as(OTHER, "/api/chat").await;
     assert_eq!(house_chat["last"], 1, "{house_chat}");
 
+    // **The deletes** (M6.5c2 cycle D, R-D4), after every page above is taken,
+    // so the pages keep showing what was said. Red takes her own table
+    // message down — an empty 204, which the walk records as `null`, the
+    // reading of an empty body every replay makes; blue, a seat who neither
+    // wrote it nor created the table, is refused on the same message, now a
+    // tombstone — the author is kept, so the answer is the one a stranger
+    // gets before the delete too; red reads the page again, which is the
+    // corpus's one TOMBSTONE — `text: ""`, `deleted: true`, the author and
+    // the number kept, the revision one past the count — the shape a client
+    // renders "message removed" from, pinned against what the server emits;
+    // and red takes her house post down. `events` is taken later in the walk,
+    // so it carries the same revision one past its count.
+    let (status, chat_delete) = api.call_as(Some(WALKER), "DELETE", "/api/games/wire/chat/1", None).await;
+    assert_eq!((status, &chat_delete), (StatusCode::NO_CONTENT, &Value::Null), "{chat_delete}");
+    let (status, chat_delete_403) = api.call_as(Some(OTHER), "DELETE", "/api/games/wire/chat/1", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{chat_delete_403}");
+    assert_eq!(chat_delete_403["error"], "only the message's author or the table's creator may delete it");
+    let chat_deleted = api.get("/api/games/wire/chat").await;
+    assert_eq!(
+        (&chat_deleted["messages"][0]["deleted"], &chat_deleted["messages"][0]["text"]),
+        (&json!(true), &json!("")),
+        "message 1 is a tombstone: {chat_deleted}",
+    );
+    assert_eq!((&chat_deleted["last"], &chat_deleted["rev"]), (&json!(3), &json!(4)), "{chat_deleted}");
+    let (status, house_chat_delete) = api.call_as(Some(WALKER), "DELETE", "/api/chat/1", None).await;
+    assert_eq!((status, &house_chat_delete), (StatusCode::NO_CONTENT, &Value::Null), "{house_chat_delete}");
+
     for (name, v) in [
         ("chat", chat),
         ("chat_after", chat_after),
@@ -1245,6 +1310,10 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         ("chat_403_locked", chat_403_locked),
         ("house_chat", house_chat),
         ("house_chat_post", house_chat_post),
+        ("chat_delete", chat_delete),
+        ("chat_delete_403", chat_delete_403),
+        ("chat_deleted", chat_deleted),
+        ("house_chat_delete", house_chat_delete),
     ] {
         out.push((name.to_string(), v));
     }
@@ -1783,6 +1852,29 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     );
     out.push(("table_bot".to_string(), table_bot));
 
+    // **The deal at that bot table, before it is finalized** (M6.5c2 cycle D,
+    // straw poll row 32): the corpus had no `…/deal` at a bot table. The
+    // walker's own two cards and the deal's other fields, at a table whose
+    // other seat is a bot — the shape the set-table screen draws at a vs-bot
+    // game, and one whose bot must not appear in the reader's cards. Undealt
+    // is deterministic (the bot's stream seed is drawn at finalize), and the
+    // reader is the walker, so Task 6's by-value pin scans it too.
+    let (status, deal_bot_table) = bots.call("GET", "/api/games/wire-bot/deal", None).await;
+    assert_eq!(status, StatusCode::OK, "{deal_bot_table}");
+    assert_eq!(deal_bot_table["seat"], 0, "the walker holds seat 0 at the bot table: {deal_bot_table}");
+    out.push(("deal_bot_table".to_string(), deal_bot_table));
+
+    // **A three-player table with TWO seats still open** (row 32): every open
+    // fixture before it was a 2P table with one. `open` is the status a table
+    // keeps for as long as any seat is unfilled, so the second open seat must
+    // not flip it.
+    let (status, table_two_open) = bots.call("POST", "/api/games", Some(three_player_two_open_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_two_open}");
+    assert_eq!(table_two_open["status"], "open", "two seats open, so the table is open: {table_two_open}");
+    let open_seats = table_two_open["seats"].as_array().expect("seats").iter().filter(|s| s["kind"] == "open").count();
+    assert_eq!(open_seats, 2, "premise: two seats are open: {table_two_open}");
+    out.push(("table_two_open".to_string(), table_two_open));
+
     // **A game played against a bot this build does not run** (M6.5c2,
     // R-6.5c2.10), from an `Api` of its own: the committed browser-played pair
     // with its bot seat renamed to `v2-padded` — cut at 300 events (not over:
@@ -1864,6 +1956,20 @@ fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, Stri
     }
     (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
 }
+/// The 3P table with two open seats `table_two_open` is read from: the walker
+/// at seat 0 and nobody named at seats 1 and 2.
+fn three_player_two_open_body() -> Value {
+    json!({
+        "players": 3,
+        "colors": ["Red", "Blue", "Green"],
+        "start_seat": 0,
+        "seed": SETUP_SEED,
+        "seats": [{ "user": WALKER }, { "open": true }, { "open": true }],
+        "name": "wire-open3",
+        "id": "wire-open3",
+    })
+}
+
 /// The vs-bot table the `table_bot` fixture is read from: the walker at seat 0,
 /// the bot at seat 1, at the corpus seed.
 fn bot_table_body() -> Value {
@@ -2228,6 +2334,14 @@ fn every_refusal_payload() -> Value {
 /// the tests below cannot disagree about what either contains.
 struct Corpus {
     payloads: Vec<(String, Value)>,
+    /// **Who each WALKED payload was served to** (M6.5c2 cycle D, R-6.5c2.35):
+    /// every identity header — `None` for the one call that omits it — of
+    /// every request, on the primary `Api` or a second one, whose frozen
+    /// reply is byte-equal to the payload. A SET, and every member of it: a
+    /// payload two callers were both handed is read by both, and an address
+    /// in it has to be each one's own. A payload with no entry here is a
+    /// CONSTRUCTION — see [`constructed`] — and was served to nobody.
+    readers: std::collections::BTreeMap<String, std::collections::BTreeSet<Option<String>>>,
     /// The primary `Api`'s calls, in order, each one that produced a committed
     /// payload carrying its name — see [`ScriptRow`] and [`corpus`].
     script: Vec<ScriptRow>,
@@ -2304,6 +2418,21 @@ async fn corpus() -> Corpus {
         );
     }
 
+    // **The readers, by value** (M6.5c2 cycle D, R-6.5c2.35): every row of the
+    // WHOLE walk whose reply is this payload, before the host rows are split
+    // out and dropped below — `aside` holds the second `Api`s' rows, the
+    // archive's among them. The binding above names one row per payload; a
+    // leakage question has to ask every row, since a reply two callers were
+    // both handed is read by both.
+    let readers = all[..from_the_walk]
+        .iter()
+        .map(|(name, value)| {
+            let want = digest_of(value);
+            let who = script.iter().chain(&aside).filter(|r| r.digest == want).map(|r| r.who.clone()).collect();
+            (name.clone(), who)
+        })
+        .collect();
+
     // **The archive `Api`'s rows, bound the same way** (M6.5c, spec §5.3): each
     // of the eight `archive_*` payloads finds the FIRST unbound archive row
     // whose frozen response equals it, by [`digest_of`]. The loop above has
@@ -2359,16 +2488,17 @@ async fn corpus() -> Corpus {
     }
 
     // The HOST's own routes leave the script with the rows that named them: the
-    // browser host has no `/events`, no `/stream` and no `/api/art`, so those
-    // requests are not askable of it and the payloads they produced fall into
-    // the third column — derived here, rather than written down in the replay.
+    // browser host has no `/events` and no `/stream`, and answers `/api/art`
+    // with the layer's 404 rather than a manifest, so those requests are not
+    // askable of it and the payloads they produced fall into the third column —
+    // derived here, rather than written down in the replay.
     script.retain(|r| !hosts_own(&r.path));
 
     // Sorted, so the file set is a set and its order is not an accident of the
     // walk. (The names, not the payloads — payload key order is serde's.) The
     // SCRIPT keeps the walk's order, which is the only order it replays in.
     all.sort_by(|a, b| a.0.cmp(&b.0));
-    Corpus { payloads: all, script, host_script, archive_script }
+    Corpus { payloads: all, readers, script, host_script, archive_script }
 }
 
 /// **The terminal's own words for every printed building-site space.**
@@ -2607,6 +2737,135 @@ fn production_bot() -> Value {
     json!({ "identity": bot.controller, "label": yokohama_web::bots::label(&bot) })
 }
 
+/// One place `needle` appears in a payload: the path to it, and whether it is
+/// an object KEY rather than a string value.
+///
+/// A key hit is at the key's own path, so its siblings read back like a
+/// value's — but it is never the VALUE there, and no rule that allows a string
+/// at a position allows a map keyed by one.
+struct Hit {
+    path: Vec<String>,
+    key: bool,
+}
+
+/// Every place `needle` appears — inside a string value, or as an object key.
+/// The path is the steps taken to reach it, array indices included, so the
+/// caller can read the hit's SIBLINGS back out ([`at_path`]).
+///
+/// **A tree walk and not a text search**, because the leakage pins that use it
+/// rule on WHERE a hit is, which a text search cannot say. It is no weaker: a
+/// string value containing the needle anywhere inside it is a hit, as
+/// `contains` over the text was, and so is a key.
+fn find(v: &Value, path: &mut Vec<String>, needle: &str, hits: &mut Vec<Hit>) {
+    match v {
+        Value::String(s) if s.contains(needle) => hits.push(Hit { path: path.clone(), key: false }),
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                path.push(i.to_string());
+                find(item, path, needle, hits);
+                path.pop();
+            }
+        }
+        Value::Object(map) => {
+            for (k, item) in map {
+                path.push(k.clone());
+                if k.contains(needle) {
+                    hits.push(Hit { path: path.clone(), key: true });
+                }
+                find(item, path, needle, hits);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The value at a path [`find`] produced, so a hit can be checked against its
+/// siblings. Every step exists by construction — the path was walked out of
+/// this very value.
+fn at_path<'a>(v: &'a Value, path: &[String]) -> &'a Value {
+    let mut here = v;
+    for step in path {
+        here = match here {
+            Value::Array(items) => {
+                let i: usize = step.parse().expect("an array step is an index");
+                &items[i]
+            }
+            _ => &here[step.as_str()],
+        };
+    }
+    here
+}
+
+/// What one payload says about addresses, read for one READER (M6.5c2 cycle
+/// D, R-6.5c2.35, R-D3).
+#[derive(Debug, Default)]
+struct AddressRead {
+    /// Every `@` the rule does not allow, as `path: value`.
+    offenders: Vec<String>,
+    /// Allowed as the reader's own address.
+    own: usize,
+    /// Allowed as `seats[i].invited` in a table built for its creator — and
+    /// NOT the reader's own, so this counts the arm only it could allow.
+    invited: usize,
+}
+
+/// **The rule, R-D3, as one function**: a payload built for `reader` carries an
+/// address only where it is the reader's own, or at `seats[i].invited` in a
+/// table whose `mine` is `true` — the address the creator typed for a seat
+/// nobody has named.
+///
+/// `reader` is the identity header as sent, normalized here the way the
+/// server's extractor normalizes it (`User::parse`) — `None`, or a header that
+/// is no identity, is nobody, and nothing is theirs. Any string holding an
+/// `@` is a candidate, which is deliberately wider than "an address": a
+/// sentence that EMBEDS one (`it is seat 1's turn (blue@wire.test)`) is the
+/// shape a refusal leaks in.
+fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
+    let reader = reader
+        .and_then(|r| yokohama_web::identity::User::parse(r).ok())
+        .map(|u| u.as_str().to_string());
+    let mut hits = Vec::new();
+    find(value, &mut Vec::new(), "@", &mut hits);
+    let mut read = AddressRead::default();
+    for Hit { path, key } in hits {
+        let here = path.join(".");
+        if key {
+            read.offenders.push(format!("{here}: an object KEY holds an `@`"));
+            continue;
+        }
+        let text = at_path(value, &path).as_str().expect("a value hit is a string");
+        if reader.as_deref() == Some(text) {
+            read.own += 1;
+            continue;
+        }
+        let n = path.len();
+        let invited = n >= 3
+            && path[n - 1] == "invited"
+            && path[n - 3] == "seats"
+            && at_path(value, &path[..n - 3])["mine"] == Value::Bool(true);
+        if invited {
+            read.invited += 1;
+        } else {
+            read.offenders.push(format!("{here}: {text:?}"));
+        }
+    }
+    read
+}
+
+/// **The constructed payloads that may hold an `@`, each with its reason, one
+/// line each** (M6.5c2 cycle D, R-6.5c2.35). A construction was served to
+/// nobody, so it has no reader whose own address it could hold: every `@` in
+/// one is a finding unless it is here — and here by PATH where the payload has
+/// one, so a new field in the same file is not waved through with it.
+///
+/// Not empty, and the plan expected it to be: these two were on the corpus
+/// before this cycle, and neither names a person.
+const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
+    ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
+    ("why", Some("ok.provenance.contestant"), "a contestant's identity spells `name@v<version>{params}`: a bot, not a person"),
+];
+
 /// **No payload spells the setup seed. There is no longer an exception.**
 ///
 /// The seed is the FIRST member of the engine's hidden set (`game/observe.rs`):
@@ -2722,6 +2981,216 @@ async fn no_committed_payload_carries_the_setup_seed() {
     );
 }
 
+/// **No payload carries an address that is not its reader's own** (M6.5c2
+/// cycle D, R-6.5c2.35, R-D3; the plan's Review Focus 1).
+///
+/// Until this cycle a table view carried every seat's email and the creator's,
+/// a chat message its poster's, and a refusal the acting seat's holder's — to
+/// every reader, the lobby's and the house chat's to anyone signed in. The
+/// rule is now [`addresses_for`]'s: an address crosses only to its owner, and
+/// to a table's CREATOR as the `invited` address they typed for a seat nobody
+/// has named.
+///
+/// **Per READER, which is what no earlier pin could say.** The seed and
+/// password pins search for values nobody may be handed; an address is a value
+/// exactly one person may be handed, so the question is who each payload was
+/// served to — [`Corpus::readers`], every identity whose reply it was.
+/// A payload with no reader is a CONSTRUCTION and holds no `@` at all but
+/// [`CONSTRUCTED_WITH_AN_AT`]'s, each by name and reason — and an entry nothing
+/// needs any more is refused too, so the list cannot outlive its reason.
+///
+/// **What it proves**: over every WALKED row, no string holding an `@` but the
+/// reader's own address, or an `invited` at `seats[i]` in a table whose `mine`
+/// is `true`; and over every construction, none but the allowlist's.
+///
+/// **What it trusts**: the payload's own `mine`. A `mine` wrongly `true` for
+/// every reader carries its `invited` past this pin — measured, that mutant
+/// leaves it green. Two cells hold `mine` honest instead:
+/// `table::tests::the_view_names_no_address_but_the_readers_own`, which reads
+/// `mine` and `invited` for three readers of one table, and
+/// [`the_stored_table_document_carries_every_seats_address`]'s
+/// `(own, invited) == (0, 0)` over the invited seat's own view.
+///
+/// **Anti-vacuity, two halves.** Here: the walker finds a reader's own address
+/// in the corpus (`/api/me` alone guarantees one), so it is looking at strings
+/// that exist. In [`the_stored_table_document_carries_every_seats_address`]:
+/// the addresses the corpus must not carry ARE written down, in the documents
+/// the store holds, and the rule is shown refusing the two leak shapes it
+/// exists for — an `invited` in a view whose `mine` is false, and another
+/// person's address planted outside `invited`.
+#[tokio::test]
+async fn no_payload_carries_an_address_that_is_not_the_readers_own() {
+    let Corpus { payloads, readers, .. } = corpus().await;
+    let mut offenders: Vec<String> = Vec::new();
+    let (mut own, mut walked) = (0usize, 0usize);
+    let mut allowances_used = std::collections::BTreeSet::new();
+    for (name, value) in &payloads {
+        match readers.get(name) {
+            Some(who) => {
+                walked += 1;
+                assert!(!who.is_empty(), "{name}.json is walked and was served to nobody");
+                for reader in who {
+                    let read = addresses_for(value, reader.as_deref());
+                    own += read.own;
+                    for o in read.offenders {
+                        offenders.push(format!("{name}.json read by {reader:?} carries {o}"));
+                    }
+                }
+            }
+            None => {
+                let mut hits = Vec::new();
+                find(value, &mut Vec::new(), "@", &mut hits);
+                for Hit { path, key } in hits {
+                    let here = path.join(".");
+                    let allowed = CONSTRUCTED_WITH_AN_AT
+                        .iter()
+                        .find(|(n, at, _)| n == name && !key && at.is_none_or(|at| at == here));
+                    match allowed {
+                        Some((n, _, _)) => {
+                            allowances_used.insert(*n);
+                        }
+                        None => offenders.push(format!("{name}.json, a construction, carries an `@` at {here}")),
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "an address reached a reader whose own it is not: {}\n\
+         A payload built for one reader names another person by `name`, by `you`, or by the \
+         words \"invited\" or \"someone\" — never by their address. The one exception is \
+         `seats[i].invited` in a table built for its creator (R-D3); anything wider needs an \
+         owner decision first, not an exemption here.",
+        offenders.join("\n  "),
+    );
+    let unused: Vec<&str> =
+        CONSTRUCTED_WITH_AN_AT.iter().map(|(n, _, _)| *n).filter(|n| !allowances_used.contains(n)).collect();
+    assert!(unused.is_empty(), "an allowance nothing needs any more — remove it: {unused:?}");
+    assert!(walked > 50, "only {walked} walked payloads: the reader map is not describing this corpus");
+    assert!(
+        own > 0,
+        "no reader's own address was found anywhere in the corpus — `/api/me` alone carries one, so \
+         the walker is not looking at the strings that exist",
+    );
+}
+
+/// **The partner: the addresses ARE written down, and the rule refuses them
+/// where they do not belong** (M6.5c2 cycle D, R-6.5c2.35) — so
+/// [`no_payload_carries_an_address_that_is_not_the_readers_own`] cannot pass
+/// by absence.
+///
+/// One 2P table, red the creator and blue INVITED by address and not yet
+/// named, driven through the router:
+/// - the stored TABLE document names both addresses (the keys every binding
+///   is written under), and the stored CHAT names each author's — two seats and
+///   a watcher, ALL THREE WITHOUT A NAME — and the HOUSE's its poster's;
+/// - red's view carries blue's address at `seats[1].invited` and the rule
+///   ALLOWS it there — the one arm of [`addresses_for`] the walked corpus
+///   never exercises with somebody else's address, since nobody there is
+///   invited by one;
+/// - the rule REFUSES the two leak shapes it exists for: that view with
+///   `mine` false (an `invited` served to a non-creator), and blue's view with
+///   red's address planted outside `invited` — which the same rule ALLOWS when
+///   red reads it, so it is a rule about the reader and says so;
+/// - blue's own view carries no address at all, and a chat page read by red
+///   carries none of the other two posters'. **Nameless on purpose**: every
+///   author in the walked corpus gave a name, so a name that FELL BACK to the
+///   address would reach no committed payload — measured: that mutant on the
+///   watcher arm left every other pin in this file green.
+///
+/// **What the rule trusts**: the payload's own `mine`. A `mine` wrongly
+/// `true` for a non-creator would carry its `invited` past this pin; that the
+/// flag is per reader is `table.rs`'s
+/// `the_view_names_no_address_but_the_readers_own`, which reads it for three
+/// readers of one table.
+#[tokio::test]
+async fn the_stored_table_document_carries_every_seats_address() {
+    use yokohama_web::store::Doc;
+    let api = Api::new();
+    let (status, created) = api
+        .call(
+            "POST",
+            "/api/games",
+            Some(json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": SETUP_SEED,
+                "seats": [{ "user": WALKER }, { "user": OTHER }],
+                "id": "addressed",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let stored = |doc: Doc, id: &str| {
+        api.state.games.store().read(doc, id).expect("a readable store").map(|(json, _)| json).expect("a document")
+    };
+    let table = stored(Doc::Table, "addressed");
+    assert!(
+        table.contains(WALKER) && table.contains(OTHER),
+        "the table document names both seats' addresses — or the pin searches for strings nothing writes: {table}",
+    );
+
+    let red_view = api.get_as(WALKER, "/api/games/addressed/table").await;
+    let read = addresses_for(&red_view, Some(WALKER));
+    assert!(read.offenders.is_empty(), "the creator's view breaks the rule: {:?}", read.offenders);
+    assert_eq!(read.invited, 1, "blue's address, at `seats[1].invited`, to the creator: {red_view}");
+    assert_eq!(red_view["seats"][1]["invited"], OTHER);
+    let mut not_mine = red_view.clone();
+    not_mine["mine"] = json!(false);
+    for reader in [Some(WALKER), Some(OTHER), Some(GREEN), None] {
+        assert!(
+            !addresses_for(&not_mine, reader).offenders.is_empty(),
+            "an `invited` address in a view whose `mine` is false, read by {reader:?}, must break the rule",
+        );
+    }
+    let blue_view = api.get_as(OTHER, "/api/games/addressed/table").await;
+    let read = addresses_for(&blue_view, Some(OTHER));
+    assert!(read.offenders.is_empty(), "the invited seat's view breaks the rule: {:?}", read.offenders);
+    assert_eq!((read.own, read.invited), (0, 0), "no address at all reaches the invited seat: {blue_view}");
+    let mut planted = blue_view.clone();
+    planted["seats"][0]["name"] = json!(WALKER);
+    assert_eq!(
+        addresses_for(&planted, Some(OTHER)).offenders,
+        [format!("seats.0.name: {WALKER:?}")],
+        "red's address, planted in blue's view, is refused to blue",
+    );
+    assert_eq!(addresses_for(&planted, Some(WALKER)).own, 1, "and the same string is red's own to red");
+
+    for (seat, who) in [(0, WALKER), (1, OTHER)] {
+        let (status, kept) = api
+            .call_as(Some(who), "POST", "/api/games/addressed/keep", Some(json!({ "seat": seat, "card": 1 })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+    }
+    for (who, body) in [
+        (WALKER, json!({ "text": "good luck" })),
+        (OTHER, json!({ "text": "you too" })),
+        (GREEN, json!({ "text": "watching" })),
+    ] {
+        let (status, posted) = api.call_as(Some(who), "POST", "/api/games/addressed/chat", Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{who}: {posted}");
+    }
+    let chat = stored(Doc::Chat, "addressed");
+    for who in [WALKER, OTHER, GREEN] {
+        assert!(chat.contains(who), "the chat document names {who}, its author: {chat}");
+    }
+    let page = api.get_as(WALKER, "/api/games/addressed/chat").await;
+    let read = addresses_for(&page, Some(WALKER));
+    assert!(read.offenders.is_empty(), "red's page carries another poster's address: {:?}", read.offenders);
+    let nameless = page["messages"].as_array().expect("a page").iter().filter(|m| m["author"]["name"].is_null()).count();
+    assert_eq!(nameless, 3, "premise: all three authors are nameless, so a fallback would show: {page}");
+
+    let (status, posted) =
+        api.call_as(Some(WALKER), "POST", "/api/chat", Some(json!({ "text": "anyone?", "name": "Red" }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{posted}");
+    let house = stored(Doc::House, yokohama_web::chat::HOUSE);
+    assert!(house.contains(WALKER), "the house document names its poster: {house}");
+    let read = addresses_for(&api.get_as(OTHER, "/api/chat").await, Some(OTHER));
+    assert!(read.offenders.is_empty(), "the house carries a poster's address to blue: {:?}", read.offenders);
+}
+
 /// **No payload carries the table password, its salt or its hash** (M6.2 §5.7).
 ///
 /// The sibling fence above is about the setup seed; this is the same shape of
@@ -2755,15 +3224,35 @@ async fn no_committed_payload_carries_the_setup_seed() {
 /// searched for — they are strings this codebase really does write down, and
 /// their lengths are pinned (16 bytes of salt and a SHA-256, in hex) so a lock
 /// that silently became empty would fail here rather than make every search
-/// trivially pass. **Neither password has such a partner and neither can have
-/// one**: nothing stores either of them, which is the property — so those two
-/// searches rest on the salt and the hash having proved the mechanism finds what
-/// is there, and on the mutations recorded in the task report.
+/// trivially pass. **The two passwords' partner is the walk's request script**
+/// (M6.5c2 cycle D, dossier row 38): nothing STORES either of them, which is
+/// the property, but both are SENT, and the rows `wire-script/walk.json` is
+/// written from are where a request body is written down. So the passwords are
+/// read out of the rows that carry one, both constants are asserted to be
+/// exactly what was sent, and the search is shown to find each in the text
+/// the script is emitted as — the mechanism finding what is there, as the
+/// salt's and the hash's partners show it for theirs.
 #[tokio::test]
 async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
     // This run's payloads, taken before the golden compares them — the same
-    // corpus the committed files are cut from.
-    let run = corpus().await.payloads;
+    // corpus the committed files are cut from — and the request script beside
+    // them, which the golden holds byte for byte to `walk.json`. The rows and
+    // not the committed file: a regeneration rewrites that file while this
+    // test may be reading it.
+    let Corpus { payloads: run, script, .. } = corpus().await;
+    let sent: std::collections::BTreeSet<String> = script
+        .iter()
+        .filter_map(|row| row.body.as_ref()?.get("password")?.as_str().map(str::to_string))
+        .collect();
+    assert_eq!(
+        sent,
+        [WIRE_PASSWORD, WIRE_WRONG_PASSWORD].map(str::to_string).into_iter().collect(),
+        "the walk sends exactly the table's password and its one wrong attempt",
+    );
+    let emitted = serde_json::to_string_pretty(&script).expect("pretty JSON");
+    for needle in &sent {
+        assert!(emitted.contains(needle.as_str()), "the search finds {needle:?} where the script writes it");
+    }
 
     let api = Api::new();
     let (status, created) = api.call("POST", "/api/games", Some(new_game_body())).await;
@@ -2839,135 +3328,88 @@ async fn no_payload_of_this_run_carries_the_password_or_its_hash() {
 /// did not invite them. `TableView` carries the one boolean the caller needs
 /// about THEMSELVES (`can_watch`) and the list itself never crosses (R-3.5).
 ///
-/// **M6.3 stated that as "no payload names a watcher", and M6.4 makes that
-/// sentence false in one place on purpose.** A watcher may now speak, and a
-/// message is signed — so [`GREEN`]'s address is legitimately on the wire, as
-/// `author.user` of the one message green sent. The narrowing is not "green is
-/// exempt": it is a PATH rule, checked per hit. An address may appear at
-/// `<…>.author.user` beside `kind: "watcher"`, and nowhere else, and only for
-/// the identity that actually posted.
+/// **M6.4 made "no payload names a watcher" false in one place, and M6.5c2
+/// cycle D makes it true again** (R-6.5c2.35). A watcher may speak, and a
+/// message is signed — but by a name and a `you`, never an address: the
+/// allowance M6.4 wrote here (`author.user` beside `kind: "watcher"`) is
+/// GONE, and in its place the pin asserts that NO author, of any kind, carries
+/// a `user`. So [`GREEN`], who posts, is named nowhere either, and the watcher
+/// is "named only as an author" in the one sense left: the author of what they
+/// posted, by the name they gave.
 ///
-/// **Which is why there are three needles and not two.** The claim M6.3 made
-/// needs a witness that still has no reason to be on the wire at all, so
-/// [`QUIET`] knocks at the same table, is written into the same `unlocked` list,
-/// and then says nothing for the rest of the walk: every payload after that
-/// point is built while it is watching, and none of them may spell it. [`GREEN`]
-/// exercises the allowance. [`STRANGER`] rides along as the second realistic
-/// leak on these routes — a view or a refusal that echoed its READER's address
-/// back, a shape no other test would see, since every other payload is read by
-/// somebody who is named in it anyway.
+/// **Three needles.** [`QUIET`] knocks at the same table, is written into the
+/// same `unlocked` list, and then says nothing for the rest of the walk: the
+/// witness with no reason to be on the wire at all. [`GREEN`] is the one who
+/// posts, and whose message is served back on the page, from a cursor and as
+/// the post's own reply — each an author with no address. [`STRANGER`] rides
+/// along as the second realistic leak on these routes — a view or a refusal
+/// that echoed its READER's address back.
 ///
-/// **The search walks the tree rather than the serialized text**, because the
-/// allowance is about WHERE a hit is and a text search has no position. It is
-/// no weaker for it: a string VALUE containing the address anywhere inside it is
-/// a hit, exactly as `contains` was, and an object KEY containing it is a hit
-/// too — which the text search also caught and a naive walk would not.
+/// **The search walks the tree** ([`find`]): a string VALUE containing the
+/// address anywhere inside it is a hit, and an object KEY containing it is a
+/// hit too. The reader-aware rule for every OTHER address is
+/// [`no_payload_carries_an_address_that_is_not_the_readers_own`]'s.
 #[tokio::test]
 async fn a_silent_watcher_is_named_nowhere_and_a_posting_one_only_as_an_author() {
-    /// Every path at which `needle` appears — inside a string value, or as an
-    /// object key. The path is the steps taken to reach it, array indices
-    /// included, so the caller can read the hit's SIBLINGS back out.
-    fn find(v: &Value, path: &mut Vec<String>, needle: &str, hits: &mut Vec<Vec<String>>) {
+    /// Every object at an `author` key, anywhere in `v`.
+    fn authors<'a>(v: &'a Value, out: &mut Vec<&'a Value>) {
         match v {
-            Value::String(s) if s.contains(needle) => hits.push(path.clone()),
-            Value::Array(items) => {
-                for (i, item) in items.iter().enumerate() {
-                    path.push(i.to_string());
-                    find(item, path, needle, hits);
-                    path.pop();
-                }
-            }
+            Value::Array(items) => items.iter().for_each(|item| authors(item, out)),
             Value::Object(map) => {
                 for (k, item) in map {
-                    path.push(k.clone());
-                    // A KEY spelling the address is a hit at the key's own path.
-                    // It can never be `allowed` — the rule requires the last step
-                    // to be `user` — which is the answer a map keyed by email
-                    // should get.
-                    if k.contains(needle) {
-                        hits.push(path.clone());
+                    if k == "author" && item.is_object() {
+                        out.push(item);
                     }
-                    find(item, path, needle, hits);
-                    path.pop();
+                    authors(item, out);
                 }
             }
             _ => {}
         }
     }
 
-    /// The value at a path [`find`] produced, so a hit can be checked against
-    /// its siblings. Every step exists by construction — the path was walked
-    /// out of this very value.
-    fn at_path<'a>(v: &'a Value, path: &[String]) -> &'a Value {
-        let mut here = v;
-        for step in path {
-            here = match here {
-                Value::Array(items) => {
-                    let i: usize = step.parse().expect("an array step is an index");
-                    &items[i]
-                }
-                _ => &here[step.as_str()],
-            };
-        }
-        here
-    }
-
     let mut offenders: Vec<String> = Vec::new();
-    let mut allowed_hits = 0usize;
+    let mut green_posts = 0usize;
     for (name, value) in corpus().await.payloads {
-        for (who, needle, may_post) in [
-            ("the watcher", GREEN, true),
-            ("a watcher who never spoke", QUIET, false),
-            ("a caller who never knocked", STRANGER, false),
+        for (who, needle) in [
+            ("the watcher who posted", GREEN),
+            ("a watcher who never spoke", QUIET),
+            ("a caller who never knocked", STRANGER),
         ] {
-            let mut hits: Vec<Vec<String>> = Vec::new();
+            let mut hits = Vec::new();
             find(&value, &mut Vec::new(), needle, &mut hits);
-            for path in hits {
-                let allowed = may_post
-                    && path.last().map(String::as_str) == Some("user")
-                    && path.len() >= 2
-                    && path[path.len() - 2] == "author";
-                if allowed {
-                    // **The sibling `kind` must say watcher.** A seat author
-                    // carrying this address would be a seat green does not hold
-                    // — a different and worse leak than the one the allowance
-                    // covers, and one that would otherwise pass on its path
-                    // alone.
-                    let author = at_path(&value, &path[..path.len() - 1]);
-                    assert_eq!(
-                        author["kind"],
-                        "watcher",
-                        "{name} names {who} as a {} author at {} — the allowance is for the \
-                         author of a message a watcher sent, not for a seat",
-                        author["kind"],
-                        path.join("."),
-                    );
-                    allowed_hits += 1;
-                } else {
-                    offenders.push(format!("{name} names {who} at {}", path.join(".")));
-                }
+            for hit in hits {
+                offenders.push(format!("{name} names {who} at {}", hit.path.join(".")));
+            }
+        }
+        let mut found = Vec::new();
+        authors(&value, &mut found);
+        for author in found {
+            if author.get("user").is_some() {
+                offenders.push(format!("{name} has an author carrying a `user`: {author}"));
+            }
+            if author["kind"] == "watcher" && author["name"] == "Green" {
+                green_posts += 1;
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "a watcher is named where they did not speak: {}\n\
+        "a watcher, or an author, is named by address: {}\n\
          `unlocked` is the roster of everyone looking over these players' shoulders, and \
-         `can_watch` — one boolean, about the reader — is what crosses instead. The ONE \
-         allowance is `author.user` beside `kind: \"watcher\"`, on a message that watcher \
-         actually sent.",
+         `can_watch` — one boolean, about the reader — is what crosses instead. A message is \
+         signed with a name and a `you` (R-6.5c2.35); no author carries a `user`.",
         offenders.join(", "),
     );
 
-    // **Anti-vacuity, first half: the allowance is EXERCISED.** A path rule that
-    // nothing in the corpus ever satisfies is a rule that has not been read —
-    // green posted one message, and it is served back on the page, on the page
-    // from a cursor, and as the post's own reply.
+    // **Anti-vacuity, first half: the author check READ something.** Green
+    // posted one message, and it is served back on the page, on the page from
+    // a cursor, and as the post's own reply — each an author this cell looked
+    // inside for a `user` and did not find one.
     assert!(
-        allowed_hits >= 2,
-        "green's post should appear at `author.user` in more than one payload; found \
-         {allowed_hits} — either the chat fixtures stopped carrying an author, or the \
-         allowance above is describing a shape this corpus does not have",
+        green_posts >= 2,
+        "green's post should appear as a watcher author named Green in more than one payload; \
+         found {green_posts} — either the chat fixtures stopped carrying an author, or the \
+         check above is looking at a shape this corpus does not have",
     );
 
     // **The anti-vacuity partner: the search cannot pass by searching for
@@ -3165,6 +3607,25 @@ async fn the_stream_s_first_frame_is_the_events_route_s_reply_by_value() {
     assert_eq!(framed, polled, "the stream and the route answer the same object");
 }
 
+/// One drift line: both lengths and WHERE the two first differ — the byte
+/// offset and its line (M6.5c2 cycle D, dossier row 56). The payload arm
+/// always named the offset; the three script arms named only the lengths, and
+/// `walk.json` is some 24,000 pretty-printed lines, so a drift there said "it
+/// moved" and nothing about where.
+fn drift_line(label: &str, committed: &str, emitted: &str, makes: &str) -> String {
+    let at = committed
+        .bytes()
+        .zip(emitted.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| committed.len().min(emitted.len()));
+    let line = committed.as_bytes()[..at].iter().filter(|b| **b == b'\n').count() + 1;
+    format!(
+        "  {label} — committed {} bytes, {makes} {} bytes; first difference at byte {at} (line {line})",
+        committed.len(),
+        emitted.len(),
+    )
+}
+
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     let dir = wire_dir();
@@ -3175,7 +3636,7 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
 
     let mut drifted: Vec<String> = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    let Corpus { payloads, script, host_script, archive_script } = corpus().await;
+    let Corpus { payloads, script, host_script, archive_script, .. } = corpus().await;
     for (name, value) in payloads {
         names.push(name.clone());
         let path = dir.join(format!("{name}.json"));
@@ -3186,16 +3647,9 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
         match std::fs::read_to_string(&path) {
             Ok(committed) if committed == emitted => {}
-            Ok(committed) => drifted.push(format!(
-                "  {name}.json — committed {} bytes, server emits {} bytes; first difference at byte {}",
-                committed.len(),
-                emitted.len(),
-                committed
-                    .bytes()
-                    .zip(emitted.bytes())
-                    .position(|(a, b)| a != b)
-                    .unwrap_or_else(|| committed.len().min(emitted.len())),
-            )),
+            Ok(committed) => {
+                drifted.push(drift_line(&format!("{name}.json"), &committed, &emitted, "server emits"))
+            }
             Err(e) => drifted.push(format!("  {name}.json — {e}")),
         }
     }
@@ -3229,10 +3683,11 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     } else {
         match std::fs::read_to_string(&script_path) {
             Ok(committed) if committed == emitted_script => {}
-            Ok(committed) => drifted.push(format!(
-                "  wire-script/walk.json — committed {} bytes, the walk makes {} bytes",
-                committed.len(),
-                emitted_script.len(),
+            Ok(committed) => drifted.push(drift_line(
+                "wire-script/walk.json",
+                &committed,
+                &emitted_script,
+                "the walk makes",
             )),
             Err(e) => drifted.push(format!("  wire-script/walk.json — {e}")),
         }
@@ -3261,10 +3716,11 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
         }
         match std::fs::read_to_string(&path) {
             Ok(committed) if committed == emitted => {}
-            Ok(committed) => drifted.push(format!(
-                "  wire-script/{file} — committed {} bytes, the walk makes {} bytes",
-                committed.len(),
-                emitted.len(),
+            Ok(committed) => drifted.push(drift_line(
+                &format!("wire-script/{file}"),
+                &committed,
+                &emitted,
+                "the walk makes",
             )),
             Err(e) => drifted.push(format!("  wire-script/{file} — {e}")),
         }
@@ -3375,12 +3831,19 @@ async fn the_dispatcher_answers_what_the_router_answers() {
 /// is a property of a NAME, so nothing about the type can hold it: this reads
 /// the files.
 ///
+/// **It reads the MESSAGES' stamps, by name, and nothing else** (M6.5c2 cycle
+/// D, row 130): a page's `messages[].created_at` and a post reply's own
+/// `created_at`. The walk it replaced collected a `created_at` from anywhere in
+/// the file, so a clock carried by some other object on one of these payloads
+/// would have been counted as a message's.
+///
 /// **Its anti-vacuity is the count.** A sweep that found no stamps at all would
-/// pass exactly as loudly, so the number of clocks read is asserted — EIGHT,
+/// pass exactly as loudly, so the number of clocks read is asserted — ELEVEN,
 /// which is the page's three, the one message a cursor leaves, the two posts'
-/// own replies and the house's pair. A regeneration that emptied the chat
-/// corpus fails here rather than going quiet, and so does one that stopped
-/// serving a message's author its own page.
+/// own replies, the house's pair, and (M6.5c2 cycle D) the page read again
+/// after the delete, whose TOMBSTONE keeps its clock. A regeneration that
+/// emptied the chat corpus fails here rather than going quiet, and so does one
+/// that stopped serving a message's author its own page.
 #[test]
 fn every_chat_message_carries_the_frozen_clock() {
     assert!(
@@ -3388,29 +3851,18 @@ fn every_chat_message_carries_the_frozen_clock() {
         "regeneration run — re-run WITHOUT UPDATE_WIRE_FIXTURES to check the corpus",
     );
 
-    fn stamps(v: &Value, found: &mut Vec<u64>) {
-        match v {
-            Value::Object(map) => {
-                for (k, item) in map {
-                    if k == "created_at" {
-                        found.push(item.as_u64().unwrap_or_else(|| {
-                            panic!("a message's clock is a unix timestamp: {item}")
-                        }));
-                    } else {
-                        stamps(item, found);
-                    }
-                }
-            }
-            Value::Array(items) => items.iter().for_each(|i| stamps(i, found)),
-            _ => {}
-        }
-    }
-
     let dir = wire_dir();
     let mut found: Vec<u64> = Vec::new();
-    for name in
-        ["chat", "chat_after", "chat_post", "chat_post_watcher", "house_chat", "house_chat_post"]
-    {
+    // Each file, and whether it is a PAGE (`{messages, last}`) or one message.
+    for (name, page) in [
+        ("chat", true),
+        ("chat_after", true),
+        ("chat_post", false),
+        ("chat_post_watcher", false),
+        ("house_chat", true),
+        ("house_chat_post", false),
+        ("chat_deleted", true),
+    ] {
         let path = dir.join(format!("{name}.json"));
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
@@ -3419,16 +3871,25 @@ fn every_chat_message_carries_the_frozen_clock() {
                 path.display()
             )
         });
-        let before = found.len();
-        stamps(&serde_json::from_str::<Value>(&text).expect("a committed fixture is JSON"), &mut found);
-        assert!(
-            found.len() > before,
-            "{name}.json carries no `created_at` at all — a message whose stamp is spelled \
-             something else is a wall clock inside a committed golden",
-        );
+        let v: Value = serde_json::from_str(&text).expect("a committed fixture is JSON");
+        let messages: Vec<&Value> = if page {
+            v["messages"].as_array().unwrap_or_else(|| panic!("{name}.json is a page with no `messages`")).iter().collect()
+        } else {
+            vec![&v]
+        };
+        assert!(!messages.is_empty(), "{name}.json carries no message");
+        for m in messages {
+            let stamp = m.get("created_at").and_then(Value::as_u64).unwrap_or_else(|| {
+                panic!(
+                    "{name}.json: a message with no `created_at` — a stamp spelled something else is a \
+                     wall clock inside a committed golden: {m}"
+                )
+            });
+            found.push(stamp);
+        }
     }
 
-    assert_eq!(found.len(), 8, "one clock per committed message: {found:?}");
+    assert_eq!(found.len(), 11, "one clock per committed message: {found:?}");
     for seen in &found {
         assert_eq!(
             *seen, FROZEN_CREATED_AT,

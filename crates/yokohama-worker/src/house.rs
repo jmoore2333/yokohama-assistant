@@ -177,12 +177,12 @@ pub fn remove_copy_inner(id: &str) -> Result<(), String> {
     store.delete(id)
 }
 
-/// The lobby socket's frame data (spec §2.5): `{"seq":…,"chat":…}` — the
-/// layer's own `signal::house_frame` (M6.5c2, spec §2.6), which the NAS's
-/// `/api/stream` writes as each `house` event's data too, so the two hosts'
-/// frames are one function's.
-pub fn house_frame_inner(seq: u64, chat: u64) -> String {
-    yokohama_web::signal::house_frame(seq, chat)
+/// The lobby socket's frame data (spec §2.5): `{"seq":…,"chat":…,"rev":…}` —
+/// the layer's own `signal::house_frame` (M6.5c2, spec §2.6; `rev` since cycle
+/// D, R-D4), which the NAS's `/api/stream` writes as each `house` event's data
+/// too, so the two hosts' frames are one function's.
+pub fn house_frame_inner(seq: u64, chat: u64, rev: u64) -> String {
+    yokohama_web::signal::house_frame(seq, chat, rev)
 }
 
 /// This instance's store: `crate::STORE`, the same `Arc` its `Games` reads, so
@@ -608,14 +608,15 @@ mod tests {
     /// `yokohama_web::signal::house_frame`, whose shape the layer's own cells
     /// pin — compared with that function, it would be compared with itself — so
     /// this pins the BYTES. What is this crate's own is the export's `u32` (the
-    /// orchestrator's ruling I-22). Mutants: the export narrowing either
-    /// counter, or swapping the two.
+    /// orchestrator's ruling I-22). Mutants: the export narrowing any counter,
+    /// or swapping two of them.
     #[test]
     fn house_frame_is_the_sse_frames_data_byte_for_byte() {
-        assert_eq!(house_frame_inner(3, 7), r#"{"seq":3,"chat":7}"#);
-        assert_eq!(crate::house_frame(3, 7), r#"{"seq":3,"chat":7}"#);
-        assert_eq!(crate::house_frame(u32::MAX, 7), r#"{"seq":4294967295,"chat":7}"#);
-        assert_eq!(crate::house_frame(7, u32::MAX), r#"{"seq":7,"chat":4294967295}"#);
+        assert_eq!(house_frame_inner(3, 7, 8), r#"{"seq":3,"chat":7,"rev":8}"#);
+        assert_eq!(crate::house_frame(3, 7, 8), r#"{"seq":3,"chat":7,"rev":8}"#);
+        assert_eq!(crate::house_frame(u32::MAX, 7, 8), r#"{"seq":4294967295,"chat":7,"rev":8}"#);
+        assert_eq!(crate::house_frame(7, u32::MAX, 8), r#"{"seq":7,"chat":4294967295,"rev":8}"#);
+        assert_eq!(crate::house_frame(7, 8, u32::MAX), r#"{"seq":7,"chat":8,"rev":4294967295}"#);
     }
 
     /// `put_copy` REPLACES a copy the house already holds — where `load`, a

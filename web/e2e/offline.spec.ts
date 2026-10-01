@@ -78,15 +78,11 @@ import {
   WALKER,
   type Game,
 } from "./harness";
+import { CAP, REV } from "./caps";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
 // `every_spec_can_skip.spec.ts` reads this directory for.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
-
-/** The walk's own cap, the same figure every other walk here carries.
- *  A hit throws `capReached`, which names the cap, the turn and the
- *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
-const CAP = 4000;
 
 /** How long a cold install is given. `INSTALL_DEADLINE_MS` in `swInstall.ts` is
  *  120 s for the install itself, and this is the same budget plus the page's
@@ -120,9 +116,6 @@ const ENVELOPE = path.join(HERE, "..", "src", "wire-script", "backup-envelope.js
 const SEGMENT = [...WALKER]
   .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
   .join("");
-
-/** This build's semantics rev, which is the archive's own directory level. */
-const REV = "rev7";
 
 /**
  * Where `api.ts` keeps the name this browser signs its requests with
@@ -429,6 +422,13 @@ test("close and reopen: the profile keeps the release and the game, and both com
     ).toBeGreaterThanOrEqual(opening);
 
     expect(api.answered, "the whole reopened session answered nothing from the network").toEqual([]);
+    // The partner that makes the line above mean something: an empty
+    // `answered` is also what a watcher attached to nothing reads, so the page
+    // has to have ASKED (the game-over hook's health read) and been refused.
+    expect(
+      api.failed.filter((f) => f.endsWith("/api/health")).length,
+      "and the reopened page did ask: the game-over hook's own health read never arrived",
+    ).toBeGreaterThan(0);
     // eslint-disable-next-line no-console
     console.log(
       `REOPEN: ${game.id} — ${opening} moves before the close, ${moves} after, ` +
@@ -619,6 +619,90 @@ test("the update: a second release waits, nothing switches until the click, and 
       // purpose: a poisoned `dist` breaks every spec that follows, so it is the
       // more urgent fact. The original is carried in the sentence so neither is
       // lost.
+      throw new Error(
+        `dist was NOT restored: sw.js names ${back} (expected ${firstName}), ` +
+          `manifest.webmanifest ${same ? "is" : "is NOT"} its original bytes. ` +
+          `Rebuild with \`npm run build:client\` before trusting any later spec.` +
+          (failure ? ` The cell itself had already failed: ${String(failure)}` : ""),
+      );
+    }
+  }
+  if (failure) throw failure;
+});
+
+test("the update offered to a tab NO worker controls: its click reloads it once the new worker has activated, and the tab beside it is not reloaded", async ({
+  page: u,
+  context,
+}) => {
+  // **Row 26 (E2), the one arm `swRegister.ts` decides at the click and no
+  // browser had read.** Every other "Reload to use it" in this file is pressed
+  // in a CONTROLLED tab, which hears `controllerchange` and reloads on it. A
+  // tab nothing controls — the visit that installed the release, since nothing
+  // calls `clients.claim()` — is not promised a `controllerchange`, so the click
+  // has to wait for the worker it asked for to reach `activated` instead
+  // (`reloadWhenActivated`). Unit cells hold the branch (`swRegister.test.ts`);
+  // this holds that the PLATFORM's events make it land.
+  //
+  // **What it proves, and what it does not.** It proves the uncontrolled tab
+  // reloads onto the new release after its click, and that the tab beside it
+  // does not; mutating away the `reloadWhenActivated` call fails it. It does
+  // NOT prove the branch choice: Chromium also sends this tab a
+  // `controllerchange`, so forcing the controlled branch (`if (true)`) still
+  // passes. The choice is held by the unit cells only.
+  //
+  // **Staged with two tabs, and the second is what makes an offer exist.** An
+  // update waits only while some client is still served by the old worker; with
+  // no controlled client the new worker would activate on its own and the door
+  // would never show an offer. So tab C loads after the install and IS
+  // controlled by release 1, and tab U — the install visit, never reloaded — is
+  // the uncontrolled one that takes the offer.
+  const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
+  const firstName = cacheNameOf(was.worker.toString("utf8"));
+  const watch = watchForFaults(u);
+  let failure: unknown = null;
+  try {
+    await u.goto("/");
+    const one = await installed(u);
+    expect(one, "the release on disk is the release in the cache").toBe(firstName);
+    expect(await controlled(u), "the install visit is served by no worker (nothing claims)").toBe(false);
+
+    const c = await context.newPage();
+    await c.goto("/");
+    expect(await controlled(c), "C loads in front of release 1's worker, as any returning tab does").toBe(true);
+    // A property only THIS document carries: a reload of C would lose it.
+    await c.evaluate(() => {
+      (window as unknown as { __still?: boolean }).__still = true;
+    });
+
+    const two = shipRelease(2);
+    expect(two, "a changed file is a different release").not.toBe(one);
+    await checkForUpdate(u);
+    await expect(u.getByText("A new version is ready.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    // The premise of the whole cell, read at the moment of the click: this tab
+    // is offered the update and is still controlled by nothing.
+    expect(await controlled(u), "U is offered the update while nothing controls it").toBe(false);
+
+    await Promise.all([
+      u.waitForEvent("load"),
+      u.getByRole("button", { name: "Reload to use it" }).click(),
+    ]);
+    expect(await controlled(u), "the reloaded tab is served by release 2's worker").toBe(true);
+    expect(await markOnScreen(u), "and reads release 2").toBe(2);
+    await expect(u.getByText("A new version is ready.")).toHaveCount(0);
+    expect(
+      await c.evaluate(() => (window as unknown as { __still?: boolean }).__still === true),
+      "the tab that did not click was NOT reloaded",
+    ).toBe(true);
+    expect(watch.failures).toEqual([]);
+  } catch (e) {
+    failure = e;
+  } finally {
+    // Cell 3's restoration, and checked in the same place for the same reason.
+    fs.writeFileSync(MARKED, was.marked);
+    fs.writeFileSync(SW, was.worker);
+    const back = cacheNameOf(fs.readFileSync(SW, "utf8"));
+    const same = fs.readFileSync(MARKED).equals(was.marked);
+    if (back !== firstName || !same) {
       throw new Error(
         `dist was NOT restored: sw.js names ${back} (expected ${firstName}), ` +
           `manifest.webmanifest ${same ? "is" : "is NOT"} its original bytes. ` +

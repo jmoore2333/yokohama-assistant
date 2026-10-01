@@ -77,6 +77,9 @@ export function GameMenu({
   // two `GET /api/games`, and the first to answer is not the first sent; a
   // stale list is one that offers a game already deleted.
   const listing = useRef(0);
+  /** The menu itself — an uncontrolled `<details>`, whose `open` is the one
+   *  thing a switch has to put back (see `switchTo`). */
+  const menu = useRef<HTMLDetailsElement | null>(null);
   // The sentence to show. A 401 needs nothing here: `api.ts` moves the door
   // from inside `call`, before this ever sees the refusal (ruling R-7.1).
   const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
@@ -115,6 +118,11 @@ export function GameMenu({
     setSwitching(true);
     try {
       await onSwitch(id);
+      // **Closed once the switch has LANDED** (M6.5c2 cycle D, dossier row 2):
+      // a switch between two games keeps this banner mounted, and the list was
+      // left open over the game just chosen. A refusal keeps it open, because
+      // the refusal is said on this menu's own line.
+      if (menu.current) menu.current.open = false;
     } catch (e) {
       setError(said(e));
     } finally {
@@ -125,6 +133,7 @@ export function GameMenu({
   const others = (saved ?? []).filter((t) => t.id !== state.id);
   return (
     <details
+      ref={menu}
       className="cards-menu game-menu"
       onToggle={(e) => {
         if (e.currentTarget.open) load();

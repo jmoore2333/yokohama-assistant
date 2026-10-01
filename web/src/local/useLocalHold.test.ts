@@ -8,7 +8,7 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resetLocalHostForTests } from "./client";
+import { localCall, resetLocalHostForTests } from "./client";
 import { useLocalHold } from "./useLocalHold";
 import { currentWorker, FakeWorker, stubWorker } from "../test/fakeWorker";
 import type { Req } from "./client";
@@ -98,6 +98,117 @@ describe("the hold on a local game", () => {
 
     act(() => currentWorker().emit({ kind: "lost", id: "local-1" }));
     await waitFor(() => expect(result.current.state).toBe("lost"));
+  });
+
+  // **An acquisition that could not read the store is its own answer** (M6.5c2
+  // cycle D, dossier row 14). It used to be a trap, and the page restarted the
+  // host into the same store; now the Worker answers in the storage's words,
+  // and the hook hands the screen a state it can draw — the broken-store face
+  // with Reload — and the sentence to put on it. Nothing restarts, and the
+  // game is not released: the hold was never granted.
+  it("reports UNREADABLE with the store's own sentence, restarts nothing, and releases nothing", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    stubWorker({ hold: () => ({ unreadable: sentence }) });
+    const { result, unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("unreadable"));
+    expect(result.current.id).toBe("local-1");
+    expect(result.current.sentence).toBe(sentence);
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(currentWorker().terminated).toBe(false);
+    unmount();
+    expect(posted("release")).toEqual([]);
+  });
+
+  // **A Take over the store refuses is the same face** (fix round 1, review
+  // Minor 3): not the lock screen's refusal line, which drew the sentence
+  // without the Reload that is its one remedy.
+  it("reports UNREADABLE when a Take over could not read the store", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    stubWorker({ hold: (_id, steal) => (steal ? { unreadable: sentence } : false) });
+    const { result, unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("elsewhere"));
+    await act(() => result.current.takeover());
+    expect(result.current).toMatchObject({ id: "local-1", state: "unreadable", sentence });
+    unmount();
+    expect(posted("release"), "and the refused steal is not released").toEqual([]);
+  });
+
+  // **And a game this tab HELD whose restart could not read the store** (fix
+  // round 1, review Minor 1): the client says so for that game, and the hook
+  // draws the same face.
+  it("reports UNREADABLE when a restart could not acquire the game again", async () => {
+    const sentence = "this browser's storage could not be read \u2014 The database connection is closing.";
+    let fresh = false;
+    stubWorker({
+      hold: () => (fresh ? { unreadable: sentence } : true),
+      call: () => ({ status: 500, body: { error: "unreachable executed" }, trapped: true }),
+    });
+    const { result } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("held"));
+    fresh = true;
+    await act(() => localCall("GET", "/api/games/local-1/ports").catch(() => undefined));
+    await waitFor(() => expect(result.current).toMatchObject({ id: "local-1", state: "unreadable", sentence }));
+  });
+
+  // **The hook releases only what it may be holding** (M6.5c2 cycle D, dossier
+  // row 56). A hold answered "open in another tab" was never this tab's, and
+  // an unconditional release read as if the page believed it held the game.
+  it("releases nothing for a game another tab has open", async () => {
+    stubWorker({ hold: () => false });
+    const { result, unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("elsewhere"));
+    unmount();
+    expect(posted("release")).toEqual([]);
+  });
+
+  // The partner that keeps the rule above from going too far: a hold still IN
+  // FLIGHT when the screen goes is released, because the Worker's own record
+  // of what the page wants (`wanted`) is what makes the acquisition drop the
+  // lock when it lands — React's StrictMode sends hold, release, hold before
+  // the first has answered, and a real departure can be that quick too.
+  it("releases a hold still in flight when the screen goes", async () => {
+    stubWorker({ hold: () => "pending" });
+    const { unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(posted("hold")).toEqual(["local-1"]));
+    unmount();
+    expect(posted("release")).toEqual(["local-1"]);
+  });
+
+  // And the other partner: a game this tab found open elsewhere and then TOOK
+  // OVER is this tab's, so leaving releases it.
+  it("releases a game it took over, when the screen goes", async () => {
+    stubWorker({ hold: (_id, steal) => steal });
+    const { result, unmount } = renderHook(() => useLocalHold("local-1"));
+    await waitFor(() => expect(result.current.state).toBe("elsewhere"));
+    await act(() => result.current.takeover());
+    expect(result.current.state).toBe("held");
+    unmount();
+    expect(posted("release")).toEqual(["local-1"]);
+  });
+
+  // **A takeover that lands after the route has moved on changes nothing**
+  // (M6.5c2 cycle D, dossier row 56: `take`'s missing `live` guard). The
+  // answer is about the game being LEFT; setting it would put that game's
+  // "held" over the one the route now names, which is the stale read
+  // `Hold.id` exists to stop.
+  it("keeps the new game's answer when a takeover of the old one lands late", async () => {
+    stubWorker({ hold: (id, steal) => (steal ? "pending" : id === "local-2") });
+    const { result, rerender } = renderHook(({ id }) => useLocalHold(id), {
+      initialProps: { id: "local-1" },
+    });
+    await waitFor(() => expect(result.current.state).toBe("elsewhere"));
+    const taking = result.current.takeover();
+    rerender({ id: "local-2" });
+    await waitFor(() => expect(result.current).toMatchObject({ id: "local-2", state: "held" }));
+    // The steal was in flight when the screen left the game, so the game IS
+    // released — the one release that lets the Worker drop a lock landing
+    // after the page has gone.
+    expect(posted("release")).toEqual(["local-1"]);
+
+    const steal = currentWorker().posted.find((p) => p.kind === "takeover")!;
+    act(() => currentWorker().emit({ seq: steal.seq, held: true }));
+    await act(() => taking);
+    expect(result.current).toMatchObject({ id: "local-2", state: "held" });
   });
 
   // Take over and Take back are one message and one state: the lock is STOLEN,

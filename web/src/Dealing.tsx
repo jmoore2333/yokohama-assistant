@@ -66,7 +66,6 @@ const pad = (id: number) => `O${String(id).padStart(2, "0")}`;
 
 export function Dealing({
   game,
-  me,
   art,
   labels,
   sections,
@@ -78,10 +77,6 @@ export function Dealing({
 }: {
   /** The table being dealt. */
   game: string;
-  /** Who this browser plays as, from the door — used to say "you" rather than
-   *  your own email back at you on the seats you hold yourself, which at a
-   *  hot-seat table is most of them. */
-  me: string;
   art: ArtManifest | null;
   labels: Labels | null;
   /** Owned by `App` (R-T12-4), so this screen and the game agree about which
@@ -121,6 +116,9 @@ export function Dealing({
    *  panel's `count` (spec §6.2). The table exists before the game does, and so
    *  do the people waiting at it. */
   const [chatCount, setChatCount] = useState(0);
+  /** The table's chat revision off the same frame (M6.5c2 cycle D, R-D4): the
+   *  panel's `rev`, which moving further than the count is a delete. */
+  const [chatRev, setChatRev] = useState(0);
 
   // The same guard, and the same reasoning, as `App`'s `inFlight`: React
   // batches, so two clicks in the same tick both read a `busy` STATE of false
@@ -152,6 +150,13 @@ export function Dealing({
 
   const said = (e: unknown) => (e instanceof ApiError ? e.message : String(e));
 
+  /** How many deal reads have been asked for — `fetchDeal` keeps only the
+   *  newest one's answer. */
+  const asked = useRef(0);
+  /** The chat fields of the last frame, or `null` before the first — what
+   *  tells a keep's frame from a message's (the signal's handler below). */
+  const lastFrame = useRef<{ chat: number; rev: number } | null>(null);
+
   const start = useCallback(async () => {
     if (started.current) return;
     started.current = true;
@@ -171,10 +176,16 @@ export function Dealing({
    *  that is already playing (§4.3), which is exactly what a table finalized by
    *  somebody else between two of this browser's requests looks like. */
   const fetchDeal = useCallback(async () => {
+    // Which read is the newest: two frames close together send two reads, and
+    // the one that answers LAST is not always the one asked last.
+    const mine = (asked.current += 1);
     try {
-      setDeal(await api.deal(game));
+      const d = await api.deal(game);
+      if (mine !== asked.current) return;
+      setDeal(d);
       setError(null);
     } catch (e) {
+      if (mine !== asked.current) return;
       if (e instanceof ApiError && e.status === 409) {
         void start();
         return;
@@ -195,7 +206,9 @@ export function Dealing({
    *  running and this screen is done. The only case it serves is a table whose
    *  remaining seats are at OTHER browsers — a keep of this browser's own is
    *  answered by `POST …/keep` itself, which says whether that keep finalized
-   *  the table.
+   *  the table. **And a frame that leaves it dealing re-reads the deal**
+   *  (M6.5c2 cycle D), so the "waiting on" line follows the other seats' keeps
+   *  — see the handler for the one kind of frame it lets pass.
    *
    *  What the hook adds is what the interval could not do: nothing is asked
    *  from a tab nobody is looking at (R-P8), the return asks at once, a server
@@ -216,7 +229,27 @@ export function Dealing({
       // The table's newest message number, off the frame this screen already
       // reads for its own hand-over (spec §6.2) — the panel's `count`.
       setChatCount(e.chat);
-      if (e.status !== "dealing") void start();
+      setChatRev(e.chat_rev);
+      const before = lastFrame.current;
+      lastFrame.current = { chat: e.chat, rev: e.chat_rev };
+      if (e.status !== "dealing") {
+        void start();
+        return;
+      }
+      // **Another seat's keep, followed** (M6.5c2 cycle D, dossier row 1). At
+      // three seats and more a keep that does not finish the deal leaves the
+      // table dealing, and this frame is the only word of it — the line below
+      // went on naming a seat that had chosen until this browser's own next
+      // keep. So a `dealing` frame re-reads the deal, EXCEPT one where only
+      // the chat moved: `Events` carries no keep count, and a message (or a
+      // delete) bumps the table too, so `chat`/`chat_rev` moving is the one
+      // sign that a frame is not a keep. A frame that moves both — a keep and
+      // a message coalesced into one — reads as a message, and the next frame
+      // that is not a message corrects it. The first frame of all (the connection's own) re-reads,
+      // because nothing is known to compare it with. And none while this
+      // browser's own keep is out: its reply re-reads the deal itself.
+      const onlyChat = before !== null && (before.chat !== e.chat || before.rev !== e.chat_rev);
+      if (!onlyChat && !inFlight.current) void fetchDeal();
     },
     // **A table that is GONE stops being polled, and says so**, which the deal
     // needs as much as the game screen does: the creator can abandon from a
@@ -362,7 +395,7 @@ export function Dealing({
                 <span className={seatClass(colors[i])}>{colors[i]}</span> &middot; seat {i}
               </h2>
               <p className="muted deal-state">
-                {seat.kind === "human" && seat.user === me ? "you" : seatName(seat)} &middot;{" "}
+                {seat.kind === "human" && seat.you ? "you" : seatName(seat)} &middot;{" "}
                 {table.chosen[i] ? "chosen" : "waiting"}
               </p>
             </section>
@@ -378,7 +411,14 @@ export function Dealing({
             screen learned it from the release's headed live review (I-1), which
             found a panel here accepting messages from `local@browser`. */}
         {!isLocal(game) && (
-          <Chat scope={{ kind: "table", id: game }} count={chatCount} colors={colors} sendName={false} />
+          <Chat
+            scope={{ kind: "table", id: game }}
+            count={chatCount}
+            rev={chatRev}
+            canModerate={table.mine}
+            colors={colors}
+            sendName={false}
+          />
         )}
       </aside>
       <div className="deck">

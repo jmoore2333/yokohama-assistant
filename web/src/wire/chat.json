@@ -6,9 +6,10 @@
         "kind": "seat",
         "name": "Red",
         "seat": 0,
-        "user": "red@wire.test"
+        "you": true
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 1,
       "text": "good luck"
     },
@@ -17,9 +18,10 @@
         "kind": "seat",
         "name": "Blue",
         "seat": 1,
-        "user": "blue@wire.test"
+        "you": false
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 2,
       "text": "you too"
     },
@@ -27,11 +29,13 @@
       "author": {
         "kind": "watcher",
         "name": "Green",
-        "user": "green@wire.test"
+        "you": false
       },
       "created_at": 1789000000,
+      "deleted": false,
       "seq": 3,
       "text": "watching from the rail"
     }
-  ]
+  ],
+  "rev": 3
 }

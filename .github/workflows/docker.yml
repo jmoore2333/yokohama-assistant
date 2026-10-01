@@ -1,6 +1,6 @@
 name: docker
 
-# **The self-host image, built when one of its WEB-LANE inputs changes**
+# **The self-host image, built by hand, on dispatch**
 # (M6.5c2, R-6.5c2.14; spec §2.9 as revision 2.7 amends it).
 # `deploy/Dockerfile` builds the server and the browser client from a
 # checkout: the image a self-hoster runs. The NAS is deployed from
@@ -11,23 +11,13 @@ name: docker
 # (`deploy/smoke-image.sh`), then built again with a project link, and the
 # link is checked to reach that build's bundle and no other.
 #
-# **The trigger is NARROWED to the web lane** (the owner's ruling
-# R-6.5c2.24, "CI stays lean"; cycle C's R-C9): a pull request, or a push to
-# master, that changes one of the paths below, and a dispatch by hand. The
-# image COPYs `rust-toolchain.toml`, `Cargo.toml`, `Cargo.lock`, ALL of
-# `crates/`, `web/package*.json` and `web/`, and `cargo build -p
-# yokohama-web` compiles the engine, the CLI and the BGA bridge with the
-# layer — yet a change under `crates/yokohama-core`, `crates/yokohama-cli` or
-# `crates/yokohama-bridge` alone, or under any member of `crates/` but the
-# layer and the browser host, does NOT run this workflow, deliberately: an
-# AI-lane push pays no cold image build. A core change that breaks the image
-# is caught at the next web-lane pull request, or by dispatching this
-# workflow by hand. `Cargo.lock` stays in the list, because a dependency
-# change moves it. From `deploy/`, the Dockerfile and its dockerignore are
-# the image's inputs and the smoke script is this workflow's; the RUNBOOK is
-# neither. GitHub filters paths per WORKFLOW, which is why this is a workflow
-# and not a job of `test.yml`. The repository is private, so its minutes are
-# counted.
+# **The trigger is DISPATCH ONLY** (R-6.5c2.31): run it by hand with
+# `gh workflow run docker.yml --ref <branch>` before a release or after a
+# change to the image's inputs (`deploy/Dockerfile`, `deploy/smoke-image.sh`,
+# `crates/`, `web/`, the lockfile, the toolchain file). R-C9's fifteen-minute
+# rule is retired with the trigger, since nothing runs this on a push or pull
+# request any more. GitHub side: disabled since 2026-09-28 and it stays so
+# through E's merge.
 #
 # **Which runs are COLD, and which are WARM.** `cache-to: type=gha,…,mode=max`
 # exports every layer of every stage, the server stage's build step among
@@ -37,59 +27,28 @@ name: docker
 # step's layer cannot come back from the cache. That happens when one of the
 # server stage's inputs differs from the cached run's: `rust-toolchain.toml`,
 # `Cargo.toml`, `Cargo.lock` or anything under `crates/` (a change under
-# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, a core change an
-# earlier, untriggered push carried in, or a dockerignore edit that changes
+# `crates/yokohama-web/**` or `crates/yokohama-wasm/**`, a core change
+# since the cached run, or a dockerignore edit that changes
 # what reaches them). It happens when one of the server stage's instructions
 # in `deploy/Dockerfile` is edited, and when the floating base tag
 # `rust:1-slim-trixie` has been republished since the cached run. And it
 # happens when the run can restore no cache at all: the first run, one after
 # GitHub evicts the cache, or one whose ref cannot read the cache an earlier
-# run wrote (a run restores its own ref's caches and the default branch's,
-# and a pull request its base branch's too, so a new pull request finds no
-# other pull request's). Every other run is WARM, typically one triggered only
-# by `web/**`, the smoke script, this file, an edit to the Dockerfile's client
-# or runtime stage, or a dispatch: it restores the server stage and pays the
+# run wrote (a run restores its own ref's caches and the default branch's, so
+# a branch dispatched for the first time finds no other branch's). Every other
+# run is WARM, typically one whose changes since the cached run touch only
+# `web/**`, the smoke script, this file or the Dockerfile's client or runtime
+# stage: it restores the server stage and pays the
 # client stage alone.
 # A cold run caused by a changed input still restores the layers above that
 # input's step (the toolchain, binaryen and `wasm-bindgen-cli` sit above the
 # source `COPY`); a run with no cache, or after the base is republished,
 # restores none of them.
 #
-# **R-C9's fifteen minutes are a COLD wall** (ruling R-C21, as amended). It is
-# read from the first run on the M6.5c2 close's PULL REQUEST (the `push`
-# trigger is master-only; the branch's push runs `test.yml` alone) — cold by
-# construction, with no cache yet and `crates/yokohama-web/**` changed — and
-# afterwards only from a run whose log shows the server build layer,
-# `[server 10/10]`, executing rather than `CACHED`. The
-# first runs' walls are recorded in the M6.5c2 close; if a cold build reads
-# over fifteen minutes the trigger drops to master pushes and dispatch (R-C9),
-# and a cache-mount export step is the option only if the walls warrant it.
+# **Reading a cold wall.** A run whose log shows the server build layer,
+# `[server 10/10]`, executing rather than `CACHED` is cold, and a cold wall is
+# the one worth reading.
 on:
-  push:
-    branches: [master]
-    paths:
-      - "deploy/Dockerfile"
-      - "deploy/Dockerfile.dockerignore"
-      - "deploy/smoke-image.sh"
-      - "crates/yokohama-web/**"
-      - "crates/yokohama-wasm/**"
-      - "web/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/docker.yml"
-  pull_request:
-    paths:
-      - "deploy/Dockerfile"
-      - "deploy/Dockerfile.dockerignore"
-      - "deploy/smoke-image.sh"
-      - "crates/yokohama-web/**"
-      - "crates/yokohama-wasm/**"
-      - "web/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/docker.yml"
   workflow_dispatch:
 
 permissions:

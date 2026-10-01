@@ -20,7 +20,8 @@ import {
   serverFactsTakenAt,
 } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
-import { openDb, readOutboxRow } from "./local/db";
+import { DB_NAME, openDb, readOutboxRow } from "./local/db";
+import { STORAGE_BOUND_MS } from "./backup";
 import {
   archiveDisposition,
   drain,
@@ -36,7 +37,7 @@ import {
   startOutbox,
 } from "./outbox";
 import { stubWorker, workerAnswersWith } from "./test/fakeWorker";
-import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 const GAME = "local-7";
@@ -70,7 +71,7 @@ function hosts(opts: {
       return opts.pair ?? { record: RECORD, table: TABLE };
     },
     call: (req) => {
-      if (req.path === "/api/games" && req.method === "GET") {
+      if (isGamesList(req, "mine")) {
         return {
           status: 200,
           body: {
@@ -553,6 +554,51 @@ describe("the database handles", () => {
     // not two zeros.
     expect(opens.mock.calls.length).toBeGreaterThan(1);
     expect(closes.mock.calls.length).toBe(opens.mock.calls.length);
+  });
+});
+
+// ---- another tab holding the OLD storage version (M6.5c2 cycle D, row 12) --
+//
+// **The outbox's own open had the hang "Back up everything" had**: an
+// M6.5b-era tab holds IndexedDB version 1 with no `versionchange` handler, so
+// this build's open waits for as long as that tab lives, and the outbox's
+// fallback — "a browser with no usable store has no outbox" — never arrived:
+// the door's waiting list was a read that never settled. It opens through
+// `backup.ts`'s bounded helper now, so a held store is answered like any
+// store it cannot use, within the same bound. Staged as `backup.test.ts`'s
+// Review Focus 5 cell stages it: this tab's Worker's open queued first, so
+// only the timer can answer.
+describe("another tab holding the old storage version", () => {
+  const holdVersionOne = (): Promise<IDBDatabase> =>
+    new Promise((resolve, reject) => {
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains("docs"))
+          db.createObjectStore("docs", { keyPath: ["doc", "id"] });
+        if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "id" });
+      };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers its fallback within the storage bound, never a hang", async () => {
+    const old = await holdVersionOne();
+    const workersOpen = openDb(); // this tab's Worker, already waiting
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let answer: unknown = "unanswered";
+    void pending().then((p) => (answer = p));
+    await vi.advanceTimersByTimeAsync(STORAGE_BOUND_MS - 1);
+    expect(answer, "the premise: a queued open hears nothing before the bound").toBe("unanswered");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(answer).toEqual([]);
+    vi.useRealTimers();
+    old.close();
+    (await workersOpen).close();
   });
 });
 

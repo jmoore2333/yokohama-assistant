@@ -9,7 +9,7 @@
 # 3.10 (RUNBOOK §1–§3); until M6.5c2 this paragraph said the NAS ran this
 # image. `.github/workflows/docker.yml` builds this one and smoke-runs it.
 # (Hosted multiplayer on Cloudflare is the Worker in `worker/`, which runs no
-# image — RUNBOOK §6.)
+# image — `worker/RUNBOOK.md`.)
 #
 # Built for `linux/amd64` deliberately: the architecture of the NAS (a DS1517+,
 # an Intel Atom C2538) and of the runner `docker.yml` builds on. The build
@@ -93,8 +93,8 @@ RUN apt-get update \
 # **Both of those are Task-5 readings of a module that has since GROWN** (Task
 # 8's `restore_read`), and **this stage has not been re-measured since**. The
 # current figures are measured in ONE place and every other document cites it:
-# the `release-wasm` comment in the root `Cargo.toml` — 1,175,223 B raw /
-# 456,048 B gzipped on the workstation at the M6.5b2 close. **A ceiling on the
+# the `release-wasm` comment in the root `Cargo.toml`.
+# **A ceiling on the
 # module must clear the LARGER host's figure**, because this stage is what a
 # deployment ships, and the cross-host gap is the thing to re-measure before
 # any ceiling is tightened.

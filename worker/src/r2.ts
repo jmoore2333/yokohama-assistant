@@ -34,8 +34,15 @@ export type Outcome = { outcome: "landed" | "identical" | "conflict" | "failed";
 
 /** `meta.archive_owed` (spec §2.4, §2.6): a game-over plan the layer did not
  *  re-dispatch, the P-2 reading pinned for the call that made it, and how many
- *  of its uploads have failed. */
-export type ArchiveOwed = { plan: Plan; reading: number; attempt: number };
+ *  of its uploads have failed.
+ *
+ *  `not_before` (R-D6, R-6.5c2.30's "a short backoff after a failure") is
+ *  the gate a failure sets: `Date.now()` in MILLISECONDS — the shell's own
+ *  time base, a retry due's — at the rung the failure re-armed the alarm for.
+ *  Until it passes, a REQUEST hands the save to no upload; the alarm ignores
+ *  it. A row no failure has gated carries none — game over's first attempt,
+ *  and every row an earlier build wrote — and reads as no gate. */
+export type ArchiveOwed = { plan: Plan; reading: number; attempt: number; not_before?: number };
 
 /** `stamp_archive`'s 200 (the orchestrator's ruling I3, refined at Task 6):
  *  whether the stamp LANDED, and whether the game is over at retry time. */

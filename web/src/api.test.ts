@@ -209,6 +209,37 @@ describe("call routes by host", () => {
     // The corpus fixture itself carries none, so the line came from here.
     expect(wire.options.warnings).toEqual([]);
   });
+
+  // **And on a reply that has no `warnings` of its own** (M6.5c2 cycle D,
+  // dossier row 56; the M6.5b close's "a create … that the browser's store
+  // refuses is not reported as unsaved"). The line used to be appended only
+  // where the reply already carried the array, so a CREATE the store refused
+  // came back as a table like any other and said nothing at all. The table is
+  // the corpus's own dealing table, re-addressed — `fakeWorker.ts`'s one
+  // permitted edit.
+  it("keeps the APPLIED BUT NOT SAVED line on a reply that carries no warnings array", async () => {
+    forbidFetch();
+    stubWorker({
+      call: (req) =>
+        req.method === "POST" && req.path === "/api/games"
+          ? {
+              status: 201,
+              body: { ...wire.tableDealing, id: "local-1" },
+              saved: "unsaved",
+              reason: "the quota is full",
+            }
+          : undefined,
+    });
+    expect("warnings" in wire.tableDealing, "the premise: a table carries no warnings").toBe(false);
+    const table = await api.create(
+      { players: 2, colors: ["Red", "Blue"], start_seat: 0, seats: [{ user: "local@browser" }, { bot: true }] },
+      "local",
+    );
+    expect((table as unknown as { warnings?: unknown }).warnings).toEqual([
+      'APPLIED BUT NOT SAVED \u2014 the quota is full \u2014 back this game up \u2014 the "Back up" button on ' +
+        "it writes a file this app can restore.",
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

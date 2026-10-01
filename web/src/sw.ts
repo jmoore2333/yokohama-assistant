@@ -40,17 +40,19 @@
 //   before the network, one `try` per generation, nothing written;
 // - `fromRetained` never serves the stamp (`META_PATH`).
 //
-// **And these are made here and pinned by NO cell** — the same mutations, each
-// of which every cell survived:
+// **Also pinned by `sw.node.test.ts`** (its "clocks and small decisions"
+// describe, fake timers for the clock only), each checked by mutating this
+// file: the abort of the other lanes on a failed install (no clock moved); the
+// per-fetch timeout and the whole-install deadline; `credentials:
+// "same-origin"` on every install fetch; the stamp written FIRST, before any
+// entry; a failed install telling uncontrolled pages too
+// (`includeUncontrolled`); and a timeout worded "took too long".
 //
-// - on a failed install the other lanes are ABORTED and AWAITED before the
-//   delete. The abort cell does not see its own mutation: the per-fetch timeout
-//   aborts the held lane instead, fifteen seconds later, and the cell passes;
-// - the per-fetch timeout and the whole-install deadline themselves;
-// - `credentials: "same-origin"` on every install fetch;
-// - the stamp written FIRST, before any entry;
-// - a failed install telling uncontrolled pages too (`includeUncontrolled`),
-//   and a timeout worded "took too long".
+// **Made here and pinned by NO cell:** that the other lanes are AWAITED
+// (`Promise.allSettled(lanes)`) before the delete. Dropping the await leaves
+// every cell green, but not because the lanes have settled by then: an aborted
+// lane can still settle after the delete, and the cells' fake cache storage
+// unmaps the name on delete, so a late write goes unseen there.
 
 /// <reference lib="webworker" />
 

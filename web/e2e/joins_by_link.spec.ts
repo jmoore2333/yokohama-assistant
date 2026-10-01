@@ -468,6 +468,24 @@ test("a person holding only a link joins a locked open table and plays", async (
         `clock ${line.time} + text ${line.text} ` +
         `(${Math.round((100 * line.text) / line.row)}% of the row, floor 60%)`,
     );
+
+    // **The line taken down, on the same page, by the frame** (M6.5c2 cycle
+    // D, R-D4). A's Delete answers an empty 204 and changes nothing on screen
+    // by itself: the table's next frame carries `chat_rev` one past its
+    // `chat`, and the panel re-reads what it holds — so "message removed"
+    // appearing in A's own row is a reading of the SIGNAL, and the text is gone
+    // from the page.
+    const said = gameChat.getByRole("listitem").filter({ hasText: "and a line on the game screen" });
+    await said.getByRole("button", { name: "Delete this message" }).click();
+    await expect(
+      gameChat.locator("ol.chat-lines li").last(),
+      "the tombstone, in the author's own row",
+    ).toContainText("message removed");
+    await expect(said, "and the words are gone from the page").toHaveCount(0);
+    await expect(
+      gameChat.locator("ol.chat-lines li").last().getByRole("button"),
+      "a tombstone has no Delete of its own",
+    ).toHaveCount(0);
   }
 
   // And the table is in A's lobby, under Your tables, saying who is at it and

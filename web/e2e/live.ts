@@ -46,12 +46,13 @@
 // `expect(res).toBeOK()` on a live context's response: its failure message
 // prints the call log too — `expect(res.ok())` is the form to use.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { BrowserContextOptions, Page } from "@playwright/test";
+import { KEYS, ORIGIN, readCredential } from "../../worker/scripts/dev-vars.mjs";
 
-/** The deployed Worker's origin: `BASE_URL` under `LIVE`. */
-export const LIVE_ORIGIN = "https://yokohama.moore.nyc";
+/** The deployed Worker's origin: `BASE_URL` under `LIVE` — `ORIGIN`, stated
+ *  once in `worker/scripts/dev-vars.mjs` beside the credential that is sent
+ *  nowhere else (M6.5c2 cycle D, Task 9). */
+export const LIVE_ORIGIN = ORIGIN;
 
 /** The local binary's port — `playwright.config.ts` says why it is its own. */
 export const LOCAL_PORT = 8479;
@@ -100,41 +101,14 @@ export function baseUrlFor(live: boolean): string {
   return live ? LIVE_ORIGIN : `http://127.0.0.1:${LOCAL_PORT}`;
 }
 
-/** The repository root's `.dev.vars`, which holds the credential (the plan's
- *  Global Constraints: two `KEY=VALUE` lines, named as the headers). */
-export const DEV_VARS = fileURLToPath(new URL("../../.dev.vars", import.meta.url));
-
-const KEYS = ["CF-Access-Client-Id", "CF-Access-Client-Secret"] as const;
-
 /** A context's storage state, as Playwright seeds one. */
 type StorageState = Exclude<BrowserContextOptions["storageState"], string | undefined>;
 type Cookie = StorageState["cookies"][number];
 
-/**
- * The credential in `file`: its `CF-Access-Client-Id=` and
- * `CF-Access-Client-Secret=` lines, among any others. A file or a key that is
- * absent — or a value that is empty — is refused by NAME: the file and the
- * key, never a value.
- */
-export function credential(file: string = DEV_VARS): { id: string; secret: string } {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-  }
-  const values = new Map<string, string>();
-  for (const line of text.split(/\r?\n/)) {
-    const eq = line.indexOf("=");
-    if (eq !== -1) values.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
-  }
-  const read = (key: (typeof KEYS)[number]) => {
-    const value = values.get(key);
-    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-    return value;
-  };
-  return { id: read(KEYS[0]), secret: read(KEYS[1]) };
-}
+/** The credential in the repository root's `.dev.vars`: `readCredential`, the
+ *  ONE reader of it (`worker/scripts/dev-vars.mjs`), which the live replay
+ *  calls too (M6.5c2 cycle D, Task 9). */
+export const credential = readCredential;
 
 /** Who a context is, to the dev door: the claimed header, in both modes. */
 export function identityHeaders(email: string): Record<string, string> {
@@ -316,6 +290,8 @@ export type Opening = {
  *  `TimeoutError`; the page closing, and the page crashing, both named plain
  *  `Error` — so a name other than `TimeoutError` is one of those two. */
 function waitEnded(e: unknown): string {
+  // The error's NAME only, never its message: a thrown Playwright call's
+  // message can carry the request's headers, the cookie among them (I-79).
   const name = e instanceof Error ? e.name : typeof e;
   return name === "TimeoutError"
     ? "the wait for its reply timed out (TimeoutError): no reply within the context's default timeout, the config's " +

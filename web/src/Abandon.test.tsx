@@ -343,6 +343,31 @@ describe("the abandon control on a local game", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  // **A REFUSING archive is not a reason to keep a game for ever** (M6.5c2
+  // cycle D, straw poll row 100). The two cells above hold the first answer —
+  // the game is kept, the server's sentence shown, the confirm face still up —
+  // and that answer stands. But a refusal is the archive's settled word about
+  // THIS record (a 409 names a different record under the id; a 400 is a
+  // record it will not replay), so trying again meets it again, and the game's
+  // own screen had no way to be rid of it. The third deliberate click the `ask`
+  // face already offers is offered here too, and it sends nothing.
+  it("offers Abandon without saving after a refused send, and deletes on it without sending again", async () => {
+    const { steps, onDone, onError, user } = local("dir", () => ({
+      status: 409,
+      body: wire.archive409,
+    }));
+    await confirm(user);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
+    // The first answer, unchanged: kept, and still asking.
+    expect(steps).toEqual(["health", "archive"]);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["health", "archive", "delete"]);
+  });
+
   // **The archive unreachable** (R-6.5b.7): the client's own sentence, because
   // there is no server sentence to carry — and the game stays.
   it("keeps the game when the archive cannot be reached", async () => {
@@ -355,6 +380,9 @@ describe("the abandon control on a local game", () => {
     );
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
+    // **No third choice for a send that never got an answer**: trying again is
+    // the remedy there, and the refusal cell above is the one that offers it.
+    expect(screen.queryByRole("button", { name: `abandon ${LOCAL} without saving` })).toBeNull();
   });
 
   // **A 404 is the deployment's answer, not the moment's** (M6.5c2 spec §2.8;
@@ -373,6 +401,8 @@ describe("the abandon control on a local game", () => {
     expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
     expect(archiveAnswer()).toBe("off");
+    // Nor after a 404: the next confirm deletes, because the archive is off.
+    expect(screen.queryByRole("button", { name: `abandon ${LOCAL} without saving` })).toBeNull();
     // The label redraws from the fact: no "and save" over nowhere to save to.
     await user.click(screen.getByRole("button", { name: `cancel abandoning ${LOCAL}` }));
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
@@ -554,6 +584,65 @@ describe("the abandon control on a local game", () => {
     } finally {
       caught.restore();
     }
+  });
+
+  // **The two catches of the refusal path** (M6.5c2 cycle D; the straw poll's
+  // row 25): "back it up to a file" and "abandon without saving" each end in a
+  // `catch` that hands the error to the screen's own line, and until now both
+  // were only ever walked on their happy paths.
+  it("says why on the screen when the backup file cannot be made, and stays ready to try again", async () => {
+    const caught = catchDownload();
+    try {
+      const { steps, onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+      stubApi(() => {
+        throw new TypeError("Failed to fetch");
+      });
+      await confirm(user);
+      await screen.findByText(CANNOT_ASK);
+      // The store will not be read for this game: the backup is the thing that fails.
+      stubWorker({
+        pair: () => ({ unreadable: "the store would not open" }),
+        call: (req) => {
+          if (req.method === "DELETE") steps.push("delete");
+          return undefined;
+        },
+      });
+      await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+      expect(onError.mock.calls[0]![0], "the failure's own sentence, as the screen's line").toBe(
+        `there is no game named ${LOCAL} on this device`,
+      );
+      // Nothing was written to disk and nothing deleted.
+      expect(caught.clicks).toHaveLength(0);
+      expect(steps).toEqual([]);
+      expect(onDone).not.toHaveBeenCalled();
+      // And the guard was released: the control answers a second click.
+      await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
+    } finally {
+      caught.restore();
+    }
+  });
+
+  it("says why on the screen when abandoning without saving is refused, and keeps the game", async () => {
+    const { onDone, onError, user } = local("dir", () => wire.archivePost, { remember: false });
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+    await screen.findByText(CANNOT_ASK);
+    // The local host refuses the delete in its own words.
+    stubWorker({
+      pair: () => ({ record: RECORD, table: TABLE }),
+      call: (req) => (req.method === "DELETE" ? { status: 500, body: wire.error } : undefined),
+    });
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0]![0]).toBe(wire.error.error);
+    expect(onDone).not.toHaveBeenCalled();
+    // The guard was released: a second try reaches the host again.
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(2));
   });
 
   it("deletes on the third deliberate click when the player abandons without saving", async () => {

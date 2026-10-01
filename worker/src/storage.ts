@@ -55,7 +55,12 @@ export type MetaKey =
  * `sqlite_master`, and it runs inside every `getMeta` and every `readDocs`:
  * MEASURED in the pool before this memo, six scans and 30 of a warm
  * request's 32 rows read. Only `deleteAll()` drops the tables once they exist, and its one
- * caller forgets them (`forgetTables`, from `Table.end`). Keyed by the
+ * caller forgets them (`forgetTables`, from `Table.end`) — with ONE unstated
+ * exception this sentence owns: `Table.batch` runs `ensureTables` inside a
+ * `transactionSync` with no catch, so a `hasTables` that answered true inside
+ * a batch which then throws leaves `known` naming tables the rollback removed
+ * (the next batch's `ensureTables` creates them again; a read in between
+ * answers from the memo). Keyed by the
  * object's `SqlStorage`, which is one object for the life of an instance and
  * a new one after an eviction (measured in the pool), so a new instance
  * scans once again.

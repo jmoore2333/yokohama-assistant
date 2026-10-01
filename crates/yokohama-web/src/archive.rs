@@ -60,7 +60,9 @@ pub enum PutOutcome {
 /// is the shape that deletes somebody's only complete copy.
 #[derive(Debug)]
 pub enum PutError {
-    /// The path holds a different record. `key` is the path, for the operator;
+    /// The path holds a different record. `key` is the path RELATIVE to the
+    /// archive's root, for the operator (M6.5c2 cycle D, row 56 — an abandon's
+    /// refusal carries it to a client, and the root is the server's own);
     /// `held` is the record already there where the archive read it —
     /// [`DirArchive`] always does, and `None` where it cannot say (the Worker's
     /// receipt, until its shell hands the held text back) — so the game-over
@@ -68,7 +70,9 @@ pub enum PutError {
     /// (M6.5c2, R-6.5c2.11). The ROUTE words its own sentence and never this
     /// one, and `held` is in neither: it is a whole record, the setup seed in it.
     Conflict { key: String, held: Option<String> },
-    /// The write did not happen. Carries the implementation's own reason.
+    /// The write did not happen. Carries the implementation's own reason, which
+    /// names any path RELATIVE to the archive's root (M6.5c2 cycle D, row 56),
+    /// for `key`'s reason.
     Failed(String),
 }
 
@@ -90,11 +94,20 @@ impl std::fmt::Display for PutError {
 /// [`PutOutcome::Identical`] for the same bytes again and refuses DIFFERENT
 /// bytes rather than versioning, and the two server sites of R-6.5a.11 — the
 /// `archived_at` stamp they read and write — are what keep one of this
-/// server's games to one reason (umbrella R-6.5.4). A stamp lost after a landed
-/// put is therefore a DUPLICATE under the other leaf at the next abandon, not a
-/// refusal; the M6.5a close records that edge. What it does NOT prevent: the
-/// same save sent by two different callers lands twice, under two prefixes
-/// (spec §2.4 — the training side dedups by digest).
+/// server's games to one reason (umbrella R-6.5.4). **A stamp lost after a
+/// landed game-over put is NOT a duplicate on its own** (M6.5c2 cycle D, row
+/// 11, correcting the M6.5a close's edge): since M6.5b (R-6.5b.13) the next
+/// abandon files an unstamped game whose table MIRROR says over under `over/`,
+/// where the landed copy answers [`PutOutcome::Identical`] and the delete goes
+/// ahead. A second copy under `abandoned/` needs the stamp lost AND a mirror
+/// that no longer says over, at once: a STALE mirror (its own write failed or
+/// lost a race), or an undo past game over at a one-person table, where the
+/// CLI's undo applies and the mirror then truly reads not over (measured in
+/// M6.5c2 cycle D and recorded in its close,
+/// `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`). That residual is
+/// `Games::delete`'s to state, and it does. What it does NOT prevent: the same
+/// save sent by two different callers lands twice, under two prefixes (spec
+/// §2.4 — the training side dedups by digest).
 pub trait Archive: Send + Sync {
     /// `prefix` is `""` for this server's own games and
     /// `browser/<`[`caller_segment`]`>/` (R-6.5b.15) for a game a browser sent;
@@ -219,7 +232,9 @@ pub use dir::DirArchive;
 
 #[cfg(feature = "server")]
 mod dir {
+    use std::io::Write;
     use std::path::{Component, Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{paths, Archive, PutError, PutOutcome, Why};
 
@@ -247,23 +262,98 @@ mod dir {
             Ok(Some(Self { dir }))
         }
 
-        /// Temp + rename, over whatever is there.
-        ///
-        /// **The existence check that used to live here moved UP into `put`**
-        /// (M6.5b, spec §2.4), and it had to: the once-rule is about the RECORD
-        /// — the same bytes again are a retry and not a bug — and the TABLE is
-        /// written first precisely so a half pair can be repaired, which a
-        /// refuse-if-present write could not do.
-        fn write_over(path: &Path, text: &str) -> Result<(), PutError> {
+        /// A name beside `path` that no other put is using — the pid and a
+        /// counter, as `FsStore::publish` draws its own, and for its reason: two
+        /// puts sharing ONE temp name interleave inside it, and whichever
+        /// publishes second publishes a mix of both (M6.5c2 cycle D, row 56).
+        fn temp_beside(path: &Path) -> PathBuf {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            path.with_extension(format!("json.{}.{n}.tmp", std::process::id()))
+        }
+
+        /// `text`, whole and flushed, at a fresh temp name beside `rel`'s path —
+        /// the step both publishes share. Every sentence names `rel`, RELATIVE
+        /// to the root (see [`PutError::Failed`]).
+        fn write_temp(&self, rel: &str, text: &str) -> Result<(PathBuf, PathBuf), PutError> {
+            let path = self.dir.join(rel);
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| PutError::Failed(format!("mkdir {}: {e}", parent.display())))?;
+                let shown = Path::new(rel).parent().map_or_else(String::new, |p| p.display().to_string());
+                std::fs::create_dir_all(parent).map_err(|e| PutError::Failed(format!("mkdir {shown}: {e}")))?;
             }
-            let tmp = path.with_extension("json.tmp");
-            std::fs::write(&tmp, text)
-                .map_err(|e| PutError::Failed(format!("write {}: {e}", tmp.display())))?;
-            std::fs::rename(&tmp, path)
-                .map_err(|e| PutError::Failed(format!("rename {}: {e}", path.display())))
+            let tmp = Self::temp_beside(&path);
+            let written = std::fs::File::create(&tmp).and_then(|mut f| {
+                f.write_all(text.as_bytes())?;
+                f.sync_all()
+            });
+            if let Err(e) = written {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(PutError::Failed(format!("write {rel}: {e}")));
+            }
+            Ok((path, tmp))
+        }
+
+        /// The TABLE's publish: temp + rename, over whatever is there.
+        ///
+        /// Over, on purpose: the once-rule is about the RECORD — the same bytes
+        /// again are a retry and not a bug — and the table is written first
+        /// precisely so a half pair (a table with no record, a crash between the
+        /// two writes) is REPAIRED by the next put, which a refuse-if-present
+        /// write could not do.
+        fn write_over(&self, rel: &str, text: &str) -> Result<(), PutError> {
+            let (path, tmp) = self.write_temp(rel, text)?;
+            std::fs::rename(&tmp, &path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                PutError::Failed(format!("rename {rel}: {e}"))
+            })
+        }
+
+        /// The RECORD's publish — the marker's — and never over anything: the
+        /// complete temp file is HARD-LINKED into place, which the filesystem
+        /// refuses when the path is taken (M6.5c2 cycle D, row 56). `Ok(false)`
+        /// is that refusal; the temp name is removed either way.
+        ///
+        /// **This closes the marker's read-then-write race** (M6.5b close
+        /// §6.2, dossier row 56). A link and not a rename, because `rename`
+        /// REPLACES what it finds: the marker read answers "absent", the table
+        /// lands, and another put of the same path can land its record in
+        /// between — so the second of two such puts replaced the first and
+        /// both answered `Landed`. A link is the create-if-absent `rename` is
+        /// not, and it publishes a file that was whole before it had this name,
+        /// so no partial record is ever visible at the path.
+        ///
+        /// **It needs a filesystem with hard links.** The NAS's btrfs volume
+        /// and the workstations' APFS both have them; on one without, EVERY
+        /// put is refused — a `Failed` naming the path, never a fall-back to
+        /// writing over.
+        fn publish_new(&self, rel: &str, text: &str) -> Result<bool, PutError> {
+            let (path, tmp) = self.write_temp(rel, text)?;
+            let linked = std::fs::hard_link(&tmp, &path);
+            let _ = std::fs::remove_file(&tmp);
+            match linked {
+                Ok(()) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(PutError::Failed(format!("link {rel}: {e}"))),
+            }
+        }
+
+        /// **The record is the marker, and reading it has THREE answers, not
+        /// two**: the same bytes are a retry (`Some(Identical)`), different bytes
+        /// a conflict, and ABSENT (`None`) is the only road to a write.
+        ///
+        /// A read that failed for any OTHER reason — a path that is a
+        /// directory, a file this process may not read, a truncated write that
+        /// left invalid UTF-8 — must NOT fall through. A fall-through would go on
+        /// to write the table and try the record, which is the one outcome this
+        /// protocol exists to prevent (spec §2.4 — "a 409 must never delete the
+        /// only complete copy"), reached without even a 409.
+        fn read_marker(&self, rel: &str, record_json: &str) -> Result<Option<PutOutcome>, PutError> {
+            match std::fs::read_to_string(self.dir.join(rel)) {
+                Ok(existing) if existing == record_json => Ok(Some(PutOutcome::Identical)),
+                Ok(existing) => Err(PutError::Conflict { key: rel.to_string(), held: Some(existing) }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(PutError::Failed(format!("read {rel}: {e}"))),
+            }
         }
     }
 
@@ -290,37 +380,22 @@ mod dir {
                     return Err(PutError::Failed("an archive path must stay under its root".to_string()));
                 }
             }
-            let record_path = self.dir.join(&record);
-            // **The record is the marker, and it has THREE answers, not two**:
-            // the same bytes are a retry, different bytes a conflict, and
-            // ABSENT is the only road to a write.
-            //
-            // A read that failed for any OTHER reason — a path that is a
-            // directory, a file this process may not read, a truncated write
-            // that left invalid UTF-8 — must NOT fall through. `rename` needs
-            // write permission on the DIRECTORY and not on the file, so a
-            // fall-through would REPLACE an archived record with different
-            // bytes and answer `Landed`: the one outcome this protocol exists
-            // to prevent (spec §2.4 — "a 409 must never delete the only
-            // complete copy"), reached without even a 409.
-            match std::fs::read_to_string(&record_path) {
-                Ok(existing) if existing == record_json => return Ok(PutOutcome::Identical),
-                Ok(existing) => {
-                    return Err(PutError::Conflict { key: record_path.display().to_string(), held: Some(existing) })
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(PutError::Failed(format!(
-                        "read {}: {e}",
-                        record_path.display()
-                    )))
-                }
+            if let Some(outcome) = self.read_marker(&record, record_json)? {
+                return Ok(outcome);
             }
             // The table FIRST — overwriting a half pair's table is the repair —
             // and the record second, which is what makes the pair complete.
-            Self::write_over(&self.dir.join(&table), table_json)?;
-            Self::write_over(&record_path, record_json)?;
-            Ok(PutOutcome::Landed)
+            self.write_over(&table, table_json)?;
+            if self.publish_new(&record, record_json)? {
+                return Ok(PutOutcome::Landed);
+            }
+            // The path was TAKEN between the marker read and the link: another
+            // put's record landed there. Answered as though it had been there at
+            // the read — a retry of these bytes, or a conflict — and a path that
+            // is taken and still reads absent (a dangling link) is a failure.
+            self.read_marker(&record, record_json)?.ok_or_else(|| {
+                PutError::Failed(format!("link {record}: the path is taken and reads as absent"))
+            })
         }
         fn kind(&self) -> &'static str {
             "dir"
@@ -678,7 +753,7 @@ mod tests {
         let said = conflict.to_string();
         let PutError::Conflict { key, held } = conflict else { panic!("a conflict, not a failure: {said}") };
         assert_eq!(held.as_deref(), Some("{\"record\":1}"), "the record already there, read from the file");
-        assert_eq!(key, dir.join("rev7/abandoned/sim-3.json").display().to_string());
+        assert_eq!(key, "rev7/abandoned/sim-3.json", "relative to the root (M6.5c2 cycle D, row 56)");
         assert_eq!(said, format!("{key} holds a different record — a game is archived once"));
         assert!(!said.contains("\"record\""), "the sentence names the key and never the held record: {said}");
         assert_eq!(std::fs::read_to_string(dir.join("rev7/abandoned/sim-3.json")).unwrap(), "{\"record\":1}");
@@ -695,6 +770,99 @@ mod tests {
         // `put` that hand-built its `over/` path survived the `abandoned/` pins.
         assert_eq!(std::fs::read_to_string(dir.join("rev7/over/sim-3.json")).unwrap(), "{\"record\":3}");
         assert_eq!(std::fs::read_to_string(dir.join("rev7/over/sim-3.table.json")).unwrap(), "{\"table\":3}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    /// **The marker is PUBLISHED, never written over** (M6.5c2 cycle D, row
+    /// 56) — the catcher for a record written in place, or renamed over
+    /// whatever reached its path after the marker was read.
+    ///
+    /// The marker read answers "absent", the table lands, and only then is the
+    /// record written — so another put of the same path can land its own record
+    /// in between. `rename` replaces what it finds, so the second of two such
+    /// puts REPLACED the first and both answered `Landed`: the once-rule broken
+    /// with no conflict said. The record is now linked into place from a
+    /// complete temp file, which the filesystem refuses when the path is taken,
+    /// so no partial record is ever visible at it and nothing there is replaced.
+    ///
+    /// **The race, made deterministic without a second thread**: the record's
+    /// path is a symlink to the pair's OWN table path, so it reads absent at the
+    /// marker read (its target does not exist yet) and present once the table
+    /// has landed — the shape of another put landing in between. The put must
+    /// answer `Conflict` holding what is there and leave both files alone. A
+    /// rename over the link answers `Landed`; a write in place follows the link
+    /// and puts the RECORD into the table's file.
+    #[cfg(all(feature = "server", unix))]
+    #[test]
+    fn the_marker_is_written_atomically() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_marker_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        let (record, table) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-5").unwrap();
+        let leaf = dir.join(&record).parent().expect("a leaf").to_path_buf();
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::os::unix::fs::symlink("sim-5.table.json", dir.join(&record)).unwrap();
+        assert!(!dir.join(&record).exists(), "premise: the marker reads absent");
+
+        let out = a.put("", Why::Over, "sim-5", "{\"record\":1}", "{\"table\":1}");
+        let Err(PutError::Conflict { held, .. }) = out else {
+            panic!("a path taken after the marker read is a conflict, never replaced: {out:?}");
+        };
+        assert_eq!(held.as_deref(), Some("{\"table\":1}"), "held is what reached the path");
+        assert_eq!(std::fs::read_to_string(dir.join(&table)).unwrap(), "{\"table\":1}", "the table's file holds the table");
+        assert!(
+            std::fs::symlink_metadata(dir.join(&record)).unwrap().file_type().is_symlink(),
+            "what took the path is still there",
+        );
+        let temps: Vec<String> = std::fs::read_dir(&leaf)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(temps.is_empty(), "no temp file is left behind: {temps:?}");
+
+        // Anti-vacuity: an ordinary put still lands, as a plain file.
+        let landed = a.put("", Why::Over, "sim-6", "{\"record\":6}", "{\"table\":6}");
+        assert!(matches!(landed, Ok(PutOutcome::Landed)), "{landed:?}");
+        let (six, _) = paths(yokohama_core::SEMANTICS_REV, "", Why::Over, "sim-6").unwrap();
+        assert!(std::fs::symlink_metadata(dir.join(&six)).unwrap().file_type().is_file());
+        assert_eq!(std::fs::read_to_string(dir.join(&six)).unwrap(), "{\"record\":6}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A failed or refused put names its path RELATIVE to the archive root**
+    /// (M6.5c2 cycle D, row 56). The abandon wraps the archive's own sentence
+    /// into a 500 a client reads ("the archive could not be written (…)"), so
+    /// an absolute path there was the server's filesystem layout on the wire;
+    /// the relative one is still exact for an operator, who knows the root.
+    /// Three arms: an unreadable marker, a table that cannot be published, and
+    /// a conflict's key.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_failed_put_names_a_relative_path() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_relative_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.display().to_string();
+        let a = DirArchive::new(&dir);
+        let rel = |id: &str| paths(yokohama_core::SEMANTICS_REV, "", Why::Over, id).unwrap();
+
+        let (record, _) = rel("sim-7");
+        std::fs::create_dir_all(dir.join(&record)).unwrap();
+        let out = a.put("", Why::Over, "sim-7", "{\"record\":7}", "{\"table\":7}");
+        let Err(PutError::Failed(said)) = out else { panic!("an unreadable marker fails: {out:?}") };
+        assert!(said.starts_with(&format!("read {record}: ")) && !said.contains(&root), "{said}");
+
+        let (_, table) = rel("sim-8");
+        std::fs::create_dir_all(dir.join(&table)).unwrap();
+        std::fs::write(dir.join(&table).join("x"), "a table's path taken by a full directory").unwrap();
+        let out = a.put("", Why::Over, "sim-8", "{\"record\":8}", "{\"table\":8}");
+        let Err(PutError::Failed(said)) = out else { panic!("an unpublishable table fails: {out:?}") };
+        assert!(said.contains(&table) && !said.contains(&root), "{said}");
+
+        let (record, _) = rel("sim-9");
+        a.put("", Why::Over, "sim-9", "{\"record\":9}", "{\"table\":9}").unwrap();
+        let out = a.put("", Why::Over, "sim-9", "{\"record\":10}", "{\"table\":10}");
+        let Err(conflict) = out else { panic!("different bytes conflict") };
+        assert_eq!(conflict.to_string(), format!("{record} holds a different record — a game is archived once"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

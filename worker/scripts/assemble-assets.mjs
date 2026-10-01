@@ -28,31 +28,18 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
-/** One entry as esbuild prints the substituted `__PRECACHE__` into `sw.js`
- *  (`web/scripts/precache.mjs`): unquoted keys, a quoted path with no escape
- *  in it, and a SHA-256 in lowercase hex. */
-const PAIR = /path: "([^"\\]*)", digest: "([0-9a-f]{64})"/g;
+import { readPrecacheList } from "./precache-list.mjs";
 
 /**
- * The release's precache list, read out of the built service worker's text.
- * Refuses a worker with no entry, and one carrying a `digest: "` this reader
- * could not pair with a path — the count is its own anti-vacuity: a list whose
- * printed shape drifted would otherwise read as a shorter list.
+ * The release's precache list, read out of the built service worker's text
+ * by the ONE reader (`readPrecacheList`, `precache-list.mjs`): each entry's
+ * path and digest. Refuses a worker with no entry, and one carrying a
+ * `digest: "` this reader could not pair with a path — the count is its own
+ * anti-vacuity: a list whose printed shape drifted would otherwise read as a
+ * shorter list.
  */
 export function precacheEntriesFrom(swText) {
-  const entries = [...swText.matchAll(PAIR)].map(([, path, digest]) => ({ path, digest }));
-  if (entries.length === 0) {
-    throw new Error("the built sw.js carries no precache entries — is it web/scripts/precache.mjs's output?");
-  }
-  const digests = swText.split('digest: "').length - 1;
-  if (digests !== entries.length) {
-    throw new Error(
-      `the built sw.js carries ${digests} digests but paired ${entries.length} of them with a path — ` +
-        "the list's printed shape is not the one this reader knows",
-    );
-  }
-  return entries;
+  return readPrecacheList(swText, "built").map(({ path, digest }) => ({ path, digest }));
 }
 
 /** Throws, naming every entry of `entries` whose file under `root` is absent

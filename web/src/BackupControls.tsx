@@ -323,9 +323,9 @@ function Forget({ id, onForget }: { id: string; onForget: (id: string) => Promis
  * `reload` is a number the caller bumps after a restore, so the list re-reads
  * without this component owning a subscription of its own.
  *
- * **A row can outlive its reason across a `SEMANTICS_REV` bump**, and the note
- * for whoever makes that bump is on `restoreOne` in `local/db.ts`, which is the
- * function it is about (whole-branch review, Minor 1).
+ * **A row can outlive its reason across a `SEMANTICS_REV` bump** until the next
+ * restore of that game, which re-derives it (`restoreOne` in `local/db.ts`,
+ * M6.5c2 cycle D); "Remove" is the other way to clear one.
  *
  * **And the games the LISTING says this build's bot cannot continue** (M6.5c2,
  * spec §2.4), handed in by the host as `foreign`: listed first, beside the
@@ -381,15 +381,23 @@ export function Unplayable({
   // open IndexedDB already draws `OnThisDevice`'s own fault line; a second,
   // unlabelled `indexedDB is not defined` beside it says nothing about which
   // read failed or what it was for.
-  if (error !== null)
-    return <p className="error">the games that will not open could not be read &mdash; {error}</p>;
-  const cross = rows ?? [];
+  const errorLine =
+    error === null ? null : (
+      <p className="error">the games that will not open could not be read &mdash; {error}</p>
+    );
+  // **The foreign rows are drawn whatever this read did** (M6.5c2 cycle D,
+  // straw poll row 100): they are the MODULE's listing, handed in, and need
+  // nothing from this browser's store — so a store that could not be read
+  // must not take them, and the only Remove they have, off the screen.
+  if (errorLine !== null && foreign.length === 0) return errorLine;
+  const cross = errorLine !== null ? [] : (rows ?? []);
   if (cross.length === 0 && foreign.length === 0) return null;
   return (
     <div className="unplayable">
       {/* An `h3`, the level under the device card's `h2` it sits in (cycle C,
           polish 3). */}
       <h3>Will not open here</h3>
+      {errorLine}
       <ul>
         {foreign.map((t) => (
           <li key={t.id}>

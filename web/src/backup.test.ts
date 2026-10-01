@@ -25,6 +25,7 @@ import {
   backupEverything,
   backupOne,
   buildEnvelope,
+  STORAGE_BOUND_MS,
   WORKER_BOUND_MS,
   forgetUnplayable,
   listUnplayable,
@@ -34,10 +35,20 @@ import {
   type Envelope,
 } from "./backup";
 import { api } from "./api";
-import { deletePair, openDb, readPair, restoreOne, takeGeneration, writeDocs } from "./local/db";
+import {
+  DB_NAME,
+  deletePair,
+  openDb,
+  readPair,
+  restoreOne,
+  takeGeneration,
+  writeDocs,
+  type CompatNote,
+} from "./local/db";
 import { rememberServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { breakTheWorker, currentWorker, stubWorker, workerAnswersWith } from "./test/fakeWorker";
+import { isGamesList } from "./test/matchers";
 import { wire } from "./wire/contract";
 import committed from "./wire-script/backup-envelope.json";
 
@@ -201,8 +212,11 @@ describe("backing up", () => {
     // exactly, under any load: one for the whole export, not one per game.
     const timers = vi.spyOn(globalThis, "setTimeout");
     const text = await backupEverything();
+    // **The Worker's bounds only** (M6.5c2 cycle D): the storage open arms
+    // its own, longer bound on every call (`STORAGE_BOUND_MS`, Review Focus
+    // 5), which is a different timer about a different wait.
     const bounds = timers.mock.calls.filter(
-      ([, ms]) => typeof ms === "number" && ms > WORKER_BOUND_MS / 2,
+      ([, ms]) => typeof ms === "number" && ms > WORKER_BOUND_MS / 2 && ms <= WORKER_BOUND_MS,
     ).length;
     timers.mockRestore();
     const asked = worker.instances.flatMap((w) => w.posted).filter((r) => r.kind === "pair").length;
@@ -220,6 +234,31 @@ describe("backing up", () => {
         table: tableFor(g.id),
       });
     }
+  });
+
+  // **The whole-device file is the UNION of what the store holds and what the
+  // module lists** (M6.5c2 cycle D, straw poll row 13). A create the store
+  // refused — quota, a private window — is a game this tab's module holds and
+  // lists, so the door shows it; walking the STORE's ids alone left it out of
+  // the one file that exists to carry everything off the device. Its pair is
+  // the Worker's answer, which is where that game's only copy is.
+  it("carries a game only the module lists — a create the store refused", async () => {
+    await putPair("local-2", RECORD_TEXT, tableFor("local-2"));
+    // `local-1` is the row the local host's listing names (the corpus's own
+    // row, `fakeWorker.ts`), and this tab's Worker holds it in memory.
+    workerAnswersWith("local-1", { record: RECORD_TEXT, table: tableFor("local-1") });
+    expect(await readBack("local-1"), "the premise: the store never kept it").toEqual({
+      record: null,
+      table: null,
+    });
+
+    const games = (JSON.parse(await backupEverything()) as Envelope).games;
+    expect(games.map((g) => g.id)).toEqual(["local-1", "local-2"]);
+    expect(games[0]).toMatchObject({ record: RECORD_TEXT, table: tableFor("local-1") });
+    expect(
+      currentWorker().posted.filter((r) => r.kind === "call" && isGamesList(r, "mine")).length,
+      "the module's listing was asked",
+    ).toBeGreaterThan(0);
   });
 
   it("backs up ONE game, and refuses a name this device does not have", async () => {
@@ -392,6 +431,43 @@ describe("restoring", () => {
     expect(out.semantics_rev).toBe(wire.health.semantics_rev);
   });
 
+  // **A compatibility row is re-derived at restore** (M6.5c2 cycle D, straw
+  // poll row 16; `db.test.ts` holds the transaction's half). A row an earlier
+  // build wrote about a game at THIS build's revision hid a game the module
+  // opens; the next restore of the same file drops it, and the door lists the
+  // game as playable — the hide set is `unplayableIds`, read here.
+  it("drops a row naming this build's rev at the next restore, so the game is listed as playable", async () => {
+    const REV = wire.health.semantics_rev;
+    const note: CompatNote = {
+      semantics_rev: REV,
+      rules_hash: null,
+      reason: `saved at semantics rev ${REV}; this app plays rev ${REV - 1}`,
+      restored_at: 0,
+    };
+    const table = tableFor("local-bumped");
+    await restoreOne(await openDb(), "local-bumped", {
+      record: RECORD_TEXT,
+      table,
+      compat: JSON.stringify(note),
+    });
+    expect(await unplayableIds(), "the premise: the earlier build's row hides it").toEqual(
+      new Set(["local-bumped"]),
+    );
+
+    const worker = stubWorker();
+    const r = await restorePairs(
+      fileFromAnotherDevice([{ id: "local-bumped", record: RECORD_TEXT, table, rev: REV }]),
+    );
+    expect(r.games[0]).toMatchObject({ id: "local-bumped", outcome: "restored" });
+    expect(await unplayableIds()).toEqual(new Set());
+    expect(await readBack("local-bumped")).toEqual({ record: RECORD_TEXT, table });
+    // The running tab is told, which is what re-reads the door's list.
+    const adopts = worker.instances
+      .flatMap((w) => w.posted)
+      .filter((q): q is Extract<typeof q, { kind: "adopt" }> => q.kind === "adopt");
+    expect(adopts.map((a) => a.ids)).toEqual([["local-bumped"]]);
+  });
+
   // **I-1: a game's rows are ONE list, and both deletes remove all of them.**
   // The path is ordinary: a cross-rev pair whose TABLE parses lists as a
   // playable row too, opening it hits the broken-save screen, and its one
@@ -521,12 +597,74 @@ describe("restoring", () => {
   // A file this build cannot read at all is a refusal about the FILE: nothing
   // is written and no per-game row is reported.
   it("refuses a file the validator will not read, and writes nothing", async () => {
-    stubWorker({ restore: () => ({ refused: "this is envelope version 2; this build reads version 1" }) });
+    stubWorker({ restore: () => ({ refused: "this is a version 2 backup; this build reads version 1" }) });
     const env = buildEnvelope([
       { id: "local-c", record: RECORD_TEXT, table: tableFor("local-c") },
     ]);
-    await expect(restorePairs(env)).rejects.toThrow(/envelope version 2/);
+    await expect(restorePairs(env)).rejects.toThrow(/version 2 backup/);
     expect(await readBack("local-c")).toEqual({ record: null, table: null });
+  });
+});
+
+// ---- another tab holding the OLD storage version (Review Focus 5) ---------
+//
+// **An M6.5b-era tab holds IndexedDB version 1 for its Worker's whole life and
+// installs no `versionchange` handler** (`db.ts`'s `openDb`), so this build's
+// version-2 open waits for as long as that tab stays open. "Back up everything"
+// awaited that open with no bound: the click answered nothing, ever, and its
+// `busy` guard stayed set, so every later click was swallowed too (straw poll
+// row 12). Staged with fake-indexeddb, the pattern of `db.test.ts`'s blocked
+// cell — a v1 tab is not a thing a browser walk can make.
+describe("another tab holding the old storage version", () => {
+  const HELD = "another tab holds this app's storage; close it and try again";
+
+  /** An M6.5b-shaped holder: version 1, no `versionchange` handler. */
+  const holdVersionOne = (): Promise<IDBDatabase> =>
+    new Promise((resolve, reject) => {
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => {
+        const db = r.result;
+        if (!db.objectStoreNames.contains("docs"))
+          db.createObjectStore("docs", { keyPath: ["doc", "id"] });
+        if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "id" });
+      };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // **The bound is what answers, and this is the staging that proves it.**
+  // This tab's own Worker is waiting on the old tab too, and its open is FIRST
+  // in the database's queue: the page's open queues behind it and is never
+  // sent a `blocked` event of its own — which is what a real tab looks like,
+  // since the Worker opens the database at its start. Only a timer can answer
+  // that open, so the timer is TEST-CONTROLLED here and the cell reads the
+  // answer at the bound and not a tick before it.
+  it("answers Back up everything with a sentence naming the other tab, within the bound (Review Focus 5)", async () => {
+    const old = await holdVersionOne();
+    const workersOpen = openDb(); // this tab's Worker, already waiting
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let answer: { ok: true } | { ok: false; said: string } | null = null;
+    void backupEverything().then(
+      () => (answer = { ok: true }),
+      (e: unknown) => (answer = { ok: false, said: e instanceof Error ? e.message : String(e) }),
+    );
+    await vi.advanceTimersByTimeAsync(STORAGE_BOUND_MS - 1);
+    expect(answer, "the premise: a queued open hears nothing before the bound").toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(answer).toEqual({ ok: false, said: HELD });
+    vi.useRealTimers();
+
+    // **And the next click works** once the other tab has gone: a refusal
+    // that left the export unusable would be the same hang one click later.
+    old.close();
+    (await workersOpen).close();
+    await putPair("local-2", RECORD_TEXT, tableFor("local-2"));
+    const games = (JSON.parse(await backupEverything()) as Envelope).games;
+    expect(games.map((g) => g.id)).toEqual(["local-2"]);
   });
 });
 
@@ -620,8 +758,12 @@ describe("the record's run block through every save path", () => {
     expect(RUN).toContain('"agent_seed": 10851594032870736878');
     expect(RUN).toContain('"weights": 6957643967275421640');
     expect(String(Number("10851594032870736878"))).not.toBe("10851594032870736878");
-    // So a parse and a re-serialize on ANY path would change the bytes.
-    expect(JSON.stringify(JSON.parse(RECORD_TEXT), null, 2)).not.toBe(RECORD_TEXT);
+    // So a parse and a re-serialize on ANY path would change the bytes. Read
+    // on the `run` slice ALONE: the whole record's top-level `seed` is also
+    // past 2^53, so a comparison over the whole text would stay true with the
+    // run block's own numbers made safe.
+    const again = JSON.stringify(JSON.parse(`{${RUN}}`), null, 2);
+    expect(again, "the run block, parsed and re-written, is no longer its bytes").not.toContain(RUN);
   });
 
   it("survives this browser's database byte for byte", async () => {

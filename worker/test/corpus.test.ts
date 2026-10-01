@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import { HOST_FIELDS } from "../scripts/corpus-walk.mjs";
 import { WIRE } from "./corpus.gen";
 import { replaceOnce, settle, tableStub } from "./helpers";
 import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
@@ -23,20 +24,6 @@ import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
 // are fixed, and the house's listing must hold the walk's tables and nothing
 // else, as the committed pages do.
 
-/**
- * The fields a HOST is entitled to differ on (spec §4's second class): which
- * header names the caller (`identity`, and `mode` on `/api/me`), how a change
- * reaches a browser (`signal`), and where its archive is kept (`archive`).
- * This host reads `cf-access`, `ws` and `r2`; the axum host the corpus was cut
- * from, `open`, `sse` and `off` — its primary `Api` keeps no archive.
- * `multiplayer` is NOT here: both hosts offer it.
- */
-const HOST_FIELDS: Record<string, string[]> = {
-  health: ["identity", "signal", "archive"],
-  me: ["mode"],
-  me_signed_out: ["mode"],
-};
-
 /** What one exempted field of a named reply came to: `spent` when this host
  *  sent it as a string that differs from the committed one; `no-string` when
  *  it sent no string for it, absent or of another type; `agrees` when both
@@ -53,13 +40,13 @@ type HostFieldVerdict = { field: string; verdict: "spent" | "no-string" | "agree
  * check here let an absent field through.
  *
  * **The rule's twin** is the live replay's, stated in
- * `worker/scripts/live-replay.mjs`'s `judge` (its "An exemption is spent only
+ * `worker/scripts/replay/judge.mjs`'s `judge` (its "An exemption is spent only
  * on a value this host SENT" comment): the same rule over the same fields,
  * stated once in each of the two WORKER replays (ruling R-C3), each naming the
  * other. The browser host's node replay (`web/src/local/corpus.node.test.ts`)
- * is not a third statement of it: it still spends an exemption on
- * `not.toEqual` alone, which an absent field passes — a debt recorded
- * forward, left this cycle (Task 7's review, M-5; ruling R-C20).
+ * is the THIRD statement of it: it asserts the field is present
+ * (`toHaveProperty`) and then that it differs, "present and differs" rather
+ * than "sent as a string", because `multiplayer` is a boolean (R-C20).
  */
 function hostFields(fixture: string, committed: unknown, got: unknown): HostFieldVerdict[] {
   const sent = (typeof got === "object" && got !== null ? got : {}) as Record<string, unknown>;
@@ -100,11 +87,14 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
  *   holding the committed pair re-seated against another bot — which no script
  *   replays.
+ * - `deal_bot_table` and `table_two_open` (cycle D) come from that same vs-bot
+ *   table's `Api`, which no script replays.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
  */
 const THIRD_COLUMN = [
+  "deal_bot_table",
   "explanation_terminal",
   "foreign_bot_409",
   "house_chat_off_404",
@@ -115,6 +105,7 @@ const THIRD_COLUMN = [
   "site_space_words",
   "table_bot",
   "table_foreign",
+  "table_two_open",
   "watching",
   "why",
   "why_foreign",

@@ -32,16 +32,18 @@
 // 6. **A trap is answered, and the PAGE starts a fresh Worker** (R5). A
 //    trapped module holds its own mutex and traps again on `init()`, so there
 //    is nothing to recover in place. A stored game that no longer rebuilds is
-//    not a trap: it is the module's own 500, an ordinary reply. Nor are TWO
-//    storage failures, both answered as ordinary replies: a WRITE the store
-//    refuses (`persist`'s `unsaved`, R4), and a READ that fails inside the
-//    export arm (`pair`, which reads IndexedDB since the PR #37 fix wave — a
-//    restart there would discard the very move the export exists to rescue).
-//    **Every other storage failure still goes the trap's way — named here,
-//    not fixed** (PR #37 fix wave, re-review N-2): a generation or a read that
-//    fails during a hold's acquisition (`takeGeneration`, `rebuild`), during
-//    the startup `ready` runs, or in `adopt` after a restore is answered
-//    `trapped`, and the page restarts the host.
+//    not a trap: it is the module's own 500, an ordinary reply. **Nor is any
+//    storage failure** — each is an ordinary reply naming the storage. A WRITE
+//    `persist` makes and the store refuses is `unsaved` (R4); the export arm's
+//    generation read answers from memory when it fails (`exportPair`). Every
+//    other IndexedDB call goes through `fromStorage`, which names its failure
+//    as `StoreUnreadable`, and every failed request is answered by ONE
+//    function, `failureReply` (both in `exportPair.ts`, where a cell can reach
+//    them): the export arm's committed read (since the PR #37 fix wave), and
+//    since M6.5c2 cycle D (dossier row 14) the startup (`ready`), a hold's
+//    acquisition (`takeGeneration`, `rebuild`) and `adopt` after a restore. A
+//    restart there would, in any real failure, meet the same store — and could
+//    throw away a Worker holding the one copy of a move the store refused.
 
 import {
   deletePair,
@@ -54,7 +56,7 @@ import {
   takeGeneration,
   writeDocs,
 } from "./db";
-import { exportPair, StoreUnreadable, unreadableReply, type Pair } from "./exportPair";
+import { exportPair, failureReply, fromStorage, type Pair } from "./exportPair";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -137,7 +139,9 @@ const serial = <T>(f: () => Promise<T>): Promise<T> => {
  *  so it costs no pending call its answer. */
 const ready = retryingStart(async () => {
   await init();
-  db = await openDb({ onBlocked: (sentence) => post({ kind: "notice", sentence }) });
+  db = await fromStorage(() =>
+    openDb({ onBlocked: (sentence) => post({ kind: "notice", sentence }) }),
+  );
   await rebuild();
 });
 
@@ -151,7 +155,7 @@ const ready = retryingStart(async () => {
 async function rebuild(): Promise<void> {
   wasm.init();
   lastWritten.clear();
-  const rows = await readAll(db);
+  const rows = await fromStorage(() => readAll(db));
   const byId = new Map<string, { record?: string; table?: string }>();
   for (const r of rows) {
     // **Only the module's own kinds** (M6.5b2): `docs` also holds this
@@ -175,10 +179,16 @@ type Outcome = { saved: "saved" | "unsaved" | "not-held" | "lost"; reason?: stri
 
 /** This tab no longer owns `id`: forget it, let the lock go, and tell the page
  *  ONCE. Called from the steal's own rejection and from a write that found a
- *  newer generation — whichever notices first. */
-function lose(id: string): void {
+ *  newer generation — whichever notices first.
+ *
+ *  **The ONE statement of the loss** (M6.5c2 cycle D, dossier row 56; the
+ *  M6.5b review's "written twice"): the steal's arm used to do these three
+ *  things inline. `only` is that arm's identity check — a steal followed by a
+ *  Take back puts a DIFFERENT entry under the id, and the old request's
+ *  rejection must not take the new hold away. */
+function lose(id: string, only?: Held): void {
   const entry = held.get(id);
-  if (!entry) return;
+  if (!entry || (only !== undefined && entry !== only)) return;
   held.delete(id);
   post({ kind: "lost", id });
   entry.release();
@@ -280,7 +290,7 @@ async function adopt(ids: string[]): Promise<number> {
   let taken = 0;
   for (const id of ids) {
     if (wasm.read("table", id) !== undefined) continue;
-    const pair = await readPair(db, id);
+    const pair = await fromStorage(() => readPair(db, id));
     if (pair.table === null) continue;
     wasm.load("table", id, pair.table);
     if (pair.record !== null) wasm.load("record", id, pair.record);
@@ -387,7 +397,12 @@ function hold(id: string, steal: boolean): Promise<boolean> {
 
   const acquire = async (): Promise<number> =>
     serial(async () => {
-      const generation = await takeGeneration(db, id);
+      // `fromStorage` for the generation too, though it is a read-then-WRITE:
+      // the page's answer is the same — this game cannot be opened here. **The
+      // sentence's opening words say "read"**, which a quota refusal of this
+      // one-row write does not strictly deserve; its reason, after the dash,
+      // is the store's own and says which it was.
+      const generation = await fromStorage(() => takeGeneration(db, id));
       await rebuild();
       return generation;
     });
@@ -485,12 +500,7 @@ function hold(id: string, steal: boolean): Promise<boolean> {
       // **A steal rejects the previous holder's request with an `AbortError`**
       // — the Web Locks specification's own mechanism, and the only notice a
       // stolen-from tab gets.
-      const entry = mine;
-      if (entry && held.get(id) === entry) {
-        held.delete(id);
-        post({ kind: "lost", id });
-        entry.release();
-      }
+      if (mine) lose(id, mine);
       // A steal is the expected rejection and is answered `false` (the hold
       // already resolved `true` long ago, so this settles nothing); anything
       // else is a fault, which `refuse` names.
@@ -520,18 +530,18 @@ async function acquisition(req: Extract<Req, { kind: "hold" | "takeover" }>): Pr
     await ready();
     post({ seq: req.seq, held: await hold(req.id, req.kind === "takeover") });
   } catch (err) {
-    post(trapped(req.seq, err));
+    // The trap, or unreadable storage — `failureReply` tells them apart (rule
+    // 6), and the page draws the second as the broken-store face.
+    post(failureReply(req.seq, err));
   }
 }
 
-const trapped = (seq: number, err: unknown): Record<string, unknown> => ({
-  seq,
-  status: 500,
-  body: JSON.stringify({ error: `the local host stopped: ${String(err)}` }),
-  trapped: true,
-});
+/** Everything but the two acquisitions, which `onmessage` routes to
+ *  [`acquisition`] before the queue — so this switch has no arm for them
+ *  (M6.5c2 cycle D, dossier row 56: the two it carried were dead). */
+type Queued = Exclude<Req, { kind: "hold" | "takeover" }>;
 
-async function handle(req: Req): Promise<void> {
+async function handle(req: Queued): Promise<void> {
   await ready();
   switch (req.kind) {
     case "call":
@@ -554,29 +564,22 @@ async function handle(req: Req): Promise<void> {
       //
       // **An IndexedDB read that fails here is NOT a trap** (rule 6; fix round
       // 1, review I-1). A holder whose generation read fails answers its
-      // memory, and a committed read that fails is answered as `unreadable`,
-      // a reply the page refuses the export with. Letting either escape would
-      // reach the queue's `catch` below, which answers `trapped` — and the
-      // page's restart would throw away this Worker and the one copy of any
-      // move the store has refused to keep. A `wasm.read` that throws is not
-      // caught here and still traps: that one is the module's.
+      // memory, and a committed read that fails rejects as `StoreUnreadable`,
+      // which the queue's `catch` below answers through `failureReply` as
+      // `unreadable` — a reply the page refuses the export with, and not the
+      // restart that would throw away this Worker and the one copy of any move
+      // the store has refused to keep. A `wasm.read` that throws is the
+      // module's, and `failureReply` answers it as the trap.
       const id = req.id;
-      let pair: Pair;
-      try {
-        pair = await exportPair(
-          held.get(id)?.generation,
-          () => readGeneration(db, id),
-          () => ({
-            record: wasm.read("record", id) ?? null,
-            table: wasm.read("table", id) ?? null,
-          }),
-          () => readPair(db, id),
-        );
-      } catch (err) {
-        if (!(err instanceof StoreUnreadable)) throw err;
-        post({ seq: req.seq, ...unreadableReply(err) });
-        return;
-      }
+      const pair: Pair = await exportPair(
+        held.get(id)?.generation,
+        () => readGeneration(db, id),
+        () => ({
+          record: wasm.read("record", id) ?? null,
+          table: wasm.read("table", id) ?? null,
+        }),
+        () => readPair(db, id),
+      );
       post({ seq: req.seq, ...pair });
       return;
     }
@@ -641,10 +644,6 @@ async function handle(req: Req): Promise<void> {
       }
       return;
     }
-    // The acquisitions never reach here; `onmessage` routes them.
-    case "hold":
-    case "takeover":
-      return;
   }
 }
 
@@ -658,10 +657,11 @@ ctx.onmessage = (e: MessageEvent<Req>) => {
     try {
       await handle(req);
     } catch (err) {
-      // A trap inside the module, or a module that never loaded. Answered, and
-      // then the PAGE recreates this Worker (R5) — a trapped instance holds its
-      // own mutex and traps again on `init()`.
-      post(trapped(req.seq, err));
+      // A trap inside the module, or a module that never loaded — answered as
+      // the trap, and the PAGE recreates this Worker (R5): a trapped instance
+      // holds its own mutex and traps again on `init()`. Or this browser's
+      // storage, answered as an ordinary reply naming it (rule 6).
+      post(failureReply(req.seq, err));
     }
   });
 };

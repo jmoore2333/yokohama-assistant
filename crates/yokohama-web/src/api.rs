@@ -202,6 +202,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("POST", "/api/games/{id}/unlock"),
         ("GET", "/api/games/{id}/chat"),
         ("POST", "/api/games/{id}/chat"),
+        ("DELETE", "/api/games/{id}/chat/{seq}"),
         ("POST", "/api/games/{id}/input"),
         ("GET", "/api/games/{id}/ports"),
         ("GET", "/api/games/{id}/labs"),
@@ -209,6 +210,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("GET", "/api/games/{id}/log"),
         ("GET", "/api/chat"),
         ("POST", "/api/chat"),
+        ("DELETE", "/api/chat/{seq}"),
         ("POST", "/api/archive"),
         ("GET", "/api/games/{id}/at"),
         ("GET", "/api/games/{id}/at/{k}"),
@@ -232,9 +234,14 @@ fn is_game_route(pattern: &str) -> bool {
     pattern.starts_with("/api/games") || pattern.starts_with("/api/chat")
 }
 
-/// Segment-wise match; `{name}` binds one segment. Returns the bound values in
-/// pattern order. The ids this API accepts are `store::is_safe_id`'s ASCII
-/// set, so a bound segment needs no percent-decoding.
+/// Segment-wise match; `{name}` binds one NON-EMPTY segment. Returns the bound
+/// values in pattern order. The ids this API accepts are `store::is_safe_id`'s
+/// ASCII set, so a bound segment needs no percent-decoding.
+///
+/// **An empty segment binds nothing** (M6.5c2 cycle D, straw poll row 10), as
+/// axum's matchit reads it: `/api/games//table` is no route, a 404. Bound, it
+/// reached `get_table` and came back as the store's "not a usable game name",
+/// a 500 — the server blamed for a path the caller mistyped.
 fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     let mut bound = Vec::new();
     let mut ps = pattern.split('/');
@@ -242,7 +249,7 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     loop {
         match (ps.next(), xs.next()) {
             (None, None) => return Some(bound),
-            (Some(p), Some(x)) if p.starts_with('{') => bound.push(x),
+            (Some(p), Some(x)) if p.starts_with('{') && !x.is_empty() => bound.push(x),
             (Some(p), Some(x)) if p == x => {}
             _ => return None,
         }
@@ -253,7 +260,7 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
 /// `GET` as axum's `MethodRouter` lists them — what the adapter writes into a
 /// 405's `Allow` header. Empty for a path no row matches.
 ///
-/// It takes the host's `serves_games` for the same reason [`find`] does: a 405
+/// It takes the host's `serves_games` for the same reason `find` does: a 405
 /// and its `Allow` are answers ABOUT the table, so they have to be read off the
 /// table this host actually serves.
 pub fn allowed_methods(path: &str, serves_games: bool) -> Vec<&'static str> {
@@ -310,9 +317,12 @@ pub struct Health {
     /// Which change transport to read: the server's `SIGNAL_KIND` (M6.3, R-plan-4).
     ///
     /// The second such fact, and it is here for the same reason as the first:
-    /// the client's polling hook has to know whether to open `…/stream` or to
-    /// hold a request against `…/events?wait=25`, and it cannot tell from a
-    /// successful call to anything else.
+    /// the client's signal hook has to know whether to read `…/stream` as a
+    /// stream (`"sse"`, the NAS) or as a socket (`"ws"`, the Worker), and it
+    /// cannot tell from a successful call to anything else. Its one plain
+    /// `…/events` read is the socket's probe; since M6.5c2 cycle D (R-D5) no
+    /// client holds a request, and a `wait` is accepted and ignored up to
+    /// [`MAX_WAIT_SECONDS`] — above it, still a 400.
     pub signal: &'static str,
     /// Which archive this deployment writes finished and abandoned games to
     /// (M6.5a, R-6.5a.13): `"off"`, `"dir"`, or M6.5c's `"r2"`. The client's
@@ -473,7 +483,7 @@ pub fn labels(games: &Games) -> Labels {
 /// `events` and `stream` can share it: a table that is open or dealing has no
 /// record, and a function that fetched one would have to refuse those two
 /// before the routes that must answer them got a look. A route that needs a
-/// session asks [`games::Games::handle`] afterwards and gets the same 409 it
+/// session asks [`Games::handle`](crate::games::Games::handle) afterwards and gets the same 409 it
 /// always did.
 ///
 /// **The table is read FIRST, as `seated` read it**, so a stranger holding an
@@ -490,18 +500,49 @@ pub fn labels(games: &Games) -> Labels {
 /// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
 /// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
 /// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
+///
+/// **The seat it answers was read under ITS OWN lock take** and is stale the
+/// moment that take ends: a route that takes the game's lock again to ACT
+/// reads the seat again under that take ([`input`], M6.5c2 cycle D, row 129).
+///
+/// The read and the admission are two steps since M6.5c2 cycle D: this is
+/// [`admitted_with`] over one [`Games::table_for_anyone`] read, for a route
+/// that has no table in hand.
 pub fn admitted(
     games: &Games,
     id: &str,
     user: &identity::User,
 ) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
-    use crate::table::TableStatus as S;
     let table = games.table_for_anyone(id, user)?;
+    admitted_with(games, &table, id, user)
+}
+
+/// [`admitted`]'s rule over a table the CALLER has already read (M6.5c2 cycle
+/// D, row 129) — so a route that needs the document before it knows whether to
+/// admit (`events_at`, which answers an open table itself) reads it ONCE.
+///
+/// `table` must be what [`Games::table_for_anyone`] answered for this `id` and
+/// `user`: that read is the first half of the admission (a stranger at a deal
+/// is refused there), and this function is the second. It answers the table
+/// back beside the viewer, so a call site reads as `admitted`'s does.
+///
+/// **It reads no table document, the handle's cold rebuild included**: the
+/// seat holder's arm reaches the handle through `Games::live_handle`, which
+/// takes the table in hand rather than settling it again — the read
+/// [`Games::handle`] would make.
+pub fn admitted_with(
+    games: &Games,
+    table: &crate::table::TableDoc,
+    id: &str,
+    user: &identity::User,
+) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
+    use crate::table::TableStatus as S;
+    let table = table.clone();
     if !table.seats_of(user).is_empty() {
         let seat = match table.status {
             S::Playing => {
-                let handle = games.handle(id)?;
-                let repl = handle.lock().expect("a game");
+                let handle = games.live_handle(id, &table)?;
+                let repl = games.lock_game(&handle, id)?;
                 client::viewer_seat(&table, user, repl.session.state())
                     .expect("a seat holder has a viewer seat")
             }
@@ -558,16 +599,25 @@ fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
     }
 }
 
-/// Who holds `seat` at this table, for a refusal that names them.
+/// Who holds `seat` at this table, for a refusal that names them — by the
+/// seat's NAME, or by its COLOUR when its holder gave none, and NEVER by
+/// address (M6.5c2 cycle D, R-6.5c2.35, R-D3): the sentence goes to every
+/// other seated caller who presses a key out of turn, and it used to hand them
+/// the acting seat's email.
 ///
-/// A bot has no email and is named as what it is. The `None` arm is the same
-/// unreachable-by-construction shape as [`admitted`]'s viewer seat:
-/// `Games::read_table` refuses a document whose `seats` disagrees with its
-/// `players`.
-fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
-    match table.seats.get(usize::from(seat.0)) {
-        Some(crate::table::SeatDoc::Human { user, .. }) => user,
-        _ => "the bot",
+/// A bot is named as what it is, as it always was. The colour's `None` arm is
+/// the same unreachable-by-construction shape as [`admitted`]'s viewer seat:
+/// `Games::read_table` refuses a document whose `colors` or `seats` disagrees
+/// with its `players`.
+fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> String {
+    let i = usize::from(seat.0);
+    match table.seats.get(i) {
+        Some(crate::table::SeatDoc::Human { name: Some(name), .. }) => name.clone(),
+        Some(crate::table::SeatDoc::Human { name: None, .. }) => table
+            .colors
+            .get(i)
+            .map_or_else(|| format!("seat {i}"), |c| yokohama_cli::render::color_name(*c).to_string()),
+        _ => "the bot".to_string(),
     }
 }
 
@@ -627,10 +677,19 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// person at it) the fence is what guards, exactly as before.
 ///
 /// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
-/// — replay-derived**, which is the CLI's own attribution for exactly this
-/// question (`repl.rs`'s undo unwinds by replay, not by a boundary stack, so it
-/// survives a save and reload). A `GameEvent` carries no seat of its own, and a
-/// second attribution here would be a second thing to keep true.
+/// — replay-derived** ([`trailing_mover`]), which is the CLI's own attribution
+/// for exactly this question (`repl.rs`'s undo unwinds by replay, not by a
+/// boundary stack, so it survives a save and reload). A `RecordedEvent` carries
+/// no seat of its own — nor does the `Move` inside one — and a second
+/// attribution here would be a second thing to keep true.
+///
+/// **A record that will not replay is the SERVER's failure, not a refusal**
+/// (M6.5c2 cycle D, straw poll row 5): [`UndoRefusal::Replay`], a 500 carrying
+/// the replay's own sentence. It used to be folded into the refusal's `String`
+/// and answered 403, which tells a caller the rule turned them away when no
+/// rule was consulted. No sound record reaches that arm — a resident `Repl`
+/// was built by folding the same chain over the whole record — so it is a
+/// server fault by construction, which is exactly what a 500 says.
 ///
 /// What pops is `Session::undo`'s unit — one `Move` with the reveals bound to
 /// it, or a trailing standalone reveal — and never more: admission requires
@@ -640,7 +699,7 @@ pub(crate) fn undo_allowed(
     repl: &yokohama_cli::repl::Repl,
     table: &crate::table::TableDoc,
     viewer: yokohama_core::PlayerId,
-) -> Result<(), String> {
+) -> Result<(), UndoRefusal> {
     // **Nobody undoes a game played against a bot this build does not run**
     // (M6.5c2, R-6.5c2.10; spec §2.4's third mask), on the one-human path and
     // the shared path alike, and so FIRST. Such a game reaches here only
@@ -651,10 +710,10 @@ pub(crate) fn undo_allowed(
     // the refusal's pair (R-C5), so a same-name re-point reads "V4.2", never
     // "V4" on a server that runs V4.
     if let Some((_, played)) = crate::bots::foreign(repl.session.record()).first() {
-        return Err(format!(
+        return Err(UndoRefusal::Refused(format!(
             "undo is not offered on a game played against {}, which this server doesn't run",
             crate::bots::distinguishing_labels(played, &crate::bots::production()).0,
-        ));
+        )));
     }
     if table.distinct_humans() <= 1 {
         return Ok(());
@@ -672,25 +731,59 @@ pub(crate) fn undo_allowed(
     // helper the acting-seat fence reads, so the two cannot drift (R-4.3 with
     // R-5.1). It returns `None` on a live game, which is where R-P6 speaks.
     if let Some(status) = status_refusal(repl) {
-        return Err(status);
+        return Err(UndoRefusal::Refused(status));
     }
-    let record = repl.session.record();
-    let len = record.events.len();
+    let mover = trailing_mover(repl.session.record(), repl.session.rules())?;
+    if mover == viewer && repl.session.state().current_player == viewer {
+        Ok(())
+    } else {
+        Err(UndoRefusal::Refused("undo is not offered once your turn has passed".to_string()))
+    }
+}
+
+/// Why [`undo_allowed`] did not wave an undo through — two different answers,
+/// typed so the caller cannot give them one status.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UndoRefusal {
+    /// The RULE refused this caller: the foreign-bot rule, R-5.2's finished or
+    /// faulted game, "nothing to undo", or R-P6 itself. A 403, in the rule's
+    /// own words, exactly as every one of them has always answered.
+    Refused(String),
+    /// The record would not replay far enough to name who made its last move:
+    /// a 500 carrying the replay's sentence (`ReplayError`'s `Display`, which
+    /// names the event that failed).
+    Replay(String),
+}
+
+/// **The one place the two arms become statuses**: a refusal is
+/// [`GameError::Forbidden`](crate::games::GameError::Forbidden) and a replay
+/// failure [`GameError::Server`](crate::games::GameError::Server), which the
+/// crate root's `From<GameError>` turns into a 403 and a 500.
+impl From<UndoRefusal> for crate::games::GameError {
+    fn from(e: UndoRefusal) -> Self {
+        match e {
+            UndoRefusal::Refused(m) => Self::Forbidden(m),
+            UndoRefusal::Replay(m) => Self::Server(m),
+        }
+    }
+}
+
+/// Who made `record`'s LAST event: the seat to move in the state before it,
+/// replayed under `rules` (see [`undo_allowed`] on why by replay).
+fn trailing_mover(
+    record: &yokohama_core::GameRecord,
+    rules: &Rules,
+) -> Result<yokohama_core::PlayerId, UndoRefusal> {
     // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
     // a game whose first prompt has not been answered yet. `Session::undo`'s
     // own words for the same condition, so the answer reads the same whichever
     // of the two paths reaches it.
-    if len == 0 {
-        return Err("nothing to undo".to_string());
-    }
-    let mover = yokohama_core::state_at(record, len - 1, repl.session.rules())
-        .map_err(|e| e.message)?
-        .current_player;
-    if mover == viewer && repl.session.state().current_player == viewer {
-        Ok(())
-    } else {
-        Err("undo is not offered once your turn has passed".to_string())
-    }
+    let Some(last) = record.events.len().checked_sub(1) else {
+        return Err(UndoRefusal::Refused("nothing to undo".to_string()));
+    };
+    yokohama_core::state_at(record, last, rules)
+        .map(|state| state.current_player)
+        .map_err(|e| UndoRefusal::Replay(e.to_string()))
 }
 
 /// What `GET /api/games` is being asked (§3.3).
@@ -793,7 +886,7 @@ pub struct Keep {
     pub seat: u8,
     pub card: u8,
     /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
-    /// only when it has no name yet — see [`Games::keep`](games::Games::keep).
+    /// only when it has no name yet — see [`Games::keep`](crate::games::Games::keep).
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -838,7 +931,7 @@ pub struct Unlock {
 
 /// `POST /api/games/{id}/unlock` — knock, and be remembered.
 ///
-/// The whole of the ladder is [`games::Games::unlock`]'s, held under the
+/// The whole of the ladder is [`Games::unlock`](crate::games::Games::unlock)'s, held under the
 /// table's own lock; this handler carries no rule of its own. It answers the
 /// `TableView`, whose `can_watch` now reads true, so a client that was
 /// drawing the unlock face has the payload it needs to draw the game instead
@@ -881,8 +974,18 @@ pub struct ChatQuery {
 /// it from an empty page.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatPage {
-    pub messages: Vec<chat::Message>,
+    /// Built for the reader ([`chat::ChatDoc::page_for`]): `you` on their own
+    /// messages, and no author's address (M6.5c2 cycle D, R-6.5c2.35).
+    pub messages: Vec<chat::MessageView>,
     pub last: u64,
+    /// The document's REVISION (M6.5c2 cycle D, R-D4), beside `last` for the
+    /// same reason `last` is the document's: a reader holding `rev - last`
+    /// from its previous page sees it move exactly when a message it may
+    /// already hold was deleted. Every chat panel is a count host and compares
+    /// that held difference with each signal frame's — `Events.chat` and
+    /// `chat_rev` at a table, the house frame's `chat` and `rev` in the lobby —
+    /// which are this document's `last` and `rev` on both hosts.
+    pub rev: u64,
 }
 
 /// `GET /api/games/{id}/chat?after=N` — admitted exactly as a read is.
@@ -907,9 +1010,12 @@ pub fn chat_read(
     id: &str,
     q: &ChatQuery,
 ) -> Result<ChatPage, ApiError> {
-    admitted(games, id, user)?;
-    let (messages, last) = games.chat_page(id, q.after.unwrap_or(0))?;
-    Ok(ChatPage { messages, last })
+    // The admission's table is the page's too (M6.5c2 cycle D, row 130): the
+    // chat is bounded by its seat count, and reading the document again for
+    // that one number was a second read per page.
+    let (table, _) = admitted(games, id, user)?;
+    let (messages, counts) = games.chat_page(id, &table, user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
 }
 
 /// `POST /api/games/{id}/chat` — the one write a watcher may make (R-6.4.11).
@@ -922,17 +1028,21 @@ pub fn chat_read(
 /// lock": `admitted` runs first, and on a dealing table where every human has
 /// kept it goes through `settle`, which takes that table's lock to finish the
 /// deal.)
+///
+/// **The reply is the message as its POSTER reads it** (M6.5c2 cycle D,
+/// R-6.5c2.35): `you: true`, and no address — the page's shape, so a client
+/// reads one author type.
 pub fn chat_post(
     games: &Games,
     user: &User,
     id: &str,
     req: &ChatPost,
-) -> Result<chat::Message, ApiError> {
+) -> Result<chat::MessageView, ApiError> {
     let (table, viewer) = admitted(games, id, user)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
-    let author = author_of(&table, viewer, user, req.name.as_deref())?;
+    let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
     let message = games.chat_append(id, author, &text)?;
-    Ok(message)
+    Ok(message.view_for(user))
 }
 
 /// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
@@ -942,8 +1052,13 @@ pub fn chat_post(
 /// at a seat the table has already settled that claim. A seated caller who
 /// sends one is refused rather than quietly overridden, because a client that
 /// believed it was setting a name and was answered 201 would go on sending it.
+///
+/// **It takes the SEATS, not the table** (M6.5c2 cycle D, row 130), so the
+/// house — which has none — asks it too, as a [`client::Viewer::Spectator`]
+/// over `&[]`: the watcher's rule (the name checked, the key the caller's) is
+/// written once, here, and not restated in [`house_chat_post`].
 fn author_of(
-    table: &crate::table::TableDoc,
+    seats: &[crate::table::SeatDoc],
     viewer: client::Viewer,
     user: &identity::User,
     name: Option<&str>,
@@ -953,7 +1068,7 @@ fn author_of(
             if name.is_some() {
                 return Err(ApiError::bad_request("a seated caller is named by their seat"));
             }
-            let stored = match table.seats.get(usize::from(seat.0)) {
+            let stored = match seats.get(usize::from(seat.0)) {
                 Some(crate::table::SeatDoc::Human { name, .. }) => name.clone(),
                 _ => None,
             };
@@ -981,10 +1096,10 @@ pub fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
 }
 
 /// `GET /api/chat?after=N` — the house. Any signed-in caller.
-pub fn house_chat_read(games: &Games, _user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
+pub fn house_chat_read(games: &Games, user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
     lobby_chat_on(games)?;
-    let (messages, last) = games.house_page(q.after.unwrap_or(0))?;
-    Ok(ChatPage { messages, last })
+    let (messages, counts) = games.house_page(user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
 }
 
 /// `POST /api/chat` — the house. Every author is a `Watcher`: the house has
@@ -993,17 +1108,48 @@ pub fn house_chat_read(games: &Games, _user: &User, q: &ChatQuery) -> Result<Cha
 /// Which is not a simplification but the shape rule's own answer: the house
 /// document is checked with `players: None`, and a `Seat` author there is
 /// refused on write. There is nothing to be seated at.
+///
+/// The reply is the message as its poster reads it, as [`chat_post`]'s is.
 pub fn house_chat_post(
     games: &Games,
     user: &User,
     req: &ChatPost,
-) -> Result<chat::Message, ApiError> {
+) -> Result<chat::MessageView, ApiError> {
     lobby_chat_on(games)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
-    let name = req.name.as_deref().map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
-    let author = chat::Author::Watcher { user: user.as_str().to_string(), name };
+    let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
     let message = games.house_append(author, &text)?;
-    Ok(message)
+    Ok(message.view_for(user))
+}
+
+/// `DELETE /api/games/{id}/chat/{seq}` (M6.5c2 cycle D, R-D4) — a message
+/// taken down by its AUTHOR or by the table's CREATOR, and by nobody else.
+///
+/// **Admitted exactly as [`chat_post`] is**, by the same [`admitted`]: a seat
+/// holder at every status, a watcher once the table admits them, the lock's
+/// sentence to a caller who has not knocked — so the one write a spectator
+/// may make and its undoing are behind the same door. Then the standing,
+/// which is [`chat::ChatDoc::delete`]'s: `only the message's author or the
+/// table's creator may delete it` (403) for anyone else, and `no message N in
+/// this chat` (404) for a number the document does not hold.
+///
+/// **The answer is an empty 204**, and a second delete of the same message by
+/// someone entitled is the same 204 — idempotent, writing and signalling
+/// nothing. The message stays as a TOMBSTONE (`text: ""`, `deleted: true`), so
+/// its number is never reused and every cursor still means what it meant; the
+/// table's `Events.chat_rev` moves and `Events.chat` does not.
+pub fn chat_delete(games: &Games, user: &User, id: &str, seq: u64) -> Result<(), ApiError> {
+    admitted(games, id, user)?;
+    Ok(games.delete_chat(id, seq, user)?)
+}
+
+/// `DELETE /api/chat/{seq}` (M6.5c2 cycle D, R-D4) — the house, where nobody
+/// is a creator, so only the message's AUTHOR may take it down. The switch
+/// first, as the read and the post have it; any signed-in caller is asked.
+/// The house frame's `rev` moves and its `chat` does not.
+pub fn house_chat_delete(games: &Games, user: &User, seq: u64) -> Result<(), ApiError> {
+    lobby_chat_on(games)?;
+    Ok(games.delete_house_chat(seq, user)?)
 }
 
 pub fn keep(
@@ -1028,7 +1174,7 @@ pub fn get_game(games: &Games, user: &User, id: &str) -> Result<ClientState, Api
     // seat's is (M6.3, R-3.7).
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     Ok(ClientState::of(id, &repl, viewer, Vec::new()))
 }
 
@@ -1092,15 +1238,28 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // of those are about a SEAT, and this caller has none: R-P6 would read the
     // trailing event's mover against a seat that does not exist.
     spectators_write_nothing(viewer)?;
-    // The seat the rules below compare against. Total by the refusal one line
-    // up, and written as a `match` rather than an `unwrap` so a third `Viewer`
-    // variant is a compile error here instead of a panic in production.
-    let seat = match viewer {
-        client::Viewer::Seat(s) => s,
-        client::Viewer::Spectator => return Err(spectators_write_nothing(viewer).unwrap_err()),
-    };
     let handle = games.handle(id)?;
-    let mut repl = handle.lock().expect("a game");
+    let mut repl = games.lock_game(&handle, id)?;
+    // **The seat the rules below compare against is read AGAIN, under THIS
+    // take** (M6.5c2 cycle D, row 129). `admitted` read one under its own take
+    // and let that go, and a move landing in between — this person's other
+    // tab, a double click — moves the turn from one of their seats to the
+    // other: the fence then compared the NEW acting seat against the OLD one
+    // and told the holder of both "it is seat 1's turn". It never admitted
+    // anybody wrongly; it refused the one person it should have let through.
+    // Pinned, with the gap held open, by
+    // `a_hot_seat_creator_is_never_told_it_is_not_their_turn_between_two_lock_takes`.
+    //
+    // `None` is unreachable — a caller admitted as a seat holds one, and
+    // `viewer_seat` answers for everyone who does — and is refused rather than
+    // unwrapped, so nothing under the game's lock can panic here.
+    let seat = client::viewer_seat(&table, user, repl.session.state()).ok_or_else(|| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: NOT_SEATED.to_string(),
+        table_status: None,
+        foreign_bot: None,
+    })?;
+    let viewer = client::Viewer::Seat(seat);
 
     // **An undo reaches back into your own turn and no further** (R-P6).
     //
@@ -1118,11 +1277,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // pressed; "it is seat 1's turn" answers a question they did not ask. The
     // fence is untouched and still runs, for this line and every other.
     if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, seat).map_err(|message| ApiError {
-            status: StatusCode::FORBIDDEN,
-            message,
-            table_status: None, foreign_bot: None,
-        })?;
+        undo_allowed(&repl, &table, seat).map_err(crate::games::GameError::from)?;
     }
 
     // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
@@ -1328,7 +1483,7 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
     // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
     // verbatim rather than a subset of it.
     let read = {
-        let repl = handle.lock().expect("a game");
+        let repl = games.lock_game(&handle, id)?;
         let refuse = if repl.session.record().lockdown.is_some() {
             Some(R::Locked)
         } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
@@ -1401,7 +1556,7 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
     let (mode, record, bots) = {
-        let repl = handle.lock().expect("a game");
+        let repl = games.lock_game(&handle, id)?;
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
         // the rule the three route families follow. M2 already settled that a
         // read-only GET serves a locked session — `ports`/`labs`/`areas`/`log`
@@ -1499,7 +1654,7 @@ pub fn card_index(
     // there is no hand here that is this reader's.
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let me = match viewer {
         client::Viewer::Seat(s) => Some(s),
         client::Viewer::Spectator => None,
@@ -1532,7 +1687,7 @@ pub struct IndexQuery {
 pub fn result(games: &Games, user: &User, id: &str) -> Result<outcome::Outcome, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     if !repl.session.is_over() {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
@@ -1573,7 +1728,7 @@ pub fn log(
 ) -> Result<yokohama_cli::screen_model::LogPanel, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     let first = q.tail.map_or(0, |n| total.saturating_sub(n));
     let described: Vec<(usize, String)> =
@@ -1581,8 +1736,8 @@ pub fn log(
     Ok(yokohama_cli::screen_model::build_log(total, described))
 }
 
-/// How much of the game a poll gets: the SIGNAL, in five fields (room plan
-/// R-P9, spec §6; the fifth is M6.4's).
+/// How much of the game a poll gets: the SIGNAL, in six fields (room plan
+/// R-P9, spec §6; the fifth is M6.4's and the sixth M6.5c2 cycle D's).
 ///
 /// **A few bytes, and no frame is built.** This is the endpoint the client asks
 /// every three seconds while it is somebody else's turn, and the whole point of
@@ -1616,43 +1771,38 @@ pub struct Events {
     /// does not walk it backwards and a client comparing it against its own
     /// cursor cannot be told to fetch a room that has not spoken.
     pub chat: u64,
+    /// The table's chat REVISION (M6.5c2 cycle D, R-D4): `chat` is a count for
+    /// the text, this a revision for the shape.
+    pub chat_rev: u64,
 }
 
-/// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
+/// `…/events`'s query, PARSED AND IGNORED since M6.5c2 cycle D (R-D5).
 ///
-/// **It is here now so the transport can change without the client changing.**
-/// M6.3 chooses among a held request, server-sent events and a Durable Object
-/// notifier, and every one of those answers "what has happened since N" — so
-/// the polled form takes the same parameter and answers immediately whether or
-/// not `events` has moved past it. A client written against this cycle keeps
-/// working when the transport underneath it is replaced.
+/// **Both keys stay so an older release keeps working.** M6.3 carried a resume
+/// cursor (`after`) and a hold (`wait`) for the held-request transport; the
+/// held arm is retired on every host, and the route answers at once whatever
+/// either key says. An older precached release's close probe still sends
+/// `wait=25`, and with the key gone `deny_unknown_fields` would answer it a
+/// 400.
 ///
-/// Typed `usize`, so a negative or non-numeric cursor is a 400 from serde
-/// rather than a value this handler would have to range-check; and
-/// `deny_unknown_fields` through the layer's `parse_query` makes a MISSPELLED
-/// cursor a 400 too, rather than a silent `None` that polls from the beginning forever.
+/// Typed `usize` and `u64`, so a negative or non-numeric value is still a 400
+/// from serde; `deny_unknown_fields` through the layer's `parse_query` still
+/// makes a MISSPELLED key a 400 rather than a silent default; and a `wait`
+/// above [`MAX_WAIT_SECONDS`] is still a 400 ([`check_wait`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsQuery {
+    /// A resume cursor: parsed and ignored (R-D5). No host ever acted on it.
     #[serde(default)]
     pub after: Option<usize>,
-    /// Hold this request open for up to N seconds, or until the table bumps
-    /// (R-plan-5, spec §3.3).
-    ///
-    /// **The held-request transport, shipped whether or not it is the one the
-    /// client reads.** R-3.1 decides between server-sent events and this on a
-    /// measurement through the real tunnel; carrying both costs one cell here
-    /// and makes the fallback a one-line change in the client's reader rather
-    /// than a second plan. It subscribes to the same channel `…/stream` does
-    /// and answers the same object, so a client that swaps transports swaps
-    /// nothing else.
-    ///
-    /// Absent, the route answers at once, exactly as it always has.
+    /// A hold of up to N seconds: parsed, bounded by [`check_wait`], and
+    /// ignored (R-D5). The route answers at once.
     #[serde(default)]
     pub wait: Option<u64>,
 }
 
-/// The longest a `?wait` may hold (spec §3.3).
+/// The longest a `?wait` may name (spec §3.3) — kept, with its refusal, since
+/// the hold was retired (R-D5): the value is still bounded, and then ignored.
 ///
 /// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
 /// silently given 25 would read the early answer as "nothing changed for two
@@ -1680,7 +1830,7 @@ pub fn check_wait(wait: Option<u64>) -> Result<(), ApiError> {
 /// stream's own cell asserts the first frame equals an `events` read BY VALUE,
 /// which is the property this function makes true by construction rather than
 /// by agreement between two bodies.
-pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64) -> Events {
+pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: chat::ChatCounts) -> Events {
     let s = repl.session.state();
     let over = repl.session.is_over();
     Events {
@@ -1694,7 +1844,8 @@ pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: 
         // A PARAMETER rather than a read, because this function holds a `Repl`
         // and the count lives nowhere near one: a chat message is not an event
         // and must never move the number a client re-fetches a board on.
-        chat,
+        chat: chat.last,
+        chat_rev: chat.rev,
     }
 }
 
@@ -1733,24 +1884,36 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
     // does reach it — one read and, on a miss, a cache seed — and is then
     // refused by `admitted` below. Nothing of it crosses the wire: the 403
     // carries no count.
-    let chat = games.chat_last(id);
+    let chat = games.chat_counts(id);
+    // The two arms with no session answer the same two numbers `events_of`
+    // does for a live one.
+    let unplayed = |status| Events {
+        events: 0,
+        to_move: None,
+        status,
+        your_turn: false,
+        chat: chat.last,
+        chat_rev: chat.rev,
+    };
     if table.status == crate::table::TableStatus::Open {
-        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
+        return Ok(unplayed("open"));
     }
-    let (table, viewer) = admitted(games, id, user)?;
+    // **The table read above IS the admission's** (M6.5c2 cycle D, row 129):
+    // `admitted` would read and settle it a second time, once per poll, per
+    // NAS stream frame per connection, and per Worker reading, where a read is
+    // a row. Pinned by `events_at_reads_the_table_once`.
+    let (table, viewer) = admitted_with(games, &table, id, user)?;
     match table.status {
         // Unreachable behind the return above, and written rather than
         // collapsed into the fall-through: a status this function answers by
         // name is a status a reader can find.
-        crate::table::TableStatus::Open => {
-            Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat })
-        }
-        crate::table::TableStatus::Dealing => {
-            Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
-        }
+        crate::table::TableStatus::Open => Ok(unplayed("open")),
+        crate::table::TableStatus::Dealing => Ok(unplayed("dealing")),
         crate::table::TableStatus::Playing => {
-            let handle = games.handle(id)?;
-            let repl = handle.lock().expect("a game");
+            // `live_handle`, not `handle`: the table is in hand, and a cold
+            // handle's rebuild through `handle` would settle it once more.
+            let handle = games.live_handle(id, &table)?;
+            let repl = games.lock_game(&handle, id)?;
             Ok(events_of(&repl, viewer, chat))
         }
     }
@@ -1795,7 +1958,7 @@ pub struct RunFrames {
 pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFrames, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if q.to > q.from && q.to - q.from > RUN_CAP {
         return Err(ApiError::bad_request(format!(
@@ -1865,7 +2028,7 @@ pub fn at_k(
 ) -> Result<client::HistoricalFrame, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if k > total {
         return Err(ApiError::not_found(format!(
@@ -1906,7 +2069,7 @@ pub fn surface<T>(
 ) -> Result<T, ApiError> {
     let _admitted = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = handle.lock().expect("a game");
+    let repl = games.lock_game(&handle, id)?;
     Ok(build(repl.session.state(), repl.session.rules()))
 }
 
@@ -1928,7 +2091,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         });
     }
     let handle = games.handle(id)?;
-    let over = handle.lock().expect("a game").session.is_over();
+    let over = games.lock_game(&handle, id)?.session.is_over();
     if !over {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
@@ -1942,6 +2105,33 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         .map_err(ApiError::server_error)?
         .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
     Ok(json)
+}
+
+/// The largest body `POST /api/archive` reads (M6.5c2 cycle D, straw poll row
+/// 81): 1 MiB. Over it the route answers 413 BEFORE it parses anything
+/// (`check_archive_size`, the route's own check).
+///
+/// **A route's own bound, under both hosts' body limits** — the NAS adapter's
+/// 2 MiB and the Worker's `BODY_LIMIT`, which bound every route alike. This
+/// route is the one whose body an untrusted replay reads whole, so it gets a
+/// bound of its own and a sentence of its own. A finished two-person record is
+/// about 54 KB (`tests/fixtures/browser-played-2p.json`), so the room is wide.
+pub const ARCHIVE_BODY_LIMIT: usize = 1 << 20;
+
+/// The archive route's size check: over [`ARCHIVE_BODY_LIMIT`] is a 413 that
+/// names the bound, answered after the caller and before the body is parsed —
+/// pinned first in
+/// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`.
+fn check_archive_size(body: &[u8]) -> Result<(), ApiError> {
+    if body.len() > ARCHIVE_BODY_LIMIT {
+        return Err(ApiError {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: "the record is larger than 1 MiB".to_string(),
+            table_status: None,
+            foreign_bot: None,
+        });
+    }
+    Ok(())
 }
 
 /// What a browser sends to the archive (M6.5b, R-6.5b.6): the record and the
@@ -1974,7 +2164,7 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The EIGHT checks [`backup::check_pair_with`] makes, in spec §2.4's order**
+/// **The EIGHT checks `backup::check_pair_with` makes, in spec §2.4's order**
 /// (nine refusals through this route, because the archive-off 404 is asked
 /// first, and a rev that disagrees and a rev that is absent are two different
 /// sentences): the record parses; a `semantics_rev` present and equal to this
@@ -2135,6 +2325,10 @@ fn answer(
                 "/api/games/{id}/chat" => {
                     chat_post(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(201, &v))
                 }
+                "/api/games/{id}/chat/{seq}" => {
+                    let seq = parse_path_u64(1, b[1])?;
+                    chat_delete(games, u, b[0], seq).map(|()| ApiResponse { status: 204, body: String::new() })
+                }
                 "/api/games/{id}/input" => {
                     input(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
@@ -2155,10 +2349,18 @@ fn answer(
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
+                "/api/chat/{seq}" => {
+                    let seq = parse_path_u64(0, b[0])?;
+                    house_chat_delete(games, u, seq).map(|()| ApiResponse { status: 204, body: String::new() })
+                }
                 // 201 for a pair that landed, 200 for a retry that found its own
                 // bytes already there — the client acts on either (spec §2.4).
-                "/api/archive" => archive_post(games, u, &parse_json(req.content_type, req.body)?)
-                    .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v)),
+                // The body's SIZE first, before the parse (straw poll row 81).
+                "/api/archive" => {
+                    check_archive_size(req.body)?;
+                    archive_post(games, u, &parse_json(req.content_type, req.body)?)
+                        .map(|v| ok_json(if v.identical { 200 } else { 201 }, &v))
+                }
                 "/api/games/{id}/at" => {
                     run(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
@@ -2192,6 +2394,19 @@ fn answer(
 /// as a `u64` and names that — the pin caught the plan's `usize` (R-plan-3).
 pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiError> {
     raw.parse::<usize>().map_err(|_| {
+        ApiError::bad_request(format!(
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+        ))
+    })
+}
+
+/// A chat message's number off the path (M6.5c2 cycle D, R-D4), refused in
+/// [`parse_path_usize`]'s words — axum's own for a `Path<(String, u64)>`
+/// segment that is not a number. A `u64` and not a `usize`, so a number is the
+/// same number on a 32-bit host: the browser's module and the Worker's are
+/// `wasm32`, where `usize` stops at four billion and a stored `seq` does not.
+pub(crate) fn parse_path_u64(index: usize, raw: &str) -> Result<u64, ApiError> {
+    raw.parse::<u64>().map_err(|_| {
         ApiError::bad_request(format!(
             "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
         ))
@@ -2319,11 +2534,11 @@ mod tests {
         assert!(res.body.contains(r#""foreign_bot":{"played":"V2 lookahead""#), "anti-vacuity: the third shape: {}", res.body);
     }
 
-    /// **The wait cap is the layer's, exported** (M6.5c2): 25 holds, 26 is a
-    /// 400 in the handler's own words — a refusal, never a clamp — and no
-    /// `wait` holds nothing. The axum handler calls this;
-    /// `events_can_be_held_until_a_bump_and_the_wait_is_bounded` (`lib.rs`)
-    /// pins it there end to end.
+    /// **The wait cap is the layer's, exported** (M6.5c2): 25 is accepted, 26
+    /// is a 400 in the handler's own words — a refusal, never a clamp — and no
+    /// `wait` is accepted too. Since R-D5 an accepted `wait` is ignored. The
+    /// axum handler calls this; `a_wait_is_accepted_and_answered_at_once`
+    /// (`lib.rs`) pins it there end to end.
     #[test]
     fn a_wait_above_the_cap_is_refused_never_clamped() {
         assert_eq!(MAX_WAIT_SECONDS, 25);
@@ -2415,8 +2630,14 @@ mod tests {
     };
 
     fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
-        let user = User::parse("local@browser").expect("an address");
         let body = serde_json::json!({ "record": record, "table": table }).to_string();
+        post_archive_bytes(games, body.as_bytes())
+    }
+
+    /// [`post_archive`] with the body as given, for the rows about the body
+    /// itself rather than the pair inside it.
+    fn post_archive_bytes(games: &Games, body: &[u8]) -> (u16, serde_json::Value) {
+        let user = User::parse("local@browser").expect("an address");
         let res = dispatch(
             games,
             &LOCAL_HOST,
@@ -2426,7 +2647,7 @@ mod tests {
                 path: "/api/archive",
                 query: "",
                 content_type: Some("application/json"),
-                body: body.as_bytes(),
+                body,
             },
         );
         let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
@@ -2503,6 +2724,72 @@ mod tests {
         assert_eq!(v["bot"], serde_json::json!({ "label": "V2 lookahead", "runs_here": false }));
         let (status, v) = ask(&games, "local@browser", "DELETE", &base, "", "");
         assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+    }
+
+    /// **A pair whose table and record disagree about which seats are bots is
+    /// refused, in one 409 naming the seat** (M6.5c2 cycle D, the review of
+    /// Task 4), at `Games::live_handle` — the one place every host rebuilds a
+    /// stored game — and so on every route that reads one.
+    ///
+    /// Row 1 is the shape the review measured: a record naming seat 1
+    /// `bga-human` beside the committed table, which seats a BOT there. Before
+    /// the guard it opened at seat 1's turn and nothing ever moved it — the CLI
+    /// resumes seat 1 as a human, so no bot runs, and the acting-seat fence
+    /// refuses the only person at the table. Unfinished and finished alike, and
+    /// Abandon, which never rebuilds, still deletes it. Row 2 is the other
+    /// direction (a recorded bot at a table's human seat); row 3 a record with
+    /// no run provenance beside a bot seat, which no build of this layer writes
+    /// (`finalize` has stamped the run seats since the first table document).
+    #[test]
+    fn a_pair_whose_table_and_record_disagree_about_a_bot_is_refused_in_one_409() {
+        use crate::games::test_support::{BOT_TO_MOVE_AT, PLAYED_RECORD, PLAYED_TABLE};
+        let holding = |record: &str, table: &str| -> Games {
+            let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+            games.load_document(crate::store::Doc::Record, PLAYED_ID, record).unwrap();
+            games.load_document(crate::store::Doc::Table, PLAYED_ID, table).unwrap();
+            games
+        };
+        let refusal = |why: &str| {
+            serde_json::json!({ "error": format!("the table document does not agree with the record: {why}") })
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+
+        // Row 1: `bga-human` in the record, a bot at the table.
+        let row_1 = refusal("seat 1 is a person in the record (bga-human) but a bot at the table");
+        let unfinished = holding_foreign(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, Some(BOT_TO_MOVE_AT));
+        for (method, route, query, body) in [
+            ("GET", "", "", ""),
+            ("POST", "/input", "", r#"{"line":"1"}"#),
+            ("GET", "/why", "", ""),
+            ("GET", "/suggest", "", ""),
+        ] {
+            let (status, v) = ask(&unfinished, "local@browser", method, &format!("{base}{route}"), query, body);
+            assert_eq!((status, &v), (409, &row_1), "unfinished: {method} {base}{route}");
+        }
+        let finished = holding_foreign(yokohama_cli::bga::CONTROLLER_BGA_HUMAN, None);
+        assert_eq!(ask(&finished, "local@browser", "GET", &base, "", ""), (409, row_1.clone()), "finished too");
+        let (status, v) = ask(&unfinished, "local@browser", "DELETE", &base, "", "");
+        assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+
+        // Row 2: the record's bot at a table's human seat.
+        let mut table: crate::table::TableDoc = serde_json::from_str(PLAYED_TABLE).unwrap();
+        table.seats[1] = crate::table::SeatDoc::Human { user: "ada@t.test".to_string(), name: None };
+        table.keeps[1] = Some(1);
+        let games = holding(PLAYED_RECORD, &serde_json::to_string(&table).unwrap());
+        let runs = crate::bots::label(&crate::bots::production());
+        assert_eq!(
+            ask(&games, "local@browser", "GET", &base, "", ""),
+            (409, refusal(&format!("seat 1 is a bot in the record ({runs}) but a person at the table"))),
+        );
+
+        // Row 3: no run provenance beside the table's bot seat.
+        let mut record: yokohama_core::GameRecord = serde_json::from_str(PLAYED_RECORD).unwrap();
+        record.run = None;
+        let games = holding(&serde_json::to_string(&record).unwrap(), PLAYED_TABLE);
+        assert_eq!(
+            ask(&games, "local@browser", "GET", &base, "", ""),
+            (409, refusal("seat 1 is a bot at the table but the record names no controller for it")),
+        );
     }
 
     /// **A finished game against a foreign bot opens, scores and downloads —
@@ -2620,15 +2907,38 @@ mod tests {
         assert_eq!(status, 200, "{v}");
         assert_eq!(v["identical"], true);
 
+        // **The body's size, FIRST and before any parse** (M6.5c2 cycle D,
+        // straw poll row 81) — the catcher for "the archive cap after the
+        // parse". One byte over the cap, and not JSON either, to an archive
+        // that is OFF: the 413 is answered before the body parse would say 400
+        // and before the switch would say 404. At the cap exactly, the same
+        // non-JSON body reaches the parse — so the bound is the cap and not one
+        // below it.
+        let over = vec![b'x'; ARCHIVE_BODY_LIMIT + 1];
+        let (status, v) = post_archive_bytes(&off, &over);
+        assert_eq!((status, v["error"].as_str()), (413, Some("the record is larger than 1 MiB")), "{v}");
+        let (status, v) = post_archive_bytes(&on, &over[..ARCHIVE_BODY_LIMIT]);
+        assert_eq!(status, 400, "at the cap the body is read, and refused for what it is: {v}");
+
         // The nine checks, in order, each named by the sentence it answers.
         let rev_wrong = keyed(PLAYED_RECORD, "semantics_rev", 6.into());
         let no_digest = without(PLAYED_RECORD, "terminal_digest");
         let no_replay = replay_broken(PLAYED_RECORD);
         let bad_players = keyed(PLAYED_TABLE, "players", 3.into());
         let bad_seat = keyed(PLAYED_TABLE, "start_seat", 1.into());
+        let unsafe_id = keyed(PLAYED_TABLE, "id", "not/a/safe/id".into());
 
         // **The adjacent-pair probes.** Each row carries the defects of TWO
         // neighbouring checks and expects the earlier one's sentence.
+        //
+        // **The TABLE's four checks run BEFORE the replay since M6.5c2 cycle D**
+        // (straw poll row 81): the replay rebuilds the game's setup from the
+        // record's own configuration, and it is the table's checks that bound
+        // `players`, `colors` and `start_seat` against it — so an untrusted
+        // record now reaches setup only once a table agrees with it. The
+        // catcher for "the table checks after the replay" is the digest row's
+        // partner and the id row's: each carries a record that would not
+        // replay, and expects a TABLE sentence.
         let probes: [(&Games, String, String, &str); 8] = [
             // archive-off  <  the record parses
             (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
@@ -2642,24 +2952,24 @@ mod tests {
             // the rev agrees  <  a terminal digest is present
             (&on, without(&rev_wrong, "terminal_digest"), PLAYED_TABLE.to_string(),
              "this record is at semantics rev 6; this server archives rev 7"),
-            // a terminal digest is present  <  the record replays
-            (&on, replay_broken(&no_digest), PLAYED_TABLE.to_string(),
+            // a terminal digest is present  <  the table parses
+            (&on, no_digest.clone(), "not json at all".to_string(),
              "the record carries no terminal digest"),
-            // the record replays  <  the table parses
-            (&on, no_replay.clone(), "not json at all".to_string(), "the record does not replay"),
             // the table parses  <  the table's shape
             (
                 &on,
-                PLAYED_RECORD.to_string(),
+                no_replay.clone(),
                 keyed(&bad_players, "archived_at", "not a number".into()),
                 "the table document does not parse",
             ),
             // the table's shape  <  the table agrees with the record
-            (&on, PLAYED_RECORD.to_string(), bad_players.clone(),
+            (&on, no_replay.clone(), bad_players.clone(),
              "the table document is malformed"),
             // the table agrees  <  the table's id is a safe name
-            (&on, PLAYED_RECORD.to_string(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
+            (&on, no_replay.clone(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
              "the table document does not agree with the record"),
+            // the table's id is a safe name  <  the record replays
+            (&on, no_replay.clone(), unsafe_id.clone(), "the table's id is not a safe name"),
         ];
         let mut sentences = std::collections::BTreeSet::new();
         for (games, record, table, expect) in probes {
@@ -2673,9 +2983,12 @@ mod tests {
         assert_eq!(sentences.len(), 8, "eight checks, eight different sentences");
 
         // The ninth, on its own — nothing follows it to probe against.
-        let (status, v) = post_archive(&on, PLAYED_RECORD, &keyed(PLAYED_TABLE, "id", "not/a/safe/id".into()));
+        let (status, v) = post_archive(&on, &no_replay, PLAYED_TABLE);
         assert_eq!(status, 400, "{v}");
-        assert_eq!(v["error"], "the table's id is not a safe name");
+        assert!(
+            v["error"].as_str().expect("a sentence").starts_with("the record does not replay"),
+            "{v}",
+        );
 
         // A record with NO rev is a different sentence from one that disagrees:
         // the engine's own, carried verbatim.
@@ -2687,6 +3000,193 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // M6.5c2 cycle D: the chat's delete, through `dispatch` (R-D4)
+    // -----------------------------------------------------------------------
+
+    /// The only sentence a delete is refused with for want of standing.
+    const NOT_YOURS: &str = "only the message's author or the table's creator may delete it";
+
+    /// A playing THREE-person table, created by red: red, blue and green each
+    /// keep through the route helper, so the third seat — neither the creator
+    /// nor, below, the author — is a person the table admits.
+    fn three_people_playing(games: &Games, id: &str) {
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerColor;
+        let mut req = crate::games::test_support::req_seeded(id, crate::games::test_support::CORPUS_SEED);
+        req.players = 3;
+        req.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        req.seats = ["red@t.test", "blue@t.test", "green@t.test"]
+            .iter()
+            .map(|u| SeatSpec { user: Some((*u).to_string()), bot: false, open: false })
+            .collect();
+        crate::games::test_support::playing(games, &req, &["red@t.test", "blue@t.test", "green@t.test"]);
+    }
+
+    /// **A message is deleted by its author or the table's creator, and by
+    /// NOBODY else** (M6.5c2 cycle D, R-D4; Review Focus 2) — the catcher for
+    /// "a third seat may delete".
+    ///
+    /// Three callers who must be refused: green, a third SEAT who neither wrote
+    /// blue's message nor created the table; grey, a WATCHER, on a seat's
+    /// message; and blue, a seat, on the CREATOR's message. Two who may: blue
+    /// on her own, and red — the creator — on a watcher's. The watcher's own
+    /// second delete is the idempotent 204. Every refusal is the one sentence,
+    /// and the page afterwards shows exactly the two tombstones.
+    #[test]
+    fn a_chat_message_is_deleted_by_its_author_or_the_tables_creator_and_nobody_else() {
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        three_people_playing(&games, "three");
+        let chat = "/api/games/three/chat";
+        let post = |who: &str, body: &str| ask(&games, who, "POST", chat, "", body);
+        assert_eq!(post("blue@t.test", r#"{"text":"blue's"}"#).1["seq"], 1);
+        assert_eq!(post("grey@t.test", r#"{"text":"grey's","name":"Grey"}"#).1["seq"], 2, "a watcher posts");
+        assert_eq!(post("red@t.test", r#"{"text":"red's"}"#).1["seq"], 3);
+        let delete = |who: &str, seq: &str| ask(&games, who, "DELETE", &format!("{chat}/{seq}"), "", "");
+
+        for (who, seq, what) in [
+            ("green@t.test", "1", "a third seat, on another seat's message"),
+            ("grey@t.test", "1", "a watcher, on a seat's message"),
+            ("blue@t.test", "3", "a seat, on the creator's message"),
+        ] {
+            let (status, v) = delete(who, seq);
+            assert_eq!((status, v["error"].as_str()), (403, Some(NOT_YOURS)), "{what}: {v}");
+        }
+        assert_eq!(delete("blue@t.test", "1"), (204, serde_json::Value::Null), "the author, an empty 204");
+        assert_eq!(delete("red@t.test", "2"), (204, serde_json::Value::Null), "the creator, on a watcher's message");
+        assert_eq!(delete("grey@t.test", "2"), (204, serde_json::Value::Null), "the watcher's own, again: idempotent");
+
+        let (status, page) = ask(&games, "green@t.test", "GET", chat, "", "");
+        assert_eq!(status, 200, "{page}");
+        let shape: Vec<(u64, bool, String)> = page["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|m| (m["seq"].as_u64().expect("a seq"), m["deleted"] == true, m["text"].as_str().expect("text").to_string()))
+            .collect();
+        assert_eq!(
+            shape,
+            [(1, true, String::new()), (2, true, String::new()), (3, false, "red's".to_string())],
+            "the two deleted, and only those: {page}",
+        );
+        assert_eq!(page["last"], 3, "no number moved");
+        // **The page carries the document's REVISION** (R-D4): three posts and
+        // two deletes — the watcher's repeat changed nothing — so a reader
+        // holding `rev - last` from an earlier page sees it move by two.
+        assert_eq!(page["rev"], 5, "{page}");
+    }
+
+    /// **The delete is admitted exactly as the post is, and its own answers
+    /// follow** (R-D4): a stranger at an open table, at a dealing one and at a
+    /// LOCKED playing one reads `admitted`'s own sentence — the seat one, the
+    /// seat one, and the lock's — before anything about the message; then, for
+    /// a caller admitted, a number nobody was given is a 404, and a segment
+    /// that is no number is axum's own 400 for a `u64` path segment.
+    #[test]
+    fn a_chat_delete_is_admitted_as_a_post_is() {
+        use crate::games::test_support::{playing, req_seeded, two_people, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let red = User::parse("red@t.test").expect("an address");
+        let mut open = req_seeded("opent", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealt", CORPUS_SEED), &red).expect("a dealing table");
+        let mut locked = two_people("lockt", CORPUS_SEED);
+        locked.password = Some("sesame".to_string());
+        playing(&games, &locked, &["red@t.test", "blue@t.test"]);
+        for id in ["opent", "dealt", "lockt"] {
+            let (status, v) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/chat"), "", r#"{"text":"hi"}"#);
+            assert_eq!(status, 201, "{id}: {v}");
+        }
+
+        for (id, sentence) in [
+            ("opent", "you are not seated at this table"),
+            ("dealt", "you are not seated at this table"),
+            ("lockt", "this table is locked — unlock it first"),
+        ] {
+            let (status, v) = ask(&games, "green@t.test", "DELETE", &format!("/api/games/{id}/chat/1"), "", "");
+            assert_eq!((status, v["error"].as_str()), (403, Some(sentence)), "a stranger at {id}: {v}");
+        }
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/dealt/chat/9", "", "");
+        assert_eq!((status, v["error"].as_str()), (404, Some("no message 9 in this chat")), "{v}");
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/dealt/chat/one", "", "");
+        assert_eq!(
+            (status, v["error"].as_str()),
+            (400, Some("Invalid URL: Cannot parse value at index 1 with value `one` to a `u64`")),
+            "{v}",
+        );
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/games/nothing/chat/1", "", "");
+        assert_eq!(status, 404, "no table, no message: {v}");
+    }
+
+    /// **The house's delete: the author alone, and the switch before
+    /// anything** (R-D4). The house has no creator, so blue may not take down
+    /// red's post; red may. With the lobby chat off the route is the switch's
+    /// 404, as the read and the post are.
+    #[test]
+    fn a_house_message_is_deleted_by_its_author_alone() {
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let (status, m) = ask(&games, "red@t.test", "POST", "/api/chat", "", r#"{"text":"anyone?","name":"Red"}"#);
+        assert_eq!(status, 201, "{m}");
+        let (status, v) = ask(&games, "blue@t.test", "DELETE", "/api/chat/1", "", "");
+        assert_eq!((status, v["error"].as_str()), (403, Some(NOT_YOURS)), "{v}");
+        assert_eq!(ask(&games, "red@t.test", "DELETE", "/api/chat/1", "", ""), (204, serde_json::Value::Null));
+        let (_, page) = ask(&games, "blue@t.test", "GET", "/api/chat", "", "");
+        assert_eq!(
+            (page["messages"][0]["deleted"].as_bool(), page["last"].as_u64(), page["rev"].as_u64()),
+            (Some(true), Some(1), Some(2)),
+            "a tombstone, the number held, the revision moved: {page}",
+        );
+        let (status, v) = ask(&games, "red@t.test", "DELETE", "/api/chat/x", "", "");
+        assert_eq!(
+            (status, v["error"].as_str()),
+            (400, Some("Invalid URL: Cannot parse value at index 0 with value `x` to a `u64`")),
+            "{v}",
+        );
+
+        let off = Games::with_parts(
+            std::sync::Arc::new(yokohama_core::Rules::standard()),
+            std::sync::Arc::new(crate::store::MemStore::default()),
+            crate::chat::ChatConfig { lobby: false, ..crate::chat::ChatConfig::default() },
+            std::sync::Arc::new(crate::signal::NoSignal),
+            std::sync::Arc::new(|| 1_789_000_000u64),
+            std::sync::Arc::new(crate::archive::NoArchive),
+            crate::games::RunHost::Server,
+        );
+        let (status, v) = ask(&off, "red@t.test", "DELETE", "/api/chat/1", "", "");
+        assert_eq!((status, v["error"].as_str()), (404, Some("the lobby chat is off")), "{v}");
+    }
+
+    /// **`Events.chat_rev` moves on a delete while `chat` does not** (R-D4;
+    /// Review Focus 2's "the client learns of the deletion at the next frame")
+    /// — at an open table, where there is no session, and at a playing one,
+    /// through `events_of`. `chat` is a count for the text and a delete adds
+    /// no text; `chat_rev` is the revision for the shape, and the tombstone
+    /// changed it.
+    #[test]
+    fn events_carries_chat_rev_which_a_delete_moves_and_chat_does_not() {
+        use crate::games::test_support::{playing, req_seeded, two_people, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let red = User::parse("red@t.test").expect("an address");
+        let mut open = req_seeded("opent", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        for id in ["opent", "playt"] {
+            let (status, v) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/chat"), "", r#"{"text":"hi"}"#);
+            assert_eq!(status, 201, "{v}");
+            let e = events_at(&games, id, &red).unwrap_or_else(|e| panic!("a reading: {}", e.message));
+            assert_eq!((e.chat, e.chat_rev), (1, 1), "{id}: one append moves both");
+            assert_eq!(ask(&games, "red@t.test", "DELETE", &format!("/api/games/{id}/chat/1"), "", "").0, 204);
+            let e = events_at(&games, id, &red).unwrap_or_else(|e| panic!("a reading: {}", e.message));
+            assert_eq!((e.chat, e.chat_rev), (1, 2), "{id}: the delete moves the revision alone");
+            let wire = serde_json::to_value(&e).expect("an Events serializes");
+            assert_eq!((wire["chat"].as_u64(), wire["chat_rev"].as_u64()), (Some(1), Some(2)), "{wire}");
+        }
     }
 
     #[test]
@@ -2711,6 +3211,7 @@ mod tests {
             ("POST", "/api/games/{id}/unlock"),
             ("GET", "/api/games/{id}/chat"),
             ("POST", "/api/games/{id}/chat"),
+            ("DELETE", "/api/games/{id}/chat/{seq}"),
             ("POST", "/api/games/{id}/input"),
             ("GET", "/api/games/{id}/ports"),
             ("GET", "/api/games/{id}/labs"),
@@ -2718,6 +3219,7 @@ mod tests {
             ("GET", "/api/games/{id}/log"),
             ("GET", "/api/chat"),
             ("POST", "/api/chat"),
+            ("DELETE", "/api/chat/{seq}"),
             ("POST", "/api/archive"),
             ("GET", "/api/games/{id}/at"),
             ("GET", "/api/games/{id}/at/{k}"),
@@ -2730,6 +3232,43 @@ mod tests {
         let table = routes(true);
         let names: Vec<(&str, &str)> = table.iter().map(|r| (r.method, r.pattern)).collect();
         assert_eq!(names, expected.to_vec());
+    }
+
+    /// **An undo over a record that will not replay is the SERVER's failure — a
+    /// 500 carrying the replay's own sentence — and never a 403** (M6.5c2 cycle
+    /// D, straw poll row 5). A 403 tells the caller the RULE refused them, and
+    /// here no rule was consulted: the record could not name who made its last
+    /// move.
+    ///
+    /// **No route reaches this arm, and the cell says why rather than
+    /// pretending otherwise.** A resident `Repl` exists only through
+    /// `Session::from_record` (or a session that applied every event itself),
+    /// which folds the SAME `new_game` → `finalize_setup` → `replay_from` chain
+    /// over the whole record; a prefix of a record that folds, folds. So the
+    /// cell holds the arm at the two places that decide its status: the mover's
+    /// derivation, handed a HAND-BUILT record that will not replay (a 5-Power
+    /// take before any placement — asserted as a premise through `state_at`
+    /// itself), and the one mapping `input` sends [`UndoRefusal`] through.
+    /// The rule's own refusal is read through that mapping too, still a 403.
+    #[test]
+    fn undo_on_a_record_that_will_not_replay_is_a_500_not_a_403() {
+        use yokohama_core::{GameConfig, GameRecord, Move, RecordedEvent, StartingOrderChoice};
+        let rules = Rules::standard();
+        let mut record =
+            GameRecord::new(7, GameConfig::for_player_count(2), vec![StartingOrderChoice::Keep(0); 2], &rules);
+        record.events = vec![RecordedEvent::Move(Move::Take5PowerToken), RecordedEvent::Move(Move::SkipBuilding)];
+        let sentence = yokohama_core::state_at(&record, 1, &rules)
+            .expect_err("premise: the record will not replay")
+            .to_string();
+
+        let refusal = trailing_mover(&record, &rules).expect_err("no mover to name");
+        assert_eq!(refusal, UndoRefusal::Replay(sentence.clone()), "a replay failure, not a refusal");
+        let answer = ApiError::from(crate::games::GameError::from(refusal));
+        assert_eq!((answer.status, answer.message), (StatusCode::INTERNAL_SERVER_ERROR, sentence));
+
+        let rule = "undo is not offered once your turn has passed";
+        let answer = ApiError::from(crate::games::GameError::from(UndoRefusal::Refused(rule.to_string())));
+        assert_eq!((answer.status, answer.message.as_str()), (StatusCode::FORBIDDEN, rule));
     }
 
     #[test]
@@ -2754,5 +3293,201 @@ mod tests {
             _ => panic!("the run route"),
         }
         assert!(matches!(find("GET", "/api/games/sim-1/index", true), Matched::NoRoute), "a short path binds nothing");
+        // An EMPTY segment binds nothing (M6.5c2 cycle D, straw poll row 10):
+        // bound, `/api/games//table` reached `get_table` and answered the
+        // store's "not a usable game name" as a 500, where axum's matchit
+        // answers 404 — so no route, in the middle and at the end alike.
+        assert!(matches!(find("GET", "/api/games//table", true), Matched::NoRoute), "an empty {{id}}");
+        assert!(matches!(find("GET", "/api/games/sim-1/at/", true), Matched::NoRoute), "an empty {{k}}");
+    }
+
+    /// **`events` reads the table document ONCE per call** (M6.5c2 cycle D, row
+    /// 129) — at every status, for a seat holder and for a watcher, with the
+    /// handle resident and with it cold.
+    ///
+    /// It read it twice: once itself, to answer an open table, and again inside
+    /// `admitted`. That is every poll, every NAS stream frame per connection
+    /// per bump, and every Worker reading, where a read is a row — and a COLD
+    /// handle added a third, since `Games::handle` settles the table again
+    /// before it rebuilds. The count is the store's, so a route that read the
+    /// same document twice and served it once cannot pass.
+    #[test]
+    fn events_at_reads_the_table_once() {
+        use std::sync::Arc;
+        use crate::games::test_support::*;
+        use crate::store::Store;
+        use crate::tables::SeatSpec;
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (red, green) = (who("red@t.test"), who("green@t.test"));
+        let reads = |id: &str, user: &User| {
+            let before = store.table_reads();
+            events_at(&games, id, user).unwrap_or_else(|e| panic!("{id}: {}", e.message));
+            store.table_reads() - before
+        };
+
+        let mut open = two_people("open", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealing", CORPUS_SEED), &red).expect("a dealing table");
+        playing(&games, &two_people("playing", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+
+        assert_eq!(reads("open", &red), 1, "open");
+        assert_eq!(reads("dealing", &red), 1, "dealing");
+        assert_eq!(reads("playing", &red), 1, "playing, the handle resident");
+        assert_eq!(reads("playing", &green), 1, "playing, a watcher");
+        games.evict_for_test("playing");
+        assert_eq!(reads("playing", &red), 1, "playing, the handle cold");
+        games.evict_for_test("playing");
+        assert_eq!(reads("playing", &green), 1, "playing, a watcher, the handle cold");
+    }
+
+    /// **The non-acting refusal names the seat, never its holder's address**
+    /// (M6.5c2 cycle D, R-6.5c2.35, R-D3): `it is seat {n}'s turn (…)` carries
+    /// the seat's NAME, or its COLOUR when its holder gave none. It was the
+    /// holder's email, handed to every other seated caller who pressed a key
+    /// out of turn.
+    ///
+    /// Two tables, one per arm: seat 1 unnamed reads its colour, and seat 1
+    /// named reads the name — so a sentence that always said the colour would
+    /// fail the second half.
+    #[test]
+    fn a_non_acting_callers_refusal_names_the_seat_by_name_or_colour_never_an_address() {
+        use crate::games::test_support::{games, two_people, who, CORPUS_SEED};
+        let games = games();
+        for (id, blue_name, said) in [("colour", None, "Blue"), ("named", Some("Ada Bell"), "Ada Bell")] {
+            let mut req = two_people(id, CORPUS_SEED);
+            req.start_seat = 1;
+            let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+            games.create(&req, &red).expect("a table");
+            games.keep(id, &red, yokohama_core::PlayerId::new(0), 1, None).expect("red keeps");
+            games.keep(id, &blue, yokohama_core::PlayerId::new(1), 1, blue_name).expect("blue keeps");
+            let (status, body) = ask(&games, "red@t.test", "POST", &format!("/api/games/{id}/input"), "", r#"{"line":"1"}"#);
+            assert_eq!(status, 403, "{body}");
+            assert_eq!(body["error"], format!("it is seat 1's turn ({said})"), "{id}");
+            assert!(!body.to_string().contains('@'), "{id}: no address in the refusal: {body}");
+        }
+    }
+
+    /// **The reply to a move whose write CONFLICTED says so, out loud** (M6.5c2
+    /// cycle D, straw poll row 31): the move applied, the store answered
+    /// `Conflict` at the swap, and the 200 carries `APPLIED BUT NOT SAVED`
+    /// instead of a refusal the server did not make. Its games.rs partner
+    /// asserts the eviction; this asserts the sentence on the wire, and is not
+    /// a catcher for a conflict that keeps the handle (the battery's row 25):
+    /// the sentence is the same either way.
+    #[test]
+    fn a_move_whose_write_conflicted_is_answered_applied_but_not_saved() {
+        use crate::games::test_support::{conflicting_games, req, who};
+        use std::sync::atomic::Ordering;
+        let (games, store) = conflicting_games();
+        let red = who("red@t.test");
+        games.create(&req("cnf"), &red).expect("a table");
+        games.keep("cnf", &red, yokohama_core::PlayerId::new(0), 1, None).expect("red keeps");
+        store.armed.store(true, Ordering::SeqCst);
+        let (status, body) = ask(&games, "red@t.test", "POST", "/api/games/cnf/input", "", r#"{"line":"1"}"#);
+        assert_eq!(status, 200, "{body}");
+        let warnings = body["warnings"].as_array().expect("warnings ride the reply");
+        assert!(
+            warnings.iter().any(|w| w.as_str().is_some_and(|w| w.starts_with("APPLIED BUT NOT SAVED")
+                && w.contains("changed under this handle"))),
+            "{body}",
+        );
+    }
+
+    /// **A hot seat's holder is never told it is not their turn** (M6.5c2 cycle
+    /// D, row 129) — the catcher for an acting-seat fence that compares against
+    /// the seat `admitted` read under its OWN lock take.
+    ///
+    /// `input` takes the game's lock twice: once inside the admission, to learn
+    /// which of the caller's seats they act as, and again to act. A move landing
+    /// between the two — the same person's other tab, or a double click —
+    /// moved the turn from seat 0 to seat 1, and the fence then told the person
+    /// holding BOTH seats "it is seat 1's turn" about their own seat. It never
+    /// admitted anybody wrongly; it refused the one person it should have let
+    /// through.
+    ///
+    /// **The gap is held open on the `live` map's lock, not on the store**:
+    /// with the handle resident nothing between the two takes reaches the store,
+    /// and the second take's `Games::handle` is the one step that passes through
+    /// that map. So the cell holds the game's lock (the request waits at its
+    /// first take), takes the map's lock, lets the first take through, waits
+    /// for the request to drop its handle (the first take is over), plays seat
+    /// 0's whole turn in the gap, and only then lets the second take through.
+    ///
+    /// **Nothing can panic while the cell holds either lock**: every wait is
+    /// bounded and answers a bool, the gap's moves report rather than `expect`,
+    /// and every assertion runs after both guards are gone and the request has
+    /// been joined — so a failure releases `live` and the game's lock unpoisoned
+    /// and never leaves the request thread waiting on either.
+    #[test]
+    fn a_hot_seat_creator_is_never_told_it_is_not_their_turn_between_two_lock_takes() {
+        use std::sync::Arc;
+        use crate::games::test_support::*;
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerId;
+        /// Spin until `done`, for at most 20 s; whether it came true.
+        fn waited(done: impl Fn() -> bool) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !done() {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+        let games = games();
+        let red = who("red@t.test");
+        let mut hot = two_people("hot", CORPUS_SEED);
+        hot.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        let handle = playing(&games, &hot, &["red@t.test"]);
+        assert_eq!(handle.lock().unwrap().session.state().current_player, PlayerId::new(0), "premise: seat 0 opens");
+        let resident = Arc::strong_count(&handle);
+        let req = Input { line: "1".to_string(), expect: None };
+
+        let (took_the_handle, first_take_over, gap, answer) = std::thread::scope(|scope| {
+            let game = handle.lock().unwrap();
+            let request = scope.spawn(|| input(&games, &red, "hot", &req));
+            let took_the_handle = waited(|| Arc::strong_count(&handle) > resident);
+            let live = games.live.lock().unwrap();
+            drop(game);
+            let first_take_over = took_the_handle && waited(|| Arc::strong_count(&handle) == resident);
+            // Seat 0's whole turn, played in the gap — reported, never unwrapped.
+            let gap: Result<PlayerId, String> = if !first_take_over {
+                Err("the gap never opened".to_string())
+            } else {
+                match handle.lock() {
+                    Err(_) => Err("the game's lock was poisoned".to_string()),
+                    Ok(mut repl) => {
+                        let mut played = Ok(());
+                        for _ in 0..200 {
+                            if repl.session.state().current_player != PlayerId::new(0) {
+                                break;
+                            }
+                            let Some(mv) = repl.session.legal().first().cloned() else {
+                                played = Err("seat 0 had no legal move".to_string());
+                                break;
+                            };
+                            if let Err(e) = repl.session.apply(mv, Vec::new()) {
+                                played = Err(format!("a legal move did not apply: {e:?}"));
+                                break;
+                            }
+                        }
+                        played.map(|()| repl.session.state().current_player)
+                    }
+                }
+            };
+            drop(live);
+            (took_the_handle, first_take_over, gap, request.join())
+        });
+        assert!(took_the_handle, "timed out: the request never took the handle");
+        assert!(first_take_over, "timed out: the request's first take never ended");
+        assert_eq!(gap, Ok(PlayerId::new(1)), "premise: the gap moved the turn to seat 1");
+        match answer {
+            Err(_) => panic!("the request panicked"),
+            Ok(Err(e)) => panic!("the hot seat's holder was refused between two lock takes: {} {}", e.status, e.message),
+            Ok(Ok(_)) => {}
+        }
     }
 }

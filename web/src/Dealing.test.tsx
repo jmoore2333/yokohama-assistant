@@ -32,12 +32,10 @@ import type { DealView } from "./types";
  *  without this component keeping a second copy of it. */
 function Host({
   game = "wire",
-  me = "red@wire.test",
   onPlaying = () => {},
   onLeave = () => {},
 }: {
   game?: string;
-  me?: string;
   onPlaying?: () => void;
   onLeave?: (sentence?: string) => void;
 }) {
@@ -45,7 +43,6 @@ function Host({
   return (
     <Dealing
       game={game}
-      me={me}
       art={wire.artManifest}
       labels={wire.labels}
       sections={sections}
@@ -91,7 +88,7 @@ const signalling = (onOpen?: (open: number) => Array<[string, unknown]>) => {
  *  its DOM. The one cell that IS answers the route itself. */
 const quietChat = (call: ApiCall): Reply | undefined =>
   call.method === "GET" && call.path.includes("/chat")
-    ? { ...wire.chat, messages: [], last: 0 }
+    ? { ...wire.chat, messages: [], last: 0, rev: 0 }
     : undefined;
 
 /** Let a reply chain settle without moving the clock — the harness's own
@@ -438,7 +435,7 @@ describe("the dealing screen", () => {
   // the life of the game. The server writes the name onto a seat that has none,
   // so a keep can never rename somebody.
   it("posts the name this browser remembers with the keep", async () => {
-    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ada Bell");
     const stub = stubApi((call) => {
       if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
       return dealThen(wire.deal, wire.dealWaiting)(call);
@@ -450,7 +447,7 @@ describe("the dealing screen", () => {
     expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
       seat: wire.deal.seat,
       card: 1,
-      name: "Jeremy",
+      name: "Ada Bell",
     });
   });
 
@@ -501,7 +498,7 @@ describe("the dealing screen", () => {
       }),
     );
     stubApi(() => undefined); // nothing hosted is asked for a local table
-    render(<Host game="local-1" me="local@browser" />);
+    render(<Host game="local-1" />);
     await screen.findAllByRole("button", { name: /^keep O\d\d/ });
     expect(screen.queryByRole("log")).toBeNull();
     // …and nothing was ASKED of the local host about chat either.
@@ -539,5 +536,76 @@ describe("the dealing screen's chat", () => {
     await waitFor(() => expect(side.lastElementChild).toHaveClass("chat"));
     expect(side.lastElementChild).toHaveClass("folded");
     expect(within(side as HTMLElement).getByRole("button", { name: "show" })).toBeInTheDocument();
+  });
+});
+
+// ---- M6.5c2 cycle D: another seat's keep (dossier row 1) -------------------
+
+describe("the dealing screen, following the other seats", () => {
+  /** The corpus's waiting deal as a THREE-seat table reads it. **Derived**,
+   *  because the walk's tables are two-seat: no committed deal is still dealing
+   *  once a second seat has kept. The third seat is Blue's own shape with its
+   *  name cleared, so it reads "invited" (`seatName`), and each reply moves
+   *  `chosen` alone. */
+  const threeSeats = (chosen: boolean[]): DealView => {
+    const t = wire.dealWaiting.table;
+    const blue = t.seats[1]!;
+    if (blue.kind !== "human") throw new Error("the corpus's seat 1 is Blue's");
+    return {
+      ...wire.dealWaiting,
+      table: { ...t, players: 3, colors: [...t.colors, "Green"], seats: [...t.seats, { ...blue, name: null }], chosen },
+    };
+  };
+  /** The waiting line, read whole. */
+  const waitingLine = () => document.querySelector(".deal-waiting")?.textContent ?? null;
+
+  // **A keep at another browser that does not finish the deal leaves the table
+  // DEALING, and the frame it causes says exactly that.** The handler dropped
+  // it — it acted only on a status that had LEFT dealing — so at three seats
+  // and more the line went on naming a seat that had chosen.
+  //
+  // **The connection's own frame comes FIRST, as on both real hosts** (the
+  // Task 11 review's I-3): the NAS stream writes the current `Events` on
+  // connect and the Worker's `admit` sends one. The keep's frame is the
+  // SECOND, so a screen that re-read on the first frame alone — which drops
+  // every later keep, row 1's defect as production shows it — fails here.
+  it("re-reads who it is waiting on when a dealing frame follows another seat's keep", async () => {
+    vi.useFakeTimers();
+    const { stream, at } = signalling(() => [["signal", wire.eventsDealing]]);
+    const before = threeSeats([true, false, false]);
+    const deals = dealThen(before, before, threeSeats([true, false, true]));
+    const stub = stubApi((call) => (call.path.endsWith("/deal") ? deals(call) : at(call)));
+    render(<Host />);
+    await until(() => waitingLine() === "waiting on Blue, invited", "the first reading names both seats");
+    await until(() => stub.matching("GET", "/deal").length === 2, "the connection's own frame was read");
+    expect(waitingLine(), "nothing had moved at connect").toBe("waiting on Blue, invited");
+
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    expect(stub.matching("GET", "/deal"), "the keep's frame re-read the deal").toHaveLength(3);
+    expect(waitingLine()).toBe("waiting on Blue");
+  });
+
+  // **A frame where only the chat moved is a message, not a keep** — `Events`
+  // carries no keep count, and `chat`/`chat_rev` are the fields that tell a
+  // post (or a delete) from a keep. Two fields moved on the dealing reading,
+  // taken from the corpus's own playing one. The connection's frame first,
+  // then a keep's (the anti-vacuity: a frame that is not only a chat move DOES
+  // re-read, after the first), then the message's.
+  it("does not re-read the deal for a frame where only the chat moved", async () => {
+    vi.useFakeTimers();
+    const { stream, at } = signalling(() => [["signal", wire.eventsDealing]]);
+    const deals = dealThen(threeSeats([true, false, false]), threeSeats([true, false, false]), threeSeats([true, false, true]));
+    const stub = stubApi((call) => (call.path.endsWith("/deal") ? deals(call) : at(call)));
+    render(<Host />);
+    await until(() => waitingLine() !== null, "the first reading");
+    await until(() => stub.matching("GET", "/deal").length === 2, "the connection's own frame was read");
+    stream.push("signal", wire.eventsDealing);
+    await settle();
+    expect(stub.matching("GET", "/deal"), "the premise: a keep's frame re-reads").toHaveLength(3);
+
+    stream.push("signal", { ...wire.eventsDealing, chat: wire.events.chat, chat_rev: wire.events.chat_rev });
+    await settle();
+    expect(stub.matching("GET", "/deal"), "a message is not a keep").toHaveLength(3);
   });
 });

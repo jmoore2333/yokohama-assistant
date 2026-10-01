@@ -467,8 +467,9 @@ describe("the hook", () => {
     expect(result.current.reason).toMatch(/NetworkError/);
   });
 
-  // **A tab nothing controls hears no `controllerchange`** (PR #37 F3, E2).
-  // `skipWaiting` hands the new worker only the tabs the old one CONTROLLED —
+  // **A tab nothing controls is not promised a `controllerchange`** (PR #37 F3,
+  // E2; Chromium sends one anyway). `skipWaiting` hands the new worker the tabs
+  // the old one CONTROLLED —
   // a first visit is not one, since nothing calls `clients.claim()`, and nor is
   // a page whose first registration was retried — so such a tab that clicks
   // reloads when the worker it asked reaches `activated`. Before this it

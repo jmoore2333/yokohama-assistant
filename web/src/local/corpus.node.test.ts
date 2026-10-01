@@ -143,6 +143,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
  *   holding the committed pair re-seated against another bot — which no script
  *   replays.
+ * - `deal_bot_table` and `table_two_open` (cycle D) come from that same vs-bot
+ *   table's `Api`, which no script replays.
  */
 const NOT_SERVED = [
   "art_manifest",
@@ -169,6 +171,8 @@ const NOT_SERVED = [
   "archive_400_table",
   "production_bot",
   "table_bot",
+  "deal_bot_table",
+  "table_two_open",
   "foreign_bot_409",
   "table_foreign",
   "why_foreign",
@@ -176,6 +180,56 @@ const NOT_SERVED = [
 
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`, which the walk's own clock reads. */
 const FROZEN_CREATED_AT = 1_789_000_000;
+
+/** A reply's body, parsed — `null` for an empty one — and a body that is not
+ *  JSON refused in a sentence naming the ROW that got it and quoting the
+ *  start of what came back (M6.5c2 cycle D, dossier row 56). */
+function replyOf(text: string, row: string): Record<string, unknown> | null {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `${row} answered something that is not JSON: ${JSON.stringify(text.slice(0, 80))} (${why})`,
+    );
+  }
+}
+
+// **A reply that is not JSON names the ROW that got it** (M6.5c2 cycle D,
+// dossier row 56). The walk is 2,209 requests long, and a bare `SyntaxError`
+// from the parse — "Unexpected token '<'" — says nothing about which of them
+// answered with something other than this API's shape. Its own suite, with no
+// module: it is about the replay's reading of a reply, not about the module.
+describe("the replay's reading of a reply", () => {
+  it("refuses a reply that is not JSON by naming the row and quoting what came back", () => {
+    expect(() => replyOf("<html>oops</html>", "GET /api/games/wire/log")).toThrow(
+      /GET \/api\/games\/wire\/log answered something that is not JSON: "<html>oops<\/html>"/,
+    );
+  });
+
+  it("parses a JSON reply, and reads an empty one as no body", () => {
+    expect(replyOf('{"a":1}', "GET /api/me")).toEqual({ a: 1 });
+    expect(replyOf("", "DELETE /api/games/wire")).toBeNull();
+  });
+
+  // **And the walk USES it** (fix round 1, review Minor 2): the two cells
+  // above pin the helper, and a walk that went back to parsing its replies by
+  // hand would leave both green. The walk's cell is read from this file and
+  // must reach its replies through `replyOf` and parse none itself.
+  it("is the only way the walk reads a reply", () => {
+    const source = fs.readFileSync(fileURLToPath(import.meta.url), "utf8");
+    // Anchored at the START OF A LINE, which this cell's own text never is:
+    // the first draft searched for the bare title, found it in this very
+    // line, and so read ITSELF — green over a walk that parsed by hand.
+    const start = source.indexOf('\n  it("replays the walk through the module');
+    expect(start, "the walk's cell is in this file").toBeGreaterThan(-1);
+    const walk = source.slice(start, source.indexOf("\n  it(", start + 1));
+    expect(walk, "anti-vacuity: the slice is the walk, which dispatches").toContain("wasm.dispatch(");
+    expect(walk).toContain("replyOf(text, ");
+    expect(walk).not.toMatch(/JSON\.parse\(\s*text\b/);
+  });
+});
 
 describe.skipIf(!have)("the browser host serves the corpus", () => {
   it("replays the walk through the module and every named reply is its committed file", () => {
@@ -219,7 +273,10 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
       const committed = JSON.parse(
         fs.readFileSync(path.join(wire, `${row.fixture}.json`), "utf8"),
       ) as Record<string, unknown>;
-      const got = (text ? JSON.parse(text) : null) as Record<string, unknown>;
+      const got = replyOf(text, `${row.method} ${row.path}${row.query ? `?${row.query}` : ""}`) as Record<
+        string,
+        unknown
+      >;
       // **An exempted field must really DIFFER between the two hosts.** The
       // exemption list is the replay's own accounting, and nothing else checks
       // it: the close's mutation battery added `archive` to `health`'s list and
@@ -229,6 +286,15 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
       // that the module's value and the committed value are NOT equal; a field
       // that agrees does not belong on the list.
       for (const field of HOST_FIELDS[row.fixture!] ?? []) {
+        // **Present, THEN different** (R-C20, the pool's presence rule stated
+        // for this host): `expect(undefined).not.toEqual(x)` passes, so a
+        // field the module stopped sending would be exempted unread. The rule
+        // here is "present and differs", not the pool's "sent as a string",
+        // because `multiplayer` is a boolean.
+        expect(
+          got,
+          `${row.fixture}.${field} is exempted as host-parameterised, so the module must SEND it`,
+        ).toHaveProperty(field);
         expect(
           got[field],
           `${row.fixture}.${field} is exempted as host-parameterised, but both hosts agree on it — take it off HOST_FIELDS`,

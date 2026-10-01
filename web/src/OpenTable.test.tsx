@@ -13,16 +13,17 @@
 // one derived table is `fourWithTwoOpen`, and it moves only the SIZE: its own
 // doc says why.
 
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_ANSWER } from "./Abandon";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
+import { OPEN_KEY } from "./chatFold";
 import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import { endSentence } from "./signal";
-import type { TableView } from "./types";
+import type { ChatPage, TableView } from "./types";
 
 /** The table this caller SITS at, still filling its seats — `wire2`, the
  *  lobby's second row, committed exactly in that shape: `status: "open"`,
@@ -34,16 +35,29 @@ const seated = (over: Partial<TableView> = {}): TableView => ({
   ...over,
 });
 
+/** `seated()` as a GUEST reads it — somebody who sits at the table and did not
+ *  open it. The corpus has no such reading of an OPEN table (the one guest the
+ *  walk seats fills the last seat, and the table deals), so the two fields the
+ *  server answers differently to a guest are moved (M6.5c2 cycle D,
+ *  R-6.5c2.35): `mine`, and each seat's `invited`, which is the creator's
+ *  alone. */
+const asGuest = (t: TableView): TableView => ({
+  ...t,
+  mine: false,
+  seats: t.seats.map((s) => (s.kind === "human" ? { ...s, invited: null } : s)),
+});
+
 /** A FOUR-seat table with two seats still open, as a stranger reads it. **Every
  *  value is the corpus's** — the stranger's own open table, with Blue's seat
- *  from `table.json` and the open seat's shape from `table_open.json` — and only
- *  the SIZE moves: the walk's tables are two-seat, so no committed payload has
- *  two seats free, and the several-seat face is the one R-6.5c2.9 is about. */
+ *  as a stranger reads it (`table_watchable.json`: named, not `you`) and the
+ *  open seat's shape from `table_open.json` — and only the SIZE moves: the
+ *  walk's tables are two-seat, so no committed payload has two seats free, and
+ *  the several-seat face is the one R-6.5c2.9 is about. */
 const fourWithTwoOpen = (): TableView => ({
   ...wire.tableOpen,
   players: 4,
   colors: ["Red", "Blue", "Yellow", "Green"],
-  seats: [wire.tableOpen.seats[0]!, wire.table.seats[1]!, wire.tableOpen.seats[1]!, wire.tableOpen.seats[1]!],
+  seats: [wire.tableOpen.seats[0]!, wire.tableWatchable.seats[1]!, wire.tableOpen.seats[1]!, wire.tableOpen.seats[1]!],
   chosen: [false, false, false, false],
 });
 
@@ -77,13 +91,12 @@ function show(
     // its DOM. A STRANGER's screen draws no panel and asks for nothing, which
     // is the half the cell below pins.
     if (call.method === "GET" && call.path.includes("/chat"))
-      return { ...wire.chat, messages: [], last: 0 };
+      return { ...wire.chat, messages: [], last: 0, rev: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(
     <OpenTable
       game="wire"
-      me="red@wire.test"
       onStarted={onStarted}
       onLeave={onLeave}
       {...props}
@@ -142,6 +155,24 @@ describe("the open table, to a stranger with one seat to take", () => {
     expect(screen.queryByLabelText("Invite link")).toBeNull();
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
     expect(screen.queryByLabelText("Your name")).toBeNull();
+  });
+
+  // **An unnamed seat reads "invited" to a stranger, and no address reaches
+  // the page** (M6.5c2 cycle D, R-6.5c2.35). `wire2` as the lobby's stranger
+  // read it (`games_open.json`): its creator sits at seat 0 and gave no name,
+  // so the server sends no name, no `you`, no `invited` and no `creator` —
+  // and the page says "invited" and "the creator's table" rather than the
+  // address the seat is keyed by, which it was never handed.
+  it("shows a stranger an unnamed seat as invited and never an address", async () => {
+    const t = wire.gamesOpen.games[1]!;
+    const seat = t.seats[0]!;
+    if (seat.kind !== "human") throw new Error("wire2's seat 0 is its creator's");
+    expect([seat.name, seat.you, seat.invited, t.creator, t.mine]).toEqual([null, false, null, null, false]);
+    show(tableIs(t), { game: t.id });
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(cards()[0]!).toHaveTextContent("invited");
+    expect(screen.getByText(/the creator's table \u00b7 2 players \u00b7 one seat left/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("@");
   });
 
   // **The first player is the table's `start_seat`, not the first card** (the
@@ -230,6 +261,22 @@ describe("the open table, to a stranger with one seat to take", () => {
     // And the table was not re-read: a 403 is about the caller, not about the
     // table having moved.
     expect(stub.matching("GET", "/table")).toHaveLength(1);
+  });
+
+  // **A join sent with no password at a locked table is refused in the
+  // server's words** (dossier row 38): the corpus's `join_403_locked` had
+  // contract cells only, and no screen was shown drawing it. Nothing typed,
+  // so the join carries no password key at all.
+  it("says a locked table wants its password when Join is pressed with none typed", async () => {
+    const { stub, user } = show((call) => {
+      if (call.path.endsWith("/table")) return wire.tableOpen;
+      if (call.path.endsWith("/join")) return { status: 403, body: wire.join403Locked };
+      return undefined;
+    });
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
+    expect(await screen.findByText(wire.join403Locked.error)).toBeInTheDocument();
+    expect(stub.matching("POST", "/join")[0]!.body).toEqual({ seat: 1 });
+    expect(screen.getByLabelText("Table password")).toHaveValue("");
   });
 
   // **The refusal sits by the field it is about** (M6.5c2 cycle C, polish 4):
@@ -376,7 +423,7 @@ describe("the open table, to somebody sitting at it", () => {
   // Somebody ELSE seated invites too, and is not told they set a password they
   // did not set.
   it("reminds a seated guest of the table's password without claiming they set it", async () => {
-    showSeated(tableIs(seated({ locked: true, created_by: "someone@else.test" })));
+    showSeated(tableIs(asGuest(seated({ locked: true }))));
     await screen.findByLabelText("Invite link");
     expect(screen.getByText("They'll need the table's password.")).toBeInTheDocument();
     expect(screen.queryByText(/password you set/)).toBeNull();
@@ -397,7 +444,10 @@ describe("the open table, to somebody sitting at it", () => {
     if (mine.kind !== "human") throw new Error("wire2's seat 0 is the creator's");
     expect(cards()[0]!).toHaveTextContent("Red \u00b7 first player");
     expect(cards()[0]!).toHaveTextContent("You");
-    expect(cards()[0]!).toHaveTextContent(mine.name ?? mine.user);
+    // No name given, so the card is "You" and nothing else: not the address
+    // the creator's own `invited` carries (M6.5c2 cycle D, R-6.5c2.35).
+    expect(mine.name).toBeNull();
+    expect(cards()[0]!.textContent).not.toContain("@");
     expect(cards()[1]!).toHaveTextContent("Open seat");
     expect(cards()[1]!).toHaveTextContent("anyone in the lobby, with the password");
     expect(screen.getByText(/Waiting for 1 more player \u00b7 2 players/)).toBeInTheDocument();
@@ -476,12 +526,31 @@ describe("the open table, to somebody sitting at it", () => {
   // where the screen goes when the table is gone.
   it("offers the abandon control to the person who opened the table", async () => {
     showSeated(tableIs(seated()));
-    // `created_by` is `red@wire.test`, which is who this browser is.
+    // `wire2` is its creator's own reading: `mine` is true (R-6.5c2.35).
+    expect(seated().mine).toBe(true);
     expect(await screen.findByRole("button", { name: "abandon wire2" })).toBeInTheDocument();
   });
 
+  // **A PIN: the table's creator who holds no seat is offered NO Abandon**
+  // (dossier row 17, as ruled after the Task 11 review's I-1). The layer's
+  // delete refuses a caller who holds no seat before it asks who created the
+  // table — `delete_locked`: "you are not seated at this table" — so a control
+  // here would be drawn over a guaranteed refusal; the rule is `mayAbandon`,
+  // the one the lobby and the broken-game screen read. The state is
+  // unreachable through `create` ("the creator must hold a seat", R-1.6); the
+  // M6.2 close's "reachable if a create fills every seat with other people's
+  // emails" is false at HEAD. The corpus's stranger reading with ONE field
+  // moved, `mine`, so only the seat can withhold the control.
+  it("offers no abandon control to the table's creator who holds no seat at it, whose delete the layer refuses", async () => {
+    const creator = { ...wire.tableOpen, mine: true };
+    expect(creator.my_seats).toHaveLength(0);
+    show(tableIs(creator));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
+  });
+
   it("offers nothing to abandon to a person who merely sits here", async () => {
-    showSeated(tableIs(seated({ created_by: "someone@else.test" })));
+    showSeated(tableIs(asGuest(seated())));
     await screen.findByLabelText("Invite link");
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
@@ -575,7 +644,7 @@ describe("the open table's watch", () => {
         : undefined;
     });
     render(
-      <OpenTable game="wire" me="red@wire.test" onStarted={onStarted} onLeave={() => {}} />,
+      <OpenTable game="wire" onStarted={onStarted} onLeave={() => {}} />,
     );
     await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onStarted).not.toHaveBeenCalled();
@@ -610,7 +679,7 @@ describe("the open table's watch", () => {
         ? wire.tableOpen
         : { status: 404, body: { error: "no such game" } };
     });
-    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    render(<OpenTable game="wire" onStarted={() => {}} onLeave={onLeave} />);
     await until(() => stream.opens() > 0, "the table's stream was opened");
     stream.push("signal", wire.eventsDealing);
     await settle();
@@ -644,7 +713,7 @@ describe("the open table's watch", () => {
       if (call.path.endsWith("/stream")) return stream.reply(call);
       return call.path.endsWith("/table") ? wire.tableOpen : undefined;
     });
-    render(<OpenTable game="wire" me="red@wire.test" onStarted={() => {}} onLeave={onLeave} />);
+    render(<OpenTable game="wire" onStarted={() => {}} onLeave={onLeave} />);
     await until(() => stream.opens() > 0, "the table's stream was opened");
     expect(onLeave).not.toHaveBeenCalled();
 
@@ -689,5 +758,75 @@ describe("the open table's chat", () => {
     expect(screen.queryByText("Chat")).toBeNull();
     expect(document.querySelector("section.panel.chat")).toBeNull();
     expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);
+  });
+
+  // **One chat read at mount** (M6.5c2 cycle D, row 130). The panel was handed
+  // a tick per wake, and the stream's ON-CONNECT frame is a wake — so every
+  // visit read the chat twice before anything was said. The panel reads the
+  // frame's own `chat`/`chat_rev` now (`peek`) and is a count host: the
+  // connection's resync frame reads the chat only when one of the two has
+  // moved past what the mount read holds. **The panel is OPEN** — a folded
+  // count host reads nothing whatever the count says, so a folded panel could
+  // not tell "nothing moved" from "folded". The frame is the corpus's
+  // open-table `Events`; the page, the empty room with the same two numbers.
+  // **The frame is written AFTER the panel's mount read**, the order a network
+  // gives it (the stream opens behind the transport's health read): written at
+  // connect in a stubbed tick, it lands before the panel exists and the cell
+  // would witness nothing. The partner: a frame whose count HAS moved (the
+  // corpus's own playing reading, `events.json`'s two counters, over the
+  // corpus's page) is read once.
+  it("reads the chat once at mount, and not again for the connection's own first frame", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["wire2"]));
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    let page: ChatPage = { ...wire.chat, messages: [], last: wire.eventsOpen.chat, rev: wire.eventsOpen.chat_rev };
+    const { stub } = showSeated((call) => {
+      if (call.path.endsWith("/table")) return seated();
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      if (call.method === "GET" && call.path.includes("/chat")) return page;
+      return undefined;
+    });
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    await until(() => stub.matching("GET", "/chat").length === 1, "the panel's mount read");
+    stream.push("signal", wire.eventsOpen);
+    await until(() => stub.matching("GET", "/table").length >= 2, "the frame's table read");
+    await flush();
+    expect(stub.matching("GET", "/chat"), "the resync frame moved nothing").toHaveLength(1);
+
+    page = wire.chat;
+    stream.push("signal", { ...wire.eventsOpen, chat: wire.chat.last, chat_rev: wire.chat.rev });
+    await until(() => stub.matching("GET", "/chat").length === 2, "a moved count is read");
+    await flush();
+    expect(stub.matching("GET", "/chat")).toHaveLength(2);
+  });
+
+  // **And nothing for its own post** (row 130): the 201 has already moved the
+  // cursor to the message the frame then counts. The room starts empty, the
+  // post is `chat_post.json`, and the frame the post causes is the corpus's
+  // open-table `Events` with its two counters moved to the post's number.
+  it("asks the chat nothing for its own post", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["wire2"]));
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    const { stub } = showSeated((call) => {
+      if (call.path.endsWith("/table")) return seated();
+      if (call.path.endsWith("/stream")) return stream.reply(call);
+      if (call.method === "POST" && call.path.endsWith("/chat")) return { status: 201, body: wire.chatPost };
+      if (call.method === "GET" && call.path.includes("/chat")) return { ...wire.chat, messages: [], last: 0, rev: 0 };
+      return undefined;
+    });
+    await until(() => stream.opens() > 0, "the table's stream was opened");
+    await until(() => screen.queryByRole("textbox", { name: "Say something" }) !== null, "the chat's input");
+    const box = screen.getByRole("textbox", { name: "Say something" });
+    fireEvent.change(box, { target: { value: wire.chatPost.text } });
+    fireEvent.submit(box.closest("form")!);
+    await until(() => stub.matching("POST", "/chat").length === 1, "the post went out");
+    await flush();
+    expect(stub.matching("GET", "/chat"), "the mount read").toHaveLength(1);
+    stream.push("signal", { ...wire.eventsOpen, chat: wire.chatPost.seq, chat_rev: wire.chatPost.seq });
+    await until(() => stub.matching("GET", "/table").length >= 2, "the frame's table read");
+    await flush();
+    expect(stub.matching("GET", "/chat"), "the frame counts the post the 201 drew").toHaveLength(1);
+    expect(screen.getByText(wire.chatPost.text)).toBeInTheDocument();
   });
 });

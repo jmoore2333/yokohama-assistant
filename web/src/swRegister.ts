@@ -13,8 +13,9 @@
 // until the new worker is in charge before it reloads, rather than reloading
 // straight after posting and racing activation — on `controllerchange` where
 // the old worker controlled it, and on the new worker's `activated` where
-// nothing did, since `skipWaiting` hands over only CONTROLLED tabs and an
-// uncontrolled one hears no `controllerchange` at all (PR #37 F3, E2); and an
+// nothing did, since `skipWaiting` hands over CONTROLLED tabs and an
+// uncontrolled one is not promised a `controllerchange` (Chromium sends it one
+// too; the branch choice is what differs, PR #37 F3, E2); and an
 // update this tab did not ask for — another tab clicked, and `skipWaiting` is
 // registration-wide — reloads nothing. The worker's half is `sw.ts`: no
 // `clients.claim()`; `activate` retains the previous generation; and the
@@ -306,7 +307,7 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
     // the old worker controlled is handed to the new one and hears
     // `controllerchange`; a tab nothing controls — a first visit, since
     // nothing calls `clients.claim()`, or a page whose first registration was
-    // retried — is handed nothing and hears none, so it waits for the worker
+    // retried — is not promised a `controllerchange` (Chromium sends one anyway), so it waits for the worker
     // it asked to reach `activated` (PR #37 F3, E2). A controlled tab sees
     // both events, and deciding at the click is what keeps it from reloading
     // twice.

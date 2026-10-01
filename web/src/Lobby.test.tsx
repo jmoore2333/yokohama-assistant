@@ -7,16 +7,18 @@
 // that stubbed the open list would be handed the `mine` reply and pass while
 // asserting the wrong thing.
 
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
-import { setLobbyChat } from "./api";
+import { setLobbyChat, setSignalKind } from "./api";
+import { BACKOFF_MS } from "./signal";
+import { FakeSocket } from "./test/fakeSocket";
 import { OPEN_KEY } from "./chatFold";
-import { fakeStream, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { fakeStream, flush, gate, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import productionBot from "./wire/production_bot.json";
-import type { TableView } from "./types";
+import type { ChatPage, TableView } from "./types";
 
 /** All three scopes, from the corpus's own listings.
  *
@@ -33,9 +35,11 @@ const lists = (call: ApiCall): Reply | undefined => {
   return undefined;
 };
 
-/** Who this browser is, and who opened every table the corpus carries — so the
- *  abandon control is on every row, and the cell that wants it absent moves
- *  `created_by` instead. */
+/** Who this browser is — the door's answer, which the band's corner draws.
+ *  Since M6.5c2 cycle D (R-6.5c2.35) no row control compares it with anything:
+ *  the creator's Abandon follows each row's `mine`, as the server said it for
+ *  that row's reader, and the corpus's `mine` rows are the walk's creator's
+ *  readings (`wire.games`, `wire.tableForeign`). */
 const ME = "red@wire.test";
 
 function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
@@ -54,9 +58,12 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
     // file now makes that request whether or not it is about the chat. A lobby
     // where nothing has been said, derived from the corpus's own page rather
     // than typed out here (the `gamesNamed` rule), so a cell that is not about
-    // the chat has none of it in its DOM. A cell that IS answers first.
+    // the chat has none of it in its DOM. A cell that IS answers first. Its
+    // `rev` is moved to 0 with its `last`: a room nobody has spoken in has
+    // moved neither, and the panel — a count host here since M6.5c2 cycle D —
+    // reads a `rev` ahead of `last` as a delete.
     if (call.method === "GET" && call.path.startsWith("/api/chat"))
-      return { ...wire.houseChat, messages: [], last: 0 };
+      return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
   render(<Lobby me={ME} corner={<span className="identity-corner">{ME}</span>} />);
@@ -126,10 +133,11 @@ describe("the lobby", () => {
     // they click is on the row.
     expect(wire.gamesPlaying.games[0]!.locked).toBe(true);
     expect(within(row).getByLabelText("password required")).toBeInTheDocument();
-    // **Not yours to abandon.** `created_by` on the corpus row is this browser's
-    // own address, so the control would be drawn by a `created_by === me` test
-    // alone — the section is what withholds it.
-    expect(wire.gamesPlaying.games[0]!.created_by).toBe(ME);
+    // **Not yours to abandon.** The row is a watcher's reading, `mine: false`
+    // (R-6.5c2.35) — and it is under Being played, not Your tables. The cell
+    // that tells the SECTION rule from the `mine` rule is "draws the control
+    // in Your tables and not in Open tables", below.
+    expect(wire.gamesPlaying.games[0]!.mine).toBe(false);
     expect(within(playing).queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
@@ -148,9 +156,11 @@ describe("the lobby", () => {
     expect(filling.querySelector(".row-meta")).toHaveTextContent("2 players \u00b7 waiting for 1 more");
     expect(chips(filling)).toEqual(["you", "open seat"]);
     // Read from OUTSIDE (the open list is a stranger's view), the unnamed seat
-    // falls back to its address, on the same screen as the named one above.
+    // reads "invited" — never the address it is keyed by, which the server no
+    // longer sends a stranger (M6.5c2 cycle D, R-6.5c2.35).
     const stranger = within(section("Open tables")).getByRole("link", { name: "wire2" }).closest("li")!;
-    expect(chips(stranger)).toEqual(["red@wire.test", "open seat"]);
+    expect(chips(stranger)).toEqual(["invited", "open seat"]);
+    expect(stranger.textContent).not.toContain("@");
     expect(stranger.querySelector(".row-meta")!.textContent).toMatch(/^2 players \u00b7 opened /);
   });
 
@@ -319,12 +329,14 @@ describe("the lobby", () => {
   // **The bot's version** (R-6.5c2.10, mock 10), from the row's own
   // `TableView.bot`: the corpus's undealt vs-bot table (`table_bot.json`,
   // which shows the production bot) and its foreign one (`table_foreign.json`,
-  // a bot this build does not run). One field moved on the foreign table,
-  // `created_by`, to this browser, so its creator's Abandon has a row to be on.
+  // a bot this build does not run). No field moved: the foreign row is its
+  // CREATOR's own reading (`mine: true`, R-6.5c2.35), so its creator's Abandon
+  // has a row to be on.
   it("names the bot and its version, and says so where this server cannot continue a game", async () => {
     expect(wire.tableBot.bot).toEqual({ label: productionBot.label, runs_here: true });
     expect(wire.tableForeign.bot!.runs_here).toBe(false);
-    const foreign = { ...wire.tableForeign, created_by: ME };
+    const foreign = wire.tableForeign;
+    expect(foreign.mine).toBe(true);
     show((call) =>
       isGamesList(call, "mine") ? { ...wire.games, games: [wire.tableBot, foreign] } : undefined,
     );
@@ -461,22 +473,25 @@ describe("the lobby", () => {
       );
     });
 
-    // **Your tables only** (R-13, and the reason the row takes its section).
-    // The creator must hold a seat (R-1.6), so on a server a table you opened
-    // is one you sit at, listed under Your tables alone (`notMine`). The
-    // control still follows the SECTION and not `created_by` ALONE, so no other list
-    // can ever draw it. The corpus's open listing was read by another caller,
-    // which puts the same table this browser opened in both sections here: the
-    // one case that tells a section rule from a `created_by` rule. And the
-    // control sits in its own cell under the action (`.row-abandon`), never in
-    // the action's.
-    it("draws the control in Your tables and not in Open tables", async () => {
-      show();
+    // **The creator's, SEATED — the layer's rule** (R-13; `mayAbandon`, as
+    // ruled after the Task 11 review's I-1). The layer's delete refuses a
+    // caller who holds no seat before it asks who created the table —
+    // `delete_locked`: "you are not seated at this table" — so a creator's
+    // SEATLESS reading carries no control, and a seated one does. A table you
+    // sit at is listed under Your tables alone (`notMine`), so on a server the
+    // control is drawn there and nowhere else. The corpus's open listing was
+    // read by a caller who did not open the table (`mine: false`), so ONE field
+    // is moved on its rows, `mine`, which puts the same table, `mine: true`, in
+    // both sections — seated under Your tables, seatless under Open tables: the
+    // one case that tells the seat rule from a `mine` rule. And the control
+    // sits in its own cell under the action (`.row-abandon`), never in the
+    // action's.
+    it("draws the control for the seated creator in Your tables, and none for a seatless creator's reading in Open tables", async () => {
+      const opened = { ...wire.gamesOpen, games: wire.gamesOpen.games.map((g) => ({ ...g, mine: true })) };
+      expect(opened.games[0]!.my_seats, "the premise: a seatless reading").toHaveLength(0);
+      show((call) => (isGamesList(call, "open") ? opened : undefined));
       const mine = section("Your tables");
       const open = section("Open tables");
-      // Anti-vacuity: the corpus puts the SAME table, opened by this browser,
-      // in both sections (its open listing read from outside), so the two
-      // reads below differ only in which section they are.
       const control = await within(mine).findByRole("button", { name: "abandon wire" });
       expect(control.closest(".row-abandon")).not.toBeNull();
       expect(control.closest(".row-action")).toBeNull();
@@ -484,8 +499,12 @@ describe("the lobby", () => {
       expect(within(open).queryByRole("button", { name: /abandon/i })).toBeNull();
     });
 
+    // Read, not moved: the corpus's playing table as its SECOND seat reads it
+    // — seated (`my_seats: [1]`), so listed under Your tables, and not its
+    // creator (`mine: false`).
     it("offers nothing to abandon at a table this browser did not open", async () => {
-      const theirs = { ...wire.games.games[0]!, created_by: "someone@else.test" };
+      const theirs = wire.table;
+      expect([theirs.mine, theirs.my_seats.length > 0]).toEqual([false, true]);
       show((call) =>
         isGamesList(call, "mine") ? { ...wire.games, games: [theirs] } : undefined,
       );
@@ -514,6 +533,64 @@ describe("the lobby", () => {
     // setup screen's own list used to fail in: a swallowed refusal told a
     // signed-out player they had nothing.
     expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+
+  // **One scope refused leaves the other two standing** (dossier row 4). The
+  // three listings were ONE `Promise.all`, so a refusal of any one blanked all
+  // three on the first read: Your tables said nothing over a strip that was
+  // about Open tables. Each section takes its own answer now, and the refusal
+  // is said once, in the section it is about.
+  it("draws the two lists that answered on the first read, and one strip in the section that was refused", async () => {
+    show((call) => {
+      if (isGamesList(call, "open")) return { status: 500, body: wire.error };
+      if (isGamesList(call, "playing")) return wire.gamesPlaying;
+      return undefined;
+    });
+    const mine = section("Your tables");
+    const open = section("Open tables");
+    const playing = section("Being played");
+    await waitFor(() => expect(within(mine).getAllByRole("listitem")).toHaveLength(wire.games.games.length));
+    expect(within(playing).getAllByRole("listitem")).toHaveLength(wire.gamesPlaying.games.length);
+    expect(within(open).getByText(wire.error.error)).toBeInTheDocument();
+    expect(within(open).queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getAllByText(wire.error.error), "said once").toHaveLength(1);
+    expect(screen.queryByText(/loading/)).toBeNull();
+  });
+
+  // **And a LATER read with one scope refused keeps that section's rows under
+  // its strip while the other two are refreshed** — a wake's re-read is the
+  // same three listings, and one refusal is not a reason to leave the rest of
+  // the screen older than the store. The second `mine` answer is the corpus's
+  // listing cut to its first row, so a refresh is visible as one row fewer.
+  it("keeps a refused section's rows under its strip on a later read, and refreshes the others", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      let reads = 0;
+      show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (isGamesList(call, "mine")) {
+          reads += 1;
+          return reads === 1 ? wire.games : { ...wire.games, games: wire.games.games.slice(0, 1) };
+        }
+        if (isGamesList(call, "open") && reads > 1) return { status: 500, body: wire.error };
+        return undefined;
+      });
+      const mine = () => section("Your tables");
+      const open = () => section("Open tables");
+      await until(() => within(mine()).queryAllByRole("listitem").length === wire.games.games.length, "the first read");
+      const openRows = wire.gamesOpen.games.length;
+      expect(within(open()).getAllByRole("listitem")).toHaveLength(openRows);
+      await until(() => stream.opens() > 0, "the house stream is open");
+
+      stream.push("house", { seq: 1, chat: 0 });
+      await until(() => within(mine()).queryAllByRole("listitem").length === 1, "Your tables was refreshed");
+      expect(within(open()).getAllByRole("listitem"), "the refused section keeps its rows").toHaveLength(openRows);
+      expect(within(open()).getByText(wire.error.error)).toBeInTheDocument();
+      expect(screen.getAllByText(wire.error.error), "said once").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -575,8 +652,9 @@ describe("the Finished group", () => {
     expect(view.querySelector("svg.padlock")).toBeNull();
     expect(within(row).getByLabelText("password required")).toBeInTheDocument();
     // The other lists' row: one link, not gold-edged, and no Abandon, which is
-    // the creator's under Your tables — this browser opened the table.
-    expect(won.created_by).toBe(ME);
+    // the creator's under Your tables — and this row is a watcher's reading
+    // (`mine: false`, R-6.5c2.35).
+    expect(won.mine).toBe(false);
     expect(row).toHaveClass("lobby-row");
     expect(row).not.toHaveClass("mine");
     expect(row.querySelectorAll("a")).toHaveLength(1);
@@ -679,32 +757,205 @@ describe("the lobby's chat", () => {
     }
   });
 
-  // **The house frame is a WAKE, and the panel's tick is this screen's own**
-  // (spec §6.2). The house channel coalesces and carries no table, so the lobby
-  // refetches its lists on any frame; the chat is told to ask for its delta the
-  // same way, off the same wake, rather than being handed a count it cannot
-  // read from a frame that names no table.
-  it("asks the house chat for its delta on a house frame", async () => {
+  // **The lobby chat is a COUNT host off the house frame** (M6.5c2 cycle D,
+  // row 130). The house frame carries the house chat's newest number beside
+  // the sequence every table's move bumps; the panel used to be handed a tick
+  // per wake and asked for a delta on every one — every move of every game on
+  // the server — and made a second read at mount off the lobby's own opening
+  // read. It reads its delta now only when `chat` passes what it holds, and
+  // the mount read is the only read until then. The panel is OPEN, because a
+  // folded count host reads nothing whatever the count says.
+  //
+  // **Where the house frames come from**: no corpus fixture carries one — a
+  // frame is a stream's, not a route's payload — so each is built in the shape
+  // the layer pins (`signal.rs`'s `house_frame`, `{"seq":…,"chat":…,"rev":…}`,
+  // the same on the Worker) from the corpus's own numbers: `house_chat.json`'s
+  // `last` and `rev`, and one past each for the message that moves them. The
+  // page behind that message is `house_chat.json` with its first message
+  // renumbered to it.
+  it("reads the lobby chat once at mount, not on a table's move, and again when the house chat moves", async () => {
     setLobbyChat(true);
-    // Remembered OPEN, because a folded count-driven panel fetches nothing —
-    // but a wake-driven one asks whatever its fold state, and this cell would
-    // pass for the wrong reason if the fold were the thing being read.
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stream = fakeStream();
+    const next = { ...wire.houseChat.messages[0]!, seq: wire.houseChat.last + 1 };
+    let page: ChatPage = wire.houseChat;
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) return page;
+        return undefined;
+      });
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => within(section("Your tables")).queryAllByRole("listitem").length > 0, "the lists landed");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "one read at mount, the lists' landing none").toHaveLength(1);
+      // A table moved: the sequence moves and the house chat does not.
+      stream.push("house", { seq: 1, chat: wire.houseChat.last, rev: wire.houseChat.rev });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "a table's move asks the chat nothing").toHaveLength(1);
+      page = { ...wire.houseChat, messages: [...wire.houseChat.messages, next], last: next.seq, rev: wire.houseChat.rev + 1 };
+      stream.push("house", { seq: 2, chat: next.seq, rev: wire.houseChat.rev + 1 });
+      await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "one read for the one message").toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **A restarted server's first frame is read** (M6.5c2 cycle D, the final
+  // review's C1; the reviewer's probe, kept). The rule this panel reads by — a
+  // frame's `chat` above the `last` of the page it holds — trusts the frame's
+  // numbers to be the house chat DOCUMENT's. On the Worker they are read off
+  // the document. On the NAS they were a count the process kept from 0, so
+  // after a restart the first message over a room at 57 framed `chat: 1`, and
+  // the panel read nothing, by its own rule: a count below what it holds is
+  // not news. The NAS now seeds its counters from the document when it starts
+  // (the lib cell `after_a_restart_the_house_frame_counts_on_from_the_document`),
+  // so the same message frames `chat: 58` beside the restarted process's `seq`
+  // of 0. Both frames are pushed here, the old one first: it reads nothing,
+  // and the seeded one reads the message. The page is `house_chat.json`
+  // renumbered, as the cells above build theirs, served above the `after` the
+  // panel asks from.
+  it("reads the house message a restarted server's first frame counts, and nothing for a count below what it holds", async () => {
+    setLobbyChat(true);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const stream = fakeStream();
+    const held = { ...wire.houseChat.messages[0]!, seq: 57 };
+    const next = { ...wire.houseChat.messages[0]!, seq: 58 };
+    let page: ChatPage = { ...wire.houseChat, messages: [held], last: 57, rev: 57 };
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) {
+          const after = Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0);
+          return { ...page, messages: page.messages.filter((m) => m.seq > after) };
+        }
+        return undefined;
+      });
+      const panel = () => document.querySelector<HTMLElement>("section.lobby-chat")!;
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => stub.matching("GET", "/api/chat").length === 1, "the mount read");
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "premise: the room at 57").toHaveLength(1);
+      page = { ...page, messages: [held, next], last: 58, rev: 58 };
+      // The frame a restarted NAS sent before the seed: a count from 0.
+      stream.push("house", { seq: 0, chat: 1, rev: 1 });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "a count below what the panel holds is not news").toHaveLength(1);
+      // The frame it sends now: the document's numbers.
+      stream.push("house", { seq: 0, chat: 58, rev: 58 });
+      await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "the 58th message is drawn").toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **A house message its socket's reconnect missed is read once the reader's
+  // own post shows the gap** (the Task 11 re-review's lost-message finding;
+  // the production path of `Chat.test.tsx`'s "reads the messages its own
+  // post's number shows it missed"). On the socket arm, a close this client did
+  // not make is followed by ONE probe, and the lobby's probe reads the
+  // listings, which carry no chat count; the house says nothing on connect. So
+  // a house message that landed while the socket was down reaches this browser
+  // as no frame at all. The reader's next post is numbered two past what the
+  // panel holds, and taking that 201 alone moved the cursor past the missed
+  // message for good. The pages are built from the corpus as the cells above
+  // build theirs: `house_chat.json`'s message renumbered to 2 (the missed one)
+  // and `house_chat_post.json` renumbered to 3 (the post), served up to what
+  // the server holds; the frame on the new socket in the layer's pinned shape.
+  it("reads a house message its socket's reconnect missed once the reader's own post shows the gap", async () => {
+    setLobbyChat(true);
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.useFakeTimers();
+    try {
+      const missed = { ...wire.houseChat.messages[0]!, seq: wire.houseChat.last + 1 };
+      const post = { ...wire.houseChatPost, seq: wire.houseChat.last + 2 };
+      const all = [...wire.houseChat.messages, missed, post];
+      let held = wire.houseChat.last;
+      const { stub } = show((call) => {
+        if (call.method === "POST" && call.path === "/api/chat") {
+          held = post.seq;
+          return { status: 201, body: post };
+        }
+        if (call.method === "GET" && call.path.startsWith("/api/chat")) {
+          const after = Number(new URL(call.path, "http://x").searchParams.get("after") ?? 0);
+          return { ...wire.houseChat, messages: all.filter((m) => m.seq > after && m.seq <= held), last: held, rev: held };
+        }
+        return undefined;
+      });
+      const panel = () => document.querySelector<HTMLElement>("section.lobby-chat")!;
+      await until(() => FakeSocket.made.length === 1, "the house socket was opened");
+      act(() => FakeSocket.made[0]!.accept());
+      await until(() => stub.matching("GET", "/api/chat").length === 1, "the mount read");
+
+      // The missed message lands while the socket is down: no frame for it.
+      held = missed.seq;
+      const listed = stub.calls.filter((c) => isGamesList(c, "mine")).length;
+      act(() => FakeSocket.made[0]!.drop());
+      await until(() => stub.calls.filter((c) => isGamesList(c, "mine")).length > listed, "the probe read the listings");
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "the probe read no chat").toHaveLength(1);
+
+      // The reader posts, and the 201 is numbered two past what the panel holds.
+      const box = within(panel()).getByRole("textbox", { name: "Say something" });
+      fireEvent.change(box, { target: { value: post.text } });
+      fireEvent.submit(box.closest("form")!);
+      await until(() => stub.matching("POST", "/api/chat").length === 1, "the post went out");
+      await flush();
+
+      // The socket comes back, and the post's own house frame counts it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+      });
+      await until(() => FakeSocket.made.length === 2, "the house socket reopened");
+      act(() => FakeSocket.made[1]!.accept());
+      act(() => FakeSocket.made[1]!.frame("house", { seq: 2, chat: post.seq, rev: post.seq }));
+      await flush();
+      expect(within(panel()).getAllByRole("listitem"), "the missed message is drawn").toHaveLength(all.length);
+    } finally {
+      vi.useRealTimers();
+      setSignalKind("sse");
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // **And nothing for its own post** (row 130): the 201 has already moved the
+  // cursor to the message the house frame then counts. The room starts empty
+  // (the resting `show` answer), so the post's number lands above it. The
+  // frame is built as the cell above builds its own, from
+  // `house_chat_post.json`'s number.
+  it("asks the lobby chat nothing for its own post", async () => {
+    setLobbyChat(true);
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
     const stream = fakeStream();
     vi.useFakeTimers();
     try {
       const { stub } = show((call) => {
         if (call.path.endsWith("/api/stream")) return stream.reply(call);
-        if (call.method === "GET" && call.path.startsWith("/api/chat")) return wire.houseChat;
+        if (call.method === "POST" && call.path === "/api/chat") return { status: 201, body: wire.houseChatPost };
         return undefined;
       });
       await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => screen.queryByRole("textbox", { name: "Say something" }) !== null, "the chat's input");
+      const box = screen.getByRole("textbox", { name: "Say something" });
+      fireEvent.change(box, { target: { value: "hi all" } });
+      fireEvent.submit(box.closest("form")!);
+      await until(() => stub.matching("POST", "/api/chat").length === 1, "the post went out");
+      await flush();
       const before = stub.matching("GET", "/api/chat").length;
-      stream.push("house", { seq: 1, chat: 1 });
-      await until(
-        () => stub.matching("GET", "/api/chat").length > before,
-        "the chat delta was asked for",
-      );
+      expect(before, "the mount read").toBe(1);
+      stream.push("house", { seq: 1, chat: wire.houseChatPost.seq, rev: wire.houseChatPost.seq });
+      await flush();
+      expect(stub.matching("GET", "/api/chat"), "the frame counts the post the 201 drew").toHaveLength(before);
+      expect(screen.getByText(wire.houseChatPost.text)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -772,7 +1023,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const retry = vi.fn();
@@ -805,7 +1056,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const { rerender } = render(<Lobby me={ME} />);
@@ -832,7 +1083,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     const { rerender } = render(<Lobby me={ME} onReached={() => {}} />);
@@ -849,7 +1100,7 @@ describe("the server area", () => {
       if (l !== undefined) return l;
       if (call.path.endsWith("/api/stream")) return openStream();
       if (call.method === "GET" && call.path.startsWith("/api/chat"))
-        return { ...wire.houseChat, messages: [], last: 0 };
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     render(<Lobby me={ME} serverUp={false} onReached={onReached} />);

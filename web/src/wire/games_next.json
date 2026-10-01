@@ -12,9 +12,10 @@
         "Blue"
       ],
       "created_at": 1789000000,
-      "created_by": "red@wire.test",
+      "creator": "Red",
       "id": "wire",
       "locked": true,
+      "mine": true,
       "my_seats": [
         0
       ],
@@ -23,14 +24,16 @@
       "players": 2,
       "seats": [
         {
+          "invited": null,
           "kind": "human",
           "name": "Red",
-          "user": "red@wire.test"
+          "you": true
         },
         {
+          "invited": null,
           "kind": "human",
           "name": "Blue",
-          "user": "blue@wire.test"
+          "you": false
         }
       ],
       "start_seat": 0,

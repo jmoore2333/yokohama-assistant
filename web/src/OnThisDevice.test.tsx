@@ -19,7 +19,7 @@ import { OnThisDevice } from "./OnThisDevice";
 import { api, rememberServerFacts } from "./api";
 import { resetFactsForTest } from "./local/facts";
 import { enqueue, resetOutboxForTests } from "./outbox";
-import { stubApi } from "./test/harness";
+import { isGamesList, stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
 import { resetLocalHostForTests } from "./local/client";
 import { openDb, restoreOne } from "./local/db";
@@ -56,7 +56,7 @@ describe("On this device", () => {
     // The read went to the MODULE. `fetch` is the setup file's throwing stub,
     // so a section that asked the server would have failed loudly instead.
     expect(
-      currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
+      currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine")),
     ).toHaveLength(1);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -80,7 +80,7 @@ describe("On this device", () => {
     };
     stubWorker({
       call: (req) =>
-        req.path === "/api/games" && req.method === "GET"
+        isGamesList(req, "mine")
           ? { status: 200, body: { games: [game], next: null } }
           : undefined,
     });
@@ -128,7 +128,7 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     await waitFor(() =>
       expect(
-        currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games"),
+        currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine")),
       ).toHaveLength(1),
     );
     await waitFor(() => expect(screen.queryByRole("link", { name: LOCAL })).toBeNull());
@@ -163,7 +163,7 @@ describe("On this device", () => {
     it("lists a game that is not over under Will not open here, not as a link, with Back up and Remove", async () => {
       stubWorker({
         call: (req) =>
-          req.method === "GET" && req.path === "/api/games"
+          isGamesList(req, "mine")
             ? { status: 200, body: { games: [row("local-9", false)], next: null } }
             : undefined,
       });
@@ -180,10 +180,38 @@ describe("On this device", () => {
       expect(screen.queryByRole("link", { name: "local-9" })).toBeNull();
     });
 
+    // **Its row does not depend on this browser's store** (M6.5c2 cycle D,
+    // straw poll row 100): it comes from the MODULE's listing. The section's
+    // own read of the compatibility rows failing used to replace the whole of
+    // "Will not open here" with that read's error line, so a store this page
+    // could not read hid a row it never needed — and with it the only Remove
+    // that game has.
+    it("keeps it under Will not open here when this browser's store cannot be read", async () => {
+      stubWorker({
+        call: (req) =>
+          isGamesList(req, "mine")
+            ? { status: 200, body: { games: [row("local-9", false)], next: null } }
+            : undefined,
+      });
+      vi.spyOn(indexedDB, "open").mockImplementation(() => {
+        throw new DOMException("the operation is insecure", "SecurityError");
+      });
+      render(<OnThisDevice />);
+      const block = (await screen.findByRole("heading", { level: 3, name: "Will not open here" })).closest(
+        ".unplayable",
+      )!;
+      expect(within(block as HTMLElement).getByText("local-9")).toBeInTheDocument();
+      expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
+      // And the read that failed still says so, where it failed — and only
+      // there: the module listed this game, so no line says the games could
+      // not be listed (the final review's triage; see the cell below).
+      expect(within(block as HTMLElement).getByText(/the games that will not open could not be read/)).toBeInTheDocument();
+    });
+
     it("keeps a FINISHED game against a foreign bot as an ordinary row: it opens as it always did", async () => {
       stubWorker({
         call: (req) =>
-          req.method === "GET" && req.path === "/api/games"
+          isGamesList(req, "mine")
             ? { status: 200, body: { games: [row("local-9", true)], next: null } }
             : undefined,
       });
@@ -196,7 +224,7 @@ describe("On this device", () => {
       let games = [row("local-9", false)];
       stubWorker({
         call: (req) => {
-          if (req.method === "GET" && req.path === "/api/games")
+          if (isGamesList(req, "mine"))
             return { status: 200, body: { games, next: null } };
           if (req.method === "DELETE" && req.path === "/api/games/local-9") {
             games = [];
@@ -223,7 +251,7 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     await screen.findByRole("link", { name: LOCAL });
     const listings = () =>
-      currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/games" && p.method === "GET");
+      currentWorker().posted.filter((p) => p.kind === "call" && isGamesList(p, "mine"));
     expect(listings()).toHaveLength(1);
 
     // A write on the local host — a create, a move, a delete — is what the
@@ -244,6 +272,47 @@ describe("On this device", () => {
     render(<OnThisDevice />);
     expect(await screen.findByText(/could not be read/)).toBeInTheDocument();
     expect(screen.queryByText(/no game on this device yet/)).toBeNull();
+  });
+
+  // **An unreadable store is a LINE, never an empty list** (M6.5c2 cycle D,
+  // straw poll row 100). The card's own read of this browser's database — the
+  // rows that say which games will not open — used to fall back to "hide
+  // nothing" when it failed, so a module listing nothing beside a store that
+  // could not be read drew "no game on this device yet": a false sentence on a
+  // device whose games are there and cannot be reached.
+  it("says the games could not be listed when this browser's store cannot be read", async () => {
+    stubWorker({
+      call: (req) =>
+        isGamesList(req, "mine") ? { status: 200, body: { games: [], next: null } } : undefined,
+    });
+    vi.spyOn(indexedDB, "open").mockImplementation(() => {
+      throw new DOMException("the operation is insecure", "SecurityError");
+    });
+    render(<OnThisDevice />);
+    const line = await screen.findByText(/this device's games could not be listed/);
+    expect(line).toHaveTextContent("the operation is insecure");
+    expect(within(section()).queryByText(/no game on this device yet/)).toBeNull();
+  });
+
+  // **Above a listed game, no line says the games could not be listed** (M6.5c2
+  // cycle D, the final review's triage). The
+  // module listed them: the rows are drawn and open through it, so "this
+  // device's games could not be listed" above them was false, and it named the
+  // one failure a second time beside `Unplayable`'s own line — which is the
+  // true sentence here, because the read that failed is the one that says
+  // which games will not open. The line stands only where "no game on this
+  // device yet" would (the cell above).
+  it("draws a listed game on a store it cannot read, and names the failed read once, where it failed", async () => {
+    stubWorker();
+    vi.spyOn(indexedDB, "open").mockImplementation(() => {
+      throw new DOMException("the operation is insecure", "SecurityError");
+    });
+    render(<OnThisDevice />);
+    expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    const failed = await screen.findByText(/the games that will not open could not be read/);
+    expect(failed).toHaveTextContent("the operation is insecure");
+    expect(within(section()).queryByText(/this device's games could not be listed/)).toBeNull();
+    expect(within(section()).getAllByText(/the operation is insecure/), "one failure, named once").toHaveLength(1);
   });
 
   it("says why when the module faults after the section is drawn", async () => {
@@ -457,7 +526,7 @@ describe("keeping the games on this device", () => {
     });
     stubWorker({
       call: (req) =>
-        req.path === "/api/games" && req.method === "GET"
+        isGamesList(req, "mine")
           ? { status: 200, body: { games: [], next: null } }
           : undefined,
     });

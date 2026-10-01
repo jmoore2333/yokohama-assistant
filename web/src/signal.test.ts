@@ -22,7 +22,6 @@ import {
   nextDelay,
   endSentence,
   BACKOFF_MS,
-  HELD_REASK_MS,
   type End,
   type Source,
 } from "./signal";
@@ -67,7 +66,7 @@ function streamed(onOpen?: (open: number) => Array<[string, unknown]>, extra?: (
 }
 
 /** The game's signal, as the game and the dealing screens hold it: a `"value"`
- *  source, whose `once` is the HELD `GET …/events?wait=25`. */
+ *  source, whose `once` is a plain `GET …/events` that answers at once. */
 const gameSource = (game: string): Source<Events> => ({
   key: game,
   once: () => api.events(game),
@@ -76,8 +75,7 @@ const gameSource = (game: string): Source<Events> => ({
 });
 
 /** The lobby's and the open table's shape: a `"wake"` source, whose `once` is
- *  an ordinary read that answers at once and has no waiting endpoint behind
- *  it. The distinction is what [`HELD_REASK_MS`] is about. */
+ *  an ordinary read that answers at once, asked on every frame. */
 const wakeSource = (game: string): Source<Events> => ({
   key: game,
   once: () => api.events(game),
@@ -640,80 +638,6 @@ describe("the two frame modes (R-7.1)", () => {
   });
 });
 
-describe("the held-request arm (R-plan-5)", () => {
-  it("re-asks a WAKE source after the named wait, and never opens the stream", async () => {
-    // The fallback for an edge that will not hold a stream open: the same hook,
-    // one frame per request. **For a `"wake"` source the re-ask is at
-    // `HELD_REASK_MS` and not at once** — the lobby's and the open table's
-    // `once` have no waiting endpoint at all, so a reopen at zero would be a
-    // hot loop against three listings. The cell below is the other half, and
-    // the two delays are why one number could not serve both (I-3).
-    setSignalKind("held");
-    const seen: Events[] = [];
-    const { stub } = streamed(undefined, (call) =>
-      call.path.includes("/events") ? at(2) : undefined,
-    );
-    renderHook(() => usePolled<Events>(wakeSource("wire"), true, (e) => seen.push(e)));
-    await settle();
-    expect(stub.matching("GET", "/events")).toHaveLength(1);
-    expect(stub.matching("GET", "/stream")).toHaveLength(0);
-    expect(seen.map((e) => e.events)).toEqual([2]);
-
-    // Not before the wait, and then exactly once more.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(HELD_REASK_MS - 100);
-    });
-    expect(stub.matching("GET", "/events")).toHaveLength(1);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(200);
-    });
-    await settle();
-    expect(stub.matching("GET", "/events")).toHaveLength(2);
-    expect(stub.matching("GET", "/stream")).toHaveLength(0);
-  });
-
-  // **A source whose `once` HOLDS is re-asked at ONCE** (final review I-3).
-  //
-  // The number that was shared cost real latency and not merely requests:
-  // `?wait` subscribes and waits for a NEW bump, and nothing compares the
-  // caller's count (R-3.14), so a bump landing in the 3 s gap was not seen
-  // until the NEXT request's 25 s deadline — 27–28 s under a hook whose whole
-  // claim is to be faster than the 3 s poll it replaced.
-  //
-  // The discriminator is the CLOCK: `settle` advances it by twelve
-  // milliseconds in all, which fires a timer armed at 0 and cannot reach one
-  // armed at 3,000. The request is held so that exactly one is ever in flight,
-  // which is what makes the second ask a reading about the re-ask and not
-  // about the answer racing it.
-  it("re-asks a source whose own request HOLDS at once, not after the wake delay", async () => {
-    setSignalKind("held");
-    const holding: Array<() => void> = [];
-    const { stub } = streamed(undefined, (call) =>
-      call.path.includes("/events")
-        ? new Promise<Reply>((resolve) => holding.push(() => resolve(at(2))))
-        : undefined,
-    );
-    renderHook(() => usePolled<Events>(gameSource("wire"), true, () => {}));
-    await until(() => holding.length === 1, "the first held request went out");
-    expect(stub.matching("GET", "/events")).toHaveLength(1);
-
-    holding[0]!();
-    await until(() => holding.length === 2, "the next ask went out without waiting");
-    expect(stub.matching("GET", "/events")).toHaveLength(2);
-    expect(stub.matching("GET", "/stream")).toHaveLength(0);
-  });
-
-  it("asks the game's events route to HOLD, which is what makes one request a signal", async () => {
-    setSignalKind("held");
-    const { stub } = streamed(undefined, (call) => (call.path.includes("/events") ? at(2) : undefined));
-    renderHook(() => useSignal("wire", true, () => {}));
-    await settle();
-    // `wait` is the server's held request (R-plan-5): without it this arm would
-    // be a three-second poll again, wearing the ladder's name.
-    expect(stub.matching("GET", "/events")[0]!.path).toContain("wait=25");
-  });
-});
-
 describe("the hook's own rules, whatever the transport", () => {
   it("does not re-open when a consumer re-renders with a new closure", async () => {
     // **The hazard the refs exist for.** Every consumer closes over state, so
@@ -980,6 +904,27 @@ describe("the signal, over a WebSocket (M6.5c)", () => {
     expect(seen.map((e) => e.events)).toEqual([4, 5, 6]);
     // ONE probe for one close.
     expect(stub.matching("GET", "/events")).toHaveLength(1);
+  });
+
+  // **The probe asks for the reading NOW** (M6.5c2 cycle D, R-D5). Until the
+  // held arm was retired the game's `once` sent `wait=25` for that arm's sake,
+  // and this probe carried it; now it is a plain `GET …/events` with no query
+  // at all, which every host answers at once. The three held-arm cells this
+  // replaces pinned a transport no host ever named. An older release's
+  // `wait=25` is still parsed (`a_wait_is_accepted_and_answered_at_once`, in
+  // the layer). Mutant: the probe asking `wait` again.
+  it("sends the probe after a close nobody explained with no wait: a plain read of the game's events", async () => {
+    const stub = stubApi((call) => (call.path.includes("/events") ? at(2) : undefined));
+    renderHook(() => useSignal("wire", true, () => {}));
+    const first = await socket(1);
+    act(() => {
+      first.accept();
+      first.frame("signal", at(1));
+    });
+    act(() => first.drop());
+    await until(() => stub.matching("GET", "/events").length === 1, "the probe went out");
+    const [probe] = stub.matching("GET", "/events");
+    expect(probe!.path, "no wait, and no query at all").toMatch(/\/api\/games\/wire\/events$/);
   });
 
   // **A probe that lands after the screen has gone hands nothing over** — the
@@ -1353,25 +1298,28 @@ describe("the transport is known before anything opens (M6.5c live tier)", () =>
 
   // **The check AFTER the wait** (Task 15's re-review, R2-1): a tab that hid
   // while the transport was being asked has let its attempt go, and the answer
-  // landing must not open anything for it. The held arm is the one whose first
-  // move is a REQUEST, so it is the arm an answer names here — without the
-  // check, a hidden tab would ask (against R-P8).
+  // landing must not open anything for it (R-P8). Until R-D5 the answer named
+  // the held arm here, whose first move was a request no abort reaches. Both
+  // arms left honour the abort themselves — `readSocket` returns before it
+  // makes a socket, and a real `fetch` sends nothing on an aborted signal — so
+  // the check is now the first of two guards. The answer names the STREAM,
+  // whose aborted `fetch` the harness still RECORDS, which is what lets this
+  // cell see the check go.
   it("asks nothing for a tab that hid while the transport was being asked, and asks once it is back", async () => {
     const health = gate<Reply>();
     const stub = stubApi((call) => (call.path.endsWith("/api/health") ? health.promise : undefined));
     const asked = api.health();
-    const once = vi.fn(async () => null);
-    renderHook(() => usePolled<null>({ ...house, once }, true, () => {}));
+    renderHook(() => usePolled<null>(house, true, () => {}));
     await settle();
     act(() => visibility("hidden"));
-    health.resolve({ ...wire.health, signal: "held" });
+    expect(wire.health.signal, "premise: the answer names the stream").toBe("sse");
+    health.resolve(wire.health);
     await asked;
     await settle();
-    expect(once, "nothing asked from a hidden tab (R-P8)").not.toHaveBeenCalled();
-    expect(stub.matching("GET", "/api/stream")).toEqual([]);
+    expect(stub.matching("GET", "/api/stream"), "nothing asked from a hidden tab (R-P8)").toEqual([]);
     expect(FakeSocket.made).toEqual([]);
 
     act(() => visibility("visible"));
-    await until(() => once.mock.calls.length === 1, "the held arm's ask, once the tab is back");
+    await until(() => stub.matching("GET", "/api/stream").length === 1, "the stream's open, once the tab is back");
   });
 });

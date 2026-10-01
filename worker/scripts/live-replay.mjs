@@ -20,17 +20,21 @@
 //    never an operator (R-6.5c.16). A force leaves no marker, and a force on an
 //    object holding nothing is 204 writing nothing. Anything but three 204s
 //    and the run does not start.
-// 2. **The house chat's `last`**, read as the walk's own house-chat reader:
-//    the base its two payloads are taken back by (spec §9.3).
+// 2. **The house chat's `last` and `rev`**, read as the walk's own house-chat
+//    reader: the base its payloads are taken back by (spec §9.3).
 // 3. **Every row** of `walk.json`, each `walk-host.json` row after the walk
 //    row its `after` names, then `archive-walk.json`, with the credential and
 //    `X-Yokohama-Claimed-User: <who>` — a row with no `who` sends none.
 // 4. **Every row's status, and every named row's body** against its committed
 //    file — the clock frozen first (`freezeClock`), then three named
 //    exemptions (`filterLobby`, `normalizeHouseChat`, `firstSendAccepts`, the
-//    exported pure functions below) and `HOST_FIELDS`, each COUNTED when it is
+//    pure functions of `replay/exemptions.mjs`) and `HOST_FIELDS`, each COUNTED when it is
 //    spent; a host field that reads as the axum host's is refused, because an
 //    exemption that differs nowhere is a hole a later host could hide behind.
+//    **The walk's house post is DELETED by the run that made it** (M6.5c2
+//    cycle D, R-D4): the delete row is sent carried forward to the number
+//    that run's post was really given (`houseDeleteRow`, counted like the
+//    rest), so every run answers 204 and no run leaves a post behind.
 // 5. **The force again** once the replay has begun, however it ended; then the
 //    report: rows run, named rows compared, the exemptions spent, and every
 //    mismatch. Exit 1 on a mismatch, a refused force, or a run that stopped.
@@ -51,433 +55,22 @@
 // bodies carry passwords and seeds), nor a redirect's `location` (Access's
 // carries a token), and a reported value under a key that could hold a secret
 // or a seed prints as `<redacted>`.
+//
+// **Its parts** (M6.5c2 cycle D, Task 9), under `scripts/replay/`, each with
+// its cells in `live-replay.test.mjs`: the credential and the run's bounds
+// (`credential.mjs`, the credential itself `dev-vars.mjs`'s, which the live
+// tier shares); the scripts, their order and where each row goes
+// (`scripts.mjs`, the order `corpus-walk.mjs`'s, which the pool shares); the
+// named exemptions (`exemptions.mjs`); the sends and the forces (`send.mjs`);
+// and the judging of a reply and the report (`judge.mjs`). `replay`, below,
+// is the one place they meet.
 
-import { readFileSync, readdirSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
-
-/** The deployed Worker's origin, the only one this script sends to. */
-export const ORIGIN = "https://yokohama.moore.nyc";
-
-/** `FROZEN_CREATED_AT` in `wire_fixtures.rs`: the reading every committed
- *  `created_at` and page cursor carries. */
-export const FROZEN_CREATED_AT = 1_789_000_000;
-
-/** `freeze_clock`'s floor: a reading at or under it is not a clock. */
-const NOT_A_CLOCK = 1_700_000_000n;
-const U64_MAX = 18_446_744_073_709_551_615n;
-
-const REPO = new URL("../../", import.meta.url);
-
-/** The repository root's `.dev.vars`, which holds the credential. */
-const DEV_VARS = fileURLToPath(new URL(".dev.vars", REPO));
-
-/** The credential's two keys, named as the headers Access expects. */
-const KEYS = ["CF-Access-Client-Id", "CF-Access-Client-Secret"];
-
-/**
- * The fields a HOST is entitled to differ on (spec §4's second class), as the
- * pool's replay names them: this host reads `cf-access`, `ws` and `r2`, and
- * the axum host the corpus was cut from `open`, `sse` and `off`.
- */
-const HOST_FIELDS = { health: ["identity", "signal", "archive"], me: ["mode"], me_signed_out: ["mode"] };
-
-/** The lobby's pages: shared with the owner's tables and the e2e's. */
-const LOBBY = new Set(["games", "games_next", "games_open", "games_playing"]);
-/** The house chat's two payloads: shared with every run and every person. */
-const HOUSE_CHAT = new Set(["house_chat_post", "house_chat"]);
-/** `archive-walk.json`'s two FIRST sends, which land only once. */
-const FIRST_SENDS = new Set(["archive_post", "archive_post_abandoned"]);
-
-/**
- * How many times a lobby page is read again while it differs, and how long
- * apart. The mechanism it waits out: a table's slot push to the house rides
- * `waitUntil` AFTER the table's reply (spec §2.5), so a lobby GET sent right
- * after a create — or a join, or a keep — can reach the house before the push
- * does. The pool flushes with `deliverSlot` before every house row; a live run
- * cannot, so it reads again instead. Every re-read is counted and printed with
- * this bound, and a page still differing after the last is a MISMATCH.
- */
-const LOBBY_REREADS = 5;
-const LOBBY_PAUSE_MS = 500;
-
-const REQUEST_TIMEOUT_MS = 60_000;
-
-/** A value one side of a comparison does not have. */
-const ABSENT = Symbol("absent");
-
-// ---- the four named normalizations (`live-replay.test.mjs`) ----
-
-/**
- * `value` with every `created_at` and every page cursor's time read as the
- * frozen reading, as `wire_fixtures.rs`'s `freeze_clock` does — at any depth,
- * and REFUSING what it refuses: a `created_at` that is not a whole
- * non-negative number, or not past 1,700,000,000; a cursor that is not
- * `<created_at>,<id>`, or whose time is not one. `null` is the last page and
- * carries no clock. Nothing else is touched, and `value` is not rewritten.
- */
-export function freezeClock(value) {
-  if (Array.isArray(value)) return value.map(freezeClock);
-  if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value).map(([key, v]) => {
-      if (key === "created_at") return [key, frozenAt(v)];
-      if (key === "next") return [key, frozenCursor(v)];
-      return [key, freezeClock(v)];
-    }),
-  );
-}
-
-function frozenAt(v) {
-  if (!Number.isSafeInteger(v) || v < 0) throw new Error(`created_at is not a unix timestamp: ${JSON.stringify(v)}`);
-  if (BigInt(v) <= NOT_A_CLOCK) {
-    throw new Error(`created_at reads ${v}, which is not a clock — freezing it would hide a field that has stopped being stamped`);
-  }
-  return FROZEN_CREATED_AT;
-}
-
-function frozenCursor(v) {
-  if (typeof v !== "string") return v;
-  const comma = v.indexOf(",");
-  if (comma === -1) throw new Error(`a page cursor is <created_at>,<id>: ${JSON.stringify(v)}`);
-  const at = v.slice(0, comma);
-  // Rust's `u64` parse: digits, an optional leading `+`, and no overflow.
-  if (!/^\+?[0-9]+$/.test(at) || BigInt(at) > U64_MAX) {
-    throw new Error(`a page cursor's first half is a unix timestamp: ${JSON.stringify(v)}`);
-  }
-  const seen = BigInt(at);
-  if (seen <= NOT_A_CLOCK) {
-    throw new Error(`a page cursor reads ${seen}, which is not a clock — freezing it would hide a cursor that has stopped carrying one`);
-  }
-  return `${FROZEN_CREATED_AT},${v.slice(comma + 1)}`;
-}
-
-/** Whether a page cursor names one of `ours`: `<created_at>,<id>`. */
-function cursorNames(cursor, ours) {
-  if (typeof cursor !== "string") return false;
-  const comma = cursor.indexOf(",");
-  return comma !== -1 && ours.has(cursor.slice(comma + 1));
-}
-
-/**
- * A lobby page read on the SHARED lobby (spec §5.3's live half): `games`
- * filtered to the replay's own `ids`, and `next` compared only where the
- * committed cursor names one of them (`games_next.json`). Elsewhere the
- * committed page ends at `null`, and a live cursor that runs on into other
- * people's tables is taken back to it — only a cursor or `null`, so a `next`
- * of any other shape, or none at all, still differs.
- */
-export function filterLobby(name, committed, got, ids) {
-  if (!LOBBY.has(name)) throw new Error(`${name} is not a lobby page`);
-  if (got === null || typeof got !== "object" || !Array.isArray(got.games)) {
-    throw new Error(`${name}: the reply carries no games list`);
-  }
-  const ours = new Set(ids);
-  const page = { ...got, games: got.games.filter((row) => ours.has(row?.id)) };
-  const cursorOrEnd = typeof got.next === "string" || got.next === null;
-  if (Object.hasOwn(got, "next") && cursorOrEnd && !cursorNames(committed.next, ours)) page.next = committed.next;
-  return page;
-}
-
-/**
- * The house chat's two payloads read on the SHARED house chat (spec §9.3):
- * `seq` and `last` taken back by `base` — the `last` read at the run's start —
- * and the page's messages filtered to those after `base` from the replay's own
- * `identities`. `last` is taken back and never recomputed from what was kept:
- * a person talking in the lobby during a run moves it, and that run fails.
- */
-export function normalizeHouseChat(name, got, base, identities) {
-  if (!HOUSE_CHAT.has(name)) throw new Error(`${name} is not a house chat payload`);
-  if (name === "house_chat_post") {
-    if (typeof got?.seq !== "number") throw new Error(`${name}: the reply's seq is not a number`);
-    return { ...got, seq: got.seq - base };
-  }
-  if (typeof got?.last !== "number") throw new Error(`${name}: the reply's last is not a number`);
-  if (!Array.isArray(got.messages)) throw new Error(`${name}: the reply carries no messages list`);
-  const ours = new Set(identities);
-  const messages = got.messages
-    .filter((m) => typeof m?.seq === "number" && m.seq > base && ours.has(m?.author?.user))
-    .map((m) => ({ ...m, seq: m.seq - base }));
-  return { ...got, last: got.last - base, messages };
-}
-
-/**
- * What to delete when a first send meets an earlier run's save of a `wire`
- * record that has since changed (R3's M-1): each first send's record key, as
- * its committed reply names the path, and its `.table.json` twin — under the
- * root spec §2.6 gives the sender `who`, `test/` for an EMAIL ending `.test`
- * and the bucket's top for anything else, a plain name ending `.test` among
- * them — and a `wrangler r2 object delete` for each.
- */
-export function resetRecipe(corpus, who) {
-  // The module's own rule: `crates/yokohama-worker/src/receipt.rs`'s `is_test_identity`.
-  const root = who.includes("@") && who.endsWith(".test") ? "test/" : "";
-  const keys = [...FIRST_SENDS].flatMap((fixture) => {
-    const { path } = JSON.parse(corpus[fixture]);
-    return [`${root}${path}`, `${root}${path.replace(/\.json$/, ".table.json")}`];
-  });
-  return { keys, commands: keys.map((key) => `npx wrangler r2 object delete "yokohama-archive/${key}" --remote`) };
-}
-
-/**
- * One of `archive-walk.json`'s two first sends (spec §5.3): the committed
- * 201 — `"landed"` — or, on every run after the first, the once-rule's 200
- * with the same body but `"identical": true` — `"identical"`. Anything else
- * is `null`.
- */
-export function firstSendAccepts(committed, status, got) {
-  if (status === 201 && isDeepStrictEqual(got, committed)) return "landed";
-  if (status === 200 && got?.identical === true && isDeepStrictEqual({ ...got, identical: committed.identical }, committed)) {
-    return "identical";
-  }
-  return null;
-}
-
-// ---- the rows, and where they go ----
-
-/**
- * The credential in `file`: its `CF-Access-Client-Id=` and
- * `CF-Access-Client-Secret=` lines, among any others. A file or a key that is
- * absent — or a value that is empty — is refused by NAME: the file and the
- * key, never a value.
- */
-export function readCredential(file = DEV_VARS) {
-  let text;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-  }
-  const values = new Map();
-  for (const line of text.split(/\r?\n/)) {
-    const eq = line.indexOf("=");
-    if (eq !== -1) values.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
-  }
-  const read = (key) => {
-    const value = values.get(key);
-    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
-    return value;
-  };
-  return { id: read(KEYS[0]), secret: read(KEYS[1]) };
-}
-
-/** The three request scripts, from `web/src/wire-script/`. */
-export function loadScripts() {
-  const read = (name) => JSON.parse(readFileSync(new URL(`web/src/wire-script/${name}`, REPO), "utf8"));
-  return { walk: read("walk.json"), host: read("walk-host.json"), archive: read("archive-walk.json") };
-}
-
-/** The committed corpus, `web/src/wire/*.json`, by file name. */
-export function loadCorpus() {
-  const dir = new URL("web/src/wire/", REPO);
-  return Object.fromEntries(
-    readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => [f.slice(0, -".json".length), readFileSync(new URL(f, dir), "utf8")]),
-  );
-}
-
-/**
- * The rows in the order they run, each with its script's name and its index
- * there — the pool's `order` (`test/walk.ts`): `walk-host.json`'s rows after
- * the walk row their `after` names (`-1`: before the first), then
- * `archive-walk.json`'s.
- */
-export function order(walk, host, archive) {
-  const hosted = host.map((row, index) => ({ script: "walk-host.json", index, row }));
-  const at = (after) => hosted.filter(({ row }) => row.after === after);
-  const rows = [...at(-1)];
-  walk.forEach((row, index) => rows.push({ script: "walk.json", index, row }, ...at(index)));
-  if (rows.length !== walk.length + host.length) throw new Error("a host row names no walk row to follow");
-  archive.forEach((row, index) => rows.push({ script: "archive-walk.json", index, row }));
-  return rows;
-}
-
-/** Where `row` is sent: the Worker's origin, and nowhere else. */
-export function urlOf(row) {
-  const url = new URL(`${row.path}${row.query ? `?${row.query}` : ""}`, ORIGIN);
-  if (url.origin !== ORIGIN) throw new Error(`the row ${row.method} ${row.path} leaves ${ORIGIN}: this script sends nothing anywhere else`);
-  return url.href;
-}
-
-/** The tables the walk creates, by the ids its create bodies name. */
-function tableIds(walk) {
-  return walk.filter((row) => row.method === "POST" && row.path === "/api/games").map((row) => row.body.id);
-}
-
-/** One row, sent with the credential and its `who`, and its answer read
- *  whole. */
-async function send(row, credential, fetcher) {
-  const url = urlOf(row);
-  const headers = { [KEYS[0]]: credential.id, [KEYS[1]]: credential.secret };
-  if (row.who !== null) headers["X-Yokohama-Claimed-User"] = row.who;
-  let body;
-  if (row.body !== null) {
-    body = JSON.stringify(row.body);
-    headers["content-type"] = "application/json";
-  }
-  const res = await fetcher(url, { method: row.method, headers, body, redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  return { status: res.status, text: new TextDecoder().decode(bytes), bytes: bytes.length, contentType: res.headers.get("content-type") };
-}
-
-/** The operator's force on each id, bare: no credential and no claimed
- *  header. */
-async function forceAll(ids, fetcher) {
-  const forced = [];
-  for (const id of ids) {
-    try {
-      const res = await fetcher(`${ORIGIN}/api/admin/tables/${encodeURIComponent(id)}/expire?force`, {
-        method: "POST",
-        headers: {},
-        redirect: "manual",
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      forced.push({ id, status: res.status, said: said({ status: res.status, text: new TextDecoder().decode(bytes), bytes: bytes.length, contentType: res.headers.get("content-type") }) });
-    } catch (e) {
-      forced.push({ id, status: null, said: ` — no answer: ${errorText(e)}` });
-    }
-  }
-  return forced;
-}
-
-// ---- reporting, and its redaction ----
-
-/** A key whose value could be a secret or a seed. */
-const SECRET_KEY = /^(seed|salt|hash|password|secret|token|cookie|authorization)$/i;
-
-const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-
-function redacted(value) {
-  if (Array.isArray(value)) return value.map(redacted);
-  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, SECRET_KEY.test(k) ? "<redacted>" : redacted(v)]));
-  return value;
-}
-
-/** A value as the report prints it: redacted under a key that could hold a
- *  secret or a seed, at any depth, and cut short when long. */
-function fmt(value, key) {
-  if (value === ABSENT) return "(absent)";
-  if (value === undefined) return "(undefined)";
-  if (typeof key === "string" && SECRET_KEY.test(key)) return "<redacted>";
-  const text = JSON.stringify(redacted(value));
-  return text.length > 160 ? `${text.slice(0, 157)}… (${text.length} characters)` : text;
-}
-
-/** What an answer said, for a line about it: a JSON error's sentence, or the
- *  shape of any other body — never a redirect's `location`. */
-function said(reply) {
-  if (reply.status >= 300 && reply.status < 400) return " — a redirect (its location is not printed: Access's carries a token)";
-  if (reply.bytes === 0) return "";
-  try {
-    const error = JSON.parse(reply.text)?.error;
-    if (typeof error === "string") return ` — it said: ${error.length > 200 ? `${error.slice(0, 197)}…` : error}`;
-  } catch {
-    // Not JSON: its shape below.
-  }
-  return ` — a ${reply.contentType ?? "typeless"} body of ${reply.bytes} B`;
-}
-
-/** An answer's body as JSON, or `null` — for no body, or one that is not JSON. */
-function parsed(reply) {
-  try {
-    return reply.bytes === 0 ? null : JSON.parse(reply.text);
-  } catch {
-    return null;
-  }
-}
-
-/** `n` of `noun`, in the plural when it is not one. */
-const count = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-
-function errorText(e) {
-  return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-}
-
-/** Every leaf where `got` differs from `committed`, by dotted path. */
-function differences(committed, got, path = []) {
-  if (Array.isArray(committed) && Array.isArray(got)) {
-    const out = [];
-    for (let i = 0; i < Math.max(committed.length, got.length); i++) {
-      out.push(...differences(i < committed.length ? committed[i] : ABSENT, i < got.length ? got[i] : ABSENT, [...path, i]));
-    }
-    return out;
-  }
-  if (isObject(committed) && isObject(got)) {
-    const keys = [...new Set([...Object.keys(committed), ...Object.keys(got)])].sort();
-    return keys.flatMap((k) =>
-      differences(Object.hasOwn(committed, k) ? committed[k] : ABSENT, Object.hasOwn(got, k) ? got[k] : ABSENT, [...path, k]),
-    );
-  }
-  return isDeepStrictEqual(committed, got) ? [] : [{ path: path.length > 0 ? path.join(".") : "(body)", committed, got }];
-}
-
-/**
- * One named reply against its committed file: the clock frozen, the host
- * fields exempted (each proven to differ), and a lobby page or a house chat
- * payload normalized. Answers the differences and the exemptions it spent.
- */
-function judge(fixture, reply, context) {
-  const committed = JSON.parse(context.corpus[fixture]);
-  let got;
-  try {
-    got = reply.bytes === 0 ? null : JSON.parse(reply.text);
-  } catch {
-    return { diffs: [{ path: "(body)", committed: "JSON", got: `a ${reply.contentType ?? "typeless"} body of ${reply.bytes} B that is not JSON` }], spent: [] };
-  }
-  const spent = [];
-  const diffs = [];
-  try {
-    got = freezeClock(got);
-    for (const field of HOST_FIELDS[fixture] ?? []) {
-      if (!isObject(got)) break;
-      // An exemption is spent only on a value this host SENT, as a string,
-      // that differs from the committed one: a field it dropped is a
-      // mismatch, never `"off" → (absent)`. The rule's twin is the pool's,
-      // `worker/test/corpus.test.ts`'s `hostFields` — the same rule over the
-      // same fields, stated once in each of the two WORKER replays (R3's L-5;
-      // ruling R-C3). The browser host's node replay
-      // (`web/src/local/corpus.node.test.ts`) still spends an exemption on
-      // `not.toEqual` alone, which an absent field passes: a recorded debt
-      // (Task 7's review, M-5; ruling R-C20).
-      if (typeof got[field] !== "string") {
-        diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
-      } else if (isDeepStrictEqual(got[field], committed[field])) {
-        diffs.push({ path: field, reason: "exempted, but both hosts agree on it", committed: committed[field], got: got[field] });
-      } else {
-        spent.push(`HOST_FIELDS ${fixture}.${field}: ${fmt(committed[field])} → ${fmt(got[field])}`);
-      }
-    }
-    if (LOBBY.has(fixture)) {
-      const listed = Array.isArray(got?.games) ? got.games.length : 0;
-      got = filterLobby(fixture, committed, got, context.ids);
-      const compared = cursorNames(committed.next, new Set(context.ids));
-      spent.push(`filterLobby ${fixture}: ${count(listed - got.games.length, "other row")} dropped; next ${compared ? "compared" : "taken back to the committed page's end"}`);
-    }
-    if (HOUSE_CHAT.has(fixture)) {
-      const listed = Array.isArray(got?.messages) ? got.messages.length : 0;
-      got = normalizeHouseChat(fixture, got, context.base, context.identities);
-      spent.push(
-        fixture === "house_chat_post"
-          ? `normalizeHouseChat ${fixture}: seq taken back by ${context.base}`
-          : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}; ${count(listed - got.messages.length, "other message")} dropped`,
-      );
-    }
-  } catch (e) {
-    return { diffs: [...diffs, { path: "(normalized)", reason: errorText(e) }], spent };
-  }
-  const strip = (v) => {
-    if (!isObject(v)) return v;
-    const copy = { ...v };
-    for (const field of HOST_FIELDS[fixture] ?? []) delete copy[field];
-    return copy;
-  };
-  diffs.push(...differences(strip(committed), strip(got)));
-  return { diffs, spent };
-}
-
-// ---- the run ----
+import { pathToFileURL } from "node:url";
+import { KEYS, LOBBY_PAUSE_MS, LOBBY_REREADS, ORIGIN, readCredential } from "./replay/credential.mjs";
+import { FIRST_SENDS, firstSendAccepts, houseDeleteRow, LOBBY, resetRecipe } from "./replay/exemptions.mjs";
+import { errorText, finish, fmt, judge, parsed, said } from "./replay/judge.mjs";
+import { loadCorpus, loadScripts, order, tableIds, urlOf } from "./replay/scripts.mjs";
+import { forceAll, send } from "./replay/send.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -490,7 +83,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function replay({ walk, host, archive, corpus, credential, fetcher = fetch, log = console.log, pause = sleep }) {
   const rows = order(walk, host, archive);
   const ids = tableIds(walk);
-  const identities = [...new Set(rows.map(({ row }) => row.who).filter((who) => who !== null))];
   const reader = rows.find(({ row }) => row.fixture === "house_chat")?.row;
   if (reader === undefined) throw new Error("no row of the scripts reads the house chat, so there is no base to read");
   // Every row's address, checked BEFORE anything is sent — the forces
@@ -528,18 +120,29 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
 
   try {
     const baseReply = await send(reader, credential, fetcher);
-    const last = baseReply.status === 200 ? parsed(baseReply)?.last : undefined;
-    if (typeof last === "number") {
+    const basePage = baseReply.status === 200 ? parsed(baseReply) : undefined;
+    const last = basePage?.last;
+    const baseRev = basePage?.rev;
+    if (typeof last === "number" && typeof baseRev === "number") {
       result.base = last;
-      log(`the house chat's base: last ${last}, read as ${reader.who}`);
+      log(`the house chat's base: last ${last}, rev ${baseRev}, read as ${reader.who}`);
     } else {
       // No base, no rows: the `finally` forces the ids again, and the report
       // follows it, as on every other road out.
       result.stopped = `the house chat's base could not be read: ${baseReply.status}${said(baseReply)}`;
     }
-    const context = { corpus, ids, identities, base: last };
+    // `houseShift`: set once the run's own house post is answered.
+    const context = { corpus, ids, base: last, baseRev, houseShift: undefined };
 
-    for (const { script, index, row } of result.stopped === null ? rows : []) {
+    for (const { script, index, row: scripted } of result.stopped === null ? rows : []) {
+      let row = scripted;
+      try {
+        row = houseDeleteRow(scripted, context.houseShift);
+      } catch (e) {
+        result.stopped = `${script} row ${index}: ${errorText(e)}`;
+        break;
+      }
+      if (row !== scripted) result.spent.push(`houseDeleteRow ${row.fixture}: ${scripted.path} sent as ${row.path}`);
       const label = `${script} row ${index}: ${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;
       let reply;
       try {
@@ -587,6 +190,11 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
         differs(label, null, { path: "status", reason: `committed ${row.status} · got ${reply.status}${said(reply)}` });
         break;
       }
+      // The run's own house post: the number the delete row is carried to.
+      if (row.fixture === "house_chat_post") {
+        const seq = parsed(reply)?.seq;
+        if (typeof seq === "number") context.houseShift = seq - JSON.parse(corpus.house_chat_post).seq;
+      }
       if (row.fixture === null) continue;
 
       result.named += 1;
@@ -614,33 +222,6 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     log(`force after: ${result.forcedAfter.map((f) => `${f.id} ${f.status ?? "—"}${f.status === 204 ? "" : f.said}`).join(", ")}`);
   }
   return finish(result, log);
-}
-
-/** The report's summary, and the verdict. */
-function finish(result, log) {
-  const forcesHeld = (forces) => forces.length > 0 && forces.every((f) => f.status === 204);
-  result.holds =
-    result.stopped === null &&
-    result.run === result.total &&
-    result.mismatches.length === 0 &&
-    forcesHeld(result.forcedBefore) &&
-    forcesHeld(result.forcedAfter);
-  log(`rows run: ${result.run} of ${result.total}`);
-  log(`named rows compared: ${result.named}`);
-  log(`exemptions spent (${result.spent.length}):`);
-  for (const line of result.spent) log(`  ${line}`);
-  log(
-    `lobby re-reads: ${result.rereads} spent (the bound: ${LOBBY_REREADS} per lobby row, ${LOBBY_PAUSE_MS} ms apart; ` +
-      "a page still differing after them is a mismatch)",
-  );
-  if (result.stopped !== null) log(`stopped: ${result.stopped}`);
-  if (result.reset !== null) {
-    log("the reset — in worker/, with wrangler's own login; then run the replay again:");
-    for (const command of result.reset.commands) log(`  ${command}`);
-  }
-  log(`mismatches: ${result.mismatches.length === 0 ? "none" : result.mismatches.length}`);
-  log(`live-replay: ${result.holds ? "HOLDS" : "DOES NOT HOLD"}`);
-  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

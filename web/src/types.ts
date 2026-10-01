@@ -400,6 +400,11 @@ export interface Events {
    *  fetch for the text. It is the document's own `last`, so a trim never walks
    *  it backwards past a cursor the client is holding. */
   chat: number;
+  /** The table's chat REVISION (M6.5c2 cycle D, R-D4): +1 per message AND per
+   *  message deleted, so `chat` is a count for the text and this a revision
+   *  for the shape — `chat_rev - chat` moves exactly when a message a reader
+   *  may already hold was deleted. */
+  chat_rev: number;
 }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
@@ -478,10 +483,10 @@ export interface Health {
   rules_hash: string;
   /** Which identity source this deployment reads, by name. */
   identity: string;
-  /** Which change transport `usePolled` reads: the stream, or the held
-   *  request (M6.3), or — the Worker's, M6.5c — the socket. A deployment fact,
-   *  not a preference. */
-  signal: "sse" | "held" | "ws";
+  /** Which change transport `usePolled` reads: the stream, or — the Worker's,
+   *  M6.5c — the socket. A deployment fact, not a preference. The held request
+   *  M6.3 built is retired (M6.5c2 cycle D, R-D5), and no host reports it. */
+  signal: "sse" | "ws";
   /** Which archive this deployment writes finished and abandoned games to
    *  (M6.5a): none, a directory beside the store, or (M6.5c) a bucket. Read at
    *  the three points spec §2.2 names since M6.5b2 — entering the multiplayer
@@ -533,20 +538,23 @@ export interface DealCard {
 
 // ---- the table: who sits where (M6.1) ------------------------------------
 
-/** Who plays one seat: a person, the built-in bot, or nobody yet.
+/** Who plays one seat, as THIS reader is handed it: a person, the built-in
+ *  bot, or nobody yet.
  *
- *  A human seat carries the server's NORMALIZED email — the key every binding
- *  is written under — and, since M6.2, the display `name` its holder gave. The
- *  name is `null` on a seat bound before names existed and on a seat whose
- *  holder gave none, so a screen that shows one falls back to the email; and
- *  the email stays beside it because a name is chosen rather than unique, and
- *  two people at one table may pick the same one.
+ *  **No address crosses but the reader's own typing** (M6.5c2 cycle D,
+ *  R-6.5c2.35, R-D3). A human seat carries the display `name` its holder gave
+ *  (`null` on a seat bound before names existed and on a seat whose holder
+ *  gave none), `you` — whether the reader holds it — and `invited`: the
+ *  address the table's CREATOR typed for it, served to the creator alone and
+ *  only while the seat has no name. Everyone else reads an unnamed seat as
+ *  "invited" (`seatName`). Two people who pick one name are told apart by their
+ *  colour, as they are on the board.
  *
  *  `open` is an unfilled seat at an open table (M6.2): anyone signed in may
  *  take it through `api.join`. It never appears once the table has left
  *  `open` — the server refuses to read back a document where the two disagree. */
-export type SeatDoc =
-  | { kind: "human"; user: string; name: string | null }
+export type SeatView =
+  | { kind: "human"; name: string | null; you: boolean; invited: string | null }
   | { kind: "bot" }
   | { kind: "open" };
 
@@ -565,13 +573,18 @@ export type TableStatus = "open" | "dealing" | "playing";
 export interface TableView {
   id: string;
   name: string | null;
-  created_by: string;
+  /** Whether the READER created this table — what draws the creator's own
+   *  controls. A fact about the reader, like `can_watch`. */
+  mine: boolean;
+  /** The creator's seat NAME, or `null` when they hold no seat or gave no name
+   *  — never their address. */
+  creator: string | null;
   /** Unix SECONDS, not a formatted string — the lobby sorts on it. */
   created_at: number;
   players: number;
   colors: PlayerColor[];
   start_seat: number;
-  seats: SeatDoc[];
+  seats: SeatView[];
   /** True for a bot seat from the start, and for a human seat once it has kept. */
   chosen: boolean[];
   /** The seats the CALLER holds. Empty for a caller not seated at an OPEN
@@ -623,16 +636,6 @@ export interface GamesList {
    *  `<created_at>,<id>`: opaque to this client, which sends it straight back
    *  as `before`. */
   next: string | null;
-}
-
-/** Which of the two dealt cards a seat keeps. `card` is 1 or 2, as they are
- *  numbered on screen. */
-export interface KeepRequest {
-  seat: number;
-  card: 1 | 2;
-  /** What this seat is called on screen (spec §5.6). The server writes it onto
-   *  the seat only where it has none yet, so a keep never renames somebody. */
-  name?: string;
 }
 
 /** The 409 a session route answers while its table is still open or dealing:
@@ -1006,12 +1009,15 @@ export interface Outcome {
 
 // ---- M6.4: the chat ------------------------------------------------------
 
-/** Who said it (M6.4, R-6.4.2, R-6.4.15). Tagged like `SeatDoc`, so an arm can be
- *  added on both sides of the wire; `bot` is read and rendered and produced by
- *  no route yet. */
+/** Who said it (M6.4, R-6.4.2, R-6.4.15), as THIS reader is handed it.
+ *  Tagged like `SeatView`, so an arm can be added on both sides of the wire;
+ *  `bot` is read and rendered and produced by no route yet.
+ *
+ *  **No address** (M6.5c2 cycle D, R-6.5c2.35): `you` marks the reader's own
+ *  messages, and a poster with no name reads as their seat or as "someone". */
 export type ChatAuthor =
-  | { kind: "seat"; seat: PlayerId; user: string; name: string | null }
-  | { kind: "watcher"; user: string; name: string | null }
+  | { kind: "seat"; seat: PlayerId; name: string | null; you: boolean }
+  | { kind: "watcher"; name: string | null; you: boolean }
   | { kind: "bot"; seat: PlayerId; name: string | null };
 
 export interface ChatMessage {
@@ -1020,7 +1026,12 @@ export interface ChatMessage {
    *  pins a clock by key name. */
   created_at: number;
   author: ChatAuthor;
+  /** The empty string on a tombstone. */
   text: string;
+  /** A TOMBSTONE (M6.5c2 cycle D, R-D4): taken down by its author or the
+   *  table's creator. Its number, clock and author stay, so every cursor holds
+   *  and the row still says who posted. */
+  deleted: boolean;
 }
 
 /** `GET …/chat?after=N`: the retained messages above N, and the newest number
@@ -1028,6 +1039,14 @@ export interface ChatMessage {
 export interface ChatPage {
   messages: ChatMessage[];
   last: number;
+  /** The document's REVISION (M6.5c2 cycle D, R-D4): +1 per message and per
+   *  message deleted. `rev - last` moves exactly when a message a reader may
+   *  already hold was deleted. The panel keeps this page's `rev - last` and
+   *  compares each frame's with it: every chat host is a count host
+   *  (`Events.chat`/`chat_rev` at a table, the house frame's `chat`/`rev` in
+   *  the lobby), and those are the same document's `last` and `rev` on both
+   *  hosts. */
+  rev: number;
 }
 
 export interface ChatPost {

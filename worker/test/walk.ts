@@ -1,5 +1,6 @@
 import { createExecutionContext, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { order as ordered } from "../scripts/corpus-walk.mjs";
 import { ARCHIVE_PREFIX } from "../src/archive";
 import type { KeySource } from "../src/identity";
 import { handle } from "../src/index";
@@ -84,17 +85,11 @@ const NO_KEYS: KeySource = async () => {
   throw new Error("the walk's art row asks for no key: /api/art is answered before the caller is read");
 };
 
-/** The rows in the order they run, each with its index in its own script. */
+/** The rows in the order they run, each with its index in its own script:
+ *  the ONE `order` (`scripts/corpus-walk.mjs`), which the live replay runs
+ *  too, over the scripts this walk was asked for. */
 function order(host: boolean, archive: boolean): Array<{ index: number; row: Row }> {
-  const hosted = host ? WALK_HOST.map((row, index) => ({ index, row })) : [];
-  const at = (after: number) => hosted.filter(({ row }) => (row as HostRow).after === after);
-  const rows: Array<{ index: number; row: Row }> = [...at(-1)];
-  WALK.forEach((row, index) => rows.push({ index, row }, ...at(index)));
-  if (host && rows.length !== WALK.length + WALK_HOST.length) {
-    throw new Error("a host row names no walk row to follow");
-  }
-  if (archive) ARCHIVE_WALK.forEach((row, index) => rows.push({ index, row }));
-  return rows;
+  return ordered(WALK, host ? WALK_HOST : [], archive ? ARCHIVE_WALK : []);
 }
 
 /** One row, sent where the Worker would send it; answers its reply and the

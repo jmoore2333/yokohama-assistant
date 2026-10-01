@@ -157,6 +157,65 @@ test("Undo takes the pieces back off the tile", async ({ page }) => {
   expect(watch.failures).toEqual([]);
 });
 
+// **The picker's own Cancel, walked** (M6.5c2 cycle D, straw poll row 30). The
+// harness's walk backs out of a picker through Cancel when it must
+// (`cancelPicker`), but only when the picker happens to strand it, and a walk
+// that REQUIRED the occasional affordance would be a flake wearing a coverage
+// badge. So this is the targeted cell: open the first placement picker, press a
+// tile, press Cancel, and read that the picker closed, the press was let go and
+// nothing was applied.
+test("Cancel closes a placement picker with a tile pressed and applies nothing", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  const pick = rng(0x4341_4e43); // "CANC"
+  let opened = false;
+  for (let i = 0; i < 30 && !opened; i++) {
+    const screen = await readScreen(page);
+    if (screen.over) break;
+    if (screen.tiles > 0 && screen.confirm) {
+      opened = true;
+      break;
+    }
+    if ((await act(page, screen, pick)) === null) break;
+  }
+  expect(opened, "never reached a placement picker").toBe(true);
+
+  // The picker is open with nothing selected (the walk stopped at its arrival).
+  const before = await readScreen(page);
+  expect(before.pressed, "a picker that opens with a tile already pressed is a refused Confirm").toBe(0);
+  const piecesOn = (id: string) =>
+    page.evaluate((want) => {
+      const tile = [...document.querySelectorAll(".tile")].find(
+        (t) => t.querySelector(".tile-id")?.textContent === want,
+      )!;
+      return tile.querySelector(".pieces")?.getAttribute("aria-label") ?? "";
+    }, id);
+
+  // Press tiles one at a time until the server takes one, as the walk does.
+  const free = page.locator('.tile[role="button"][aria-pressed="false"]:not([aria-disabled="true"])');
+  let pressedId: string | null = null;
+  const n = await free.count();
+  for (let i = 0; i < n && pressedId === null; i++) {
+    const tile = free.nth(i);
+    const id = (await tile.getAttribute("aria-label"))!.slice(0, 3);
+    await tile.click();
+    if ((await readScreen(page)).pressed > 0) pressedId = id;
+  }
+  expect(pressedId, "the server took no tile, so there is nothing for Cancel to let go").not.toBeNull();
+  const piecesBefore = await piecesOn(pressedId!);
+
+  await page.locator(".decision .controls button.ghost", { hasText: "Cancel" }).first().click();
+
+  const after = await readScreen(page);
+  expect(after.pressed, "Cancel let the pressed tile go").toBe(0);
+  expect(after.tiles, "and the picker is closed: no tile is a control any more").toBe(0);
+  expect(after.confirm, "and there is nothing to Confirm").toBe(false);
+  await expect(page.getByRole("button", { name: "Confirm" })).toHaveCount(0);
+  expect(await piecesOn(pressedId!), "and nothing was applied to the tile that was pressed").toBe(piecesBefore);
+  expect(after.options, "the choice the picker came from is answerable again").toBeGreaterThan(0);
+  expect(watch.failures).toEqual([]);
+});
+
 test("the Game menu switches between saved games from inside a game", async ({ page }) => {
   const watch = watchForBreakage(page);
   const a = await startGame(page, { players: 2 });
@@ -166,16 +225,22 @@ test("the Game menu switches between saved games from inside a game", async ({ p
   await page.locator(".game-menu > summary").click();
   await page.getByRole("button", { name: a.id, exact: true }).click();
   await expect(page.locator(".game-menu > summary")).toContainText(a.id);
-  // **No second click on the summary here, and this cell is the only place the
-  // reason can be checked.** The menu stays OPEN across a switch, and the list
-  // it is showing has already recomputed against the game just loaded, so the
-  // way back is a button already on screen; a second summary click would CLOSE
-  // it. `GameMenu.test.tsx` cannot see either half — jsdom ships no UA
-  // stylesheet for `details`, so a closed menu's buttons are just as findable
-  // there — while Chromium's are `display: none`, and the first draft of this
-  // line waited fifteen seconds for a button that was never going to appear.
-  await page.getByRole("button", { name: b.id, exact: true }).click();
+  // **The menu CLOSES once a switch has landed** (M6.5c2 cycle D, dossier row
+  // 2), and this is the cell where closed means hidden. It used to stay open,
+  // and this cell leaned on that — it clicked the way back without reopening.
+  // `GameMenu.test.tsx` reads the `open` attribute; only Chromium applies the
+  // UA stylesheet that hides a closed menu's rows (`display: none`), so the
+  // way back is asserted NOT visible before the summary click and visible
+  // after it.
+  const menu = page.locator("details.game-menu");
+  const back = page.getByRole("button", { name: b.id, exact: true });
+  await expect(menu).not.toHaveAttribute("open", "");
+  await expect(back).toBeHidden();
+  await page.locator(".game-menu > summary").click();
+  await expect(back).toBeVisible();
+  await back.click();
   await expect(page.locator(".game-menu > summary")).toContainText(b.id);
+  await expect(menu).not.toHaveAttribute("open", "");
   expect(watch.failures).toEqual([]);
 });
 

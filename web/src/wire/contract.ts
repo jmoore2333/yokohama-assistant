@@ -52,6 +52,7 @@ import type {
   AreasPanel,
   ArtManifest,
   ApiErrorBody,
+  SeatView,
   ChatAuthor,
   ChatMessage,
   ChatPage,
@@ -152,11 +153,13 @@ import tableDealing from "./table_dealing.json";
 import table from "./table.json";
 import deal from "./deal.json";
 import dealWaiting from "./deal_waiting.json";
+import dealBotTable from "./deal_bot_table.json";
 import dealing409 from "./dealing_409.json";
 import gamesList from "./games.json";
 import gamesOpen from "./games_open.json";
 import gamesNext from "./games_next.json";
 import tableOpen from "./table_open.json";
+import tableTwoOpen from "./table_two_open.json";
 import open409 from "./open_409.json";
 import join403Locked from "./join_403_locked.json";
 import join403Password from "./join_403_password.json";
@@ -201,6 +204,10 @@ import chat403Locked from "./chat_403_locked.json";
 import houseChat from "./house_chat.json";
 import houseChatPost from "./house_chat_post.json";
 import houseChatOff404 from "./house_chat_off_404.json";
+import chatDelete from "./chat_delete.json";
+import chatDelete403 from "./chat_delete_403.json";
+import chatDeleted from "./chat_deleted.json";
+import houseChatDelete from "./house_chat_delete.json";
 
 /** The declared type, widened exactly as importing it from JSON would widen it.
  *
@@ -259,6 +266,9 @@ const _table: Widen<TableView> = table;
 // that is the "waiting for the others" screen.
 const _deal: Widen<DealView> = deal;
 const _dealWaiting: Widen<DealView> = dealWaiting;
+// ...and the deal at a table whose other seat is a BOT (cycle D, row 32): the
+// caller's two cards, and nothing of the bot's.
+const _dealBotTable: Widen<DealView> = dealBotTable;
 const _gamesList: Widen<GamesList> = gamesList;
 // ---- M6.2: the room's opening ------------------------------------------
 //
@@ -266,6 +276,8 @@ const _gamesList: Widen<GamesList> = gamesList;
 // the one payload in the corpus whose `my_seats` is empty, and the only place
 // an `open` seat and a `locked` table reach the client's declared types.
 const _tableOpen: Widen<TableView> = tableOpen;
+// ...and a THREE-player table with two seats still open (cycle D, row 32).
+const _tableTwoOpen: Widen<TableView> = tableTwoOpen;
 // The lobby's two lists. `games_open` is the OTHER question (tables I could sit
 // at, whoever made them), and `games_next` is the only payload anywhere whose
 // `next` is a cursor rather than null — so the string arm of that field is
@@ -352,6 +364,11 @@ const _chat400SeatedName: Widen<ApiErrorBody> = chat400SeatedName;
 const _chat403NotSeated: Widen<ApiErrorBody> = chat403NotSeated;
 const _chat403Locked: Widen<ApiErrorBody> = chat403Locked;
 const _houseChatOff404: Widen<ApiErrorBody> = houseChatOff404;
+// M6.5c2 cycle D (R-D4): the delete's refusal, and the page with a tombstone —
+// the one payload whose `deleted` reads true. The two 204s are `null` and are
+// pinned by value in `contract.test.ts`.
+const _chatDelete403: Widen<ApiErrorBody> = chatDelete403;
+const _chatDeleted: Widen<ChatPage> = chatDeleted;
 // ---- M6.5c2: the bot's label ------------------------------------------------
 //
 // `bot` is `TableBot | null` and `null` in every walk payload, so the table
@@ -532,8 +549,8 @@ void [
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
   _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
-  _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
-  _tableOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
+  _tableDealing, _table, _deal, _dealWaiting, _dealBotTable, _gamesList, _dealing409, _notSeated403,
+  _tableOpen, _tableTwoOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
   _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
   _events, _eventsDealing, _eventsOpen,
@@ -549,6 +566,7 @@ void [
   _terminal, _terminalStanding,
   _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
   _chat400Long, _chat400SeatedName, _chat403NotSeated, _chat403Locked, _houseChatOff404,
+  _chatDelete403, _chatDeleted,
   _tableBot, _tableBotBot, _seatBots, _productionBot,
   _foreignBot409, _tableForeign, _tableForeignBot, _whyForeign, _whyForeignRefusal,
 ];
@@ -638,10 +656,15 @@ const HEALTH = [
 ] as const;
 const ME = ["mode", "user"] as const;
 const TABLE = [
-  "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
+  "id", "name", "mine", "creator", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
   "can_watch", "bot",
 ] as const;
+// M6.5c2 cycle D (R-6.5c2.35): a HUMAN seat, which carries no address. Its own
+// list because `Widen<TableView>` distributes over the seat union — a human
+// seat that re-gained `user` would still match its widened arm — so the
+// runtime half checks every human seat in the corpus against these four.
+const SEAT_HUMAN = ["kind", "name", "you", "invited"] as const;
 // M6.5c2: the table's bot, one bot seat, and the door's contract file.
 const TABLE_BOT = ["label", "runs_here"] as const;
 const SEAT_BOT = ["seat", "label"] as const;
@@ -654,7 +677,7 @@ const GAMES_LIST = ["games", "next"] as const;
 // foreign-bot 409 (M6.5c2) carries `foreign_bot`: the only four refusals that
 // do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
-const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn", "chat", "chat_rev"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
@@ -691,10 +714,12 @@ const INDEX_CARD = ["face", "location", "selection"] as const;
 // either arm. `bot` has no list because it has no fixture; the cell fails loudly
 // on an author kind it has no list for, which is what makes that absence
 // visible rather than silent.
-const CHAT_PAGE = ["messages", "last"] as const;
-const CHAT_MESSAGE = ["seq", "created_at", "author", "text"] as const;
-const CHAT_AUTHOR_SEAT = ["kind", "seat", "user", "name"] as const;
-const CHAT_AUTHOR_WATCHER = ["kind", "user", "name"] as const;
+const CHAT_PAGE = ["messages", "last", "rev"] as const;
+const CHAT_MESSAGE = ["seq", "created_at", "author", "text", "deleted"] as const;
+// No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
+// and a `you`, and the address stays in the server's document.
+const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "name", "you"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -716,6 +741,7 @@ const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 // `_me` is taken by the widened assignment above, so the key list takes `_mk`.
 const _mk: KeysOf<Me, typeof ME> = ME;
 const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
+const _sh: KeysOf<Extract<SeatView, { kind: "human" }>, typeof SEAT_HUMAN> = SEAT_HUMAN;
 const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
 const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
@@ -753,7 +779,7 @@ const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_E
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
-      _tv, _dv, _gl, _d4,
+      _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
       _cg, _cm, _as, _aw, _tb, _sb, _pb, _fe, _fb];
@@ -778,6 +804,7 @@ export const KEYS = {
   health: HEALTH,
   me: ME,
   table: TABLE,
+  seatHuman: SEAT_HUMAN,
   dealView: DEAL_VIEW,
   gamesList: GAMES_LIST,
   events: EVENTS,
@@ -864,8 +891,10 @@ export const wire = {
   table: as<TableView>(table),
   deal: as<DealView>(deal),
   dealWaiting: as<DealView>(dealWaiting),
+  dealBotTable: as<DealView>(dealBotTable),
   games: as<GamesList>(gamesList),
   tableOpen: as<TableView>(tableOpen),
+  tableTwoOpen: as<TableView>(tableTwoOpen),
   gamesOpen: as<GamesList>(gamesOpen),
   gamesNext: as<GamesList>(gamesNext),
   open409: as<DealingErrorBody>(open409),
@@ -936,6 +965,16 @@ export const wire = {
   chat403NotSeated: as<ApiErrorBody>(chat403NotSeated),
   chat403Locked: as<ApiErrorBody>(chat403Locked),
   houseChatOff404: as<ApiErrorBody>(houseChatOff404),
+  // ---- M6.5c2 cycle D: the delete (R-D4) --------------------------------
+  /** An empty 204, which every host reads as `null`: the corpus's word that a
+   *  delete answers with nothing. */
+  chatDelete: chatDelete as null,
+  chatDelete403: as<ApiErrorBody>(chatDelete403),
+  /** The page read again after the delete: the corpus's one TOMBSTONE, at
+   *  `seq` 1 — `text: ""`, `deleted: true`, its author kept — and `rev` one
+   *  past `last`. */
+  chatDeleted: as<ChatPage>(chatDeleted),
+  houseChatDelete: houseChatDelete as null,
   // ---- M6.5c2: the bot's label -------------------------------------------
   tableBot: as<TableView>(tableBot),
   productionBot: as<ProductionBot>(productionBot),

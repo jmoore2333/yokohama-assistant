@@ -90,7 +90,9 @@ const ANOTHER_CALLER: &str =
 /// kept the last would drop the first without a word. No layer site defers
 /// two in one call — the layer's `delete` reads the stored record without
 /// building a handle, and `archive_over_retry`'s two puts are one plan — so
-/// this makes one plan per call structural rather than observed.
+/// this makes one plan per call structural rather than observed. The premise it
+/// rests on: a call defers at most one plan, so this refusal guards that
+/// premise and no layer route reaches it.
 const SECOND_PLAN: &str = "a second deferred put in one call — this host carries one plan per call";
 
 /// This instance's receipt archive — the SAME `Arc` its `Games` puts through —
@@ -458,13 +460,14 @@ fn stamped(games: &Games, id: &str) -> bool {
 /// under a resident game are the house's `put_copy` and `remove_copy`, which
 /// the shell makes on the house's own instance, where no game is played.
 ///
-/// **One document reaches that 500 with no game resident** (M6.5c2): one the
-/// layer reads and this module's JSON read of the creator (`creator_of`)
-/// cannot — an unknown key holding a number out of `f64`'s range, which
-/// serde's struct parse skips unread and a `serde_json::Value` refuses. The
-/// creator it names is the layer's alone, so `handle` REBUILDS the game,
-/// pumping any owed bot move, and answers `Ok`. No layer write makes such a
-/// document. The arm answers under `Scope::Table(id)`, so that pump's record
+/// **One CLASS of document reaches that 500 with no game resident** (M6.5c2,
+/// R-C14): a hand-made document whose value the layer's parse admits and this
+/// module's JSON read of the creator (`creator_of`) refuses, so the 500 names
+/// the wrong reason. The one such document known is an unknown key holding a
+/// number out of `f64`'s range, which serde's struct parse skips unread and a
+/// `serde_json::Value` refuses. The creator it names is the layer's alone, so
+/// `handle` REBUILDS the game, pumping any owed bot move, and answers `Ok`. No
+/// layer write makes a document of this class. The arm answers under `Scope::Table(id)`, so that pump's record
 /// change clears the table's picker (`picker.rs`'s
 /// `an_expire_with_no_creator_whose_rebuild_pumps_clears_the_picker`).
 pub fn expire_inner(id: &str) -> ReplyData {

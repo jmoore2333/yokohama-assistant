@@ -8,7 +8,7 @@
 // sign-in form to a player whose Access session is perfectly good — and would
 // show the game to one whose session has expired.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, clearClaimedUser, isSessionExpired } from "./api";
 import type { Channel } from "./route";
 import type { Me } from "./types";
@@ -75,6 +75,15 @@ export function useMe(channel: Channel): Door {
   const [failure, setFailure] = useState<DoorFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  /** **The player asked to sign out, and the server has not named anybody
+   *  since** (M6.5c2 cycle D, dossier row 3). `signOut` drops the stored name
+   *  and re-asks, but `me` goes on naming the old player until that answer
+   *  lands — so a request a screen sends in that window goes out with no name
+   *  and is refused 401, and `App` hands the sentence to `signedOut`. That
+   *  refusal is the sign-out itself, not news: while this is set `signedOut`
+   *  does nothing. Released by the first read that names somebody, after
+   *  which a 401 is a real one again. A ref, because nothing is drawn from it. */
+  const leaving = useRef(false);
   useEffect(() => {
     if (channel !== "multiplayer") return;
     let live = true;
@@ -85,7 +94,11 @@ export function useMe(channel: Channel): Door {
     setFailure(null);
     api
       .me()
-      .then((m) => live && setMe(m))
+      .then((m) => {
+        if (!live) return;
+        if (m.user !== null) leaving.current = false;
+        setMe(m);
+      })
       .catch((e) => {
         if (!live) return;
         setError(e instanceof ApiError ? e.message : String(e));
@@ -116,8 +129,19 @@ export function useMe(channel: Channel): Door {
     refresh,
     // Asked for, so the door says nothing — a notice left standing from an
     // earlier refusal would explain a screen the player chose.
-    signOut: useCallback(() => leave(null), [leave]),
-    signedOut: useCallback((sentence: string) => leave(sentence), [leave]),
+    signOut: useCallback(() => {
+      leaving.current = true;
+      leave(null);
+    }, [leave]),
+    // Ignored while a sign-out that was asked for is still being read back:
+    // the name is already dropped and the re-read already out (`leaving`).
+    signedOut: useCallback(
+      (sentence: string) => {
+        if (leaving.current) return;
+        leave(sentence);
+      },
+      [leave],
+    ),
   };
 }
 

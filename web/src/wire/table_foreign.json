@@ -13,9 +13,10 @@
     "Blue"
   ],
   "created_at": 1789000000,
-  "created_by": "local@browser",
+  "creator": null,
   "id": "wire-foreign",
   "locked": false,
+  "mine": true,
   "my_seats": [
     0
   ],
@@ -24,9 +25,10 @@
   "players": 2,
   "seats": [
     {
+      "invited": "local@browser",
       "kind": "human",
       "name": null,
-      "user": "local@browser"
+      "you": true
     },
     {
       "kind": "bot"

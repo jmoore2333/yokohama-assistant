@@ -121,31 +121,10 @@ export interface RestoreReport {
  *  take this long times the number of games.
  *
  *  **Exported for the cell that spends it** (ledger Task 8 L195): the cell that
- *  proves one bound is spent for a whole export advances a fake clock by this
- *  number, which is what took a wall-clock assertion — and its flake — out of a
- *  per-edit gate. */
+ *  proves one bound is spent for a whole export COUNTS the timers of about this
+ *  length the export arms, which is what took a wall-clock assertion — and its
+ *  flake — out of a per-edit gate. */
 export const WORKER_BOUND_MS = 1_500;
-
-/** Settle with `null` if `p` has not answered in `ms`.
- *
- *  A rejection is `null` too: a Worker that refuses is a Worker that did not
- *  answer, and the whole point of the fallback is that the caller does not have
- *  to know which kind of silence it met. */
-function withinBound<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), ms);
-    p.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(null);
-      },
-    );
-  });
-}
 
 /** One game on its way into a file: the two strings, and what THIS DEVICE
  *  knows about which revision they are at. */
@@ -239,20 +218,51 @@ async function pairOf(
   stored: { record: string | null; table: string | null },
   deadline: Deadline,
 ): Promise<{ record: string | null; table: string | null }> {
-  const live = deadline.expired() ? null : await withinBound(localPair(id), deadline.left());
+  const live = deadline.expired() ? null : await deadline.within(localPair(id));
   return live ?? stored;
 }
 
-/** A budget for the Worker across ONE export. */
+/** A budget for the Worker across ONE export: **one timer**, armed when the
+ *  export starts, which every question the export puts to the Worker races.
+ *
+ *  **One timer and not one per question** (M6.5c2 cycle D): "Back up
+ *  everything" now asks the Worker for its LISTING as well as for each pair
+ *  (straw poll row 13), and a timer armed per question — each for whatever
+ *  was left — was a count of questions rather than a budget. `close` clears
+ *  it once the export is done with the Worker, answered or not. */
 interface Deadline {
+  /** The budget has been spent: ask nothing more. */
   expired: () => boolean;
-  left: () => number;
+  /** `p`'s answer, or `null` once the budget is spent or `p` refuses — a
+   *  Worker that refuses is a Worker that did not answer, and the whole point
+   *  of the fallback is that the caller does not have to know which kind of
+   *  silence it met. */
+  within: <T>(p: Promise<T>) => Promise<T | null>;
+  close: () => void;
 }
 
-const deadlineOf = (ms: number): Deadline => {
-  const at = Date.now() + ms;
-  return { expired: () => Date.now() >= at, left: () => Math.max(0, at - Date.now()) };
-};
+function deadlineOf(ms: number): Deadline {
+  let spent = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const passed = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      spent = true;
+      resolve(null);
+    }, ms);
+  });
+  return {
+    expired: () => spent,
+    within: <T>(p: Promise<T>) =>
+      Promise.race([
+        p.then(
+          (v): T | null => v,
+          (): T | null => null,
+        ),
+        passed,
+      ]),
+    close: () => clearTimeout(timer),
+  };
+}
 
 /**
  * Run `f` against this browser's database and GIVE THE CONNECTION BACK (final
@@ -271,7 +281,7 @@ const deadlineOf = (ms: number): Deadline => {
  * here, a file that is not a backup — belongs on the screen that asked.
  */
 async function withDb<T>(f: (db: IDBDatabase) => Promise<T>): Promise<T> {
-  const db = await openDb();
+  const db = await openDbBounded();
   try {
     return await f(db);
   } finally {
@@ -279,7 +289,80 @@ async function withDb<T>(f: (db: IDBDatabase) => Promise<T>): Promise<T> {
   }
 }
 
-/** Every game in this browser, as a file. */
+/** What a player reads when this page could not open its own storage in time
+ *  (M6.5c2 cycle D, straw poll row 12; Review Focus 5). It names the other TAB
+ *  for `db.ts`'s `BLOCKED_SENTENCE`'s reason — that is the thing a player can
+ *  act on — and it asks for the click again, because this refusal, unlike the
+ *  Worker's wait, does not carry on by itself. */
+export const STORAGE_HELD = "another tab holds this app's storage; close it and try again";
+
+/** How long a player's click waits for this browser's storage before it is
+ *  answered with [`STORAGE_HELD`]. Exported for the cell that spends it. */
+export const STORAGE_BOUND_MS = 3_000;
+
+/**
+ * Open this browser's database for a player's click — **answered within `ms`,
+ * always**.
+ *
+ * **Why the Worker's open is not enough here.** `openDb` WAITS OUT a blocked
+ * upgrade (spec §2.6): an M6.5b-era tab holds version 1 for its Worker's whole
+ * life with no `versionchange` handler, and the Worker's startup must carry on
+ * by itself when that tab goes. A click cannot wait like that: "Back up
+ * everything" awaited this open, answered nothing, and left its one-file guard
+ * set, so the button never worked again on that page (straw poll row 12).
+ *
+ * **Two ways it is answered, and both are needed.** A `blocked` event answers
+ * at once — the click's own open is the upgrade the old tab is holding up. But
+ * in a real tab the WORKER opened the database first, so the page's open is
+ * queued behind the Worker's blocked upgrade and is never sent a `blocked` of
+ * its own; only the bound answers that one.
+ *
+ * **An open that lands after its answer is closed**, so a refusal leaves no
+ * connection behind to hold up the next upgrade — and the request itself is
+ * left to finish, because IndexedDB has no way to take one back.
+ */
+export function openDbBounded(ms = STORAGE_BOUND_MS): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    let answered = false;
+    const refuse = () => {
+      if (answered) return;
+      answered = true;
+      clearTimeout(timer);
+      reject(new Error(STORAGE_HELD));
+    };
+    const timer = setTimeout(refuse, ms);
+    openDb({ onBlocked: refuse }).then(
+      (db) => {
+        if (answered) {
+          db.close();
+          return;
+        }
+        answered = true;
+        clearTimeout(timer);
+        resolve(db);
+      },
+      (e: unknown) => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * Every game in this browser, as a file.
+ *
+ * **The UNION of the games the store holds and the games the module lists**
+ * (M6.5c2 cycle D, straw poll row 13). A create the store refused — quota, a
+ * private window — is a game this tab's module holds, lists and draws on the
+ * door, with no row in the store; walking the store's ids alone left it out of
+ * the one file that exists to carry everything off the device. The listing is
+ * asked inside the export's Worker budget, so a module that will not answer
+ * costs the listing nothing more than the pairs already did: the store's games
+ * alone, within the one bound.
+ */
 export async function backupEverything(): Promise<string> {
   return withDb(async (db) => {
     const rows = await readAll(db);
@@ -294,18 +377,46 @@ export async function backupEverything(): Promise<string> {
       byId.set(r.id, { ...at, [r.doc]: r.text });
     }
     const deadline = deadlineOf(WORKER_BOUND_MS);
-    const pairs: OutgoingGame[] = [];
-    for (const [id, stored] of byId) {
-      const both = await pairOf(id, stored, deadline);
-      // A game with no table document is not a game — half a pair on disk, from
-      // a write that did not complete. It is left where it is rather than
-      // exported as something a restore would refuse.
-      if (both.table === null) continue;
-      pairs.push({ id, record: both.record, table: both.table, ...revisionOf(known.get(id)) });
+    try {
+      // A listed game with nothing in the store is asked for like any other;
+      // its only copy is the Worker's, and `pairOf` takes that answer whole.
+      for (const id of await listedIds(deadline)) {
+        if (!byId.has(id)) byId.set(id, { record: null, table: null });
+      }
+      const pairs: OutgoingGame[] = [];
+      for (const id of [...byId.keys()].sort()) {
+        const both = await pairOf(id, byId.get(id)!, deadline);
+        // A game with no table document is not a game — half a pair on disk,
+        // from a write that did not complete, or a listed game the Worker no
+        // longer has. It is left where it is rather than exported as something
+        // a restore would refuse.
+        if (both.table === null) continue;
+        pairs.push({ id, record: both.record, table: both.table, ...revisionOf(known.get(id)) });
+      }
+      return buildEnvelope(pairs);
+    } finally {
+      deadline.close();
     }
-    pairs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    return buildEnvelope(pairs);
   });
+}
+
+/** Every game the local host's listing names, page by page, inside the
+ *  export's budget — or as far as the budget reached. A listing the module
+ *  cannot answer is no games: the store's are still exported. */
+async function listedIds(deadline: Deadline): Promise<string[]> {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let before: string | undefined;
+  for (;;) {
+    if (deadline.expired()) return ids;
+    const page = await deadline.within(api.list("mine", before, "local"));
+    if (page === null) return ids;
+    ids.push(...page.games.map((t) => t.id));
+    // A cursor seen before would loop for the rest of the budget.
+    if (page.next === null || seen.has(page.next)) return ids;
+    seen.add(page.next);
+    before = page.next;
+  }
 }
 
 /** What a compatibility row says about a game's revision, or nothing. */
@@ -318,7 +429,8 @@ const revisionOf = (note: CompatNote | undefined) => ({
 export async function backupOne(id: string): Promise<string> {
   return withDb(async (db) => {
     const stored = await readPair(db, id);
-    const both = await pairOf(id, stored, deadlineOf(WORKER_BOUND_MS));
+    const deadline = deadlineOf(WORKER_BOUND_MS);
+    const both = await pairOf(id, stored, deadline).finally(deadline.close);
     if (both.table === null) throw new Error(`there is no game named ${id} on this device`);
     const known = await knownRevisions(db);
     return buildEnvelope([
@@ -494,7 +606,13 @@ export async function listUnplayable(): Promise<UnplayableGame[]> {
  *  TABLE document parses is a row the layer's own listing builds happily, so
  *  the door listed the same game twice: once as playable and once under "Will
  *  not open here", with different controls on each. One game, one row, and the
- *  row that says why it will not open is the true one. */
+ *  row that says why it will not open is the true one.
+ *
+ *  **It trusts every row, and may**: a row is re-derived at every restore of
+ *  its game (`restoreOne`, M6.5c2 cycle D), so one that outlived its reason
+ *  across a `SEMANTICS_REV` bump is dropped by the next restore. **And it
+ *  REJECTS when the store cannot be read**, which the door says in a line of
+ *  its own rather than hiding nothing in silence (straw poll row 100). */
 export async function unplayableIds(): Promise<Set<string>> {
   return withDb(async (db) => {
     return new Set((await readCompat(db)).map((r) => r.id));

@@ -1030,12 +1030,13 @@ mod tests {
         a_rebuild_that_pumps_clears_the_entry("stamp_archive", &stored_table, 200, || stamp_archive_inner("owed"));
     }
 
-    /// `expire`'s arm with NO creator. It reaches a rebuild through one
-    /// document alone: one the layer reads and this module's JSON read of the
-    /// creator cannot — an unknown key holding a number out of `f64`'s range,
-    /// which serde's struct parse skips unread and a `serde_json::Value`
-    /// refuses. The arm then answers its host-written 500, over a game the
-    /// rebuild has just moved. Every other no-creator table is gone or
+    /// `expire`'s arm with NO creator. It reaches a rebuild through one CLASS
+    /// of document (R-C14): a hand-made one whose value the layer's parse
+    /// admits and this module's JSON read of the creator refuses, so the error
+    /// names the wrong reason, and no layer write makes one. The instance here
+    /// is an unknown key holding a number out of `f64`'s range, which serde's
+    /// struct parse skips unread and a `serde_json::Value` refuses. The arm
+    /// then answers its host-written 500, over a game the rebuild has just moved. Every other no-creator table is gone or
     /// unreadable, and changes no record. Mutant: `Scope::Dispatch` passed by
     /// that arm.
     #[test]

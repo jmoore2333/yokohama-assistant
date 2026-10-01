@@ -77,6 +77,13 @@ export function Abandon({
    *  is being offered the two choices (R-6.5b2.13). A THIRD face, not a mode of
    *  the confirm one: what it asks is a different question. */
   const [choices, setChoices] = useState(false);
+  /** The archive REFUSED this game's send (M6.5c2 cycle D, straw poll row
+   *  100): a non-404 answer, which is its settled word about this record, so
+   *  trying again meets it again. The confirm face then offers the same third
+   *  deliberate click the `choices` face does. A send that got NO answer is
+   *  not this — trying again is its remedy — and a 404 is the archive OFF,
+   *  after which the next confirm deletes. */
+  const [refused, setRefused] = useState(false);
   /** What the SERVER keeps, as this browser last heard it — `"unknown"`
    *  included (M6.5b2).
    *
@@ -133,6 +140,7 @@ export function Abandon({
       // `rememberArchiveOff`): the archive is OFF, and the label and the next
       // click read that — the game is still kept, as on every refusal.
       if (e instanceof ApiError && e.status === 404) rememberArchiveOff();
+      else if (e instanceof ApiError) setRefused(true);
       // The server's own sentence where it gave one; this client's where the
       // request never got an answer at all.
       onError(e instanceof ApiError ? e.message : UNREACHABLE);
@@ -145,6 +153,7 @@ export function Abandon({
   const remove = async () => {
     await api.remove(table.id);
     setChoices(false);
+    setRefused(false);
     setConfirming(false);
     await onDone();
   };
@@ -217,7 +226,8 @@ export function Abandon({
 
   /** The other choice, and it is the one with no undo. **A third deliberate
    *  click**: the player has already asked to abandon, confirmed it, read a
-   *  refusal naming what could not be reached, and is now saying it anyway. */
+   *  refusal — what could not be reached, or what the archive would not take
+   *  — and is now saying it anyway. */
   const abandonAnyway = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -299,11 +309,29 @@ export function Abandon({
       >
         confirm abandon
       </button>
+      {/* **After a refused send only** (`refused`): the first answer stands —
+          the game is kept, the server's sentence is on the host's strip, and
+          confirm is still here to try again — and this is the way out that a
+          refusal repeated for ever would otherwise leave no room for. It names
+          the table, as all three of this component's faces do. */}
+      {refused && (
+        <button
+          type="button"
+          className="ghost danger"
+          aria-label={`abandon ${named} without saving`}
+          onClick={() => void abandonAnyway()}
+        >
+          Abandon without saving
+        </button>
+      )}
       <button
         type="button"
         className="ghost"
         aria-label={`cancel abandoning ${named}`}
-        onClick={() => setConfirming(false)}
+        onClick={() => {
+          setRefused(false);
+          setConfirming(false);
+        }}
       >
         cancel
       </button>

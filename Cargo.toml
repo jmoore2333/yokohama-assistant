@@ -27,31 +27,34 @@ authors = ["Jeremy Moore"]
 # release is precached, so bytes there are paid by every visitor on every
 # version.
 #
-# **The figures in this paragraph are the BROWSER module's**, RE-MEASURED at
-# M6.5b2's fix-wave head (2026-09-22), on this machine, `wasm-bindgen`'s
-# output: 2,843,070 B under plain `release`, 1,783,361 B under this profile,
-# and 1,175,223 B / 456,048 B gzipped (`gzip -9`) once
-# `npm run build:wasm` runs `wasm-opt -Oz` over it. The cost is a whole bot turn
-# going 28.6 -> 35.2 ms. **This is the ONE place the figures are measured and
-# every other document cites it** — `web/scripts/wasm-opt.mjs`,
+# **The figures in this paragraph are the BROWSER module's**, read at
+# `4212f6a0` (the M6.5c2 cycle D close, §3) under `wasm-opt` 133,
+# `wasm-bindgen`'s output: the release module reads **1,215,865 B** under this
+# profile once `npm run build:wasm` runs `wasm-opt -Oz` over it, from
+# 1,843,940 B before `wasm-opt` (cycle C's close read 1,197,069 B from
+# 1,814,905 B at `ea4f174d`; the +18,796 B is that cycle's layer code). Its
+# `gzip -9` reading at that close: **472,156 B** (M6.5b2's 456,048 B was the
+# last one before it, at a smaller module). The plain-`release` size and the
+# cost of a whole bot turn (M6.5b2's 2,843,070 B, and 28.6 -> 35.2 ms) were
+# not re-read.
+# **A figure here is a READING, not a constant**: two builds of one source
+# differ by about a hundred bytes. **This is the ONE place the figures are
+# measured and every other document cites it** — `web/scripts/wasm-opt.mjs`,
 # `web/src/precache.ts`, `deploy/RUNBOOK.md` §1 and `CLAUDE.md` all carried
 # M6.5b2's Task 5 readings after its Task 8 grew the module, which is that
-# cycle's whole-branch review's false sentence 6. The M6.5b2 spec's §0.3
-# carries all nine of Task 5's builds, at a head three tasks older; the
-# differences are that growth plus ordinary build variance, which that
-# document also records.
+# cycle's whole-branch review's false sentence 6.
 #
 # **The WORKER module's figures** (`yokohama-worker`, M6.5c2, spec §2.7),
-# measured 2026-09-28 on this workstation (Darwin arm64, macOS 27.0) over the
-# tree of the commit that added this paragraph (its parent `d431dbc1`), off
-# `worker/gen/yokohama_worker_bg.wasm` after `cd worker && npm run
-# build:module` (this profile, then `wasm-opt -Oz`), by `node
+# read at `4212f6a0` (the cycle D close, §3; this workstation, Darwin arm64,
+# macOS 27.0), off `worker/gen/yokohama_worker_bg.wasm` after `cd worker && npm
+# run build:module` (this profile, then `wasm-opt -Oz`), by `node
 # worker/scripts/module-figures.mjs worker/gen/yokohama_worker_bg.wasm`:
-# 1,256,770 B, and 491,409 B gzipped at level 9 (Node's `zlib`, whose header
-# names no file; the `gzip -9` command's names this one, 24 B more). Its
-# linear memory starts at 18 pages (1,152 KiB), 123,040 B of them the
-# module's data, copied in from its 170 data segments (the data SECTION is
-# 124,439 B encoded). Every instance pays that memory — a table object's own,
+# **1,275,056 B** (1,928,529 B before `wasm-opt`; cycle C's close read
+# 1,258,106 B from 1,901,547 B), and 498,330 B gzipped at level 9 (Node's
+# `zlib`, whose header names no file; the `gzip -9` command's names this one,
+# 24 B more). Its linear memory starts at 18 pages (1,152 KiB), 123,648 B of
+# them the module's data, copied in from its 171 data segments (the data
+# SECTION is 125,055 B encoded). A figure here is a READING, not a constant. Every instance pays that memory — a table object's own,
 # and the second it builds for one house copy (`copyOf`,
 # `worker/src/table.ts`). **This is the ONE place those figures are
 # measured**: `copyOf`'s doc and `worker/README.md` §6.3 cite it, as the

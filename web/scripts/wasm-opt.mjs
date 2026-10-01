@@ -1,13 +1,12 @@
 // `wasm-opt -Oz` over the modules `wasm-bindgen` just emitted, in place.
 //
 // **Why this is a build PREREQUISITE and not a nicety** (M6.5b2, R-6.5b2.15).
-// Measured on the workstation, the same pair `Cargo.toml`'s profile comment
-// carries and re-measured with it at the fix-wave head (2026-09-22): with
-// `--profile release-wasm` the module is 1,783,361 B, this pass takes it to
-// 1,175,223 B, and 456,048 B is what a phone actually downloads.
+// The figures (the module before and after this pass, and what a phone
+// downloads) are the root `Cargo.toml`'s `release-wasm` comment; read them
+// there, never here.
 // That is the single largest file in the release and the one a cold start
 // compiles before anything is playable, so a build that quietly skipped the
-// pass would ship a module 53% larger than the one every recorded figure and
+// pass would ship a module far larger than the one every recorded figure and
 // every `npm run test:wasm` replay was taken on.
 //
 // So an absent `wasm-opt` is a REFUSAL that names the package to install, and

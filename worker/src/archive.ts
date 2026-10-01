@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
-import { Instance, pinnedTo, type Replied } from "./module";
+import { Instance, pinnedTo, readReply, type Replied } from "./module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
 import { errorBody, log, respond } from "./respond";
 import { forwardedCaller } from "./table";
@@ -114,9 +114,11 @@ export class Archive extends DurableObject<Env> {
    * setting after it) — for the second dispatch, after `receipt`'s outcome is
    * installed as its plan's receipt — under ONE `guarded`. A trap is the
    * archive's trap 500. `init`'s refusal, thrown as its sentence
-   * (`Instance.get`), is the 500 that carries it: only the first dispatch can
-   * meet it, since the second runs on the module the first built, so a string
-   * the second throws — a receipt the module refused — is thrown on.
+   * (`Instance.get`), is the 500 that carries it — unless it was the CALLER
+   * that `init` refused (`callerRefused`), which is the layer's 401: only the
+   * first dispatch can meet it, since the second runs on the module the first
+   * built, so a string the second throws — a receipt the module refused — is
+   * thrown on.
    */
   private dispatch(
     id: string | undefined,
@@ -141,13 +143,39 @@ export class Archive extends DurableObject<Env> {
     } catch (e) {
       if (typeof e !== "string" || receipt !== undefined) throw e;
       log("init-refused", { id, error: e });
-      return respond(500, errorBody(e));
+      return this.callerRefused(incoming.user) ?? respond(500, errorBody(e));
     }
     if ("trapped" in done) {
       log("trap", { id, call: stage, error: done.trapped });
       return respond(500, errorBody(TRAP));
     }
     return done.ok;
+  }
+
+  /**
+   * **A caller the door refuses is the layer's 401, as on the NAS** (M6.5c2
+   * cycle D, straw poll row 8; R-C10 fixed). Under `open` a claim is held only
+   * to what a header can carry (spec §2.1), so a claim the key grammar refuses
+   * — `..` — still names an archive object, whose `init` refuses it as the
+   * object's caller. The NAS refuses the same request before any route, with
+   * the identity 401. So when `init` refuses, the caller is asked of a module
+   * built with NO caller: the module's own `identity` answers the layer's
+   * 401 body for that caller — the very one its `dispatch` would write — and
+   * that is the answer. Anything else, a 200 among it, means `init` refused
+   * for another reason, and its 500 stands. A trap, or a throw, while asking
+   * is `undefined` too: the 500 is still the truthful answer.
+   *
+   * The module is built only on this refusal and thrown away after it.
+   */
+  private callerRefused(user: string | undefined): Response | undefined {
+    try {
+      const judge = new Instance(moduleConfig(this.env, null));
+      const done = judge.guarded((mod) => readReply(mod.identity(user)));
+      if ("trapped" in done || done.ok.status !== 401) return undefined;
+      return respond(401, done.ok.body);
+    } catch {
+      return undefined;
+    }
   }
 }
 

@@ -111,6 +111,20 @@ async function owedOf(stub: DurableObjectStub<Table>): Promise<ArchiveOwed | und
   return rows[0] === undefined ? undefined : (JSON.parse(rows[0].v) as ArchiveOwed);
 }
 
+/** The owed save's gate (`not_before`, R-D6) moved one millisecond into the
+ *  past: its rung has passed. An edit of the row's TEXT, never a parse and
+ *  re-serialization — the plan inside it carries a record. */
+async function rungPassed(stub: DurableObjectStub<Table>): Promise<void> {
+  const gate = (await owedOf(stub))?.not_before;
+  if (gate === undefined) throw new Error("premise: a save is owed, and a failure has gated it");
+  await runInDurableObject(stub, (_t, state) => {
+    const sql = state.storage.sql;
+    const [row] = sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'archive_owed'").toArray();
+    const moved = replaceOnce(row!.v, `"not_before":${gate}`, `"not_before":${Date.now() - 1}`);
+    state.storage.transactionSync(() => sql.exec("UPDATE meta SET v = ? WHERE k = 'archive_owed'", moved));
+  });
+}
+
 /** Every reading P-2 hands out, ticking one second each from `from`. */
 function ticking(from: number): { readings: number[]; restore(): void } {
   const readings: number[] = [];
@@ -524,6 +538,100 @@ describe("game over (spec §2.6)", () => {
       expect(await bucketText(recordKey)).toBe(await docOf(stub, "record"));
     } finally {
       ttl.restore();
+    }
+  });
+
+  // **An outage costs a request a read and nothing else** (R-D6, R-6.5c2.30's
+  // "a short backoff after a failure"; Review Focus 3). R2 is down: game
+  // over's first attempt, after the reply, fails and is counted, and the
+  // failure sets the owed save's gate (`not_before`) at the rung its alarm is
+  // armed for. TWENTY requests inside that rung each find the save owed and
+  // put NOTHING: no line, no count, the owed row as it was. The alarm — run
+  // at once, so still inside the rung — ignores the gate and puts once; it
+  // fails, and the gate moves to the second rung. R2 back, the alarm lands the
+  // save and stamps, and a request after that finds nothing owed and puts
+  // nothing. On the one-person table, for the reason the cell above gives: the
+  // owed-game-over pair's copy never reached the house, so the first alarm's
+  // recopy would put a slot in motion, and its 30 s retry — due first — is
+  // where `retryAt` would set the second gate (measured). Mutants: the gate
+  // ignored on a request (a put and a failure batch per request); the gate
+  // honoured on the alarm (no put at the rung); the gate set at game over's
+  // first attempt (no put after the reply); a failure that sets no gate, or
+  // one that moves it no further.
+  it("an owed save is attempted once per rung, not once per request, while R2 is down (Review Focus 3)", async () => {
+    const id = "outage-seat";
+    const stub = await oneSeatGame(id);
+    const recordKey = `test/rev7/over/${id}.json`;
+    const input = (line: string) => call(stub, WIRE_RED, "POST", `/api/games/${id}/input`, JSON.stringify({ line }));
+    const read = () => call(stub, WIRE_RED, "GET", `/api/games/${id}/table`);
+    expect((await input("undo")).status, "premise: the one person's undo").toBe(200);
+    await settle(stub);
+    let down = true;
+    let puts = 0;
+    const swapped = await swapBucket(stub, (real, key, value, options) => {
+      puts += 1;
+      return down ? Promise.reject(new Error(R2_UNREACHABLE)) : real.put(key, value, options);
+    });
+    try {
+      const failedFrom = Date.now();
+      const first = await logsDuring(async () => {
+        expect((await input("1")).status, "premise: the last move ends the game again").toBe(200);
+        await settle(stub);
+      });
+      const failedTo = Date.now();
+      expect(archiveLines(first.lines), "premise: game over's first attempt, after the reply, failed").toEqual([
+        overLine("failed", id, recordKey, 0, R2_UNREACHABLE),
+      ]);
+      expect(puts, "premise: that attempt put once").toBe(1);
+      const owed = await owedOf(stub);
+      expect(owed?.attempt, "the failure is counted").toBe(1);
+
+      const burst = await logsDuring(async () => {
+        for (let n = 0; n < 20; n++) {
+          expect((await read()).status).toBe(200);
+          await settle(stub);
+        }
+      });
+      expect(puts, "twenty requests inside the rung put nothing").toBe(1);
+      expect(archiveLines(burst.lines), "and log no outcome").toEqual([]);
+      expect(await owedOf(stub), "the owed row as it was").toEqual(owed);
+      expect(owed?.not_before, "the failure set the gate at the first rung").toBeGreaterThanOrEqual(failedFrom + 30_000);
+      expect(owed?.not_before).toBeLessThanOrEqual(failedTo + 30_000);
+      expect(Date.now(), "premise: the twenty ran inside the rung").toBeLessThan(owed!.not_before!);
+
+      const before = Date.now();
+      const rung = await logsDuring(async () => {
+        expect(await runDurableObjectAlarm(stub)).toBe(true);
+        await settle(stub);
+      });
+      const after = Date.now();
+      expect(after, "premise: the alarm ran inside the rung too").toBeLessThan(owed!.not_before!);
+      expect(archiveLines(rung.lines), "the alarm ignores the gate").toEqual([overLine("failed", id, recordKey, 1, R2_UNREACHABLE)]);
+      expect(puts, "and puts once").toBe(2);
+      const again = await owedOf(stub);
+      expect(again?.attempt, "the second failure is counted").toBe(2);
+      expect(again?.not_before, "and moves the gate to the second rung").toBeGreaterThanOrEqual(before + 120_000);
+      expect(again?.not_before).toBeLessThanOrEqual(after + 120_000);
+
+      down = false;
+      const landed = await logsDuring(async () => {
+        expect(await runDurableObjectAlarm(stub)).toBe(true);
+        await settle(stub);
+      });
+      expect(archiveLines(landed.lines), "R2 back: the alarm lands the save and stamps").toEqual([
+        overLine("landed", id, recordKey, 2),
+        stampLine(id, recordKey, owed!.reading, true, true),
+      ]);
+      expect(puts, "premise: the table's put and the record's").toBe(4);
+      const later = await logsDuring(async () => {
+        expect((await read()).status).toBe(200);
+        await settle(stub);
+      });
+      expect(await owedOf(stub), "a request after the landed put finds nothing owed").toBeUndefined();
+      expect([puts, archiveLines(later.lines)], "and puts nothing").toEqual([4, []]);
+    } finally {
+      await swapped.restore();
+      await settle(stub);
     }
   });
 
@@ -941,11 +1049,12 @@ describe("game over (spec §2.6)", () => {
   // rule). The alarm's upload lands; the wake's rebuild and the stamp's are
   // both refused by the layer's foreign-bot rule, a 409. The shell logs
   // `stamp-refused {id, status}`, throws nothing, and keeps the save owed —
-  // counted, its alarm re-armed to the next rung: final-for-now, bounded by
+  // counted, its alarm re-armed to the next rung and its gate set there, so a
+  // request before it re-stamps nothing (R-D6): final-for-now, bounded by
   // the creator's Abandon or the table's expiry, which never rebuild (spec
   // §2.4; the layer's own cell holds the Abandon). Mutants: the 409 body
   // handed to `parseStamp` (a throw inside the alarm); the refusal read as a
-  // settled stamp (the save cleared).
+  // settled stamp (the save cleared); the retry left ungated.
   it("a stamp the layer refuses is logged and retried on the backoff, and nothing throws inside the alarm", async () => {
     const id = "go-foreign";
     const stub = await owedGameOver(id);
@@ -975,7 +1084,14 @@ describe("game over (spec §2.6)", () => {
     );
     expect(archiveLines(ran.lines), "the upload landed, and no stamp settled").toEqual([overLine("landed", id, recordKey, 1)]);
     expect(ran.lines, "the refusal logged").toContainEqual({ event: "stamp-refused", id, status: 409 });
-    expect(await owedOf(stub), "still owed, one more failure counted").toEqual({ ...owed, attempt: 2 });
+    const still = await owedOf(stub);
+    expect(still, "still owed, one more failure counted").toEqual({ ...owed, attempt: 2, not_before: expect.any(Number) });
+    // Gated at the retry its batch armed (R-D6, `retryAt`): the rung after two
+    // failures, 2 min, or sooner when something else is due first — here the
+    // slot the alarm's recopy put in motion, whose retry is 30 s, unless its
+    // acknowledgement came before the stamp's batch.
+    expect(still!.not_before, "gated at its retry").toBeGreaterThanOrEqual(before + 30_000);
+    expect(still!.not_before).toBeLessThanOrEqual(after + 120_000);
     expect(archivedAt(await docOf(stub, "table")), "nothing stamped").toBeNull();
     const alarm = await alarmOf(stub);
     expect(alarm, "re-armed at the rung after two failures").toBeGreaterThanOrEqual(before + 120_000);
@@ -1128,9 +1244,14 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
   // is KEPT while it reads `off`: the alarm logs it and neither uploads nor
   // re-arms for it — it re-arms to the table's expiry, the one deadline still
   // kept while off (spec §2.6: "at the latest its expiry") — and a request
-  // retries nothing. Switched back on, the next request resumes it. Mutants:
-  // the owed save retried while off; the alarm re-armed for it while off; a
-  // request that never resumes it.
+  // retries nothing. Switched back on, the next request resumes it. The gate
+  // the first failure set (R-D6; inside it a request uploads nothing — the
+  // outage cell above) is moved into the past BEFORE the off period, a
+  // premise, since the cell runs in well under 30 s: so the switch, and not
+  // the gate, is what stops the off period's request, and nothing stands
+  // between the switch coming back on and the resumption. Mutants: the owed
+  // save retried while off; the alarm re-armed for it while off; a request
+  // that never resumes it, or a gate that never opens to a request.
   it("an owed save is kept, not retried, while off (battery 27), and resumes at the next request once on", async () => {
     const id = "off-owed";
     const stub = await owedGameOver(id);
@@ -1144,6 +1265,7 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
       await failing.restore();
     }
     const failedTo = Date.now();
+    await rungPassed(stub);
     const owed = await owedOf(stub);
     expect(owed?.attempt, "premise: a save is owed").toBe(1);
     const retry = await alarmOf(stub);

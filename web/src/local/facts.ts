@@ -28,20 +28,19 @@ export type ArchiveKind = "off" | "dir" | "r2";
 
 /** What a screen asks about the source it is talking to. */
 export interface DeploymentFacts {
-  /** How a change ARRIVES: the stream, the held request, the socket (the
-   *  Worker's, M6.5c), or — locally — nothing at all, because the bot's
-   *  trailing run returns inside the reply and there is nobody else at the
-   *  table to wait for. */
-  signal: "sse" | "held" | "ws" | "none";
+  /** How a change ARRIVES: the stream, the socket (the Worker's, M6.5c), or —
+   *  locally — nothing at all, because the bot's trailing run returns inside
+   *  the reply and there is nobody else at the table to wait for. */
+  signal: "sse" | "ws" | "none";
   archive: ArchiveKind;
   lobbyChat: boolean;
   chatText: number;
 }
 
 /** The SERVER's record, whose signal is NARROWER: a server always serves one
- *  of its three transports, and `signalKind()`'s union is what `usePolled`'s
- *  held and socket arms branch on. `"none"` is a local fact and is never
- *  reachable here — which is a type and not a comment.
+ *  of its two transports, and `signalKind()`'s union is what `usePolled`'s
+ *  socket arm branches on. `"none"` is a local fact and is never reachable
+ *  here — which is a type and not a comment.
  *
  *  **Two fields the local host has no answer to** (M6.5b2): which door this
  *  deployment reads, and whether it serves multiplayer at all. Both are
@@ -49,7 +48,7 @@ export interface DeploymentFacts {
  *  — a local game is played by this browser and has no door and no second
  *  seat. */
 export interface ServerFacts extends DeploymentFacts {
-  signal: "sse" | "held" | "ws";
+  signal: "sse" | "ws";
   /** `Health.identity` — the door's name. Empty until a health read has landed,
    *  which is a THIRD state and not a mode: nothing has been asked. */
   identity: string;
@@ -143,8 +142,9 @@ function sane(parsed: Partial<ServerFacts> | undefined): ServerFacts {
   const str = (v: unknown, d: string) => (typeof v === "string" ? v : d);
   const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   return {
-    signal:
-      p.signal === "held" || p.signal === "sse" || p.signal === "ws" ? p.signal : DEFAULTS.signal,
+    // Any other value reads as the default — the retired `"held"` among them,
+    // which no host ever reported (M6.5c2 cycle D, R-D5).
+    signal: p.signal === "sse" || p.signal === "ws" ? p.signal : DEFAULTS.signal,
     archive: ARCHIVE_KINDS.includes(p.archive as string)
       ? (p.archive as ServerFacts["archive"])
       : DEFAULTS.archive,

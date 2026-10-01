@@ -124,8 +124,7 @@ on plain `--release`) for `wasm32-unknown-unknown`, reading it from
 `target/wasm32-unknown-unknown/release-wasm/`, and runs `wasm-bindgen` twice:
 the web glue INTO `web/src/local/wasm/` (gitignored; Vite bundles it and emits
 the module as a hashed asset, `web/dist/assets/yokohama_wasm_bg-<hash>.wasm`,
-**1,175,223 B raw / 456,048 B gzip since M6.5b2** — it was ~2.8 MB raw / ~760 KB
-gzip — served `immutable` since the M6.5b fix wave; the figures are measured in
+served `immutable` since the M6.5b fix wave; its figures are measured in
 ONE place, the `release-wasm` comment in the root `Cargo.toml`, and re-measured
 at each release) and the Node glue into `web/wasm-node/` for
 `npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
@@ -208,8 +207,8 @@ POST /build?remote=http://<workstation-lan-ip>:8899/ctx.tar.gz&t=yokohama-web:<t
 ```
 
 Resulting image: **19 MB**. Stop the file server as soon as the build answers (`kill %1`), then `rm -rf "$CTX"`.
-`<tag>` names the release and the cycle: the M6.5c2 close built `0.6.0-m6.5c2` (§3.17), and the
-first build, recorded above, was `0.5.0`.
+`<tag>` names the release and the cycle: the M6.5c2 close built `0.6.0-m6.5c2` (§3.17), cycle D's close
+`0.6.0-m6.5c2d` (§3.18), and the first build, recorded above, was `0.5.0`.
 
 **`COPYFILE_DISABLE=1` is on the `tar` line since §3.16.** Without it, macOS
 `tar` writes an AppleDouble `._name` entry beside every file that carries an
@@ -2201,6 +2200,182 @@ exists to mask — a sentence on screen, not a refusal. The browser store did no
 
 ---
 
+### 3.18 M6.5c2 cycle D is live — the fifteenth deployment, 2026-09-29 (a record, not a plan)
+
+From `4212f6a0`, cycle D's reviewed head on `web-room-m6.5c2d` (stacked on cycle C over A and B; the
+record of record is `docs/plans/2026-09-29-web-frontend-m6.5c2d-close.md`). The same `0.6.0`, the same
+`Env` line as §3.17 (`cf-access`, the archive on), the same transport (`sse`) and archive (`dir`). What
+cycle D brings to this host: the layer's six defects and the NAS server's robustness (a poisoned game
+lock evicts and rebuilds, the locks pruned, the `events` route reading once and off the executor, the
+hot-seat fence on the second take, the chat edges, the archive's marker published by hard link); the
+seat-email roster off the wire (R-6.5c2.35); chat delete and moderation as tombstones with a revision
+counter (R-D4) and the archive route's 1 MiB cap; **the held-request arm RETIRED (R-D5) — `GET
+…/events?wait=` answers at once on this host**; the house frame's counters SEEDED from the house chat
+document at start (the whole-branch review's C1), so the lobby's chat panel learns of a post after a
+restart; the client's defects by screen; backup and restore bounded and version-first; and **the
+door's project link, `YOKOHAMA_PROJECT_URL`, the first release built with one**
+(`https://github.com/jmoore2333/yokohama-assistant/`, baked into the bundle at `build:client`).
+
+- **Build:** the musl cross-compile per §1 read **`Finished release in 5.06s`** — only `yokohama-web`
+  recompiled (the fenced crates are byte-identical to cycle C's, so their artifacts were cached). The
+  binary is **6,818,656 bytes**, `ELF 64-bit LSB pie executable, x86-64, static-pie linked`, sha256
+  `e0ca3801ccf3e23296d74a573cbc5e9d0ad5ea96ef68175c32781f72a584edd5` — **+71,216 B over §3.17's
+  6,747,440**, the cycle's layer code.
+- **The client build was `npm run build` with `YOKOHAMA_PROJECT_URL` set**, the RELEASE module, run
+  before anything else touched `web/dist` (the close's sequence had left the debug module there).
+  §1's preflight `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js` read **0**; the link is in
+  the bundle (`grep -c jmoore2333/yokohama-assistant dist/assets/index-*.js` → 1). **`wasm-opt version
+  133`** read **1,843,940 → 1,215,865 B (−34.1%)** over both modules — +18,796 B over §3.17's
+  1,197,069, the cycle's layer code in the browser module. What moved, against §3.17:
+
+  | File | §3.17 | Now |
+  |---|---|---|
+  | bundle | `index-BdDFy9mU.js` 387,210 B | `index-oCCrOYjf.js` **394,557 B** (+7,347) |
+  | stylesheet | `index-DcjjNWqH.css` 61,526 B | `index-BO2LRdmb.css` **61,534 B** (+8) |
+  | local Worker | `worker-DHOWSAOP.js` 15,731 B | `worker-C-xFsyou.js` **15,681 B** (−50) |
+  | module | `yokohama_wasm_bg-Ciy339-r.wasm` 1,197,069 B | `yokohama_wasm_bg-OvdimP7Y.wasm` **1,215,865 B** (+18,796) |
+  | `sw.js` | 29,045 B | **29,045 B** (the same generator; a different name inside) |
+
+  Unchanged: both fonts, both OFL texts, `manifest.webmanifest`, the 131 art files.
+- **The precache generator's four lines, verbatim:**
+
+  ```
+  precache: 153 entries, 10,036,763 B (release total ceiling 11,900,000 B)
+  precache: module 1,215,865 B at /assets/yokohama_wasm_bg-OvdimP7Y.wasm (release module ceiling 1,400,000 B; release 1,400,000, debug 3,200,000)
+  precache: module 1,215,865 · bundle 471,772 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327
+  precache: yokohama-release-d97c124af854a3ff -> dist/sw.js (29,045 B), 131 art files
+  ```
+
+  The +26,101 B over §3.17's 10,010,662 is the four rows above, to the byte. **This is the same
+  `web/dist` the Worker's twenty-fourth deployment ships** (`worker/RUNBOOK.md` §18): one build, both
+  hosts, one release name.
+- **Delivery:** the context tarball, cut with **`COPYFILE_DISABLE=1`** at **15:44:48Z** from a
+  directory of its own under the session's scratchpad (§2's shape; the build and the swap each ONE
+  script this time — the close's `nas-build.sh` and `nas-swap.sh`, in its gitignored ledger):
+  **11,372,251 B** (+33,761 over §3.17's), sha256
+  `6f3dc910b722203781fab6d9363bde9bc29c03511b61ad10d394359b7295931a`, **174 entries, 0 `._`
+  entries**. Served by `python3 -m http.server 8899 --bind 192.168.1.221`; **before the POST,
+  `/.dev.vars` answered 404**, the listing named `ctx.tar.gz` alone, and `HEAD /ctx.tar.gz` read 200
+  with the size. The NAS (192.168.1.173) fetched it ONCE at **15:44:50Z**. One slip, recorded: the
+  script's first `kill` of the file server had not taken when its own post-kill probe ran — the probe
+  fetched the tarball from this workstation — and a second kill did; 8899 read 0 listeners and
+  connection refused after, at 15:47Z.
+- **Image:** `yokohama-web:0.6.0-m6.5c2d`, Id
+  `sha256:cb3b437c84607f69d1a5aac3bea28b559a67a6c5f5d8ded5a039419df3647152`, **24,769,517 B**,
+  created **15:45:00.30Z** through
+  `POST /build?remote=http://192.168.1.221:8899/ctx.tar.gz&t=yokohama-web:0.6.0-m6.5c2d&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2; the proxy answered 200 after 12 s and carries no build stream, so the image
+  was READ back). It is **97,317 B larger than §3.17's 24,672,200**, and the layers say where:
+  - the binary layer is **6,818,656 B**, NEW (+71,216);
+  - the dist layer is **2,611,481 B**, up from 2,585,380 by exactly the precache's +26,101;
+  - the art layer is **7,454,327 B**, unchanged and shared (the 131 files).
+
+  The base is `alpine:3.21` (3.21.7). **Twenty-two tags now sit on the NAS**, `yokohama-web:0.5.0`
+  through `0.6.0-m6.5c2d`.
+- **Swap, as ONE script** (straw-poll row 135; `GET /api/games?scope=playing` read **0 tables being
+  played** first): `POST /containers/yokohama-web/stop` on the `0.6.0-m6.5c2` container
+  (`10feaa56a4fe…`, created 2026-09-28T16:54:48Z). The old process exited at **15:46:48.774Z**. Then
+  `DELETE /containers/yokohama-web`, then `POST /containers/create?name=yokohama-web` with §3's body
+  — **`Env` exactly `["YOKOHAMA_WEB_IDENTITY=cf-access", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive"]`**
+  (unchanged since §3.17; `YOKOHAMA_WEB_MULTIPLAYER` unset), the two labels (`maintainer`, `purpose`),
+  `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume `yokohama-web-data` →
+  `/data` — then `POST …/start`. That made container Id
+  `5672839f06b74b4feaf4610702af2b1a2b60ad67099ff35dfa7b49cc9e9a2e41`, created **15:46:49.33Z**,
+  started **15:46:50.18Z**. Its log reads `yokohama-web listening on http://0.0.0.0:8080` at
+  **15:46:50.277Z**, and it was `healthy` on the first probe. The same address on `cf-internal`
+  (**172.21.0.4**); cloudflared, DNS and Access were not touched. **Downtime, old exit to new listening
+  line, both off Docker: 1.50 s; stop to the listening line, seen from the workstation: 2.18 s** —
+  against §3.17's 25.3 s over four separate proxy round trips and §3.16's 8.45 s: the one-script swap
+  is what the row asked for.
+
+#### Verified through the tunnel
+
+Taken from the WARP-enrolled workstation at **15:46:55Z** with a browser User-Agent (§3.2's recipe),
+5 s after the listening line, every reading on the first try:
+
+```
+GET /api/health          200  {"server_version":"0.6.0","semantics_rev":7,
+                               "rules_hash":"d85445c479cb1ead","identity":"cf-access",
+                               "signal":"sse","archive":"dir","lobby_chat":true,
+                               "chat_keep":500,"chat_text":500,"multiplayer":true}
+GET /api/me              200  {"mode":"cf-access","user":"<the owner's address>"}
+GET /api/games?scope=mine 200 {"games":[…one table…],"next":…}: sim-54b139c22c136cb0 · playing · over false · bot null
+GET /enter               302  location: https://yokohama-nas.moore.nyc/#/lobby
+GET /                    200  serving index-oCCrOYjf.js and index-BO2LRdmb.css
+GET /sw.js               200  content-length: 29045 · cache-control: no-store
+                               · cache name off the wire: yokohama-release-d97c124af854a3ff
+                               · byte-equal to web/dist/sw.js
+GET /assets/yokohama_wasm_bg-OvdimP7Y.wasm
+                         200  application/wasm · content-length: 1215865
+GET /art/areas/Church.webp
+                         200  image/webp · content-length: 51118
+```
+
+**`/api/me` names the owner under `cf-access`** — the load-bearing reading (§3.2); no STOP, no rollback.
+The negative half (the `yokohama-worker` credential reading `user: null` and 401 on `/api/games`) was
+NOT re-read at this deployment; §3.17's reading of it stands for the same door on the same tunnel.
+
+#### The first game on this host's `cf-access` arm (the close's E.6)
+
+Played 15:48Z → 15:50Z through Claude-in-Chrome in the owner's own signed-in browser (WARP), so the
+identity was Access's and no header was forged. **The lobby** read "Playing as" + the Access identity
+beside "change name"; "Your tables" listed C's one table (`you · your move`, `the bot`, Play), no open
+and no played tables, the lobby chat folded. **New table** (`#/new`): 2 players, Red = You, Blue = The
+bot (`V4`, "offered at two players only"), first player Red, no password, named `nas-e6-cycle-d` →
+**Deal** → the set table `#/t/sim-d82f17b0a0549316`: the ten areas with their site cards and tokens,
+the port, and "Choose your card" with Red's two orders face up (032 English, keep score 31 · 016
+American, keep score 46) and the bot's two face DOWN — the owner's-edition withholding, live → the
+American kept → the game screen (`sim · sim-d82f17b0a0549316 · saved`). The area art drew DARK for the
+first second or two, then every tile loaded — the art is served, not precached, on a first visit over
+the tunnel. **Four moves of the owner's** — `End additional-action phase` (the only option), `Place no
+assistants`, `Return President to hand (recover no assistants)`, `End additional-action phase` — and
+then **the bot's turn WALKED on the table** (`Blue is playing · step N of 9`, 2 s a step): assistants
+to Laboratory, Port A and Customs; the President to the Laboratory (fee 2 yen); University acquired;
+the 5-Power token and the building skipped; University used. Turn 3, Red to move; the table LEFT on
+this host as the owner's. The browser console: no errors.
+
+**Off the volume** (Portainer's archive read of `/data/games` and `/data/archive` at 15:50:17Z, as
+counts and fields, never an address): `/data/games` **14 files** — 10 records, 2 table documents, 2
+chat documents (§3.17 read 12; the game's record and table document are the two new); `/data/archive`
+6 files (one pair under `rev7/over/`, pairs under `rev7/abandoned/` and one under
+`browser/<a .test caller>/rev7/abandoned/`). **The new table document**: schema **3**, `playing`,
+seats `[human, bot]` (one seat with a user), `keeps [2, null]`, no lock, `archived_at` null, and its
+mirror **`turn = {to_move: 0, over: false, winner: null, bot: {controller: "v4-step9-draft1", version:
+2, params: {b: 4, eval_impl: 3, k: 1, m: 8, weights: 6957643967275421640}}}`** — the mirror's `bot`
+on a document for the first time on this host (§3.17's "does NOT claim" closed). **The new record**:
+`engine_version 0.6.0`, `semantics_rev 7`, **`run.run_id = "web/server"`**, `run.seats` a `human`
+and a `v4-step9-draft1` (version 2, the same params, an agent seed, `observation: view`), **12
+events** (the owner's four and the bot's eight), a `terminal_digest`. C's table `sim-54b139c22c136cb0`
+beside it, unchanged: schema 2, a mirror without `bot`, its record at `engine_version 0.5.0` with a
+`run` that has no `run_id` and one event — §2.4's "dealt before the deploy" case.
+
+**Memory** (`GET /containers/yokohama-web/stats?stream=false`, 15:47:49Z, before the game): usage
+**11,059,200 B** (rss 380,928 B, page cache 10,678,272 B), 4 CPUs online.
+
+#### Rollback
+
+`yokohama-web:0.6.0-m6.5c2` stays on the NAS. Recreate from it with §3's body and **the same `Env`
+line**. **Read §5's cycle-D bullet first**: an image from before cycle D answers 500 on every chat read
+and post of a chat document that holds a TOMBSTONE, until the roll forward. At this deployment no
+message has been deleted on this host — the two chat documents on the volume predate cycle D — so a
+rollback today meets no tombstone; the first delete on this host changes that. `TABLE_SCHEMA` stays
+3, the record format is the engine's at `SEMANTICS_REV` 7, and the browser store did not move.
+
+#### What this deployment does NOT claim
+
+- **The game was four moves and one bot turn, not a whole game**: no game over, no archive round trip
+  through this container (the table is still `playing`), no `archived_at` set by it.
+- **The update path was not exercised live**: the owner's browser held `605fe69f17100c46`'s service
+  worker and now loads `d97c124af854a3ff`, but the door (`#/`) — where the offer renders — was not
+  opened; the lobby was reached by its hash directly.
+- **The negative half of §3.2 was not re-read** (above).
+- **No headed walk beyond the lobby, the set table and the game screen**, and no phone (E's).
+- **The retired held arm was not read on this host**: `GET …/events?wait=25` answering at once is
+  proven by the layer's cells (Task 8), not by a request to this container.
+- **The edge's `index.html` rewrite (§3.16's finding) was not re-read**; nothing changed on the zone.
+
+---
+
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 
 **This section described an upgrade path. It is now the record of why that path was deleted**, by
@@ -2291,6 +2466,27 @@ The files' last versions are in history: `git show 87d30a14:deploy/worker/src/in
   refuses `open`: each exits 1 naming the value it was given. `cf-access` reads
   the same on both, so a rollback from the M6.5c2 close's image to
   `0.5.0-m6.5b2.1` keeps its `Env` line as it is. *(Added 2026-09-28, M6.5c2.)*
+- **Across M6.5c2 cycle D, a chat with a DELETED message stops answering on the
+  older binary.** Cycle D deletes a message as a TOMBSTONE — its number, author
+  and clock stay, its `text` becomes `""` and it carries `"deleted": true` — and
+  every chat document it writes carries a revision, `rev`. An image from before
+  it (`0.6.0-m6.5c2` and earlier) does NOT show the tombstone as an empty
+  message: it ignores the two new keys (neither `ChatDoc` nor `Message` is
+  `deny_unknown_fields`), then refuses the whole document on its shape rule,
+  where an empty text is malformed. At that table — or at the house, for the
+  lobby's chat — every chat read AND post answers 500 with `"<id>"'s chat
+  document is malformed: message N's text is empty or carries a control
+  character`. Nothing else goes: the game, its events (whose chat count is read
+  without the shape rule), the table and the lobby's listing all answer, and the
+  stored document is left as it was. **It does not heal on the older binary**:
+  the trim that would drop the tombstone runs only on an append, and the append
+  reads the document first. The chat is down there until the newer image is
+  back, which reads the document whole, or the document is edited by hand. A
+  chat with no deleted message reads and appends as before, except that the
+  older binary's append rewrites it without `rev`; rolled forward, its revision
+  reads 0 and moves from there (`#[serde(default)]`). Measured on the layer at
+  `014433df` over documents the cycle D layer wrote. *(Added 2026-09-29, M6.5c2
+  cycle D.)*
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.
