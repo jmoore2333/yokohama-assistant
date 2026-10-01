@@ -5,13 +5,32 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
+import { CLAIMED_USER_KEY } from "./api";
 import { loadSections } from "./sections";
-import { gate, renderApp, stubApi } from "./test/harness";
+import {
+  gameMenu,
+  gamesNamed,
+  gate,
+  renderApp,
+  signedOutReply,
+  stubApi,
+  type ApiCall,
+  type Reply,
+} from "./test/harness";
+import { VISIBLE_MS } from "./signal";
 import { wire } from "./wire/contract";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
   screen.getByRole("button", { name: new RegExp(`^A${String(area).padStart(2, "0")} `) });
+
+/** The first answer in the deck, whatever the prompt's rows happen to say.
+ *
+ *  A query by CLASS, because the cells that use it are about what the click
+ *  SENDS rather than about which move it was: matching on the row's own words
+ *  would tie them to a fixture's wording for no gain. */
+const firstOptionButton = () =>
+  document.querySelector<HTMLButtonElement>("button.option:not([disabled])")!;
 
 describe("the in-flight guard", () => {
   // **The defect, exactly.** The board tile was the one mutation control with
@@ -117,7 +136,7 @@ describe("the seed on screen", () => {
     expect(screen.queryByText(/seed/i)).not.toBeInTheDocument();
     // The banner is still there and still names the game — the assertion above
     // would pass on a blank page without this.
-    expect(screen.getByText(new RegExp(wire.options.id))).toBeInTheDocument();
+    expect(gameMenu()).toHaveTextContent(wire.options.id);
   });
 });
 
@@ -447,7 +466,7 @@ describe("a reply for a game you left", () => {
     const reply = gate<unknown>();
     const stub = await renderApp(wire.optionsMany, (call) => {
       if (call.method === "GET" && call.path.endsWith("/api/games"))
-        return [wire.optionsMany.id, "sim-other"];
+        return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other"))
         return switchGet.promise;
       if (call.path.endsWith("/input")) return reply.promise;
@@ -456,7 +475,7 @@ describe("a reply for a game you left", () => {
     const user = userEvent.setup();
 
     // The switch goes out and is HELD, so it is still in flight for the move.
-    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    await user.click(gameMenu());
     await user.click(await screen.findByRole("button", { name: "sim-other" }));
 
     const state = wire.optionsMany;
@@ -489,12 +508,12 @@ describe("a reply for a game you left", () => {
     const held = gate<unknown>();
     await renderApp(wire.optionsMany, (call) => {
       if (call.method === "GET" && call.path.endsWith("/api/games"))
-        return [wire.optionsMany.id, "sim-other"];
+        return gamesNamed(wire.optionsMany.id, "sim-other");
       if (call.path.endsWith("/input")) return held.promise;
       return undefined;
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.optionsMany.id)));
+    await user.click(gameMenu());
     const row = await screen.findByRole("button", { name: "sim-other" });
     expect(row).toBeEnabled();
 
@@ -922,7 +941,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReply();
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(before, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [before.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
       const m = /\/at\/(\d+)$/.exec(call.path);
@@ -939,7 +959,7 @@ describe("the turn playback", () => {
       expect(screen.getByText(/is playing · step 1 of 3/)).toBeInTheDocument();
       expect(boardPieces()).toHaveLength(2);
 
-      click(screen.getByText(new RegExp(before.id)));
+      click(gameMenu());
       await settle();
       click(screen.getByRole("button", { name: "sim-other" }));
       await settle();
@@ -1035,14 +1055,146 @@ describe("the turn playback", () => {
 //
 // The cell drives the whole flow rather than the storage, because storage was
 // the half that was already right.
-describe("the boards a player switches during setup", () => {
-  it("stay switched when the game opens", async () => {
+// ---- opening a table (M6.1 §7.4) -------------------------------------------
+//
+// **A table exists before its game does**, and every session route refuses one
+// that is still dealing with a 409. So `App` asks `GET …/table` FIRST and picks
+// the screen from the status — which is the whole reason a saved row hands up an
+// ID rather than a game.
+describe("opening a saved table", () => {
+  /** The screens in front of a game, with the table's status the one thing that
+   *  moves. The saved list names one table, so the row is the way in. */
+  const openWith = async (table: unknown, extra: (call: ApiCall) => Reply | undefined = () => undefined) => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     const stub = stubApi((call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [];
+      const mine = extra(call);
+      if (mine !== undefined) return mine;
+      if (call.path.endsWith("/api/me")) return wire.me;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/api/art")) return wire.artManifest;
-      if (call.path.endsWith("preview")) return wire.previewBot;
-      if (call.method === "POST" && call.path.endsWith("/api/games")) return wire.options;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed("wire");
+      if (call.path.endsWith("/api/games/wire/table")) return table;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      return undefined;
+    });
+    render(<App />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "wire" }));
+    return stub;
+  };
+
+  it("reads its table first and shows the dealing screen when it is dealing", async () => {
+    const stub = await openWith(wire.tableDealing);
+    await screen.findByRole("heading", { name: "Choose your card" });
+    // **And the game itself was never asked for.** That request is a 409 while
+    // the table is dealing, so a client that sent it would greet the player with
+    // a refusal on exactly the tables this screen exists for.
+    expect(
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/wire")),
+    ).toHaveLength(0);
+  });
+
+  it("opens the game when the same table reads playing, so the branch above is a branch", async () => {
+    const stub = await openWith(wire.table, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games/wire") ? wire.options : undefined,
+    );
+    await screen.findByText(/end triggers:/);
+    expect(
+      stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/wire")),
+    ).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Choose your card" })).toBeNull();
+  });
+});
+
+// ---- the hot-seat pass, in the game (M6.1 §7.5) ----------------------------
+//
+// **A move that ends a turn answers its own mover with a `watching` prompt.**
+// That is the true thing to say to the person who has just played — the reply is
+// built for the seat that POSTED — and at a table with other people in it the
+// poll is what brings their move back. At a table where the NEXT seat is also
+// this person's, it leaves a browser holding an unanswerable screen for a turn
+// that never left it. `TableView.my_seats` is the server's own answer to which
+// of the two this is, and it is why `App` holds the table at all.
+describe("a move that ends the turn", () => {
+  /** Open the game, then answer once; `seats` is what the table says this
+   *  caller holds. The `/input` reply is the corpus's own `watching` payload —
+   *  seat 1's view of seat 0's turn — so the re-read is asked for the seat the
+   *  game is actually waiting on. */
+  const answerOnce = async (seats: number[]) => {
+    const stub = await renderApp(wire.options, (call) => {
+      // **`my_seats` is the one field moved off the corpus payload**, and it is
+      // the one the server varies per caller: the committed table can only
+      // carry one caller's reading, and a hot seat is the same person in two.
+      if (call.path.endsWith(`/api/games/${wire.options.id}/table`))
+        return { ...wire.table, my_seats: seats };
+      if (call.path.endsWith("/input")) return wire.watching;
+      return undefined;
+    });
+    await userEvent.setup().click(firstOptionButton());
+    return stub;
+  };
+  const reads = (stub: Awaited<ReturnType<typeof answerOnce>>) =>
+    stub.calls.filter(
+      (c) => c.method === "GET" && c.path.endsWith(`/api/games/${wire.options.id}`),
+    );
+
+  it("re-reads for the next seat when this browser holds it", async () => {
+    const stub = await answerOnce([0, 1]);
+    // Two: the read that opened the game, and the pass.
+    await waitFor(() => expect(reads(stub)).toHaveLength(2));
+    // And the screen is answerable again, which is the point of the re-read
+    // rather than the request being made.
+    expect(screen.queryByText(/Nothing here is yours to answer/)).toBeNull();
+    expect(firstOptionButton()).toBeInTheDocument();
+  });
+
+  it("does not re-read when the next seat is somebody else's", async () => {
+    const stub = await answerOnce([1]);
+    // The opening read, and nothing since: the poll is what brings the other
+    // player's move back, and a client that re-read here would spend a request
+    // per move earning the same watching payload.
+    await screen.findByText(/Nothing here is yours to answer/);
+    expect(reads(stub)).toHaveLength(1);
+  });
+});
+
+describe("the boards a player switches during setup", () => {
+  it("stay switched when the game opens", async () => {
+    // Signed in, because since M6.1 there is a door in front of every screen
+    // and this cell drives `App` directly rather than through `renderApp`.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    // **The table's status MOVES, because the flow crosses it twice.** `App`
+    // reads `GET …/table` on the way into the dealing screen and again on the
+    // way into the game, so a stub answering one fixed status would either
+    // refuse to open the deal or send the dealing screen straight back to
+    // itself. The keep that finishes the dealing is what flips it, which is
+    // exactly what the server does.
+    let dealt = false;
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      // The opening sequence (M6.1 §§4.2–4.3): a create answers 201 with a
+      // DEALING table, the dealing screen fetches the caller's own two cards,
+      // and the keep that finishes the dealing answers with the table at
+      // `playing` — which is when the GAME is read back.
+      if (call.method === "POST" && call.path.endsWith("/api/games"))
+        return { status: 201, body: wire.tableDealing };
+      if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/keep")) {
+        dealt = true;
+        return wire.table;
+      }
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return wire.options;
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
@@ -1053,18 +1205,22 @@ describe("the boards a player switches during setup", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    // `Re-deal`, not Start: since R-C2 Start is not drawn until every human seat
-    // has chosen, so waiting for it here would wait for a click below.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Re-deal" })).toBeInTheDocument());
+    // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
+    // the setup screen is one round trip away rather than there on first paint.
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+    // The dealing screen's own heading: a create opens a TABLE, and the deal is
+    // a screen of its own since M6.1, so this is what says the set table
+    // arrived.
+    await screen.findByRole("heading", { name: "Choose your card" });
     expect(document.querySelector(".table-sec.ports")).not.toBeNull();
 
     await user.click(screen.getByText(/^Boards/));
     await user.click(screen.getByRole("button", { name: "Port" }));
     expect(document.querySelector(".table-sec.ports")).toBeNull();
 
+    // One keep, and it is the last: the table comes back at `playing`, and the
+    // dealing screen hands `App` the game.
     await user.click(screen.getAllByRole("button", { name: /^keep O\d\d for seat 0/ })[0]!);
-    await user.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(screen.getByText(/end triggers:/)).toBeInTheDocument());
 
     // The claim: the GAME opens with the board the player switched off still
@@ -1076,5 +1232,376 @@ describe("the boards a player switches during setup", () => {
     // And the port was never fetched for the game either — the section being
     // absent is not the same as its request not going out.
     expect(stub.matching("GET", "/ports")).toHaveLength(0);
+  });
+});
+
+// ---- the door (M6.1 §7.1) --------------------------------------------------
+//
+// Four screens, and `/api/me` picks between them: nothing while it is in
+// flight, the sign-in form under a `claimed` deployment with nobody signed in,
+// a sentence naming the missing header under the other two doors, and the app
+// itself once the server names a user.
+
+describe("the door", () => {
+  it("shows sign-in when the door is claimed and nobody is signed in, then the games list", async () => {
+    const stub = stubApi((call) => {
+      // Answered the way the SERVER answers it: from the header this browser
+      // is sending. A stub that returned `wire.me` regardless would model a
+      // server that ignores its own header, and signing in would prove nothing.
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/games")) return wire.games;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Sign in" });
+    // **Nothing is asked for from behind the door.** Every `/api/games` route
+    // is a 401 without an identity, so a client that listed first would show
+    // the player a refusal as their first screen.
+    expect(stub.matching("GET", "/api/games")).toHaveLength(0);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Email"), wire.me.user!);
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await screen.findByText(`You are ${wire.me.user}`);
+    // The list, and no individual game: signing in lands on the setup screen,
+    // not inside whatever game happens to be first.
+    expect(stub.matching("GET", "/api/games/")).toHaveLength(0);
+    // Read AGAIN after signing in, rather than the client deciding for itself
+    // that it is now this person: a typed name is only worth what the server
+    // says it is worth.
+    expect(stub.matching("GET", "/api/me").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
+    stubApi((call) =>
+      // The corpus carries only the `claimed` door — the fixture server runs in
+      // that mode — so the MODE is the one field moved off a real payload.
+      call.path.endsWith("/api/me") ? { ...wire.meSignedOut, mode: "cf-access" } : undefined,
+    );
+    render(<App />);
+    await screen.findByText(/Cf-Access-Authenticated-User-Email/);
+    // There is nothing to type: the identity arrives from an edge in front of
+    // the server, and a form here would store a name that server ignores.
+    expect(screen.queryByLabelText("Email")).toBeNull();
+  });
+
+  it("a 401 mid-game returns to sign-in, carrying the sentence", async () => {
+    const stub = await renderApp(wire.options, (call) =>
+      call.path.endsWith("/input") ? signedOutReply() : undefined,
+    );
+    await userEvent.setup().click(firstOptionButton());
+    await screen.findByRole("heading", { name: "Sign in" });
+    // **§7.1's last bullet.** The refusal was in an error strip the sign-in
+    // screen replaced, so without carrying it the player's game vanishes and a
+    // bare form appears with nothing connecting the two.
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+    expect(stub.matching("POST", "/input")).toHaveLength(1);
+    // The stored name is DROPPED, not merely re-asked: the harness answers
+    // `/api/me` from storage, so a client that kept it would have been handed
+    // its user straight back and walked into the game again.
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+    // And the recovery a refusal normally triggers does NOT run: re-reading the
+    // game would earn the same 401, so the only `GET` for it is the one that
+    // opened it. The GAME, not its board panels — `matching` is a substring
+    // test and every panel's path contains the game's.
+    expect(
+      stub.calls.filter(
+        (c) => c.method === "GET" && c.path.endsWith(`/api/games/${wire.options.id}`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // ---- R-7.1: EVERY call routes, because `call()` does it ------------------
+  //
+  // The four cells below are four different callers, and three of them handle
+  // their own refusals in ways that could not have routed a 401 on their own:
+  // the Game menu shows the sentence and stays put, the scrubber is an effect,
+  // `/result` throws its error away entirely, and the opening walk reports into
+  // an error strip on a screen it has already drawn. One `if` in `api.ts` is
+  // what makes all four the same, and Task 8's rewritten screens too.
+
+  it("a 401 from the Game menu's list returns to sign-in", async () => {
+    let lists = 0;
+    await renderApp(wire.options, (call) => {
+      if (call.method === "GET" && call.path.endsWith("/api/games")) {
+        // The FIRST list is the setup screen's, which `renderApp` opens the
+        // game from. The menu's is the next one, and that is the one refused.
+        lists += 1;
+        if (lists > 1) return signedOutReply();
+      }
+      return undefined;
+    });
+    await userEvent.setup().click(gameMenu());
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  // The scrubber reads the same record every other route does, and it is the
+  // one catch site that is an effect rather than a click handler.
+  it("a 401 from the replay scrubber returns to sign-in", async () => {
+    await renderApp(wire.options, (call) =>
+      /\/at\/\d+$/.test(call.path) ? signedOutReply() : undefined,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Log" }));
+    // One step back from the present. The fetch is debounced 200 ms, so the
+    // wait below is what carries it.
+    await user.click(await screen.findByRole("button", { name: "Previous move" }));
+    await screen.findByRole("heading", { name: "Sign in" }, { timeout: 2000 });
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+  });
+
+  it("a refusal that is not about identity leaves you in the game", async () => {
+    // **What makes the cell above about 401 and not about 4xx.** Not being
+    // seated at a table is a 403, and is exactly the refusal a player CAN act
+    // on from inside the app; signing them out would throw away the screen
+    // that explains it.
+    await renderApp(wire.options, (call) =>
+      call.path.endsWith("/input") ? { status: 403, body: wire.notSeated403 } : undefined,
+    );
+    await userEvent.setup().click(firstOptionButton());
+    await screen.findByText(wire.notSeated403.error);
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
+  });
+
+  // **The cell that can only pass CENTRALLY.** `/result`'s catch is
+  // `.catch(() => setOutcome(null))` — it does not receive the error, it
+  // discards it — so no amount of wiring at the call sites that DO receive one
+  // would route this. A finished game whose session had expired sat there
+  // showing no standing and saying nothing at all.
+  it("a 401 from the final score returns to sign-in", async () => {
+    await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/result") ? signedOutReply() : undefined,
+    );
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+  });
+
+  // **The worst of the unrouted sites, because it put a FALSE sentence on
+  // screen.** The setup screen's list swallows its refusal into an empty array,
+  // so a player whose session had expired was told they had no games.
+  it("a 401 from the saved-game list says why, rather than that you have no games", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return signedOutReply();
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+    expect(screen.queryByText(/none yet/)).toBeNull();
+  });
+
+  // The opening walk: the run a just-created game's own events are shown as. It
+  // runs OUTSIDE any request of its own — `show` starts it — so its refusal
+  // landed in the error strip of a game screen already drawn, and the SAME walk
+  // routed correctly when it ran inside a move.
+  it("a 401 from the opening walk returns to sign-in", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    let dealt = false;
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed();
+      if (call.method === "POST" && call.path.endsWith("/api/games"))
+        return { status: 201, body: wire.tableDealing };
+      // The table crosses from dealing to playing at the keep, which is what
+      // makes the game open at all — see the boards cell above for the shape.
+      if (call.path.endsWith("/table")) return dealt ? wire.table : wire.tableDealing;
+      if (call.path.endsWith("/deal")) return wire.deal;
+      if (call.path.endsWith("/events")) return wire.eventsDealing;
+      if (call.path.endsWith("/keep")) {
+        dealt = true;
+        return wire.table;
+      }
+      // **`events` is the one field moved, and it is what makes this the
+      // opening walk at all**: `show(state, opening)` builds a run only when the
+      // game it opens already has events, and the corpus's playable state has
+      // none. Two of them, so the run is three positions rather than the 1,036
+      // the finished game would fetch.
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
+        return { ...wire.options, events: 2 };
+      if (/\/at\/\d+$/.test(call.path)) return signedOutReply();
+      if (/\/log(\?|$)/.test(call.path)) return wire.log;
+      if (call.path.endsWith("/ports")) return wire.ports;
+      if (call.path.endsWith("/labs")) return wire.labs;
+      if (call.path.endsWith("/areas")) return wire.areas;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+    // Two dealt cards, so two buttons: the first, as the other create cells do.
+    // The keep is the last one, so the game opens on the reply and the opening
+    // walk starts — which is the run whose refusal this cell is about.
+    await user.click((await screen.findAllByRole("button", { name: /^keep O\d\d for seat 0/ }))[0]!);
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+  });
+});
+
+// ---- M6.1 §6: the opponent's turn arrives by the signal ---------------------
+//
+// The poll's own properties — when it asks, when it is silent, what it says
+// while it cannot reach the server — are `signal.test.ts`'s. What this cell is
+// about is the CONSUMER (R-P9): the one function M6.3 replaces the transport
+// under, and the only thing in the client that turns "the count moved" into a
+// board the player can see.
+describe("the opponent's turn arrives by the signal", () => {
+  /** A position for the run to be walked over: the corpus's `at_k`, moved to
+   *  the position and the mover this cell is about, and NOT marked as a bot.
+   *
+   *  **No seat here is a bot, and that is the point (ruling R-9.1).** A room is
+   *  people. A walk gated on `hasBotStep` therefore never runs for a person's
+   *  turn, and the opponent's move SNAPS onto the table — M5.5's whole
+   *  step-by-step account, the thing the room plan promises the poll will
+   *  drive, silently not happening at exactly the table it was built for. The
+   *  first version of this cell marked seat 0 a bot and so could not have seen
+   *  it; the fixture is left honest instead. */
+  const at = (k: number, total: number) => {
+    const f = JSON.parse(JSON.stringify(wire.atK)) as typeof wire.atK;
+    f.index = k;
+    f.total = total;
+    f.to_move = wire.watching.to_move;
+    return f;
+  };
+
+  /** The reply chain settles without the clock moving — `the turn playback`'s
+   *  helper, and for the reason written out in full there: `waitFor` takes its
+   *  real-timer branch under vitest's fake clock and never polls. */
+  const settle = async (rounds = 10) => {
+    for (let i = 0; i < rounds; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
+  };
+
+  /** Put the tab in a state and tell the document, the way `signal.test.ts`
+   *  does: jsdom has no page lifecycle, so both halves are set by hand. */
+  const visibility = (value: "visible" | "hidden") =>
+    act(() => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+  it("walks the new events when the count grows, and reloads without a walk when it shrinks", async () => {
+    let events = wire.watching.events;
+    const stub = await renderApp(wire.watching, (call) => {
+      if (call.path.endsWith("/events"))
+        return { events, to_move: wire.watching.to_move, status: "playing", your_turn: false };
+      if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
+        return { ...wire.watching, events };
+      const m = /\/at\/(\d+)$/.exec(call.path);
+      if (m) return at(Number(m[1]), events);
+      return undefined;
+    });
+    /** The RE-READS of the game, and the match is anchored on purpose:
+     *  `matching("GET", "/api/games/wire")` is a substring test that also counts
+     *  `/events`, `/at/0` and `/table`, so it would pass without a reload
+     *  happening at all. */
+    const reloads = () =>
+      stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
+    expect(reloads()).toHaveLength(1);
+
+    // **The tab is hidden and then shown again, and that is not decoration.**
+    // The poll's first timer was armed while `renderApp` drove `userEvent`
+    // under REAL timers — `renderApp` has to, because user-event awaits a
+    // `setTimeout(0)` between interactions and a faked one never fires — so
+    // advancing a fake clock would never reach a timer scheduled before it was
+    // installed. Hiding the tab under the real clock genuinely cancels that
+    // timer (R-P8) and the return arms the next one on whichever clock is
+    // installed by then. The cell gets the poll on the fake clock, and the
+    // R-P8 round trip is exercised on the way.
+    await visibility("hidden");
+    vi.useFakeTimers();
+    try {
+      await visibility("visible");
+      // **The strip, on the banner, before the answer.** The board on screen is
+      // as old as the tab was hidden, so this is the one true thing to say for
+      // the length of one round trip — and it is the only assertion anywhere
+      // that `App` renders the hook's state at all.
+      expect(screen.getByText(/refreshing/)).toBeInTheDocument();
+      // That one ask, answered: the count has NOT moved, so the strip goes and
+      // nothing at all is fetched. It is the answer this poll gives nearly
+      // every time it runs, and the cheapest thing it can do with it.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      await settle();
+      expect(screen.queryByText(/refreshing/)).toBeNull();
+      expect(reloads()).toHaveLength(1);
+      expect(stub.matching("GET", "/at/")).toHaveLength(0);
+
+      events = wire.watching.events + 2;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+      });
+      await settle();
+      // The count moved, so the game was re-read ONCE and the run's positions
+      // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
+      // highlight is a diff and the live payload is not a position.
+      expect(reloads()).toHaveLength(2);
+      expect(
+        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
+      ).toEqual([0, 1, 2]);
+      // And the walk is on the table: the deck is the strip rather than the
+      // prompt, and the account has one row per event.
+      //
+      // **A PERSON's turn, walked (ruling R-9.1).** Nothing in this fixture is
+      // a bot; the mover is simply not the seat this browser is watching from
+      // (`wire.watching` is built for seat 1 while seat 0 is to move). The
+      // account's transport is the assertion that separates a walk from a
+      // static list of rows — `TurnAccount` renders those controls only while
+      // one is running — and the lit row is what says a STEP is on the table
+      // rather than the whole run at once.
+      expect(document.querySelector(".decision.walking")).not.toBeNull();
+      expect(screen.getByText(/is playing · step 1 of 2/)).toBeInTheDocument();
+      expect(document.querySelectorAll("ol.account li")).toHaveLength(2);
+      const account = within(document.querySelector<HTMLElement>(".turn-account")!);
+      expect(account.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "Step forward" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "Step back" })).toBeInTheDocument();
+      expect(account.getByRole("button", { name: "skip" })).toBeInTheDocument();
+      expect(document.querySelector("ol.account li.at")).toBe(
+        document.querySelector("ol.account li"),
+      );
+
+      // **`events` is legitimately non-monotone: an undo POPS them** (R-P5).
+      // The client re-reads, and must NOT try to walk a range that runs
+      // backwards — `/at/-1` is not a position and the account it would build
+      // describes nothing.
+      //
+      // **One ask per advance, deliberately.** React's `act` flushes its work
+      // queue when the async scope ends, so a single advance long enough for
+      // three ticks runs all three against a tree that has not re-rendered —
+      // and the callback, read through its ref, is still closed over the count
+      // from before the first of them. Measured: one 9 s advance issued three
+      // re-reads where a browser issues one. That is the harness, not the
+      // client; a real commit lands between two timer callbacks.
+      const atCalls = stub.matching("GET", "/at/").length;
+      events = wire.watching.events;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(VISIBLE_MS + 10);
+      });
+      await settle();
+      expect(reloads()).toHaveLength(3);
+      expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
+      expect(document.querySelector("ol.account")).toBeNull();
+      expect(document.querySelector(".decision.walking")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

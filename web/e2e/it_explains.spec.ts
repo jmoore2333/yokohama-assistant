@@ -16,12 +16,15 @@
 
 import { expect, test } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
-import { watchForBreakage } from "./harness";
+import { signIn, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
 // and a silent absence.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
+
+/** The identity header for the API-level calls below. */
+const WHO = { "x-yokohama-claimed-user": WALKER };
 
 /** Seat 0 is the bot AND the start seat, so `create`'s pump plays a whole bot
  *  turn before anything is on screen. The setup seed is fixed; the BOT seed is
@@ -29,19 +32,32 @@ test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run t
  *  asserts a number that depends on it. */
 async function aGameWithABot(request: import("@playwright/test").APIRequestContext, name: string) {
   const res = await request.post("/api/games", {
+    // The `request` fixture is not the browser, so the client's own header
+    // attach never runs for it: an API call carries the identity itself.
+    headers: WHO,
     data: {
       players: 2,
       colors: ["Red", "Blue"],
       start_seat: 0,
       seed: "20260831",
-      // Seat 0 is the bot: its keep is the bot's own, so the wire carries
-      // `null` there and a number would be refused by name.
-      keeps: [null, 1],
-      bot_seats: [0],
+      // **Who sits where, and nothing about the cards (M6.1 §4.2).** `keeps` and
+      // `bot_seats` are gone — the create opens a DEALING table and each seat
+      // chooses for itself — and sending either is a 400 by the body's own
+      // fence. The bot's keep is still the bot's: nothing here names a card for
+      // it, and the server takes its argmax when the table finalizes.
+      seats: [{ bot: true }, { user: WALKER }],
       name,
     },
   });
   expect(res.status(), await res.text()).toBe(201);
+  // **A table is not a game.** The one human seat has to keep before there is
+  // anything to explain, and that last keep is what finalizes the table and
+  // pumps the bot's opening turn.
+  const kept = await request.post(`/api/games/${name}/keep`, {
+    headers: WHO,
+    data: { seat: 1, card: 1 },
+  });
+  expect(kept.status(), await kept.text()).toBe(200);
 }
 
 /**
@@ -57,17 +73,20 @@ async function pastTheForcedOpening(
   request: import("@playwright/test").APIRequestContext,
   game: string,
 ) {
-  const state = await (await request.get(`/api/games/${game}`)).json();
+  const state = await (await request.get(`/api/games/${game}`, { headers: WHO })).json();
   expect(state.prompt?.kind, "the pump leaves an option list").toBe("options");
   expect(state.prompt.rows.length, "…with exactly one move in it").toBe(1);
   const res = await request.post(`/api/games/${game}/input`, {
+    headers: WHO,
     data: { line: String(state.prompt.rows[0].number), expect: state.prompt.kind },
   });
   expect(res.status(), await res.text()).toBe(200);
 }
 
 async function openPanel(page: import("@playwright/test").Page, game: string, label: string) {
-  await page.goto(`/?game=${game}`);
+  // `signIn` navigates: the door is a SCREEN since M6.1, so getting through it
+  // is a page load and a form rather than a storage write before one.
+  await signIn(page, WALKER, `/?game=${game}`);
   const pick = page.getByRole("button", { name: game, exact: false }).first();
   if (await pick.count()) await pick.click().catch(() => {});
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();

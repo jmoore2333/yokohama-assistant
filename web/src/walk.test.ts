@@ -3,7 +3,14 @@
 
 import { describe, expect, it } from "vitest";
 import { QUICK_DWELL } from "./playback";
-import { buildRun, dwellFor, hasBotStep, walkReducer, type WalkState } from "./walk";
+import {
+  buildRun,
+  dwellFor,
+  hasBotStep,
+  hasOpponentStep,
+  walkReducer,
+  type WalkState,
+} from "./walk";
 import { wire } from "./wire/contract";
 import type { HistoricalFrame, LogPanel, PlayerId } from "./types";
 
@@ -79,6 +86,36 @@ describe("buildRun", () => {
     expect(run.steps[1]!.moverIsBot).toBe(true);
     expect(run.steps[0]!.moverIsBot).toBe(false);
     expect(hasBotStep(run)).toBe(true);
+  });
+
+  // **The gate on a walk that arrived through the SIGNAL (ruling R-9.1), and
+  // it is a different question from the one above.** A room is people: no seat
+  // at a human table is a bot, so a run gated on `hasBotStep` never plays and
+  // the opponent's turn snaps onto the table instead. What the walk is for is
+  // watching somebody else play, and who that somebody is does not change the
+  // picture.
+  it("knows a step this viewer did not play, bot or person", () => {
+    const { frames, log } = fixture();
+    const { steps } = buildRun(10, frames, log);
+    // The two steps are moved by seat 0 and seat 1, so each seat is an
+    // opponent of the other — from either chair there is something to watch.
+    expect(steps.map((s) => s.mover)).toEqual([0, 1]);
+    expect(hasOpponentStep(steps, 0)).toBe(true);
+    expect(hasOpponentStep(steps, 1)).toBe(true);
+
+    // A run every step of which this viewer played: their OWN move, which
+    // applies at once and is never walked.
+    const mine = fixture();
+    mine.frames.forEach((f) => (f.to_move = 0));
+    const own = buildRun(10, mine.frames, mine.log).steps;
+    expect(own.map((s) => s.mover)).toEqual([0, 0]);
+    expect(hasOpponentStep(own, 0)).toBe(false);
+
+    // **And the bot arm still carries.** It is not redundant with the seat
+    // comparison: `moverIsBot` is the arm that answers for a seat a browser
+    // holds itself, which is exactly the vs-bot game every other cell is about.
+    mine.frames.forEach((f) => markBot(f, 0));
+    expect(hasOpponentStep(buildRun(10, mine.frames, mine.log).steps, 0)).toBe(true);
   });
 
   it("dwells the cadence on a changed frame and the short dwell on an unchanged one", () => {

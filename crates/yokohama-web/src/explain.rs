@@ -584,7 +584,12 @@ pub fn refusal_kinds() -> Vec<&'static str> {
 ///   before returning, so a bot is never the seat to move when a request is
 ///   answered. It is kept because a HALTED pump (the `PUMP_MOVE_CAP` arm) can
 ///   leave one, and because a handler that assumed otherwise would advise a bot
-///   against the player.
+///   against the player. **Since M6.1 it is unreachable over HTTP entirely**,
+///   and this is the line an audit of "which refusals can a browser see" will
+///   find: R-1.8 refuses a caller who does not hold the acting seat, a bot seat
+///   is held by nobody, and that 403 sits ahead of this rung in `suggest`'s
+///   ladder. The variant stays because this crate carries `repl::suggest_cmd`'s
+///   four refusals verbatim rather than a subset of them.
 /// - `LiveMode` cannot be reached through this API at all — `Session::new_sim`
 ///   is the only constructor `games.rs` calls, and `TrackingMode::Live` is
 ///   derived from a record's setup observations, so only a live-tracked CLI save
@@ -747,19 +752,33 @@ mod tests {
         let games = crate::games::Games::new(
             std::sync::Arc::new(rules.clone()),
             std::sync::Arc::new(crate::store::MemStore::default())
-                as std::sync::Arc<dyn crate::store::SessionStore>,
+                as std::sync::Arc<dyn crate::store::Store>,
         );
-        let (_, handle) = games
-            .create(&crate::games::NewGame {
-                players: 2,
-                colors: vec![yokohama_core::PlayerColor::Red, yokohama_core::PlayerColor::Blue],
-                start_seat: 0,
-                seed: Some(crate::games::WireSeed(20_260_831)),
-                keeps: vec![Some(1), Some(1)],
-                bot_seats: vec![],
-                name: Some("rank".to_string()),
-            })
-            .expect("a game");
+        // create -> keep at both seats -> the handle. A table is not a game
+        // until every human seat has chosen (M6.1 §4.3), and both seats here are
+        // one person's, so one identity answers for both.
+        let red = crate::identity::User::parse("red@t.test").expect("an email");
+        let seat = |who: &str| crate::games::SeatSpec { user: Some(who.to_string()), bot: false };
+        let id = games
+            .create(
+                &crate::games::NewGame {
+                    players: 2,
+                    colors: vec![yokohama_core::PlayerColor::Red, yokohama_core::PlayerColor::Blue],
+                    start_seat: 0,
+                    seed: Some(crate::games::WireSeed(20_260_831)),
+                    seats: vec![seat("red@t.test"), seat("red@t.test")],
+                    name: Some("rank".to_string()),
+                },
+                &red,
+            )
+            .expect("a table")
+            .id;
+        while let Some(s) =
+            games.table(&id, &red).expect("seated").next_unkept_seat_of(&red)
+        {
+            games.keep(&id, &red, s, 1).expect("a keep");
+        }
+        let handle = games.handle(&id).expect("a game");
         let repl = handle.lock().expect("the handle");
         (repl.session.state().clone(), rules)
     }

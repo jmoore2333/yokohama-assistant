@@ -15,8 +15,39 @@
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
 import { App } from "../App";
+import { CLAIMED_USER_KEY } from "../api";
 import { wire } from "../wire/contract";
-import type { ClientState } from "../types";
+import type { ClientState, GamesList } from "../types";
+
+/** What `GET /api/games` answers with, naming these games.
+ *
+ *  **Derived from the corpus's own row, never hand-authored** — the rule this
+ *  whole file follows. `games.json` carries one real `TableView`; only its `id`
+ *  moves, which is the same pattern the game-switch cells already use to make a
+ *  second game out of a corpus payload. A builder that typed a `TableView` out
+ *  by hand would keep compiling after the server dropped a field from it. */
+export const gamesNamed = (...ids: string[]): GamesList => ({
+  // **`name` is cleared as well as `id` being set, and that is what "naming"
+  // means since M6.1**: a row is listed as `name ?? id`, so a table that kept
+  // the corpus row's own name would be listed as `wire` however this helper was
+  // called, and every cell that finds its game by the id it asked for would
+  // find nothing. Clearing it is the `?? id` fallback — a table opened without
+  // a name — which is the shape these cells have always assumed.
+  games: ids.map((id) => ({ ...wire.games.games[0]!, id, name: null })),
+});
+
+/** What the server answers a request it cannot name a caller for.
+ *
+ *  The SHAPE is the corpus's refusal; the sentence is `identity.rs`'s own, for
+ *  the `claimed` door. **The sentence is not what the client routes on** — the
+ *  status is, because `identity.rs` is the only place on this API that answers
+ *  401 at all, while the sentence is one of three (the other two doors say "no
+ *  identity reached the server…" instead). Here so that the cells about the
+ *  three catch sites all refuse the same way. */
+export const signedOutReply = () => ({
+  status: 401,
+  body: { ...wire.error, error: "no signed-in user: send X-Yokohama-Claimed-User" },
+});
 
 /** One request the client made. */
 export interface ApiCall {
@@ -77,6 +108,17 @@ export function stubApi(handler: (call: ApiCall) => Reply | Promise<Reply>): Api
   };
 }
 
+/** The Game menu's summary: the banner control that opens the saved-game list.
+ *
+ *  **Queried by its element, and no longer by the game id.** Until M6.1 the id
+ *  appeared exactly once on screen, so `getByText(/wire/)` found the menu. The
+ *  "You are …" strip now carries the signed-in email beside it, and the corpus's
+ *  user is `red@wire.test` while its game is `wire` — so that regex matches two
+ *  elements and every cell using it fails on an ambiguity that has nothing to
+ *  do with what it is testing. */
+export const gameMenu = (): HTMLElement =>
+  document.querySelector<HTMLElement>(".game-menu > summary")!;
+
 /** A promise a test resolves by hand, to hold a request in flight. */
 export function gate<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
@@ -102,8 +144,31 @@ export function gate<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
  *  multiple elements". A test that wants to see one of these refuse still
  *  supplies its own reply; the caller is asked first. */
 function bootstrapReply(call: ApiCall): Reply | undefined {
+  // **The door, answered the way the SERVER answers it: from the header this
+  // browser is sending.** `App` draws nothing at all until `/api/me` replies,
+  // so without this every cell here would render a blank page.
+  //
+  // Conditioned on storage rather than pinned to `wire.me`, because that is
+  // what `/api/me` IS — it reads the same claimed-user header `api.ts` attaches
+  // from storage. A fallback that answered `wire.me` regardless would model a
+  // server ignoring its own header, and the 401 cell could never see sign-in:
+  // the client drops the stored name and asks again, and a stub with no memory
+  // would hand the user straight back.
+  if (call.path.endsWith("/api/me"))
+    return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
   if (call.path.endsWith("/api/labels")) return wire.labels;
   if (call.path.endsWith("/api/art")) return wire.artManifest;
+  // **`GET …/table` is now on the way into every game (M6.1 §7.4)**: `App`'s
+  // `open` asks what a table IS before it fetches the game, because a table
+  // still dealing refuses the game route with a 409. So every cell that opens a
+  // game passes through here, whether or not it is about tables.
+  //
+  // The ID is taken from the PATH rather than left at the corpus's own, which is
+  // the documented fixture-override shape — the smallest move that makes the
+  // reply about the table the caller asked for. The status is the corpus's
+  // (`playing`); a cell that wants the dealing screen answers `/table` itself.
+  const table = /\/api\/games\/([^/]+)\/table$/.exec(call.path);
+  if (table) return { ...wire.table, id: decodeURIComponent(table[1]!) };
   if (call.path.endsWith("/ports")) return wire.ports;
   if (call.path.endsWith("/labs")) return wire.labs;
   if (call.path.endsWith("/areas")) return wire.areas;
@@ -137,10 +202,18 @@ export async function renderApp(
     if (mine !== undefined) return mine;
     const boot = bootstrapReply(call);
     if (boot !== undefined) return boot;
-    if (call.method === "GET" && call.path.endsWith("/api/games")) return [state.id];
+    if (call.method === "GET" && call.path.endsWith("/api/games")) return gamesNamed(state.id);
     if (call.method === "GET" && call.path.endsWith(`/api/games/${state.id}`)) return state;
     throw new Error(`unexpected ${call.method} ${call.path}`);
   });
+
+  // **Signed in before the app mounts**, because since M6.1 there is a door in
+  // front of every screen: with nobody stored, `App` draws the sign-in form and
+  // there is no saved-game list to click. The value is the corpus's own user —
+  // the one `wire.me` names, and the one the fixtures' tables are seated by —
+  // so the identity this browser claims and the identity the payloads were
+  // built for are one string.
+  localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 
   const view = render(<App />);
   const open = await view.findByRole("button", { name: state.id });

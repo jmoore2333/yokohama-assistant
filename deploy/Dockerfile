@@ -77,11 +77,22 @@ COPY --from=client /app/dist /srv/web/dist
 COPY crates/yokohama-web/assets/art /srv/assets/art
 
 # **`0.0.0.0` here and NOWHERE ELSE.** The binary's own default is loopback,
-# deliberately, because this API has no authentication of its own: a game id is
-# not a secret and `GET /api/games` lists every one of them. Binding wide is a
-# statement that something in FRONT of this container is doing identity — a
-# Cloudflare Tunnel with an Access policy, or Modal's proxy-auth layer — and it
-# belongs in the deployment artifact where that is true, not in the program.
+# deliberately. Since M6.1 this API reads an identity of its own — one header,
+# named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route, with
+# 401 for no identity and 403 for a caller with no seat — but that is not the
+# same as being safe to expose: `cf-access` and `worker` trust a header only
+# their own edge can set, and `claimed` authenticates the door and not the seat.
+# Binding wide is still a statement that something in FRONT of this container is
+# doing identity — a Cloudflare Tunnel with an Access policy, or Modal's
+# proxy-auth layer plus the edge Worker — and it belongs in the deployment
+# artifact where that is true, not in the program.
+#
+# **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here either**, for the same
+# reason: there is no default mode, and an image started without it exits 1
+# naming the three accepted values. The NAS sets it on the container
+# (`RUNBOOK.md` §3, `claimed`); `modal_app.py` sets it on the image it builds
+# from this file (`worker`, because there the Worker is the thing that
+# authenticates).
 ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
     YOKOHAMA_WEB_PORT=8080 \
     YOKOHAMA_WEB_DIST=/srv/web/dist \

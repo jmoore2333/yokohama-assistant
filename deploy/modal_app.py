@@ -1,9 +1,12 @@
 """Run the Yokohama server on Modal.
 
-**The compute layer only.** Identity lives in front of this — Cloudflare Access
-on the public hostname, and a Cloudflare Worker that forwards here holding a
-Modal proxy token. This file's job is to run the same image the NAS runs and to
-make the game store durable.
+**The compute layer only.** Authentication lives in front of this — Cloudflare
+Access on the public hostname, and a Cloudflare Worker that forwards here
+holding a Modal proxy token. Since M6.1 the server does READ an identity
+(``YOKOHAMA_WEB_IDENTITY``, ``worker`` on this path), but it verifies nothing:
+it trusts the header the Worker sets, which is why the Worker strips any the
+client sent. This file's job is to run the same image the NAS runs, to name the
+identity source, and to make the game store durable.
 
 Deploy:
 
@@ -35,11 +38,24 @@ PORT = 8080
 VOLUME = modal.Volume.from_name("yokohama-games", create_if_missing=True)
 MOUNT = "/data"
 
+# The identity source, and it is REQUIRED: the server has no default mode and
+# exits 1 without this variable, naming the accepted values. ``worker`` is the
+# right one HERE and ``claimed`` is the right one on the NAS, because the value
+# names whatever is actually authenticating in front — on this path that is the
+# Cloudflare Worker in ``deploy/worker/``, which reads the Access identity, sets
+# ``X-Yokohama-User``, and strips any the client sent. Set it to ``cf-access``
+# here and the server would wait for a header this path never sends, so every
+# request would be a 401.
+IDENTITY_MODE = "worker"
+
 # The SAME Dockerfile the NAS deployment uses. Building the image from it here
 # rather than describing the environment twice is the whole reason the two
-# targets cannot drift.
+# targets cannot drift. The Dockerfile deliberately sets no identity mode — it
+# cannot know what is in front of it — so the two deployments declare it at the
+# level that does: this image for Modal, the container's create body for the NAS
+# (``RUNBOOK.md`` §3).
 IMAGE = modal.Image.from_dockerfile("deploy/Dockerfile", context_dir=".").env(
-    {"YOKOHAMA_WEB_DIR": f"{MOUNT}/games"}
+    {"YOKOHAMA_WEB_DIR": f"{MOUNT}/games", "YOKOHAMA_WEB_IDENTITY": IDENTITY_MODE}
 )
 
 app = modal.App(APP_NAME, image=IMAGE)
@@ -96,6 +112,10 @@ def _commit_loop() -> None:
     requires_proxy_auth=True,
 )
 def serve() -> None:
+    # `YOKOHAMA_WEB_IDENTITY` is NOT set here on purpose: it rides in from the
+    # image env above and through this copy of `os.environ`. Declared once, in
+    # one place — a second assignment here would be a second place for the two
+    # to disagree, and the server refuses to start rather than guess.
     env = dict(os.environ)
     env["YOKOHAMA_WEB_HOST"] = "0.0.0.0"
     env["YOKOHAMA_WEB_PORT"] = str(PORT)

@@ -196,6 +196,22 @@ test("the answer bar is always in view — top of the side column above 1201, bo
     "the answer list was never clamped in this run — nothing squeezed it, so the floor above proved nothing",
   ).toBeGreaterThan(0);
 
+  // **Settle before the two arms below, because the loop does not.**
+  //
+  // The loop's last `act` clicks and moves on; the reply, and anything the
+  // client does with it, may still be in flight when the arms start reading. It
+  // did not matter while a 4P game had a bot in it — the human's own reply
+  // always came back answerable. Since M6.1 a turn-ending move answers its own
+  // mover with a `watching` prompt and the client re-reads for the next of its
+  // own seats (`App`'s hot-seat pass), so for one round trip the deck holds a
+  // notice and no control at all, and a read taken there reports "no control in
+  // the deck" about a screen that is fine. Measured: one full-suite run in five,
+  // with the page snapshot showing all three controls present by the time it was
+  // taken. `readScreen` is the harness's own settle — it waits on `data-busy`
+  // and on the deck's disabled state — so this is the same wait every move in
+  // the loop already takes, taken once more on the way out.
+  await readScreen(page);
+
   // **Two arms, because the deck has two homes (M5 spec §3.1).** Above 1201 it
   // is pinned at the top of the side column by the grid, and the thing that
   // scrolls is the TABLE; below 1201 it is M3.5's bottom-edge sticky bar and the
@@ -223,6 +239,15 @@ test("the answer bar is always in view — top of the side column above 1201, bo
       if (list) list.scrollTop = 0;
       const lr = list?.getBoundingClientRect();
       return {
+        // What the deck HELD, for the failure line: "no control" is a count, and
+        // a count does not say whether the deck was empty, was showing a notice
+        // with nothing to press, or had every control pushed out of the list's
+        // own clip. `blame()` does the same job for the width gate.
+        held: [...deck.querySelectorAll<HTMLElement>("button")].map(
+          (b) =>
+            `${(b.textContent ?? "").trim().slice(0, 18)}|drawn=${b.offsetParent === null ? "no" : "yes"}`,
+        ),
+        deckClass: deck.className,
         top: Math.round(r.top),
         bottom: Math.round(r.bottom),
         innerHeight: window.innerHeight,
@@ -254,7 +279,10 @@ test("the answer bar is always in view — top of the side column above 1201, bo
     const r = await readDeck();
     expect(r.top, `the deck runs off the top at table scroll ${y}`).toBeGreaterThanOrEqual(0);
     expect(r.bottom, `the deck runs below the viewport at table scroll ${y}`).toBeLessThanOrEqual(r.innerHeight);
-    expect(r.reachable.length, `no control in the deck at table scroll ${y}`).toBeGreaterThan(0);
+    expect(
+      r.reachable.length,
+      `no control in the deck at table scroll ${y} — deck "${r.deckClass}" held [${r.held.join(", ")}]`,
+    ).toBeGreaterThan(0);
     expect(r.reachable.filter((c) => !c.reached).map((c) => c.name), `controls covered at table scroll ${y}`).toEqual([]);
   }
 
@@ -916,6 +944,14 @@ test("a panel really is modal", async ({ page }) => {
 // the sub-1201 column stack is not what this milestone is about, and nothing
 // here should start gating it by accident.
 //
+// **M6.1 put a door in the banner, and 1024 went back to two rows.** The strip
+// ("You are …") is 162px and the sign-out button was another 87 beside it: at
+// 1280 that was 1325px of children and gaps against a 1240px content box, and
+// the cell caught it. The button moved into the Game menu — this screen's other
+// session controls are already there — which restores 1440 and 1280 at 56px
+// with 22px of room to spare, and leaves 1024 at 101px. The children are printed
+// in the record below so the next person does not have to measure them again.
+//
 // **One limit of the reference, stated so it is not mistaken for more.**
 // `oneRowBox` is the banner's padding and border plus its TALLEST CHILD, and
 // `nav.views` is itself `flex-wrap: wrap` — so a nav that wrapped INTERNALLY
@@ -930,7 +966,7 @@ test("the banner is one row at 1440 and 1280", async ({ page }) => {
 
   // Every width is measured BEFORE anything is asserted, so the record below is
   // printed whole even though the run stops at the first width that wrapped.
-  const rows: { width: number; height: number; oneRowBox: number; wrapped: boolean }[] = [];
+  const rows: { width: number; height: number; oneRowBox: number; wrapped: boolean; kids: string }[] = [];
   for (const width of [1440, 1280, 1024]) {
     await page.setViewportSize({ width, height: 900 });
     await startGame(page);
@@ -948,7 +984,10 @@ test("the banner is one row at 1440 and 1280", async ({ page }) => {
       // The same 1px of slack the page-overflow read takes, and for the same
       // reason: a border box is not an integer and an exact compare reports
       // fractional rounding as a wrap.
-      return { height: Math.round(height), oneRowBox: Math.round(box), wrapped: height > box + 1 };
+      const kids = [...banner.children]
+        .map((c) => `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}=${Math.round(c.getBoundingClientRect().width)}`)
+        .join(" ");
+      return { height: Math.round(height), oneRowBox: Math.round(box), wrapped: height > box + 1, kids };
     });
     expect(r, `the banner did not draw at ${width}px`).not.toBeNull();
     rows.push({ width, ...r! });
@@ -957,7 +996,7 @@ test("the banner is one row at 1440 and 1280", async ({ page }) => {
   // eslint-disable-next-line no-console
   console.log(
     "banner rows: " +
-      rows.map((r) => `${r.width}px ${r.height}px in a ${r.oneRowBox}px one-row box`).join(" · "),
+      rows.map((r) => `${r.width}px ${r.height}px in a ${r.oneRowBox}px one-row box [${r.kids}]`).join(" · "),
   );
   expect(rows.length, "a width was skipped, so the record above is short").toBe(3);
 

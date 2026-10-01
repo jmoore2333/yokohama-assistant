@@ -64,15 +64,42 @@ async fn main() {
         .unwrap_or(8080);
 
     // **The default stays loopback, and that is the safe half of this knob.**
-    // This API has no authentication of any kind — `GET /api/games` lists every
-    // game to any caller — so a bind address is a real decision and not a
-    // convenience. A container needs `0.0.0.0` to be reachable at all, and it
-    // is expected to sit behind an identity proxy that terminates before the
-    // request arrives. Making the host explicit means that choice is made by
-    // whoever deploys it rather than by this line.
+    //
+    // A bind address is a real decision and not a convenience, and M6.1's
+    // identity seam narrowed the reason without removing it. Every
+    // `/api/games` route now refuses a request carrying no identity — so this
+    // is no longer "no authentication of any kind" — but neither mode makes the
+    // port safe to expose:
+    //
+    // - Under `claimed` the header is whatever the caller sends. It
+    //   authenticates the DOOR, not the seat: two callers sending two different
+    //   emails ARE two different people to this server, seated and scoped
+    //   separately — it simply cannot verify that either is who they say, so
+    //   anyone past the door can be anyone.
+    // - Under `cf-access` and `worker` the trusted header is one only that
+    //   deployment's own edge can set — which is worth exactly nothing if the
+    //   port is reachable without going through the edge, since anyone who can
+    //   connect directly can send the same header and be anyone.
+    //
+    // A container needs `0.0.0.0` to be reachable at all, and it is expected to
+    // sit behind that identity proxy. Making the host explicit means the choice
+    // is made by whoever deploys it rather than by this line.
     let host = std::env::var("YOKOHAMA_WEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
-    let state = Arc::new(AppState::new());
+    // **No default identity source (R-1.3).** Which header names the caller is
+    // a deployment decision — `claimed` trusts anything past the door, and the
+    // two proxy modes trust a header only their own edge can set — so a process
+    // that was not told refuses to start rather than guessing the permissive
+    // one. The Worker's own fail-closed shape for its secrets.
+    let identity = match yokohama_web::identity::IdentityMode::from_env() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
+    let state = Arc::new(AppState::new(identity));
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {

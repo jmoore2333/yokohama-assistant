@@ -73,18 +73,35 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["at_k", wire.atK, KEYS.historicalFrame],
     ["labels", wire.labels, KEYS.labels],
     ["health", wire.health, KEYS.health],
-    ["preview", wire.preview, KEYS.preview],
-    ["preview_bot", wire.previewBot, KEYS.preview],
-    ["preview.deal", wire.preview.deals[0], KEYS.deal],
-    ["preview.dealCard", wire.preview.deals[0]!.cards[0], KEYS.dealCard],
-    // **The BOT's deal, which no row above reaches.** `preview.deal` is the
-    // bot-free fixture's human seat and `preview_bot` is checked only at its
-    // top level, so before this row a field emitted on a bot seat alone — under
-    // any name but the literal `bot_keep` the three absence cells search for —
-    // passed every check in this file. §1's structural typing cannot see it
-    // either: TypeScript does not flag excess properties on a JSON import.
-    // That is precisely the seat R-C1 moved the leak-relevant shape onto.
-    ["preview_bot.deal(bot)", wire.previewBot.deals[1], KEYS.deal],
+    ["me", wire.me, KEYS.me],
+    ["me_signed_out", wire.meSignedOut, KEYS.me],
+    // **M6.1's seven.** Each is a payload shape the client has to draw and
+    // nothing else in the corpus reaches: a table at each of its two statuses,
+    // the deal with the caller's cards and the deal without them, the lobby, and
+    // the two refusals — the dealing 409 the client BRANCHES on, and the 403 a
+    // caller with no seat here is handed.
+    ["table_dealing", wire.tableDealing, KEYS.table],
+    ["table", wire.table, KEYS.table],
+    ["deal", wire.deal, KEYS.dealView],
+    ["deal_waiting", wire.dealWaiting, KEYS.dealView],
+    ["games", wire.games, KEYS.gamesList],
+    ["dealing_409", wire.dealing409, KEYS.dealingError],
+    ["not_seated_403", wire.notSeated403, KEYS.apiError],
+    // And the two a SEATED caller meets by acting out of turn (spec §8): an
+    // ordinary line from the seat that is not to move, and `undo` after that
+    // seat's turn has passed. One root key each, which is the whole of the
+    // shape — what these files are for is the two SENTENCES, asserted below.
+    ["wrong_seat_403", wire.wrongSeat403, KEYS.apiError],
+    ["undo_refused_403", wire.undoRefused403, KEYS.apiError],
+    // The signal at both statuses. Two rows rather than one because the fields
+    // are the same four at each, and a corpus carrying only the playing shape
+    // would let a `dealing` reply grow or lose a key unnoticed.
+    ["events", wire.events, KEYS.events],
+    ["events_dealing", wire.eventsDealing, KEYS.events],
+    // The dealt CARD, reached through the one payload that still carries one:
+    // a caller's own `deal`. It used to be reached through `preview.deals`,
+    // which served every seat's at once and is retired (M6.1 §8).
+    ["deal.dealCard", wire.deal.cards![0], KEYS.dealCard],
     ["error", wire.error, KEYS.apiError],
     ["suggest", wire.suggest, KEYS.suggestResponse],
     ["suggest.ok", wire.suggest.ok, KEYS.suggestOk],
@@ -181,101 +198,141 @@ describe("the keyed payloads are not empty", () => {
 });
 
 describe("what the corpus itself has to be true of", () => {
-  // A payload built for a seat whose hand is masked must not carry the
-  // identities anywhere. The mask is a property of the MODEL — `HandPanel.cards`
-  // is empty when `hidden` — which is what makes a client that ignores the flag
-  // still unable to leak. This asserts the property on the wire rather than
-  // trusting the sentence.
-  it("a masked hand carries a count and no identities", () => {
-    const hand = wire.hiddenHand.frame.dashboard.find(
-      (p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p,
-    );
-    expect(hand).toBeDefined();
-    expect(hand!.Hand.hidden).toBe(true);
-    expect(hand!.Hand.cards).toEqual([]);
-    // Truthful whether masked or not: the height of a hand is public at a table.
-    expect(hand!.Hand.card_count).toBeGreaterThan(0);
-    expect(JSON.stringify(wire.hiddenHand)).not.toContain('"is_starting_order"');
+  // **R-1.7, asserted over the WHOLE corpus rather than over one fixture.**
+  //
+  // Every payload is built for exactly one seat (M6.1 §5.1): the only Hand
+  // panel in it is that seat's, open, and every other seat carries
+  // `hand_hidden` on the Players panel instead. Stated here as a property of
+  // the corpus because that is the strongest form available on this side of the
+  // wire — a server that unmasked a second seat in ANY of the twenty payloads
+  // fails, where a cell over one fixture would only have covered one.
+  //
+  // It replaces a cell over `hidden_hand`, the `privacy`-toggle payload, which
+  // is retired: the server no longer reads that flag, so no fixture carries a
+  // masked Hand panel and the mask lives entirely on the Players rows.
+  it("every payload unmasks its own seat and no other", () => {
+    for (const state of EVERY_STATE) {
+      const hands = state.frame.dashboard.filter(
+        (p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p,
+      );
+      expect(hands.length, `${state.id}: one hand panel`).toBe(1);
+      expect(hands[0]!.Hand.seat).toBe(state.seat);
+      expect(hands[0]!.Hand.hidden).toBe(false);
+
+      const players = state.frame.dashboard.find(
+        (p): p is Extract<Panel, { Players: unknown }> => "Players" in p,
+      );
+      expect(players).toBeDefined();
+      for (const p of players!.Players.players) {
+        expect(p.hand_hidden, `seat ${p.seat} of ${state.seat}'s payload`).toBe(
+          p.seat !== state.seat,
+        );
+      }
+      // The mask is a property of the MODEL, not of the renderer: a masked hand
+      // has no `cards` to leak, so the one card-level secret — which order was
+      // dealt as a starting order — appears only inside the viewer's own panel.
+      const marks = JSON.stringify(state).split('"is_starting_order"').length - 1;
+      expect(marks, `${state.seat}'s payload`).toBe(hands[0]!.Hand.cards.length);
+    }
   });
 
-  // **A seat only ever sees its own deal (2026-09-06, R-C1).** The bot still
-  // keeps a card — the argmax it has always kept, now visible only as a card in
-  // its hand — and the wire says nothing about which two it was dealt: `cards`
-  // is empty and there is no keep field to read. The two preview fixtures are
-  // the two sides of that, and the human halves are the anti-vacuity: a server
-  // that emptied EVERY deal would pass a check on the bot's alone.
-  it("a bot seat's deal is not on the wire, and a human seat's is", () => {
-    const bot = wire.previewBot.deals[1]!;
-    expect(bot.is_bot).toBe(true);
-    expect(bot.cards.length).toBe(0);
-    expect("bot_keep" in bot).toBe(false);
-    expect(wire.previewBot.deals[0]!.is_bot).toBe(false);
-    expect(wire.previewBot.deals[0]!.cards.length).toBe(2);
-    expect(wire.preview.deals.every((d) => !d.is_bot)).toBe(true);
-    expect(wire.preview.deals.every((d) => d.cards.length === 2)).toBe(true);
-    expect(wire.preview.deals.every((d) => !("bot_keep" in d))).toBe(true);
+  // **A seat only ever sees its own deal (2026-09-06, R-C1), and since M6.1 §8
+  // that is the SHAPE of the payload rather than a filter over it.** The wire
+  // used to carry one `Deal` per seat and the reader picked its own; there is
+  // no per-seat array any more, so a caller's `cards` is either its own two or
+  // null.
+  //
+  // **Both payloads, because each is the other's anti-vacuity.** `deal_waiting`
+  // is the null — every seat this caller holds has chosen — so a server that
+  // always sent two cards would fail there, and one that never sent any would
+  // fail on `deal`. Either payload alone is satisfied by a field that is always
+  // the same thing.
+  it("a deal carries the caller's own two cards, or none at all", () => {
+    expect(wire.deal.seat).not.toBeNull();
+    expect(wire.deal.cards).toHaveLength(2);
+    expect(JSON.stringify(wire.deal)).not.toContain("bot_keep");
+    expect(wire.dealWaiting.seat).toBeNull();
+    expect(wire.dealWaiting.cards).toBeNull();
   });
 
   // **The technologies and the goals are not on the set table (2026-09-06,
-  // R-C3).** Both previews carry the laboratory with every slot emptied and no
-  // `Achievements` panel at all, because the owner's edition deals the two
-  // starting orders and takes the secret choice at its step 9 — before the
-  // technologies reach the Laboratory at step 10 and the achievements the score
-  // track at step 11.
+  // R-C3).** The set table is the `frame` beside a seat's two cards now that
+  // `preview` is retired (M6.1 §8), and it carries the laboratory with every
+  // slot emptied and no `Achievements` panel at all — because the owner's
+  // edition deals the two starting orders and takes the secret choice at its
+  // step 9, before the technologies reach the Laboratory at step 10 and the
+  // achievements the score track at step 11.
   //
   // `deck_remaining` stays: how many cards are left is public arithmetic, and
   // it is the identities that have not come out yet.
   //
+  // **Both deal fixtures, because they are different moments** — the payload a
+  // seat chooses over, and the one it is handed after choosing — and the screen
+  // draws the table in both.
+  //
   // **`at_k` is the anti-vacuity and it is load-bearing.** A `HistoricalFrame`
   // whose labs were empty and whose dashboard had no Achievements panel BY TYPE
-  // would satisfy every line above while proving nothing about the preview; the
-  // replay position at k shows both, so what is asserted here is a property of
-  // this payload and not of its shape.
-  it("both previews withhold the laboratory and the goals, and a replay position does not", () => {
+  // would satisfy every line above while proving nothing about the set table;
+  // the replay position at k shows both, so what is asserted here is a property
+  // of these payloads and not of their shape.
+  it("the set table withholds the laboratory and the goals, and a replay position does not", () => {
     const hasGoals = (frame: { dashboard: Panel[] }) =>
       frame.dashboard.some((p) => "Achievements" in p);
-    for (const [name, p] of [
-      ["preview", wire.preview],
-      ["preview_bot", wire.previewBot],
+    for (const [name, d] of [
+      ["deal", wire.deal],
+      ["deal_waiting", wire.dealWaiting],
     ] as const) {
-      expect(p.table.labs.boards.length, `${name}: the laboratory board is still drawn`)
+      const p = d.frame;
+      expect(p.labs.boards.length, `${name}: the laboratory board is still drawn`)
         .toBeGreaterThan(0);
-      expect(p.table.labs.boards.every((b) => b.slots.length === 0), name).toBe(true);
-      expect(p.table.labs.deck_remaining, `${name}: the deck count is public`).toBeGreaterThan(0);
-      expect(hasGoals(p.table.frame), `${name}: no Achievements panel`).toBe(false);
+      expect(p.labs.boards.every((b) => b.slots.length === 0), name).toBe(true);
+      expect(p.labs.deck_remaining, `${name}: the deck count is public`).toBeGreaterThan(0);
+      expect(hasGoals(p.frame), `${name}: no Achievements panel`).toBe(false);
       // R-C4: what STAYS. The port is on the table at step 9, and the tracks
       // are printed board rather than cards.
-      expect(p.table.ports.boards.flatMap((b) => b.slots).filter((s) => s.card !== null).length)
+      expect(p.ports.boards.flatMap((b) => b.slots).filter((s) => s.card !== null).length)
         .toBe(6);
-      expect(p.table.frame.dashboard.some((d) => "Tracks" in d), name).toBe(true);
+      expect(p.frame.dashboard.some((d) => "Tracks" in d), name).toBe(true);
     }
     expect(wire.atK.labs.boards.some((b) => b.slots.length > 0)).toBe(true);
     expect(hasGoals(wire.atK.frame)).toBe(true);
   });
 
-  // **No play payload carries the setup seed; `preview` does, and must.**
+  // **NO payload carries the setup seed, and the exemption is gone (M6.1 §8).**
   //
   // The seed regenerates both decks, the boxed pile, the board and every deal —
   // hidden-set member #1 in `game/observe.rs` — so a frame carrying it hands the
   // whole hidden set to whoever holds the frame. It used to ride on every
-  // payload twice, as `ClientState.seed` and again as `frame.title.seed`.
+  // payload twice, as `ClientState.seed` and again as `frame.title.seed`, and
+  // then on `preview` alone, which had to carry one because the setup flow
+  // round-tripped the value back into `create`. The flow is create-then-deal
+  // now: the seed is written into the table document on the server and no
+  // client ever reads it back.
   //
   // The server has its own fence over the same corpus
-  // (`no_committed_payload_carries_the_setup_seed_except_the_preview`). This is
-  // the client's half and is deliberately not the same check: that one searches
-  // for the VALUE, this one asserts the SHAPE the client is allowed to see, so
-  // a payload that carried a seed under some other key would fail there and a
-  // client that started reading one would fail here.
+  // (`no_committed_payload_carries_the_setup_seed`). This is the client's half
+  // and is deliberately not the same check: that one searches for the VALUE,
+  // this one asserts the SHAPE the client is allowed to see, so a payload that
+  // carried a seed under some other key would fail there and a client that
+  // started reading one would fail here.
   //
-  // `preview` keeps it, and keeps it as a STRING: the setup flow round-trips
-  // the value from preview into create, and a `u64` through a JS number rounds
-  // silently — dealing a different game than the one whose cards were chosen.
-  it("no play payload carries a seed, and preview's is a string", () => {
+  // **Every committed fixture, not only the play states.** `EVERY_STATE` is the
+  // `ClientState` corpus; the setup payloads are where a seed would now have to
+  // reappear, so they are named beside it.
+  it("no payload carries a seed at all", () => {
     for (const state of EVERY_STATE) {
       expect(JSON.stringify(state)).not.toContain('"seed"');
     }
-    expect(typeof wire.preview.seed).toBe("string");
-    expect(wire.preview.seed).toMatch(/^\d+$/);
+    for (const [name, payload] of [
+      ["table_dealing", wire.tableDealing],
+      ["table", wire.table],
+      ["deal", wire.deal],
+      ["deal_waiting", wire.dealWaiting],
+      ["games", wire.games],
+      ["at_k", wire.atK],
+    ] as const) {
+      expect(JSON.stringify(payload), name).not.toContain('"seed"');
+    }
   });
 
   // A payload that is not the actor's carries no answerable list, in BOTH
@@ -287,6 +344,31 @@ describe("what the corpus itself has to be true of", () => {
     expect(wire.watching.frame.decision.options).toEqual([]);
     expect(wire.watching.frame.decision.viewer_is_deciding).toBe(false);
     expect(wire.watching.your_turn).toBe(false);
+  });
+
+  // **The three 403s a person can be handed say three different things**, and
+  // that is the only reason three of them are committed: the shape is one root
+  // key, so a key-set row alone would let all three collapse into one sentence
+  // without a single check going red.
+  //
+  // Each one answers a different question. Not seated here: this table is not
+  // yours. Not your turn: whose it is, so you know whether to wait. `undo`
+  // after your turn: the button you pressed, which is R-5.1's ordering — the
+  // undo rule runs in FRONT of the acting-seat fence precisely so this caller
+  // is not told "it is seat 1's turn" about a question they did not ask.
+  it("the three refusals a caller can be handed are three different sentences", () => {
+    const said = [
+      wire.notSeated403.error,
+      wire.wrongSeat403.error,
+      wire.undoRefused403.error,
+    ];
+    expect(new Set(said).size).toBe(3);
+    for (const sentence of said) expect(sentence.length).toBeGreaterThan(0);
+    expect(wire.notSeated403.error).toContain("not seated");
+    // Whose turn it is, named — a bare "403" leaves a player with nothing to
+    // do next.
+    expect(wire.wrongSeat403.error).toMatch(/seat \d+'s turn/);
+    expect(wire.undoRefused403.error).toContain("undo");
   });
 
   // A locked session accepts nothing, and says why. It used to report a live

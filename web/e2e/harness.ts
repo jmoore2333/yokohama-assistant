@@ -72,91 +72,134 @@ export function watchForBreakage(
   return { failures };
 }
 
-/** What `startGame` hands back: enough to reproduce and to name a failure. */
+/** What `startGame` hands back: enough to name a failure.
+ *
+ *  **The seed is gone, and its absence is the point (M6.1).** It used to ride
+ *  here so a failing walk could be reproduced, read off the preview response —
+ *  the one payload that still carried it. There is no preview in the flow any
+ *  more and no play payload carries a seed at all: it regenerates both decks,
+ *  the boxed pile and every deal, so a client that held one would be holding the
+ *  hidden set. A failure names the table, and the table's record on the server
+ *  is what reproduces it. */
 export interface Game {
-  /** The store id, which is also the button that reopens it. */
+  /** The table id, which is also the button that reopens it. */
   id: string;
-  /** The setup seed as a decimal string — the server drew it, so a failing walk
-   *  is only reproducible if the failure says which game it was. */
-  seed: string;
+}
+
+/** Who the walk plays as. */
+export const WALKER = "walker@e2e.test";
+
+/**
+ * Go to the app and get through the door, exactly as a player does.
+ *
+ * **Through the SCREEN, not around it (M6.1 §7.1).** Until the sign-in screen
+ * existed this seeded `localStorage` through `addInitScript`, which was a
+ * stand-in and said so. It is a form now, so the walk types into it — which is
+ * the only thing that also tests the screen that puts the name there.
+ *
+ * **`email` is a parameter because two browsers are two people.** Every walk but
+ * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
+ * signs its two contexts in under two different addresses, and the identity a
+ * context holds is the whole subject there.
+ *
+ * Idempotent, because several specs navigate more than once in a test and the
+ * name survives inside a page's storage: if the door is already open this just
+ * waits for the strip that says so. The wait is on EITHER, because `App` draws
+ * nothing at all until `/api/me` answers — a bare `count()` would read zero for
+ * a player who is signed in perfectly well.
+ */
+export async function signIn(page: Page, email: string = WALKER, url = "/"): Promise<void> {
+  await page.goto(url);
+  const form = page.getByRole("heading", { name: "Sign in" });
+  const strip = page.getByText(new RegExp(`^You are ${email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+  await expect(form.or(strip).first()).toBeVisible();
+  if (await form.count()) {
+    await page.getByLabel("Email").fill(email);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  }
+  await expect(strip.first()).toBeVisible();
+}
+
+/**
+ * Open a table from the saved-games list, BY ID.
+ *
+ * The list is the only way into a table this browser did not create, which is
+ * how the second person at a two-browser table gets to it. A row's button is
+ * labelled with the table's name, and a table opened without one is named by its
+ * id — so `exact: true` is load-bearing: the row also carries `delete <name>`
+ * and `confirm delete <name>` buttons, whose accessible names CONTAIN the id.
+ */
+export async function openFromList(page: Page, id: string): Promise<void> {
+  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  await page.getByRole("button", { name: id, exact: true }).click();
 }
 
 /** Start a fresh game through the setup screen, exactly as a player does. */
 export async function startGame(page: Page, opts: { players?: number } = {}): Promise<Game> {
-  await page.goto("/");
+  const players = opts.players ?? 2;
+  await signIn(page);
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
 
-  if (opts.players && opts.players !== 2) {
-    await page.getByLabel("Players").selectOption(String(opts.players));
+  if (players !== 2) {
+    await page.getByLabel("Players").selectOption(String(players));
   }
-  // **Both facts come off the RESPONSES, not off the banner.**
+  // **The id comes off the RESPONSE, not off the banner.**
   //
-  // This used to read `header .meta` and split it on `·`, taking the seed from
-  // position 1 and the id from position 2. That is a test parsing a display
-  // string for machine-readable facts, and it broke the moment the banner
-  // stopped printing the seed — silently, into `id === "saved"`, because the
-  // fields shifted by one and every segment is still a non-empty string. The
-  // walk then spent fifteen seconds waiting to click a saved game called
-  // "saved".
+  // This used to read `header .meta` and split it on `·`, taking the id from
+  // position 2. That is a test parsing a display string for machine-readable
+  // facts, and it broke the moment the banner stopped printing the seed —
+  // silently, into `id === "saved"`, because the fields shifted by one and every
+  // segment is still a non-empty string. The walk then spent fifteen seconds
+  // waiting to click a saved game called "saved".
   //
-  // The seed no longer reaches any play payload at all (it regenerates the
-  // whole hidden set), so `preview` is now the only place it is served — which
-  // is fine, and better: this captures each value from the request that
-  // actually carries it. The seed stays in the handle because a failed walk is
-  // only reproducible if its failure message names the game it walked.
-  const previewed = page.waitForResponse(
-    (r) => r.url().includes("/api/games/preview") && r.request().method() === "POST",
+  // Deal now CREATES the table (M6.1 §4.2) rather than asking for a preview, so
+  // this is the create's own 201 and the id is the table's.
+  const created = page.waitForResponse(
+    (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Deal" }).click();
-  const seed = String(((await (await previewed).json()) as { seed: string }).seed);
+  const id = String(((await (await created).json()) as { id: string }).id);
+  if (!id) throw new Error("the server did not name the table");
 
-  // `Re-deal`, not Start: since R-C2 Start is not DRAWN until every human seat
-  // has chosen, so it cannot be the signal that the set table arrived.
-  await expect(page.getByRole("button", { name: "Re-deal" })).toBeVisible();
-
-  // The set table (M5.5, sequenced by the 2026-09-06 corrections): the human
-  // seats choose ONE AT A TIME, and only the seat whose turn it is draws
-  // buttons. The walk takes each in order — asserting it is the one being asked
-  // before it presses anything, which is what makes this a walk of the sequence
-  // rather than a loop that happens to find a button — chooses the first of its
-  // two, and passes the screen on. The bot's card is the bot's.
+  // **The deal, one seat at a time, served by `GET …/deal` (§4.3).** Every seat
+  // this browser holds is asked in turn — the form seats one bot at two players
+  // and nobody but the walker above that — and the screen hands over to the game
+  // when the last keep finalizes the table. So the loop is "keep whatever I am
+  // being asked, until the game is on screen", and the COUNT afterwards is what
+  // says the sequence really happened.
   //
-  // **Which walks actually press it.** This form always seats one bot, so a 2P
-  // walk has a SINGLE human seat and never passes the screen on; the pass rides
-  // the 3P and 4P cells, where there are two and three human seats. (There is
-  // no bot-free game in the browser at all — `preview.json`, whose two seats are
-  // both human, is the wire corpus the component suite renders.)
-  const humanSeats = await page.locator(".deal-seat.human").all();
-  // Anti-vacuity, and it is the whole loop's: `all()` on a selector that
-  // matches nothing returns an empty list, and a `for` over it asserts and
-  // clicks nothing while the walk goes on to press a Start that is not there.
-  // This screen always seats exactly one bot, so the count is players minus 1 —
-  // which is also what says the pass is EXERCISED above two players.
-  const humans = (opts.players ?? 2) - 1;
-  if (humanSeats.length !== humans) {
-    throw new Error(
-      `the set table drew ${humanSeats.length} human seats, expected ${humans} at ` +
-        `${opts.players ?? 2} players`,
+  // `:not([disabled])` matters: the pick stays in the DOM while the keep is in
+  // flight, so a plain selector would find a button that cannot be clicked and
+  // wait out the action timeout on the very last keep.
+  const pick = page.locator(".app.setup-table.dealing button.deal-pick:not([disabled])");
+  const inGame = page.locator(".app:not(.setup-table)");
+  const humans = players === 2 ? 1 : players;
+  let kept = 0;
+  for (;;) {
+    await page.waitForFunction(
+      () =>
+        !!document.querySelector(".app.setup-table.dealing button.deal-pick:not([disabled])") ||
+        !!document.querySelector(".app:not(.setup-table)"),
+      null,
+      { timeout: 30_000 },
     );
-  }
-  for (const [i, seat] of humanSeats.entries()) {
-    await expect(seat).toHaveClass(/(^|\s)current(\s|$)/);
-    await seat.locator("button.deal-pick").first().click();
-    if (i < humanSeats.length - 1) {
-      await page.getByRole("button", { name: "Next seat" }).click();
+    if (await inGame.count()) break;
+    await pick.first().click();
+    kept += 1;
+    if (kept > humans) {
+      throw new Error(`the deal asked for more than ${humans} keeps at ${players} players`);
     }
   }
-
-  const created = page.waitForResponse(
-    (r) =>
-      /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Start" }).click();
-  const id = String(((await (await created).json()) as { id: string }).id);
+  // Anti-vacuity, and it is the whole loop's: a screen that drew no pick at all
+  // would leave this at zero and the walk would go on into a game it never dealt
+  // for. It is also what says the per-seat sequence is EXERCISED above two
+  // players, where this browser holds every seat.
+  if (kept !== humans) {
+    throw new Error(`the deal took ${kept} keeps at ${players} players, expected ${humans}`);
+  }
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
 
-  if (!id || !seed) throw new Error(`the server did not name the game: id=${id} seed=${seed}`);
-  return { id, seed };
+  return { id };
 }
 
 /**
@@ -351,9 +394,7 @@ export async function deadEnd(page: Page, game: Game, moves: number): Promise<Er
       : screen.inert === "locked"
         ? "the session is LOCKED after a driver or engine fault"
         : "nothing on the screen is answerable and the game is not over";
-  return new Error(
-    `${why}\n  game ${game.id}, seed ${game.seed}, after ${moves} moves\n\n${zone}`,
-  );
+  return new Error(`${why}\n  game ${game.id}, after ${moves} moves\n\n${zone}`);
 }
 
 // ---- the layout measurement (M3.5's width gate, shared since M5.5) --------

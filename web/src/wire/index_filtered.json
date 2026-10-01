@@ -522,7 +522,7 @@
               }
             }
           },
-          "location": null,
+          "location": "OwnHand",
           "selection": null
         }
       ],
@@ -560,7 +560,7 @@
               }
             }
           },
-          "location": "OwnHand",
+          "location": null,
           "selection": null
         },
         {

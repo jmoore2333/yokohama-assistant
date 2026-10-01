@@ -71,9 +71,10 @@ if (!haveBrowser) {
 // the gate list, which is the silent skip the whole design was avoiding.
 //
 // Every BROWSER spec carries `test.skip(!haveBrowser, …)` instead, so the
-// reporter prints one SKIPPED test per browser test — eleven at this writing,
-// a reading rather than a contract — with the reason attached, and the run
-// exits 0. A skip you can count is not a skip you can miss.
+// reporter prints one SKIPPED test per browser test — thirty-seven at this
+// writing, which is every test in the glob except the structural one below, a
+// reading rather than a contract — with the reason attached, and the run exits
+// 0. A skip you can count is not a skip you can miss.
 //
 // **And the convention is enforced rather than remembered.** It was written
 // down here once and then broken anyway: M3 added a third spec without the
@@ -156,6 +157,14 @@ export default defineConfig({
           stderr: "pipe",
           env: {
             YOKOHAMA_WEB_PORT: String(PORT),
+            // There is NO default identity source (M6.1 R-1.3): the server
+            // exits 1 before it binds anything without this, so a walk that
+            // omitted it would fail at start-up rather than in a test.
+            // `claimed` is the development mode — the client attaches the
+            // header from `localStorage`, and the walk puts it there by typing
+            // into the sign-in screen (`harness.ts`'s `signIn`), which is the
+            // only shape that also tests the screen.
+            YOKOHAMA_WEB_IDENTITY: "claimed",
             // ONE directory, reused and cleared, rather than `mkdtempSync`.
             // This module is loaded by every Playwright invocation — including
             // `--list` and each worker — so a fresh temp directory per load

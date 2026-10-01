@@ -1,120 +1,6 @@
 {
-  "deals": [
-    {
-      "cards": [
-        {
-          "card": {
-            "country": "English",
-            "id": 27,
-            "requirements": {
-              "copper": 2,
-              "seafood": 2,
-              "silk": 0,
-              "tea": 0
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 0,
-              "money": 2,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 1,
-              "warehouse_tokens": 1
-            }
-          },
-          "keep_score": -4
-        },
-        {
-          "card": {
-            "country": "French",
-            "id": 5,
-            "requirements": {
-              "copper": 1,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 2
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 1,
-              "money": 0,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 1,
-              "warehouse_tokens": 0
-            }
-          },
-          "keep_score": 1
-        }
-      ],
-      "is_bot": false,
-      "seat": 0
-    },
-    {
-      "cards": [
-        {
-          "card": {
-            "country": "French",
-            "id": 23,
-            "requirements": {
-              "copper": 1,
-              "seafood": 0,
-              "silk": 2,
-              "tea": 3
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 1,
-              "money": 0,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 9,
-              "warehouse_tokens": 0
-            }
-          },
-          "keep_score": 57
-        },
-        {
-          "card": {
-            "country": "English",
-            "id": 32,
-            "requirements": {
-              "copper": 2,
-              "seafood": 1,
-              "silk": 0,
-              "tea": 1
-            },
-            "rewards": {
-              "any_trade_good": 0,
-              "copper": 0,
-              "imported_goods": 1,
-              "money": 0,
-              "movement": 0,
-              "seafood": 0,
-              "silk": 0,
-              "tea": 0,
-              "victory_points": 5,
-              "warehouse_tokens": 0
-            }
-          },
-          "keep_score": 31
-        }
-      ],
-      "is_bot": false,
-      "seat": 1
-    }
-  ],
-  "seed": "20260831",
-  "table": {
+  "cards": null,
+  "frame": {
     "deck_remaining": 10,
     "end_game_triggered": false,
     "end_triggers": "end triggers: deck 10 · church 0/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4",
@@ -1068,7 +954,7 @@
                   "silk": 1,
                   "tea": 1
                 },
-                "hand_hidden": false,
+                "hand_hidden": true,
                 "is_bot": false,
                 "is_current": false,
                 "mercenaries_unused": 0,
@@ -1454,5 +1340,39 @@
     "seat": 0,
     "to_move": 0,
     "total": 0
+  },
+  "keep_note": "  (the Keep score is what the built-in bot would prefer, from the card's printed\n   economics alone — hand-set, unmeasured, and no substitute for your own read)\n",
+  "seat": null,
+  "table": {
+    "chosen": [
+      true,
+      false
+    ],
+    "colors": [
+      "Red",
+      "Blue"
+    ],
+    "created_at": 1789000000,
+    "created_by": "red@wire.test",
+    "id": "wire",
+    "my_seats": [
+      0
+    ],
+    "name": "wire",
+    "over": null,
+    "players": 2,
+    "seats": [
+      {
+        "kind": "human",
+        "user": "red@wire.test"
+      },
+      {
+        "kind": "human",
+        "user": "blue@wire.test"
+      }
+    ],
+    "start_seat": 0,
+    "status": "dealing",
+    "to_move": null
   }
 }

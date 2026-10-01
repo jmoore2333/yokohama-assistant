@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, isSignedOut, onUnauthorized } from "./api";
+import { SignIn } from "./SignIn";
+import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
 import { Dashboard } from "./Dashboard";
 import { TurnAccount } from "./TurnAccount";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
+import { Dealing } from "./Dealing";
 import { NewGame } from "./NewGame";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
+import { useSignal } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
@@ -15,6 +19,7 @@ import {
   buildRun,
   dwellFor,
   hasBotStep,
+  hasOpponentStep,
   heldChanges,
   walkReducer,
   type Run,
@@ -24,10 +29,13 @@ import {
 import type {
   ArtManifest,
   ClientState,
+  Events,
   HistoricalFrame,
   Labels,
   Outcome,
   PlayerColor,
+  PlayerId,
+  TableView,
 } from "./types";
 
 /** The positions `prev..=next` and the log's tail, in parallel.
@@ -49,9 +57,43 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
 }
 
 export function App() {
+  // **The door, read before any screen is chosen** (M6.1 §7.1). Every
+  // `/api/games` route is a 401 without an identity, so who the server thinks
+  // we are decides which of four screens this is — see the branch below the
+  // hooks, which is where it can finally be acted on.
+  const door = useMe();
+  const { refresh, signOut, signedOut } = door;
+  // **Every 401 on this API routes here, and no screen has to remember to
+  // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
+  // refusal is thrown — so it reaches the door whatever the caller then does
+  // with the error, including `/result`'s catch, which discards it. Registered
+  // in an effect and cleared on unmount: the module holds one handler, and a
+  // handler left behind by a torn-down tree would move a door that is gone.
+  useEffect(() => {
+    onUnauthorized(signedOut);
+    return () => onUnauthorized(null);
+  }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
+  /** The table being DEALT, when there is one (M6.1 §7.4).
+   *
+   *  **A third screen, not a mode of the other two.** A table exists before its
+   *  game does — `create` opens one at `status: "dealing"` and every session
+   *  route refuses it with a 409 until the last seat has kept — so "no game on
+   *  screen" is no longer the same question as "the setup form". `state` and
+   *  this are never both set: `show` clears this, and the one place that sets it
+   *  is `open`. */
+  const [dealing, setDealing] = useState<string | null>(null);
+  /** The table the game on screen belongs to — who sits where, and which of
+   *  those seats are the caller's.
+   *
+   *  **Held because a payload cannot say it.** `ClientState` reports ONE seat's
+   *  view and `SeatFacts` says only whether a hand is hidden, so nothing in a
+   *  play payload distinguishes "somebody else is to move" from "another of MY
+   *  seats is to move" — and those are two different screens. `my_seats` is the
+   *  server's own answer to that, read once when the game is opened. */
+  const [table, setTable] = useState<TableView | null>(null);
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,33 +163,52 @@ export function App() {
   // the player is now looking at. So the id is kept in a ref that every change
   // of game updates, and `send` drops anything that no longer matches it.
   const gameId = useRef<string | null>(null);
-  /** A reply landed: if it added events, build the run and start the walk when
-   *  a bot moved.
+  /** Events `prev..next` landed: build the run, and walk it when it holds a
+   *  move this browser did not make.
    *
    *  Called INSIDE the busy window, so the deck stays disabled until the walk
    *  is ready to show rather than offering the next prompt over a table that is
    *  about to rewind.
    *
-   *  **A reply that added NOTHING clears the run as well as `fresh` (ruling
+   *  **A COUNT, not the payload that carried it (M6.1 §6).** Until the poll
+   *  there was exactly one way events arrived — a reply to something this
+   *  browser sent — so taking the `ClientState` was the same thing as taking
+   *  its `events`. The signal is the second way, and what IT knows is a number:
+   *  the frame that goes with it is fetched separately, and threading a
+   *  synthetic `ClientState` through here only to read one field off it would
+   *  be a payload built to satisfy a signature.
+   *
+   *  **A run that added NOTHING clears the run as well as `fresh` (ruling
    *  R-P5).** `events` is legitimately non-monotone: a picker step applies no
    *  event, a refusal none, and an undo POPS them. Leaving the previous run
    *  standing there would keep an account of an earlier turn on screen in place
-   *  of the prose that answers the click just made. */
+   *  of the prose that answers the click just made.
+   *
+   *  **`watching` is what decides whether the run PLAYS, and the two answers
+   *  are different questions (ruling R-9.1).** A run that came back as the
+   *  reply to this browser's own move passes `null`: the only other mover there
+   *  can be is a bot seat it is playing against, so `hasBotStep` is the whole
+   *  question and a vs-bot game is unchanged. A run that arrived through the
+   *  SIGNAL passes the seat it is being watched from, and every step that seat
+   *  did not play is worth watching — because **a room is people**, and a gate
+   *  on `moverIsBot` would leave the opponent's turn SNAPPING onto the board at
+   *  exactly the table the walk was built for. */
   const landed = useCallback(
-    async (game: string, prev: number, replied: ClientState) => {
+    async (game: string, prev: number, next: number, watching: PlayerId | null = null) => {
       setFresh(false);
-      if (replied.events <= prev) {
+      if (next <= prev) {
         setRun(null);
         setWalk(null);
         return;
       }
-      const r = await fetchRun(game, prev, replied.events);
+      const r = await fetchRun(game, prev, next);
       // The same rule the reply itself is judged by: a run for a game the
       // player has left is dropped, never shown over the game they are on.
       if (gameId.current !== game) return;
+      const plays = watching === null ? hasBotStep(r) : hasOpponentStep(r.steps, watching);
       setRun(r);
       setFresh(true);
-      setWalk(hasBotStep(r) ? { at: 0, playing: true } : null);
+      setWalk(plays ? { at: 0, playing: true } : null);
     },
     [],
   );
@@ -167,6 +228,12 @@ export function App() {
     (s: ClientState | null, opening = false) => {
       gameId.current = s?.id ?? null;
       setState(s);
+      // The dealing screen goes with the game being shown, and with "New game"
+      // too: a table id left behind here would draw the dealing screen again the
+      // next time the player asked for the form. The TABLE goes with it for the
+      // same reason — `open` puts the new one back in the same tick.
+      setDealing(null);
+      setTable(null);
       setRun(null);
       setWalk(null);
       setFresh(false);
@@ -177,12 +244,48 @@ export function App() {
         // the refusal goes where every other one goes rather than into an
         // unhandled rejection.
         setBusy(true);
-        void landed(s.id, 0, s)
+        void landed(s.id, 0, s.events)
           .catch((e) => setError(e instanceof ApiError ? e.message : String(e)))
           .finally(() => setBusy(false));
       }
     },
     [landed],
+  );
+
+  /** Open a table BY ID — the one door into a game, and the reason it asks
+   *  `GET …/table` first (M6.1 §7.4).
+   *
+   *  A table exists before its game does. While it is dealing every session
+   *  route answers 409 by design, so a caller that went straight to
+   *  `GET /api/games/{id}` would show a refusal for exactly the tables this
+   *  cycle exists to open — and each of the three places that open one (the
+   *  create, a saved row, the Game menu) would have to know that separately.
+   *  One `open` asks what the table IS and picks the screen.
+   *
+   *  `opening` is true only where the events already on the record have just
+   *  HAPPENED: the last keep finalizes the table, and a bot on the start seat
+   *  has played by the time the dealing screen hands over. A saved game
+   *  reopened passes false — its events are history, not something that just
+   *  happened. */
+  const open = useCallback(
+    async (id: string, opening = false) => {
+      // `doc`, not `table`: the state of the same name is what this puts BACK,
+      // and one name for both would read as a self-assignment.
+      const doc = await api.table(id);
+      if (doc.status === "dealing") {
+        // `show(null)` first, so a game being left takes its walk and its
+        // refusal with it; the dealing id is set in the same tick.
+        show(null);
+        setDealing(id);
+        return;
+      }
+      const next = await api.get(id);
+      show(next, opening);
+      // AFTER `show`, which clears it: React batches both into one render, so
+      // the last write is the one that stands.
+      setTable(doc);
+    },
+    [show],
   );
 
   // **The final standing comes from `/result`, because `scores` cannot carry
@@ -234,12 +337,41 @@ export function App() {
         // rides INSIDE the `try` on purpose: a failed fetch of the run reports
         // through the error strip like any other refusal, and the live state
         // stays on screen — the move was applied and persisted either way.
-        if (replied.id === gameId.current) await landed(game, state.events, replied);
+        if (replied.id === gameId.current) await landed(game, state.events, replied.events);
+        // **The hot-seat pass, and it is one re-read (spec §7.5).**
+        //
+        // A move that ends a turn answers its own mover with a `watching`
+        // prompt: the reply is built for the seat that POSTED, which is the
+        // true thing to say to a person who has just finished playing. At a
+        // table where somebody else holds the next seat that is the whole of
+        // it — the poll is what brings their move back. At a table where the
+        // next seat is ALSO this person's, it leaves a browser holding an
+        // unanswerable screen for a turn that is its own: `my_seats` is the
+        // server's own answer to which of the two this is, and `GET
+        // /api/games/{id}` builds for the acting seat whenever the caller
+        // holds it, so one re-read IS the pass.
+        //
+        // **Not the poll, and not a substitute for it.** The poll (M6.1 §6)
+        // waits on somebody else and runs on a timer; this is a single read
+        // for a turn that never left this browser, and without it a hot-seat
+        // table stalls on every seat change until a timer happens to fire.
+        if (
+          replied.id === gameId.current &&
+          replied.prompt.kind === "watching" &&
+          table?.my_seats.includes(replied.to_move)
+        ) {
+          const mine = await api.get(game);
+          if (mine.id === gameId.current) setState(mine);
+        }
       } catch (e) {
         // The same rule for the refusal: a sentence about a game that is no
         // longer on screen would sit over a game it does not describe.
         if (gameId.current !== game) return;
         setError(e instanceof ApiError ? e.message : String(e));
+        // **The re-read below is skipped on a 401.** The door has already been
+        // moved — `api.ts` did that before this refusal was thrown — and a
+        // re-read would only spend a request earning the same answer.
+        if (isSignedOut(e)) return;
         // **Re-read the game, because the server just told us to and this
         // client had no way to.**
         //
@@ -268,7 +400,72 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed],
+    [state, landed, table],
+  );
+
+  /** The OTHER way a move reaches this screen: somebody else made it (M6.1 §6).
+   *
+   *  **The consumer the room plan names, and it is one function** (R-P9). The
+   *  poll knows only that this game now has N events; everything about turning
+   *  that into a board happens here, and M6.3 replaces the transport under
+   *  `useSignal` without touching a line of it.
+   *
+   *  `active` is "there is something to wait for". Your own turn is not: the
+   *  prompt on screen is the answer, and a timer under it would re-read the
+   *  game under the player's hand. Nor is a finished game, nor the setup screen.
+   *  **It is read off the STATE and never off the signal** — a locked session
+   *  answers `/events` with `your_turn: true` by the M3 projection rule, and a
+   *  client that let the signal decide would have the lockdown hand it a move
+   *  to make.
+   *
+   *  `busy` is in there for a second reason: while a request of this browser's
+   *  own is in flight, the count the server is about to report is one this
+   *  client is itself changing. Polling through that window races a reply
+   *  against a signal for the same events. */
+  const link = useSignal(
+    state?.id ?? null,
+    !!state && !state.over && !state.your_turn && !busy,
+    useCallback(
+      async (e: Events) => {
+        if (!state) return;
+        const game = state.id;
+        // The cheap answer, and the one this poll gives nearly every time: the
+        // count has not moved, so nothing is fetched and nothing re-renders.
+        if (e.events === state.events) return;
+        setBusy(true);
+        try {
+          const fresh = await api.get(game);
+          // The same rule every other reply is judged by: a payload for a game
+          // the player has left is dropped, never drawn over the game they are
+          // on.
+          if (gameId.current !== game) return;
+          setState(fresh);
+          // **Grown: walk it. SHRUNK: reload and show nothing.** `events` is
+          // non-monotone because `undo` pops them (R-P5), and at a shared table
+          // the pop can be somebody else's. A run over a backwards range is not
+          // a turn that happened — there are no positions to fetch for it — so
+          // the account goes with the events it described.
+          // **`fresh.seat`, and it is read off the payload the walk will be
+          // drawn against.** `ClientState` is built for ONE seat, and at a
+          // hot-seat table the server builds for the acting seat whenever this
+          // caller holds it — so the seat this browser is watching from is the
+          // fresh payload's, not the one the poll started under.
+          if (e.events > state.events)
+            await landed(game, state.events, fresh.events, fresh.seat);
+          else {
+            setRun(null);
+            setWalk(null);
+            setFresh(false);
+          }
+        } catch (err) {
+          if (gameId.current === game)
+            setError(err instanceof ApiError ? err.message : String(err));
+        } finally {
+          setBusy(false);
+        }
+      },
+      [state, landed],
+    ),
   );
 
   // **Debounced, because a drag is not a click.**
@@ -319,18 +516,75 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
+  // ---- the door, below every hook and above every screen (M6.1 §7.1) -------
+  //
+  // Four answers, in order, and the ORDER is the rule:
+  //
+  // 1. `/api/me` refused. Say so and offer nothing — a sign-in form over a
+  //    server that cannot answer would take a name and lose it.
+  // 2. It has not answered yet: draw NOTHING. A default either way flashes the
+  //    wrong screen at half the players for one round trip, and the one that
+  //    flashes is the sign-in form at people who are already signed in.
+  // 3. Nobody is signed in under `claimed` — the one door this browser can
+  //    knock on. The form.
+  // 4. Nobody is signed in under Cloudflare Access or the edge Worker. There is
+  //    no form to offer: the identity comes from in front of the server, so the
+  //    only useful thing to say is which header was expected.
+  if (door.error) return <div className="setup door-error">{door.error}</div>;
+  if (!door.me) return null;
+  if (door.me.mode === "claimed" && !door.me.user)
+    return <SignIn onSignedIn={() => refresh()} notice={door.notice ?? undefined} />;
+  if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
+
+  // **Who you are, and how to stop being them.**
+  //
+  // The setup and dealing screens carry their own root and their own banner, so
+  // the strip is handed to them as a node rather than restated there: two copies
+  // would be two places for the sign-out wiring to drift.
+  //
+  // The button exists under `claimed` ONLY. Under the two edge doors there is
+  // nothing stored to clear, and a control that looked like it logged you out
+  // while Access kept letting you in would be a lie on screen.
+  const signOutButton = door.me.mode === "claimed" && (
+    <button type="button" className="ghost" onClick={signOut}>
+      sign out
+    </button>
+  );
+  const whoStrip = <span className="meta who">You are {door.me.user}</span>;
+  const who = (
+    <>
+      {whoStrip}
+      {signOutButton}
+    </>
+  );
+
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
   // and the game must agree about which boards are on, and a second
   // `useSections()` inside `NewGame` was two copies that stopped agreeing the
   // moment one of them was toggled (R-T12-4).
+  // **Two screens live in front of a game now, not one.** A table is dealt
+  // before it is played, and the dealing screen is where the person holding a
+  // seat chooses their card. `open` is what moves between them, so neither
+  // screen has to know what the other is for.
   if (!state) {
-    return (
-      <NewGame
+    return dealing ? (
+      <Dealing
+        game={dealing}
+        me={door.me.user}
         art={art}
         labels={labels}
         sections={enabled}
         onToggleSection={toggleSection}
-        onStarted={show}
+        onPlaying={() => open(dealing, true)}
+        onLeave={() => show(null)}
+        who={who}
+      />
+    ) : (
+      <NewGame
+        me={door.me.user}
+        onCreated={(t) => open(t.id)}
+        onOpen={(id) => open(id)}
+        who={who}
       />
     );
   }
@@ -450,14 +704,18 @@ export function App() {
         <GameMenu
           state={state}
           busy={busy}
-          onSwitch={(s) => {
+          signOut={signOutButton || undefined}
+          onSwitch={(id) => {
             setSurface(null);
             setScrubK(null);
             // The refusal on screen was about the game being left, so it goes
             // with it: a sentence from game A over game B describes nothing
             // the player can see.
             setError(null);
-            show(s);
+            // Through `open`, so a table still DEALING in this list opens its
+            // dealing screen instead of the 409 every session route answers it
+            // with.
+            return open(id);
           }}
           onNew={() => {
             setSurface(null);
@@ -466,6 +724,28 @@ export function App() {
             show(null);
           }}
         />
+        {/* **The strip here, and the BUTTON inside the Game menu.**
+            The banner is one row at 1440 and 1280 by a gate that measures it
+            (`the_screen_itself.spec.ts`), and the door's two controls together
+            cost 269px of a 1240px content box at 1280 — enough to break the
+            line, measured: 1325px of children and gaps against 1240. The strip
+            is a FACT a player reads at a glance and stays; the button is a
+            control, and the Game menu is already where this screen's session
+            controls live (which game, which other game, back to the form). The
+            screens with no Game menu — the form and the deal — keep both. */}
+        {whoStrip}
+        {/* **What the poll can say for itself, and `live` says nothing.**
+            A permanent "connected" mark is a thing people stop seeing, and the
+            banner is GATED at one row at 1440 and 1280 with 22px of room
+            measured — so the resting state costs no width at all. The two words
+            that do appear are the two a player would otherwise have to guess
+            at: the board is as old as the tab was hidden ("refreshing"), or
+            this browser cannot reach the server ("reconnecting"). */}
+        {link !== "live" && (
+          <span className="meta link" role="status">
+            {link}&hellip;
+          </span>
+        )}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px
@@ -512,11 +792,14 @@ export function App() {
             </div>
           </details>
         </nav>
-        {/* The payload is built for the seat to move, so the banner names WHO
-            is playing rather than saying "your turn" — at 3P or 4P one operator
+        {/* The payload is built for the CALLER's seat, which is not always the
+            seat to move — so the banner names WHO is playing rather than saying
+            "your turn". That is right on both counts: while somebody else is
+            thinking it says whose turn it is, and at 3P or 4P one operator
             drives more than one human seat, exactly as the terminal does, and a
             screen that will not say which seat is a screen you can play the
-            wrong turn on. */}
+            wrong turn on. `view.to_move` is the field it reads, and it means
+            the mover whoever asked. */}
         <span className="meta turn">
           {state.over ? (
             "finished"

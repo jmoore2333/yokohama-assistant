@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { renderApp } from "./test/harness";
+import { gameMenu, gamesNamed, renderApp } from "./test/harness";
 import { wire } from "./wire/contract";
 
 /** This file's own directory, as a `file:` URL.
@@ -21,12 +21,13 @@ describe("the Game menu", () => {
   it("lists the other saved games and switches to one", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [wire.options.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
     });
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.options.id)));
+    await user.click(gameMenu());
     const button = await screen.findByRole("button", { name: "sim-other" });
     await user.click(button);
     // The summary now names the other game, and the list has RECOMPUTED: the
@@ -46,16 +47,93 @@ describe("the Game menu", () => {
 
   it("returns to the setup screen without a reload", async () => {
     await renderApp(wire.options, (call) =>
-      call.method === "GET" && call.path.endsWith("/api/games") ? [wire.options.id] : undefined,
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? gamesNamed(wire.options.id)
+        : undefined,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByText(new RegExp(wire.options.id)));
+    await user.click(gameMenu());
     await user.click(screen.getByRole("button", { name: "New game" }));
     expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
     // A reload in jsdom is a no-op that would pass; the source is the check.
     for (const f of ["App.tsx", "GameMenu.tsx"]) {
       expect(readFileSync(new URL(`./${f}`, here), "utf8")).not.toMatch(/location\.reload/);
     }
+  });
+
+  // The list is a list of TABLES since M6.1, and a row has to say enough for a
+  // player with three games open to pick the right one: what it is CALLED, how
+  // many seats it has, and whether it is waiting on them. Before this it said
+  // an opaque id and nothing else.
+  it("names each table, its size, and what it is waiting on", async () => {
+    // Three rows off two corpus payloads. The menu hides the game you are
+    // already in, so each has to be a table other than this one — `id` is
+    // moved, and on two of them `name` is cleared, which is the `?? id`
+    // fallback a table opened without a name takes.
+    //
+    // `dealing` keeps a name, and it is INVENTED rather than the corpus's
+    // "wire": a table's name is free text a player typed, so there is no
+    // server-authored value to preserve, and the corpus's happens to collide
+    // with the id of the game this cell is playing.
+    const dealing = { ...wire.games.games[0]!, id: "sim-dealing", name: "Tuesday game" };
+    const waiting = { ...wire.table, id: "sim-waiting", name: null };
+    // `my_seats` is the one field the server varies per caller, and the corpus
+    // can only carry one caller's reading — so the row every player sees most
+    // often, their own turn, is the corpus's table read from the other side.
+    const yours = { ...wire.table, id: "sim-yours", name: null, my_seats: [wire.table.to_move!] };
+    await renderApp(wire.options, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? // The game being played is in the list too — `renderApp` opens it
+          // from the setup screen's copy of this same list — and the menu is
+          // then asserted NOT to offer it back.
+          { games: [...gamesNamed(wire.options.id).games, dealing, waiting, yours] }
+        : undefined,
+    );
+    await userEvent.setup().click(gameMenu());
+    expect(screen.queryByRole("button", { name: wire.options.id })).toBeNull();
+
+    const row = async (name: string) =>
+      (await screen.findByRole("button", { name })).closest(".game-row")!;
+    // The `name`, not the id: a table opened with a name is listed under it.
+    expect(await row(dealing.name)).toHaveTextContent("2P · dealing");
+    expect(await row("sim-waiting")).toHaveTextContent("2P · waiting on red@wire.test");
+    expect(await row("sim-yours")).toHaveTextContent("2P · your turn");
+
+    // §7.2: WHO is at the table, which is how a player picks between three of
+    // them. `tableWord` names at most one seat, and on the dealing row it names
+    // none at all — so without this a lobby says nothing about the company.
+    for (const seat of dealing.seats) {
+      expect(await row(dealing.name)).toHaveTextContent(
+        seat.kind === "bot" ? "the bot" : seat.user,
+      );
+    }
+  });
+
+  // **The way out lives here on the game screen, and the reason is measured.**
+  // The banner is gated at ONE ROW at 1440 and 1280 (`the_screen_itself.spec.ts`),
+  // and M6.1's door put a strip and a button in it: 1325px of children and gaps
+  // against a 1240px content box at 1280, which broke the line. The FACT ("You
+  // are …") is read at a glance and stays in the banner; the CONTROL joins this
+  // menu, where the screen's other session controls already are. The screens
+  // with no Game menu — the form and the deal — keep both.
+  it("carries the way out, beside the way to another game", async () => {
+    await renderApp(wire.options, (call) =>
+      call.method === "GET" && call.path.endsWith("/api/games")
+        ? gamesNamed(wire.options.id)
+        : undefined,
+    );
+    // The strip stays in the banner, and the button is no longer a CHILD of it
+    // — which is the half that keeps the banner one row. A direct-child query,
+    // because the menu is itself a banner child and a subtree query would find
+    // the button through it and prove nothing.
+    expect(document.querySelector("header.banner")).toHaveTextContent(`You are ${wire.me.user}`);
+    expect(
+      document.querySelector("header.banner > button"),
+      "the door's button is no longer a banner child",
+    ).toBeNull();
+    await userEvent.setup().click(gameMenu());
+    const out = await screen.findByRole("button", { name: "sign out" });
+    expect(out.closest(".game-menu")).not.toBeNull();
   });
 
   // **The same defect the app guards at its two other mutation controls**, in the
@@ -67,22 +145,32 @@ describe("the Game menu", () => {
   it("a double-clicked saved game is fetched once", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     const stub = await renderApp(wire.options, (call) => {
-      if (call.method === "GET" && call.path.endsWith("/api/games")) return [wire.options.id, "sim-other"];
+      if (call.method === "GET" && call.path.endsWith("/api/games"))
+        return gamesNamed(wire.options.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       return undefined;
     });
-    await userEvent.setup().click(screen.getByText(new RegExp(wire.options.id)));
+    await userEvent.setup().click(gameMenu());
     const row = await screen.findByRole("button", { name: "sim-other" });
     // The GAME, not its board panels: `matching` is a substring test, and the
     // switched-to game's `/ports` and `/labs` fetches contain the id too.
     const gets = () =>
       stub.calls.filter((c) => c.method === "GET" && c.path.endsWith("/api/games/sim-other"));
+    // **The FIRST request the switch makes, and since M6.1 that is `…/table`
+    // rather than the game** — `App.open` asks what a table is before it fetches
+    // the game, because a table still dealing refuses the game route. It is what
+    // this cell has to count in the same tick: the game fetch is now one await
+    // later, so counting it here would read zero however many clicks landed and
+    // the guard could be deleted with the cell still green.
+    const tableReads = () =>
+      stub.calls.filter((c) => c.path.endsWith("/api/games/sim-other/table"));
     act(() => {
       fireEvent.click(row);
       fireEvent.click(row);
     });
-    expect(gets()).toHaveLength(1);
+    expect(tableReads()).toHaveLength(1);
     await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    expect(tableReads()).toHaveLength(1);
     expect(gets()).toHaveLength(1);
   });
 });

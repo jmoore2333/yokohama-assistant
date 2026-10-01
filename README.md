@@ -199,16 +199,30 @@ file locally.
 ## The browser client
 
 **Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections). The same engine, the same words, and the same legal-move gate —
+corrections), with **M6.1 "identity and seats" live since 2026-09-15**. The same engine, the same
+words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
-about the game, so the terminal and the browser cannot disagree about a rule. A game starts on the
+about the game, so the terminal and the browser cannot disagree about a rule.
+
+**Starting a game.** You sign in first — the server reads one identity header, and which header
+it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
+is me, this is *someone@else*, or this is the bot, which is offered at two players only. Creating
+the table does not deal onto one screen: the table opens **dealing**, and each person opens it and
+keeps from **their own view**. You see your own two cards on the
 **set table** — the areas with their site cards and tokens, the port and the tracks, what the
 rulebook has on the table at the step where the two starting orders are dealt and chosen in
-secret — where you choose your first card over the real board rather than off a list, with the
-built-in bot's Keep score under each of your own two cards. The technologies and the goals go out
-at the two steps after that one, so they are revealed once you have chosen, and the bot's own two
-are face down: it keeps one of them, the record knows which, and you never see it.
+secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach
+your browser at all. The technologies and the goals go out at the two steps after that one, so
+they are revealed once you have chosen, and a bot seat's own two are face down: it keeps one of
+them, the record knows which, and you never see it. When the last person has kept, the game
+starts.
+
+While it runs, each browser is served **its own seat**: your hand is open, every other seat is a
+count. Your opponent's turn arrives on its own — the client asks a small endpoint every three
+seconds from a visible tab, and a turn that landed elsewhere plays back step by step across your
+table rather than snapping into place. Undo works as it always has against the bot; at a table
+with more than one person you can take back your own move only while your turn has not passed.
 
 ![The browser client at two players: the banner with the Boards menu and the reference buttons
 along the top, the end-trigger strip beneath it, and the table filling the left with the ten area
@@ -245,11 +259,13 @@ The track has one more stop than there are moves, because the last stop is *now*
 position with no move to name. It is a projection over the record the server already holds:
 browsing the past applies nothing, records nothing, and changes nothing.
 
-**It serves one seat at a time, and the replay route pins that seat.** The live payload shows
-whoever is moving — the hot-seat model the CLI is built on, one operator at one screen. The
-replay route deliberately does *not* follow the mover: walking every position returns one seat's
-hands and no other's, so the history cannot be harvested in a single pass. That is a fence
-against a sweep, and **not** authentication — see [Hosting](#hosting) below.
+**It serves one seat at a time, and the replay route serves the caller's own.** Every payload —
+live, historical, the card indexes, the explanations — is built for the seat the *caller* holds,
+so walking every position of the replay returns your own hands and no other's and the history
+cannot be harvested in a single pass. Before M6.1 that was a fence around whoever happened to be
+moving; it is now a fence around a named person, resolved from the identity header on every
+request. It is still **not** a claim that the identity was verified — see
+[Hosting](#hosting) below.
 
 **Asking the bot.** `Suggest` runs the production bot on your seat and shows the move, the line
 it searched, and the arithmetic term by term. `Why` does the same for a move a bot already
@@ -262,18 +278,22 @@ There is a **Help** panel in the client itself covering all of this, with the sa
 ```bash
 # from the repo root
 cd web && npm ci && npm run build && cd ..
-cargo run --release -p yokohama-web        # http://127.0.0.1:8080
+YOKOHAMA_WEB_IDENTITY=claimed cargo run --release -p yokohama-web   # http://127.0.0.1:8080
 ```
+
+`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `claimed` is the mode to
+run locally: you type a name and play under it.
 
 ## Hosting
 
 **Deployed since 2026-09-01: a container on the owner's Synology NAS behind Cloudflare Access at
-`yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The eighth build,
-`yokohama-web:0.5.0-m5.5.4`, has been live since 2026-09-06. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
+`yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The current build,
+`yokohama-web:0.5.0-m6.1`, has been live since 2026-09-15 and runs with
+`YOKOHAMA_WEB_IDENTITY=claimed`. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
 is the record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery
 as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
 §3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
-store, no port published to the LAN), §3.5–§3.6 every deployment so far with its numbers, §5
+store, no port published to the LAN), §3.5–§3.7 every deployment so far with its numbers, §5
 rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
 edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
 
@@ -290,25 +310,36 @@ What the code already does right:
   `YOKOHAMA_WEB_PORT` (default `8080`); a container needs `0.0.0.0` and that is a deployment's
   decision to make, not a default to inherit.
 
-**What is NOT true yet, stated plainly because the gap is the point:**
+**What M6.1 added, and what it did not:**
 
-- **This API has no authentication of any kind.** No header is read, no session exists, no route
-  is scoped to a person. `GET /api/games` returns every game id to any caller, so a game id is
-  not even a secret — the id space is enumerable in one request.
-- **So the identity gate has to be the proxy, and it has to be in front of everything.** An
-  origin reachable without going through Access is an origin with no access control at all.
-- **Trusting an injected header is not enough.** Cloudflare sends
+- **The API now reads an identity, and scopes every route to it.** `YOKOHAMA_WEB_IDENTITY`
+  selects one of three modes — `claimed`, `cf-access`, `worker` — and each reads **exactly one
+  header and no other**. There is **no default**: an unset variable exits at start-up, because a
+  server that guesses its own door is a server whose door nobody wrote down. `GET /api/games`
+  lists only the tables where the caller sits; every other game route resolves the caller to a
+  seat first and answers 403 to anyone who holds none.
+- **It does not authenticate anyone.** `claimed` is a *development door*: the name you type is
+  the name you play under, which is why it is only appropriate behind something that does
+  authenticate. `cf-access` and `worker` both trust an injected header.
+- **Trusting an injected header is not enough on its own.** Cloudflare sends
   `Cf-Access-Authenticated-User-Email` alongside a signed `Cf-Access-Jwt-Assertion`, and
   Cloudflare's own guidance is that validating the convenience header alone does not prevent
-  spoofing — the JWT signature has to be verified at the origin. That verification does not
-  exist in this crate today.
+  spoofing — the JWT signature has to be verified at the origin. **That verification does not
+  exist in this crate today**, which is why the `worker` mode is the stronger shape: an Access
+  policy attached to a Worker hands the identity to the Worker directly, and the origin trusts
+  only what that Worker sets.
+- **So the identity gate is still the proxy, and it still has to be in front of everything.** An
+  origin reachable without going through Access is an origin whose identity header anyone can
+  write.
 
-Until those are closed, the Access application in front of the tunnel is the only door — the
-container publishes no port, a local run stays on `127.0.0.1` — and the replay route's seat pin
-is what it is: a fence against sweeping a game's history in one pass, not a privacy boundary.
-Identity at the origin, the transport for a shared room, and the store are M6's three open
-questions; its entry artifact is
-[`docs/plans/2026-09-06-web-frontend-m6-handover.md`](docs/plans/2026-09-06-web-frontend-m6-handover.md).
+The Access application in front of the tunnel is the door — the container publishes no port, a
+local run stays on `127.0.0.1` — and what the server adds behind it is *scoping*: a person sees
+their own tables, their own seat's cards, and nobody else's, on every route including the replay.
+The transport for a shared room and the store are the questions still open; the lobby, live
+transport, chat and the hosting move are M6.2–M6.5 of
+[`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md),
+and M6.1's own record is
+[`docs/plans/2026-09-15-web-frontend-m6.1-close.md`](docs/plans/2026-09-15-web-frontend-m6.1-close.md).
 
 ## Status (2026-08-30)
 
@@ -466,7 +497,7 @@ semantics bump by design, and rev-6-and-earlier saves no longer resume.
 | `yokohama-oracle` | The independent referee: legal-move enumeration, final scoring + tie-break, and a prune-free route reference, authored from the rules sources under an audited independence rule (types-only dependency on the engine) |
 | `yokohama-difftest` | The harness comparing engine vs oracle: per-decision-point sweeps under two policies, terminal scoring comparison, three-way route-pruning check, self-contained divergence artifacts + `repro` tool |
 | `yokohama-bridge` | The BGA capture relay (Phase 3.5b): a localhost-only HTTP sink that appends what the read-only browser extension in `bridge/` observes to `bridge-captures/<table>.ndjson`, plus the feed pre-processor (typed NDJSON reader, payload-identity dedupe, structural supersession collapse for takebacks). Depends on NO engine crate and knows no rules — translating captures into engine moves is `yokohama-cli`'s `import`, deliberately on the other side of that boundary |
-| `yokohama-web` | **Merged 2026-09-11** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no play payload anywhere carries the setup seed |
+| `yokohama-web` | **Merged 2026-09-11** — the HTTP surface over the engine, with its browser client in `web/`. It routes, scopes and serializes and computes nothing about the game: every model is `screen_model`'s, every word is `describe`'s, every move goes through the same `Session` legal-list gate the terminal uses, so the two frontends cannot disagree about a rule. Read-only projections for the reference panels and the replay track, the two explanation routes that run a real search (`suggest`, `why`), and no payload anywhere carries the setup seed. Since M6.1 it reads one identity header per configured mode and builds every payload for the caller's own seat |
 | `gen-data` | YAML → Rust generator for the verified card/site data (never hand-edit `game/data.rs`) |
 
 ## Download and run
@@ -526,12 +557,13 @@ otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, 
 **The browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
 2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
 `npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
-client types), `npm test` (**393** vitest component tests over jsdom in 24 files, every payload
-of them server-emitted), and `npm run e2e` (**37** Playwright tests in six spec files — 36
+client types), `npm test` (**447** vitest component tests over jsdom in 29 files, every payload
+of them server-emitted), and `npm run e2e` (**38** Playwright tests in seven spec files — 37
 driving real Chromium against the real release binary, including a whole 2P game clicked through
-to a winner, the explanation chart's real geometry, the page's real width at four viewports per
+to a winner, TWO browsers signed in as two people playing one game and each checked for the
+other's cards, the explanation chart's real geometry, the page's real width at four viewports per
 seat count, the table's fit rule read as the rendered tile width, and the replay track walking
-the board back and returning it unchanged; the thirty-seventh needs no browser and is what keeps
+the board back and returning it unchanged; the thirty-eighth needs no browser and is what keeps
 the escape hatch below honest). Two further spec FILES are GENERATORS rather than tests and are
 dropped from the glob unless their own switch asks for them: `shots.spec.ts`
 (`YOKOHAMA_WEB_SHOTS=1`, two) writes the help panel's pictures, so leaving it in the run would

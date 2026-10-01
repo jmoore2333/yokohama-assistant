@@ -42,11 +42,21 @@ COPY dist/ /srv/web/dist/
 COPY art/  /srv/assets/art/
 
 # **`0.0.0.0` belongs HERE and not in the program.** The binary defaults to
-# loopback deliberately: this API has no authentication of any kind — no
-# session, no header read, and `GET /api/games` lists every game to any caller.
-# Binding wide is a statement that something in front is doing identity. On this
-# deployment that something is the Cloudflare tunnel plus its Access
-# application, and the container is never published to the LAN.
+# loopback deliberately. Since M6.1 this API does read an identity — one header,
+# named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route — but a
+# header is worth exactly what the path to the port is worth: `cf-access` and
+# `worker` trust a header only their own edge can set, and `claimed`
+# authenticates the door and not the seat. So binding wide is still a statement
+# that something in FRONT is doing identity. On this deployment that something
+# is the Cloudflare tunnel plus its Access application, and the container is
+# never published to the LAN.
+#
+# **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here.** There is no default
+# mode, and an image started without the variable **exits 1** naming the three
+# accepted values rather than guessing. Which door is in front is a fact about
+# the deployment and not about the image, so the container's create body carries
+# it (`RUNBOOK.md` §3) — and a deploy that drops that line does not come up,
+# which is the intended failure.
 ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
     YOKOHAMA_WEB_PORT=8080 \
     YOKOHAMA_WEB_DIST=/srv/web/dist \

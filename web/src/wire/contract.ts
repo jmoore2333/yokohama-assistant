@@ -54,8 +54,11 @@ import type {
   ApiErrorBody,
   ClientState,
   Counter,
-  Deal,
   DealCard,
+  DealingErrorBody,
+  DealView,
+  Events,
+  GamesList,
   IndexCard,
   IndexGroup,
   DecisionModel,
@@ -68,18 +71,19 @@ import type {
   Labels,
   LabsPanel,
   LogPanel,
+  Me,
   OptionRow,
   Outcome,
   Placing,
   PlayerModel,
   PortsPanel,
-  Preview,
   PromptState,
   Provenance,
   Ranked,
   RefusalRow,
   SuggestOk,
   SuggestResponse,
+  TableView,
   Term,
   Terminal,
   TileModel,
@@ -96,14 +100,17 @@ import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
 import error from "./error.json";
+import events from "./events.json";
+import eventsDealing from "./events_dealing.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
 import health from "./health.json";
-import hiddenHand from "./hidden_hand.json";
 import labels from "./labels.json";
 import labs from "./labs.json";
 import locked from "./locked.json";
 import log from "./log.json";
+import me from "./me.json";
+import meSignedOut from "./me_signed_out.json";
 import atK from "./at_k.json";
 import options from "./options.json";
 import options4p from "./options_4p.json";
@@ -115,8 +122,15 @@ import placeASelected from "./place_a_selected.json";
 import placeB from "./place_b.json";
 import placeBSelected from "./place_b_selected.json";
 import ports from "./ports.json";
-import preview from "./preview.json";
-import previewBot from "./preview_bot.json";
+import tableDealing from "./table_dealing.json";
+import table from "./table.json";
+import deal from "./deal.json";
+import dealWaiting from "./deal_waiting.json";
+import dealing409 from "./dealing_409.json";
+import gamesList from "./games.json";
+import notSeated403 from "./not_seated_403.json";
+import undoRefused403 from "./undo_refused_403.json";
+import wrongSeat403 from "./wrong_seat_403.json";
 import refused from "./refused.json";
 import retreat from "./retreat.json";
 import retreatAnswered from "./retreat_answered.json";
@@ -171,7 +185,6 @@ const _placeB: Widen<ClientState> = placeB;
 const _placeBSelected: Widen<ClientState> = placeBSelected;
 const _gameOver: Widen<ClientState> = gameOver;
 const _watching: Widen<ClientState> = watching;
-const _hiddenHand: Widen<ClientState> = hiddenHand;
 const _locked: Widen<ClientState> = locked;
 const _feeNonzero: Widen<ClientState> = feeNonzero;
 const _choiceAssistantMove: Widen<ClientState> = choiceAssistantMove;
@@ -179,9 +192,41 @@ const _choiceChurchSpace: Widen<ClientState> = choiceChurchSpace;
 const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
-const _preview: Widen<Preview> = preview;
-const _previewBot: Widen<Preview> = previewBot;
+// ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
+//
+// `table_dealing` and `table` are the SAME type at its two statuses, and both
+// are here because a widened `TableStatus` cannot tell them apart: `to_move`
+// and `over` are null on one and present on the other, and only a payload of
+// each proves both shapes are the type the client declares.
+const _tableDealing: Widen<TableView> = tableDealing;
+const _table: Widen<TableView> = table;
+// Likewise the deal at its two shapes: the caller's cards, and the null pair
+// that is the "waiting for the others" screen.
+const _deal: Widen<DealView> = deal;
+const _dealWaiting: Widen<DealView> = dealWaiting;
+const _gamesList: Widen<GamesList> = gamesList;
+// The signal at both of the statuses the client polls through. Two payloads
+// because `to_move` is null on one and a seat on the other, and a widened
+// `status` cannot tell the two apart on its own.
+const _events: Widen<Events> = events;
+const _eventsDealing: Widen<Events> = eventsDealing;
+const _dealing409: Widen<DealingErrorBody> = dealing409;
+const _notSeated403: Widen<ApiErrorBody> = notSeated403;
+// The two refusals a SEATED caller meets by acting out of turn (spec §8). The
+// same `ApiErrorBody` shape as the 403 above, and committed for the SENTENCES:
+// the undo rule runs in front of the acting-seat fence (R-5.1), so the two
+// answer a player differently and a server that lost the ordering would answer
+// both the same way.
+const _wrongSeat403: Widen<ApiErrorBody> = wrongSeat403;
+const _undoRefused403: Widen<ApiErrorBody> = undoRefused403;
+
 const _health: Widen<Health> = health;
+// Both sides of `/api/me`: signed in, and the payload a caller with no identity
+// is handed. The second is a real response and not a construction — `user` is
+// `null` there, and a type alone cannot say that the SERVER answers rather than
+// refusing.
+const _me: Widen<Me> = me;
+const _meOut: Widen<Me> = meSignedOut;
 const _error: Widen<ApiErrorBody> = error;
 const _ports: Widen<PortsPanel> = ports;
 const _labs: Widen<LabsPanel> = labs;
@@ -239,7 +284,6 @@ const _pOptionsMany: PromptOf<"options"> = optionsMany.prompt;
 const _pOptionsPriced: PromptOf<"options"> = optionsPriced.prompt;
 const _pOptions4p: PromptOf<"options"> = options4p.prompt;
 const _pRefused: PromptOf<"options"> = refused.prompt;
-const _pHiddenHand: PromptOf<"options"> = hiddenHand.prompt;
 const _pPick: PromptOf<"pick"> = pick.prompt;
 const _pRetreat: PromptOf<"retreat"> = retreat.prompt;
 const _pRetreatAnswered: PromptOf<"retreat"> = retreatAnswered.prompt;
@@ -257,7 +301,7 @@ const _pLocked: PromptOf<"locked"> = locked.prompt;
 // `reveal` has no fixture — live mode only; see `wire_fixtures.rs`'s exemption.
 
 void [
-  _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused, _pHiddenHand,
+  _pOptions, _pOptionsMany, _pOptionsPriced, _pOptions4p, _pRefused,
   _pPick, _pRetreat, _pRetreatAnswered, _pPlaceA, _pPlaceASelected, _pPlaceB,
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
@@ -267,7 +311,10 @@ void [
 // reference keeps the compiler's other rule from deleting the check.
 void [
   _options, _options4p, _optionsMany, _optionsPriced, _pick, _retreat, _retreatAnswered, _placeA, _placeASelected, _placeB, _placeBSelected,
-  _gameOver, _watching, _hiddenHand, _locked, _refused, _labels, _preview, _previewBot, _health, _error,
+  _gameOver, _watching, _locked, _refused, _labels, _health, _me, _meOut, _error,
+  _tableDealing, _table, _deal, _dealWaiting, _gamesList, _dealing409, _notSeated403,
+  _wrongSeat403, _undoRefused403,
+  _events, _eventsDealing,
   _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
@@ -349,9 +396,18 @@ const HISTORICAL_FRAME = [
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",
 ] as const;
-const HEALTH = ["server_version", "semantics_rev", "rules_hash"] as const;
-const PREVIEW = ["seed", "table", "deals"] as const;
-const DEAL = ["seat", "is_bot", "cards"] as const;
+const HEALTH = ["server_version", "semantics_rev", "rules_hash", "identity"] as const;
+const ME = ["mode", "user"] as const;
+const TABLE = [
+  "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
+  "seats", "chosen", "my_seats", "status", "to_move", "over",
+] as const;
+const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
+const GAMES_LIST = ["games"] as const;
+// The dealing 409 is the ONE refusal that carries a second key, and the only
+// one this client branches on rather than displays.
+const DEALING_ERROR = ["error", "status"] as const;
+const EVENTS = ["events", "to_move", "status", "your_turn"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
@@ -398,8 +454,13 @@ const _ar: KeysOf<AreasPanel, typeof AREAS> = AREAS;
 const _lo: KeysOf<LogPanel, typeof LOG> = LOG;
 const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
-const _pv: KeysOf<Preview, typeof PREVIEW> = PREVIEW;
-const _dl: KeysOf<Deal, typeof DEAL> = DEAL;
+// `_me` is taken by the widened assignment above, so the key list takes `_mk`.
+const _mk: KeysOf<Me, typeof ME> = ME;
+const _tv: KeysOf<TableView, typeof TABLE> = TABLE;
+const _dv: KeysOf<DealView, typeof DEAL_VIEW> = DEAL_VIEW;
+const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
+const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
+const _ev: KeysOf<Events, typeof EVENTS> = EVENTS;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
 const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
@@ -420,7 +481,9 @@ const _ct: KeysOf<Counter, typeof COUNTER> = COUNTER;
 const _ig: KeysOf<IndexGroup, typeof INDEX_GROUP> = INDEX_GROUP;
 const _hf: KeysOf<HistoricalFrame, typeof HISTORICAL_FRAME> = HISTORICAL_FRAME;
 const _ic: KeysOf<IndexCard, typeof INDEX_CARD> = INDEX_CARD;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _pv, _dl, _dc, _er,
+void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+      _ev,
+      _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf];
 
@@ -440,8 +503,12 @@ export const KEYS = {
   log: LOG,
   labels: LABELS,
   health: HEALTH,
-  preview: PREVIEW,
-  deal: DEAL,
+  me: ME,
+  table: TABLE,
+  dealView: DEAL_VIEW,
+  gamesList: GAMES_LIST,
+  events: EVENTS,
+  dealingError: DEALING_ERROR,
   dealCard: DEAL_CARD,
   apiError: API_ERROR,
   suggestResponse: SUGGEST_RESPONSE,
@@ -495,7 +562,6 @@ export const wire = {
   placeBSelected: as<ClientState>(placeBSelected),
   gameOver: as<ClientState>(gameOver),
   watching: as<ClientState>(watching),
-  hiddenHand: as<ClientState>(hiddenHand),
   locked: as<ClientState>(locked),
   feeNonzero: as<ClientState>(feeNonzero),
   choiceAssistantMove: as<ClientState>(choiceAssistantMove),
@@ -503,9 +569,20 @@ export const wire = {
   choiceWarehouseTake: as<ClientState>(choiceWarehouseTake),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
-  preview: as<Preview>(preview),
-  previewBot: as<Preview>(previewBot),
+  tableDealing: as<TableView>(tableDealing),
+  table: as<TableView>(table),
+  deal: as<DealView>(deal),
+  dealWaiting: as<DealView>(dealWaiting),
+  games: as<GamesList>(gamesList),
+  events: as<Events>(events),
+  eventsDealing: as<Events>(eventsDealing),
+  dealing409: as<DealingErrorBody>(dealing409),
+  notSeated403: as<ApiErrorBody>(notSeated403),
+  wrongSeat403: as<ApiErrorBody>(wrongSeat403),
+  undoRefused403: as<ApiErrorBody>(undoRefused403),
   health: as<Health>(health),
+  me: as<Me>(me),
+  meSignedOut: as<Me>(meSignedOut),
   error: as<ApiErrorBody>(error),
   ports: as<PortsPanel>(ports),
   labs: as<LabsPanel>(labs),
@@ -547,6 +624,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.options, wire.optionsMany, wire.options4p, wire.optionsPriced, wire.pick, wire.retreat,
   wire.retreatAnswered, wire.placeA, wire.placeASelected,
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
-  wire.refused, wire.hiddenHand, wire.feeNonzero,
+  wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
 ];

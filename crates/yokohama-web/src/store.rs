@@ -9,25 +9,135 @@
 //!
 //! The trait is byte-shaped, not path-shaped, so an object store is a second
 //! implementation rather than a refactor.
+//!
+//! **Two things changed shape for M6.1, and both are about what a second
+//! document costs.** A game is no longer one blob: beside the `GameRecord`
+//! there is a table document saying who may sit at it, so the trait is keyed by
+//! [`Doc`] rather than by an id alone — a second store, or a second directory,
+//! would have made "the record and its table" two things that can disagree with
+//! nothing able to say so. And the write is CONDITIONAL
+//! ([`Store::write_if_version`]): the compare-and-swap `Games::persist` already
+//! performed by hand, moved to the seam where the store can actually hold it.
+//! Within a process that swap is atomic; ACROSS processes it detects a conflict
+//! and does not prevent one, which is exactly the property `persist` has always
+//! had — restated here rather than quietly widened.
 
 use std::path::{Path, PathBuf};
 
 /// A game's name. Also a filename, which is why [`is_safe_id`] exists.
 pub type GameId = String;
 
-pub trait SessionStore: Send + Sync {
-    /// Every game this store holds, in a stable order.
-    fn list(&self) -> Result<Vec<GameId>, String>;
-    /// The stored `GameRecord` JSON.
-    fn read(&self, id: &str) -> Result<String, String>;
-    /// Whether `id` is stored. **An unreadable entry answers `true`** — see the
-    /// `FsStore` implementation for why conflating this with `read().is_ok()`
-    /// destroyed data.
-    fn exists(&self, id: &str) -> Result<bool, String>;
-    /// Replace `id`'s record. Must not leave a partial file behind.
-    fn write(&self, id: &str, json: &str) -> Result<(), String>;
+/// Which document under a game id.
+///
+/// The two are separate documents with separate versions, so a write to one is
+/// never a conflict on the other: a seat change and a move are different
+/// questions and land independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Doc {
+    /// The `GameRecord` JSON — `<id>.json`. What the engine replays; the only
+    /// durable truth about a game's position.
+    Record,
+    /// The table document — who may sit at this game, and in which seat.
+    /// `<id>.table.json`. Written by `Games::create` and by every `keep`; it is
+    /// what `GET /api/games` lists over, so a record with no table beside it is
+    /// a game this API does not serve (R-P7).
+    Table,
+}
+
+impl Doc {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Record => ".json",
+            Self::Table => ".table.json",
+        }
+    }
+}
+
+/// An opaque version of a stored document.
+///
+/// For the file and memory stores it is the digest of the exact bytes, so two
+/// writers of identical bytes agree; a Postgres store would carry a row
+/// version instead and nothing above this module would notice. Callers compare
+/// one and pass it back; they never construct one.
+///
+/// In-process only and never persisted, which is why a hasher with no
+/// stability guarantee across builds is exactly right here: the only
+/// comparison is between two values computed by one running process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Version(u64);
+
+/// The version a store reports for these exact bytes.
+pub fn version_of(json: &str) -> Version {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut h);
+    Version(h.finish())
+}
+
+/// Why a conditional write did not land.
+///
+/// The split is the point: a CONFLICT means this writer is wrong about the
+/// world and its handle should be dropped, while an I/O failure means the
+/// writer is right and the disk is not. `Games::persist` acts on exactly that
+/// difference — see `Games::conflict`.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The document is not at `expected`: `current` is what is there now, or
+    /// `None` when the document is absent and a replace was asked for.
+    Conflict { current: Option<Version> },
+    Io(String),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict { current: Some(_) } => {
+                write!(f, "the stored document changed under this writer")
+            }
+            Self::Conflict { current: None } => write!(f, "the document is absent"),
+            Self::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+pub trait Store: Send + Sync {
+    /// Every id holding a `doc`, sorted.
+    fn list(&self, doc: Doc) -> Result<Vec<GameId>, String>;
+    /// The document and its version, or `None` when absent. An unreadable
+    /// present file is an `Err`, never `None` — conflating "cannot be read"
+    /// with "is not there" is what let a new game overwrite a real one, and the
+    /// distinction is now in the return type rather than in a second method.
+    fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String>;
+    /// `expected: None` creates and refuses a present document; `Some(v)`
+    /// replaces only if the current version is `v`. Atomic within a process;
+    /// across processes it DETECTS a conflict and does not prevent one — the
+    /// property `Games::persist` has always had, restated at the seam.
+    fn write_if_version(
+        &self,
+        doc: Doc,
+        id: &str,
+        json: &str,
+        expected: Option<Version>,
+    ) -> Result<Version, WriteError>;
+    /// Both documents. An `Err` only when NEITHER was there.
     fn delete(&self, id: &str) -> Result<(), String>;
 }
+
+/// The id suffix [`Doc::Table`] reserves, which no game may end with.
+///
+/// `<id>.table.json` IS `<id>`'s table document, and a dot is a legal character
+/// in a name — `is_safe_id`'s own cell lists `A.b-c_d` as good — so without
+/// this the game `mygame.table` would have its RECORD written to the exact path
+/// `mygame`'s table occupies. On `FsStore` that is reachable data loss and not
+/// merely confusion: `list(Doc::Record)` excludes the table suffix, so the game
+/// vanishes from the list, and `delete("mygame")` — for a `mygame` that never
+/// existed — removes the other game's record and answers `Ok`, which the route
+/// serves as a 200.
+///
+/// `MemStore` keys `(Doc, GameId)` and has none of this. That the two
+/// implementations of one trait diverge is exactly why the guard lives HERE,
+/// above both, rather than in the store that has the problem.
+const RESERVED_ID_SUFFIX: &str = ".table";
 
 /// Whether `id` may be used as a storage key.
 ///
@@ -36,74 +146,67 @@ pub trait SessionStore: Send + Sync {
 /// on the list rather than by being enumerated. The same shape (and the same
 /// reasoning) as `yokohama_bridge::capture::safe_table_id`, which guards the
 /// one other place in this repo where an outside string becomes a filename.
+///
+/// The one SUBTRACTION from that allowlist is [`RESERVED_ID_SUFFIX`] — read it
+/// for why a name may not end in `.table`.
 pub fn is_safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        && !spells_a_table_document(id)
 }
 
-/// The local implementation: one JSON file per game in a directory.
+/// Whether `id` would spell another game's table document.
+///
+/// **Case-INSENSITIVE**, because the filesystems this is written and tested on
+/// are: on APFS and NTFS, `mygame.TABLE.json` and `mygame.table.json` are one
+/// file, so a case-sensitive guard would close the hole on the deployment and
+/// leave it open on both workstations.
+///
+/// The slice is safe because `is_safe_id` has already established that every
+/// character is ASCII by the time `&&` reaches this call — the checks are
+/// short-circuiting and ordered.
+fn spells_a_table_document(id: &str) -> bool {
+    id.len() >= RESERVED_ID_SUFFIX.len()
+        && id[id.len() - RESERVED_ID_SUFFIX.len()..].eq_ignore_ascii_case(RESERVED_ID_SUFFIX)
+}
+
+/// The local implementation: one JSON file per document in a directory.
 pub struct FsStore {
     dir: PathBuf,
+    /// Held across the read, the compare AND the write of
+    /// [`Store::write_if_version`], which is what makes the swap atomic within
+    /// this process. It does NOT reach across processes — see the trait's doc.
+    lock: std::sync::Mutex<()>,
 }
 
 impl FsStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self { dir: dir.into(), lock: std::sync::Mutex::new(()) }
     }
 
-    fn path(&self, id: &str) -> Result<PathBuf, String> {
+    fn path(&self, doc: Doc, id: &str) -> Result<PathBuf, String> {
         if !is_safe_id(id) {
             return Err(format!("{id:?} is not a usable game name"));
         }
-        Ok(self.dir.join(format!("{id}.json")))
-    }
-}
-
-impl SessionStore for FsStore {
-    fn list(&self) -> Result<Vec<GameId>, String> {
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(e) => e,
-            // An absent directory is an empty store, not a failure: the first
-            // save creates it, and a fresh install must not have to be
-            // provisioned before it can answer "what games do I have?".
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.to_string()),
-        };
-        let mut ids: Vec<GameId> = entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                    return None;
-                }
-                let id = p.file_stem()?.to_str()?.to_string();
-                is_safe_id(&id).then_some(id)
-            })
-            .collect();
-        ids.sort();
-        Ok(ids)
+        Ok(self.dir.join(format!("{id}{}", doc.suffix())))
     }
 
-    fn read(&self, id: &str) -> Result<String, String> {
-        std::fs::read_to_string(self.path(id)?).map_err(|e| e.to_string())
-    }
-
-    /// Whether `id` is stored — and an unreadable file answers **yes**.
-    ///
-    /// Split out from `read` because the two questions want opposite error
-    /// handling and conflating them destroys data. `create`'s duplicate guard
-    /// used `read(...).is_ok()`, which reads every failure as "absent": a
-    /// stored game whose file is momentarily unreadable (EACCES, or EMFILE
-    /// under load this server invites) was answered 201 and overwritten. Only
-    /// `NotFound` is absence; every other error is a file that exists and
-    /// cannot be spoken for, which is the safest thing to call occupied.
-    fn exists(&self, id: &str) -> Result<bool, String> {
-        match std::fs::metadata(self.path(id)?) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(_) => Ok(true),
+    /// The current document, with no lock of its own — the caller holds it.
+    fn read_locked(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+        match std::fs::read_to_string(self.path(doc, id)?) {
+            Ok(json) => {
+                let v = version_of(&json);
+                Ok(Some((json, v)))
+            }
+            // Absence is `NotFound` and NOTHING else. Every other error is a
+            // file that exists and cannot be spoken for; answering "absent" for
+            // one of those let `create` overwrite a real game — measured with a
+            // `chmod 000`: the POST returned 201 and the original record was
+            // gone.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -122,19 +225,20 @@ impl SessionStore for FsStore {
     /// where the durable record held a different game than the handle the
     /// 201'd client was playing. The per-game `Mutex<Repl>` does not cover it,
     /// because `create` and the cold-rebuild in `handle` both persist outside
-    /// any shared lock.
+    /// any shared lock. The store's own `lock` now serializes writers WITHIN a
+    /// process; the unique name is what holds across processes, where no mutex
+    /// reaches.
     ///
     /// A private counter and the pid, rather than a random name: no dependency,
     /// unique within a process by construction, and unique across processes
     /// because the pid is. A leftover temp from a crash is inert — it is never
-    /// read, never listed (`list` takes only `.json`), and the next write for
-    /// that id uses a different name.
-    fn write(&self, id: &str, json: &str) -> Result<(), String> {
+    /// read, never listed (`list` takes only a `Doc`'s own suffix), and the
+    /// next write for that id uses a different name.
+    fn publish(&self, path: &Path, json: &str) -> Result<(), String> {
         use std::io::Write;
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
 
-        let path = self.path(id)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -148,22 +252,86 @@ impl SessionStore for FsStore {
             f.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
             f.sync_all().map_err(|e| e.to_string())?;
         }
-        let renamed = std::fs::rename(&tmp, &path).map_err(|e| e.to_string());
+        let renamed = std::fs::rename(&tmp, path).map_err(|e| e.to_string());
         if renamed.is_err() {
             // Do not leave our own temp behind on a failed publish.
             let _ = std::fs::remove_file(&tmp);
         }
         renamed
     }
+}
+
+impl Store for FsStore {
+    fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            // An absent directory is an empty store, not a failure: the first
+            // save creates it, and a fresh install must not have to be
+            // provisioned before it can answer "what games do I have?".
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut ids: Vec<GameId> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.path().file_name()?.to_str()?.to_string();
+                // `<id>.table.json` ends with `.json` too, and stripping that
+                // suffix leaves `<id>.table` — which `is_safe_id` now REFUSES,
+                // by [`RESERVED_ID_SUFFIX`]. So this branch is redundant
+                // defence rather than the thing that keeps a table document out
+                // of a record listing, and it is kept as the second of two:
+                // the id guard closes the name at the way in, and this closes
+                // the listing even for a file some other writer left there.
+                if doc == Doc::Record && name.ends_with(Doc::Table.suffix()) {
+                    return None;
+                }
+                let id = name.strip_suffix(doc.suffix())?.to_string();
+                is_safe_id(&id).then_some(id)
+            })
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+        self.read_locked(doc, id)
+    }
+
+    fn write_if_version(
+        &self,
+        doc: Doc,
+        id: &str,
+        json: &str,
+        expected: Option<Version>,
+    ) -> Result<Version, WriteError> {
+        let path = self.path(doc, id).map_err(WriteError::Io)?;
+        let _swap = self.lock.lock().expect("store lock");
+        let current = self.read_locked(doc, id).map_err(WriteError::Io)?.map(|(_, v)| v);
+        match (expected, current) {
+            // A create, and the document is absent: ours.
+            (None, None) => {}
+            // A replace, and the document is still what the caller last saw.
+            (Some(want), Some(have)) if want == have => {}
+            (_, current) => return Err(WriteError::Conflict { current }),
+        }
+        self.publish(&path, json).map_err(WriteError::Io)?;
+        Ok(version_of(json))
+    }
 
     fn delete(&self, id: &str) -> Result<(), String> {
-        let path = self.path(id)?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(format!("no game named {id:?}"))
+        let mut removed = false;
+        for doc in [Doc::Record, Doc::Table] {
+            let path = self.path(doc, id)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.to_string()),
             }
-            Err(e) => Err(e.to_string()),
+        }
+        if removed {
+            Ok(())
+        } else {
+            Err(format!("no game named {id:?}"))
         }
     }
 }
@@ -171,38 +339,68 @@ impl SessionStore for FsStore {
 /// An in-memory store, for tests and for a run that must leave no trace.
 #[derive(Default)]
 pub struct MemStore {
-    games: std::sync::Mutex<std::collections::BTreeMap<GameId, String>>,
+    docs: std::sync::Mutex<std::collections::BTreeMap<(Doc, GameId), String>>,
 }
 
-impl SessionStore for MemStore {
-    fn list(&self) -> Result<Vec<GameId>, String> {
-        Ok(self.games.lock().expect("store lock").keys().cloned().collect())
-    }
-    fn exists(&self, id: &str) -> Result<bool, String> {
-        Ok(self.games.lock().expect("store lock").contains_key(id))
-    }
-    fn read(&self, id: &str) -> Result<String, String> {
-        self.games
+impl Store for MemStore {
+    fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+        Ok(self
+            .docs
             .lock()
             .expect("store lock")
-            .get(id)
-            .cloned()
-            .ok_or_else(|| format!("no game named {id:?}"))
+            .keys()
+            .filter(|(d, _)| *d == doc)
+            .map(|(_, id)| id.clone())
+            .collect())
     }
-    fn write(&self, id: &str, json: &str) -> Result<(), String> {
+
+    fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
         if !is_safe_id(id) {
             return Err(format!("{id:?} is not a usable game name"));
         }
-        self.games.lock().expect("store lock").insert(id.to_string(), json.to_string());
-        Ok(())
-    }
-    fn delete(&self, id: &str) -> Result<(), String> {
-        self.games
+        Ok(self
+            .docs
             .lock()
             .expect("store lock")
-            .remove(id)
-            .map(|_| ())
-            .ok_or_else(|| format!("no game named {id:?}"))
+            .get(&(doc, id.to_string()))
+            .map(|json| (json.clone(), version_of(json))))
+    }
+
+    fn write_if_version(
+        &self,
+        doc: Doc,
+        id: &str,
+        json: &str,
+        expected: Option<Version>,
+    ) -> Result<Version, WriteError> {
+        if !is_safe_id(id) {
+            return Err(WriteError::Io(format!("{id:?} is not a usable game name")));
+        }
+        // The map's own lock spans the read, the compare and the write, which
+        // is the same guarantee `FsStore` buys with a separate mutex.
+        let mut docs = self.docs.lock().expect("store lock");
+        let key = (doc, id.to_string());
+        let current = docs.get(&key).map(|json| version_of(json));
+        match (expected, current) {
+            (None, None) => {}
+            (Some(want), Some(have)) if want == have => {}
+            (_, current) => return Err(WriteError::Conflict { current }),
+        }
+        docs.insert(key, json.to_string());
+        Ok(version_of(json))
+    }
+
+    fn delete(&self, id: &str) -> Result<(), String> {
+        let mut docs = self.docs.lock().expect("store lock");
+        let removed = [Doc::Record, Doc::Table]
+            .into_iter()
+            .filter(|doc| docs.remove(&(*doc, id.to_string())).is_some())
+            .count();
+        if removed > 0 {
+            Ok(())
+        } else {
+            Err(format!("no game named {id:?}"))
+        }
     }
 }
 
@@ -219,6 +417,169 @@ pub fn default_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    /// An `FsStore` on a temporary directory that removes itself.
+    ///
+    /// A `Drop` rather than a trailing `remove_dir_all`, so a cell that PANICS
+    /// still cleans up: a failing test that leaves a directory behind makes the
+    /// next run's failure a different one.
+    struct TempFs(FsStore, PathBuf);
+
+    impl Drop for TempFs {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+
+    impl Store for TempFs {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.0.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            self.0.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            self.0.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.0.delete(id)
+        }
+    }
+
+    /// Both implementations, so a cell written once binds both.
+    ///
+    /// A property asserted only against `MemStore` is a property of the test
+    /// double; the server runs on `FsStore`, and the two have different
+    /// failure modes (a directory that is not there, a file that cannot be
+    /// read). Every cell below names which store it was running when it fails.
+    fn both(name: &str) -> Vec<(&'static str, Arc<dyn Store>)> {
+        let dir =
+            std::env::temp_dir().join(format!("yokohama-store-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        vec![
+            ("mem", Arc::new(MemStore::default()) as Arc<dyn Store>),
+            ("fs", Arc::new(TempFs(FsStore::new(&dir), dir.clone())) as Arc<dyn Store>),
+        ]
+    }
+
+    /// **The conditional write, in both of its refusals.**
+    ///
+    /// `expected: None` means "create", so a present document refuses rather
+    /// than being overwritten; `Some(v)` means "replace what I last saw", so a
+    /// version that has moved on refuses and NAMES what is there now. The
+    /// second is what `Games::persist` performed by hand and now delegates.
+    #[test]
+    fn a_create_refuses_a_present_document_and_a_stale_version_conflicts() {
+        for (name, store) in both("cas") {
+            let v1 = store.write_if_version(Doc::Record, "g", "{\"a\":1}", None).expect(name);
+            match store.write_if_version(Doc::Record, "g", "{\"a\":2}", None) {
+                Err(WriteError::Conflict { current: Some(c) }) => assert_eq!(c, v1, "{name}"),
+                other => panic!("{name}: a second create must conflict, got {other:?}"),
+            }
+            let v2 = store.write_if_version(Doc::Record, "g", "{\"a\":2}", Some(v1)).expect(name);
+            assert_ne!(v1, v2);
+            match store.write_if_version(Doc::Record, "g", "{\"a\":3}", Some(v1)) {
+                Err(WriteError::Conflict { current: Some(c) }) => {
+                    assert_eq!(c, v2, "{name}: names the current")
+                }
+                other => panic!("{name}: a stale version must conflict, got {other:?}"),
+            }
+            let (json, v) = store.read(Doc::Record, "g").expect(name).expect("present");
+            assert_eq!((json.as_str(), v), ("{\"a\":2}", v2));
+        }
+    }
+
+    /// **Two documents under one id are two documents.**
+    ///
+    /// The record and the table are written, versioned and listed
+    /// independently — a game with no table is not a game with an empty one —
+    /// and only `delete` takes both, because a game that is gone is gone.
+    ///
+    /// The last two assertions are the retired memory-store cell's: an unsafe
+    /// id is refused by BOTH stores, not only by the one that touches a
+    /// filesystem, and a second delete is an error rather than a silent ok.
+    ///
+    /// **One id here carries a DOT, and that is the point of running this cell
+    /// on both stores.** `MemStore` keys `(Doc, GameId)` and cannot confuse two
+    /// documents whatever the name; `FsStore` spells each as one filename in
+    /// one directory and has to tell `a.b.json` from `a.b.table.json`. With
+    /// only dotless ids the cell would pass against a store that could not do
+    /// that — which is the divergence `both()` exists to catch.
+    #[test]
+    fn the_two_kinds_are_separate_documents_under_one_id() {
+        for (name, store) in both("kinds") {
+            // The dotted round trip first, so a store that cannot separate two
+            // documents under a dotted name fails here rather than later.
+            store.write_if_version(Doc::Record, "a.b", "{\"r\":0}", None).expect(name);
+            store.write_if_version(Doc::Table, "a.b", "{\"t\":0}", None).expect(name);
+            assert_eq!(
+                store.read(Doc::Record, "a.b").expect(name).expect("present").0,
+                "{\"r\":0}",
+                "{name}: a dotted id's record is its own",
+            );
+            assert_eq!(
+                store.read(Doc::Table, "a.b").expect(name).expect("present").0,
+                "{\"t\":0}",
+                "{name}: and so is its table",
+            );
+
+            store.write_if_version(Doc::Record, "g", "{\"r\":1}", None).expect(name);
+            assert!(store.read(Doc::Table, "g").expect(name).is_none(), "{name}");
+            store.write_if_version(Doc::Table, "g", "{\"t\":1}", None).expect(name);
+            assert_eq!(
+                store.list(Doc::Table).expect(name),
+                vec!["a.b".to_string(), "g".to_string()],
+            );
+            store.write_if_version(Doc::Record, "h", "{\"r\":2}", None).expect(name);
+            assert_eq!(
+                store.list(Doc::Table).expect(name),
+                vec!["a.b".to_string(), "g".to_string()],
+                "{name}: h has no table",
+            );
+            assert_eq!(
+                store.list(Doc::Record).expect(name),
+                vec!["a.b".to_string(), "g".to_string(), "h".to_string()],
+                "{name}: and a dotted record is listed as a record, not hidden as a table",
+            );
+            store.delete("g").expect(name);
+            assert!(
+                store.read(Doc::Record, "g").expect(name).is_none()
+                    && store.read(Doc::Table, "g").expect(name).is_none(),
+                "{name}: a delete takes both",
+            );
+            assert!(
+                store.delete("g").is_err(),
+                "{name}: deleting twice is an error, not a silent ok",
+            );
+            store.delete("a.b").expect(name);
+            assert!(
+                store.read(Doc::Record, "a.b").expect(name).is_none()
+                    && store.read(Doc::Table, "a.b").expect(name).is_none(),
+                "{name}: and a dotted id's delete takes both of ITS documents",
+            );
+            assert!(
+                store.write_if_version(Doc::Record, "../escape", "{}", None).is_err(),
+                "{name}: an unsafe id is refused",
+            );
+        }
+    }
+
+    /// Two writers of identical bytes agree, and different bytes do not.
+    ///
+    /// The property `Games::persist` rests on: a version is a statement about
+    /// CONTENT, so "is the store still what I left there?" is answerable
+    /// without keeping the bytes.
+    #[test]
+    fn identical_bytes_from_two_writers_carry_one_version() {
+        assert_eq!(version_of("{\"x\":1}"), version_of("{\"x\":1}"));
+        assert_ne!(version_of("{\"x\":1}"), version_of("{\"x\":2}"));
+    }
 
     /// The id guard is the only thing between a client-supplied name and the
     /// filesystem, so it is asserted against the shapes that matter rather than
@@ -240,25 +601,68 @@ mod tests {
             "with space",
             "nul\0byte",
             "sö",
+            // **A name ending in `.table` spells another game's TABLE.**
+            // `FsStore` gives both documents one filename each in one
+            // directory, so a record stored for `mygame.table` is written to
+            // exactly the path `mygame`'s table document occupies — and from
+            // there `list(Doc::Record)` hides it, and `delete("mygame")`
+            // removes it while answering `Ok`. Case-insensitively, because the
+            // filesystems this is developed and tested on (APFS, NTFS) are.
+            "mygame.table",
+            "mygame.TABLE",
+            ".table",
         ] {
             assert!(!is_safe_id(bad), "{bad:?} must be refused");
         }
         assert!(!is_safe_id(&"a".repeat(65)), "an unbounded name must be refused");
         assert!(is_safe_id(&"a".repeat(64)));
+
+        // The guard and the document have to reserve the SAME suffix, and a
+        // constant that merely looks right is how they drift apart. This
+        // derives one from the other: change either `Doc`'s suffixes or
+        // `RESERVED_ID_SUFFIX` alone and this fails.
+        assert_eq!(
+            Doc::Table.suffix(),
+            format!("{RESERVED_ID_SUFFIX}{}", Doc::Record.suffix()),
+            "the id guard reserves exactly what the table document appends",
+        );
     }
 
+    /// Every door into the filesystem asks the id guard first — both documents,
+    /// and the refusal is an `Io` rather than a `Conflict`.
+    ///
+    /// The distinction is not pedantry: `Games::persist` EVICTS the handle on a
+    /// conflict and leaves it alone on an I/O failure, so a refused name
+    /// arriving as the wrong variant would drop a live session over a request
+    /// that never touched the store. And the sentence is read through
+    /// [`WriteError`]'s own `Display`, which is what a caller that does not
+    /// destructure the variant sees.
     #[test]
     fn a_refused_id_never_reaches_the_filesystem() {
         let store = FsStore::new(std::env::temp_dir().join("yokohama-web-test-never-created"));
-        assert!(store.read("../../etc/passwd").is_err());
-        assert!(store.write("../../etc/passwd", "{}").is_err());
+        assert!(store.read(Doc::Record, "../../etc/passwd").is_err());
+        assert!(store.read(Doc::Table, "../../etc/passwd").is_err());
+        for doc in [Doc::Record, Doc::Table] {
+            let refused = store.write_if_version(doc, "../../etc/passwd", "{}", None);
+            match &refused {
+                Err(e @ WriteError::Io(_)) => assert!(
+                    e.to_string().contains("not a usable game name"),
+                    "the refusal names the id guard: {e}",
+                ),
+                other => panic!("{doc:?}: an unsafe id must be refused, got {other:?}"),
+            }
+        }
         assert!(store.delete("../../etc/passwd").is_err());
     }
 
     #[test]
     fn an_absent_directory_is_an_empty_store_rather_than_an_error() {
         let store = FsStore::new(std::env::temp_dir().join("yokohama-web-test-absent-dir"));
-        assert_eq!(store.list().expect("an absent dir lists empty"), Vec::<GameId>::new());
+        assert_eq!(
+            store.list(Doc::Record).expect("an absent dir lists empty"),
+            Vec::<GameId>::new(),
+        );
+        assert_eq!(store.list(Doc::Table).expect("an absent dir lists empty"), Vec::<GameId>::new());
     }
 
     /// Concurrent writers to ONE id never publish a torn or foreign record.
@@ -269,9 +673,18 @@ mod tests {
     /// concurrent creates, that produced an unparseable 869-byte record which
     /// `list` still returned and `create` then refused to replace.
     ///
-    /// The assertion is on the PROPERTY, not on who wins: every read of the
-    /// finished file must parse, and its content must be exactly one of the
-    /// values written — never a splice of two.
+    /// **What holds this now is two mechanisms, and this cell can only see
+    /// one.** `write_if_version` holds the store's lock across the whole
+    /// read-compare-write, so within this process the writers are serialized
+    /// and cannot interleave at all; the unique temp name is what protects the
+    /// same id written from a SECOND PROCESS, which no cell here can arrange.
+    /// So this asserts the PROPERTY — every read of the finished file parses,
+    /// and its content is exactly one of the values written, never a splice —
+    /// rather than proving the mechanism that used to be its only defence.
+    ///
+    /// Each writer reads the current version and writes against it, which is
+    /// how a real caller uses this seam; exactly one of them can win a round,
+    /// and the losers must conflict rather than corrupt.
     #[test]
     fn concurrent_writers_never_publish_a_torn_record() {
         let dir = std::env::temp_dir().join(format!("yokohama-web-torn-{}", std::process::id()));
@@ -290,16 +703,22 @@ mod tests {
                 .cloned()
                 .map(|v| {
                     let store = Arc::clone(&store);
-                    std::thread::spawn(move || store.write("g", &v))
+                    std::thread::spawn(move || {
+                        let expected =
+                            store.read(Doc::Record, "g").expect("a read").map(|(_, v)| v);
+                        store.write_if_version(Doc::Record, "g", &v, expected)
+                    })
                 })
                 .collect();
-            // At least one writer must succeed; a loser is allowed to fail, but
-            // never to leave the record unreadable.
-            let ok = handles.into_iter().filter_map(|h| h.join().expect("a writer")
-                .ok()).count();
+            // At least one writer must succeed; a loser is allowed to conflict,
+            // but never to leave the record unreadable.
+            let ok = handles.into_iter().filter_map(|h| h.join().expect("a writer").ok()).count();
             assert!(ok > 0, "every concurrent writer failed");
 
-            let got = store.read("g").expect("the record is readable after concurrent writes");
+            let (got, _) = store
+                .read(Doc::Record, "g")
+                .expect("the record is readable after concurrent writes")
+                .expect("a record was published");
             assert!(
                 values.contains(&got),
                 "the published record is a splice, not one of the writes: {:?}",
@@ -309,12 +728,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An entry that exists but cannot be READ is reported as present.
+    /// An entry that exists but cannot be READ is never mistaken for absence.
     ///
     /// `create`'s duplicate guard asks this question, and answering "absent" on
     /// a permission error let a new game overwrite a real one — measured with
     /// `chmod 000`: the POST returned 201 and the original record was gone.
     /// Absence is `NotFound` and nothing else.
+    ///
+    /// Both halves, because the refusal has to survive the seam: `read` answers
+    /// `Err` rather than `Ok(None)`, and a CREATE over that file is an
+    /// `Io` error rather than a silent overwrite. The second is the one that
+    /// destroys data, and it is now the store's own answer rather than a rule
+    /// `Games::create` has to remember.
     #[cfg(unix)]
     #[test]
     fn an_unreadable_entry_is_present_not_absent() {
@@ -322,7 +747,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("yokohama-web-eacces-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = FsStore::new(&dir);
-        store.write("locked", "{\"seed\":111}").expect("a write");
+        store.write_if_version(Doc::Record, "locked", "{\"seed\":111}", None).expect("a write");
 
         let path = dir.join("locked.json");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
@@ -333,24 +758,17 @@ mod tests {
             return;
         }
 
-        assert!(store.read("locked").is_err(), "the premise: it is unreadable");
-        assert!(store.exists("locked").expect("exists answers"), "...and still PRESENT");
-        assert!(!store.exists("never-written").expect("exists answers"), "absent is absent");
+        assert!(store.read(Doc::Record, "locked").is_err(), "the premise: it is unreadable");
+        match store.write_if_version(Doc::Record, "locked", "{\"seed\":222}", None) {
+            Err(WriteError::Io(_)) => {}
+            other => panic!("an unreadable file must not be silently created over, got {other:?}"),
+        }
+        assert!(
+            store.read(Doc::Record, "never-written").expect("absent answers").is_none(),
+            "absent is absent",
+        );
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_memory_store_round_trips_and_refuses_what_the_fs_store_refuses() {
-        let store = MemStore::default();
-        assert!(store.read("nope").is_err());
-        store.write("g1", "{\"a\":1}").expect("a write");
-        store.write("g2", "{}").expect("a write");
-        assert_eq!(store.list().unwrap(), vec!["g1".to_string(), "g2".to_string()]);
-        assert_eq!(store.read("g1").unwrap(), "{\"a\":1}");
-        store.delete("g1").expect("a delete");
-        assert!(store.delete("g1").is_err(), "deleting twice is an error, not a silent ok");
-        assert!(store.write("../escape", "{}").is_err());
     }
 }

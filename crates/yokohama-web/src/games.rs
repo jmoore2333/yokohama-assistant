@@ -5,6 +5,15 @@
 //! rebuilt from the stored `GameRecord` through `Session::from_record`, which
 //! runs every refusal the CLI's resume path runs. That is what lets this server
 //! live in a container that sleeps.
+//!
+//! **M6.1 put a second document in front of that one.** A game now begins as a
+//! TABLE ([`crate::table`]) with no record at all: `create` writes the table,
+//! each seated player is dealt and keeps from its own view, and the LAST keep
+//! finalizes — builds the session, writes the record, and flips the table to
+//! `playing`. Until then there is nothing for `Session::from_record` to rebuild
+//! and every route that needs a session answers 409. The two writes are not one
+//! transaction, so both crash windows are repaired on the next read
+//! ([`Games::settle`]) rather than left to a human.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,12 +24,27 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::greedy::score_starting_order;
 use yokohama_core::{
-    new_game, GameConfig, GameRecord, OrderCard, OrderCardId, PlayerColor, PlayerId, Rules,
-    SeedSchedule, StartingOrderChoice,
+    new_game, Contestant, GameConfig, GameRecord, OrderCard, OrderCardId, PlayerColor, PlayerId,
+    Rules, SeedSchedule, StartingOrderChoice,
 };
 
 use crate::client::HistoricalFrame;
-use crate::store::{is_safe_id, GameId, SessionStore};
+use crate::identity::User;
+use crate::store::{is_safe_id, Doc, GameId, Store, Version, WriteError};
+use crate::table::{
+    now_unix, DealView, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror,
+};
+
+/// The shape version stamped on every table document this build writes.
+const TABLE_SCHEMA: u32 = 1;
+
+/// The bot stream seed a THROWAWAY table is built with.
+///
+/// Fixed rather than drawn, and nothing observable turns on it: the only thing
+/// a set table reads off `BotSeats` is `is_bot`, for the panel's badge, and no
+/// bot has moved at event 0. Drawing OS entropy on every `GET …/deal` would
+/// spend it on a number that reaches no payload and no record.
+const THROWAWAY_BOT_SEED: u64 = 0;
 
 /// A `u64` that crosses the wire as a STRING.
 ///
@@ -30,15 +54,22 @@ use crate::store::{is_safe_id, GameId, SessionStore};
 /// the browser was already displaying `5856483359458926000`, whose last four
 /// digits are not in the seed.
 ///
-/// The setup flow makes that worse than a display bug, because it ROUND-TRIPS
-/// the value: `/api/games/preview` draws a seed and deals from it, the client
-/// shows the deal and sends the seed back to `POST /api/games`, and a rounded
-/// seed starts a DIFFERENT GAME than the one the player looked at. The cards
-/// they chose between are not the cards they get.
+/// **Nothing round-trips a seed any more, and this type is now one-way.** It
+/// used to: `/api/games/preview` drew a seed and dealt from it, the client
+/// showed the deal and sent the value back to `POST /api/games`, and a rounded
+/// seed started a DIFFERENT GAME from the one the player looked at — the cards
+/// they chose between were not the cards they got. `preview` is retired (M6.1
+/// §8) and no payload carries a seat's seed at all
+/// (`no_committed_payload_carries_the_setup_seed`), so what is left is the
+/// INBOUND half: `NewGame.seed` on a create, typed by a person, a fixture or a
+/// `curl`.
 ///
 /// Deserialization accepts a string or a number, so a small literal from `curl`
-/// or a test still works and nothing that was correct becomes an error.
-/// Serialization always emits a string, so nothing a client reads can be lossy.
+/// or a test still works and nothing that was correct becomes an error. The
+/// string form is what a browser must send: the setup screen's seed box is a
+/// text field for exactly this reason, and a client that sent its own `Number`
+/// would open a different game from the one it asked for. Serialization stays a
+/// string so the type cannot become lossy if something ever serves one again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireSeed(pub u64);
 
@@ -67,7 +98,28 @@ impl<'de> Deserialize<'de> for WireSeed {
     }
 }
 
-/// What a client sends to start a game.
+/// One seat of a requested table: a person's email, or the bot.
+///
+/// **Exactly one of the two**, refused by name otherwise. Two optional fields
+/// rather than a tagged enum because that is what the browser's form produces
+/// and what a `curl` writes by hand; the refusal names the seat, which a serde
+/// untagged-union error would not.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeatSpec {
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub bot: bool,
+}
+
+/// What a client sends to open a table.
+///
+/// **`keeps` and `bot_seats` are gone** (M6.1 §4.2). A keep is now made by the
+/// seat that holds it, through `POST …/keep`, over a deal that seat was served
+/// on its own — so a create can no longer choose a card for anybody, and a
+/// client that sends the old keys gets a 400 naming them from the existing
+/// `deny_unknown_fields` fence.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewGame {
@@ -80,13 +132,8 @@ pub struct NewGame {
     /// answer always comes back as a string.
     #[serde(default)]
     pub seed: Option<WireSeed>,
-    /// One entry per seat: `1` or `2` for a human seat, as the cards are
-    /// numbered on screen; `null` for a bot seat, whose keep is the bot's
-    /// (M5.5 spec §3.3.2). A value on a bot seat, or `null` on a human one,
-    /// is refused by name — the client never chooses for the bot again.
-    pub keeps: Vec<Option<u8>>,
-    #[serde(default)]
-    pub bot_seats: Vec<u8>,
+    /// One entry per seat, in seat order.
+    pub seats: Vec<SeatSpec>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -100,59 +147,45 @@ pub struct DealCard {
     pub keep_score: i64,
 }
 
-/// The two cards a seat was dealt, so a client can show them before choosing.
+/// Why a table operation was refused, in the shapes an HTTP layer answers with.
 ///
-/// **A seat only ever sees its OWN deal (2026-09-06, R-C1).** On a bot seat
-/// `cards` is EMPTY and there is no keep field on this struct at all — the
-/// client draws two card backs from `is_bot` alone. The bot still keeps by the
-/// same argmax ([`bot_keep`], applied in [`choices_of`] at `create`): the
-/// record knows which card it took, and the player does not.
-#[derive(Debug, Clone, Serialize)]
-pub struct Deal {
-    pub seat: PlayerId,
-    pub is_bot: bool,
-    /// The seat's two dealt cards, each with its Keep score — and `[]` on a bot
-    /// seat, whose deal is not the reader's to see.
-    pub cards: Vec<DealCard>,
-}
-
-/// The set table (M5.5 spec §3.3.1): the position after setup, a throwaway
-/// projection over a session that is never persisted, beside the deals.
-#[derive(Debug, Clone, Serialize)]
-pub struct Preview {
-    pub seed: WireSeed,
-    pub table: HistoricalFrame,
-    pub deals: Vec<Deal>,
-}
-
-/// Why a preview could not be served — and, more to the point, WHOSE fault it
-/// is.
-///
-/// [`preview`] used to return one `String` and the route mapped every one of
-/// them to 400. Three of the four things that can go wrong there are not the
-/// caller's: once [`config_of`] has accepted a request, a `new_game`, a
-/// `Session::new_sim` or a `HistoricalFrame::at` failure is this process
-/// failing to build a position from a request that was fine — and answering
-/// "your request was wrong" sends the client away to fix something that is not
-/// broken. Only the first is a 400.
-#[derive(Debug, Clone)]
-pub enum PreviewError {
-    /// The request cannot start a game: [`config_of`]'s own refusals, which
-    /// name the seat, the numbering or the count. A 400.
-    Request(String),
-    /// The setup, or its projection, failed. Nothing the caller sent is wrong.
-    /// A 500.
+/// **`Dealing` carries no sentence and is not a `Conflict`**, deliberately: it
+/// is the one refusal a client BRANCHES on rather than displays — a game opened
+/// by id that is still dealing needs the setup screen, not an error banner — so
+/// it reaches the wire as a 409 carrying `"status": "dealing"` beside the
+/// sentence, and a variant of its own is what keeps that from being a string
+/// comparison in the handler.
+#[derive(Debug)]
+pub enum GameError {
+    NotFound(String),
+    /// Every route that needs a SESSION, while the table is still dealing.
+    Dealing,
+    Forbidden(String),
+    Conflict(String),
+    BadRequest(String),
+    /// This process failed at something the caller asked for correctly.
     Server(String),
 }
 
-impl PreviewError {
-    /// The sentence, whichever side it came from.
-    pub fn message(&self) -> &str {
+impl std::fmt::Display for GameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Request(m) | Self::Server(m) => m,
+            Self::NotFound(m)
+            | Self::Forbidden(m)
+            | Self::Conflict(m)
+            | Self::BadRequest(m)
+            | Self::Server(m) => f.write_str(m),
+            Self::Dealing => f.write_str(DEALING_SENTENCE),
         }
     }
 }
+
+impl std::error::Error for GameError {}
+
+/// The one sentence a dealing table answers every session route with. Beside it
+/// on the wire rides `"status": "dealing"`, which is what the client branches
+/// on — the words are for a human reading a `curl`.
+pub const DEALING_SENTENCE: &str = "this table is still dealing";
 
 /// The bot's Keep: the argmax of [`score_starting_order`] over its two dealt
 /// cards, ties to the first — the rule every evaluator contestant applies in
@@ -191,7 +224,14 @@ pub fn draw_seed() -> u64 {
 
 /// Validate a request the way the wizard validates its answers — same rules,
 /// same refusals, so a game started here is a game the CLI could have started.
-fn config_of(req: &NewGame) -> Result<(GameConfig, BotSeats), String> {
+///
+/// **The order of the checks is the order of the sentences a client reads**, and
+/// the last two are M6.1's: the creator must hold a seat (R-1.6, so a table
+/// cannot be opened for other people to sit at while its author watches), and a
+/// bot is refused at three and four players with the evaluator's own sentence
+/// (R-P10 — "Two-player only. Every corpus, fit, scenario and screen in the
+/// trail is 2P", `eval.rs:1044`).
+fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>), String> {
     if !(2..=4).contains(&req.players) {
         return Err(format!("{} players — the game is 2 to 4", req.players));
     }
@@ -209,73 +249,168 @@ fn config_of(req: &NewGame) -> Result<(GameConfig, BotSeats), String> {
         return Err(format!("seat {} cannot start a {n}-seat game", req.start_seat));
     }
 
-    // The seats are settled BEFORE the keeps, because which seats are bots is
-    // what makes a keep entry right or wrong. The order of the checks is the
-    // order of the sentences a client reads.
-    let mut seats: Vec<Option<yokohama_core::Contestant>> = vec![None; n];
-    for &s in &req.bot_seats {
-        let idx = usize::from(s);
-        if idx >= n {
-            return Err(format!("no seat {s} in a {n}-seat game"));
+    if req.seats.len() != n {
+        return Err(format!("{} seat entries for {n} seats", req.seats.len()));
+    }
+    let mut seats: Vec<SeatDoc> = Vec::with_capacity(n);
+    for (i, spec) in req.seats.iter().enumerate() {
+        match (&spec.user, spec.bot) {
+            // Normalized HERE and nowhere else, through the one function that
+            // knows what an email of this API's is — so a seat bound from a
+            // header reading `  Red@Wire.TEST ` is the seat the next request
+            // finds.
+            (Some(raw), false) => {
+                let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
+                seats.push(SeatDoc::Human { user: user.as_str().to_string() });
+            }
+            (None, true) => seats.push(SeatDoc::Bot),
+            _ => return Err(format!("seat {i}: exactly one of user or bot")),
         }
-        seats[idx] = Some(PROVISIONAL_DEFAULT_BOT);
     }
     // The wizard's rule, kept: an all-bot table is refused. Bot-vs-bot
     // spectating is deliberately out of v1, and a table with nobody at it
     // would sit there waiting for a move that never comes.
-    if seats.iter().all(Option::is_some) {
+    if seats.iter().all(|s| matches!(s, SeatDoc::Bot)) {
         return Err("at least one seat must stay human".to_string());
     }
-    let bots = if seats.iter().any(Option::is_some) {
-        BotSeats::new(seats, draw_seed())
-    } else {
-        BotSeats::none()
-    };
-
-    if req.keeps.len() != n {
-        return Err(format!("{} keep entries for {n} seats", req.keeps.len()));
+    if !seats.iter().any(|s| matches!(s, SeatDoc::Human { user } if user == creator.as_str())) {
+        return Err(format!("the creator must hold a seat — {creator} is not seated"));
     }
-    for (i, keep) in req.keeps.iter().enumerate() {
-        match (bots.is_bot(PlayerId::new(i as u8)), keep) {
-            (true, Some(_)) => {
-                return Err(format!("seat {i} is a bot; its keep is the bot's — send null"))
-            }
-            (false, None) => {
-                return Err(format!("seat {i} is human and needs a keep of 1 or 2"))
-            }
-            (false, Some(k)) if !(1..=2).contains(k) => {
-                return Err(format!("keep {k} — the dealt cards are numbered 1 and 2"))
-            }
-            _ => {}
-        }
+    if n > 2 && seats.iter().any(|s| matches!(s, SeatDoc::Bot)) {
+        return Err("the bot is measured at two players only".to_string());
     }
 
     let mut config = GameConfig::for_player_count(req.players);
     config.player_colors = req.colors.clone();
     config.start_player = PlayerId::new(req.start_seat);
-    Ok((config, bots))
+    Ok((config, seats))
 }
 
-/// Every seat's starting-order choice: the human's as sent, the bot's by
-/// [`bot_keep`] over the deal the seed produced.
+/// Is this a document every consumer may INDEX BY SEAT and BUILD A CONFIG FROM?
+///
+/// **The BOUNDS are the load-bearing half, and the length checks alone do not
+/// give them.** Three fields carry a number this module then hands to something
+/// that panics on a value it does not accept, and every one of them is reached
+/// on the path that holds `table_lock` across the read — where a panic is not a
+/// dropped connection but a POISONED mutex, after which every later `create`,
+/// `keep` and repairing `settle` in the process dies with it.
+///
+/// - `players`: `TableDoc::seats_of` maps each seat's position through
+///   `PlayerId::new`, which `types/ids.rs` documents as PANICKING at `id >= 4`,
+///   so `players: 9` with nine seats and nine keeps satisfies every length
+///   comparison and then panics on its fifth seat.
+/// - `start_seat`: [`config_from`] does `PlayerId::new(doc.start_seat)`, the
+///   same assertion, and [`Games::finalize`] makes that call under the lock.
+///   Measured on a hand-written `start_seat: 7`: `PlayerId must be 0-3, got 7`,
+///   raised from inside `Games::keep`.
+/// - `keeps[i]`: [`choices_of`] does `Keep(keep - 1)` on a `u8`, so a stored
+///   `0` is `attempt to subtract with overflow` in a debug build — measured, on
+///   the same call.
+///
+/// The keep bound is `{None, Some(1), Some(2)}` and not merely non-zero,
+/// because `1` and `2` are the only numbers `Games::keep` ever writes: the wire
+/// numbers the two dealt cards from 1, and `cards_of`'s doc is the join. A
+/// stored `3` indexes a third card that does not exist.
+///
+/// Only this server writes these files, so failing here means a hand-edited or
+/// truncated one — which is exactly when a typed 500 naming the file beats a
+/// dropped socket and a dead lock.
+///
+/// Checked at the two places a document ENTERS this process: [`Games::read_table`],
+/// which refuses, and [`Games::list_for`], which skips and says so. Both, because
+/// the listing deliberately does not go through `read_table` — one unreadable
+/// file must not take the other nineteen tables off the lobby.
+fn check_shape(doc: &TableDoc) -> Result<(), String> {
+    if !(2..=4).contains(&doc.players) {
+        return Err(format!("{} players — a table is 2 to 4", doc.players));
+    }
+    let n = usize::from(doc.players);
+    if doc.seats.len() != n || doc.keeps.len() != n || doc.colors.len() != n {
+        return Err(format!(
+            "{} players, but {} seats, {} keeps and {} colours",
+            doc.players,
+            doc.seats.len(),
+            doc.keeps.len(),
+            doc.colors.len(),
+        ));
+    }
+    if usize::from(doc.start_seat) >= n {
+        return Err(format!("seat {} cannot start a {n}-seat game", doc.start_seat));
+    }
+    if let Some(i) = doc.keeps.iter().position(|k| !matches!(k, None | Some(1 | 2))) {
+        return Err(format!(
+            "seat {i} kept card {} — the dealt cards are numbered 1 and 2",
+            doc.keeps[i].expect("the arm above matched a present value"),
+        ));
+    }
+    Ok(())
+}
+
+/// The engine config a stored table describes. The document is the authority on
+/// every field of it, so a resumed finalize deals the game the table promised.
+fn config_from(doc: &TableDoc) -> GameConfig {
+    let mut config = GameConfig::for_player_count(doc.players);
+    config.player_colors = doc.colors.clone();
+    config.start_player = PlayerId::new(doc.start_seat);
+    config
+}
+
+/// One contestant entry per seat, for `BotSeats`.
+fn contestants_of(seats: &[SeatDoc]) -> Vec<Option<Contestant>> {
+    seats.iter().map(|s| matches!(s, SeatDoc::Bot).then_some(PROVISIONAL_DEFAULT_BOT)).collect()
+}
+
+/// The two facts the list mirrors off a live session (R-plan-3).
+fn mirror_of(repl: &Repl) -> TurnMirror {
+    TurnMirror {
+        to_move: repl.session.state().current_player.0,
+        over: repl.session.is_over(),
+    }
+}
+
+/// Every seat's starting-order choice at finalize: the human's as the seat
+/// chose it, the bot's by [`bot_keep`] over the deal the seed produced.
+///
+/// A missing keep on a human seat is a SERVER failure and not a refusal: the
+/// only caller checks `all_humans_kept` first, so reaching this arm means the
+/// document and the check disagree.
 fn choices_of(
-    req: &NewGame,
-    bots: &BotSeats,
+    seats: &[SeatDoc],
+    keeps: &[Option<u8>],
     deals: &[[OrderCardId; 2]],
     rules: &Rules,
-) -> Vec<StartingOrderChoice> {
+) -> Result<Vec<StartingOrderChoice>, String> {
     deals
         .iter()
         .enumerate()
         .map(|(i, deal)| {
-            let seat = PlayerId::new(i as u8);
-            let keep = if bots.is_bot(seat) {
-                bot_keep(deal, rules)
-            } else {
-                req.keeps[i].expect("config_of checked it")
+            let keep = match seats.get(i) {
+                Some(SeatDoc::Bot) => bot_keep(deal, rules),
+                _ => keeps
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| format!("seat {i} has not chosen a starting order"))?,
             };
-            StartingOrderChoice::Keep(keep - 1)
+            Ok(StartingOrderChoice::Keep(keep - 1))
         })
+        .collect()
+}
+
+/// One seat's two dealt cards, each with its Keep score.
+///
+/// **`cards[0]` IS card 1 and `cards[1]` is card 2.** The wire numbers the dealt
+/// cards from 1 because that is how they are numbered on screen, and
+/// `PendingSetup.deals` indexes them from 0 — so the join between the two is
+/// this order, and it is what every `- 1` conversion in this module relies on
+/// ([`bot_keep`]'s result, [`choices_of`]'s `Keep(keep - 1)`, and the human's
+/// stored keep). A `filter_map` that dropped an unknown id would slide the
+/// second card into the first one's place; it cannot fire, because every id here
+/// came out of `new_game` against these same `rules`.
+fn cards_of(deal: &[OrderCardId; 2], rules: &Rules) -> Vec<DealCard> {
+    deal.iter()
+        .filter_map(|id| rules.orders.get(*id).cloned())
+        .map(|card| DealCard { keep_score: score_starting_order(&card, rules), card })
         .collect()
 }
 
@@ -297,8 +432,8 @@ fn choices_of(
 /// **This is a VIEW, not a rule.** Nothing here touches the engine: the seed,
 /// the draw order and the position `new_game` built are exactly what they were,
 /// and `SEMANTICS_REV` does not move — the same cards are dealt, in the same
-/// order, and the game `create` starts from this seed shows them all. What
-/// changes is only when the person looking at the screen is told.
+/// order, and the game this table starts shows them all. What changes is only
+/// when the person looking at the screen is told.
 ///
 /// `deck_remaining` is deliberately KEPT on both panels: how many cards are
 /// left is public arithmetic at any table, and it is the identities that have
@@ -313,112 +448,101 @@ fn withhold_until_the_choice(table: &mut HistoricalFrame) {
         .retain(|panel| !matches!(panel, yokohama_cli::screen_model::Panel::Achievements(_)));
 }
 
-/// The deal a seed produces AND the table it sets, without starting anything.
+/// Whose panel the set table draws when the caller has no seat left to choose
+/// for: the LOWEST HUMAN seat.
 ///
-/// **A throwaway, never a game.** The `Session` built here is dropped when this
-/// function returns: nothing is persisted, nothing joins `Games::live`, and the
-/// id a create would claim is never touched. What the caller gets is a
-/// projection of the position after setup, built through the SAME
-/// [`HistoricalFrame`] the replay route serves, so the client draws the set
-/// table with the components it already has and no second frame type exists.
-pub fn preview(req: &NewGame, rules: &Rules) -> Result<Preview, PreviewError> {
-    let (config, bots) = config_of(req).map_err(PreviewError::Request)?;
-    let seed = req.seed.map_or_else(draw_seed, |s| s.0);
-    let pending = new_game(config.clone(), rules, seed)
-        .map_err(|e| PreviewError::Server(format!("the setup did not deal: {e}")))?;
+/// **Never a bot seat, and that is the load-bearing half.** Every human hand is
+/// empty on this table — no seat has chosen, so every human choice is
+/// `Unknown` — which makes the answer cosmetic among humans. A bot seat's is
+/// not empty: its keep is already applied, and a frame built for it would
+/// unmask the one card on the set table that is nobody's business
+/// ([`client::facts_for`] shows the VIEWER's hand and masks the rest).
+///
+/// **The `unwrap_or` is the one branch that could name a bot, and it is
+/// unreachable rather than a fallback with meaning**: [`config_of`] refuses a
+/// bot-only table, so `seats` always holds a human. It is written as a fallback
+/// and not a panic because this runs inside a request handler under the
+/// per-game mutex, where a panic poisons the game rather than refusing the call;
+/// seat 0 is the safe direction if it ever is reached, because seat 0 exists at
+/// every player count. Pinned from the other side by
+/// `the_set_table_is_drawn_for_a_human_seat_and_never_the_bots`.
+fn first_human_seat(seats: &[SeatDoc]) -> PlayerId {
+    PlayerId::new(
+        seats.iter().position(|s| matches!(s, SeatDoc::Human { .. })).unwrap_or(0) as u8
+    )
+}
+
+/// The position after setup, as a THROWAWAY projection: the set table a player
+/// chooses a starting order over.
+///
+/// The `Session` built here is dropped when this function returns — nothing is
+/// persisted, nothing joins `Games::live`, and no id is claimed. What the caller
+/// gets is built through the SAME [`HistoricalFrame`] the replay route serves,
+/// so the client draws the set table with the components it already has and no
+/// second frame type exists.
+///
+/// **One caller now: [`Games::deal`].** It had two — `preview` drew a seed,
+/// dealt from it and served every seat's cards at once, and this body is what
+/// they shared so the two could not disagree about what a player sees before
+/// choosing. `preview` is retired (M6.1 §8): a set table exists only for a
+/// table that has been opened, and a seat is served its own cards over it.
+fn set_table(
+    config: GameConfig,
+    seed: u64,
+    seats: &[SeatDoc],
+    deals: &[[OrderCardId; 2]],
+    rules: &Rules,
+    viewer: PlayerId,
+) -> Result<HistoricalFrame, String> {
     // A human seat previews as `Unknown` — no card in a hand nobody has chosen
     // from — and a bot seat at its argmax, the card the game will deal it.
-    let choices: Vec<StartingOrderChoice> = pending
-        .deals
+    let choices: Vec<StartingOrderChoice> = deals
         .iter()
         .enumerate()
-        .map(|(i, deal)| {
-            if bots.is_bot(PlayerId::new(i as u8)) {
-                StartingOrderChoice::Keep(bot_keep(deal, rules) - 1)
-            } else {
-                StartingOrderChoice::Unknown
-            }
+        .map(|(i, deal)| match seats.get(i) {
+            Some(SeatDoc::Bot) => StartingOrderChoice::Keep(bot_keep(deal, rules) - 1),
+            _ => StartingOrderChoice::Unknown,
         })
         .collect();
-    let mut session =
-        Session::new_sim(config, seed, choices, rules.clone()).map_err(PreviewError::Server)?;
+    let mut session = Session::new_sim(config, seed, choices, rules.clone())?;
     // `Repl::new` reads WHO plays each seat off the record's run seats, so this
     // is what makes the previewed table's `is_bot` true — the same one line
-    // `create` runs, and the reason no second attachment step is needed here.
-    session.set_run_seats(bots.seat_provenance());
+    // finalize runs, and the reason no second attachment step is needed here.
+    session.set_run_seats(BotSeats::new(contestants_of(seats), THROWAWAY_BOT_SEED).seat_provenance());
     let repl = Repl::new(session);
-    let mut table = HistoricalFrame::at(&repl, 0).map_err(|e| {
-        PreviewError::Server(format!("the setup position did not build: {}", e.message))
-    })?;
+    let mut table = HistoricalFrame::at(&repl, 0, viewer)
+        .map_err(|e| format!("the setup position did not build: {}", e.message))?;
     withhold_until_the_choice(&mut table);
-    let deals = pending
-        .deals
-        .iter()
-        .enumerate()
-        .map(|(i, deal)| {
-            let seat = PlayerId::new(i as u8);
-            let is_bot = bots.is_bot(seat);
-            Deal {
-                seat,
-                is_bot,
-                // **A bot seat sends no cards (R-C1).** Not a filter on the
-                // client's side of the wire but an absence on this one: the
-                // payload cannot leak what it does not carry. The bot's own
-                // keep is computed above, where the previewed table needs it,
-                // and reaches the client only as a card already in a hand.
-                //
-                // **`cards[0]` IS card 1 and `cards[1]` is card 2.** The wire
-                // numbers the dealt cards from 1 because that is how they are
-                // numbered on screen, and `PendingSetup.deals` indexes them
-                // from 0 — so the join between the two is this order, and it is
-                // what the three `- 1` conversions in this module rely on
-                // ([`bot_keep`]'s result, [`choices_of`]'s `Keep(keep - 1)`,
-                // and the human's `req.keeps[i]`). A `filter_map` that dropped
-                // an unknown id would slide the second card into the first
-                // one's place; it cannot fire, because every id here came out
-                // of `new_game` against these same `rules`.
-                cards: if is_bot {
-                    Vec::new()
-                } else {
-                    deal.iter()
-                        .filter_map(|id| rules.orders.get(*id).cloned())
-                        .map(|card| DealCard {
-                            keep_score: score_starting_order(&card, rules),
-                            card,
-                        })
-                        .collect()
-                },
-            }
-        })
-        .collect();
-    Ok(Preview { seed: WireSeed(seed), table, deals })
+    Ok(table)
 }
 
 /// Every live game, plus the store behind them.
 pub struct Games {
     rules: Arc<Rules>,
-    store: Arc<dyn SessionStore>,
+    store: Arc<dyn Store>,
     live: Mutex<HashMap<GameId, Arc<Mutex<Repl>>>>,
-    /// What this process last successfully LEFT IN THE STORE, per id — a digest
-    /// of the exact JSON written (or, on a cold rebuild, of the JSON read).
+    /// What this process last successfully LEFT IN THE STORE, per id — the
+    /// [`Version`] the store reported for the JSON written (or, on a cold
+    /// rebuild, for the JSON read).
     ///
     /// **This is what makes the write a compare-and-swap rather than a
     /// monotonicity heuristic**, and the difference is a working undo. See
     /// [`Games::persist`].
-    written: Mutex<HashMap<GameId, u64>>,
-    /// Serializes `create` against itself, and nothing else.
+    written: Mutex<HashMap<GameId, Version>>,
+    /// Serializes every write to a TABLE document against every other one:
+    /// `create`, each `keep`, and the self-repair in [`Games::settle`].
     ///
-    /// `create` is check-then-write across a slow middle (`Session::new_sim`
-    /// plus the opening bot pump), so without this two requests both read
-    /// "absent" and both went on to build, write and insert. Held across the
-    /// WHOLE of `create` — the `exists` check, the build, the write and the
-    /// insert — because any shorter hold leaves the same window somewhere else.
+    /// `create` is check-then-write across a slow middle, so without this two
+    /// requests both read "absent" and both went on to build, write and insert.
+    /// A keep is read-modify-write over the same document, and the LAST keep
+    /// finalizes — two of them racing would build two sessions and write two
+    /// records for one table. Held across the whole of each, because any shorter
+    /// hold leaves the same window somewhere else.
     ///
     /// A dedicated lock rather than holding `live`: `live` is taken by every
     /// `handle`, and blocking ordinary reads for the length of a game setup to
-    /// serialize an operation a user performs by hand is the wrong trade. Two
-    /// creates now queue; a create and a read do not.
-    create_lock: Mutex<()>,
+    /// serialize an operation a user performs by hand is the wrong trade.
+    table_lock: Mutex<()>,
     /// Ids deleted since this process started, so a request that was already
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
@@ -443,41 +567,36 @@ pub struct Games {
 const MAX_RESIDENT: usize = 64;
 
 impl Games {
-    pub fn new(rules: Arc<Rules>, store: Arc<dyn SessionStore>) -> Self {
+    pub fn new(rules: Arc<Rules>, store: Arc<dyn Store>) -> Self {
         Self {
             rules,
             store,
             live: Mutex::new(HashMap::new()),
             written: Mutex::new(HashMap::new()),
-            create_lock: Mutex::new(()),
+            table_lock: Mutex::new(()),
             deleted: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
-    pub fn store(&self) -> &Arc<dyn SessionStore> {
+    pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
     }
 
-    pub fn list(&self) -> Result<Vec<GameId>, String> {
-        self.store.list()
-    }
-
-    /// Start a game and persist it before returning, so a client that is told
-    /// "created" can always find it again.
-    pub fn create(&self, req: &NewGame) -> Result<(GameId, Arc<Mutex<Repl>>), String> {
-        // Held for the whole function. `exists` -> build -> `persist` ->
-        // `insert` is check-then-write across a slow middle, and two requests
-        // that both read "absent" both went on to write a DIFFERENT game
-        // (`config_of` draws a fresh bot seed per request) — the loser's record
-        // landed on disk, the winner's insert was clobbered, and the client
-        // told 201 was silently switched onto the other game.
-        let _serialized = self.create_lock.lock().expect("games lock");
-        let (config, bots) = config_of(req)?;
+    /// Open a TABLE. No record, no session, nothing to play yet: the seats are
+    /// bound, the seed is drawn, and every human seat is owed a deal.
+    pub fn create(&self, req: &NewGame, creator: &User) -> Result<TableView, GameError> {
+        // Held for the whole function. `exists` -> build -> `write` is
+        // check-then-write, and two requests that both read "absent" both went
+        // on to write a DIFFERENT game (the seed is drawn per request), so the
+        // loser's document landed on disk and the client told 201 was silently
+        // switched onto the other table.
+        let _serialized = self.table_lock.lock().expect("games lock");
+        let (config, seats) = config_of(req, creator).map_err(GameError::BadRequest)?;
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
         let id = match &req.name {
             Some(name) if !is_safe_id(name) => {
-                return Err(format!("{name:?} is not a usable game name"))
+                return Err(GameError::BadRequest(format!("{name:?} is not a usable game name")))
             }
             Some(name) => name.clone(),
             // An INDEPENDENT draw, never `seed`. A default id of
@@ -485,74 +604,399 @@ impl Games {
             // — in the id itself, so `GET /api/games` handed out every game's
             // hidden set to anyone who could list. Dropping the seed from the
             // payloads (see `client.rs`) is undone if the id still spells it.
-            // A second draw from the same OS entropy is independent of the
-            // first and identifies the game without describing it.
             None => format!("sim-{:016x}", draw_seed()),
         };
-        // `exists`, not `read(...).is_ok()`. The latter reads EVERY failure as
-        // absence, so a stored game whose file was momentarily unreadable was
-        // answered 201 and overwritten — measured with a `chmod 000`: the
-        // create succeeded and the original record was gone.
-        if self.store.exists(&id)? {
-            return Err(format!("a game named {id:?} already exists"));
+        // **An unreadable document is OCCUPIED, not absent.** The store's `read`
+        // carries that distinction in its type — `Ok(None)` is `NotFound` and
+        // nothing else — so reading an `Err` as "a file that exists and cannot
+        // be spoken for" is what stops a new game overwriting a real one:
+        // measured with a `chmod 000`, the POST returned 201 and the original
+        // record was gone. BOTH documents are asked about, because either one
+        // present means the name is taken — a table whose finalize failed has no
+        // record, and a record whose table was hand-deleted is R-P7's legacy
+        // game, which this API will not serve but must not overwrite either.
+        let occupied = [Doc::Table, Doc::Record].iter().any(|doc| {
+            match self.store.read(*doc, &id) {
+                Ok(found) => found.is_some(),
+                Err(_) => true,
+            }
+        });
+        if occupied {
+            return Err(GameError::BadRequest(format!("a game named {id:?} already exists")));
         }
 
         self.deleted.lock().expect("games lock").remove(&id);
 
-        // The deal is drawn HERE rather than trusted from a preview: a bot seat's
-        // keep is a function of the seed and the rules, so the card this deals
-        // it is the card the preview showed, and a client cannot send a
-        // different one.
-        let pending = new_game(config.clone(), &self.rules, seed).map_err(|e| e.to_string())?;
-        let choices = choices_of(req, &bots, &pending.deals, &self.rules);
-        let mut session = Session::new_sim(config, seed, choices, (*self.rules).clone())?;
-        session.set_run_seats(bots.seat_provenance());
-        let repl = Repl::new(session);
-
-        let handle = Arc::new(Mutex::new(repl));
-        {
-            let mut r = handle.lock().expect("fresh handle");
-            bring_alive(&mut r);
-            self.persist(&id, &r)?;
-        }
-        // `entry().or_insert()`, never `insert()` — the same rule `handle`
-        // follows forty lines below, and for the same reason: one game must
-        // never be two handles applying moves to two divergent records. The
-        // create lock makes a colliding CREATE impossible, but a concurrent
-        // `handle(&id)` can still have rebuilt this id off the store between
-        // the `persist` above and this line, so keep whichever landed first
-        // and hand the caller THAT one.
-        //
-        // **NO TEST COVERS THIS LINE**, and the distinction is worth the
-        // sentence: `two_creates_of_one_name_cannot_both_succeed` is
-        // mutation-proven against removing the create lock, and passes with
-        // this reverted to `insert()`. It is defence in depth against the
-        // create-versus-rebuild window, which no cell drives — reaching it
-        // needs a store that can be parked mid-`persist`. Written down rather
-        // than implied, because a comment that reads like a covered invariant
-        // is how this lane has three times shipped a fence nothing held.
-        let kept = {
-            let mut live = self.live.lock().expect("games lock");
-            let kept = Arc::clone(live.entry(id.clone()).or_insert(handle));
-            evict_down_to(&mut live, &id);
-            kept
+        let doc = TableDoc {
+            schema: TABLE_SCHEMA,
+            id,
+            name: req.name.clone(),
+            created_by: creator.as_str().to_string(),
+            created_at: now_unix(),
+            players: req.players,
+            colors: config.player_colors.clone(),
+            start_seat: config.start_player.0,
+            seats,
+            keeps: vec![None; usize::from(req.players)],
+            seed,
+            status: TableStatus::Dealing,
+            turn: None,
         };
-        Ok((id, kept))
+        match self.write_table(&doc, None) {
+            Ok(_) => Ok(doc.view(creator)),
+            Err(WriteError::Conflict { .. }) => {
+                Err(GameError::BadRequest(format!("a game named {:?} already exists", doc.id)))
+            }
+            Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+        }
+    }
+
+    /// The stored table document, parsed AND shape-checked.
+    ///
+    /// A document that will not PARSE is a `Server` failure and never `None`:
+    /// the caller's question is "does this game exist", and answering "no" for a
+    /// file that is sitting right there is how a create comes to overwrite it.
+    ///
+    /// **The shape is checked HERE, once, because every consumer INDEXES by
+    /// seat** — see [`check_shape`] for what a document that failed it would do
+    /// to a handler and to `table_lock`. Checking at the places a document
+    /// ENTERS this process makes every later index total by construction rather
+    /// than making twenty call sites defensive.
+    fn read_table(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
+        let Some((json, version)) = self.store.read(Doc::Table, id).map_err(GameError::Server)?
+        else {
+            return Ok(None);
+        };
+        let doc: TableDoc = serde_json::from_str(&json)
+            .map_err(|e| GameError::Server(format!("{id:?}'s table document does not parse: {e}")))?;
+        check_shape(&doc).map_err(|why| {
+            GameError::Server(format!("{id:?}'s table document is malformed: {why}"))
+        })?;
+        Ok(Some((doc, version)))
+    }
+
+    fn write_table(&self, doc: &TableDoc, expected: Option<Version>) -> Result<Version, WriteError> {
+        let json = serde_json::to_string_pretty(doc)
+            .map_err(|e| WriteError::Io(format!("the table document does not serialize: {e}")))?;
+        self.store.write_if_version(Doc::Table, &doc.id, &json, expected)
+    }
+
+    /// The table as a seated caller may read it, REPAIRED first if it needs it.
+    pub fn table(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
+        let (doc, _) = self
+            .settle(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.seats_of(user).is_empty() {
+            return Err(GameError::Forbidden("you are not seated at this table".to_string()));
+        }
+        Ok(doc)
+    }
+
+    /// **Self-repair, on the way past.** A table stuck at `dealing` with every
+    /// human keep present is a crash between the two writes the last keep makes,
+    /// and there are exactly two of them: the record exists and the status was
+    /// never flipped (flip it), or the record does not exist at all (finalize).
+    ///
+    /// The lock is taken ONLY when there is repairing to do, so an ordinary read
+    /// of a playing table serializes against nothing.
+    fn settle(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
+        let Some((doc, version)) = self.read_table(id)? else { return Ok(None) };
+        if doc.status == TableStatus::Dealing && doc.all_humans_kept() {
+            let _serialized = self.table_lock.lock().expect("games lock");
+            return self.settle_locked(id);
+        }
+        Ok(Some((doc, version)))
+    }
+
+    /// [`Games::settle`] with `table_lock` already held by the caller. The
+    /// document is re-read under the lock, because the writer that made the
+    /// repair necessary may have finished it while this request was waiting.
+    fn settle_locked(&self, id: &str) -> Result<Option<(TableDoc, Version)>, GameError> {
+        let Some((doc, version)) = self.read_table(id)? else { return Ok(None) };
+        if doc.status != TableStatus::Dealing || !doc.all_humans_kept() {
+            return Ok(Some((doc, version)));
+        }
+        if self.store.read(Doc::Record, id).map_err(GameError::Server)?.is_some() {
+            let handle = self.live_handle(id)?;
+            let turn = mirror_of(&handle.lock().expect("a game"));
+            return self.flip_to_playing(id, turn).map(Some);
+        }
+        self.finalize(doc).map(Some)
+    }
+
+    /// Build the game the table describes, write the record, and flip the table.
+    ///
+    /// **The record is written FIRST and unconditionally-absent** (`expected:
+    /// None`), so two writers cannot both finalize one table: the loser's write
+    /// is a `Conflict`, and it then adopts the game that landed rather than
+    /// racing to overwrite it.
+    fn finalize(&self, doc: TableDoc) -> Result<(TableDoc, Version), GameError> {
+        let id = doc.id.clone();
+        let config = config_from(&doc);
+        let bots = BotSeats::new(contestants_of(&doc.seats), draw_seed());
+        let pending = new_game(config.clone(), &self.rules, doc.seed)
+            .map_err(|e| GameError::Server(e.to_string()))?;
+        let choices = choices_of(&doc.seats, &doc.keeps, &pending.deals, &self.rules)
+            .map_err(GameError::Server)?;
+        let mut session = Session::new_sim(config, doc.seed, choices, (*self.rules).clone())
+            .map_err(GameError::Server)?;
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = Repl::new(session);
+        bring_alive(&mut repl);
+        // `Session::to_record_json`, never `to_string_pretty(record())`: the
+        // terminal digest is stamped at WRITE time, and a record written without
+        // one disables the engine's provenance refusal on every game this server
+        // owns.
+        let json = repl.session.to_record_json().map_err(GameError::Server)?;
+
+        let turn = match self.store.write_if_version(Doc::Record, &id, &json, None) {
+            Ok(version) => {
+                self.written.lock().expect("games lock").insert(id.clone(), version);
+                let turn = mirror_of(&repl);
+                let handle = Arc::new(Mutex::new(repl));
+                // `entry().or_insert()`, never `insert()`: one game must never
+                // be two handles applying moves to two divergent records.
+                let mut live = self.live.lock().expect("games lock");
+                live.entry(id.clone()).or_insert(handle);
+                evict_down_to(&mut live, &id);
+                turn
+            }
+            // Someone else finalized this table between the read and here. The
+            // session built above is dropped unstarted and the STORED game is
+            // the game — the same rule `create` follows when a name is taken.
+            Err(WriteError::Conflict { .. }) => {
+                let handle = self.live_handle(&id)?;
+                let turn = mirror_of(&handle.lock().expect("a game"));
+                turn
+            }
+            Err(WriteError::Io(e)) => return Err(GameError::Server(e)),
+        };
+        self.flip_to_playing(&id, turn)
+    }
+
+    /// Mark a table playing. The document is RE-READ rather than carried in:
+    /// between the caller's read and here, the record write above may have run
+    /// `persist`, which refreshes the same document's turn mirror — so the
+    /// version the caller held can already be stale on a write that is not in
+    /// conflict with anything.
+    fn flip_to_playing(&self, id: &str, turn: TurnMirror) -> Result<(TableDoc, Version), GameError> {
+        let (mut doc, version) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        doc.status = TableStatus::Playing;
+        doc.turn = Some(turn);
+        match self.write_table(&doc, Some(version)) {
+            Ok(version) => Ok((doc, version)),
+            // Another writer flipped it first. Its answer is as good as ours —
+            // the record is the same record — so report what is there.
+            Err(WriteError::Conflict { .. }) => self
+                .read_table(id)?
+                .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}"))),
+            Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+        }
+    }
+
+    /// The caller's own two cards, over the set table.
+    ///
+    /// The deal is REGENERATED from the config and the seed on every call rather
+    /// than stored: `new_game` is a pure function of the two, so the cards a seat
+    /// is shown at its tenth request are the cards it was shown at its first, and
+    /// there is no second copy of the deal to keep true.
+    pub fn deal(&self, id: &str, user: &User) -> Result<DealView, GameError> {
+        let doc = self.table(id, user)?;
+        if doc.status == TableStatus::Playing {
+            return Err(GameError::Conflict("this table is playing".to_string()));
+        }
+        let seat = doc.next_unkept_seat_of(user);
+        let config = config_from(&doc);
+        let pending = new_game(config.clone(), &self.rules, doc.seed)
+            .map_err(|e| GameError::Server(format!("the setup did not deal: {e}")))?;
+        // The set table is drawn for the seat this caller is choosing FOR, so
+        // the frame beside the two cards is that seat's own; once every seat of
+        // theirs has chosen there is no such seat and the lowest human's empty
+        // panel is drawn instead. Neither shows a hand — see [`first_human_seat`].
+        let frame = set_table(
+            config,
+            doc.seed,
+            &doc.seats,
+            &pending.deals,
+            &self.rules,
+            seat.unwrap_or_else(|| first_human_seat(&doc.seats)),
+        )
+        .map_err(GameError::Server)?;
+        Ok(DealView {
+            table: doc.view(user),
+            seat,
+            // **The caller's seat, and no other index into `deals`.** This is
+            // the whole of R-C1 on this route: a payload that carried every
+            // seat's cards and let the client pick would hand the hot seat's
+            // neighbour their opponent's hand in a response body.
+            //
+            // The index is total because `read_table` refused a document whose
+            // `seats` disagrees with its `players`, and `deals` is one entry per
+            // player by `new_game`'s construction.
+            cards: seat.map(|s| cards_of(&pending.deals[usize::from(s.0)], &self.rules)),
+            keep_note: yokohama_cli::wizard::KEEP_SCORE_NOTE,
+            frame,
+        })
+    }
+
+    /// One seat chooses. The LAST one finalizes.
+    pub fn keep(
+        &self,
+        id: &str,
+        user: &User,
+        seat: PlayerId,
+        card: u8,
+    ) -> Result<TableView, GameError> {
+        let _serialized = self.table_lock.lock().expect("games lock");
+        // Settled first, so a table left mid-finalize by a crash is repaired by
+        // the same call that would otherwise refuse a keep it has already taken.
+        let (mut doc, version) = self
+            .settle_locked(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.status == TableStatus::Playing {
+            return Err(GameError::Conflict("this table is playing".to_string()));
+        }
+        let n = seat.0;
+        // A seat nobody holds and a seat somebody ELSE holds are the same
+        // refusal, and deliberately: a caller learning which of the two it was
+        // would be learning about a table it has no seat at. The bounds check
+        // rides along — `seats_of` only ever names a seat this document has.
+        if !doc.seats_of(user).contains(&seat) {
+            return Err(GameError::Forbidden(format!("seat {n} is not yours")));
+        }
+        if doc.keeps[usize::from(n)].is_some() {
+            return Err(GameError::Conflict(format!("seat {n} has already chosen")));
+        }
+        if !(1..=2).contains(&card) {
+            return Err(GameError::BadRequest(format!(
+                "keep {card} — the dealt cards are numbered 1 and 2"
+            )));
+        }
+        doc.keeps[usize::from(n)] = Some(card);
+        // **Written BEFORE the finalize, not with it.** The choice is the
+        // player's and is durable the moment it is made; a crash between this
+        // write and the record leaves a table that `settle` finishes on the next
+        // read. Writing the keep only as part of a successful finalize would
+        // lose every choice at a table whose last keep failed.
+        match self.write_table(&doc, Some(version)) {
+            Ok(_) => {}
+            Err(WriteError::Conflict { .. }) => {
+                return Err(GameError::Conflict(format!(
+                    "{id:?} changed while this keep was in flight"
+                )))
+            }
+            Err(WriteError::Io(e)) => return Err(GameError::Server(e)),
+        }
+        if doc.all_humans_kept() {
+            let (doc, _) = self.finalize(doc)?;
+            return Ok(doc.view(user));
+        }
+        Ok(doc.view(user))
+    }
+
+    /// The tables this user sits at, newest first.
+    ///
+    /// **A record with no table document is not a game this API serves** (R-P7):
+    /// the listing is over `Doc::Table`, so a pre-M6 record is neither listed
+    /// nor openable and is left on disk untouched for the Docker-archive pull.
+    ///
+    /// A document that cannot be read, parsed or trusted to be indexed is
+    /// SKIPPED rather than failing the whole list: the lobby's job is to show
+    /// the games it can, and one unreadable file must not take the other
+    /// nineteen off the screen. The game itself still refuses loudly when
+    /// OPENED, where the caller can act on it.
+    ///
+    /// **Skipped, but never silently.** A table that vanishes from its own
+    /// player's lobby with nothing said anywhere is worse than one that is
+    /// missing loudly: `create` will then report the name occupied, so the
+    /// player can neither see the game nor reuse the name and no surface says
+    /// why. Each skip writes one line naming the id and the failure, through the
+    /// same `eprintln!` channel `main.rs` reports its own failures on, so a
+    /// corrupt table is visible in the container log.
+    pub fn list_for(&self, user: &User) -> Result<Vec<TableView>, String> {
+        let mut rows: Vec<TableDoc> = Vec::new();
+        for id in self.store.list(Doc::Table)? {
+            let doc = match self.store.read(Doc::Table, &id) {
+                Ok(Some((json, _))) => match serde_json::from_str::<TableDoc>(&json) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        eprintln!(
+                            "{id:?}'s table document does not parse, so it is not in this \
+                             listing: {e}"
+                        );
+                        continue;
+                    }
+                },
+                // Absent between the listing and the read — a delete that
+                // landed in the window. Nothing is wrong and nothing is lost.
+                Ok(None) => continue,
+                Err(e) => {
+                    eprintln!(
+                        "{id:?}'s table document could not be read, so it is not in this \
+                         listing: {e}"
+                    );
+                    continue;
+                }
+            };
+            // **The same fence `read_table` applies**, because this path
+            // deliberately does not go through it — and `seats_of` two lines
+            // below is exactly the call [`check_shape`] exists to make total.
+            if let Err(why) = check_shape(&doc) {
+                eprintln!("{id:?}'s table document is malformed, so it is not in this listing: {why}");
+                continue;
+            }
+            if doc.seats_of(user).is_empty() {
+                continue;
+            }
+            rows.push(doc);
+        }
+        // Newest first, ties broken by id so the order is total and a reload
+        // does not reshuffle two tables made in the same second.
+        rows.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        Ok(rows.iter().map(|doc| doc.view(user)).collect())
     }
 
     /// The live handle for `id`, rebuilt from the store if it is not resident.
-    pub fn handle(&self, id: &str) -> Result<Arc<Mutex<Repl>>, String> {
+    ///
+    /// **409 while the table is dealing**, which is what makes every session
+    /// route answer a client that opened a game by id with the status it needs
+    /// rather than a 404 it cannot act on.
+    pub fn handle(&self, id: &str) -> Result<Arc<Mutex<Repl>>, GameError> {
         if let Some(h) = self.live.lock().expect("games lock").get(id) {
             return Ok(Arc::clone(h));
         }
-        let json = self.store.read(id)?;
+        match self.settle(id)? {
+            None => Err(GameError::NotFound(format!("no game named {id:?}"))),
+            Some((doc, _)) if doc.status == TableStatus::Dealing => Err(GameError::Dealing),
+            Some(_) => self.live_handle(id),
+        }
+    }
+
+    /// The handle alone: resident, or rebuilt from the RECORD.
+    ///
+    /// Deliberately does not consult the table document — [`Games::handle`] has
+    /// already done that, and `settle`'s repair arm calls this to read the turn
+    /// off a game whose table is mid-flip.
+    fn live_handle(&self, id: &str) -> Result<Arc<Mutex<Repl>>, GameError> {
+        if let Some(h) = self.live.lock().expect("games lock").get(id) {
+            return Ok(Arc::clone(h));
+        }
+        let (json, version) = self
+            .store
+            .read(Doc::Record, id)
+            .map_err(GameError::Server)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
         // The base for `persist`'s compare-and-swap: what we found in the store
         // is what we may overwrite until someone else changes it. Recorded
         // BEFORE `live` is taken — nothing may take `written` while holding
         // `live`.
-        self.written.lock().expect("games lock").insert(id.to_string(), digest(&json));
-        let record: GameRecord = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        let session = Session::from_record(record, (*self.rules).clone())?;
+        self.written.lock().expect("games lock").insert(id.to_string(), version);
+        let record: GameRecord =
+            serde_json::from_str(&json).map_err(|e| GameError::Server(e.to_string()))?;
+        let session =
+            Session::from_record(record, (*self.rules).clone()).map_err(GameError::Server)?;
         let mut repl = Repl::new(session);
         // A game that comes back with a bot to move is owed that move — the
         // same thing `main.rs` does through `opening()` when a save is resumed.
@@ -561,7 +1005,7 @@ impl Games {
         let before = repl.session.record().events.len();
         bring_alive(&mut repl);
         if repl.session.record().events.len() != before {
-            self.persist(id, &repl)?;
+            self.persist(id, &repl).map_err(GameError::Server)?;
         }
         let handle = Arc::new(Mutex::new(repl));
         let mut live = self.live.lock().expect("games lock");
@@ -596,6 +1040,18 @@ impl Games {
     /// than quietly deleted, because the next reader's instinct should be to
     /// distrust a paragraph that has stopped matching its code.
     ///
+    /// **The swap is now the STORE's** ([`Store::write_if_version`]): the
+    /// guards below decide what version the write may land on, and the store
+    /// holds its own lock across the read, the compare and the write. Nothing
+    /// about what is refused moved — the three refusals are the same three
+    /// sentences in the same order — but a store that can enforce the condition
+    /// (a row version, a conditional PUT) is now a second implementation rather
+    /// than a rewrite of this function.
+    ///
+    /// **A FOURTH write rides along and is not a guard**: the table document's
+    /// turn mirror (R-plan-3), refreshed after the record lands and IGNORED if
+    /// it conflicts. See [`Games::mirror_turn`].
+    ///
     /// The arm-by-arm reasoning, and the honest limits, are inline below.
     pub fn persist(&self, id: &str, repl: &Repl) -> Result<(), String> {
         if self.deleted.lock().expect("games lock").contains(id) {
@@ -608,8 +1064,37 @@ impl Games {
 
         let record = repl.session.record();
         let events = record.events.len();
-        if let Ok(stored) = self.store.read(id) {
-            if let Ok(on_disk) = serde_json::from_str::<GameRecord>(&stored) {
+        // `expected` is what the write below is CONDITIONAL on: `None` means
+        // "create, and refuse a present document", `Some(v)` means "replace
+        // only what I just read". The guards decide which, and the store
+        // performs the swap — the comparison that used to happen here by hand
+        // now happens where the read and the write are under one lock.
+        //
+        // **A read that FAILS is PROPAGATED, never discarded.** "Cannot be
+        // read" and "is not there" are different answers — the seam exists to
+        // keep them apart — and `?` returns the first one through this
+        // function's ordinary `Err` path, which does NOT evict: the handle is
+        // right and the store is not, exactly as `conflict`'s doc says.
+        //
+        // The line was `.ok().flatten()`, and discarding the error defeated
+        // that rule from the inside. A failed read became `expected: None`,
+        // which is a CREATE, and a create over a present document is a
+        // `Conflict` — so a transient I/O failure took the live session down,
+        // the one outcome the two variants exist to prevent. It is not enough
+        // that `FsStore`'s own write would have failed the same way and
+        // answered `Io`: the guarantee has to hold for the TRAIT, and any store
+        // whose read can fail where its write's read succeeds lands on the
+        // evicting arm. Pinned by
+        // `a_read_failure_refuses_the_write_and_leaves_the_handle_resident`.
+        //
+        // The old code, before the seam, wrote straight over an unreadable
+        // record. That does not survive either, and deliberately: refusing is
+        // the rule `create` has enforced since the `chmod 000` measurement,
+        // applied to the other writer.
+        let stored = self.store.read(Doc::Record, id)?;
+        let mut expected: Option<Version> = None;
+        if let Some((stored, current)) = &stored {
+            if let Ok(on_disk) = serde_json::from_str::<GameRecord>(stored) {
                 // IDENTITY BEFORE LENGTH — a name is not a game.
                 //
                 // The tombstone's own bound is "`create`, which clears the id",
@@ -620,13 +1105,28 @@ impl Games {
                 // it holds (a fresh game), so the deleted game overwrote the new
                 // one. Comparing the seed makes the two games distinguishable,
                 // which a name plus a length never was.
+                //
+                // **The two seeds are COMPARED here and printed nowhere**, and
+                // that is not tidiness. This sentence leaves the process: on an
+                // `input`, `lib.rs` pushes it into `warnings` as `APPLIED BUT
+                // NOT SAVED — {e}` and serializes it on the reply. So the
+                // version that named both numbers handed the OLD game's player
+                // the NEW table's setup seed — hidden-set member #1, which
+                // regenerates that table's decks, boxed pile, board and every
+                // deal. Narrow (a delete, a re-create under the same name, and
+                // an `input` inside `Repl::step` while it happens) and never in
+                // the corpus, so `no_committed_payload_carries_the_setup_seed`
+                // cannot see it. Pinned instead by the refusal's own cell,
+                // which reads the sentence for both spellings of both seeds.
+                //
+                // The length sentence below names an EVENT COUNT, which is
+                // public arithmetic about a game the caller is already playing.
                 if on_disk.seed != record.seed {
                     return Err(self.conflict(
                         id,
                         format!(
-                            "{id:?} now holds a different game (stored seed {}, this handle's {}) — \
-                             refusing to write one game's events over another's",
-                            on_disk.seed, record.seed,
+                            "{id:?} now holds a different game — refusing to write one game's \
+                             events over another's"
                         ),
                     ));
                 }
@@ -649,13 +1149,15 @@ impl Games {
                 // length differ in content and not in count, so a length
                 // comparison waved them through and this does not.
                 //
-                // It detects a conflict; it does not prevent one. Nothing
-                // serializes read-then-write across processes — `FsStore::write`
-                // is atomic per file (temp + rename) but the store has no lock.
-                // That is unchanged, and was never true of the old guard either.
+                // It detects a conflict; it does not prevent one. Within THIS
+                // process `write_if_version` holds the store's own lock across
+                // the read, the compare and the write; across processes nothing
+                // serializes read-then-write — `FsStore` publishes atomically
+                // per file (temp + rename), and that is the whole of it. Which
+                // is unchanged, and was never true of the old guard either.
                 match written.get(id) {
                     // Ours to overwrite, shorter or longer.
-                    Some(&base) if base == digest(&stored) => {}
+                    Some(base) if base == current => expected = Some(*current),
                     Some(_) => {
                         return Err(self.conflict(
                             id,
@@ -679,8 +1181,18 @@ impl Games {
                                 ),
                             ));
                         }
+                        expected = Some(*current);
                     }
                 }
+            } else {
+                // A record that will not PARSE is still a record, and replacing
+                // it is still a replace: conditioning on what was just read
+                // keeps a second writer's repair from being clobbered by this
+                // one. The old code wrote over it unconditionally; this refuses
+                // only if it changed between that read and the write, which is
+                // the same answer in every case a test can arrange and a
+                // stronger one under a concurrent repair.
+                expected = Some(*current);
             }
         }
         // `Session::to_record_json`, never `to_string_pretty(record())`: the
@@ -690,9 +1202,53 @@ impl Games {
         // CLI-written save's digest-for-state-N onto a state-N+1 record, which
         // the next cold rebuild refused forever.
         let json = repl.session.to_record_json()?;
-        self.store.write(id, &json)?;
-        written.insert(id.to_string(), digest(&json));
+        // The swap itself. A CONFLICT here means the store moved between the
+        // compare above and this line — a window the guards cannot close from
+        // outside — and it is a conflict in the same sense as the three
+        // refusals above, so it evicts the handle. An I/O failure does NOT:
+        // there the handle is right and the disk is not, which is the
+        // distinction `conflict`'s doc draws and `WriteError` now carries in
+        // its type.
+        //
+        // **NO CELL DRIVES THE CONFLICT ARM**, and saying so is worth the line.
+        // Within one process the guards above have already read the store under
+        // the same `written` lock, so the only way to reach it is a SECOND
+        // PROCESS writing between that read and this write — which no test here
+        // can arrange. It is defence in depth against a window the old code
+        // could not see at all, not a covered invariant.
+        let version = match self.store.write_if_version(Doc::Record, id, &json, expected) {
+            Ok(v) => v,
+            Err(WriteError::Conflict { .. }) => {
+                return Err(self.conflict(
+                    id,
+                    format!("{id:?} changed under this handle between the compare and the write"),
+                ))
+            }
+            Err(WriteError::Io(e)) => return Err(e),
+        };
+        written.insert(id.to_string(), version);
+        drop(written);
+        self.mirror_turn(id, repl);
         Ok(())
+    }
+
+    /// Refresh the list's two mirrored integers (R-plan-3).
+    ///
+    /// **Every failure here is swallowed, and that is the design.** The record
+    /// is the truth and this is a cache of `to_move` and `over` for the lobby;
+    /// nothing on a play route reads it. A conflict means another writer
+    /// refreshed the same document — from a keep, or from its own move — and
+    /// losing that race costs a list row that says whose turn it was one move
+    /// ago, until the next persist. Failing the MOVE for it would trade a
+    /// durable game for a stale label.
+    fn mirror_turn(&self, id: &str, repl: &Repl) {
+        let Ok(Some((mut doc, version))) = self.read_table(id) else { return };
+        let turn = mirror_of(repl);
+        if doc.turn == Some(turn) {
+            return;
+        }
+        doc.turn = Some(turn);
+        let _ = self.write_table(&doc, Some(version));
     }
 
     /// Refuse a write AND drop the handle that attempted it.
@@ -716,32 +1272,57 @@ impl Games {
         why
     }
 
-    /// Delete, and remember that we did.
+    /// Delete, and remember that we did. **The creator's, and nobody else's.**
     ///
     /// The tombstone is what stops an in-flight `input` from writing the record
     /// back after the file is gone. It is bounded by `create`, which clears the
     /// id — so the set only ever holds ids that are deleted and not recreated,
     /// and re-creating a deleted name works exactly as before.
-    pub fn delete(&self, id: &str) -> Result<(), String> {
-        self.store.delete(id)?;
+    ///
+    /// **It is a TABLE WRITER, so it holds `table_lock` like the other two.**
+    /// Without it, a delete could read a table that was still dealing, and the
+    /// last `keep` could then write the table and enter `finalize` before the
+    /// unlink landed — leaving `finalize`'s `expected: None` record write to
+    /// succeed over two documents that were already gone. The result is an
+    /// orphan record: unlisted (R-P7 lists over tables), unopenable, and
+    /// holding the name forever, since `create` checks both documents. Measured
+    /// and reproduced in
+    /// `a_delete_cannot_interleave_with_the_keep_that_finalizes`.
+    ///
+    /// The table is therefore read through [`Games::read_table`] and not
+    /// through [`Games::table`]: `table` goes via `settle`, which takes this
+    /// same non-reentrant lock when a repair is due, and calling it from here
+    /// would deadlock. The two refusals it raises are restated inline so the
+    /// caller reads the same sentences — and NOT settling is the right answer
+    /// besides, since finalizing a table on the way to deleting it only writes
+    /// the record this function then has to remove.
+    pub fn delete(&self, id: &str, user: &User) -> Result<(), GameError> {
+        let _serialized = self.table_lock.lock().expect("games lock");
+        let (doc, _) = self
+            .read_table(id)?
+            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+        if doc.seats_of(user).is_empty() {
+            return Err(GameError::Forbidden("you are not seated at this table".to_string()));
+        }
+        if !doc.is_creator(user) {
+            return Err(GameError::Forbidden(format!(
+                "only {} can delete this table",
+                doc.created_by
+            )));
+        }
+        self.store.delete(id).map_err(GameError::Server)?;
         self.written.lock().expect("games lock").remove(id);
         self.live.lock().expect("games lock").remove(id);
         self.deleted.lock().expect("games lock").insert(id.to_string());
         Ok(())
     }
-}
 
-/// A digest of the exact bytes in the store, for [`Games::persist`]'s
-/// compare-and-swap.
-///
-/// In-process only and never persisted, so a hasher with no stability guarantee
-/// across builds is exactly right: the only comparison is between two values
-/// computed by the same running process.
-fn digest(json: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    json.hash(&mut h);
-    h.finish()
+    /// Drop the resident handle for `id`, so the next request takes the COLD
+    /// path through the store. Tests only: nothing in the API evicts by name.
+    #[cfg(test)]
+    pub fn evict_for_test(&self, id: &str) {
+        self.live.lock().expect("games lock").remove(id);
+    }
 }
 
 /// Drop resident handles until the map is within [`MAX_RESIDENT`], never
@@ -797,14 +1378,22 @@ mod tests {
     /// deal that changed would otherwise turn these cells vacuous silently.
     const ARGMAX_IS_CARD_2: u64 = 20_260_830;
 
+    /// A normalized identity, the way the extractor produces one.
+    fn who(s: &str) -> User {
+        User::parse(s).expect("an email")
+    }
+
+    /// The cycle's standing request: red at seat 0, the bot at seat 1.
     fn req_seeded(name: &str, seed: u64) -> NewGame {
         NewGame {
             players: 2,
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seed: Some(WireSeed(seed)),
-            keeps: vec![Some(1), None],
-            bot_seats: vec![1],
+            seats: vec![
+                SeatSpec { user: Some("red@t.test".into()), bot: false },
+                SeatSpec { user: None, bot: true },
+            ],
             name: Some(name.to_string()),
         }
     }
@@ -813,121 +1402,63 @@ mod tests {
         req_seeded(name, CORPUS_SEED)
     }
 
-    /// The same request, named for the cells whose subject is the BOT's seat.
-    fn req_with_bot(name: &str) -> NewGame {
-        req(name)
+    /// The same table with a PERSON in seat 1 — the shape every cell about
+    /// per-seat scoping needs, since a bot seat never calls anything.
+    fn two_people(name: &str, seed: u64) -> NewGame {
+        let mut r = req_seeded(name, seed);
+        r.seats[1] = SeatSpec { user: Some("blue@t.test".into()), bot: false };
+        r
     }
 
-    /// One dealt card's Keep score, through core's own function.
+    /// create -> keep for every human -> the playing handle, as the API does it.
     ///
-    /// The module is NOT globbed to the crate root (`game/mod.rs` lists every
-    /// `pub use x::*` and `greedy` is deliberately namespaced), so the path is
-    /// `yokohama_core::greedy::` and not `yokohama_core::`.
-    fn keep_score(rules: &Rules, id: yokohama_core::OrderCardId) -> i64 {
-        let card = rules.orders.get(id).expect("a dealt card");
-        yokohama_core::greedy::score_starting_order(card, rules)
-    }
-
-    /// The bot keeps the higher-scored of its two cards \u2014 the argmax every
-    /// evaluator contestant applies in the arena
-    /// (`GreedyAgent::choose_starting_order`, `greedy.rs:752`, and
-    /// `LookaheadAgent`'s identical arm), reached through core. The human's keep
-    /// is honoured beside it, and the cell is mutation-proven by the human's
-    /// choice: swapping 1 for 2 moves the human's card and not the bot's.
-    ///
-    /// **At [`ARGMAX_IS_CARD_2`], deliberately.** At the corpus seed the bot's
-    /// argmax IS card 1, which is the card the old `keeps: [1, 1]` wire already
-    /// sent — so a `bot_keep` reduced to the constant `1` would pass there and
-    /// this cell would prove nothing about the feature. The premise is asserted
-    /// below rather than trusted, so a deal that moved says so out loud instead
-    /// of quietly making the cell vacuous again.
-    #[test]
-    fn the_bot_keeps_the_higher_scored_card_and_the_human_keeps_theirs() {
-        let rules = Rules::standard();
-        let pending =
-            new_game(GameConfig::for_player_count(2), &rules, ARGMAX_IS_CARD_2).unwrap();
-        let deal = pending.deals[1];
-        assert!(
-            keep_score(&rules, deal[1]) > keep_score(&rules, deal[0]),
-            "the premise: at this seed seat 1's argmax must be card 2 ({} then {}), or a \
-             constant `bot_keep = 1` passes this cell",
-            keep_score(&rules, deal[0]),
-            keep_score(&rules, deal[1]),
-        );
-        let expected = deal[1];
-
-        let g = games();
-        let (_, handle) = g.create(&req_seeded("keep", ARGMAX_IS_CARD_2)).unwrap();
-        let r = handle.lock().unwrap();
-        assert_eq!(r.session.state().players[1].order_cards_in_hand, vec![expected]);
-        assert_eq!(r.session.state().players[0].order_cards_in_hand, vec![pending.deals[0][0]]);
-        drop(r);
-
-        let mut two = req_seeded("keep2", ARGMAX_IS_CARD_2);
-        two.keeps = vec![Some(2), None];
-        let (_, handle) = g.create(&two).unwrap();
-        let r = handle.lock().unwrap();
-        assert_eq!(r.session.state().players[0].order_cards_in_hand, vec![pending.deals[0][1]]);
-        assert_eq!(
-            r.session.state().players[1].order_cards_in_hand,
-            vec![expected],
-            "the bot's card does not follow the human's choice",
-        );
-    }
-
-    /// The refusal a `create` gives. `unwrap_err` cannot be used: the Ok half
-    /// carries a `Repl`, which is not `Debug` and must not become `Debug` to
-    /// satisfy a test.
-    fn refused(g: &Games, req: &NewGame) -> String {
-        match g.create(req) {
-            Ok((id, _)) => panic!("expected a refusal; the request created {id:?}"),
-            Err(e) => e,
+    /// A game is no longer one call: the cells below that are about PERSISTENCE
+    /// want the handle `create` used to hand back, and this is the sequence that
+    /// now produces one. Each user keeps for every seat it holds, lowest first,
+    /// which is exactly what a hot seat does through the browser.
+    fn playing(games: &Games, req: &NewGame, users: &[&str]) -> Arc<Mutex<Repl>> {
+        let creator = who(users[0]);
+        let id = games.create(req, &creator).expect("a table").id;
+        for u in users {
+            let user = who(u);
+            while let Some(seat) =
+                games.table(&id, &user).expect("seated").next_unkept_seat_of(&user)
+            {
+                games.keep(&id, &user, seat, 1).expect("a keep");
+            }
         }
+        games.handle(&id).expect("playing")
     }
 
-    /// Every way a `keeps` list can disagree with the seats, refused BY NAME.
-    #[test]
-    fn a_keep_on_a_bot_seat_and_a_missing_keep_on_a_human_seat_are_refused_by_name() {
-        let g = games();
-        let mut on_bot = req_with_bot("b");
-        on_bot.keeps = vec![Some(1), Some(1)];
-        let e = refused(&g, &on_bot);
-        assert!(e.contains("seat 1") && e.contains("bot"), "{e}");
-        let mut on_human = req_with_bot("h");
-        on_human.keeps = vec![None, None];
-        let e = refused(&g, &on_human);
-        assert!(e.contains("seat 0"), "{e}");
-        let mut bad = req_with_bot("n");
-        bad.keeps = vec![Some(3), None];
-        let e = refused(&g, &bad);
-        assert!(e.contains("1 and 2"), "{e}");
-        let mut short = req_with_bot("s");
-        short.keeps = vec![Some(1)];
-        let e = refused(&g, &short);
-        assert!(e.contains("2 seats"), "{e}");
-    }
-
-    /// The preview is the position after setup \u2014 a throwaway, never a game \u2014
-    /// with every human hand empty (nothing has been chosen) and the bot's
-    /// kept card in the bot's hand; each dealt card carries its Keep score.
+    /// **The deal's frame is the position after setup** — a throwaway
+    /// projection, never a game — with every human hand empty (nothing has been
+    /// chosen) and the bot's kept card in the bot's hand; each dealt card
+    /// carries its Keep score.
+    ///
+    /// Re-pointed from `preview`, which is retired (M6.1 §8). The claim is the
+    /// route's now: a set table exists only for a table that has been OPENED,
+    /// and `index`/`total` at zero is what says the position is the one before
+    /// any move rather than a frame from somewhere in the game.
     ///
     /// **At the corpus seed on purpose**, so the projection is asserted against
     /// the same position the committed fixtures hold. **Which card the bot kept
-    /// is not on this payload and is not asserted here (R-C1)** \u2014 the deal is
-    /// empty on a bot seat; what the projection still says out loud is that the
-    /// bot HAS chosen, which is the hand count below.
+    /// is not on this payload and is not asserted here (R-C1)** — a caller is
+    /// served its OWN seat's cards and no others; what the projection still says
+    /// out loud is that the bot HAS chosen, which is the hand count below.
     #[test]
-    fn the_preview_is_the_position_after_setup() {
+    fn the_deal_is_the_position_after_setup() {
         let rules = Rules::standard();
-        let p = preview(&req_with_bot("p"), &rules).unwrap();
-        assert_eq!(p.table.index, 0);
-        assert_eq!(p.table.total, 0);
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&req("p"), &red).expect("a table").id;
+        let d = games.deal(&id, &red).expect("red's deal");
+        assert_eq!((d.frame.index, d.frame.total), (0, 0), "the position before any move");
         assert!(
-            p.table.ports.boards[0].slots.iter().all(|s| s.card.is_some()),
+            d.frame.ports.boards[0].slots.iter().all(|s| s.card.is_some()),
             "the port is full",
         );
-        let players = p
-            .table
+        let players = d
+            .frame
             .frame
             .dashboard
             .iter()
@@ -939,63 +1470,15 @@ mod tests {
         assert!(players.players[1].is_bot);
         assert_eq!(players.players[1].orders_in_hand, 1, "the bot's kept card is in its hand");
         assert_eq!(players.players[0].orders_in_hand, 0, "nothing chosen yet");
-        assert_eq!(p.deals.len(), 2);
-        assert!(!p.deals[0].is_bot);
-        assert_eq!(p.deals[0].cards.len(), 2);
-        assert!(p.deals[1].is_bot);
-        assert!(p.deals[1].cards.is_empty(), "a bot seat's deal is not on the wire");
-        for d in &p.deals {
-            for c in &d.cards {
-                assert_eq!(
-                    c.keep_score,
-                    yokohama_core::greedy::score_starting_order(&c.card, &rules),
-                );
-            }
-        }
-        // Nothing was persisted or made resident.
-        let g = games();
-        assert!(g.list().unwrap().is_empty());
-    }
-
-    /// **Another seat's deal never reaches the wire (2026-09-06, R-C1).** A bot
-    /// seat's `cards` is empty and `bot_keep` is not a field at all, so a
-    /// player reading the payload cannot learn what the bot was dealt or which
-    /// of the two it kept. The record still knows: the kept card is in the
-    /// bot's hand in the game `create` builds, which
-    /// [`the_created_game_holds_the_bots_own_keep_at_both_seeds`] reads.
-    ///
-    /// **At [`ARGMAX_IS_CARD_2`]** so the seat this cell empties is the seat
-    /// whose Keep is not the constant `1`, and with the human's half asserted
-    /// beside it: a `preview` that emptied EVERY deal would hide the bot's
-    /// cards and take the player's own with them.
-    #[test]
-    fn a_bot_seats_deal_never_reaches_the_wire() {
-        let rules = Rules::standard();
-        let p = preview(&req_seeded("hidden", ARGMAX_IS_CARD_2), &rules).unwrap();
-        assert!(p.deals[1].is_bot, "the premise: seat 1 is the bot");
-        assert!(p.deals[1].cards.is_empty(), "a bot seat's cards are not on the wire");
-        let json = serde_json::to_string(&p).unwrap();
-        assert!(!json.contains("bot_keep"), "the payload names the bot's keep");
-        // **The KEY SET, not the old field's name (R-C10).** The line above
-        // searches for one literal, so a keep re-added under any other name —
-        // `kept`, `keep_index`, `argmax` — passed every cell in this crate and
-        // was caught only by the committed corpus, which CI does not run. This
-        // reads what the bot's deal actually serializes to and requires it to
-        // be these three keys and nothing else, which is the claim this cell's
-        // own doc makes. The client half of the same fence is
-        // `contract.test.ts`'s `preview_bot.deal(bot)` row.
-        let bot = serde_json::to_value(&p.deals[1]).unwrap();
-        let mut keys: Vec<&str> =
-            bot.as_object().expect("a deal is an object").keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        assert_eq!(keys, ["cards", "is_bot", "seat"], "the bot's deal carries {bot}");
-        // Anti-vacuity: the human's own deal is untouched, with both Keep
-        // scores, so the withholding is targeted rather than a blank preview.
-        assert!(!p.deals[0].is_bot);
-        assert_eq!(p.deals[0].cards.len(), 2);
-        for c in &p.deals[0].cards {
+        let cards = d.cards.as_ref().expect("the caller's own two cards");
+        assert_eq!(cards.len(), 2);
+        for c in cards {
             assert_eq!(c.keep_score, yokohama_core::greedy::score_starting_order(&c.card, &rules));
         }
+        // And nothing has been STARTED: the table is still dealing and there is
+        // no record behind it. The projection is a throwaway.
+        assert_eq!(games.table(&id, &red).unwrap().status, TableStatus::Dealing);
+        assert!(games.store().read(Doc::Record, &id).unwrap().is_none(), "no record until the last keep");
     }
 
     /// The achievement TYPE names on a frame's dashboard, or empty where the
@@ -1016,7 +1499,7 @@ mod tests {
     }
 
     /// **The technologies and the goals are withheld until the choice
-    /// (2026-09-06, R-C3).** The previewed table carries the laboratory with
+    /// (2026-09-06, R-C3).** The set table beside a seat's two cards carries the laboratory with
     /// EMPTY slots and no `Achievements` panel at all, so the player choosing a
     /// starting order reads the same table the owner's edition has in front of
     /// them at its step 9 — before the technologies go out at step 10 and the
@@ -1025,22 +1508,23 @@ mod tests {
     /// **Read against the game the same seed CREATES**, not against a list
     /// written here: the six technology titles and the three achievement types
     /// are learned from the created game's own frame and then required to be
-    /// absent from the preview's JSON. A withholding checked against a
+    /// absent from the deal's JSON. A withholding checked against a
     /// hard-coded list stops discriminating the moment the deal changes.
     ///
-    /// The anti-vacuity is the port: its six order ids ARE in the preview's
+    /// The anti-vacuity is the port: its six order ids ARE in the deal's
     /// JSON, so this is a targeted withholding and not a blank table. And
     /// `deck_remaining` is kept — the count is public arithmetic; it is the
     /// identities that are not on the table yet.
     #[test]
-    fn the_preview_withholds_the_laboratory_and_the_achievements() {
-        let rules = Rules::standard();
-        let p = preview(&req_seeded("withheld", ARGMAX_IS_CARD_2), &rules).unwrap();
+    fn the_deal_withholds_the_laboratory_and_the_achievements() {
+        let g = games();
+        let red = who("red@t.test");
+        let id = g.create(&req_seeded("withheld", ARGMAX_IS_CARD_2), &red).unwrap().id;
+        let p = g.deal(&id, &red).unwrap();
 
         // What the SAME seed puts on a real table, read from the game itself.
-        let g = games();
-        let (_, handle) = g.create(&req_seeded("withheld", ARGMAX_IS_CARD_2)).unwrap();
-        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0).unwrap();
+        let handle = playing(&g, &req_seeded("withheld-started", ARGMAX_IS_CARD_2), &["red@t.test"]);
+        let started = HistoricalFrame::at(&handle.lock().unwrap(), 0, PlayerId::new(0)).unwrap();
         let titles: Vec<String> = started
             .labs
             .boards
@@ -1056,21 +1540,21 @@ mod tests {
         // first: a withholding that cleared the BOARDS rather than their slots
         // would otherwise pass this cell while deleting the laboratory.
         assert!(
-            !p.table.labs.boards.is_empty(),
+            !p.frame.labs.boards.is_empty(),
             "the laboratory board is still drawn on the set table",
         );
         assert!(
-            p.table.labs.boards.iter().all(|b| b.slots.is_empty()),
+            p.frame.labs.boards.iter().all(|b| b.slots.is_empty()),
             "every laboratory slot is empty on the set table",
         );
         assert_eq!(
-            p.table.labs.deck_remaining, started.labs.deck_remaining,
+            p.frame.labs.deck_remaining, started.labs.deck_remaining,
             "the technology deck's COUNT is public and is kept",
         );
         // The PANEL's absence, not merely an empty card list: `achievement_names`
         // returns nothing for either, and "no panel" is the claim.
         assert!(
-            !p.table
+            !p.frame
                 .frame
                 .dashboard
                 .iter()
@@ -1080,10 +1564,10 @@ mod tests {
 
         let json = serde_json::to_string(&p).unwrap();
         for title in &titles {
-            assert!(!json.contains(title.as_str()), "the preview names the technology {title}");
+            assert!(!json.contains(title.as_str()), "the deal names the technology {title}");
         }
         for name in &goals {
-            assert!(!json.contains(name.as_str()), "the preview names the achievement {name}");
+            assert!(!json.contains(name.as_str()), "the deal names the achievement {name}");
         }
         // Anti-vacuity: the port is still on the table, by id.
         let port_ids: Vec<u8> = started
@@ -1096,7 +1580,7 @@ mod tests {
         assert_eq!(port_ids.len(), 6, "the premise: a 2P port offers six orders");
         for id in port_ids {
             assert!(
-                p.table.ports.boards.iter().flat_map(|b| b.slots.iter()).any(|s| s
+                p.frame.ports.boards.iter().flat_map(|b| b.slots.iter()).any(|s| s
                     .card
                     .is_some_and(|c| c.0 == id)),
                 "the port's order {id} is missing from the set table",
@@ -1104,22 +1588,265 @@ mod tests {
         }
     }
 
-    /// The bot's own Keep is what lands in the created game's hand \u2014 read at
+
+    /// **Every refusal a create can raise, in the order a client reads them**,
+    /// and the two that are M6.1's: the creator must hold a seat (R-1.6), and
+    /// nothing is written but a DEALING table.
+    ///
+    /// One cell rather than five, because the ORDER is the claim: a request that
+    /// is wrong in two ways must name the first thing a client can fix, and a
+    /// checklist reordered by an edit would otherwise pass five cells apiece.
+    #[test]
+    fn create_refuses_in_the_order_a_client_reads_and_binds_the_creator() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("order");
+        r.players = 5;
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("2 to 4"));
+        let mut r = req("order");
+        r.seats[0] = SeatSpec { user: Some("other@t.test".into()), bot: false };
+        let e = games.create(&r, &red).unwrap_err().to_string();
+        assert!(e.contains("creator"), "R-1.6: {e}");
+        let mut r = req("order");
+        r.seats[1] = SeatSpec { user: Some("x@t.test".into()), bot: true };
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("exactly one"));
+        let mut r = req("order");
+        r.seats = vec![SeatSpec { user: None, bot: true }, SeatSpec { user: None, bot: true }];
+        assert!(games.create(&r, &red).unwrap_err().to_string().contains("human"));
+        let v = games.create(&req("order"), &red).expect("a table");
+        assert_eq!(v.status, TableStatus::Dealing);
+        assert_eq!(v.my_seats, vec![PlayerId::new(0)]);
+        assert_eq!(v.chosen, vec![false, true], "the bot is chosen from the start");
+        assert!(
+            games.store().read(Doc::Record, "order").unwrap().is_none(),
+            "no record until the last keep",
+        );
+    }
+
+    /// **R-P10, in the evaluator's own words.** The weights were fitted at two
+    /// players and nothing has measured what they do at three or four
+    /// (`eval.rs:1044`), so the room refuses the seat rather than seating a bot
+    /// nobody can speak for. Asserted as an EQUALITY at both counts: a refusal
+    /// that merely mentioned the bot would let the sentence drift away from the
+    /// ruling it carries.
+    #[test]
+    fn a_bot_is_refused_at_three_and_four_players_with_the_measured_sentence() {
+        let games = games();
+        for n in [3u8, 4] {
+            let mut r = req("bot3");
+            r.players = n;
+            r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green]
+                [..n as usize]
+                .to_vec();
+            r.seats = (0..n)
+                .map(|i| {
+                    if i == 1 {
+                        SeatSpec { user: None, bot: true }
+                    } else {
+                        SeatSpec { user: Some("red@t.test".into()), bot: false }
+                    }
+                })
+                .collect();
+            let e = games.create(&r, &who("red@t.test")).unwrap_err().to_string();
+            assert_eq!(e, "the bot is measured at two players only", "{n}P");
+        }
+    }
+
+    /// **The deal is per seat, and the other seat's cards are not in it.**
+    ///
+    /// The whole of R-C1 moved to the server by this cycle: the payload carries
+    /// the CALLER's two cards and there is no index into anyone else's, so a hot
+    /// seat's neighbour cannot read an opponent's hand out of a response body.
+    /// Asserted against `new_game`'s own deal at the same seed rather than
+    /// against a list written here — a deal that moved says so instead of
+    /// turning this vacuous.
+    #[test]
+    fn the_deal_serves_the_callers_own_cards_and_never_the_others() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("deal", CORPUS_SEED), &red).unwrap().id;
+        let pending = new_game(GameConfig::for_player_count(2), &Rules::standard(), CORPUS_SEED)
+            .unwrap();
+        let ids = |cards: &Vec<DealCard>| cards.iter().map(|c| c.card.id).collect::<Vec<_>>();
+        let d = games.deal(&id, &red).expect("red's deal");
+        assert_eq!(d.seat, Some(PlayerId::new(0)));
+        assert_eq!(ids(d.cards.as_ref().unwrap()), pending.deals[0].to_vec());
+        assert!(
+            !pending.deals[1].iter().any(|b| ids(d.cards.as_ref().unwrap()).contains(b)),
+            "disjoint by construction, asserted anyway",
+        );
+        assert_eq!(d.keep_note, yokohama_cli::wizard::KEEP_SCORE_NOTE);
+        let text = serde_json::to_string(&d).unwrap();
+        assert!(!text.contains(&CORPUS_SEED.to_string()), "no seed on the wire");
+        assert!(
+            d.frame.labs.boards.iter().all(|b| b.slots.is_empty()),
+            "withheld until the choice",
+        );
+        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        let d = games.deal(&id, &red).unwrap();
+        assert_eq!((d.seat, d.cards.is_none()), (None, true), "all of red's seats have kept");
+        let d = games.deal(&id, &blue).unwrap();
+        assert_eq!(ids(d.cards.as_ref().unwrap()), pending.deals[1].to_vec());
+    }
+
+    /// **The set table is never drawn for a BOT seat, before or after the
+    /// caller has chosen** (review M1).
+    ///
+    /// The one hand that is not empty on this screen is the bot's: every human
+    /// choice is `Unknown` at that point, while a bot seat's keep is already
+    /// applied so the position can be drawn. `client::facts_for` unmasks the
+    /// VIEWER's hand, so a viewer of the bot's seat would put the card the bot
+    /// kept on screen — the one thing the 2026-09-06 corrections took off this
+    /// wire (R-C1).
+    ///
+    /// **Two claims, and with `preview` retired they are reached differently
+    /// (M6.1 §8).** The ROUTE's is asserted through `deal`: before red keeps,
+    /// the viewer is `next_unkept_seat_of` — red's own seat, a human's. The
+    /// fallback's is asserted on [`first_human_seat`] itself, because no route
+    /// can reach it at a table holding a bot any more: a bot is legal at two
+    /// players only (R-P10), so such a table has one human seat and that seat's
+    /// keep finalizes it. `preview` used to be that reach, and always chose its
+    /// viewer this way.
+    ///
+    /// The bot's non-empty hand is asserted as a PREMISE: without it a frame
+    /// built for seat 1 would show an empty panel and this cell would pass while
+    /// proving nothing.
+    #[test]
+    fn the_set_table_is_drawn_for_a_human_seat_and_never_the_bots() {
+        use yokohama_cli::screen_model::Panel;
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&req_seeded("botdeal", ARGMAX_IS_CARD_2), &red).unwrap().id;
+
+        let check = |frame: &HistoricalFrame, when: &str| {
+            let hands: Vec<(u8, bool)> = frame
+                .frame
+                .dashboard
+                .iter()
+                .filter_map(|p| match p {
+                    Panel::Hand(h) => Some((h.seat.0, h.hidden)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(hands, vec![(0, false)], "{when}: the set table is seat 0's");
+            let rows: Vec<(u8, bool, usize)> = frame
+                .frame
+                .dashboard
+                .iter()
+                .filter_map(|p| match p {
+                    Panel::Players(pp) => Some(pp),
+                    _ => None,
+                })
+                .flat_map(|pp| {
+                    pp.players.iter().map(|p| (p.seat.0, p.hand_hidden, p.orders_in_hand))
+                })
+                .collect();
+            assert_eq!(rows, vec![(0, false, 0), (1, true, 1)], "{when}: {rows:?}");
+        };
+
+        check(&games.deal(&id, &red).unwrap().frame, "before the caller chooses");
+        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        // Red holds every human seat, so `next_unkept_seat_of` is now `None`.
+        // The last human keep FINALIZES, so the table is playing and `deal`
+        // refuses — which is itself the answer: there is no set table left to
+        // draw for anyone.
+        let d = games.deal(&id, &red);
+        assert!(matches!(d, Err(GameError::Conflict(_))), "the table finalized on the last keep");
+
+        // **The fallback is asserted on the function itself, because with
+        // `preview` retired no ROUTE can reach it at a table holding a bot.**
+        // It used to be reached through `preview`, which always chose its viewer
+        // this way. A bot is legal at two players only (R-P10), so a bot table
+        // has exactly one human seat and that seat's keep finalizes the table —
+        // which is the refusal just above. `first_human_seat` is still what
+        // `deal` falls back to at a table of two PEOPLE (the branch
+        // `the_deal_serves_the_callers_own_cards_and_never_the_others` walks),
+        // so the claim that it never names a bot is asserted where it lives.
+        let seats = |first_is_bot: bool| {
+            if first_is_bot {
+                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string() }]
+            } else {
+                vec![SeatDoc::Human { user: "red@t.test".to_string() }, SeatDoc::Bot]
+            }
+        };
+        assert_eq!(first_human_seat(&seats(true)), PlayerId::new(1), "the bot is skipped");
+        assert_eq!(first_human_seat(&seats(false)), PlayerId::new(0), "and the human is taken");
+    }
+
+    /// **A keep is fenced by WHO holds the seat and by having chosen once**, and
+    /// the last one starts the game.
+    ///
+    /// Four refusals and the finalize in one cell, because they are one
+    /// sequence: every refusal is stated against a table that a moment later
+    /// takes the same call from the right caller, so a fence that refused
+    /// everything could not pass. The card the human chose is read out of the
+    /// STARTED game's hand — the only place a keep is observable once the table
+    /// has stopped carrying it.
+    #[test]
+    fn keep_is_fenced_by_holder_and_by_once_and_the_last_keep_finalizes() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("keep", ARGMAX_IS_CARD_2), &red).unwrap().id;
+        assert!(matches!(games.keep(&id, &blue, PlayerId::new(0), 1), Err(GameError::Forbidden(_))));
+        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 3), Err(GameError::BadRequest(_))));
+        assert!(matches!(games.handle(&id), Err(GameError::Dealing)));
+        games.keep(&id, &red, PlayerId::new(0), 2).unwrap();
+        assert!(matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Conflict(_))));
+        let v = games.keep(&id, &blue, PlayerId::new(1), 1).unwrap();
+        assert_eq!(v.status, TableStatus::Playing);
+        assert_eq!(v.to_move, Some(PlayerId::new(0)));
+        let (json, _) = games.store().read(Doc::Record, &id).unwrap().expect("the record exists now");
+        let record: GameRecord = serde_json::from_str(&json).unwrap();
+        assert!(record.terminal_digest.is_some());
+        let handle = games.handle(&id).unwrap();
+        let pending =
+            new_game(GameConfig::for_player_count(2), &Rules::standard(), ARGMAX_IS_CARD_2)
+                .unwrap();
+        assert_eq!(
+            handle.lock().unwrap().session.state().players[0].order_cards_in_hand,
+            vec![pending.deals[0][1]],
+            "red kept card 2",
+        );
+        assert!(
+            matches!(games.keep(&id, &red, PlayerId::new(0), 1), Err(GameError::Conflict(_))),
+            "a playing table takes no keep",
+        );
+    }
+
+    /// One dealt card's Keep score, through core's own function.
+    ///
+    /// **The INDEPENDENT derivation**, and the reason it is here rather than
+    /// reusing [`bot_keep`]: a premise asserted from the function under test is
+    /// not a premise. `bot_keep` reduced to a constant would agree with itself.
+    ///
+    /// The module is NOT globbed to the crate root (`game/mod.rs` lists every
+    /// `pub use x::*` and `greedy` is deliberately namespaced), so the path is
+    /// `yokohama_core::greedy::` and not `yokohama_core::`.
+    fn keep_score(rules: &Rules, id: yokohama_core::OrderCardId) -> i64 {
+        let card = rules.orders.get(id).expect("a dealt card");
+        yokohama_core::greedy::score_starting_order(card, rules)
+    }
+
+    /// The bot's own Keep is what lands in the started game's hand — read at
     /// BOTH seeds, where the two answers differ.
     ///
-    /// **This cell used to read the preview's answer** (`bot_keep`), and the
-    /// deal left the wire in the 2026-09-06 corrections (R-C1). The claim it
-    /// made is still true and is still worth a cell, so it is made where it
-    /// remains observable: the state `create` builds. It runs at BOTH seeds
-    /// because one seed cannot discriminate \u2014 at [`CORPUS_SEED`] the argmax is
-    /// card 1 and at [`ARGMAX_IS_CARD_2`] it is card 2, so a keep reduced to
-    /// either constant fails one of the two halves. Each seed's premise is
-    /// asserted from `score_starting_order` rather than trusted, so a deal that
-    /// moved says so instead of turning the cell vacuous.
+    /// **Neither half of this may come from `bot_keep`.** One seed cannot
+    /// discriminate: at [`CORPUS_SEED`] the argmax is card 1, which is the card
+    /// every human seat in these helpers sends, and at [`ARGMAX_IS_CARD_2`] it
+    /// is card 2 — so a `bot_keep` reduced to EITHER constant fails one of the
+    /// two halves, and only both halves together say the bot chose. And each
+    /// seed's premise is derived from `score_starting_order` through
+    /// [`keep_score`] rather than from `bot_keep`, so a `bot_keep` that agreed
+    /// with itself cannot make the premise true; a deal that MOVED says so out
+    /// loud instead of quietly making the cell vacuous.
+    ///
+    /// The review that found the one-sided version put it exactly right: the
+    /// premise `assert_eq!(bot_keep(…), 2)` reads `2 == 2` under a constant `2`,
+    /// and `Keep(2-1)` then puts the expected card in the hand.
     #[test]
-    fn the_created_game_holds_the_bots_own_keep_at_both_seeds() {
+    fn the_bot_keeps_its_own_argmax_at_finalize() {
+        let games = games();
         let rules = Rules::standard();
-        let g = games();
         for (seed, expected_card) in [(CORPUS_SEED, 1usize), (ARGMAX_IS_CARD_2, 2usize)] {
             let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
             let deal = pending.deals[1];
@@ -1130,14 +1857,457 @@ mod tests {
                 "the premise at seed {seed}: the bot's argmax must be card {expected_card} \
                  ({a} then {b}), or the pair of seeds no longer discriminates",
             );
-            let name = format!("agree-{seed}");
-            let (_, handle) = g.create(&req_seeded(&name, seed)).unwrap();
+            let name = format!("argmax-{seed}");
+            let handle = playing(&games, &req_seeded(&name, seed), &["red@t.test"]);
             assert_eq!(
                 handle.lock().unwrap().session.state().players[1].order_cards_in_hand,
                 vec![deal[expected_card - 1]],
                 "seed {seed}: the bot holds the card it scored highest",
             );
         }
+    }
+
+    /// **A hot seat is a SEQUENCE and needs no button.** One person holding two
+    /// seats is served the lower one, and the next only once that one has
+    /// chosen — which is what retires M5.5's "Next seat" pass and its rule about
+    /// clearing the DOM.
+    #[test]
+    fn a_hot_seat_creator_is_served_seat_zero_then_seat_one() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = two_people("hot", CORPUS_SEED);
+        r.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false };
+        let id = games.create(&r, &red).unwrap().id;
+        assert_eq!(games.deal(&id, &red).unwrap().seat, Some(PlayerId::new(0)));
+        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        assert_eq!(games.deal(&id, &red).unwrap().seat, Some(PlayerId::new(1)));
+        let v = games.keep(&id, &red, PlayerId::new(1), 1).unwrap();
+        assert_eq!(v.status, TableStatus::Playing);
+    }
+
+    /// **Both crash windows of the last keep, repaired on the next read.**
+    ///
+    /// The keep and the record are two writes and cannot be one, so a process
+    /// that dies between them leaves a table at `dealing` with every human keep
+    /// present — in one of exactly two states. Each arm stages the state a crash
+    /// would leave and requires the next ordinary read to finish the job, which
+    /// is the difference between a self-repairing table and one a person has to
+    /// go and fix on the volume.
+    ///
+    /// Arm 1 evicts the live handle first, so the repair runs the COLD path
+    /// through the store rather than reading a session this process happens to
+    /// still hold.
+    #[test]
+    fn a_table_left_dealing_with_every_keep_present_settles_on_the_next_read() {
+        // Arm 1: the record exists and the status was never flipped.
+        let games = games();
+        let red = who("red@t.test");
+        let id = games.create(&req_seeded("settle1", CORPUS_SEED), &red).unwrap().id;
+        games.keep(&id, &red, PlayerId::new(0), 1).unwrap();
+        let (json, v) = games.store().read(Doc::Table, &id).unwrap().unwrap();
+        let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
+        doc.status = TableStatus::Dealing;
+        doc.turn = None;
+        games
+            .store()
+            .write_if_version(Doc::Table, &id, &serde_json::to_string(&doc).unwrap(), Some(v))
+            .unwrap();
+        games.evict_for_test(&id);
+        assert_eq!(games.table(&id, &red).unwrap().status, TableStatus::Playing, "settled on read");
+
+        // Arm 2: every keep present and NO record (a crash between the two writes).
+        let games = Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()));
+        let id = games.create(&req_seeded("settle2", CORPUS_SEED), &red).unwrap().id;
+        let (json, v) = games.store().read(Doc::Table, &id).unwrap().unwrap();
+        let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
+        doc.keeps[0] = Some(1);
+        games
+            .store()
+            .write_if_version(Doc::Table, &id, &serde_json::to_string(&doc).unwrap(), Some(v))
+            .unwrap();
+        let t = games.table(&id, &red).unwrap();
+        assert_eq!(t.status, TableStatus::Playing);
+        assert!(games.store().read(Doc::Record, &id).unwrap().is_some(), "finalized on read");
+    }
+
+    /// **The list is the tables you sit at**, newest first, each saying whose
+    /// turn it is — which is what lets the lobby say "your turn" without
+    /// rebuilding twenty sessions (R-P3).
+    ///
+    /// The last two lines are R-P7: a RECORD with no table document is not a
+    /// game this API serves. It is neither listed nor openable, and it is left
+    /// on disk — the pre-M6 games on the volume are review material for the AI
+    /// track, pulled as CLI saves, and this API must not serve them or quietly
+    /// adopt them.
+    #[test]
+    fn the_list_is_the_tables_i_sit_at_newest_first_with_whose_turn_it_is() {
+        let games = games();
+        let (red, blue, green) = (who("red@t.test"), who("blue@t.test"), who("green@t.test"));
+        games.create(&two_people("first", CORPUS_SEED), &red).unwrap();
+        // `created_at` is unix SECONDS (R-plan-1), so two creates in one second
+        // are one instant and the order would be the id tie-break rather than
+        // the claim this cell makes.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let handle = playing(&games, &req_seeded("second", CORPUS_SEED), &["red@t.test"]);
+        drop(handle);
+        let mine = games.list_for(&red).unwrap();
+        assert_eq!(
+            mine.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["second", "first"],
+            "newest first",
+        );
+        assert_eq!(
+            (mine[0].status, mine[0].to_move, mine[0].over),
+            (TableStatus::Playing, Some(PlayerId::new(0)), Some(false)),
+        );
+        assert_eq!(games.list_for(&blue).unwrap().len(), 1);
+        assert!(games.list_for(&green).unwrap().is_empty());
+        // A record with no table document is not a game this API serves (R-P7).
+        games.store().write_if_version(Doc::Record, "legacy", "{}", None).unwrap();
+        assert!(games.list_for(&red).unwrap().iter().all(|t| t.id != "legacy"));
+        assert!(matches!(games.handle("legacy"), Err(GameError::NotFound(_))));
+        // **And it is LEFT ON DISK**, which is the other half of the ruling and
+        // the half with teeth: those records are the AI track's review material,
+        // pulled as CLI saves. `delete` is the only destructive path, and it
+        // refuses this id before reaching the store rather than removing a file
+        // it declines to serve.
+        assert!(matches!(games.delete("legacy", &red), Err(GameError::NotFound(_))));
+        assert!(
+            games.store().read(Doc::Record, "legacy").unwrap().is_some(),
+            "a pre-M6 record is left untouched for the Docker-archive pull",
+        );
+    }
+
+    /// **The mirror follows the game, because a list that lies about whose turn
+    /// it is is worse than one that says nothing.**
+    ///
+    /// `persist` refreshes it after every applied move. The cell walks red's
+    /// opening turn to its end — answering the LAST option each time, which is
+    /// the one that ends a phase — and requires the mirror to have moved with
+    /// it, so a `persist` that wrote only the record fails here rather than at a
+    /// lobby nobody tests.
+    #[test]
+    fn the_turn_mirror_follows_every_persisted_move() {
+        let games = games();
+        let red = who("red@t.test");
+        let handle = playing(&games, &two_people("mirror", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let before = games.table("mirror", &red).unwrap().turn.unwrap();
+        {
+            let mut r = handle.lock().unwrap();
+            // Walk red's turn to its end with the sole options the opening offers.
+            for _ in 0..40 {
+                if r.session.state().current_player != PlayerId::new(0) {
+                    break;
+                }
+                let rows = r.option_rows();
+                let n = yokohama_cli::screen_model::menu_number(rows.len() - 1);
+                r.step(&n.to_string());
+                games.persist("mirror", &r).unwrap();
+            }
+        }
+        let after = games.table("mirror", &red).unwrap().turn.unwrap();
+        assert_ne!(before, after, "the mirror moved with the turn");
+        assert_eq!(after.to_move, 1);
+    }
+
+    /// **A document nobody could have created is a typed refusal, and it does
+    /// not take the server down with it.**
+    ///
+    /// `players: 9` with NINE seats, nine keeps and nine colours: every length
+    /// agrees with every other, so the length comparisons alone wave it through
+    /// and only the 2..=4 bound catches it. Without that bound `seats_of` maps
+    /// the fifth seat through `PlayerId::new(4)`, which panics — and `keep`
+    /// holds `table_lock` across the read, so the panic POISONS that mutex and
+    /// every later `create`, `keep` and repairing `settle` in the process dies
+    /// with it.
+    ///
+    /// **The last line is the load-bearing one**, and it is the one a
+    /// `catch_unwind` somewhere could not fake: after four calls against the
+    /// broken table, a create of a DIFFERENT name still works. The `list_for`
+    /// line is the other half of R-3.1 — the bad file leaves the listing, the
+    /// good one stays on it, and the call still answers `Ok`.
+    ///
+    /// **THREE documents, because there are three unbounded fields and only one
+    /// of them was bounded.** `players` was R-3.2's; the final review found
+    /// `start_seat` and `keeps[i]` reaching the SAME locked path with the same
+    /// panic class. `config_from` does `PlayerId::new(doc.start_seat)`, which
+    /// asserts `id < 4`, and `finalize` calls it under `table_lock`; a stored
+    /// `keeps: [0, …]` reaches `choices_of`'s `Keep(keep - 1)`, a debug-build
+    /// overflow on the same call. Each arm is refused typed at the read, which
+    /// is what makes the panic unreachable rather than caught.
+    #[test]
+    fn a_malformed_table_document_refuses_typed_and_leaves_the_server_alive() {
+        let games = games();
+        let red = who("red@t.test");
+        games.create(&two_people("healthy", CORPUS_SEED), &red).expect("a neighbour table");
+
+        let broken = serde_json::json!({
+            "schema": 1,
+            "id": "broken",
+            "name": "broken",
+            "created_by": "red@t.test",
+            "created_at": 1_789_000_000u64,
+            "players": 9,
+            "colors": ["Red", "Blue", "Yellow", "Green", "Red", "Blue", "Yellow", "Green", "Red"],
+            "start_seat": 0,
+            "seats": (0..9).map(|_| serde_json::json!({ "kind": "human", "user": "red@t.test" }))
+                .collect::<Vec<_>>(),
+            "keeps": [null, null, null, null, null, null, null, null, null],
+            "seed": CORPUS_SEED,
+            "status": "dealing",
+            "turn": null,
+        });
+        // A well-formed 2P document, one field at a time made impossible. Every
+        // LENGTH agrees with `players` on both of these, exactly as it does on
+        // `broken` above — so the length comparisons wave all three through and
+        // only the bounds catch them.
+        let two_seat = |id: &str, start_seat: u8, keeps: serde_json::Value| {
+            serde_json::json!({
+                "schema": 1,
+                "id": id,
+                "name": id,
+                "created_by": "red@t.test",
+                "created_at": 1_789_000_000u64,
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": start_seat,
+                "seats": [
+                    { "kind": "human", "user": "red@t.test" },
+                    { "kind": "human", "user": "blue@t.test" },
+                ],
+                "keeps": keeps,
+                "seed": CORPUS_SEED,
+                "status": "dealing",
+                "turn": null,
+            })
+        };
+        let documents = [
+            ("broken", broken),
+            // `PlayerId::new(7)` panics, and `finalize` makes that call under
+            // `table_lock`.
+            ("bad-start", two_seat("bad-start", 7, serde_json::json!([null, null]))),
+            // `Keep(0 - 1)` on a `u8`. Seat 0 has "chosen" card 0, which is not
+            // one of the two dealt cards and was never a number `keep` accepts.
+            ("bad-keep", two_seat("bad-keep", 0, serde_json::json!([0, null]))),
+        ];
+        for (id, doc) in &documents {
+            games
+                .store()
+                .write_if_version(Doc::Table, id, &doc.to_string(), None)
+                .expect("the store takes what it is given");
+
+            assert!(matches!(games.table(id, &red), Err(GameError::Server(_))), "{id}: table");
+            assert!(matches!(games.deal(id, &red), Err(GameError::Server(_))), "{id}: deal");
+            // The path that holds `table_lock` across the read, which is the one
+            // whose panic would be a poisoned mutex rather than one dropped
+            // request.
+            assert!(
+                matches!(games.keep(id, &red, PlayerId::new(0), 1), Err(GameError::Server(_))),
+                "{id}: keep",
+            );
+        }
+
+        let listed = games.list_for(&red).expect("one bad file does not fail the listing");
+        for (id, _) in &documents {
+            assert!(listed.iter().all(|t| &t.id != id), "the malformed table {id} is skipped");
+        }
+        assert!(
+            listed.iter().any(|t| t.id == "healthy"),
+            "and the other tables are still on the screen: {:?}",
+            listed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+        );
+
+        games
+            .create(&two_people("after", CORPUS_SEED), &red)
+            .expect("`table_lock` is not poisoned, so the server can still open a table");
+    }
+
+    /// A [`MemStore`] with two GATES in it, so a test can choose an
+    /// interleaving rather than race for one.
+    ///
+    /// Each gate is armed independently and fires exactly once: it signals that
+    /// a thread has ARRIVED at that operation and then blocks until the test
+    /// releases it. `park_record` sits in front of a `Doc::Record` write —
+    /// which is `finalize`'s — and `park_delete` inside `Store::delete`, after
+    /// `Games::delete` has read the table and decided to remove it.
+    ///
+    /// Both channel ends tolerate a dropped peer, so a test that fails and
+    /// unwinds while a thread is parked here does not turn one failure into
+    /// two.
+    struct RaceStore {
+        inner: MemStore,
+        park_record: std::sync::atomic::AtomicBool,
+        park_delete: std::sync::atomic::AtomicBool,
+        at_record: Mutex<std::sync::mpsc::Sender<()>>,
+        go_record: Mutex<std::sync::mpsc::Receiver<()>>,
+        at_delete: Mutex<std::sync::mpsc::Sender<()>>,
+        go_delete: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl RaceStore {
+        fn wait(
+            arrived: &Mutex<std::sync::mpsc::Sender<()>>,
+            release: &Mutex<std::sync::mpsc::Receiver<()>>,
+        ) {
+            let _ = arrived.lock().expect("the gate").send(());
+            let _ = release.lock().expect("the gate").recv();
+        }
+    }
+
+    impl Store for RaceStore {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<Version>,
+        ) -> Result<Version, WriteError> {
+            if doc == Doc::Record
+                && self.park_record.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Self::wait(&self.at_record, &self.go_record);
+            }
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            if self.park_delete.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                Self::wait(&self.at_delete, &self.go_delete);
+            }
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A `DELETE` may not interleave with the keep that finalizes**, because
+    /// the two together leave a RECORD WITH NO TABLE DOCUMENT — a game this API
+    /// will never serve (R-P7), never list, and whose NAME `create` refuses
+    /// forever, since it checks both documents. Only a shell can clear it.
+    ///
+    /// The window, in the order it happens without the lock:
+    ///
+    /// 1. `delete` reads the table while it is still DEALING and NOT all-kept —
+    ///    the one state in which `settle` takes no lock — and is on its way to
+    ///    `store.delete`;
+    /// 2. the last `keep` writes its table (now all-kept) and enters
+    ///    `finalize`;
+    /// 3. `delete` unlinks BOTH documents;
+    /// 4. `finalize`'s record write lands. It is `expected: None`, so an absent
+    ///    document is exactly what it asks for, and it SUCCEEDS.
+    ///    `flip_to_playing` then 404s and the orphan stays.
+    ///
+    /// **Both gates are needed, and where each one sits is the proof.** The
+    /// delete is parked INSIDE the store, after its read and before the unlink,
+    /// which is the only point at which step 2 can slide in front of step 3;
+    /// the finalize is parked before its record write, which is the only point
+    /// at which step 3 can slide in front of step 4. A single gate one step
+    /// earlier — on the keep's own TABLE write — proves nothing about this
+    /// defect: the delete then unlinks first and the keep's CONDITIONAL table
+    /// write conflicts harmlessly. A single gate one step later, on the record
+    /// write alone, proves nothing either: by then the stored table reads
+    /// all-kept, so even the unfixed `settle` takes the lock and blocks.
+    ///
+    /// **The delete is started FIRST and waited for**, so the lock is
+    /// unambiguously its. With the lock taken, the keep cannot reach its record
+    /// write at all while the delete is parked, which is the middle assertion;
+    /// without it, the keep sails past and the orphan is the one at the end.
+    /// Measured on the code before the fix: the record write arrives, and
+    /// `Doc::Record` is still in the store after both threads have finished.
+    #[test]
+    fn a_delete_cannot_interleave_with_the_keep_that_finalizes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+
+        let (at_record_tx, at_record_rx) = channel();
+        let (go_record_tx, go_record_rx) = channel();
+        let (at_delete_tx, at_delete_rx) = channel();
+        let (go_delete_tx, go_delete_rx) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            at_record: Mutex::new(at_record_tx),
+            go_record: Mutex::new(go_record_rx),
+            at_delete: Mutex::new(at_delete_tx),
+            go_delete: Mutex::new(go_delete_rx),
+        });
+        let games =
+            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("raced", CORPUS_SEED), &red).expect("a table").id;
+        // Seat 0 chooses. The stored table now reads `keeps: [1, null]`:
+        // DEALING and NOT all-kept, which is the state `settle` passes over
+        // without taking the lock — step 1's precondition.
+        games.keep(&id, &red, PlayerId::new(0), 1).expect("red's keep");
+
+        store.park_delete.store(true, Ordering::SeqCst);
+        store.park_record.store(true, Ordering::SeqCst);
+
+        let deleter = {
+            let (games, id, red) = (Arc::clone(&games), id.clone(), red.clone());
+            std::thread::spawn(move || games.delete(&id, &red))
+        };
+        at_delete_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the delete reaches the store with the table read and the unlink pending");
+
+        let keeper = {
+            let (games, id, blue) = (Arc::clone(&games), id.clone(), blue.clone());
+            std::thread::spawn(move || games.keep(&id, &blue, PlayerId::new(1), 1))
+        };
+
+        assert!(
+            matches!(
+                at_record_rx.recv_timeout(Duration::from_millis(500)),
+                Err(RecvTimeoutError::Timeout),
+            ),
+            "the finalizing keep reached its record write while a delete of the same table was \
+             mid-flight — which is the interleaving that writes a record over two documents that \
+             are about to be unlinked",
+        );
+
+        // Released in the order the threads can take them. The record gate's
+        // send is buffered, so it works whether the keep is parked on it or
+        // still waiting for `table_lock`.
+        go_delete_tx.send(()).expect("the parked delete is still listening");
+        go_record_tx.send(()).expect("a buffered release");
+        deleter.join().expect("the delete thread").expect("the delete");
+        // The keep's own outcome is NOT asserted: with the lock taken it finds
+        // the table gone and refuses in conflict, which is the honest answer to
+        // "the game you were choosing at has been deleted". What matters is
+        // what it left behind.
+        let _ = keeper.join().expect("the keep thread");
+
+        assert!(
+            store.read(Doc::Record, &id).expect("a readable store").is_none(),
+            "an orphan record: unlisted, unopenable, and holding the name",
+        );
+        assert!(store.read(Doc::Table, &id).expect("a readable store").is_none());
+        assert!(matches!(games.table(&id, &red), Err(GameError::NotFound(_))));
+        assert!(matches!(games.handle(&id), Err(GameError::NotFound(_))));
+        // The consequence a player would actually meet. `create` checks BOTH
+        // documents, so an orphan record makes the name permanently occupied.
+        games.create(&two_people("raced", CORPUS_SEED), &red).expect("the name is reusable");
+    }
+
+    /// **Delete is the CREATOR's**, and a seated player is not a creator.
+    ///
+    /// Asserted through a seated caller rather than a stranger, because a
+    /// stranger is refused one step earlier (not seated) and would pass a
+    /// `delete` with no creator check in it at all.
+    #[test]
+    fn delete_is_the_creators() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+        let id = games.create(&two_people("del", CORPUS_SEED), &red).unwrap().id;
+        assert!(matches!(games.delete(&id, &blue), Err(GameError::Forbidden(_))));
+        games.delete(&id, &red).unwrap();
+        assert!(matches!(games.table(&id, &red), Err(GameError::NotFound(_))));
     }
 
     /// A record this server writes carries the terminal digest, so the
@@ -1158,10 +2328,11 @@ mod tests {
     fn a_persisted_record_arms_the_provenance_refusal_against_an_edited_seed() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, _handle) = games.create(&req("digest")).expect("a game");
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "digest".to_string();
+        let _handle = playing(&games, &req("digest"), &["red@t.test"]);
 
-        let stored = store.read(&id).expect("the record");
+        let stored = stored_json(&store, &id);
         let record: GameRecord = serde_json::from_str(&stored).expect("a record");
         assert!(
             record.terminal_digest.is_some(),
@@ -1174,14 +2345,14 @@ mod tests {
             serde_json::from_str(&stored).expect("the record as json");
         let seed = tampered["seed"].as_u64().expect("a seed");
         tampered["seed"] = serde_json::Value::from(seed ^ 1);
-        store.write(&id, &tampered.to_string()).expect("the tampered write");
+        overwrite_record(&store, &id, &tampered.to_string());
 
         let fresh =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         // `Repl` is not `Debug`, so match rather than `expect_err`.
         let err = match fresh.handle(&id) {
             Ok(_) => panic!("an edited record must be refused, not loaded"),
-            Err(e) => e,
+            Err(e) => e.to_string(),
         };
         assert!(
             err.contains("digest"),
@@ -1206,12 +2377,13 @@ mod tests {
     fn a_save_that_carries_a_digest_survives_a_move_made_through_this_server() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, _handle) = games.create(&req("fromcli")).expect("a game");
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "fromcli".to_string();
+        let _handle = playing(&games, &req("fromcli"), &["red@t.test"]);
 
         // COLD rebuild, so the resident session's record is the STAMPED one
         // off the store rather than the `None`-digest record `create` built.
-        let cold = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let cold = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         let handle = cold.handle(&id).expect("the stored game loads");
         {
             let mut repl = handle.lock().expect("the handle");
@@ -1228,7 +2400,7 @@ mod tests {
             cold.persist(&id, &repl).expect("the write");
         }
 
-        let fresh = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let fresh = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
         assert!(
             fresh.handle(&id).is_ok(),
             "the record this server just wrote must still load",
@@ -1254,20 +2426,21 @@ mod tests {
     fn an_in_flight_write_cannot_land_on_a_different_game_that_took_the_name() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
 
-        let (id, handle) = games.create(&req("reused")).expect("a game");
+        let id = "reused".to_string();
+        let handle = playing(&games, &req("reused"), &["red@t.test"]);
         let repl = handle.lock().expect("the handle");
         let doomed_seed = repl.session.record().seed;
 
-        games.delete(&id).expect("a delete");
+        games.delete(&id, &who("red@t.test")).expect("a delete");
 
         // The name comes back as a DIFFERENT game — a different seed is what
         // makes it a different board, deal and box.
         let mut second = req("reused");
         second.seed = Some(WireSeed(20_260_901));
-        games.create(&second).expect("the name is reusable");
-        let after_create = store.read(&id).expect("the new record");
+        playing(&games, &second, &["red@t.test"]);
+        let after_create = stored_json(&store, &id);
 
         let err = match games.persist(&id, &repl) {
             Ok(()) => panic!("the in-flight write landed on someone else's game"),
@@ -1277,12 +2450,32 @@ mod tests {
             err.contains("different game"),
             "the refusal says the id holds another game: {err}",
         );
+        // **AND IT SAYS IT WITHOUT SPELLING EITHER SEED.**
+        //
+        // This sentence is not confined to a log: `input` pushes it into
+        // `warnings` as `APPLIED BUT NOT SAVED — {e}` (`lib.rs`) and serializes
+        // it on the reply, so a sentence carrying a seed is a seed on the wire —
+        // and it would be the NEW table's seed handed to the OLD game's player,
+        // which regenerates that table's whole hidden set. The corpus-wide value
+        // pin cannot see this one: no committed payload reaches this arm.
+        //
+        // Both spellings, and both games' seeds, because the fence is about the
+        // number and not about which side it came from.
+        for seed in [doomed_seed, 20_260_901u64] {
+            for spelling in [seed.to_string(), format!("{seed:016x}"), format!("{seed:x}")] {
+                assert!(
+                    !err.contains(&spelling),
+                    "the refusal spells a setup seed ({spelling}) on a sentence that reaches a \
+                     client's `warnings`: {err}",
+                );
+            }
+        }
 
         let now: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("the record")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         assert_ne!(now.seed, doomed_seed, "the deleted game did not come back");
         assert_eq!(
-            store.read(&id).expect("the record"),
+            stored_json(&store, &id),
             after_create,
             "the stored record is byte-identical to what `create` wrote",
         );
@@ -1306,12 +2499,13 @@ mod tests {
     fn a_handle_whose_write_was_refused_is_not_left_resident() {
         let store = Arc::new(MemStore::default());
         let rules = Arc::new(Rules::standard());
-        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, handle) = games.create(&req("stale")).expect("a game");
+        let games = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "stale".to_string();
+        let handle = playing(&games, &req("stale"), &["red@t.test"]);
 
         // Someone else moves the stored game past this handle.
         {
-            let other = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn SessionStore>);
+            let other = Games::new(Arc::clone(&rules), Arc::clone(&store) as Arc<dyn Store>);
             let h = other.handle(&id).expect("the same game");
             let mut r = h.lock().expect("the handle");
             let _ = r.step("");
@@ -1356,7 +2550,7 @@ mod tests {
             let store = Arc::new(MemStore::default());
             let games = Arc::new(Games::new(
                 Arc::new(Rules::standard()),
-                Arc::clone(&store) as Arc<dyn SessionStore>,
+                Arc::clone(&store) as Arc<dyn Store>,
             ));
             let name = format!("dup{round}");
             let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -1373,8 +2567,22 @@ mod tests {
                         // loser are distinguishable by what landed.
                         let mut r = req(&name);
                         r.seed = None;
-                        games.create(&r).map(|(id, handle)| {
-                            (id, handle.lock().expect("a handle").session.record().seed)
+                        let creator = who("red@t.test");
+                        // The winner finishes its own deal, because the RECORD
+                        // is what the assertions below read and a table has none
+                        // until its last keep. The loser never gets here.
+                        games.create(&r, &creator).map(|view| {
+                            let id = view.id;
+                            while let Some(seat) = games
+                                .table(&id, &creator)
+                                .expect("seated")
+                                .next_unkept_seat_of(&creator)
+                            {
+                                games.keep(&id, &creator, seat, 1).expect("a keep");
+                            }
+                            let handle = games.handle(&id).expect("playing");
+                            let seed = handle.lock().expect("a handle").session.record().seed;
+                            (id, seed)
                         })
                     })
                 })
@@ -1392,7 +2600,7 @@ mod tests {
             // The record on disk is the winner's game, and the resident handle
             // is the same one the winner was handed.
             let stored: GameRecord =
-                serde_json::from_str(&store.read(&name).expect("the record")).expect("a record");
+                serde_json::from_str(&stored_json(&store, &name)).expect("a record");
             assert_eq!(stored.seed, winners[0].1, "round {round}: the stored game is the winner's");
             let resident = games.handle(&name).expect("the resident handle");
             assert_eq!(
@@ -1414,25 +2622,51 @@ mod tests {
     #[test]
     fn a_delete_is_not_undone_by_a_move_already_in_flight() {
         let games = games();
-        let (id, handle) = games.create(&req("drace")).expect("a game");
+        let id = "drace".to_string();
+        let handle = playing(&games, &req("drace"), &["red@t.test"]);
         let repl = handle.lock().expect("the handle");
+        let red = who("red@t.test");
 
-        games.delete(&id).expect("a delete");
-        assert!(games.list().expect("a list").is_empty(), "the delete took");
+        games.delete(&id, &red).expect("a delete");
+        assert!(games.list_for(&red).expect("a list").is_empty(), "the delete took");
 
         let err = games.persist(&id, &repl).expect_err("the in-flight write is refused");
         assert!(err.contains("deleted"), "the refusal says why: {err}");
-        assert!(games.list().expect("a list").is_empty(), "and the game stays gone");
+        assert!(games.list_for(&red).expect("a list").is_empty(), "and the game stays gone");
 
         // The name is reusable: the tombstone holds ids that are deleted and
         // NOT recreated, so this must succeed rather than trip the guard.
-        assert!(games.create(&req("drace")).is_ok(), "the name can be reused");
-        assert_eq!(games.list().expect("a list"), vec!["drace".to_string()]);
+        assert!(games.create(&req("drace"), &red).is_ok(), "the name can be reused");
+        assert_eq!(
+            games.list_for(&red).expect("a list").iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            vec!["drace".to_string()],
+        );
+    }
+
+    /// The record `id` is stored as, as bytes.
+    ///
+    /// `expect` twice, and the two are different questions: the store failed,
+    /// or the store answered "not there". A cell calling this wants a record
+    /// that is present, so either is a failed premise.
+    fn stored_json(store: &MemStore, id: &str) -> String {
+        store.read(Doc::Record, id).expect("a readable store").expect("a stored record").0
+    }
+
+    /// Replace `id`'s record the way a SECOND WRITER does: read what is there,
+    /// then write against that version.
+    ///
+    /// Not an unconditional write, because there is no longer such a thing —
+    /// and this is the shape the cells below want anyway, since every one of
+    /// them is staging another writer who has seen the current record.
+    fn overwrite_record(store: &MemStore, id: &str, json: &str) {
+        let version = store.read(Doc::Record, id).expect("a readable store").map(|(_, v)| v);
+        store.write_if_version(Doc::Record, id, json, version).expect("another writer's write");
     }
 
     /// How many events the STORE holds for `id`.
     fn stored_events(store: &MemStore, id: &str) -> usize {
-        let json = store.read(id).expect("a stored record");
+        let (json, _) =
+            store.read(Doc::Record, id).expect("a stored record").expect("a stored record");
         serde_json::from_str::<GameRecord>(&json).expect("a record").events.len()
     }
 
@@ -1454,8 +2688,9 @@ mod tests {
     fn an_undo_reaches_the_store() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, handle) = games.create(&req("undo")).expect("a game");
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "undo".to_string();
+        let handle = playing(&games, &req("undo"), &["red@t.test"]);
 
         {
             let mut repl = handle.lock().expect("the handle");
@@ -1495,7 +2730,7 @@ mod tests {
         // And it SURVIVES a cold rebuild, which is the whole point — the record
         // is the truth, and a rebuild replays it.
         let fresh =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
         let rebuilt = fresh.handle(&id).expect("the stored game loads");
         assert_eq!(
             rebuilt.lock().expect("the handle").session.record().events.len(),
@@ -1517,8 +2752,9 @@ mod tests {
     fn a_divergent_write_of_the_same_length_is_refused() {
         let store = Arc::new(MemStore::default());
         let games =
-            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, handle) = games.create(&req("fork")).expect("a game");
+            Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "fork".to_string();
+        let handle = playing(&games, &req("fork"), &["red@t.test"]);
         {
             let mut repl = handle.lock().expect("the handle");
             repl.step("1");
@@ -1531,14 +2767,14 @@ mod tests {
         // the same reason the stale-handle cell builds its ahead-record: the
         // divergence has to be exact, not incidental.
         let mut theirs: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         let last = theirs.events.pop().expect("at least one event");
         theirs.events.push(last.clone());
         theirs.events.push(last);
         theirs.events.pop();
         theirs.lockdown = Some("a different writer was here".to_string());
         let theirs_json = serde_json::to_string(&theirs).expect("json");
-        store.write(&id, &theirs_json).expect("their write");
+        overwrite_record(&store, &id, &theirs_json);
         assert_eq!(stored_events(&store, &id), mine, "the premise: the SAME length");
 
         let repl = handle.lock().expect("the handle");
@@ -1553,7 +2789,7 @@ mod tests {
         };
         assert!(err.contains("changed"), "the refusal names the conflict: {err}");
         assert_eq!(
-            store.read(&id).expect("stored"),
+            stored_json(&store, &id),
             theirs_json,
             "their record survived byte for byte",
         );
@@ -1564,14 +2800,15 @@ mod tests {
     ///
     /// `live` caches a handle forever and nothing invalidates it against the
     /// store, so with two processes over one store — the arrangement
-    /// `SessionStore` exists for — a stale handle would publish a record with
+    /// [`Store`] exists for — a stale handle would publish a record with
     /// FEWER events, erasing a move another writer had already applied and
     /// acknowledged.
     #[test]
     fn a_stale_handle_cannot_erase_a_move_another_writer_already_stored() {
         let store = Arc::new(MemStore::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn SessionStore>);
-        let (id, handle) = games.create(&req("stale")).expect("a game");
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "stale".to_string();
+        let handle = playing(&games, &req("stale"), &["red@t.test"]);
 
         // One real move, so the handle and the store agree on a non-empty
         // record before anything diverges.
@@ -1584,10 +2821,10 @@ mod tests {
         // Now the store advances behind this handle's back — which is exactly
         // what a second process doing one move looks like from here.
         let mut record: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         let ahead = record.events.last().cloned().expect("the move is recorded");
         record.events.push(ahead);
-        store.write(&id, &serde_json::to_string(&record).expect("json")).expect("a write");
+        overwrite_record(&store, &id, &serde_json::to_string(&record).expect("json"));
         let ahead_len = record.events.len();
 
         let repl = handle.lock().expect("the handle");
@@ -1603,7 +2840,7 @@ mod tests {
         );
 
         let after: GameRecord =
-            serde_json::from_str(&store.read(&id).expect("stored")).expect("a record");
+            serde_json::from_str(&stored_json(&store, &id)).expect("a record");
         assert_eq!(after.events.len(), ahead_len, "the newer record survived");
     }
 
@@ -1611,17 +2848,22 @@ mod tests {
     #[test]
     fn create_refuses_a_name_whose_record_is_unreadable() {
         struct Unreadable;
-        impl SessionStore for Unreadable {
-            fn list(&self) -> Result<Vec<GameId>, String> {
+        impl Store for Unreadable {
+            fn list(&self, _: Doc) -> Result<Vec<GameId>, String> {
                 Ok(vec!["taken".to_string()])
             }
-            fn read(&self, _: &str) -> Result<String, String> {
+            /// An `Err`, not `Ok(None)` — the shape a present file that cannot
+            /// be read has, and the one `create` must not mistake for absence.
+            fn read(&self, _: Doc, _: &str) -> Result<Option<(String, Version)>, String> {
                 Err("permission denied".to_string())
             }
-            fn exists(&self, id: &str) -> Result<bool, String> {
-                Ok(id == "taken")
-            }
-            fn write(&self, _: &str, _: &str) -> Result<(), String> {
+            fn write_if_version(
+                &self,
+                _: Doc,
+                _: &str,
+                _: &str,
+                _: Option<Version>,
+            ) -> Result<Version, WriteError> {
                 panic!("a refused create must not reach the store");
             }
             fn delete(&self, _: &str) -> Result<(), String> {
@@ -1629,7 +2871,86 @@ mod tests {
             }
         }
         let games = Games::new(Arc::new(Rules::standard()), Arc::new(Unreadable));
-        let err = games.create(&req("taken")).err().expect("the name is occupied");
+        let err = games
+            .create(&req("taken"), &who("red@t.test"))
+            .expect_err("the name is occupied")
+            .to_string();
         assert!(err.contains("already exists"), "{err}");
+    }
+
+    /// **A store that cannot be READ refuses the write and KEEPS the handle.**
+    ///
+    /// The two ways a write can fail are not one failure, and `persist` acts on
+    /// the difference: a CONFLICT means this handle is wrong about the world,
+    /// so it is dropped and the next request rebuilds from the record; an I/O
+    /// failure means the handle is right and the disk is not, so it stays. That
+    /// rule is stated in `conflict`'s own doc and carried by `WriteError`.
+    ///
+    /// `persist` used to DISCARD its read error (`.ok().flatten()`), and the
+    /// discard defeated the rule from the inside: an unreadable store became
+    /// `expected: None`, which is a CREATE, and a create over a present
+    /// document is a `Conflict` — so a transient read failure evicted the live
+    /// session, which is precisely what the split exists to prevent.
+    ///
+    /// Residency is asserted THROUGH `handle`, which is the only honest way to
+    /// ask: it returns the resident `Arc` if there is one and otherwise rebuilds
+    /// off the store — and the store is still failing, so a rebuild cannot
+    /// succeed. `Arc::ptr_eq` against the handle `create` returned is therefore
+    /// both halves of the claim at once.
+    #[test]
+    fn a_read_failure_refuses_the_write_and_leaves_the_handle_resident() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A `MemStore` whose reads can be switched off under a live handle.
+        #[derive(Default)]
+        struct FlakyReads {
+            inner: MemStore,
+            failing: AtomicBool,
+        }
+        impl Store for FlakyReads {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.inner.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if self.failing.load(Ordering::Relaxed) {
+                    return Err("the disk went away".to_string());
+                }
+                self.inner.read(doc, id)
+            }
+            fn write_if_version(
+                &self,
+                doc: Doc,
+                id: &str,
+                json: &str,
+                expected: Option<Version>,
+            ) -> Result<Version, WriteError> {
+                self.inner.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.inner.delete(id)
+            }
+        }
+
+        let store = Arc::new(FlakyReads::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let id = "ioflake".to_string();
+        let handle = playing(&games, &req("ioflake"), &["red@t.test"]);
+
+        store.failing.store(true, Ordering::Relaxed);
+        let err = {
+            let repl = handle.lock().expect("the handle");
+            games.persist(&id, &repl).expect_err("a store that cannot be read refuses the write")
+        };
+        assert!(
+            err.contains("the disk went away"),
+            "the refusal carries the store's own reason rather than inventing a conflict: {err}",
+        );
+
+        let again = games.handle(&id).expect("the handle is still resident");
+        assert!(
+            Arc::ptr_eq(&again, &handle),
+            "an I/O failure must not evict — and a rebuild is impossible here, because the \
+             store is still refusing to be read",
+        );
     }
 }

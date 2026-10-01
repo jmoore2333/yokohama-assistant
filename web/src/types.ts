@@ -282,8 +282,12 @@ export interface FrameModel {
   /** No `seed`. The server passes `TitleModel::seed: None` on every frame it
    *  serves — the setup seed regenerates both decks, the boxed pile, the board
    *  and every deal, so a payload carrying it hands over the whole hidden set.
-   *  The one place the seed legitimately reaches this client is `Preview`,
-   *  which round-trips it back into `create`. */
+   *
+   *  **Nor does anything else on this wire.** `POST …/preview` was the last
+   *  payload that carried one, because the setup flow round-tripped the value
+   *  back into `create`; the flow is create-then-deal now, the seed lives only
+   *  in the table document on the server, and the fence that says so —
+   *  `no_committed_payload_carries_the_setup_seed` — has no exemption left. */
   title: { mode: "Sim" | "Live"; autosaved: boolean };
   board: BoardModel;
   dashboard: Panel[];
@@ -338,6 +342,25 @@ export interface ClientState {
   events: number;
 }
 
+/** The change SIGNAL, from `GET /api/games/{id}/events` — what a poll asks for
+ *  while it is somebody else's turn (room plan R-P9).
+ *
+ *  **Deliberately not a frame.** The client learns that this game now has `N`
+ *  events and seat `S` to move, and fetches a frame only when that moved — so
+ *  the every-few-seconds request costs a few bytes rather than a whole board.
+ *
+ *  `status` is what lets ONE poll serve two screens: `dealing` is the setup
+ *  screen waiting for the other seats to choose (`events` 0, `to_move` null),
+ *  and the flip to `playing` is the client's cue to open the game. `your_turn`
+ *  is answered per caller and is false once the game is `over`, so a finished
+ *  game never reads as waiting for the reader. */
+export interface Events {
+  events: number;
+  to_move: PlayerId | null;
+  status: "dealing" | "playing" | "over";
+  your_turn: boolean;
+}
+
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.
  *
@@ -363,9 +386,12 @@ export interface HistoricalFrame {
   /** The record's length. The track has `total + 1` stops, and the last one is
    *  the present: a real position with no event to name. */
   total: number;
-  /** Whose view this is. **Pinned server-side and it does not follow the
-   *  mover** — that is what stops a sweep over every `k` from harvesting every
-   *  seat's whole hand history in one pass. */
+  /** Whose view this is. **Chosen server-side, and always one of the CALLER's
+   *  own seats** — the seat to move when the caller holds it, otherwise their
+   *  lowest (R-4.2). It never names a seat somebody else holds, which is what
+   *  stops a sweep over every `k` from harvesting another player's whole hand
+   *  history in one pass. At a hot seat, where one person holds several, it
+   *  does follow the mover among those. */
   seat: PlayerId;
   /** Whose turn it was at `k`. */
   to_move: PlayerId;
@@ -406,6 +432,19 @@ export interface Health {
   server_version: string;
   semantics_rev: number;
   rules_hash: string;
+  /** Which identity source this deployment reads, by name. */
+  identity: string;
+}
+
+/** Who the server thinks you are, and which header it reads to decide.
+ *
+ *  `GET /api/me` NEVER refuses: `user` is `null` when nobody is named, which is
+ *  the answer that tells the client which screen to show. `mode` says whether
+ *  signing in here is even meaningful — only `claimed` has a screen to offer,
+ *  since the other two are set by an edge the browser cannot reach. */
+export interface Me {
+  mode: "claimed" | "cf-access" | "worker";
+  user: string | null;
 }
 
 /** Every refusal on this API, in one shape. `api.ts` reads `error` off it and
@@ -424,29 +463,76 @@ export interface DealCard {
   keep_score: number;
 }
 
-/** The two cards a seat was dealt \u2014 and NOT the two another seat was dealt.
+// ---- the table: who sits where (M6.1) ------------------------------------
+
+/** Who plays one seat. A person's normalized email, or the built-in bot. */
+export type SeatDoc = { kind: "human"; user: string } | { kind: "bot" };
+
+/** A table is DEALING until every human seat has chosen a starting order, and
+ *  PLAYING afterwards. Every route that needs a session answers 409 while it is
+ *  dealing, carrying `status: "dealing"` so this client knows which screen to
+ *  draw rather than showing an error. */
+export type TableStatus = "dealing" | "playing";
+
+/** The table as a seated player sees it.
  *
- *  **A bot seat carries an empty `cards` and no keep field at all** (the
- *  2026-09-06 corrections, R-C1): the bot keeps by its own argmax and the
- *  record holds the card, but a player reading this payload cannot learn what
- *  it was dealt or which it took. The client draws two card backs from
- *  `is_bot`, and it never chooses for the bot \u2014 `keeps` carries `null` there,
- *  which the server refuses a value on by name. */
-export interface Deal {
-  seat: PlayerId;
-  is_bot: boolean;
-  cards: DealCard[];
+ *  **Two things the server holds are not here**: the setup seed, which
+ *  regenerates every deal and both decks, and the `keeps` — what the OTHER
+ *  seats chose. `chosen` is what crosses instead: whether a seat has answered
+ *  is public at any table; which card it took is not. */
+export interface TableView {
+  id: string;
+  name: string | null;
+  created_by: string;
+  /** Unix SECONDS, not a formatted string — the lobby sorts on it. */
+  created_at: number;
+  players: number;
+  colors: PlayerColor[];
+  start_seat: number;
+  seats: SeatDoc[];
+  /** True for a bot seat from the start, and for a human seat once it has kept. */
+  chosen: boolean[];
+  /** The seats the CALLER holds. Empty is impossible: a caller with no seat here
+   *  is a 403 and never receives this payload. */
+  my_seats: PlayerId[];
+  status: TableStatus;
+  /** Present once playing, `null` while dealing. */
+  to_move: PlayerId | null;
+  over: boolean | null;
 }
 
-/** The set table: the position after setup, beside the deals.
+/** What `GET …/deal` serves: the set table, and the CALLER's own two cards.
  *
- *  `table` is a `HistoricalFrame` at `index 0, total 0` over a session the
- *  server throws away — so this screen draws the real board with the same
- *  components a replay position uses, and nothing is created until Start. */
-export interface Preview {
-  seed: string;
-  table: HistoricalFrame;
-  deals: Deal[];
+ *  **`seat` and `cards` are null together**, and that is the "waiting for the
+ *  others" screen rather than an error — every seat this caller holds has
+ *  chosen, and the table has not finished dealing. */
+export interface DealView {
+  table: TableView;
+  seat: PlayerId | null;
+  cards: DealCard[] | null;
+  /** The terminal's own `KEEP_SCORE_NOTE`, served rather than copied here, so
+   *  the hedge beside the Keep score cannot drift from the CLI's. */
+  keep_note: string;
+  frame: HistoricalFrame;
+}
+
+/** The lobby. An object rather than a bare array, so a cursor or a count can be
+ *  added without every reader changing shape. */
+export interface GamesList {
+  games: TableView[];
+}
+
+/** Which of the two dealt cards a seat keeps. `card` is 1 or 2, as they are
+ *  numbered on screen. */
+export interface KeepRequest {
+  seat: number;
+  card: 1 | 2;
+}
+
+/** The 409 a session route answers while its table is still dealing: the
+ *  ordinary error shape, plus the one status this client BRANCHES on. */
+export interface DealingErrorBody extends ApiErrorBody {
+  status: string;
 }
 
 // ---- the read-only surfaces ---------------------------------------------

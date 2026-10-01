@@ -860,6 +860,14 @@ button.primary {
 }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 
+/* One seat of the new-game form: who holds it, its colour, and — when the row
+   names somebody else — where to type their address. It WRAPS, because at
+   390px the label, the select and an email field do not sit on one line and a
+   form that pushed the input off the edge would be a page that scrolls
+   sideways (the width gate's own rule, applied before the gate sees it). */
+.field.seat-row { flex-wrap: wrap; }
+.field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
+
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {
   background: none; border: 1px solid transparent; border-radius: 6px;
@@ -870,6 +878,61 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 
 .saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 .saved li { display: flex; gap: 0.4rem; align-items: center; }
+/* The row's second half — the size, what the table is waiting on, and who is at
+   it. It wraps rather than pushing the delete controls off a narrow screen. */
+.saved li .table-facts { font-size: 11px; }
+
+/* ---- the door (M6.1) ---------------------------------------------------- */
+
+/* Who you are, on a screen that has no banner to put it in. Right-aligned and
+   above the heading, which is where a page header would have carried it. */
+.who-strip {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 0.5rem; margin-bottom: 0.8rem;
+}
+.who-strip .who { color: var(--fg-faint); font-size: 11px; letter-spacing: 0.04em; }
+
+/* In a banner it is one more `.meta`, and it sits to the LEFT of the turn strip
+   — which takes `margin-left: auto` and so stays at the far end of the row.
+
+   **Capped, because the banner is GATED at one row** (`the_screen_itself.spec.ts`,
+   1440 and 1280). Measured at 1280: 161 + 250 + 162 + 488 + 77 of children and
+   four 20px gaps = 1218 against a 1240px content box — 22px of room, and an
+   address longer than this one would spend it. The cap is on the strip rather
+   than on the banner because the strip is the part that grows with the player. */
+.banner .who {
+  white-space: nowrap; max-width: 12rem; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* What the poll can say for itself (M6.1 §6). Present ONLY while it is not
+   live, so the resting state costs the banner no width at all — which matters,
+   because the banner is gated at one row and 22px of room was what the measure
+   at 1280 left. `nowrap` for the same reason the "You are …" strip has it: this
+   is a two-word fact, and a fact that breaks the line is worse than a fact
+   that is slightly cramped. `--warn` rather than the faint grey: "reconnecting"
+   is the one thing here a player should notice without looking for it. */
+.banner .link, .who-strip .link { white-space: nowrap; color: var(--warn); }
+.who-strip .link { font-size: 11px; letter-spacing: 0.04em; margin-right: auto; }
+
+/* The door's way out, at the foot of the Game menu — see `GameMenu`'s prop. */
+.menu-door { margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--line); }
+
+/* The door's refusal: a sentence and nothing to click, so it reads as prose
+   rather than as a failed form. */
+.door-error { color: var(--warn); max-width: 34rem; }
+
+.sign-in .field { max-width: 26rem; }
+.sign-in form { margin-top: 1rem; }
+.sign-in button.primary { margin-top: 0.6rem; }
+/* Why the player is at this door, when they did not choose to be. Above the
+   form, and given the room a sentence needs. */
+.sign-in .door-notice { margin: 0 0 0.9rem; max-width: 34rem; }
+
+/* One table in the Game menu's list: the name is a control, the rest is not.
+   The facts can carry three or four emails at 4P, so the row wraps rather than
+   widening a dropdown past the banner. */
+.game-row { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.game-row .table-facts { font-size: 10px; }
 
 .error { color: var(--warn); margin-top: 0.6rem; }
 .center { text-align: center; color: var(--fg-dim); padding: 3rem; }
@@ -1408,20 +1471,19 @@ ol.account .mover { font-weight: 700; }
  * the wire in the 2026-09-06 corrections (R-C1), so there is no kept card to
  * mark and no Keep score under it to avoid covering. */
 .deal-card { display: flex; flex-direction: column; }
-/* **A HUMAN seat that is not choosing shows a SMALLER pair of backs.** Its two
- * cards are an indication — this seat has answered, or has not been asked yet —
- * with no id and no Keep score to read, so they do not need the reading size the
- * choosing seat's cards need. The BOT's two keep the full 8rem and are outside
- * this selector deliberately: they are the only cards in the side column, with
- * no height to compete for.
- *
- * Measured at 4P/1710x869, where three human seats share the deck. At the full
- * 8rem the block ran 931px inside a 539px window and the ASKING seat's own label
- * sat 28px ABOVE the fold on the middle turn — the one thing the deck's rule
- * says must stay reachable. At 4rem the block is 738px and that label is 25px
- * BELOW the top of the window. Gated since then by the 4P set-table cell in
- * `the_table.spec.ts`, which prints its own reading. */
-.deal-seat.human:not(.current) .card-face.sm { width: 4rem; }
+/* **A human seat that is not the one being asked draws no cards at all now
+ * (M6.1 §7.4).** The rule that used to live here shrank the OTHER human seats'
+ * face-down pairs to 4rem, because a hot-seat deal put every human seat's two
+ * cards in the deck at once: at 4P/1710x869 the block ran 931px inside a 539px
+ * window and the asking seat's own label sat 28px ABOVE the fold, which 4rem
+ * brought back to 738px and +25px. `GET …/deal` serves ONE seat, so the deck
+ * holds one card row at every player count and the measurement has nothing left
+ * to bind. The other seats are a line each in the side column; the 4P cell in
+ * `the_table.spec.ts` still reads the asking seat's label against the fold, and
+ * prints its own figures. */
+.deal-seat.human.other .deal-state,
+.deal-waiting { font-size: 12px; margin: 0.3rem 0; }
+.deal-seat.human.other.waiting h2 { opacity: 0.75; }
 /* The line under a face-down deal, sized with the hedge rather than as a
  * generic `<p>`: the set table's height budget (R-T12-3, measured at 1710x869)
  * is what the bot's panel is competing for. */
@@ -1439,6 +1501,10 @@ ol.account .mover { font-weight: 700; }
  * scrolls instead. Figures in the task report. */
 .setup-table .deck > .decision { padding: 0.7rem 1.25rem 0.8rem; overflow-y: auto; }
 .setup-table .asking { font-size: 1rem; margin: 0.3rem 0 0.4rem; }
+/* The line under the heading that says what IS on this table and what is not —
+   sized with the hedge rather than as a generic `<p>`, for the height budget
+   above. */
+.setup-table .setup-note { font-size: 11px; margin: 0.2rem 0 0.5rem; }
 .setup-table .deal-seat .field { margin: 0.2rem 0; }
 .setup-table .side { padding: 0.5rem 1rem; }
 @media (min-width: 1201px) {
