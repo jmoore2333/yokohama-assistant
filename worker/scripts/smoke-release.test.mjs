@@ -108,14 +108,23 @@ describe("the release module's smoke (the orchestrator's ruling, task 7's review
 describe("the smoke's live mode: the edge line", () => {
   const ORIGIN = "https://yokohama.moore.nyc";
 
-  /** A worker package holding `wrangler.x.jsonc` whose `vars` are `vars`. */
-  function pkg(vars) {
+  /** A worker package holding `wrangler.x.jsonc` whose `vars` are `vars`,
+   *  and an assembled tree's stamp, `assets/build-values.json`, whose
+   *  `site_url` is `siteUrl` — none at all when it is `null`. */
+  function pkg(vars, siteUrl = false) {
     const root = mkdtempSync(join(tmpdir(), "smoke-live-"));
     dirs.push(root);
     writeFileSync(
       join(root, "wrangler.x.jsonc"),
       `// a configuration\n{\n  "name": "yokohama-web",\n  "vars": ${JSON.stringify(vars)},\n}\n`,
     );
+    if (siteUrl !== null) {
+      mkdirSync(join(root, "assets"));
+      writeFileSync(
+        join(root, "assets", "build-values.json"),
+        `${JSON.stringify({ project_url: false, blurb: false, notice: false, release_feed: false, site_url: siteUrl, turnstile_sitekey: true }, null, 2)}\n`,
+      );
+    }
     return root;
   }
 
@@ -130,21 +139,95 @@ describe("the smoke's live mode: the edge line", () => {
     return { calls, fetch };
   }
 
+  /** A fetch that records each request and answers it by its path, from
+   *  `routes` (path → a fresh Response): the edge's answer for the API and
+   *  the asset layer's for the release's own files. */
+  function routed(routes) {
+    const calls = [];
+    const fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      const answer = routes[new URL(String(url)).pathname];
+      if (answer === undefined) throw new Error(`the cell answers no ${String(url)}`);
+      return answer();
+    };
+    return { calls, fetch };
+  }
+
   const challenge = () => new Response("<html>Just a moment...</html>", { status: 403, headers: { "cf-mitigated": "challenge" } });
+  const served = () => new Response("// the release", { status: 200 });
+  /** What every request the live mode makes carries: no cookie, a GET, a browser's agent, no redirect followed. */
+  const INIT = { method: "GET", redirect: "manual", headers: { "user-agent": BROWSER_UA } };
+  const HEALTH_LINE =
+    "smoke-release: wrangler.x.jsonc declares YOKOHAMA_TURNSTILE on, and a cookie-less GET https://yokohama.moore.nyc/api/health " +
+    `answered 403 cf-mitigated: challenge — the edge rule "${DESCRIPTION}" stands in front of the API`;
 
   // The pass. Mutant: the request made with a cookie, another method, a
   // non-browser agent, or following a redirect.
-  it("passes on under a 403 with cf-mitigated: challenge, having asked exactly one cookie-less GET of /api/health", async () => {
-    const { calls, fetch } = fake(challenge());
+  it("passes on under a 403 with cf-mitigated: challenge at /api/health, having asked it and then /sw.js, each one cookie-less GET", async () => {
+    const { calls, fetch } = routed({ "/api/health": challenge, "/sw.js": served });
     const line = await liveSmoke(ORIGIN, pkg({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_TURNSTILE: "on" }), "wrangler.x.jsonc", fetch);
     expect(line).toBe(
-      "smoke-release: wrangler.x.jsonc declares YOKOHAMA_TURNSTILE on, and a cookie-less GET https://yokohama.moore.nyc/api/health " +
-        `answered 403 cf-mitigated: challenge — the edge rule "${DESCRIPTION}" stands in front of the API`,
+      `${HEALTH_LINE}\n` +
+        "smoke-release: and a cookie-less GET https://yokohama.moore.nyc/sw.js answered 200 with no cf-mitigated header — the release's own file is not challenged\n" +
+        "smoke-release: /sitemap.xml not asked — assets/build-values.json says this build wrote none (site_url false)",
     );
     expect(calls).toEqual([
-      { url: "https://yokohama.moore.nyc/api/health", init: { method: "GET", redirect: "manual", headers: { "user-agent": BROWSER_UA } } },
+      { url: "https://yokohama.moore.nyc/api/health", init: INIT },
+      { url: "https://yokohama.moore.nyc/sw.js", init: INIT },
     ]);
     expect(BROWSER_UA).toMatch(/^Mozilla\/5\.0 .* Chrome\/\d+/);
+  });
+
+  // **The positive control** (the final review's Important 2): a rule that
+  // challenges the release's OWN files — printed from a tree without the
+  // sitemap, or edited in the zone — must fail the smoke, which before read
+  // only that the API was challenged. `/sw.js` always; `/sitemap.xml` exactly
+  // when the LOCAL stamp says the build wrote one. Mutants: the static reads
+  // missing; the challenge unread on them; the sitemap asked whatever the
+  // stamp, or never.
+  it("asks /sitemap.xml too when the local stamp says the build wrote one, and passes when neither file is challenged", async () => {
+    const { calls, fetch } = routed({ "/api/health": challenge, "/sw.js": served, "/sitemap.xml": served });
+    const line = await liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }, true), "wrangler.x.jsonc", fetch);
+    expect(line).toBe(
+      `${HEALTH_LINE}\n` +
+        "smoke-release: and a cookie-less GET https://yokohama.moore.nyc/sw.js answered 200 with no cf-mitigated header — the release's own file is not challenged\n" +
+        "smoke-release: and a cookie-less GET https://yokohama.moore.nyc/sitemap.xml answered 200 with no cf-mitigated header — the release's own file is not challenged",
+    );
+    expect(calls).toEqual([
+      { url: "https://yokohama.moore.nyc/api/health", init: INIT },
+      { url: "https://yokohama.moore.nyc/sw.js", init: INIT },
+      { url: "https://yokohama.moore.nyc/sitemap.xml", init: INIT },
+    ]);
+  });
+  it("FAILS on when the rule challenges the release's own /sw.js, naming the path, and asks nothing after it", async () => {
+    const { calls, fetch } = routed({ "/api/health": challenge, "/sw.js": challenge, "/sitemap.xml": served });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }, true), "wrangler.x.jsonc", fetch)).rejects.toThrow(
+      "smoke-release: wrangler.x.jsonc declares YOKOHAMA_TURNSTILE on, but a cookie-less GET https://yokohama.moore.nyc/sw.js " +
+        `answered 403 with cf-mitigated: challenge — the edge rule "${DESCRIPTION}" challenges the release's own /sw.js: print it ` +
+        "again from the deployed tree and update it by its id (node scripts/edge-rule.mjs; --verify; worker/RUNBOOK.md §3)",
+    );
+    expect(calls.map((c) => c.url)).toEqual(["https://yokohama.moore.nyc/api/health", "https://yokohama.moore.nyc/sw.js"]);
+  });
+  it("FAILS on when the rule challenges /sitemap.xml under a stamp that says the build wrote one", async () => {
+    const { fetch } = routed({ "/api/health": challenge, "/sw.js": served, "/sitemap.xml": challenge });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }, true), "wrangler.x.jsonc", fetch)).rejects.toThrow(
+      /^smoke-release: wrangler\.x\.jsonc declares YOKOHAMA_TURNSTILE on, but a cookie-less GET https:\/\/yokohama\.moore\.nyc\/sitemap\.xml answered 403 with cf-mitigated: challenge — the edge rule .* challenges the release's own \/sitemap\.xml: /,
+    );
+  });
+  // A reading that cannot say which files the deployed release holds asks
+  // nothing: the positive control would otherwise silently shrink.
+  it("refuses on with no local stamp, or one that is not the build's, asking nothing", async () => {
+    const { calls, fetch } = routed({ "/api/health": challenge, "/sw.js": served });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }, null), "wrangler.x.jsonc", fetch)).rejects.toThrow(
+      "smoke-release: wrangler.x.jsonc declares YOKOHAMA_TURNSTILE on, but assets/build-values.json is absent, so nothing says " +
+        "whether the deployed build wrote a sitemap — run the smoke from the tree that was deployed (npm run build)",
+    );
+    const odd = pkg({ YOKOHAMA_TURNSTILE: "on" });
+    writeFileSync(join(odd, "assets", "build-values.json"), '{"site_url": "yes"}');
+    await expect(liveSmoke(ORIGIN, odd, "wrangler.x.jsonc", fetch)).rejects.toThrow(
+      /^smoke-release: wrangler\.x\.jsonc declares YOKOHAMA_TURNSTILE on, but assets\/build-values\.json is not the client build's stamp \(its site_url is not a boolean\)/,
+    );
+    expect(calls).toEqual([]);
   });
   // **Battery row 32** (the smoke passes `on` over a 200): this cell. A
   // switch that says `on` over a missing rule is not a state this project

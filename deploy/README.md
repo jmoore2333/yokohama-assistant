@@ -89,6 +89,13 @@ network, a LAN, or a VPN. Never put an open door on the public internet.
 The corner of the lobby and the setup screens reads "Playing as" and the name, and its action is
 **switch player**, which forgets the name and asks for another.
 
+**A Turnstile site key goes with this door and no other.** A client built with
+`YOKOHAMA_TURNSTILE_SITEKEY` (§3) is the open door's: it takes the key to mean no identity provider stands
+in front, so it holds a finished game until its player has chosen a name. Behind Access nobody chooses one,
+and every finished game would stay on its device. So build with a key only for `YOKOHAMA_WEB_IDENTITY=open`;
+the server reads the build's stamp at start and refuses a keyed build under `cf-access` or `worker`, naming
+both.
+
 **Changing one origin's door.** A browser keeps the name it typed as a display name, per origin. So an
 operator who flips one origin from `open` to `cf-access` sees that stored display name in the corner
 until "change name" replaces it, while every seat is keyed by the Access address. Two hosts at two
@@ -133,7 +140,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 | `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
-| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door. |
 | `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
@@ -189,7 +196,7 @@ docker run -d --name yokohama-web \
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
 
 A bad value stops the server at start-up, naming the variable, and so does a table TTL with no archive
-directory. `/api/health` reports the door, the transport, the archive, the chat limits and the two TTLs, so
+directory and a client built with `YOKOHAMA_TURNSTILE_SITEKEY` under any door but `open` (§2). `/api/health` reports the door, the transport, the archive, the chat limits and the two TTLs, so
 a client sizes itself from the server's rules; `table_ttl_days` and `open_table_ttl_days` read `null` while
 no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`worker/RUNBOOK.md` §3).
 

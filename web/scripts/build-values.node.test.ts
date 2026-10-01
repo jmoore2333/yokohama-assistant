@@ -267,6 +267,49 @@ describe("checkSiteUrl", () => {
     expect(() => checkSiteUrl("https://user:secret@yokohama.example.org")).not.toThrow(/user/);
   });
 
+  // **No refusal echoes a credential** (cycle F's fix wave; Task 5b's review,
+  // tried by the final review): only the bare-origin shape reaches the
+  // credentials arm, which never echoed the value — a value that ALSO carries
+  // a path, a query, the wrong scheme, a space or too many characters meets
+  // another arm first, and each of those printed it whole. Every arm now
+  // prints it with everything from the scheme's `//` (or its colon) to the
+  // LAST `@` cut. Mutant: any arm echoing the raw value.
+  it.each([
+    ["a path", "https://alice:hunter2pw@host.example/path"],
+    ["a query", "https://alice:hunter2pw@host.example/?q=1"],
+    ["plain http", "http://alice:hunter2pw@host.example"],
+    ["no slashes after the scheme", "https:alice:hunter2pw@host.example"],
+    ["a space", "https://alice:hunter2pw@host.example /"],
+    ["more than the cap", `https://alice:hunter2pw@${"a".repeat(SITE_URL_MAX)}.test`],
+    ["a password holding a slash", "https://alice:hunter2pw/x@host.example"],
+    ["a password holding an @", "https://alice:hunter2pw@x@host.example/path"],
+    ["a user alone, and a path", "https://alice@host.example/path"],
+    ["the bare origin", "https://alice:hunter2pw@host.example"],
+  ])("refuses an address carrying credentials with %s, naming neither the user nor the password", (_what, raw) => {
+    let said = "";
+    try {
+      checkSiteUrl(raw);
+    } catch (e) {
+      said = e instanceof Error ? e.message : String(e);
+    }
+    expect(said, "it is refused, naming the variable").toContain(SITE_URL_VAR);
+    expect(said).not.toContain("alice");
+    expect(said).not.toContain("hunter2pw");
+  });
+  it("cuts only the credentials, so the refusal still shows what was wrong", () => {
+    expect(() => checkSiteUrl("https://alice:hunter2pw@host.example/path")).toThrow(
+      `${SITE_URL_VAR} must be an origin, with no path, query or fragment beyond a trailing /: "https://***@host.example/path"`,
+    );
+    expect(() => checkSiteUrl("http://alice:hunter2pw@host.example")).toThrow(
+      `${SITE_URL_VAR} must begin with https://: "http://***@host.example"`,
+    );
+    // The shared URL rules are the project link's and the feed's too.
+    expect(() => checkProjectUrl("ftp://alice:hunter2pw@host.example")).toThrow(
+      `${PROJECT_URL_VAR} must begin with https:// or http://: "ftp://***@host.example"`,
+    );
+    expect(() => checkReleaseFeed("http://alice:hunter2pw@host.example/feed", null)).toThrow(/"http:\/\/\*\*\*@host\.example\/feed"$/);
+  });
+
   // The value is the origin, parsed: a mixed-case scheme and host come back in
   // lower case, so a canonical link is never spelled two ways.
   it("returns the parsed origin", () => {

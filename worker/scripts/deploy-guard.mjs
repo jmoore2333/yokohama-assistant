@@ -553,9 +553,11 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
         "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
     );
   } else if (!on && stamp.turnstile_sitekey) {
+    // Asked only at the open door, which has no Access in front of it: a
+    // keyed build there is the open door's own, and its declaration says so.
     failures.push(
-      `${config} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — the widget would ` +
-        "render under Access; build the client without the key or set the var on",
+      `${config} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at ` +
+        "the open door declares on: set the var on, or build the client without the key",
     );
   }
 }

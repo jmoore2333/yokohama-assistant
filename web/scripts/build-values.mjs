@@ -30,9 +30,30 @@ export const PROJECT_URL_VAR = "YOKOHAMA_PROJECT_URL";
 export const PROJECT_URL_MAX = 200;
 
 /**
+ * `raw` as a refusal may print it (cycle F's fix wave; Task 5b's review): with
+ * everything from just after the scheme's `//` — or its first `:`, where no
+ * `//` follows it — to the LAST `@` cut to `***`, so no credential a deployer
+ * pasted reaches a build log. The LAST `@`, because a URL parser reads the
+ * user information up to it; and the cut over-reaches rather than falls short:
+ * an `@` later in a path cuts the host too, a password holding a `/` is still
+ * cut whole. A value with no `@` is printed as it is.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function withoutCredentials(raw) {
+  const at = raw.lastIndexOf("@");
+  if (at === -1) return raw;
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:(\/\/)?/.exec(raw);
+  const from = scheme === null ? 0 : scheme[0].length;
+  return at < from ? raw : `${raw.slice(0, from)}***${raw.slice(at)}`;
+}
+
+/**
  * The rules every URL build value shares: not over `max`, no whitespace or
  * control character, one of the allowed schemes, parseable, with a host. Every
- * refusal names `name`, so a deployer reads which variable to fix.
+ * refusal names `name`, so a deployer reads which variable to fix, and prints
+ * the value through `withoutCredentials`.
  *
  * @param {string} name
  * @param {string} raw a NON-EMPTY value; the callers read unset and empty first
@@ -43,7 +64,7 @@ export const PROJECT_URL_MAX = 200;
 function checkUrl(name, raw, max, httpsOnly) {
   /** @param {string} why @returns {never} */
   const refuse = (why) => {
-    throw new Error(`${name} ${why}: ${JSON.stringify(raw)}`);
+    throw new Error(`${name} ${why}: ${JSON.stringify(withoutCredentials(raw))}`);
   };
   if (raw.length > max) refuse(`is longer than ${max} characters`);
   if (/[\s\u0000-\u001f\u007f-\u009f]/u.test(raw)) refuse("holds whitespace or a control character");
@@ -138,8 +159,9 @@ export const SITE_URL_MAX = 200;
  * no query, no fragment and no credentials. The value comes back as the
  * parsed origin (a trailing `/` gone, the scheme and host in lower case), so
  * every consumer writes `${siteUrl}/sitemap.xml` and none can produce a double
- * slash. A credential is refused WITHOUT echoing the value: a build log is no
- * place for a password a deployer pasted by mistake.
+ * slash. A credential is refused WITHOUT echoing the value, and every other
+ * refusal prints it through `withoutCredentials`: a build log is no place for
+ * a password a deployer pasted by mistake.
  *
  * @param {string | undefined} raw
  * @returns {string | null}
@@ -150,7 +172,7 @@ export function checkSiteUrl(raw) {
   const parts = /^https:\/\/([^/?#]*)\/?$/i.exec(raw);
   if (parts === null) {
     throw new Error(
-      `${SITE_URL_VAR} must be an origin, with no path, query or fragment beyond a trailing /: ${JSON.stringify(raw)}`,
+      `${SITE_URL_VAR} must be an origin, with no path, query or fragment beyond a trailing /: ${JSON.stringify(withoutCredentials(raw))}`,
     );
   }
   const url = new URL(raw);

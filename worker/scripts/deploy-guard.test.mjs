@@ -835,9 +835,12 @@ describe("the deploy guard", () => {
     const noKey =
       "wrangler.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
       "build the client with YOKOHAMA_TURNSTILE_SITEKEY set";
+    // At the open door, where this comparison is now the only one asked, so
+    // the sentence says nothing about Access (cycle F's fix wave; Task 7's
+    // review, Minor 2).
     const keyed =
-      "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — the widget would " +
-      "render under Access; build the client without the key or set the var on";
+      "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at " +
+      "the open door declares on: set the var on, or build the client without the key";
 
     // The two that agree, and absent read as off.
     expect(deployGuard(worker({ "wrangler.jsonc": declared('"off"') })), "off, no key").toEqual([]);

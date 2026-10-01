@@ -27,6 +27,17 @@
 // missing rule is not a state this project ships. Under `off`, or absent, it
 // makes no request and says no edge line is owed. Its first run in a window
 // is EXPECTED to fail, before the rule is created (`worker/RUNBOOK.md` §3).
+//
+// **And the positive control** (cycle F's fix wave; the final review's
+// Important 2): a rule that challenged the release's OWN files — printed from
+// a tree without the sitemap, or edited in the zone — would pass a reading of
+// the API alone. So after the health line it asks, the same way, for
+// `/sw.js` always and for `/sitemap.xml` exactly when the LOCAL stamp
+// (`assets/build-values.json`) says the build wrote one (`site_url: true`);
+// each must come back WITHOUT a `cf-mitigated` header — the asset layer's
+// answer, not the edge's — or the smoke FAILS naming the path. The stamp is
+// read before any request: with none, nothing says which files the deployed
+// release holds, and the smoke refuses having asked nothing.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -120,34 +131,90 @@ function declaration(root, config) {
   throw new Error(`smoke-release: ${config}'s vars.YOKOHAMA_TURNSTILE must be "on" or "off" (absent is off) — got ${JSON.stringify(declared)}`);
 }
 
+/** The local tree's stamp, as the live mode names it. */
+const STAMP = "assets/build-values.json";
+
+/** Whether the LOCAL tree's stamp (`assets/build-values.json` in the package
+ *  at `root`) says the build wrote a sitemap: its `site_url`, a boolean. A
+ *  throw, prefixed `said`, when there is no stamp or it is not one. */
+function wroteSitemap(root, said) {
+  const file = join(root, STAMP);
+  if (!existsSync(file)) {
+    throw new Error(
+      `${said}, but ${STAMP} is absent, so nothing says whether the deployed build wrote a sitemap — ` +
+        "run the smoke from the tree that was deployed (npm run build)",
+    );
+  }
+  let stamp;
+  let why;
+  try {
+    stamp = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    why = "it does not parse";
+  }
+  if (why === undefined && (stamp === null || typeof stamp !== "object" || Array.isArray(stamp))) why = "it is not an object";
+  if (why === undefined && typeof stamp.site_url !== "boolean") why = "its site_url is not a boolean";
+  if (why !== undefined) {
+    throw new Error(`${said}, but ${STAMP} is not the client build's stamp (${why}) — run npm run build, then the smoke`);
+  }
+  return stamp.site_url;
+}
+
+/** What every request the live mode makes carries. No cookie: fetch carries
+ *  none of its own, so no clearance rides along. `manual`: the first answer
+ *  is the one read — an Access redirect is not a challenge. */
+const LIVE_INIT = { method: "GET", redirect: "manual", headers: { "user-agent": BROWSER_UA } };
+
 /** The edge line for the deployment at `origin` under the configuration
- *  `config` (in the package at `root`): a line saying what it read, or a
- *  throw naming why it fails. `fetchImpl` is the network; the cells pass a
- *  fake. */
+ *  `config` (in the package at `root`): the lines saying what it read, or a
+ *  throw naming why it fails. Under `on`: the API challenged, then the
+ *  release's own `/sw.js` — and `/sitemap.xml` where the local stamp says the
+ *  build wrote one — answered with no `cf-mitigated` header. `fetchImpl` is
+ *  the network; the cells pass a fake. */
 export async function liveSmoke(origin, root, config, fetchImpl = fetch) {
   if (declaration(root, config) === "off") {
     return `smoke-release: ${config} declares YOKOHAMA_TURNSTILE off — no edge line is owed, and no request was made`;
   }
-  const url = `${origin}/api/health`;
   const said = `smoke-release: ${config} declares YOKOHAMA_TURNSTILE on`;
-  let response;
-  try {
-    // No cookie: fetch carries none of its own, so no clearance rides along.
-    // `manual`: the first answer is the one read — an Access redirect is not a challenge.
-    response = await fetchImpl(url, { method: "GET", redirect: "manual", headers: { "user-agent": BROWSER_UA } });
-  } catch (e) {
-    throw new Error(`${said}, but GET ${url} failed — ${e instanceof Error ? e.message : String(e)}`);
-  }
-  await response.body?.cancel();
-  const mitigated = response.headers.get("cf-mitigated");
-  const answered = `${response.status} ${mitigated === null ? "with no cf-mitigated header" : `with cf-mitigated: ${mitigated}`}`;
-  if (response.status !== 403 || mitigated !== "challenge") {
+  const sitemap = wroteSitemap(root, said);
+  /** One cookie-less GET of `path`, its body dropped: `{ url, status, mitigated }`. */
+  const ask = async (path) => {
+    const url = `${origin}${path}`;
+    let response;
+    try {
+      response = await fetchImpl(url, LIVE_INIT);
+    } catch (e) {
+      throw new Error(`${said}, but GET ${url} failed — ${e instanceof Error ? e.message : String(e)}`);
+    }
+    await response.body?.cancel();
+    return { url, status: response.status, mitigated: response.headers.get("cf-mitigated") };
+  };
+  const answered = ({ status, mitigated }) =>
+    `${status} ${mitigated === null ? "with no cf-mitigated header" : `with cf-mitigated: ${mitigated}`}`;
+
+  const health = await ask("/api/health");
+  if (health.status !== 403 || health.mitigated !== "challenge") {
     throw new Error(
-      `${said}, but a cookie-less GET ${url} answered ${answered} — the edge rule ${JSON.stringify(DESCRIPTION)} is not ` +
+      `${said}, but a cookie-less GET ${health.url} answered ${answered(health)} — the edge rule ${JSON.stringify(DESCRIPTION)} is not ` +
         "challenging the API: create or enable it by its id (node scripts/edge-rule.mjs; worker/RUNBOOK.md §3)",
     );
   }
-  return `${said}, and a cookie-less GET ${url} answered 403 cf-mitigated: challenge — the edge rule ${JSON.stringify(DESCRIPTION)} stands in front of the API`;
+  const lines = [
+    `${said}, and a cookie-less GET ${health.url} answered 403 cf-mitigated: challenge — the edge rule ${JSON.stringify(DESCRIPTION)} stands in front of the API`,
+  ];
+  for (const path of sitemap ? ["/sw.js", "/sitemap.xml"] : ["/sw.js"]) {
+    const read = await ask(path);
+    if (read.mitigated !== null) {
+      throw new Error(
+        `${said}, but a cookie-less GET ${read.url} answered ${answered(read)} — the edge rule ${JSON.stringify(DESCRIPTION)} ` +
+          `challenges the release's own ${path}: print it again from the deployed tree and update it by its id ` +
+          "(node scripts/edge-rule.mjs; --verify; worker/RUNBOOK.md §3)",
+      );
+    }
+    lines.push(`smoke-release: and a cookie-less GET ${read.url} answered ${answered(read)} — the release's own file is not challenged`);
+  }
+  if (!sitemap) lines.push(`smoke-release: /sitemap.xml not asked — ${STAMP} says this build wrote none (site_url false)`);
+  return lines.join("\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

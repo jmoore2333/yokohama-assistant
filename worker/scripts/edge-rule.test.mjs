@@ -233,16 +233,55 @@ describe("the command line (Task 11.G.4's two commands)", () => {
     const same = cli(PRODUCTION_TREE, ["--verify"], JSON.stringify(zone));
     expect([same.status, same.stdout, same.stderr]).toEqual([
       0,
-      "edge-rule: the zone's rule equals the tree's — expression, action and description\n",
+      "edge-rule: the zone's rule equals the tree's — expression, action and description\n" +
+        "edge-rule: the local tree: sw.js names no release, build-values.json holds no boolean site_url\n",
       "",
     ]);
     const differs = cli(PRODUCTION_TREE, ["--verify"], JSON.stringify({ ...zone, action: "block" }));
     expect([differs.status, differs.stdout]).toEqual([1, ""]);
-    expect(differs.stderr).toBe(`edge-rule: the zone's rule differs from the tree's —\n  action: the zone's "block" — the tree's "managed_challenge"\n`);
+    expect(differs.stderr).toBe(
+      `edge-rule: the zone's rule differs from the tree's —\n  action: the zone's "block" — the tree's "managed_challenge"\n` +
+        "edge-rule: the local tree: sw.js names no release, build-values.json holds no boolean site_url\n",
+    );
     // A new top-level name in the tree is a difference against the zone's copy.
     const grown = cli({ ...PRODUCTION_TREE, "new/x": "" }, ["--verify"], JSON.stringify(zone));
     expect(grown.status).toBe(1);
     expect(grown.stderr).toMatch(/^edge-rule: the zone's rule differs from the tree's —\n {2}expression: /);
+  });
+  // **Which tree a verify was against** (cycle F's fix wave; the final
+  // review's Minor 6): `--verify` compares the zone's rule with whatever
+  // `worker/assets/` holds, so beside its verdict it names that tree — the
+  // release its `sw.js` names and its stamp's `site_url`, the one input that
+  // moves the sitemap in or out of the rule — and the window's record says
+  // which tree the verify read. Read, never refused: a tree it cannot name is
+  // still compared. Mutants: the line missing; printed on one verdict only;
+  // the release or the site_url unread.
+  it("--verify names the local tree beside its verdict: the release sw.js names and the stamp's site_url", () => {
+    const named = {
+      ...PRODUCTION_TREE,
+      "sw.js": "// The source is web/src/sw.ts; the release is yokohama-release-0123456789abcdef.\n",
+      "build-values.json": `${JSON.stringify({ site_url: true, turnstile_sitekey: true })}\n`,
+    };
+    const zone = JSON.parse(cli(named).stdout);
+    const same = cli(named, ["--verify"], JSON.stringify(zone));
+    expect([same.status, same.stdout, same.stderr]).toEqual([
+      0,
+      "edge-rule: the zone's rule equals the tree's — expression, action and description\n" +
+        "edge-rule: the local tree: sw.js names yokohama-release-0123456789abcdef, build-values.json reads site_url true\n",
+      "",
+    ]);
+    const unsited = { ...named, "sitemap.xml": null, "build-values.json": `${JSON.stringify({ site_url: false })}\n` };
+    delete unsited["sitemap.xml"];
+    const differs = cli(unsited, ["--verify"], JSON.stringify(zone));
+    expect(differs.status, "the sitemap left the tree, so the zone's rule differs").toBe(1);
+    expect(differs.stderr).toMatch(
+      /\nedge-rule: the local tree: sw\.js names yokohama-release-0123456789abcdef, build-values\.json reads site_url false\n$/,
+    );
+    const stampless = { ...named };
+    delete stampless["build-values.json"];
+    const unnamed = cli(stampless, ["--verify"], JSON.stringify(zone));
+    expect(unnamed.status, "a different tree, still compared").toBe(1);
+    expect(unnamed.stderr).toMatch(/\nedge-rule: the local tree: sw\.js names yokohama-release-0123456789abcdef, build-values\.json is absent\n$/);
   });
   // A run that cannot judge is not a difference: 2, naming why.
   it("refuses, with 2, input that is not JSON, any other argument, and a missing tree", () => {

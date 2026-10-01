@@ -100,6 +100,18 @@ async fn main() {
         }
     };
 
+    // **A client built with a Turnstile site key is the open door's** (M6.5c2
+    // cycle F's fix wave; R-FP4): it reads the key as a door with no identity
+    // provider in front, so behind `cf-access` or `worker` it would upload
+    // nobody's finished games. The Worker's deploy guard holds the pairing
+    // (check 12); this is the self-host's half, read off the stamp in the root
+    // this process serves (`assets::check_build_stamp`). A `dist` with no
+    // stamp, built before it, starts.
+    if let Err(e) = yokohama_web::assets::check_build_stamp(&yokohama_web::assets::dist_dir(), identity) {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+
     // **Every chat variable HAS a default (R-6.4.6, R-6.4.8)**, which is the
     // one way this differs from the identity mode above: a missing switch is
     // not a missing door. A BAD value still stops the process, and names the

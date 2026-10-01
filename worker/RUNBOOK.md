@@ -285,9 +285,13 @@ the whole list; it leaves secrets alone.
   ```
 
   A cookie-less `GET /api/health` with a browser User-Agent must answer 403 with
-  `cf-mitigated: challenge`. Exit 0 is that answer, or, under `off`, no request at all. Exit 1 names
-  what came back instead, or a refused argument or declaration. Its first run in a window is expected
-  to fail, since the rule is created after the deploy. **`on` does NOT mean** that the Worker does
+  `cf-mitigated: challenge`. Then, the same way, `GET /sw.js`, and `GET /sitemap.xml` where the local
+  tree's `assets/build-values.json` reads `site_url: true`, must each answer with NO `cf-mitigated`
+  header: the rule must not challenge the release's own files. Exit 0 is those answers, or, under
+  `off`, no request at all. Exit 1 names what came back instead and the path it came back for, a
+  refused argument or declaration, or a local tree with no stamp, which asks nothing. Run it from the
+  tree that was deployed, since the stamp it reads is the local one. Its first run in a window is
+  expected to fail, since the rule is created after the deploy. **`on` does NOT mean** that the Worker does
   anything: it reads no token, calls no siteverify, holds no secret, and answers every request as it
   does under `off`, and `/enter` is unchanged. Nor does the declaration create, enable or disable the
   rule. The operator does that through the API, by the rule's id: ENABLED before the hostname leaves
@@ -301,7 +305,8 @@ the whole list; it leaves secrets alone.
 
   The JSON is `{ "expression", "action": "managed_challenge", "description": "yokohama — the
   no-Access door's edge check (F)", "enabled": true }`. `--verify` compares the first three and
-  ignores `enabled` and every key the zone adds. Build the keyed client and assemble the tree BEFORE
+  ignores `enabled` and every key the zone adds, and beside its verdict it names the local tree it
+  read: the release `sw.js` names and the stamp's `site_url`. Build the keyed client and assemble the tree BEFORE
   printing the rule. The expression lists the tree's top-level names, and `sitemap.xml` is there only
   when the build set `YOKOHAMA_SITE_URL`.
 

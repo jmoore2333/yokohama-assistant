@@ -31,7 +31,11 @@
 //   node scripts/edge-rule.mjs                   print the rule's JSON; 0
 //   node scripts/edge-rule.mjs --verify < r.json compare the zone's rule; 0 equal, 1 different
 //
-// and 2 for a run that cannot judge: another argument, input that is not
+// Beside `--verify`'s verdict, in the same stream, one more line names the
+// local tree it compared against: the release its `sw.js` names and its
+// stamp's `site_url` (`treeShown`; cycle F's fix wave).
+//
+// It exits 2 for a run that cannot judge: another argument, input that is not
 // JSON, or a tree that is not assembled — absent, or without `index.html` or
 // `sw.js`, the two files no assembled release is without (Task 7 fix round 1:
 // over an empty tree the script once printed a rule that challenged the
@@ -138,6 +142,34 @@ export function verify(ruleFromZone, allow, host) {
   );
 }
 
+/** The local tree at `tree`, as `--verify` names it beside its verdict
+ *  (cycle F's fix wave; the final review's Minor 6): the release its `sw.js`
+ *  names — its header's "the release is …" line, which the deploy guard reads
+ *  the same way — and its stamp's `site_url`, the one build value that moves
+ *  `/sitemap.xml` in or out of the rule. So a window's record says which tree
+ *  the zone's rule was compared with. Read, never refused: `--verify` judges
+ *  the rule, and what it could not read it says. */
+export function treeShown(tree) {
+  let release = "no release";
+  try {
+    const named = /the release is (yokohama-release-[0-9a-f]+)\./.exec(readFileSync(join(tree, "sw.js"), "utf8"))?.[1];
+    if (named !== undefined) release = named;
+  } catch {
+    // `allowList` has already refused a tree with no sw.js file.
+  }
+  let stamp;
+  try {
+    const value = JSON.parse(readFileSync(join(tree, "build-values.json"), "utf8"));
+    stamp =
+      value !== null && typeof value === "object" && typeof value.site_url === "boolean"
+        ? `reads site_url ${value.site_url}`
+        : "holds no boolean site_url";
+  } catch (e) {
+    stamp = e?.code === "ENOENT" ? "is absent" : "does not parse";
+  }
+  return `edge-rule: the local tree: sw.js names ${release}, build-values.json ${stamp}`;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const refuse = (sentence) => {
@@ -147,9 +179,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (!(args.length === 0 || (args.length === 1 && args[0] === "--verify"))) {
     refuse(`expected no arguments or --verify — got ${JSON.stringify(args)}`);
   }
+  const tree = fileURLToPath(new URL("../assets", import.meta.url));
   let allow;
   try {
-    allow = allowList(fileURLToPath(new URL("../assets", import.meta.url)));
+    allow = allowList(tree);
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(2);
@@ -166,8 +199,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const differences = verify(zone, allow, HOST);
     if (differences.length > 0) {
       console.error(`edge-rule: the zone's rule differs from the tree's —\n${differences.map((d) => `  ${d}`).join("\n")}`);
+      console.error(treeShown(tree));
       process.exit(1);
     }
     console.log("edge-rule: the zone's rule equals the tree's — expression, action and description");
+    console.log(treeShown(tree));
   }
 }
