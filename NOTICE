@@ -15,3 +15,30 @@ the published board game Yokohama), which are excluded from the Apache-2.0
 license and carry no license grant of any kind. The excluded paths, and what
 that means for anyone forking or redistributing this repository, are listed in
 ASSETS.md.
+
+It also contains third-party material that DOES carry a grant, under a license
+that is not Apache-2.0:
+
+  Fraunces
+  Copyright 2018 The Fraunces Project Authors
+  https://github.com/undercasetype/Fraunces
+  Licensed under the SIL Open Font License, Version 1.1.
+  License text: web/src/fonts/fraunces/OFL.txt
+                (served copy: web/public/fonts/fraunces/OFL.txt)
+
+  JetBrains Mono
+  Copyright 2020 The JetBrains Mono Project Authors
+  https://github.com/JetBrains/JetBrainsMono
+  Licensed under the SIL Open Font License, Version 1.1.
+  License text: web/src/fonts/jetbrains-mono/OFL.txt
+                (served copy: web/public/fonts/jetbrains-mono/OFL.txt)
+
+Both are web fonts served by the browser client, which builds them into its
+bundle under a content-hashed name. The OFL permits bundling and redistribution
+with the software, provided the license text travels with the fonts and neither
+is sold on its own. That is why each family's OFL.txt is committed in the same
+directory as its font file rather than referenced from afar — and why a
+byte-identical copy also sits under web/public/, which is the tree the build
+copies verbatim, so the DISTRIBUTED bundle carries the grant and not only the
+source tree does. ASSETS.md records the same fact where a reader looking for
+asset provenance will find it.

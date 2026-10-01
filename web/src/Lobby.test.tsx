@@ -9,9 +9,8 @@
 
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
-import { resetLocalHostForTests } from "./local/client";
 import { DISPLAY_NAME_KEY, setLobbyChat } from "./api";
 import { OPEN_KEY } from "./chatFold";
 import { fakeStream, until, isGamesList, openStream, stubApi, type ApiCall, type Reply } from "./test/harness";
@@ -71,16 +70,11 @@ function show(handler: (call: ApiCall) => Reply | undefined = () => undefined) {
 const section = (heading: string): HTMLElement =>
   screen.getByRole("heading", { name: heading }).closest("section")!;
 
-// The lobby draws "On this device" since M6.5b, and that section talks to a
-// Worker this suite does not stub: with no `Worker` in jsdom the local read
-// rejects and the section says so, which is what every cell below renders
-// past. The singleton is reset so no cell inherits another's host.
-beforeEach(() => {
-  resetLocalHostForTests();
-});
-afterEach(() => {
-  resetLocalHostForTests();
-});
+// **"On this device" left this screen at M6.5b2** (R-6.5b2.1): single player is
+// a channel of its own at `#/` and the lobby is the SERVER's screen at
+// `#/lobby`. Nothing rendered here talks to the local Worker any more, so this
+// suite stubs none — `FrontDoor.test.tsx` and `OnThisDevice.test.tsx` are where
+// that section is read.
 
 describe("the lobby", () => {
   it("draws both sections from the two scopes, with the same row in each", async () => {
@@ -412,20 +406,26 @@ describe("the lobby's chat and its name field", () => {
   });
 });
 
-// ---- the server AREA (M6.5b, spec §2.5) ------------------------------------
+// ---- the server AREA (M6.5b, spec §2.5; M6.5b2, R-6.5b2.1) -----------------
 //
-// The first screen renders from this browser FIRST: "On this device" is above
-// everything, and what used to be four gates in front of the whole page — the
-// door's error, its silence, the sign-in form and the door sentence — is now
-// the content of the part of the screen the server owns.
+// What used to be four gates in front of the whole page — the door's error, its
+// silence, the sign-in form and the door sentence — is the content of the part
+// of the screen the server owns. The games in THIS BROWSER are no longer stacked
+// above it: they are the other channel now, at `#/`, and what this screen owes a
+// player is one link back to them — drawn OUTSIDE the three states, because the
+// two states a player most needs it in are the two where nothing else on this
+// screen is pressable.
 describe("the server area", () => {
-  it("draws On this device ABOVE the lobby, whatever the server is doing", async () => {
+  it("carries one way back to the door, above the lists", async () => {
     show();
-    const local = await screen.findByRole("heading", { name: "On this device" });
-    const lobby = screen.getByRole("heading", { name: "Lobby" });
-    // Order, and not merely presence: the guarantee is that the games in this
-    // browser are the first thing on the screen.
-    expect(local.compareDocumentPosition(lobby) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const back = await screen.findByRole("link", { name: "Play on this device" });
+    // An ADDRESS and not a button, for `lobbyRow`'s reason: the control's whole
+    // job is to go to `#/`, so the browser does the navigating.
+    expect(back).toHaveAttribute("href", "#/");
+    const lists = await screen.findByRole("heading", { name: "Your games" });
+    // Order, and not merely presence: a way out that sits below two listings is
+    // a way out a player on a phone scrolls past.
+    expect(back.compareDocumentPosition(lists) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("renders the door's content in place of the lists, and asks the server for nothing", async () => {
@@ -433,8 +433,11 @@ describe("the server area", () => {
       throw new Error("a signed-out lobby asked the server for something");
     });
     render(<Lobby me={null} door={<p>the door says so</p>} />);
-    await screen.findByRole("heading", { name: "On this device" });
-    expect(screen.getByText("the door says so")).toBeInTheDocument();
+    expect(await screen.findByText("the door says so")).toBeInTheDocument();
+    // **And the way back is drawn in THIS state too.** A player who is not
+    // signed in has nothing else on this screen to press, and the games in
+    // their own browser need no door at all.
+    expect(screen.getByRole("link", { name: "Play on this device" })).toBeInTheDocument();
     // **Every `/api/games` route is a 401 without an identity** (M6.1), so a
     // lobby that listed first would show a refusal as the player's first
     // screen — the reason the door was a gate in the first place, kept.

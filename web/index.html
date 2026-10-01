@@ -4,22 +4,37 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yokohama</title>
-    <!-- **A declared icon, so the browser stops asking for one it will not get**
-         (live review, M-4). With no `rel="icon"` a browser requests
-         `/favicon.ico` on every first load and this server answers 404 — the
-         ONLY console error of the whole three-browser walk, one per screen. It
-         is not a headless finding: headless Chromium never asks, which is why
-         M6.3's review read "zero console errors" and the first HEADED one did
-         not. An empty `data:` URL is the whole fix: it is a valid icon request
-         the browser answers itself, off the network, with nothing to serve and
-         nothing to commit. -->
-    <link rel="icon" href="data:," />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=JetBrains+Mono:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <!-- **The web app manifest and the real icons** (M6.5b2, R-6.5b2.9;
+         spec §2.4). They supersede the `<link rel="icon" href="data:," />`
+         that stood here since the M6.4 live review: that was an empty icon,
+         answered by the browser off the network, whose whole job was to stop
+         the `/favicon.ico` 404 on every screen. A declared PNG does the same
+         job and is also the thing a home-screen install shows, so the empty one
+         has nothing left to do.
+
+         The mark is ORIGINAL and drawn in this repository
+         (`public/icons/icon.svg`, rasterized by `scripts/mkicons.mjs`), never a
+         crop of the card art: `ASSETS.md` carves those out as carrying no grant
+         of any kind, and an app icon is the most distributed image a product
+         has.
+
+         `theme_color` and the manifest's `background_color` are `--bg` from
+         `src/styles.css`, so the installed window's chrome and the splash are
+         the colour the app already is. The manifest carries an explicit `id`
+         so a later `start_url` change does not produce a second installed app
+         beside the first. -->
+    <link rel="icon" href="/icons/icon-192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0d1013" />
+    <!-- **The typefaces are in-house since M6.5b2** (R-6.5b2.18). Two
+         `preconnect`s and a render-blocking stylesheet from
+         `fonts.googleapis.com` stood here; both families are OFL and are now
+         served from this origin, declared by `@font-face` at the head of
+         `src/styles.css`. Nothing else could make the release self-contained:
+         a service worker cannot precache a third party's origin, so an offline
+         launch lost both typefaces and one round trip to a second host was on
+         the critical path of every online one. -->
   </head>
   <body>
     <div id="root"></div>

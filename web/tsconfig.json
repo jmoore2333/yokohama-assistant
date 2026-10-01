@@ -36,5 +36,18 @@
   // file under `src` imports it — so excluding it keeps it out, and
   // `tsconfig.node.json` picks it up instead, where `process` and the node
   // module ids are real.
-  "exclude": ["src/local/worker.ts", "src/local/*.node.test.ts"]
+  //
+  // **The SERVICE WORKER's own file** (M6.5b2). `src/sw.ts` is compiled by
+  // `tsconfig.sw.json` with `lib: ["ES2022", "WebWorker"]` for the same reason
+  // the Worker's file is: `clients`, `skipWaiting` and `FetchEvent` are real
+  // there and `document` is not. Nothing under `src` imports it — the generator
+  // builds it with esbuild — so excluding it is enough to keep it out.
+  //
+  // **The real-build cell is the node project's** (M6.5b2).
+  // `src/precache.node.test.ts` runs a real `vite build` into a temporary
+  // directory: it reads `node:fs`, `node:os` and `node:child_process`, and it
+  // needs the generated wasm glue that CI's `web-client` job does not build.
+  // The `src/local/*.node.test.ts` pattern above does not reach it, so it is
+  // named here.
+  "exclude": ["src/local/worker.ts", "src/**/*.node.test.ts", "src/sw.ts"]
 }

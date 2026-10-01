@@ -42,6 +42,7 @@ import type {
   PlayerColor,
   PortsPanel,
 } from "./types";
+import { Refusal } from "./Refusal";
 
 export function TableSections({
   enabled,
@@ -200,7 +201,7 @@ export function TableSections({
             );
         }
       })}
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

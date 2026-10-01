@@ -15,6 +15,8 @@
 // **Nothing here knows a rule, a route or a document's shape.** It moves
 // strings. The module in the Worker is the layer; this is a wire.
 
+import { requestPersistenceOnce } from "../storage";
+import { unreadableOf, type UnreadableReply } from "./exportPair";
 import { gameIdOf } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 
@@ -25,7 +27,11 @@ export type ReqBody =
   | { kind: "pair"; id: string }
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
-  | { kind: "release"; id: string };
+  | { kind: "release"; id: string }
+  /** The module's validator over a backup file (M6.5b2, R-6.5b2.10). */
+  | { kind: "restore_read"; envelope: string }
+  /** Bring restored games into this Worker's live store (spec §2.5). */
+  | { kind: "adopt"; ids: string[] };
 
 /** One numbered request. The number is added by [`ask`]; `Omit<Req, "seq">`
  *  would not do the job in its place, because `Omit` over a union collapses it
@@ -127,8 +133,22 @@ function start(): Worker {
   w.onerror = (e: ErrorEvent) =>
     drop(`the local host failed to start: ${e.message || "the Worker reported an error"}`);
   w.onmessageerror = () => drop("the local host sent something this page could not read");
-  w.onmessage = (e: MessageEvent<Reply & { kind?: string; id?: string; trapped?: boolean }>) => {
+  w.onmessage = (
+    e: MessageEvent<Reply & { kind?: string; id?: string; sentence?: string; trapped?: boolean }>,
+  ) => {
     const data = e.data;
+    // **Unsolicited, and NOT a failure** (M6.5b2, spec §2.6). The Worker has
+    // something to say about its own state while it is still working on it —
+    // today, that another tab is holding the old storage version open and this
+    // one is waiting for it to go. It reaches the same handlers a fault does,
+    // because it is the same line on the same screen; what it must NOT do is
+    // settle the pending calls, which is what `fail` would have done and which
+    // would have turned a wait that ends by itself into a screenful of
+    // refusals.
+    if (data.kind === "notice" && typeof data.sentence === "string") {
+      for (const f of [...faultHandlers]) f(data.sentence);
+      return;
+    }
     if (data.kind === "lost" && typeof data.id === "string") {
       // **Unsolicited**: the lock this tab held was stolen. The page turns the
       // screen read-only; it is told BEFORE the in-flight reply that goes with
@@ -278,6 +298,27 @@ export async function localCall(
   // it anyway.
   if (method !== "GET") for (const f of [...writeHandlers]) f();
 
+  // **The browser is asked to KEEP these games at the first committed move,
+  // and never at boot** (M6.5b2, R-6.5b2.9; spec §2.4). A visitor who never
+  // plays is never asked; a player who has just committed a move has given the
+  // browser a reason to say yes, and in some browsers the answer is decided
+  // from exactly that kind of engagement.
+  //
+  // **Three conditions and each one is load-bearing.** `"saved"` alone, because
+  // a store that has just REFUSED a write is not a store to ask for a promise —
+  // that reply carries the backup line instead. `POST …/input` alone, because a
+  // create is a table and not yet a game, and a GET is a read. And
+  // `requestPersistenceOnce` holds the page flag, so a run of moves asks once.
+  //
+  // This is the one route this wire knows the meaning of, which the header's
+  // "nothing here knows a route" is otherwise true of — it sits here because
+  // this is the only place a COMMITTED local write is distinguishable from an
+  // applied-but-unsaved one, and `api.ts` sees the same reply with that
+  // distinction already flattened into a warning.
+  if (r.saved === "saved" && method === "POST" && p.endsWith("/input")) {
+    void requestPersistenceOnce();
+  }
+
   // **`not-held` is a lock loss when this page believed it held the game**
   // (review finding #4). The Worker posts its own unsolicited `lost` on the
   // paths it notices — the steal's abort, a write that reads a newer
@@ -325,9 +366,29 @@ export async function localCall(
 }
 
 /**
- * BOTH of a game's stored documents, read as ONE SNAPSHOT inside the Worker's
- * queue (spec §2.2; review finding #6) — each the store's exact bytes, or
- * `null` where there is none.
+ * BOTH of a game's documents, read as ONE SNAPSHOT inside the Worker's queue
+ * (spec §2.2; review finding #6) — each the exact bytes, or `null` where there
+ * is none.
+ *
+ * **Which snapshot is the Worker's to decide, and it is not "whatever this
+ * tab's module holds"** (PR #37 fix wave, R-F1; `exportPair.ts`). A tab's
+ * module is loaded at its Worker's boot and written back only for a game this
+ * tab holds, so it can be a copy another tab has moved past. The answer is the
+ * module's pair only where this tab OWNS the game at the current ownership
+ * generation — the one place a move applied and not yet written is worth
+ * keeping — and the pair IndexedDB committed everywhere else. Every export goes
+ * through here, so every export takes that rule: both backups, Save game file,
+ * Send to the archive, Abandon and save, and the outbox. A caller takes the
+ * answer WHOLE; a `null` in it is part of the answer, not a gap to fill from
+ * elsewhere.
+ *
+ * **A store that cannot be read REJECTS, and restarts nothing** (fix round 1,
+ * review I-1). The Worker answers that case `unreadable` rather than
+ * `trapped`, and this rejects with its sentence: a restart would terminate the
+ * Worker, and an owner's Worker is holding the one copy of any move the store
+ * refused. Each caller already names a rejection — the backups fall back to
+ * this page's own read, Abandon keeps the game, the outbox writes the sentence
+ * on the game's row, and Save game file and Send to the archive show it.
  *
  * **One message and not two**, which is the whole of why it exists. "Send to
  * the archive" sends the record and the table together and the server checks
@@ -343,9 +404,43 @@ export async function localCall(
 export const localPair = async (
   id: string,
 ): Promise<{ record: string | null; table: string | null }> => {
-  const r = await ask<{ record: string | null; table: string | null }>({ kind: "pair", id });
+  const r = await ask<{ record: string | null; table: string | null } & Partial<UnreadableReply>>({
+    kind: "pair",
+    id,
+  });
+  const unreadable = unreadableOf(r);
+  if (unreadable !== null) throw new Error(unreadable);
   return { record: r.record, table: r.table };
 };
+
+/**
+ * Ask the module what is in a backup file (M6.5b2, R-6.5b2.10 – .12).
+ *
+ * **The report as the module's own JSON string**, unparsed here: this module
+ * moves strings and knows no shape, and the page's `backup.ts` is the one
+ * reader. A file the validator refuses comes back as a REJECTION carrying its
+ * sentence — that is an answer about the file and not a fault, so it does not
+ * go through the trap path.
+ */
+export async function localRestoreRead(envelope: string): Promise<string> {
+  const r = await ask<{ report?: string; refused?: string }>({ kind: "restore_read", envelope });
+  if (typeof r.report === "string") return r.report;
+  throw new Error(r.refused ?? "the local host could not read this file");
+}
+
+/**
+ * Bring games a restore has just written into the Worker's live store, and tell
+ * every local listing to re-read (spec §2.5's "the running tab reconciles").
+ *
+ * The write handlers are fired HERE rather than by the Worker, for the reason
+ * `localCall` fires them: a listing re-reads because something local changed,
+ * and a restore is the one change that does not arrive through a call.
+ */
+export async function localAdopt(ids: string[]): Promise<number> {
+  const r = await ask<{ adopted: number }>({ kind: "adopt", ids });
+  for (const f of [...writeHandlers]) f();
+  return r.adopted;
+}
 
 /** Take this game for this tab: `false` means another tab has it open.
  *

@@ -1,7 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Abandon } from "./Abandon";
-import { api, ApiError, archiveKind, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
+import { BackUpOne } from "./BackupControls";
+import {
+  api,
+  ApiError,
+  bounded,
+  BOUND_MS,
+  isLocal,
+  isSignedOut,
+  LOCAL_USER,
+  onUnauthorized,
+  rememberServerFacts,
+  RUN_CAP,
+  useArchiveFact,
+} from "./api";
+import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { Door } from "./Door";
+import { FrontDoor, multiplayerOffered } from "./FrontDoor";
+import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
@@ -17,8 +33,9 @@ import { localPair } from "./local/client";
 import { useLocalHold, type LockState } from "./local/useLocalHold";
 import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
+import { Refusal } from "./Refusal";
 import { Unlock } from "./Unlock";
-import { navigate, useRoute, type Route } from "./route";
+import { channelOf, navigate, useRoute, type Route } from "./route";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
 import { useSignal, type End } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
@@ -74,35 +91,6 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
   return buildRun(prev, frames, log);
 }
 
-/** How long the SERVER is given to answer a boot read before this client acts
- *  on the silence.
- *
- *  **Two reads are bounded by it, and they act on it differently.** The words
- *  on the cards fall back to the module (spec §2.3); the health read is
- *  declared NOT LANDED, which is the state R-6.5b.2 names — "the API refusing
- *  OR NOT ANSWERING" — and the first screen says "not connected" for it. Long
- *  enough that a slow link is not read as an outage, short enough that a
- *  player is not left watching raw serde names, or a `connecting…` that no
- *  timeout of the platform's will ever end, while a dead connection expires on
- *  its own. */
-const BOUND_MS = 5_000;
-
-/** `p`, or a rejection once `ms` has passed.
- *
- *  **Because a read that HANGS never rejects.** `fetch` against a server that
- *  accepts the connection and then says nothing settles neither way, so a
- *  `.catch` alone is a fallback that can never be reached — the
- *  pre-execution review's point, and the reason this is a race rather than a
- *  catch. The loser's timer is left to fire and reject a promise nobody is
- *  holding, which is harmless: `Promise.race` has already settled.
- *
- *  Outside the component because it closes over nothing. */
-const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
-  Promise.race([
-    p,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms)),
-  ]);
-
 /** How a run REACHED this browser, and who is watching it (spec §5.2).
  *
  *  **Two facts that used to be one nullable seat, and separating them is the
@@ -135,17 +123,36 @@ async function saveGameFile(game: string): Promise<void> {
 }
 
 export function App() {
-  // **The door, read before any screen is chosen** (M6.1 §7.1). Every
-  // `/api/games` route is a 401 without an identity, so who the server thinks
-  // we are decides which of four screens this is — see the branch below the
-  // hooks, which is where it can finally be acted on.
-  const door = useMe();
-  const { refresh, signOut, signedOut } = door;
   // **Which screen this is, as the URL** (spec §5.1). Read here and acted on in
   // one effect below `open`, so there is ONE place that turns a route into a
   // screen — three call sites deciding for themselves is how a hash and a screen
   // stop agreeing.
+  //
+  // **First, since M6.5b2**, because the CHANNEL is read off it and the door
+  // is read off the channel: a screen drawn from this browser alone asks the
+  // server nothing, including who it thinks we are.
   const route = useRoute();
+  /** Which of the two channels this screen belongs to (R-6.5b2.1). The local
+   *  one — the front door, the local create, a `local-` table — costs the
+   *  Worker zero invocations, which is R-6.5b2.7 and is why three reads below
+   *  are gated on it. */
+  const channel = channelOf(route);
+  // **The door, read before any screen the SERVER owns is chosen** (M6.1 §7.1).
+  // Every `/api/games` route is a 401 without an identity, so who the server
+  // thinks we are decides which of four screens this is — see the branch below
+  // the hooks, which is where it can finally be acted on. It is not read at all
+  // on the local channel (spec §2.2): `/api/me` is a protected path now, and
+  // the front door needs no identity.
+  const door = useMe(channel);
+  const { refresh, signOut, signedOut } = door;
+  // **The release's worker, registered here and reported on the door**
+  // (M6.5b2, R-6.5b2.8). It is unconditional and belongs to the APP rather
+  // than to the door, because a player who arrived straight at a game should
+  // still get the release cached; what is door-only is the LINE about it. In a
+  // development build, in a browser with no service workers, and on a page the
+  // browser walk has flagged, `useReadiness` registers nothing and answers
+  // `"none"` — so this costs every existing cell one render and nothing else.
+  const readiness = useReadiness();
   // **Every 401 on this API routes here, and no screen has to remember to
   // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
   // refusal is thrown — so it reaches the door whatever the caller then does
@@ -158,6 +165,16 @@ export function App() {
   }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
+  /** What the SERVER keeps, as this browser last heard it (M6.5b2, spec §2.2).
+   *
+   *  **The HOOK, and no state of its own** (review M-9). The fact is filled at
+   *  moments a render has already happened at, so it has to re-render the
+   *  screens that read it — and a `useState` here beside `Abandon`'s own module
+   *  read was two accessors for one fact, kept in agreement only because both
+   *  read points happened to write it down. `useArchiveFact` is the one reader;
+   *  `onServerFacts` is what redraws. `"unknown"` is what nothing-has-ever-
+   *  answered looks like, and is deliberately not `"off"`. */
+  const archive = useArchiveFact();
   /** Whether `GET /api/health` LANDED — the one thing this client asks about
    *  the server's reachability, as opposed to about its answers (M6.5b,
    *  R-6.5b.2).
@@ -469,22 +486,37 @@ export function App() {
     [landed],
   );
 
-  /** **Land on the lobby, with the server's sentence if there is one.**
+  /** **Land on a first screen, with the server's sentence if there is one.**
    *
-   *  The five paths that put a player back on the lobby against their will —
-   *  a refused `#/t/<id>`, a game that stopped answering, a deal or an open
-   *  table that went out from under them, a hand-over that found the table
-   *  filled — say the same two things in the same order, and they also have to
-   *  agree with `noticeFor` about which visit the sentence belongs to. One
-   *  callback, so that agreement is not five separate things to keep true.
+   *  The paths that put a player back on a first screen against their will — a
+   *  refused `#/t/<id>`, a game that stopped answering, a deal or an open table
+   *  that went out from under them, a hand-over that found the table filled —
+   *  say the same two things in the same order, and they also have to agree
+   *  with `noticeFor` about which visit the sentence belongs to. One callback,
+   *  so that agreement is not several separate things to keep true.
+   *
+   *  **There are TWO first screens since M6.5b2** (R-6.5b2.1), and which one a
+   *  game belongs to is not a preference: a local game is listed on the DOOR
+   *  and a table of the server's in the LOBBY, so a sentence about a game shown
+   *  on the other screen would be an explanation with nothing under it. The
+   *  destination rides through `noticeFor` too, because the route effect clears
+   *  a notice as soon as the route is not the one it was raised for.
    *
    *  A `null` or absent sentence CLEARS, which is what leaving by choice
    *  should do. */
-  const toLobby = useCallback((sentence?: string | null) => {
+  const leave = useCallback((to: "door" | "lobby", sentence?: string | null) => {
     setError(sentence ?? null);
-    noticeFor.current = sentence == null ? null : "lobby";
-    navigate({ kind: "lobby" });
+    noticeFor.current = sentence == null ? null : to;
+    navigate({ kind: to });
   }, []);
+  /** Out to the SERVER's first screen. Every control in this client that says
+   *  "Lobby" comes here, whatever it is leaving: the word on the button is the
+   *  promise, and the lobby carries a link back to the door. */
+  const toLobby = useCallback((sentence?: string | null) => leave("lobby", sentence), [leave]);
+  /** Out to the DOOR, where the games in this browser are listed — the landing
+   *  for a local game that ends, is abandoned, or is asked for and no longer
+   *  there. */
+  const toDoor = useCallback((sentence?: string | null) => leave("door", sentence), [leave]);
 
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
@@ -683,10 +715,17 @@ export function App() {
         noticeFor.current = null;
         open(route.id).catch((e) => {
           // A table that does not exist, or is not this caller's to see. The
-          // sentence is the server's and the lobby is where it is shown — a
-          // bare screen at a `#/t/<id>` that answers nothing is the one place a
-          // player cannot act from.
-          toLobby(e instanceof ApiError ? e.message : String(e));
+          // sentence is the server's and a first screen is where it is shown —
+          // a bare screen at a `#/t/<id>` that answers nothing is the one place
+          // a player cannot act from.
+          //
+          // **WHICH first screen is the id's own answer** (R-6.5b2.1): a
+          // `local-` table is listed on the door and nowhere else, so a local
+          // game that has been deleted would otherwise explain itself on a
+          // screen its siblings are not on.
+          const said = e instanceof ApiError ? e.message : String(e);
+          if (isLocal(route.id)) toDoor(said);
+          else toLobby(said);
         });
       }
       return;
@@ -700,9 +739,9 @@ export function App() {
       setError(null);
       noticeFor.current = null;
     }
-    // `#/` or `#/new`: no game, no deal and no table on screen.
+    // `#/`, `#/lobby` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
-  }, [route, door.me?.user, lockState, open, show]);
+  }, [route, door.me?.user, lockState, open, show, toDoor, toLobby]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -726,64 +765,116 @@ export function App() {
     };
   }, [state?.over, state?.id]);
 
+  /** Where the words on the cards last came from, so the SERVER's answer is
+   *  asked for once and never overwritten by the module's afterwards. */
+  const wordsFrom = useRef<"local" | "server" | null>(null);
   useEffect(() => {
     // **The words on the cards survive an unreachable API** (spec §2.3,
-    // R-6.5b.8). The SERVER is asked first — it is the one that may have been
+    // R-6.5b.8), and since M6.5b2 they are LOCAL-FIRST on the local channel
+    // (spec §2.2). `/api/labels` is computed from the engine's registries, is
+    // deployment-independent, and the corpus replay proves both hosts emit it
+    // byte-identically — so on the front door and in a local game the module in
+    // this tab's Worker is the answer, and the server is not asked at all.
+    // The Worker is already running there: the door's own listing starts it.
+    if (wordsFrom.current === "server") return;
+    if (channel === "local") {
+      if (wordsFrom.current === "local") return;
+      wordsFrom.current = "local";
+      api
+        .labels("local")
+        .then(setLabels)
+        .catch(() => setLabels(null));
+      return;
+    }
+    // **Past the door, the SERVER is asked** — it is the one that may have been
     // updated — under a bound, and the Worker answers when that read fails OR
     // times out. The bound is what makes the fallback reachable at all: a
     // hanging read never rejects, so a `.catch` alone would wait for ever and
     // the cards would keep their raw serde names for the life of the page.
     //
-    // The Worker is otherwise left alone here: it is started by the local
-    // section's own listing, and a visitor who only plays hosted games never
-    // pays for the module twice.
+    // Gated on a signed-in session, because a caller the server will not name
+    // is a caller its routes refuse: asking would buy a refusal and the
+    // module's words are already on screen.
+    if (!door.me?.user) return;
+    wordsFrom.current = "server";
     bounded(api.labels(), BOUND_MS)
       .catch(() => api.labels("local"))
       .then(setLabels)
       .catch(() => setLabels(null));
+  }, [channel, door.me?.user]);
+
+  useEffect(() => {
+    // **The art manifest is a FILE and no longer a route** (M6.5b2, spec §2.2).
+    // `/api/art` read `assets/art/manifest.json` and re-serialized it, and the
+    // identical file is already served as a static asset beside the pictures it
+    // names — so the client fetches the file, and the door costs the Worker
+    // nothing for it (R-6.5b2.7: static asset requests are free and unmetered).
+    //
     // A 404 here means the server has no cropped art. That is a supported
     // state, not a failure: every card falls back to its typed values, which is
     // exactly the surface that existed before there was any art.
-    api.art().then(setArt).catch(() => setArt(null));
-    // **Which change transport this deployment serves** (M6.3 §5.1), read ONCE
-    // and kept in `api.ts` rather than in state: it is read by a hook that must
-    // not re-run when it is set, and it does not change for the life of the
-    // page. A health that does not answer leaves the default (the stream) — the
-    // cost of guessing wrong is one failed open and one trip round the ladder,
-    // which is the ladder doing its job rather than a screen that never moves.
-    // **And the two chat launch variables with it** (M6.4, R-6.4.6, R-6.4.8),
-    // read here for the same reason and kept in the same place: whether this
-    // deployment answers the house chat at all, and how long a message may be.
-    // A health that does not answer leaves both at their defaults, which costs
-    // one refused request rather than a panel that never appears.
+    fetch("/art/manifest.json")
+      .then((r) => (r.ok ? (r.json() as Promise<ArtManifest>) : Promise.reject(new Error("no art"))))
+      .then(setArt)
+      .catch(() => setArt(null));
+  }, []);
+
+  /** Whether this page has asked the server what it is like. Once per load, on
+   *  the first screen that is the server's.
+   *
+   *  A read that FAILS is not retried here and does not need to be: nothing is
+   *  recorded, so `ensureArchiveFact` asks again at the next read point, and
+   *  `Lobby`'s own `onReached` is what puts the sections back if a listing
+   *  lands while this one did not. */
+  const askedFacts = useRef(false);
+  useEffect(() => {
+    // **Entering the multiplayer channel is the first of the three read points**
+    // (M6.5b2, spec §2.2). It used to be a boot read, which made it a cost every
+    // single-player visitor paid; the screens that need what it says are the
+    // server's, so this is where it is asked.
+    //
+    // **Everything it carries is one statement**: which change transport this
+    // deployment serves (M6.3 §5.1), whether the house chat answers and how
+    // long a message may be (M6.4), which door it reads, and which archive it
+    // keeps. They are read ONCE and kept in `local/facts.ts` rather than in
+    // state, because a hook reads the transport and must not re-run when it is
+    // set. A health that does not answer leaves the defaults, which costs one
+    // failed open or one refused request — never a screen that never moves.
     //
     // **And whether it LANDED is a second question, bounded** (R-6.5b.2,
     // review fix 1). The ruling names two ways for the read to fail — the API
     // refusing, and the API not answering — and only the first of them
     // rejects: a `fetch` accepted by a server that then says nothing settles
-    // neither way, so an unbounded read left the first screen reading
-    // `connecting…` for the life of the page for exactly the case the ruling
-    // is about. The bound is the same one the words use.
+    // neither way, so an unbounded read left the lobby reading `connecting…`
+    // for the life of the page for exactly the case the ruling is about.
     //
     // **The unbounded read keeps its own chain**, so a server that answers
     // LATE is still a server that answered: it sets the facts and puts the
     // sections back, where the race's loser would have been dropped on the
     // floor.
+    if (channel !== "multiplayer" || askedFacts.current) return;
+    askedFacts.current = true;
     const health = api.health();
     health
       // **Reachability first, then the payload.** A body this client cannot
       // make facts of is still evidence the server is there, and the throw
       // that a malformed one raises must not cost the screen its listings.
-      // **All four facts in ONE statement since M6.5b**: they are the SERVER's
-      // record in `local/facts.ts`, keyed beside the local host's constants,
-      // and this read is the one thing that sets it.
       .then((h) => {
         setServerUp(true);
-        setServerFacts(h);
+        // Held in memory AND written down with the time it was taken, so the
+        // next page load starts from the answer rather than from the guesses.
+        // The screens that read it redraw through `useArchiveFact`.
+        rememberServerFacts(h);
       })
-      // Handled by the bounded chain below; swallowed here so a refusal is not
-      // an unhandled rejection as well as a state.
-      .catch(() => {});
+      // **The latch is RELEASED on a failure** (review M-1). The ref is set
+      // before the read so two renders cannot both ask; leaving it set after a
+      // read that never landed left the transport, the chat caps, the door's
+      // name and the archive at their defaults for the life of the page, even
+      // after the server came back and the listings started landing. A read
+      // that failed recorded nothing, so there is nothing to keep.
+      .catch(() => {
+        askedFacts.current = false;
+      });
     // **Only from `null`** (whole-branch review, Minor #2). The bound answers
     // the question "has anything come back yet?", and a LISTING that landed
     // is an answer: `Lobby`'s `onReached` sets this true the moment one does,
@@ -791,7 +882,51 @@ export function App() {
     // working lobby off the screen and replaced it with "not connected"
     // whenever the health read alone was the slow one.
     bounded(health, BOUND_MS).catch(() => setServerUp((v) => v ?? false));
-  }, []);
+  }, [channel]);
+
+  useEffect(() => {
+    // **A local game reaching game over is the second read point** (spec §2.2).
+    // It is the moment the answer is first USED on this channel: "Send to the
+    // archive" is drawn only where the deployment keeps one, and with no boot
+    // read the fact would otherwise stay at its `"off"` default for ever — the
+    // measured bug of spec §0.3, which this closes for an ONLINE single-player
+    // session as well as an offline one.
+    //
+    // **At most one request per HOUR per finished game OPENED** (whole-branch
+    // review, false sentence 3), which is wider than "once per browser" and is
+    // the accounting R-6.5b2.7 actually rests on: this effect keys on
+    // `state.over && isLocal`, so re-opening a finished local game fires it
+    // again, and `ensureArchiveFact` re-reads whenever the remembered answer is
+    // over an hour old. Bounded, but bounded by the hour and not by the
+    // browser.
+    if (!state?.over || !isLocal(state.id)) return;
+    // **The hook is `noteGameOver`, and the read is inside it** (M6.5b2, spec
+    // §2.6). It asks what this deployment keeps, offers the game to the archive
+    // where there is one, and writes the reason down where the send could not
+    // be made or could not yet be attempted. It is idempotent against a reload
+    // — the game is still over on the next visit and this fires again — and
+    // the receipt is what makes it so.
+    void noteGameOver(state.id);
+  }, [state?.over, state?.id]);
+
+  // **The outbox's three triggers** (spec §2.6): the browser's `online` event,
+  // this launch, and the player's own button on the door. Mounted here rather
+  // than at module load, for the reason every other listener in this client is:
+  // a module that wired a window listener when it was imported could never take
+  // it off again.
+  useEffect(() => startOutbox(), []);
+
+  // **And what the hook's own send landed as** (review M-6). `archived` is what
+  // darkens "Send to the archive", and before this the only send it knew about
+  // was the one its own button made — so a game the game-over hook had already
+  // copied still offered the control, and clicking it bought the server's
+  // `identical`. The path is the SERVER's, in the same words the button's own
+  // reply is reported in.
+  useEffect(
+    () =>
+      onArchived((id, path) => setArchived((a) => (a[id] ? a : { ...a, [id]: `archived under ${path}` }))),
+    [],
+  );
 
   const arrive = useCallback(
     async (e: Events) => {
@@ -1132,7 +1267,7 @@ export function App() {
   // them drew nothing else at all, including the games in this browser's own
   // IndexedDB, which need no door to play. `Door` renders the same four
   // bodies, in the same order and for the same reasons, as the CONTENT of the
-  // part of the first screen the server owns; `firstScreen` below is what puts
+  // part of the first screen the server owns; `lobbyScreen` below is what puts
   // them there.
   const signedIn = door.me?.user ?? null;
   /** The API could not be reached AT ALL: the health read failed and the door
@@ -1203,15 +1338,27 @@ export function App() {
     </>
   );
 
-  /** The first screen: the frame, the games in THIS BROWSER, and then whatever
-   *  the server's part of it has to say — the lobby's three listings, the
-   *  door's own answer, or the one line that says the API cannot be reached.
+  /** **The FRONT DOOR at `#/`, and everyone sees it** (R-6.5b2.1).
+   *
+   *  Two ways on: the games in this browser, and a link to the turnstile. It
+   *  asks the server nothing — not even whether the other channel is served,
+   *  which is a BUILD value (R-6.5b2.7) — so it is the one screen that renders
+   *  with the API refused, never answering, or not deployed at all. It is NOT
+   *  behind the sign-in gate below, and that is the whole product change: until
+   *  this cycle the first screen belonged to the server. */
+  const doorScreen = (notice?: string | null) => (
+    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} readiness={readiness} />
+  );
+
+  /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
+   *  answer, or the one line that says the API cannot be reached.
    *
    *  **Every screen behind a door lands here when there is no user** (spec
    *  §2.5). The four `return`s that used to do that job drew nothing else;
-   *  this draws the door's words with the local section above them, which is
-   *  the whole of R-6.5b.8. */
-  const firstScreen = (notice?: string | null) => (
+   *  this draws the door's words in the place the listings would be. The games
+   *  in THIS BROWSER are no longer stacked on top of it — they are the other
+   *  channel now, at `#/`, and the lobby carries one link back to them. */
+  const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
       who={signedIn ? who : undefined}
@@ -1252,14 +1399,14 @@ export function App() {
         <div className="setup broken-save">
           <div className="who-strip">{who}</div>
           <h2>{broken.table.name ?? broken.id}</h2>
-          <div className="error">{broken.sentence}</div>
+          <Refusal sentence={broken.sentence} />
           <div className="field unlock-controls">
             <button
               type="button"
               className="ghost"
               onClick={() =>
                 void saveGameFile(broken.id).catch((e) =>
-                  setError(e instanceof ApiError ? e.message : String(e)),
+                  setError(e instanceof Error ? e.message : String(e)),
                 )
               }
             >
@@ -1272,12 +1419,16 @@ export function App() {
                 can never be abandoned; the bytes beside this button are the
                 copy that still works. The label follows, and reads "Abandon".
               */}
-            <Abandon table={broken.table} onDone={() => toLobby()} onError={setError} />
+            {/* A broken save is a LOCAL one by construction (see `broken`'s own
+                doc), so abandoning it lands on the door, where the rest of this
+                browser's games are listed. The button beside it says "Lobby"
+                and goes there. */}
+            <Abandon table={broken.table} onDone={() => toDoor()} onError={setError} />
             <button type="button" className="ghost" onClick={() => toLobby()}>
               Lobby
             </button>
           </div>
-          {error && <div className="error">{error}</div>}
+          {error && <Refusal sentence={error} />}
         </div>
       );
     // **The two screens a game in this browser reaches with the door shut**
@@ -1307,9 +1458,12 @@ export function App() {
           who={who}
         />
       );
-    // Every screen below is the SERVER's, and the door is what stands in front
-    // of it — as content on the first screen rather than as a gate.
-    if (!signedIn) return firstScreen(error);
+    // **The front door, and it is in front of the sign-in gate rather than
+    // behind it** (R-6.5b2.1). Below this line every screen is the SERVER's.
+    if (route.kind === "door") return doorScreen(error);
+    // The door the server owns stands in front of those, as content on the
+    // lobby rather than as a gate.
+    if (!signedIn) return lobbyScreen(error);
     if (route.kind === "new")
       return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing)
@@ -1386,7 +1540,7 @@ export function App() {
           who={who}
         />
       );
-    return firstScreen(error);
+    return lobbyScreen(error);
   }
 
   // **A SERVER game still needs a door, and a local one does not.** The screen
@@ -1394,7 +1548,7 @@ export function App() {
   // there is no such caller, so the first screen — carrying the door's own
   // words — is where that lands. A `local-` game is answered by the module in
   // this browser and has no such question.
-  if (!isLocal(state.id) && !signedIn) return firstScreen(error);
+  if (!isLocal(state.id) && !signedIn) return lobbyScreen(error);
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =
@@ -1486,7 +1640,17 @@ export function App() {
     archiving.current = true;
     setError(null);
     try {
-      const pair = await localPair(state.id);
+      // **The pair's own failure is named as its own** (PR #37 fix wave, fix
+      // round 1, review I-1): a store this tab could not read rejects here
+      // with a sentence about the STORE, and the `catch` below would have
+      // called it an unreachable archive the request never went to.
+      let pair: { record: string | null; table: string | null };
+      try {
+        pair = await localPair(state.id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return;
+      }
       if (pair.record === null || pair.table === null) {
         setError("this game has no saved record on this device");
         return;
@@ -1496,6 +1660,10 @@ export function App() {
         ...a,
         [state.id]: `${r.identical ? "already archived" : "archived"} under ${r.path}`,
       }));
+      // **A landed send is a landed send, wherever it was made from** (spec
+      // §2.6): the outbox's receipt goes down, any row this game was waiting on
+      // is cleared, and the game-over hook does not offer the same bytes again.
+      await recordLanded(state.id, pair.record);
     } catch (e) {
       // The server's own sentence where it gave one; spec §4's words where the
       // request never reached it. Nothing was sent, so nothing is claimed.
@@ -1692,15 +1860,23 @@ export function App() {
           <button
             type="button"
             className="ghost"
+            title="the record alone — the file the terminal loads"
             onClick={() =>
               void saveGameFile(state.id).catch((e) =>
-                setError(e instanceof ApiError ? e.message : String(e)),
+                setError(e instanceof Error ? e.message : String(e)),
               )
             }
           >
             Save game file
           </button>
         ) : null}
+        {/* **A backup beside it, and the two say different things** (M6.5b2,
+            R-6.5b2.10). "Save game file" is the RECORD, which is what the
+            terminal loads; this is an envelope carrying the record AND the
+            table document, which is what this app restores. Offered on a local
+            game at any point, for "Save game file"'s own reason: the seed is
+            the player's own and is read off the Worker's side channel. */}
+        {isLocal(state.id) ? <BackUpOne id={state.id} /> : null}
         {/* **A tab that has LOST the lock writes nothing** (spec §4, review
             Important 2), so both controls below go the way the answer bar
             goes. The Worker fences a delete from a tab that does not hold the
@@ -1716,7 +1892,18 @@ export function App() {
             local document carries no stamp and there is nothing further to
             send. A reload puts it back, and the server answers that second
             click `identical`. */}
-        {state.over && isLocal(state.id) && archiveKind() !== "off" && lockState !== "lost" ? (
+        {/* **`archive` is `useArchiveFact()`'s, and there is no module read
+            left** (M6.5b2, spec §2.2): the fact is read when the game ENDS
+            rather than at boot, so the value a render reads has to be one that
+            changes this screen. `"unknown"` is dark for the same reason
+            `"off"` is — nothing answered, so nothing can be promised — and is
+            a different state, which is what Abandon's three arms need it to
+            be. */}
+        {state.over &&
+        isLocal(state.id) &&
+        archive !== "off" &&
+        archive !== "unknown" &&
+        lockState !== "lost" ? (
           archived[state.id] ? (
             <span className="meta archived" role="status">
               {archived[state.id]}
@@ -1732,7 +1919,7 @@ export function App() {
             and save" when the SERVER keeps an archive, because that is where
             the copy goes. */}
         {isLocal(state.id) && table && lockState !== "lost" ? (
-          <Abandon table={table} local onDone={() => toLobby()} onError={setError} />
+          <Abandon table={table} local onDone={() => toDoor()} onError={setError} />
         ) : null}
       </header>
 
@@ -1955,7 +2142,7 @@ export function App() {
             always a REFUSAL of something the player just did, and it is
             assertive for the same reason the terminal prints it immediately. */}
         <div className="decision notices" role="alert">
-          {error && <div className="error">{error}</div>}
+          {error && <Refusal sentence={error} />}
         </div>
       </div>
     </div>

@@ -31,7 +31,15 @@ export default mergeConfig(
       // It EXTENDS vitest's own defaults rather than replacing them: an
       // `exclude` given here wins outright, so a bare list would put
       // `node_modules` and `dist` back into the glob.
-      exclude: [...configDefaults.exclude, "src/local/*.node.test.ts"],
+      //
+      // **M6.5b2 adds two more and generalises the pattern**: the real-build
+      // cell (`src/precache.node.test.ts`, which runs a real `vite build`) and
+      // the driven worker (`src/sw.node.test.ts`, which bundles `sw.ts` with
+      // esbuild and runs it against fakes). Both need things jsdom does not
+      // have — esbuild refuses to run there at all — so the rule is now the
+      // SUFFIX rather than three file names, and a third `*.node.test.ts`
+      // lands in the right project without anyone editing two configs.
+      exclude: [...configDefaults.exclude, "src/**/*.node.test.ts"],
       // DOM cleanup between tests is `cleanup()` in `src/test/setup.ts`, not
       // these — an earlier comment here claimed otherwise. What these three do
       // is undo what a test did to the ENVIRONMENT: `vi.fn` spies, `vi.stubEnv`

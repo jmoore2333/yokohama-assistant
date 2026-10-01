@@ -9,6 +9,7 @@ import { useRef, useState, type ReactNode } from "react";
 import { api, ApiError } from "./api";
 import { TableFacts } from "./TableFacts";
 import type { ClientState, TableView } from "./types";
+import { Refusal } from "./Refusal";
 
 export function GameMenu({
   state,
@@ -106,7 +107,7 @@ export function GameMenu({
         </button>
         <div className="label">Saved games</div>
         {saved === null && !error && <div className="muted">loading…</div>}
-        {error && <div className="error">{error}</div>}
+        {error && <Refusal sentence={error} />}
         {/* **Disabled while a move is in flight (final review I1).** A switch
             asked for mid-request is undone when the reply lands — measured —
             and the honest answer to "you cannot have both" is to let the move

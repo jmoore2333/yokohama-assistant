@@ -80,7 +80,10 @@ describe("the local host's wire", () => {
     // operations that a move can fall between, and "Send to the archive" sends
     // the pair to a server that checks they agree.
     stubWorker({
-      pair: (id) => (id === "local-1" ? { record: '{"seed":1}', table: '{"schema":3}' } : {}),
+      pair: (id) =>
+        id === "local-1"
+          ? { record: '{"seed":1}', table: '{"schema":3}' }
+          : { record: null, table: null },
     });
     expect(await localPair("local-1")).toEqual({ record: '{"seed":1}', table: '{"schema":3}' });
     expect(currentWorker().posted).toEqual([{ seq: 1, kind: "pair", id: "local-1" }]);
@@ -395,5 +398,59 @@ describe("the two failures that must never leave a pending list", () => {
     dead.onmessageerror!({ data: undefined } as MessageEvent<unknown>);
     await expect(waiting).rejects.toThrow(/could not read/);
     expect(dead.terminated).toBe(true);
+  });
+
+  // **And a store that cannot be READ is neither** (PR #37 fix wave, fix round
+  // 1, review I-1; `worker.ts`'s rule 6). The export arm reads IndexedDB, and a
+  // read it refuses is answered as an ordinary reply naming the storage. The
+  // page must refuse the export with that sentence and leave the host ALONE:
+  // a restart terminates the Worker, and the Worker is holding the one copy of
+  // any move the store has refused to keep — exactly what the export is for.
+  it("refuses an export whose storage could not be read, and does NOT restart the host", async () => {
+    const sentence = "this browser's storage could not be read — Connection lost.";
+    stubWorker({ pair: () => ({ unreadable: sentence }) });
+    const fault = vi.fn();
+    onLocalFault(fault);
+    expect(await hold("local-1")).toBe(true);
+    const host = currentWorker();
+
+    await expect(localPair("local-1")).rejects.toThrow(sentence);
+    expect(host.terminated, "the Worker holding the unsaved move is not thrown away").toBe(false);
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(fault, "and nothing reports the host as restarted").not.toHaveBeenCalled();
+    // The host is still the one this page talks to, and still answers.
+    expect((await localCall("GET", "/api/games/local-1")).status).toBe(200);
+    expect(currentWorker()).toBe(host);
+  });
+});
+
+// ---- a notice, which is not a fault (M6.5b2, spec §2.6) --------------------
+//
+// **The distinction is whether anything is settled.** A fault means this host
+// cannot answer and everything waiting on it is rejected; a notice means it is
+// still working on it and here is why it is slow. The storage version's blocked
+// open is the first of the second kind, and a client that routed it through
+// `fail` would have turned a wait that ends by itself — the other tab closes —
+// into a screenful of refusals on a page that then had nothing left to retry.
+describe("an unsolicited notice", () => {
+  it("reaches the fault line without settling anything in flight", async () => {
+    stubWorker({ call: (req) => (req.path.endsWith("/log") ? "pending" : undefined) });
+    const fault = vi.fn();
+    onLocalFault(fault);
+    const inFlight = localCall("GET", "/api/games/local-1/log");
+    let settled = false;
+    void inFlight.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+
+    currentWorker().emit({ kind: "notice", sentence: "another tab is holding this open" });
+    await tick();
+    expect(fault).toHaveBeenCalledWith("another tab is holding this open");
+    // The call is STILL waiting, which is the whole difference from a fault.
+    expect(settled).toBe(false);
+    // And the Worker was not thrown away: a notice is not a restart.
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(currentWorker().terminated).toBe(false);
   });
 });

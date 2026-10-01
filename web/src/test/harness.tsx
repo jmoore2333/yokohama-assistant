@@ -12,11 +12,12 @@
 // defects M2 found by clicking was a second request going out while the first
 // was in flight, and a stub that resolves immediately cannot see it.
 
-import { act, render } from "@testing-library/react";
-import { vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { expect, vi } from "vitest";
 import { App } from "../App";
 import { CLAIMED_USER_KEY } from "../api";
 import { wire } from "../wire/contract";
+import { currentWorker, stubWorker } from "./fakeWorker";
 import type { ClientState, GamesList } from "../types";
 
 /** What `GET /api/games` answers with, naming these games.
@@ -331,7 +332,7 @@ export function gate<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
 /** The payloads `App` fetches to DRAW A SCREEN, answered from the corpus.
  *
  *  A FALLBACK, consulted only after the caller's own handler declines — see
- *  [`renderApp`]. It used to answer first, which silently stole `/api/art` from
+ *  [`renderApp`]. It used to answer first, which silently stole `/art/manifest.json` from
  *  any test that wanted to see the 404 branch.
  *
  *  **The three board panels joined the two bootstrap routes at W5b**, because
@@ -364,7 +365,9 @@ function bootstrapReply(call: ApiCall): Reply | undefined {
   // Every screen with a signal opens one. A cell about the signal scripts its
   // own; this is the resting answer for the rest.
   if (call.path.endsWith("/stream")) return openStream();
-  if (call.path.endsWith("/api/art")) return wire.artManifest;
+  // **The art manifest is a static FILE since M6.5b2** (spec §2.2), not
+  // `/api/art`: the door costs the Worker nothing, and a static asset is free.
+  if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
   // **`GET …/table` is now on the way into every game (M6.1 §7.4)**: `App`'s
   // `open` asks what a table IS before it fetches the game, because a table
   // still dealing refuses the game route with a 409. So every cell that opens a
@@ -411,7 +414,7 @@ export async function renderApp(
 ): Promise<ApiStub> {
   // **The caller's handler is asked FIRST, and `undefined` means "not mine".**
   // The first draft answered the bootstrap routes before consulting it, so a
-  // test that wanted to see `/api/art` refuse got the corpus manifest instead
+  // test that wanted to see `/art/manifest.json` refuse got the corpus manifest instead
   // and its 404 branch was never entered — the test passed while asserting
   // nothing about the case it named.
   const stub = stubApi(async (call) => {
@@ -442,11 +445,16 @@ export async function renderApp(
   // built for are one string.
   localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
 
+  // **At `#/lobby`, because `#/` is the front door since M6.5b2** (R-6.5b2.1).
+  // The door lists the games in THIS BROWSER and offers a link to the turnstile;
+  // the server's tables are the lobby's, which is where the row below is. The
+  // suite's own `beforeEach` leaves the hash empty, which now reads as the door.
+  window.location.hash = "#/lobby";
   const view = render(<App />);
-  // **Through the LOBBY now, which is the first screen after the door (spec
-  // §5.1).** The row is the same row the saved list used to draw, in the
-  // section that is now its home; the id is still what names it, because
-  // `gamesNamed` clears the corpus row's own name.
+  // **Through the LOBBY, the server's own first screen (spec §5.1).** The row
+  // is the same row the saved list used to draw, in the section that is now its
+  // home; the id is still what names it, because `gamesNamed` clears the corpus
+  // row's own name.
   //
   // **A LINK since M6.2 (R-14)**: the row's job is to go to `#/t/<id>`, so it
   // carries that address in an `href` and the browser navigates. A `button`
@@ -478,3 +486,52 @@ export function runRange(path: string): number[] | null {
  *  what the list of `/at/{k}` requests used to be, read off the run calls. */
 export const positionsWalked = (stub: ApiStub): number[] =>
   stub.matching("GET", "/at?").flatMap((c) => runRange(c.path) ?? []);
+
+/**
+ * The local host answering ONE playable game from the corpus (M6.5b2).
+ *
+ * **Call it BEFORE `render`**, like `stubWorker` itself: the door lists the
+ * games in this browser on its first paint, and a Worker installed afterwards
+ * is one the page has already given up asking.
+ *
+ * The state is `optionsMany` re-addressed to a local id — the corpus's own
+ * payload, the `fakeWorker` rule — because it is the fixture with a row a
+ * click can land on. Every input is answered with the SAME state, which is all
+ * a cell about the wiring needs: what is being read is which calls went out,
+ * not what the engine did with them.
+ */
+export function stubLocalGame(id = "local-1"): void {
+  const state = { ...wire.optionsMany, id };
+  stubWorker({
+    call: (req) => {
+      if (req.method === "GET" && req.path === `/api/games/${id}`) return { status: 200, body: state };
+      if (req.path === `/api/games/${id}/input`) return { status: 200, body: state };
+      return undefined;
+    },
+  });
+}
+
+/**
+ * Open the local game on the door and commit ONE move, the way a player does.
+ *
+ * A row, a click, an option, and the `/input` the click sends — asserted to
+ * have gone out, so a cell that then counts something downstream is counting
+ * from a move that really happened rather than from a click that landed on
+ * nothing. Pairs with [`stubLocalGame`].
+ */
+export async function playOneLocalMove(id = "local-1"): Promise<void> {
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("link", { name: id }));
+  // The banner strip: the one thing that exists only once a game is on screen.
+  await screen.findByText(/end triggers:/);
+  const prompt = wire.optionsMany.prompt;
+  if (prompt.kind !== "options") throw new Error("the corpus's optionsMany fixture moved");
+  const words = prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await user.click(screen.getByRole("button", { name: new RegExp(words) }));
+  await waitFor(() =>
+    expect(
+      currentWorker().posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+    ).toHaveLength(1),
+  );
+}

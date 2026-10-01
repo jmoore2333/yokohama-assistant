@@ -56,6 +56,9 @@ pub mod assets;
 // ---- end server ----
 pub mod api;
 pub mod archive;
+/// The backup envelope and the validator the archive route shares with it
+/// (M6.5b2, R-6.5b2.10 – .12). NOT behind `server`: the browser host calls it.
+pub mod backup;
 pub mod chat;
 pub mod client;
 pub mod explain;
@@ -271,6 +274,57 @@ pub const SIGNAL_KIND: &str = "sse";
 /// open.
 #[cfg(feature = "server")]
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
+// ---- end server ----
+
+/// **Whether this deployment offers multiplayer** (M6.5b2, R-6.5b2.4).
+///
+/// The third deployment switch, beside the identity door and the archive
+/// directory, and the one that decides whether a route EXISTS rather than how
+/// it behaves: off, the game, chat and stream routes are not served, so there
+/// is nothing to probe and no Access application to forget about.
+///
+/// **It has a default and the identity mode does not**, which is
+/// `ChatConfig`'s rule and for its reason: a missing switch is not a missing
+/// door. Absent is `on`, so every deployment that ran before this cycle goes
+/// on running unchanged. A BAD value still refuses to start, naming the
+/// variable — a server that read `YOKOHAMA_WEB_MULTIPLAYER=false` as `on`
+/// would be a server whose operator believes a switch that is not in force.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Multiplayer(pub bool);
+
+impl Multiplayer {
+    /// The variable's name, held here rather than written at each of its three
+    /// sites — the read, the refusal sentence and the cell that asserts the
+    /// refusal names it. A refusal that named a variable the reader's
+    /// environment does not have is worse than no refusal at all, and that is
+    /// exactly what a second spelling of this string would produce.
+    pub const VAR: &'static str = "YOKOHAMA_WEB_MULTIPLAYER";
+
+    /// The parse, split from the read so the unset case is testable without
+    /// touching the process environment — `IdentityMode::from_env_value`'s
+    /// shape, and `ChatConfig::from_env_values`' reading of `on`/`off`:
+    /// trimmed and case-insensitive, because the three variables are one
+    /// operator's `docker run` line and a rule that held for two of them would
+    /// be a rule nobody could remember.
+    pub fn from_env_value(v: Option<&str>) -> Result<Self, String> {
+        match v.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("on") => Ok(Self(true)),
+            Some("off") => Ok(Self(false)),
+            Some(other) => Err(format!("{} must be on or off — got {other:?}", Self::VAR)),
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+impl Multiplayer {
+    /// The read, `server`-only for the reason `ChatConfig::from_env` is: a host
+    /// with no process environment (the browser, a Worker) states its own
+    /// deployment facts and never asks one.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_env_value(std::env::var(Self::VAR).ok().as_deref())
+    }
+}
+// ---- end server ----
 
 /// Everything a transport handler may reach: the layer's state, the identity
 /// door, the streams' cadence and the streams' channels.
@@ -300,6 +354,24 @@ pub struct AppState {
     /// hand out a receiver — is held here rather than fetched back out of the
     /// layer below.
     pub signals: Arc<signal::Signals>,
+    /// Whether this deployment offers multiplayer (M6.5b2, R-6.5b2.4).
+    ///
+    /// Read by [`app`], which leaves the three transport routes off the router
+    /// when it is off, and by the adapter, which hands it to the layer as
+    /// [`api::Host::serves_games`] and [`api::Host::multiplayer_offered`] —
+    /// which on THIS host are the same answer, because an axum deployment that
+    /// offers no multiplayer plays nothing at all.
+    pub multiplayer: Multiplayer,
+    /// Where the built client lives (M6.5b2), read from `assets::dist_dir()`
+    /// ONCE at construction rather than on every request that misses a route.
+    ///
+    /// A seam for the same reason the archive and the clock are seams: a cell
+    /// can arrange a `dist` the ROUTER really answers from, which is what makes
+    /// "the fallback refuses `/enter` rather than serving the shell" a claim a
+    /// mutation can break. The alternative was writing `YOKOHAMA_WEB_DIST` from
+    /// a test, and `identity::from_env_value`'s own doc is this crate's rule
+    /// against mutating the process environment under a threaded runner.
+    pub dist: std::path::PathBuf,
 }
 
 #[cfg(feature = "server")]
@@ -309,7 +381,11 @@ impl AppState {
     /// names (M6.5a, R-6.5a.9) — `YOKOHAMA_WEB_ARCHIVE_DIR` unset is no archive;
     /// set to a directory that cannot be created is an `Err` `main` exits 1
     /// on, naming the variable, the shape `ChatConfig::from_env` already has.
-    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Result<Self, String> {
+    pub fn new(
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        multiplayer: Multiplayer,
+    ) -> Result<Self, String> {
         let archive: Arc<dyn archive::Archive> = match archive::DirArchive::from_env()? {
             Some(dir) => Arc::new(dir),
             None => Arc::new(archive::NoArchive),
@@ -319,7 +395,8 @@ impl AppState {
             identity,
             chat,
             archive,
-        ))
+        )
+        .with_multiplayer(multiplayer))
     }
 
     /// Backed by memory, in `claimed` mode — the mode every test drives with a
@@ -390,7 +467,28 @@ impl AppState {
             identity,
             heartbeat: HEARTBEAT,
             signals,
+            // On, which is [`Multiplayer::from_env_value`]'s own answer to an
+            // unset variable: every constructor above this one builds the
+            // deployment that existed before M6.5b2, and only `new` and
+            // [`Self::with_multiplayer`] can say otherwise.
+            multiplayer: Multiplayer(true),
+            dist: assets::dist_dir(),
         }
+    }
+
+    /// This state serving the client from `dist` (M6.5b2) — [`Self::with_clock`]'s
+    /// shape again, for the cells that need a real shell behind the fallback.
+    pub fn with_dist(self, dist: impl Into<std::path::PathBuf>) -> Self {
+        Self { dist: dist.into(), ..self }
+    }
+
+    /// This state with the multiplayer switch thrown (M6.5b2, R-6.5b2.4).
+    ///
+    /// A builder step over the field, [`Self::with_clock`]'s shape, for the two
+    /// callers that need it: `main`, which read the variable, and the cells that
+    /// assert what a single-player deployment serves.
+    pub fn with_multiplayer(self, multiplayer: Multiplayer) -> Self {
+        Self { multiplayer, ..self }
     }
 
     /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
@@ -667,7 +765,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         }
         return response;
     }
-    let host = api::Host { identity_name: state.identity.name(), signal_kind: SIGNAL_KIND };
+    // On THIS host the two multiplayer facts are one answer: an axum deployment
+    // that offers no multiplayer serves no game route either, because nothing
+    // plays here locally (spec §3.1 — the browser host is where they differ).
+    let host = api::Host {
+        identity_name: state.identity.name(),
+        signal_kind: SIGNAL_KIND,
+        serves_games: state.multiplayer.0,
+        multiplayer_offered: state.multiplayer.0,
+    };
     let out = api::dispatch(&state.games, &host, identity, &request);
     let mut response = Response::new(axum::body::Body::from(out.body.clone()));
     *response.status_mut() = StatusCode::from_u16(out.status).expect("a known status");
@@ -680,7 +786,7 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // `any()` skips it, so the adapter puts it back from the layer's own table
     // (R-6.5a.3: "axum's 405 shape, reproduced").
     if out.status == 405 {
-        let allow = api::allowed_methods(request.path).join(",");
+        let allow = api::allowed_methods(request.path, host.serves_games).join(",");
         response
             .headers_mut()
             .insert(http::header::ALLOW, http::HeaderValue::from_str(&allow).expect("ASCII method names"));
@@ -712,30 +818,84 @@ async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
 /// blames the decoder. Everything else is the client, with the SPA fallback
 /// `assets::serve` describes.
 #[cfg(feature = "server")]
-async fn fallback(uri: axum::http::Uri) -> Response {
+async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
+    }
+    // **`/enter` never falls through to the shell** (M6.5b2, spec §2.1). It is
+    // extensionless, so without this arm a deployment that does not serve it
+    // would answer `index.html` with a 200 — and the door's "Play with others"
+    // link would load the app again instead of saying why it cannot. When the
+    // turnstile IS served this arm is unreachable: a real route wins over the
+    // fallback.
+    if uri.path() == ENTER_PATH {
+        return (StatusCode::NOT_FOUND, "this deployment plays single player only").into_response();
     }
     if uri.path().starts_with("/art/") {
         return art::serve(uri).await;
     }
-    assets::serve(uri).await
+    assets::serve(&state.dist, uri).await
+}
+
+/// The path the turnstile answers on, named once because TWO places read it and
+/// they must not drift: [`app`], which registers it only where something is
+/// protected, and [`fallback`], which must refuse it everywhere else rather
+/// than let an extensionless path reach the SPA shell.
+#[cfg(feature = "server")]
+const ENTER_PATH: &str = "/enter";
+
+/// **The turnstile** (M6.5b2, R-6.5b2.2): a 302 straight back to the lobby.
+///
+/// It computes nothing and reads nothing, and that is the whole design. It is
+/// one destination of the deployment's Access application, so NAVIGATING to it
+/// is what mints the token every later `fetch` to a protected path carries —
+/// the app itself stays unaware that Access exists. "Play with others" is
+/// therefore a plain link and never a `fetch`, so the login is an ordinary
+/// navigation the browser already knows how to do.
+///
+/// 302 rather than 303 or 307 because a browser must repeat it as a GET and
+/// must not cache it; axum's `Redirect` offers 303, 307 and 308 and none of
+/// them is that, so the response is built here.
+#[cfg(feature = "server")]
+async fn enter() -> Response {
+    (StatusCode::FOUND, [(http::header::LOCATION, "/#/lobby")]).into_response()
 }
 
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
+///
+/// **Two things are conditional on the deployment** (M6.5b2). The three
+/// transport routes are registered only when multiplayer is on, because they
+/// are the ones the layer's own table cannot remove — they never reach
+/// [`api::dispatch`] — and R-6.5b2.4 is that OFF means not served. The
+/// turnstile is registered on the OR of the two protected things, multiplayer
+/// or an archive: R-6.5b2.4 is about the multiplayer routes not existing, and
+/// the turnstile is about acquiring the cookie for whatever protected route
+/// does. Multiplayer off with an archive on is a coherent deployment — play
+/// single player free and anonymous, pass the door once to contribute a save —
+/// and tying the door to multiplayer alone would point the outbox's own remedy
+/// at a 404.
 #[cfg(feature = "server")]
 pub fn app(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/api/games/{id}/events", get(events))
-        .route("/api/games/{id}/stream", get(stream))
-        .route("/api/stream", get(house_stream))
+    let mut router = Router::new();
+    if state.multiplayer.0 {
+        router = router
+            .route("/api/games/{id}/events", get(events))
+            .route("/api/games/{id}/stream", get(stream))
+            .route("/api/stream", get(house_stream));
+    }
+    if state.multiplayer.0 || archive::is_on(&state.games.archive) {
+        router = router.route(ENTER_PATH, get(enter));
+    }
+    router
         // Every other `/api/…` route is the layer's (R-6.5a.3): one catch-all
         // to the adapter, plus `/api/games` itself, which has no `{*rest}` tail.
         .route("/api/{*rest}", axum::routing::any(adapter))
         .route("/api/games", axum::routing::any(adapter))
-        .with_state(state)
+        // BEFORE `with_state`, which `fallback` now needs: it reads the client
+        // root off the state rather than the environment (M6.5b2).
         .fallback(fallback)
+        .with_state(state)
 }
 // ---- end server ----
 
@@ -797,6 +957,75 @@ mod tests {
         let status = res.status();
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
         (status, bytes.to_vec())
+    }
+
+    /// [`raw`] with the `Location` header and the body as text (M6.5b2, spec
+    /// §2.1). One helper and not two, because the two questions a turnstile
+    /// raises are asked of the same call: where it sends a browser when it is
+    /// served, and what it answered INSTEAD when it is not. No identity:
+    /// `/enter` is a navigation a browser makes before it has one.
+    async fn raw_location(
+        app: Router,
+        method: &str,
+        uri: &str,
+    ) -> (StatusCode, Option<String>, String) {
+        let res = app
+            .oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).expect("a request"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let location =
+            res.headers().get(http::header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, location, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// The router with the multiplayer switch thrown (M6.5b2, R-6.5b2.4), over
+    /// an in-memory state with no archive — which is the shape that makes the
+    /// switch the ONLY reason a route is missing.
+    async fn app_with_multiplayer(multiplayer: bool) -> Router {
+        app(Arc::new(AppState::in_memory().with_multiplayer(Multiplayer(multiplayer))))
+    }
+
+    /// The router with the two protected things chosen INDEPENDENTLY (M6.5b2,
+    /// spec §2.1) — the pair `/enter`'s OR condition is made of — serving its
+    /// client from `dist`, so the SPA fallback behind `/enter` is really live.
+    ///
+    /// The archive is an [`archive::DirArchive`] over a path that is never
+    /// created: `archive::is_on` reads its `kind()` and nothing in these cells
+    /// finishes a game, so the switch is thrown without touching a disk.
+    ///
+    /// Nothing here writes `YOKOHAMA_WEB_DIST`: the root is PASSED, through
+    /// `AppState::dist`, because a process-global written from one cell would
+    /// race `dist_dir`'s and `art_dir`'s reads in the cells scheduled beside it
+    /// — which is the rule `identity::from_env_value`'s own doc states.
+    async fn app_with(multiplayer: bool, archive: bool, dist: &std::path::Path) -> Router {
+        let archive: Arc<dyn archive::Archive> = if archive {
+            Arc::new(archive::DirArchive::new(dist.join("archive")))
+        } else {
+            Arc::new(archive::NoArchive)
+        };
+        app(Arc::new(
+            AppState::with_store_chat_and_archive(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Claimed,
+                chat::ChatConfig::default(),
+                archive,
+            )
+            .with_multiplayer(Multiplayer(multiplayer))
+            .with_dist(dist),
+        ))
+    }
+
+    /// A `dist` directory holding a real `index.html` and NO `sw.js` — the two
+    /// facts the turnstile cell's probes are about. The caller removes it.
+    fn dist_with_index_html() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("yokohama-enter-dist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a dist directory");
+        std::fs::write(root.join("index.html"), b"<!doctype html><title>Yokohama</title>")
+            .expect("a shell");
+        root
     }
 
     /// R-6.5a.4's pin: the layer's JSON rejection is axum's own `body_text()`,
@@ -876,7 +1105,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD,DELETE"));
-        assert_eq!(api::allowed_methods("/api/nothing"), Vec::<&str>::new(), "no path, no methods");
+        assert_eq!(api::allowed_methods("/api/nothing", true), Vec::<&str>::new(), "no path, no methods");
     }
 
     #[tokio::test]
@@ -905,7 +1134,12 @@ mod tests {
         ] {
             let sentence = identity::resolve(mode, &http::HeaderMap::new()).unwrap_err();
             let state = AppState::in_memory_with(mode);
-            let host = api::Host { identity_name: mode.name(), signal_kind: SIGNAL_KIND };
+            let host = api::Host {
+                identity_name: mode.name(),
+                signal_kind: SIGNAL_KIND,
+                serves_games: true,
+                multiplayer_offered: true,
+            };
             let out = api::dispatch(
                 &state.games,
                 &host,
@@ -4602,6 +4836,157 @@ mod tests {
             body["error"].as_str().is_some_and(|e| e.contains("/api/nope")),
             "the refusal names the path it refused: {body}",
         );
+    }
+
+    // ---- M6.5b2: the deployment switches and the turnstile --------------------
+
+    /// The switch's own parse (M6.5b2, R-6.5b2.4), which every cell below
+    /// reaches past by constructing a [`Multiplayer`] directly — so without
+    /// this one, an unset variable reading `off`, or a misspelling reading
+    /// `on`, would take a whole deployment down with the suite green.
+    ///
+    /// The three claims are spec §3.1's: absent is `on`, `off` is off, and a
+    /// value that is neither refuses NAMING the variable, which is what an
+    /// operator has to see to fix it.
+    #[test]
+    fn the_multiplayer_switch_defaults_on_and_a_bad_value_names_the_variable() {
+        assert_eq!(Multiplayer::from_env_value(None), Ok(Multiplayer(true)), "absent is on");
+        assert_eq!(Multiplayer::from_env_value(Some("on")), Ok(Multiplayer(true)));
+        assert_eq!(Multiplayer::from_env_value(Some("off")), Ok(Multiplayer(false)));
+        assert_eq!(
+            Multiplayer::from_env_value(Some(" OFF ")),
+            Ok(Multiplayer(false)),
+            "trimmed and case-insensitive, as the chat variables are read",
+        );
+        for bad in ["false", "0", "", "yes"] {
+            match Multiplayer::from_env_value(Some(bad)) {
+                Ok(m) => panic!("{bad:?} is neither on nor off and must refuse, not read as {m:?}"),
+                Err(e) => assert!(e.contains(Multiplayer::VAR) && e.contains(bad), "{bad:?}: {e}"),
+            }
+        }
+    }
+
+    /// R-6.5b2.4: OFF means NOT SERVED. Not gated, not hidden — the route is not
+    /// in the table, so an unknown path is the table's own 404 and there is no
+    /// second code path that "hides" anything.
+    ///
+    /// **It sweeps every pattern and every method the router can answer, not a
+    /// sample.** Five hand-picked GETs would miss `POST /api/games`, and it would
+    /// miss the three routes the AXUM ROUTER owns outside the layer's table
+    /// (`app()`: `events`, `…/stream`, `/api/stream`) — which is the whole class
+    /// this cell exists to catch, because changing [`api::routes`] alone cannot
+    /// remove them.
+    #[tokio::test]
+    async fn multiplayer_off_serves_no_game_route_and_still_serves_the_public_ones() {
+        let app = app_with_multiplayer(false).await;
+        // Every pattern the layer would serve, with a concrete id, in every method
+        // its row declares — plus the router's own three.
+        let mut forbidden: Vec<(&str, String)> = api::routes(true)
+            .iter()
+            .filter(|r| r.pattern.starts_with("/api/games") || r.pattern.starts_with("/api/chat"))
+            .map(|r| {
+                (r.method, r.pattern.replace("{id}", "x").replace("{k}", "0").replace("{kind}", "orders"))
+            })
+            .collect();
+        for uri in ["/api/games/x/events", "/api/games/x/stream", "/api/stream"] {
+            forbidden.push(("GET", uri.to_string()));
+        }
+        assert!(forbidden.len() >= 20, "anti-vacuity: the sweep is the whole table, not a sample");
+        for (method, uri) in &forbidden {
+            let (status, body) = raw(app.clone(), method, uri, Some(WHO)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri} must not be served with multiplayer off");
+            // And it is the TABLE's own 404 — the sentence a misspelling gets —
+            // rather than a second code path that "hides" a route and says so.
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("no such endpoint"), "{method} {uri}: a second sentence: {body}");
+        }
+        // **The anti-vacuity half**: a 404 everywhere would pass the loop above.
+        for uri in ["/api/health", "/api/labels", "/api/me"] {
+            let (status, _) = raw(app.clone(), "GET", uri, Some(WHO)).await;
+            assert_eq!(status, StatusCode::OK, "{uri} is public and still answers");
+        }
+        // **And `/api/health` SAYS so** (spec §3.1): the two facts a client
+        // reads to decide what to draw follow what is served. `lobby_chat` is
+        // the one that used to lie — `/api/chat` is a row the switch removes,
+        // so a panel drawn on its word would have fetched a 404 for ever.
+        let (_, body) = raw(app.clone(), "GET", "/api/health", Some(WHO)).await;
+        let off: serde_json::Value = serde_json::from_slice(&body).expect("health is JSON");
+        assert_eq!(off["multiplayer"], false, "the switch is reported: {off}");
+        assert_eq!(off["lobby_chat"], false, "and so is the chat that went with it: {off}");
+        // The contrast, without which both could be constants: the SAME reads
+        // under the switch on.
+        let (_, body) = raw(app_with_multiplayer(true).await, "GET", "/api/health", Some(WHO)).await;
+        let on: serde_json::Value = serde_json::from_slice(&body).expect("health is JSON");
+        assert_eq!(on["multiplayer"], true, "{on}");
+        assert_eq!(on["lobby_chat"], true, "{on}");
+        // `/api/art` is public too, and it is asserted by WHOSE answer it is
+        // rather than by a status: the adapter answers it before the layer, and
+        // under `cargo test` the working directory is this crate's, so the
+        // manifest is not where `art_dir()` looks and the honest reading is
+        // that the route is still routed at all.
+        let (_, body) = raw(app.clone(), "GET", "/api/art", Some(WHO)).await;
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("no such endpoint"), "/api/art is public and still routed: {body}");
+        // **And the archive is NOT one of them** (spec §3.1): it has its own
+        // variable, so a single-player deployment can still collect saves.
+        let (status, _) = raw(app.clone(), "POST", "/api/archive", Some(WHO)).await;
+        assert_ne!(status, StatusCode::NOT_FOUND, "the archive is governed by its own variable");
+    }
+
+    /// The turnstile (R-6.5b2.2). It exists so a browser can ACQUIRE the Access
+    /// cookie by navigating; the origin's only job is to send it back.
+    #[tokio::test]
+    async fn enter_is_a_turnstile_back_to_the_lobby() {
+        let app = app_with_multiplayer(true).await;
+        let (status, location, _) = raw_location(app, "GET", "/enter").await;
+        assert_eq!(status, StatusCode::FOUND);
+        assert_eq!(location.as_deref(), Some("/#/lobby"));
+    }
+
+    /// Its condition is the OR and not the multiplayer switch alone (spec §2.1,
+    /// §3.1): with multiplayer off and an archive on it is STILL served, because
+    /// the archive is behind the door and the outbox's remedy links here.
+    ///
+    /// **"Absent" has to be ARRANGED, not merely unregistered.** `assets::serve`
+    /// answers any extensionless path with `index.html`, so a `/enter` that is
+    /// simply not on the router falls through to the SPA fallback and answers
+    /// 200 HTML. This cell therefore runs against a `dist` that HAS an
+    /// `index.html` AND is the one the ROUTER serves from (`AppState::dist`):
+    /// delete `fallback`'s `/enter` arm and the second assertion below reads
+    /// the shell, which is what makes it a claim a mutation can break. Against
+    /// a dist the router never saw, every arm would pass unchanged.
+    ///
+    /// The root is passed and never configured — nothing here writes
+    /// `YOKOHAMA_WEB_DIST`.
+    ///
+    /// The same arrangement carries spec §6.1's other pin: an ABSENT `/sw.js`
+    /// is a 404 and never the shell, because it has an extension and the SPA
+    /// rule does not apply to it. Its anti-vacuity partner is the positive
+    /// control below, where an ordinary route on the SAME router does answer
+    /// the shell — so the 404 is the extension rule and not an empty build.
+    #[tokio::test]
+    async fn enter_follows_any_protected_route_and_not_multiplayer_alone() {
+        let dist = dist_with_index_html();
+        let (status, _, _) =
+            raw_location(app_with(false, /*archive*/ true, &dist).await, "GET", "/enter").await;
+        assert_eq!(status, StatusCode::FOUND, "multiplayer off + archive on still needs the door");
+
+        let nothing_protected = app_with(false, /*archive*/ false, &dist).await;
+        let (status, _, body) = raw_location(nothing_protected.clone(), "GET", "/enter").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "nothing protected, no turnstile");
+        assert!(!body.contains("<!doctype"), "and NOT the SPA fallback's index.html");
+        // Spec §6.1: `/sw.js` absent is a 404 and never HTML — a worker script
+        // answered as `index.html` registers and then fails to parse.
+        let (status, _, body) = raw_location(nothing_protected.clone(), "GET", "/sw.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "an absent worker script is a 404");
+        assert!(!body.contains("<!doctype"), "and never the shell: {body}");
+        // The positive control, which is what the two `<!doctype>` refusals
+        // above are measured against: the fallback on this very router IS live.
+        let (status, _, body) = raw_location(nothing_protected, "GET", "/lobby").await;
+        assert_eq!(status, StatusCode::OK, "the SPA fallback answers an ordinary route");
+        assert!(body.contains("<!doctype"), "with the shell: {body}");
+
+        std::fs::remove_dir_all(&dist).expect("the dist is removable");
     }
 
     // ---- M4: the replay projection -------------------------------------------

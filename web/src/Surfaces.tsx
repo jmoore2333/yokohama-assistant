@@ -38,6 +38,7 @@ import {
 import { SuggestView, WhyView } from "./Explain";
 import { IndexView, OutcomeView } from "./Index";
 import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
+import { Refusal } from "./Refusal";
 
 export type SurfaceName =
   | "areas"
@@ -280,7 +281,7 @@ export function Surface({
         </button>
       </header>
       <div className="surface-body">
-        {error && <div className="error">{error}</div>}
+        {error && <Refusal sentence={error} />}
         {!data && !error && <div className="muted">loading…</div>}
         {data != null && name === "areas" && (
           <Areas panel={data as AreasPanel} labels={labels} colors={colors} />

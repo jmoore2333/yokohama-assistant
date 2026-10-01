@@ -35,6 +35,7 @@ import { hashOf } from "./route";
 import { usePolled, type End } from "./signal";
 import { seatName } from "./tables";
 import type { PlayerColor, TableView } from "./types";
+import { Refusal } from "./Refusal";
 
 export function OpenTable({
   game,
@@ -196,7 +197,7 @@ export function OpenTable({
       <div className="setup open-table">
         {strip}
         <h2>Table</h2>
-        {error ? <div className="error">{error}</div> : <p className="muted">loading&hellip;</p>}
+        {error ? <Refusal sentence={error} /> : <p className="muted">loading&hellip;</p>}
       </div>
     );
   }
@@ -298,7 +299,7 @@ export function OpenTable({
           Lobby
         </button>
       </div>
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

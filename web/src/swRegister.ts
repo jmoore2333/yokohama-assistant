@@ -1,0 +1,379 @@
+// **Registering the release's worker, and what the door says about it**
+// (M6.5b2, spec §2.3 and §4; R-6.5b2.8).
+//
+// Registration lives in a HOOK and not in `main.tsx`, because the state the
+// door reports and the registration that produces it are one thing: a
+// `register()` in the entry point would leave the hook hunting for the
+// registration afterwards with `getRegistration()`, racing the call it was
+// trying to observe. The cost is that the worker is registered when `App`
+// mounts rather than when the module loads, which is the same tick in practice.
+//
+// **The update policy's page half is here, and it is three rules** (spec §2.3):
+// `skipWaiting` is posted only on the player's click; the clicking tab waits
+// until the new worker is in charge before it reloads, rather than reloading
+// straight after posting and racing activation — on `controllerchange` where
+// the old worker controlled it, and on the new worker's `activated` where
+// nothing did, since `skipWaiting` hands over only CONTROLLED tabs and an
+// uncontrolled one hears no `controllerchange` at all (PR #37 F3, E2); and an
+// update this tab did not ask for — another tab clicked, and `skipWaiting` is
+// registration-wide — reloads nothing. The worker's half is `sw.ts`: no
+// `clients.claim()`; `activate` retains the previous generation; and the
+// fetch handler SERVES out of that generation a path this release does not
+// list, which is what a tab that did not click asks for (PR #37, R-F2 and
+// R-F5). That last is what keeps such a tab working, and nothing on this side
+// could: `skipWaiting()` hands every tab the old worker controlled to the new
+// one whatever this page does, so the tab that reloads nothing is in front of
+// the NEW worker, still asking for the OLD release's hashed files.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+/** Where the generator writes the worker, and the one path `assets.rs` answers
+ *  `Cache-Control: no-store`. */
+export const SW_URL = "/sw.js";
+
+/** What the door reports about the release.
+ *
+ *  `"none"` is a development build, a browser without service workers, or a
+ *  page the e2e has flagged — all three are "there is nothing to say", which is
+ *  not the same as a failure and must not read as one. */
+export type Readiness = "installing" | "ready" | "failed" | "none";
+
+/** Everything the door needs from this hook. */
+export interface ReadinessStatus {
+  readonly readiness: Readiness;
+  /** What went wrong, in the worker's own words, or `null` when it did not say
+   *  — spec §4 asks for a NAMED failure. */
+  readonly reason: string | null;
+  /** A new release is installed and waiting behind the running one. */
+  readonly updateWaiting: boolean;
+  /** Take it: post `skipWaiting`, and reload THIS tab once the new worker is in
+   *  charge — whether or not the old one controlled it. */
+  readonly applyUpdate: () => void;
+  /** Try the install again after a failure. */
+  readonly retry: () => void;
+}
+
+// The three platform objects this hook touches, named as the narrowest thing it
+// uses rather than as `ServiceWorker*`. That is what lets a cell drive the
+// lifecycle: jsdom has no `navigator.serviceWorker` at all, so a hook reaching
+// for the real one directly could only ever be tested by not running.
+
+export interface WorkerLike {
+  readonly state: string;
+  addEventListener(type: "statechange", listener: () => void): void;
+  removeEventListener(type: "statechange", listener: () => void): void;
+  postMessage(message: unknown): void;
+}
+
+export interface RegistrationLike {
+  readonly installing: WorkerLike | null;
+  readonly waiting: WorkerLike | null;
+  readonly active: WorkerLike | null;
+  addEventListener(type: "updatefound", listener: () => void): void;
+  removeEventListener(type: "updatefound", listener: () => void): void;
+  update(): Promise<unknown>;
+}
+
+export interface SwHost {
+  /** Whether this build, this browser and this page want a worker at all. */
+  readonly wanted: boolean;
+  /** Whether a worker controls this page NOW — which decides how the page
+   *  hears that an update it asked for has taken charge. */
+  controlled(): boolean;
+  register(url: string): Promise<RegistrationLike>;
+  /** Returns its own removal. */
+  onControllerChange(listener: () => void): () => void;
+  /** Returns its own removal. */
+  onMessage(listener: (data: unknown) => void): () => void;
+  reload(): void;
+}
+
+/**
+ * Whether to register at all.
+ *
+ * **Production only**, because Vite's dev server serves no `dist`: a worker
+ * registered there would precache files that do not exist and then serve a
+ * stale module tree from what it did manage to cache.
+ *
+ * **And never when the page carries the flag.** `npm run e2e` runs
+ * `build:client`, which IS a production build, so without this every one of the
+ * walk's existing cells would register a worker and start a ten-megabyte
+ * precache per context, and every reload-based cell would start reading a
+ * cache-first navigation. `e2e/sw.ts` sets it through `addInitScript`, and
+ * `e2e/every_spec_declares_its_worker.spec.ts` is what keeps that convention
+ * from being one anybody has to remember.
+ */
+export function serviceWorkerWanted(
+  win: { readonly __YOKOHAMA_NO_SW__?: unknown; readonly navigator: { readonly serviceWorker?: unknown } },
+  prod: boolean,
+): boolean {
+  if (!prod) return false;
+  if (win.__YOKOHAMA_NO_SW__) return false;
+  return Boolean(win.navigator.serviceWorker);
+}
+
+/** A registration's shape, as this hook reads it. */
+export interface RegSnapshot {
+  readonly installingState: string | null;
+  readonly hasWaiting: boolean;
+  readonly hasActive: boolean;
+}
+
+/**
+ * What a registration's shape means for the door.
+ *
+ * Pure, and it is where the policy is: the hook only wires events and asks this
+ * again. `"redundant"` on the installing worker is the lifecycle's word for
+ * "the install threw", which is what an all-or-nothing install does on one bad
+ * file.
+ *
+ * **The offer needs a waiting worker AND a running one.** A waiting worker with
+ * nothing active is a first install that has not activated yet, and offering to
+ * reload into it would be offering the player nothing.
+ */
+export function readinessOf(snapshot: RegSnapshot): {
+  readiness: Readiness;
+  updateWaiting: boolean;
+} {
+  const updateWaiting = snapshot.hasWaiting && snapshot.hasActive;
+  const state = snapshot.installingState;
+  if (state === "redundant") return { readiness: "failed", updateWaiting };
+  if (state !== null && state !== "installed" && state !== "activating" && state !== "activated") {
+    return { readiness: "installing", updateWaiting };
+  }
+  if (state !== null || snapshot.hasActive || snapshot.hasWaiting) {
+    return { readiness: "ready", updateWaiting };
+  }
+  return { readiness: "installing", updateWaiting };
+}
+
+/** The real browser, behind the seam above. */
+export function browserSwHost(): SwHost {
+  const wanted =
+    typeof window !== "undefined" && serviceWorkerWanted(window, import.meta.env.PROD);
+  return {
+    wanted,
+    controlled: () => navigator.serviceWorker.controller !== null,
+    register: (url) =>
+      navigator.serviceWorker.register(url) as unknown as Promise<RegistrationLike>,
+    onControllerChange(listener) {
+      navigator.serviceWorker.addEventListener("controllerchange", listener);
+      return () => navigator.serviceWorker.removeEventListener("controllerchange", listener);
+    },
+    onMessage(listener) {
+      const wrapped = (event: MessageEvent) => listener(event.data);
+      navigator.serviceWorker.addEventListener("message", wrapped);
+      return () => navigator.serviceWorker.removeEventListener("message", wrapped);
+    },
+    reload: () => window.location.reload(),
+  };
+}
+
+/** What the hook's effect lends its two controls. */
+interface Lent {
+  /** Store a registration, watch its workers, wire `updatefound`, settle. */
+  adopt(reg: RegistrationLike): void;
+  /** Read the stored registration's shape again. */
+  settle(): void;
+  /** Reload this tab once `worker` has reached `activated`. */
+  reloadWhenActivated(worker: WorkerLike): void;
+}
+
+/** Register the release's worker and report what it is doing. */
+export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
+  const [readiness, setReadiness] = useState<Readiness>("none");
+  const [reason, setReason] = useState<string | null>(null);
+  const [updateWaiting, setUpdateWaiting] = useState(false);
+
+  const hostRef = useRef(host);
+  const registration = useRef<RegistrationLike | null>(null);
+  /** Set by `applyUpdate` alone: how THIS tab will hear that the worker it
+   *  asked for has taken charge, or `null` while it has asked nothing. It is
+   *  the one thing that makes a controller change this tab's business. */
+  const asked = useRef<"controllerchange" | "activated" | null>(null);
+  /** Cleared by the retry, so a failure the worker named does not outlive it. */
+  const failure = useRef<string | null>(null);
+  /** The effect's own wiring, lent to the retry and the update offer: set by
+   *  the effect and cleared by its cleanup. Through it a page whose first
+   *  registration was refused, or whose first install failed, adopts the one
+   *  "Try again" produces exactly as it would have adopted the first, and
+   *  every listener either control attaches lands on the effect's one `undo`.
+   *  A control that resolves after the unmount finds nothing to call — though
+   *  each lent function's own `live` check is the guard that holds; the clear
+   *  only lets go of a dead effect's closure. */
+  const lent = useRef<Lent | null>(null);
+
+  useEffect(() => {
+    const swHost = hostRef.current;
+    if (!swHost.wanted) return;
+    let live = true;
+    /** Everything wired to a worker or a registration, so the unmount is total. */
+    const undo: (() => void)[] = [];
+
+    const settle = () => {
+      const current = registration.current;
+      if (!live || !current) return;
+      const next = readinessOf({
+        installingState: current.installing?.state ?? null,
+        hasWaiting: current.waiting !== null,
+        hasActive: current.active !== null,
+      });
+      setUpdateWaiting(next.updateWaiting);
+      // A failure the worker REPORTED outranks the shape, because the shape
+      // stops saying "redundant" the moment the browser drops the worker.
+      setReadiness(failure.current !== null ? "failed" : next.readiness);
+    };
+
+    const watch = (worker: WorkerLike | null) => {
+      if (!worker) return;
+      worker.addEventListener("statechange", settle);
+      undo.push(() => worker.removeEventListener("statechange", settle));
+    };
+
+    undo.push(
+      swHost.onMessage((data) => {
+        const said = data as { yokohama?: unknown; reason?: unknown } | null;
+        if (!live || !said || said.yokohama !== "install-failed") return;
+        failure.current = typeof said.reason === "string" ? said.reason : "";
+        setReason(typeof said.reason === "string" ? said.reason : null);
+        setReadiness("failed");
+      }),
+    );
+    undo.push(
+      swHost.onControllerChange(() => {
+        // **Only the tab that clicked reloads.** `skipWaiting` is
+        // registration-wide, so this fires in every tab the old worker
+        // controlled — and in no tab it did not, which is why an uncontrolled
+        // tab that clicked listens for `activated` instead.
+        if (live && asked.current === "controllerchange") swHost.reload();
+      }),
+    );
+
+    /** Store the registration, watch its workers, wire `updatefound`, and say
+     *  what it means — every listener onto `undo`, whichever path got here. */
+    const adoptRegistration = (reg: RegistrationLike) => {
+      if (!live) return;
+      registration.current = reg;
+      watch(reg.installing);
+      watch(reg.waiting);
+      const onUpdateFound = () => {
+        watch(reg.installing);
+        settle();
+      };
+      reg.addEventListener("updatefound", onUpdateFound);
+      undo.push(() => reg.removeEventListener("updatefound", onUpdateFound));
+      settle();
+    };
+
+    const reloadWhenActivated = (worker: WorkerLike) => {
+      if (!live) return;
+      const onState = () => {
+        if (live && worker.state === "activated") swHost.reload();
+      };
+      worker.addEventListener("statechange", onState);
+      undo.push(() => worker.removeEventListener("statechange", onState));
+    };
+    lent.current = { adopt: adoptRegistration, settle, reloadWhenActivated };
+
+    setReadiness("installing");
+    void swHost
+      .register(SW_URL)
+      .then(adoptRegistration)
+      .catch((error: unknown) => {
+        if (!live) return;
+        const said = error instanceof Error ? error.message : String(error);
+        failure.current = said;
+        setReason(said);
+        setReadiness("failed");
+      });
+
+    return () => {
+      live = false;
+      lent.current = null;
+      for (const off of undo) off();
+    };
+  }, []);
+
+  const applyUpdate = useCallback(() => {
+    const waiting = registration.current?.waiting;
+    // **`asked` is set only when there really is something to take.** It is
+    // what makes a `controllerchange` this tab's business, and a click with no
+    // waiting worker that armed it anyway would reload this tab the next time
+    // ANOTHER one took an update — which is precisely the two-tab behaviour
+    // spec §2.3 is written to avoid.
+    if (!waiting) return;
+    // **Which event means "it has taken charge" is decided ONCE, here.** A tab
+    // the old worker controlled is handed to the new one and hears
+    // `controllerchange`; a tab nothing controls — a first visit, since
+    // nothing calls `clients.claim()`, or a page whose first registration was
+    // retried — is handed nothing and hears none, so it waits for the worker
+    // it asked to reach `activated` (PR #37 F3, E2). A controlled tab sees
+    // both events, and deciding at the click is what keeps it from reloading
+    // twice.
+    if (hostRef.current.controlled()) {
+      asked.current = "controllerchange";
+    } else {
+      asked.current = "activated";
+      lent.current?.reloadWhenActivated(waiting);
+    }
+    waiting.postMessage({ yokohama: "skip-waiting" });
+  }, []);
+
+  const retry = useCallback(() => {
+    failure.current = null;
+    setReason(null);
+    setReadiness("installing");
+    // **`update()` only while the registration has a WAITING or an ACTIVE
+    // worker** — an UPDATE whose install failed, with the release before it
+    // still there. `update()` fetches the worker again, and a changed one
+    // installs again. One that installs nothing (the server's worker went back
+    // to the running one's bytes) resolves with no event at all, so the door
+    // is settled from the registration's shape rather than left on
+    // "installing".
+    //
+    // **Otherwise the retry REGISTERS, and adopts what that resolves to through
+    // the effect's own wiring** (PR #37 F3, R-F3, E1 and R-orch-5). Three
+    // cases arrive here. Where the FIRST `register()` was refused, there is no
+    // registration at all. Where the FIRST install failed, the platform has
+    // marked the worker redundant, emptied the registration and removed it
+    // from the registration map, and `update()` on it is refused — measured in
+    // Chromium: "The object is in an invalid state", on every click until a
+    // reload. And in the few milliseconds between those two — the worker posts
+    // "install-failed" BEFORE its install rejects — the page's copy still
+    // names the DYING worker as `installing`, which is why `installing` does
+    // not count: an `update()` taken then queues behind the failing install
+    // and is refused once that install has removed the registration, while a
+    // `register()` queues the same way and then registers anew. (Against an
+    // install really in progress, `register()` resolves with that same
+    // registration — Register's shortcut: the same script URL, a newest worker
+    // present — and adopting it again adds one more `updatefound` listener,
+    // removed at the unmount like the first.) Before F3 the retry registered
+    // and dropped the result, which left the door on "installing" after the
+    // worker activated.
+    //
+    // **A REJECTED retry goes back to failed rather than staying "installing"**
+    // — that is the same defect the install's own deadline exists to prevent,
+    // one level up: a door that says "Preparing to play offline" for ever has
+    // nothing on it a player can act on.
+    const said = (error: unknown) => {
+      const text = error instanceof Error ? error.message : String(error);
+      failure.current = text;
+      setReason(text);
+      setReadiness("failed");
+    };
+    const reg = registration.current;
+    if (reg && (reg.waiting ?? reg.active)) {
+      void reg
+        .update()
+        .then(() => lent.current?.settle())
+        .catch(said);
+      return;
+    }
+    void hostRef.current
+      .register(SW_URL)
+      .then((next) => lent.current?.adopt(next))
+      .catch(said);
+  }, []);
+
+  return { readiness, reason, updateWaiting, applyUpdate, retry };
+}

@@ -47,12 +47,25 @@ pub struct ApiResponse {
     pub body: String,
 }
 
-/// The two deployment facts `/api/health` and `/api/me` report that the layer
-/// cannot know: which identity door this host has, and which change transport.
+/// The deployment facts the layer cannot know and a host must tell it: which
+/// identity door it has, which change transport it runs, whether it serves the
+/// game routes at all, and whether it OFFERS multiplayer.
 #[derive(Debug, Clone, Copy)]
 pub struct Host {
     pub identity_name: &'static str,
     pub signal_kind: &'static str,
+    /// Whether [`routes`] includes the game and chat rows on this host
+    /// (M6.5b2, R-6.5b2.4). Off, they are not in the table, so an unknown path
+    /// is the table's own 404 and nothing "hides" a route.
+    pub serves_games: bool,
+    /// Whether this DEPLOYMENT offers multiplayer, which [`Health`] reports.
+    ///
+    /// **Two facts and not one** (spec §3.1). A local game plays by calling
+    /// `/api/games/…` through this same [`dispatch`], so the browser host
+    /// SERVES the game routes and OFFERS no multiplayer; axum with the switch
+    /// off does neither. A single field would have made single player stop
+    /// working the moment a deployment said it had no multiplayer.
+    pub multiplayer_offered: bool,
 }
 
 /// The caller, or the host's own sentence for why there is none.
@@ -126,7 +139,14 @@ pub struct Route {
 /// host writes itself. `/api/art` is listed so the 405/404 arithmetic is one
 /// table, but its body lives in the server (art is gated) and the adapter
 /// answers it before calling [`dispatch`].
-pub fn routes() -> Vec<Route> {
+///
+/// **`serves_games` removes rows rather than gating them** (M6.5b2, R-6.5b2.4):
+/// a host that does not serve games has no game or chat row at all, so every
+/// such path is the same `no such endpoint` 404 a misspelling is, and there is
+/// no second sentence to leak which of the two it was. `/api/archive` is NOT
+/// one of them — it has its own variable (spec §3.1), so a single-player
+/// deployment can still collect saves — and neither are the public four.
+pub fn routes(serves_games: bool) -> Vec<Route> {
     [
         ("GET", "/api/health"),
         ("GET", "/api/me"),
@@ -160,8 +180,17 @@ pub fn routes() -> Vec<Route> {
         ("GET", "/api/games/{id}/record"),
     ]
     .into_iter()
+    .filter(|(_, pattern)| serves_games || !is_game_route(pattern))
     .map(|(method, pattern)| Route { method, pattern })
     .collect()
+}
+
+/// The rows the multiplayer switch takes away: every game route and both house
+/// chat routes. A prefix test and not a list, so a route added under
+/// `/api/games` is governed by the switch the day it lands rather than the day
+/// someone remembers to add it here.
+fn is_game_route(pattern: &str) -> bool {
+    pattern.starts_with("/api/games") || pattern.starts_with("/api/chat")
 }
 
 /// Segment-wise match; `{name}` binds one segment. Returns the bound values in
@@ -184,9 +213,13 @@ fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
 /// The methods the table takes at `path`, in table order, with `HEAD` beside
 /// `GET` as axum's `MethodRouter` lists them — what the adapter writes into a
 /// 405's `Allow` header. Empty for a path no row matches.
-pub fn allowed_methods(path: &str) -> Vec<&'static str> {
+///
+/// It takes the host's `serves_games` for the same reason [`find`] does: a 405
+/// and its `Allow` are answers ABOUT the table, so they have to be read off the
+/// table this host actually serves.
+pub fn allowed_methods(path: &str, serves_games: bool) -> Vec<&'static str> {
     let mut out = Vec::new();
-    for r in routes() {
+    for r in routes(serves_games) {
         if matches(r.pattern, path).is_some() {
             out.push(r.method);
             if r.method == "GET" {
@@ -205,10 +238,10 @@ enum Matched<'a> {
 
 /// HEAD reaches the GET arm (R-6.5a.3 — axum's `get` serves HEAD that way);
 /// [`dispatch`] strips the body afterwards.
-fn find<'a>(method: &str, path: &'a str) -> Matched<'a> {
+fn find<'a>(method: &str, path: &'a str, serves_games: bool) -> Matched<'a> {
     let method = if method == "HEAD" { "GET" } else { method };
     let mut path_known = false;
-    for r in routes() {
+    for r in routes(serves_games) {
         if let Some(bound) = matches(r.pattern, path) {
             path_known = true;
             if r.method == method {
@@ -248,12 +281,32 @@ pub struct Health {
     pub archive: &'static str,
     /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
     /// draws no lobby panel and asks nothing.
+    ///
+    /// **Since M6.5b2 it is the chat switch AND [`Host::serves_games`]**, which
+    /// is the predicate the sentence above always claimed: `/api/chat` is one
+    /// of the rows the multiplayer switch removes, so a deployment with the
+    /// switch off served no house chat while reporting that it did — and a
+    /// client believing it drew a panel whose every fetch was a 404.
     pub lobby_chat: bool,
     /// Messages retained per chat document; `null` for `all` (R-6.4.8).
     pub chat_keep: Option<u64>,
     /// Characters per message, so the client sizes its input from the
     /// server's rule and never from a copy (R-6.4.8).
     pub chat_text: u64,
+    /// Whether this deployment offers multiplayer (M6.5b2, R-6.5b2.4).
+    ///
+    /// [`Host::multiplayer_offered`] and never `serves_games`: the browser host
+    /// serves every game route — a local game is played through them — and
+    /// reports `false` here, because there is no one else at the table.
+    ///
+    /// **A deployment reporting `false` still SERVES `/api/me` and this route**
+    /// (whole-branch review, Minor 12). Spec §2.1 lists `/api/me` among the
+    /// protected paths and §3.1 lists what the switch removes — the game, chat
+    /// and stream rows — and the two lists disagree about this one. §3.1 is
+    /// what is built, deliberately: the identity read is how a browser learns
+    /// there is nobody to be, and answering it costs nothing a single-player
+    /// deployment wants to hide.
+    pub multiplayer: bool,
 }
 
 pub fn health(games: &Games, host: &Host) -> Health {
@@ -264,9 +317,10 @@ pub fn health(games: &Games, host: &Host) -> Health {
         identity: host.identity_name,
         signal: host.signal_kind,
         archive: games.archive.kind(),
-        lobby_chat: games.chat.lobby,
+        lobby_chat: games.chat.lobby && host.serves_games,
         chat_keep: games.chat.limits.keep.map(|n| n as u64),
         chat_text: games.chat.limits.text as u64,
+        multiplayer: host.multiplayer_offered,
     }
 }
 
@@ -1838,13 +1892,18 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The four checks, in spec §2.4's order** (five REFUSALS, because a rev that
-/// disagrees and a rev that is absent are different sentences): a
-/// `semantics_rev` present and equal to this build's; a terminal digest
-/// present; `replay_strict` clean; and the table document parsing, passing
-/// [`tables::check_shape`] and AGREEING with the record. A fifth guard follows
-/// them — the document's id is `is_safe_id`'s, because it becomes a path
-/// component. Then **the leaf IS the `Why`** — `Over` iff the
+/// **The EIGHT checks [`backup::check_pair_with`] makes, in spec §2.4's order**
+/// (nine refusals through this route, because the archive-off 404 is asked
+/// first, and a rev that disagrees and a rev that is absent are two different
+/// sentences): the record parses; a `semantics_rev` present and equal to this
+/// build's; a terminal digest present; `replay_strict` clean; the table
+/// document parses; it passes [`tables::check_shape`]; it AGREES with the
+/// record; and its id is `is_safe_id`'s, because it becomes a path component.
+/// **The count is stated here once** — an earlier draft said four here, four
+/// again at the call below and five in `CLAUDE.md`, three counts for one
+/// function (whole-branch review, false sentence 4); the order is the one
+/// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`
+/// probes pairwise. Then **the leaf IS the `Why`** — `Over` iff the
 /// replayed state is over, else `Abandoned` — and one put under
 /// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
 /// table RE-STRIPPED server-side from the parsed document, as `delete` does, so
@@ -1858,45 +1917,21 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     if !is_on(&games.archive) {
         return Err(ApiError::not_found("this server keeps no archive"));
     }
-    let record: yokohama_core::GameRecord = serde_json::from_str(&req.record)
-        .map_err(|e| ApiError::bad_request(format!("the record does not parse: {e}")))?;
-    match record.semantics_rev {
-        Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
-        Some(rev) => {
-            return Err(ApiError::bad_request(format!(
-                "this record is at semantics rev {rev}; this server archives rev {}",
-                yokohama_core::SEMANTICS_REV
-            )))
-        }
-        // `replay_strict`'s own sentence for unknown provenance, carried
-        // verbatim rather than reworded: the engine is the authority on what a
-        // record with no rev is, and it says so in one place.
-        None => {
-            let e = yokohama_core::replay_strict(&record, games.rules())
-                .expect_err("a record with no semantics_rev is refused by strict replay");
-            return Err(ApiError::bad_request(e.message));
-        }
-    }
-    if record.terminal_digest.is_none() {
-        return Err(ApiError::bad_request("the record carries no terminal digest"));
-    }
-    let state = yokohama_core::replay_strict(&record, games.rules()).map_err(|e| {
-        ApiError::bad_request(format!(
-            "the record does not replay: at event {}, {}",
-            e.event_index, e.message
-        ))
-    })?;
+    // **The eight checks above are `backup::check_pair`'s since M6.5b2**
+    // (R-6.5b2.10, spec §2.5): one function, two callers, so a backup and an
+    // upload cannot disagree about what a valid game is. The order and every sentence are
+    // this route's own and did not move — pinned through `dispatch` by
+    // `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
+    // which was written and green BEFORE the extraction.
+    let facts = crate::backup::check_pair_with(&req.record, &req.table, games.rules())
+        .map_err(ApiError::bad_request)?;
+    // The document again, for the strip and the path. **Unreachable as a
+    // refusal** — `check_pair_with` parsed this very string a line ago — and written
+    // as one anyway rather than as an `expect`, because a panic inside a route
+    // takes the process out and this costs a parse of 500 bytes.
     let doc: crate::table::TableDoc = serde_json::from_str(&req.table)
         .map_err(|e| ApiError::bad_request(format!("the table document does not parse: {e}")))?;
-    tables::check_shape(&doc)
-        .map_err(|why| ApiError::bad_request(format!("the table document is malformed: {why}")))?;
-    doc.agrees_with(&record).map_err(|why| {
-        ApiError::bad_request(format!("the table document does not agree with the record: {why}"))
-    })?;
-    if !crate::store::is_safe_id(&doc.id) {
-        return Err(ApiError::bad_request("the table's id is not a safe name"));
-    }
-    let why = if yokohama_core::is_game_over(&state) { Why::Over } else { Why::Abandoned };
+    let why = if facts.over { Why::Over } else { Why::Abandoned };
     let prefix = format!("browser/{}/", caller_segment(user));
     let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id);
     match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
@@ -1918,11 +1953,36 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     }
 }
 
+/// What [`archive_post`] would answer about this pair, with no archive, no
+/// caller and no put — for the cell that compares the two callers of
+/// [`backup::check_pair`](crate::backup::check_pair).
+///
+/// **Not evidence that the route is unchanged**: it is a SECOND ENTRY POINT
+/// into the same function, so it can only ever agree with itself. What the
+/// route does is pinned by
+/// [`tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`],
+/// which drives [`dispatch`].
+///
+/// It goes through the PUBLIC [`check_pair`](crate::backup::check_pair), which
+/// builds a `Rules::standard()`, while the route passes `games.rules()` — the
+/// same registries either way, since `Rules::standard()` is a pure function of
+/// the generated data.
+///
+/// **Not `#[cfg(test)]`**, although its only callers are cells: the layer's
+/// `platform_calls_stay_behind_the_server_feature` scan cuts each file at its
+/// FIRST column-0 `#[cfg(test)]`, so one here would end the cut early and put
+/// this file's own test module — which reads the filesystem and the
+/// environment, as a test may — back inside the scan.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn archive_would_accept(record: &str, table: &str) -> bool {
+    crate::backup::check_pair(record, table).is_ok()
+}
+
 /// The layer's front door: match, answer, and shape the response. A known path
 /// under another method is 405 with an empty body (axum's own shape); a path
 /// that matches nothing is the JSON 404 the server's `fallback` writes.
 pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiRequest<'_>) -> ApiResponse {
-    let (pattern, bound) = match find(req.method, req.path) {
+    let (pattern, bound) = match find(req.method, req.path, host.serves_games) {
         Matched::Route(p, b) => (p, b),
         Matched::WrongMethod => return ApiResponse { status: 405, body: String::new() },
         Matched::NoRoute => {
@@ -2082,6 +2142,206 @@ mod tests {
         assert!(e.message.starts_with("Failed to deserialize query string: "), "{}", e.message);
     }
 
+    // -----------------------------------------------------------------------
+    // The archive route's own behaviour, through `dispatch` (M6.5b2, Task 8)
+    // -----------------------------------------------------------------------
+
+    /// The finished pair a browser really played, committed beside the layer's
+    /// own tests. Its record carries a seed, which is why it lives under
+    /// `tests/fixtures/` and not in `web/src/wire/` — see
+    /// `tests/browser_played_pin.rs`'s own note.
+    const PLAYED_RECORD: &str = include_str!("../tests/fixtures/browser-played-2p.json");
+    const PLAYED_TABLE: &str = include_str!("../tests/fixtures/browser-played-2p.table.json");
+    const PLAYED_ID: &str = "local-242a5429453c593c";
+
+    /// One key of a JSON object replaced, everything else left exactly as it
+    /// was. The fixtures are PRETTY-PRINTED, so a textual `replace` of
+    /// `"players": 2` would be a different edit on a re-cut file; this one is
+    /// about the key.
+    fn keyed(text: &str, key: &str, value: serde_json::Value) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
+        v.as_object_mut().expect("an object").insert(key.to_string(), value);
+        let out = v.to_string();
+        assert_ne!(out, text, "the edit must actually change the fixture");
+        out
+    }
+
+    fn without(text: &str, key: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
+        v.as_object_mut().expect("an object").remove(key).expect("the fixture carried it");
+        v.to_string()
+    }
+
+    /// The first event replaced by a later one, which the position it now sits
+    /// in cannot legally take — and if it could, the terminal digest no longer
+    /// matches. Either way the replay refuses.
+    fn replay_broken(record: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(record).expect("a record");
+        let events =
+            v.get_mut("events").expect("events").as_array_mut().expect("a list");
+        assert!(events.len() > 1, "anti-vacuity: a one-event record cannot be re-ordered");
+        events[0] = events[1].clone();
+        v.to_string()
+    }
+
+    /// A `Games` whose archive is a real directory, and one that keeps none.
+    /// The directory is this run's own and is emptied first, so the once-rule
+    /// does not fire before the cell's first assertion.
+    fn games_with(archive: std::sync::Arc<dyn crate::archive::Archive>) -> Games {
+        Games::with_parts(
+            std::sync::Arc::new(yokohama_core::Rules::standard()),
+            std::sync::Arc::new(crate::store::MemStore::default()),
+            crate::chat::ChatConfig::default(),
+            std::sync::Arc::new(crate::signal::NoSignal),
+            std::sync::Arc::new(|| 1_789_000_000u64),
+            archive,
+        )
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yokohama_web_{name}_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory");
+        dir
+    }
+
+    /// The browser host's facts — the host that actually posts to this route.
+    const LOCAL_HOST: Host = Host {
+        identity_name: "local",
+        signal_kind: "none",
+        serves_games: true,
+        multiplayer_offered: false,
+    };
+
+    fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
+        let user = User::parse("local@browser").expect("an address");
+        let body = serde_json::json!({ "record": record, "table": table }).to_string();
+        let res = dispatch(
+            games,
+            &LOCAL_HOST,
+            Ok(&user),
+            &ApiRequest {
+                method: "POST",
+                path: "/api/archive",
+                query: "",
+                content_type: Some("application/json"),
+                body: body.as_bytes(),
+            },
+        );
+        let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
+        (res.status, v)
+    }
+
+    /// **The archive route, driven through `dispatch` itself** — written BEFORE
+    /// `archive_post`'s checks moved into [`crate::backup::check_pair`] and
+    /// re-run afterwards unedited, which is the whole of why it exists
+    /// (M6.5b2 Task 8, spec §2.5: "validation lives in Rust and is shared with
+    /// the archive route").
+    ///
+    /// `backup::check_pair` and [`archive_would_accept`] cannot prove the route
+    /// did not move: they are the same function asked twice. This drives the
+    /// front door and pins three things —
+    ///
+    /// 1. the STATUS of the accepted pair, of the retry, and of every refusal;
+    /// 2. the WORDING of each refusal, verbatim;
+    /// 3. the ORDER, by ADJACENT-PAIR probes — each probe carries BOTH of two
+    ///    neighbouring defects and asserts the EARLIER sentence. A single-defect
+    ///    probe pins no order at all, which is the lesson M6.2 relearned three
+    ///    times.
+    #[test]
+    fn the_archive_route_keeps_its_statuses_sentences_and_refusal_order() {
+        let dir = scratch("archive_order");
+        let on = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
+        let off = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+
+        // The premise that makes the accepted arm a claim about the REPLAY: the
+        // body's table says the game is over, but the leaf is not read off it.
+        let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!(status, 201, "{v}");
+        assert_eq!(v["leaf"], "over");
+        assert_eq!(v["identical"], false);
+        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+
+        // The same bytes again: 200 `identical`, never a 409.
+        let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["identical"], true);
+
+        // The nine checks, in order, each named by the sentence it answers.
+        let rev_wrong = keyed(PLAYED_RECORD, "semantics_rev", 6.into());
+        let no_digest = without(PLAYED_RECORD, "terminal_digest");
+        let no_replay = replay_broken(PLAYED_RECORD);
+        let bad_players = keyed(PLAYED_TABLE, "players", 3.into());
+        let bad_seat = keyed(PLAYED_TABLE, "start_seat", 1.into());
+
+        // **The adjacent-pair probes.** Each row carries the defects of TWO
+        // neighbouring checks and expects the earlier one's sentence.
+        let probes: [(&Games, String, String, &str); 8] = [
+            // archive-off  <  the record parses
+            (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
+            // the record parses  <  the rev agrees
+            (
+                &on,
+                keyed(&rev_wrong, "seed", "not a number".into()),
+                PLAYED_TABLE.to_string(),
+                "the record does not parse",
+            ),
+            // the rev agrees  <  a terminal digest is present
+            (&on, without(&rev_wrong, "terminal_digest"), PLAYED_TABLE.to_string(),
+             "this record is at semantics rev 6; this server archives rev 7"),
+            // a terminal digest is present  <  the record replays
+            (&on, replay_broken(&no_digest), PLAYED_TABLE.to_string(),
+             "the record carries no terminal digest"),
+            // the record replays  <  the table parses
+            (&on, no_replay.clone(), "not json at all".to_string(), "the record does not replay"),
+            // the table parses  <  the table's shape
+            (
+                &on,
+                PLAYED_RECORD.to_string(),
+                keyed(&bad_players, "archived_at", "not a number".into()),
+                "the table document does not parse",
+            ),
+            // the table's shape  <  the table agrees with the record
+            (&on, PLAYED_RECORD.to_string(), bad_players.clone(),
+             "the table document is malformed"),
+            // the table agrees  <  the table's id is a safe name
+            (&on, PLAYED_RECORD.to_string(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
+             "the table document does not agree with the record"),
+        ];
+        let mut sentences = std::collections::BTreeSet::new();
+        for (games, record, table, expect) in probes {
+            let (status, v) = post_archive(games, &record, &table);
+            let want = if expect == "this server keeps no archive" { 404 } else { 400 };
+            assert_eq!(status, want, "{expect}: {v}");
+            let said = v["error"].as_str().expect("a sentence").to_string();
+            assert!(said.starts_with(expect), "{said:?} does not start with {expect:?}");
+            sentences.insert(said);
+        }
+        assert_eq!(sentences.len(), 8, "eight checks, eight different sentences");
+
+        // The ninth, on its own — nothing follows it to probe against.
+        let (status, v) = post_archive(&on, PLAYED_RECORD, &keyed(PLAYED_TABLE, "id", "not/a/safe/id".into()));
+        assert_eq!(status, 400, "{v}");
+        assert_eq!(v["error"], "the table's id is not a safe name");
+
+        // A record with NO rev is a different sentence from one that disagrees:
+        // the engine's own, carried verbatim.
+        let (status, v) = post_archive(&on, &without(PLAYED_RECORD, "semantics_rev"), PLAYED_TABLE);
+        assert_eq!(status, 400, "{v}");
+        assert!(
+            v["error"].as_str().expect("a sentence").starts_with("missing semantics provenance"),
+            "{v}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn the_matcher_finds_every_route_in_apps_order() {
         // Every pattern `app()` registered before M6.5a, in its order, plus the
@@ -2120,32 +2380,32 @@ mod tests {
             ("GET", "/api/games/{id}/result"),
             ("GET", "/api/games/{id}/record"),
         ];
-        let table = routes();
+        let table = routes(true);
         let names: Vec<(&str, &str)> = table.iter().map(|r| (r.method, r.pattern)).collect();
         assert_eq!(names, expected.to_vec());
     }
 
     #[test]
     fn the_matcher_binds_segments_and_tells_a_wrong_method_from_no_route() {
-        match find("GET", "/api/games/sim-1/at/7") {
+        match find("GET", "/api/games/sim-1/at/7", true) {
             Matched::Route(p, b) => {
                 assert_eq!(p, "/api/games/{id}/at/{k}");
                 assert_eq!(b, vec!["sim-1", "7"]);
             }
             _ => panic!("a known route"),
         }
-        assert!(matches!(find("HEAD", "/api/health"), Matched::Route("/api/health", _)), "HEAD reaches GET");
-        assert!(matches!(find("DELETE", "/api/health"), Matched::WrongMethod));
-        assert!(matches!(find("GET", "/api/nothing"), Matched::NoRoute));
+        assert!(matches!(find("HEAD", "/api/health", true), Matched::Route("/api/health", _)), "HEAD reaches GET");
+        assert!(matches!(find("DELETE", "/api/health", true), Matched::WrongMethod));
+        assert!(matches!(find("GET", "/api/nothing", true), Matched::NoRoute));
         // Since M6.5b the five-segment `…/at` is the RUN route (R-6.5b.10), and
         // the six-segment `…/at/{k}` beside it: the matcher is segment-wise.
-        match find("GET", "/api/games/sim-1/at") {
+        match find("GET", "/api/games/sim-1/at", true) {
             Matched::Route(p, b) => {
                 assert_eq!(p, "/api/games/{id}/at");
                 assert_eq!(b, vec!["sim-1"]);
             }
             _ => panic!("the run route"),
         }
-        assert!(matches!(find("GET", "/api/games/sim-1/index"), Matched::NoRoute), "a short path binds nothing");
+        assert!(matches!(find("GET", "/api/games/sim-1/index", true), Matched::NoRoute), "a short path binds nothing");
     }
 }

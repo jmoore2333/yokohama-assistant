@@ -31,10 +31,60 @@ WORKDIR /src
 
 # `cargo build` needs no C toolchain for this workspace today (no build.rs
 # anywhere, checked), but pkg-config and a linker are cheap insurance and this
-# stage is not in the final image.
+# stage is not in the final image. `curl` is here for the step below and for
+# nothing else.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends pkg-config \
+ && apt-get install -y --no-install-recommends pkg-config curl \
  && rm -rf /var/lib/apt/lists/*
+
+# **`wasm-opt` is not insurance — it is a prerequisite** (M6.5b2, R-6.5b2.15).
+# The module is built with `--profile release-wasm` and then run through
+# `wasm-opt -Oz`, which is 1.78 MB -> 1.17 MB; `npm run build:wasm` refuses
+# outright when it is absent, and this stage runs the same steps by hand.
+#
+# **Pinned to the SAME upstream binary the workflow installs, not to apt.**
+# Debian trixie ships `binaryen 120-4` (`wasm-opt version 120`, read off an
+# `apt-cache policy` in this very base image) where the workstation and CI run
+# 132, and that was a measured difference and not a theoretical one: over the
+# same input, apt's 120 emitted 1,174,709 B where 132 emits 1,173,055 B. The
+# image is `linux/amd64`, so the workflow's own asset applies byte for byte.
+# One static binary out of a 22-entry release; `libbinaryen` is a static
+# archive, so nothing else needs unpacking.
+#
+# **The download is CHECKSUMMED before anything is unpacked from it.** A release
+# asset is mutable in the sense that matters here — the URL is a promise about a
+# name, not about bytes — and this one is fetched over the network into a stage
+# that then RUNS it. `sha256sum -c` fails the layer loudly on any mismatch, so a
+# replaced asset stops the build instead of optimizing the module with whatever
+# arrived. The hash was measured on 2026-09-21 over 117,057,408 bytes, by two
+# independent downloads on this workstation and a third elsewhere, all three
+# agreeing. `.github/workflows/test.yml` pins the same hash for the same file;
+# a binaryen bump changes BOTH.
+#
+# **What pinning the optimizer did NOT close, measured rather than assumed.**
+# With the SAME `wasm-opt 132` on both hosts, this stage's module and the
+# workstation's differ: the pair measured at M6.5b2 Task 5 was **1,173,055 B**
+# here against **1,169,222 B** there — 3,833 B, 0.33%. The optimizer is
+# converged (running 132 again over this stage's output shaves 620 B), so the
+# residue is in what `cargo` and `wasm-bindgen` emit on an x86_64-linux build
+# host versus an aarch64-darwin one. Recorded, not diagnosed; `-Oz` is
+# semantics-preserving and the corpus replay passes on the workstation's.
+#
+# **Both of those are Task-5 readings of a module that has since GROWN** (Task
+# 8's `restore_read`), and **this stage has not been re-measured since**. The
+# current figures are measured in ONE place and every other document cites it:
+# the `release-wasm` comment in the root `Cargo.toml` — 1,175,223 B raw /
+# 456,048 B gzipped on the workstation at the M6.5b2 close. **A ceiling on the
+# module must clear the LARGER host's figure**, because this stage is what a
+# deployment ships, and the cross-host gap is the thing to re-measure before
+# any ceiling is tightened.
+RUN curl -fsSL -o /tmp/binaryen.tar.gz \
+      https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
+ && echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt \
+ && install -m 0755 /tmp/binaryen-version_132/bin/wasm-opt /usr/local/bin/wasm-opt \
+ && rm -rf /tmp/binaryen.tar.gz /tmp/binaryen-version_132 \
+ && wasm-opt --version
 
 # **The pin first, and the target onto the pinned toolchain.** `rustup target
 # add` applies to whichever toolchain rustup resolves at that moment, so this
@@ -62,17 +112,26 @@ COPY crates/ ./crates/
 # and leaves the oracle, difftest, bridge and gen-data crates unbuilt — they
 # are development tooling and nothing at runtime calls them.
 #
-# Both builds and the `wasm-bindgen` run are ONE step because `target/` is a
-# cache mount: it does not survive the layer, so anything that reads what a
-# build wrote has to read it here. `/out/wasm` is outside the mount, which is
-# what makes the glue a real artifact the next stage can copy.
+# Both builds, the `wasm-bindgen` run and the `wasm-opt` pass are ONE step
+# because `target/` is a cache mount: it does not survive the layer, so anything
+# that reads what a build wrote has to read it here. `/out/wasm` is outside the
+# mount, which is what makes the glue a real artifact the next stage can copy —
+# and the optimizer therefore runs on the copy in `/out/wasm`, after
+# `wasm-bindgen`, which is the same order `npm run build:wasm` uses.
+#
+# **The server binary stays on `--release` and the module moves to
+# `--profile release-wasm`** (M6.5b2, R-6.5b2.15): `opt-level = "z"` is a trade
+# a phone's cold start wants and a long-running server does not.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release -p yokohama-web \
  && cp target/release/yokohama-web /usr/local/bin/yokohama-web \
- && cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm \
+ && cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-wasm \
  && wasm-bindgen --target web --out-dir /out/wasm \
-      target/wasm32-unknown-unknown/release/yokohama_wasm.wasm
+      target/wasm32-unknown-unknown/release-wasm/yokohama_wasm.wasm \
+ && wasm-opt -Oz --strip-debug --strip-producers \
+      /out/wasm/yokohama_wasm_bg.wasm -o /out/wasm/yokohama_wasm_bg.wasm \
+ && ls -l /out/wasm/yokohama_wasm_bg.wasm
 
 # ---------------------------------------------------------------------------
 # 2. The browser client. Vite output only; none of this reaches the runtime
@@ -87,13 +146,24 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
 COPY web/ ./
+# The card art, for the precache generator, which hashes it (M6.5b2 Task 6).
+# The runtime stage below copies the same tree to `/srv/assets/art` and that is
+# where the SERVER reads it; this copy exists because `build:client` now has a
+# step that walks every file the release contains. The path is chosen by what
+# the generator asks for, which is `../crates/yokohama-web/assets/art` relative
+# to `web/` — and this stage's `web/` is `/app`, so the tree has to sit at the
+# image root for that `..` to land on it.
+COPY crates/yokohama-web/assets/art /crates/yokohama-web/assets/art
 # The generated glue, from the stage that has the toolchain. It lands where
 # `npm run build:wasm` would have written it — `web/src/local/wasm/`, a source
 # directory, so Vite bundles the loader and emits the `.wasm` as a hashed asset
-# (a static import from `public/` fails Rollup's resolution). The
-# `.dockerignore` keeps a developer's own copy out of the context, so this is
-# the only way it arrives — which is what makes the module in the image the one
-# the stage above built.
+# (a static import from `public/` fails Rollup's resolution).
+# **`deploy/Dockerfile.dockerignore`** keeps a developer's own copy out of the
+# context, so this is the only way it arrives — which is what makes the module
+# in the image the one the stage above built. It is named for the Dockerfile
+# rather than sitting at the context root because BuildKit prefers
+# `<dockerfile>.dockerignore` when it exists; a root `.dockerignore` beside it
+# would be read by nothing and would drift in silence.
 COPY --from=server /out/wasm ./src/local/wasm
 # `build:client`, not `build`: the module is already here, and running
 # `build:wasm` in this stage is exactly what has no toolchain to run it.

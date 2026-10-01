@@ -32,7 +32,12 @@
 //     than one the browser had let go of (spec §9.5, mutations 11 and 12). That
 //     count is what found the reopen ruling R-9.1 fixed.
 
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
 import { act, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
@@ -102,8 +107,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // the whole path is also what keeps the lobby's own house channel
   // (`/api/stream`) out of these counts, as it does for the watcher's.
   let streamPath = "";
-  const a = await (await browser.newContext()).newPage();
-  const b = await (await browser.newContext()).newPage();
+  const a = await (await newContextWithoutWorker(browser)).newPage();
+  const b = await (await newContextWithoutWorker(browser)).newPage();
   /** How many times each PLAYER opened this table's stream (R-6.4.4, R-plan-7).
    *  The teardown that closed it at every turn boundary is gone, so this is a
    *  count that stops growing once each screen is up — and a reopen mid-game
@@ -173,7 +178,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // It arrives at the table's own address and nothing else: C holds no seat, so
   // the lobby's Your games does not list this table for it, and the only way in
   // is the link somebody would have sent.
-  const c = await (await browser.newContext()).newPage();
+  const c = await (await newContextWithoutWorker(browser)).newPage();
   const watchC = watchForBreakage(c);
   await signIn(c, WATCHER);
   await c.goto(`/#/t/${id}`);

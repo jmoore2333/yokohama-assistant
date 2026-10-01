@@ -933,6 +933,7 @@ name = "yokohama-wasm"
 version = "0.5.0"
 dependencies = [
  "js-sys",
+ "serde_json",
  "wasm-bindgen",
  "yokohama-core",
  "yokohama-web",

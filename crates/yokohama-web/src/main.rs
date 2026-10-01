@@ -113,10 +113,26 @@ async fn main() {
         }
     };
 
+    // **The multiplayer switch** (M6.5b2, R-6.5b2.4), read here beside the
+    // identity door and the chat facts. It reads like the chat variables
+    // rather than like the identity mode: absent is `on`, so every
+    // deployment that ran before this cycle goes on running unchanged, and a
+    // bad value stops the process naming the variable. Off, the game, chat and
+    // stream routes are not served at all — not gated, not hidden — so a
+    // single-player deployment has nothing to probe and no Access application
+    // to forget.
+    let multiplayer = match yokohama_web::Multiplayer::from_env() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
     // The archive directory is the third variable read here (M6.5a, R-6.5a.9):
     // unset is no archive, a directory that cannot be created is a refusal to
     // start that names the variable.
-    let state = match AppState::new(identity, chat) {
+    let state = match AppState::new(identity, chat, multiplayer) {
         Ok(s) => Arc::new(s),
         Err(e) => {
             eprintln!("{e}");

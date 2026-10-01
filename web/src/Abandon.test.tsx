@@ -6,15 +6,29 @@
 // invariant was asserted by nobody. The guard is now held here, in the one place
 // that has it — and the double-click cell below is what holds it.
 
+// **`fake-indexeddb` since M6.5b2**, because the refusal face's "Back it up to
+// a file" runs the real `backupOne`, which opens this browser's own database.
+import "fake-indexeddb/auto";
+import { IDBFactory } from "fake-indexeddb";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Abandon } from "./Abandon";
-import { setArchiveKind } from "./api";
+import { Abandon, CANNOT_ASK } from "./Abandon";
+import { rememberServerFacts } from "./api";
 import { resetLocalHostForTests } from "./local/client";
+import { resetFactsForTest } from "./local/facts";
 import { stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
+
+/** What this browser was last TOLD about the deployment (M6.5b2).
+ *
+ *  **`rememberServerFacts` and not a one-field setter**, because the third
+ *  state is the TIMESTAMP: a fact patched by hand is not a fact the server
+ *  answered, and "nothing has ever answered" is exactly what this cycle's
+ *  Abandon has to be able to tell from `"off"`. */
+const serverSays = (archive: "off" | "dir") =>
+  rememberServerFacts({ ...wire.health, archive });
 
 /** The control over the corpus's own table, named `wire`. */
 function show(handler: (call: ApiCall) => Reply | Promise<Reply> = () => null) {
@@ -29,6 +43,14 @@ function show(handler: (call: ApiCall) => Reply | Promise<Reply> = () => null) {
  *  test, and a table id is a prefix of longer ones. */
 const deletes = (stub: { calls: ApiCall[] }) =>
   stub.calls.filter((c) => c.method === "DELETE").map((c) => c.path);
+
+beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
+  resetFactsForTest();
+});
+afterEach(() => {
+  resetFactsForTest();
+});
 
 describe("the abandon control", () => {
   it("asks before it does anything", async () => {
@@ -140,21 +162,43 @@ describe("the abandon control", () => {
     expect(wire.table.status, "the premise: the corpus table is playing").toBe("playing");
     expect(wire.tableOpen.status).toBe("open");
     try {
-      setArchiveKind("dir");
+      serverSays("dir");
       render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
       expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent("Abandon and save");
       cleanup();
-      setArchiveKind("off");
+      serverSays("off");
       render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
       expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent(/^Abandon$/);
       cleanup();
-      setArchiveKind("dir");
+      serverSays("dir");
       render(<Abandon table={wire.tableOpen} onDone={() => {}} onError={() => {}} />);
       expect(screen.getByRole("button", { name: `abandon ${wire.tableOpen.name ?? wire.tableOpen.id}` }))
         .toHaveTextContent(/^Abandon$/);
     } finally {
-      setArchiveKind("off");
+      resetFactsForTest();
     }
+  });
+
+  // **The THIRD state on the label** (M6.5b2, R-6.5b2.13). Nothing has ever
+  // answered, so nothing can be promised — and the word this control chooses is
+  // the one that promises less, not the one that promises a save it cannot
+  // make.
+  it("reads Abandon, not Abandon and save, when nothing has ever answered", () => {
+    stubApi(() => null);
+    render(<Abandon table={wire.table} onDone={() => {}} onError={() => {}} />);
+    expect(screen.getByRole("button", { name: "abandon wire" })).toHaveTextContent(/^Abandon$/);
+  });
+
+  // A SERVER table's abandon asks the server nothing: the server archives it
+  // inside its own delete, so there is no decision here to get wrong — and a
+  // health read for one would be a request this control has never made.
+  it("asks the server nothing about the archive for a table the server owns", async () => {
+    const { stub, onDone, user } = show();
+    await user.click(screen.getByRole("button", { name: "abandon wire" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(stub.matching("GET", "/api/health")).toEqual([]);
+    expect(deletes(stub)).toEqual(["/api/games/wire"]);
   });
 });
 
@@ -180,14 +224,23 @@ describe("the abandon control on a local game", () => {
   });
   afterEach(() => {
     resetLocalHostForTests();
-    setArchiveKind("off");
+    resetFactsForTest();
   });
 
   /** The control over a local table, with the two hosts scripted and every
-   *  step recorded in the order it happened. */
-  function local(archive: "off" | "dir", onArchive: () => Reply | Promise<Reply>) {
+   *  step recorded in the order it happened.
+   *
+   *  **The health read is the SERVER's own, at the click** (M6.5b2, spec
+   *  §2.2): `archive` is what `GET /api/health` answers here, and it is also
+   *  remembered so the LABEL — a render-time read — has something to say
+   *  before the click. `null` is a server that never answers at all. */
+  function local(
+    archive: "off" | "dir" | null,
+    onArchive: () => Reply | Promise<Reply>,
+    opts: { remember?: boolean } = {},
+  ) {
     const steps: string[] = [];
-    setArchiveKind(archive);
+    if (archive !== null && opts.remember !== false) serverSays(archive);
     stubWorker({
       pair: () => ({ record: RECORD, table: TABLE }),
       call: (req) => {
@@ -196,6 +249,11 @@ describe("the abandon control on a local game", () => {
       },
     });
     const stub = stubApi(async (call) => {
+      if (call.path.endsWith("/api/health")) {
+        steps.push("health");
+        if (archive === null) throw new TypeError("Failed to fetch");
+        return { ...wire.health, archive };
+      }
       if (call.method === "POST" && call.path === "/api/archive") {
         steps.push("archive");
         return await onArchive();
@@ -218,7 +276,7 @@ describe("the abandon control on a local game", () => {
     const { steps, stub, onDone, user } = local("dir", () => wire.archivePostAbandoned);
     await confirm(user);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    expect(steps).toEqual(["archive", "delete"]);
+    expect(steps).toEqual(["health", "archive", "delete"]);
     // Both documents as the store holds them, one snapshot, neither parsed.
     expect(stub.matching("POST", "/api/archive")[0]?.body).toEqual({
       record: RECORD,
@@ -236,7 +294,7 @@ describe("the abandon control on a local game", () => {
     }));
     await confirm(user);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    expect(steps).toEqual(["archive", "delete"]);
+    expect(steps).toEqual(["health", "archive", "delete"]);
   });
 
   // **A 409 is a DIFFERENT record under this id, and it is not proof that this
@@ -248,7 +306,7 @@ describe("the abandon control on a local game", () => {
     }));
     await confirm(user);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive409.error));
-    expect(steps).toEqual(["archive"]);
+    expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
     // Still asking, so the player can try again beside the sentence.
     expect(screen.getByRole("button", { name: `confirm abandon ${LOCAL}` })).toBeInTheDocument();
@@ -261,7 +319,7 @@ describe("the abandon control on a local game", () => {
     }));
     await confirm(user);
     await waitFor(() => expect(onError).toHaveBeenCalledWith(wire.archive400Replay.error));
-    expect(steps).toEqual(["archive"]);
+    expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
   });
 
@@ -275,7 +333,7 @@ describe("the abandon control on a local game", () => {
     await waitFor(() =>
       expect(onError).toHaveBeenCalledWith("the archive could not be reached — the game was kept"),
     );
-    expect(steps).toEqual(["archive"]);
+    expect(steps).toEqual(["health", "archive"]);
     expect(onDone).not.toHaveBeenCalled();
   });
 
@@ -287,7 +345,7 @@ describe("the abandon control on a local game", () => {
     expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
     await confirm(user);
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
-    expect(steps).toEqual(["delete"]);
+    expect(steps).toEqual(["health", "delete"]);
   });
 
   // **A local table with no `local` saves NOTHING, and says so** — the screen
@@ -296,7 +354,7 @@ describe("the abandon control on a local game", () => {
   // works"). A label promising a copy nobody can make is what this rule exists
   // to stop.
   it("reads Abandon, and sends nothing, for a local table this control does not archive", async () => {
-    setArchiveKind("dir");
+    serverSays("dir");
     stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
     const stub = stubApi(() => {
       throw new Error("the archive must not be asked");
@@ -310,7 +368,7 @@ describe("the abandon control on a local game", () => {
   });
 
   it("reads Abandon and save when the server keeps an archive", () => {
-    setArchiveKind("dir");
+    serverSays("dir");
     stubWorker();
     stubApi(() => null);
     render(<Abandon table={localTable} local onDone={() => {}} onError={() => {}} />);
@@ -318,4 +376,158 @@ describe("the abandon control on a local game", () => {
       "Abandon and save",
     );
   });
+
+  // ---- THREE states, and the middle one is the finding (R-6.5b2.13) --------
+  //
+  // **Spec §0.3 measured this at HEAD**: with no boot health read, a browser
+  // that has never been past the door reads the archive's DEFAULT `"off"`,
+  // which is indistinguishable from an answer — so a first-visit abandon of a
+  // local game deleted it without ever trying to send it. The cells below are
+  // the three answers, and the first of them is the one that must not regress.
+
+  it("REFUSES when it cannot learn whether there is an archive, and offers two named choices", async () => {
+    // Nothing remembered (the `beforeEach` reset) and nothing answering.
+    const { steps, stub, onDone, onError, user } = local("dir", () => wire.archivePost, {
+      remember: false,
+    });
+    // The premise: the label promises nothing, because nothing is known.
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
+    stub.calls.length = 0;
+    // The server stops answering between the render and the click.
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+
+    await screen.findByText(CANNOT_ASK);
+    expect(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }),
+    ).toBeInTheDocument();
+    // **Nothing was deleted and nothing was sent.** A delete here is the one
+    // thing in this area that must not happen.
+    expect(steps).toEqual([]);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("still deletes where the deployment is KNOWN to keep no archive", async () => {
+    const { steps, onDone, user } = local("off", () => {
+      throw new Error("the archive must not be asked");
+    });
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    // Correct, and not the bug: the server SAID it keeps none.
+    expect(steps).toEqual(["health", "delete"]);
+  });
+
+  // **The regression cell for review I-1.** Nothing is remembered, so a control
+  // reading the module's `"off"` default would delete without sending — and the
+  // server, asked, says it keeps an archive.
+  it("sends first on a FIRST visit, where nothing was remembered and the server keeps one", async () => {
+    const { steps, onDone, user } = local("dir", () => wire.archivePostAbandoned, {
+      remember: false,
+    });
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["health", "archive", "delete"]);
+  });
+
+  // **The read is FORCED, however fresh the remembered answer is** (spec §2.2).
+  // A deployment that turned its archive on since this browser last asked would
+  // otherwise have it deleting finished games for the rest of the hour.
+  it("asks again at the click even when the remembered answer is minutes old", async () => {
+    // What this browser was told LAST TIME, before the control is drawn.
+    serverSays("off");
+    const { steps, onDone, user } = local("dir", () => wire.archivePostAbandoned, {
+      remember: false,
+    });
+    // The premise: what is remembered says there is nowhere to send it.
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toHaveTextContent(/^Abandon$/);
+    await confirm(user);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(steps).toEqual(["health", "archive", "delete"]);
+  });
+
+  it("writes the game to a file on the first choice, and deletes nothing", async () => {
+    const caught = catchDownload();
+    try {
+      const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+      stubApi(() => {
+        throw new TypeError("Failed to fetch");
+      });
+      await confirm(user);
+      await screen.findByText(CANNOT_ASK);
+
+      await user.click(screen.getByRole("button", { name: `back it up to a file: ${LOCAL}` }));
+      await waitFor(() => expect(caught.clicks).toHaveLength(1));
+      // **The ENVELOPE's name, not the record's** (whole-branch review, false
+      // sentence 10): `<id>.json` is what "Save game file" writes and what the
+      // terminal loads, and this control wrote its envelope under that very
+      // name — one file a player could not tell from the other, and one the
+      // terminal would refuse.
+      expect(caught.clicks[0]!.download).toBe(`${LOCAL}.backup.json`);
+      // The envelope carries this device's own record, seed and all — the file
+      // this app restores, which is what makes the choice a real alternative
+      // to throwing the game away.
+      const file = await readBlob(caught.create.mock.calls[0]?.[0] as Blob);
+      expect(file).toContain('"kind": "yokohama-backup"');
+      expect(file).toContain("18446744073709551615");
+      // And the game is still here.
+      expect(steps).toEqual([]);
+      expect(onDone).not.toHaveBeenCalled();
+      // The two choices are still on screen: backing up is not abandoning.
+      expect(
+        screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }),
+      ).toBeInTheDocument();
+    } finally {
+      caught.restore();
+    }
+  });
+
+  it("deletes on the third deliberate click when the player abandons without saving", async () => {
+    const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+    await screen.findByText(CANNOT_ASK);
+    await user.click(screen.getByRole("button", { name: `abandon ${LOCAL} without saving` }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    // The delete, and NOTHING sent: the player said so.
+    expect(steps).toEqual(["delete"]);
+  });
+
+  it("puts the control back when the refusal is cancelled", async () => {
+    const { steps, onDone, user } = local("dir", () => wire.archivePost, { remember: false });
+    stubApi(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    await confirm(user);
+    await screen.findByText(CANNOT_ASK);
+    await user.click(screen.getByRole("button", { name: `cancel abandoning ${LOCAL}` }));
+    expect(screen.getByRole("button", { name: `abandon ${LOCAL}` })).toBeInTheDocument();
+    expect(screen.queryByText(CANNOT_ASK)).toBeNull();
+    expect(steps).toEqual([]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
 });
+
+/** The download's globals, replaced for one cell and put back — `App.test`'s
+ *  own helper, which this file needs for the backup choice. */
+function catchDownload() {
+  const clicks: { href: string; download: string }[] = [];
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push({ href: this.href, download: this.download });
+    });
+  const create = vi.fn().mockReturnValue("blob:envelope");
+  Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true });
+  Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+  return { clicks, create, restore: () => click.mockRestore() };
+}
+
+/** jsdom's `Blob` has `text()`, and this is what reads back what was written
+ *  into the download. */
+const readBlob = (b: Blob): Promise<string> => b.text();

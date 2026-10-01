@@ -13,6 +13,7 @@
 // and it is restated below — because a door that said something new while it
 // was being moved would be two changes with one test.
 
+import { Refusal } from "./Refusal";
 import { SignIn } from "./SignIn";
 import { doorSentence, type Door as DoorState } from "./whoami";
 
@@ -27,7 +28,12 @@ export function Door({
 }) {
   // 1. `/api/me` refused. Say so and offer nothing — a sign-in form over a
   //    server that cannot answer would take a name and lose it.
-  if (door.error) return <div className="setup door-error">{door.error}</div>;
+  //
+  //    **Through `Refusal` since M6.5b2**: this route is a protected path now,
+  //    so the one refusal a player CAN act on — the edge saying their Access
+  //    session expired — arrives here, and it is drawn with the turnstile's
+  //    link beside it. Every other sentence reads exactly as it did.
+  if (door.error) return <Refusal sentence={door.error} className="setup door-error" />;
   // 2. It has not answered yet. **A line rather than nothing**, which is the
   //    one thing that did change with the move: as a gate this arm drew the
   //    whole page blank, and a default either way flashed the wrong screen at

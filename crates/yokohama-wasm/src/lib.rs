@@ -67,10 +67,18 @@ fn now() -> u64 {
     }
 }
 
-/// The two deployment facts this host reports. `"none"` rather than `"sse"`:
+/// The deployment facts this host reports. `"none"` rather than `"sse"`:
 /// nothing in a browser store can be signalled to, and the page's local arm
 /// never opens a stream.
-const HOST: Host = Host { identity_name: "local", signal_kind: "none" };
+///
+/// **`serves_games` and `multiplayer_offered` disagree here, and that is the
+/// point of them being two fields** (M6.5b2, spec §3.1): a local game is played
+/// by calling `/api/games/…` through this very layer, so the routes must be
+/// served — while there is nobody else at the table, so `/api/health` reports
+/// no multiplayer. A single field would have made single player stop working
+/// the moment this host told the truth about itself.
+const HOST: Host =
+    Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
 
 /// Build a FRESH `Games` over a fresh `MemStore`, replacing any earlier one.
 #[wasm_bindgen]
@@ -207,6 +215,25 @@ pub fn set_clock(seconds: Option<f64>) {
         }
         None => FROZEN_ON.store(false, Ordering::Relaxed),
     }
+}
+
+/// Read a backup file and say what each game in it is (M6.5b2, R-6.5b2.10 –
+/// .12) — the report as JSON, a list of `{"id":…,"verdict":{"kind":…,…}}`.
+///
+/// **The ONE export this cycle adds**, and it carries no logic: the validator
+/// is `yokohama_web::backup`, which the axum host's archive route calls too, so
+/// a backup and an upload cannot disagree about what a valid game is.
+///
+/// Writing the envelope is deliberately NOT here (spec §2.5): the page builds
+/// it from IndexedDB directly, because a module that will not load is when you
+/// most need your games out.
+pub fn restore_read_inner(envelope: &str) -> Result<String, String> {
+    yokohama_web::backup::restore_report_json(envelope)
+}
+
+#[wasm_bindgen]
+pub fn restore_read(envelope: &str) -> Result<String, JsValue> {
+    restore_read_inner(envelope).map_err(|e| JsValue::from_str(&e))
 }
 
 /// The e2e build's trap hook (spec §6.5, `--features debug`): a panic under a
@@ -346,4 +373,35 @@ mod tests {
         assert!(scanned > 0, "anti-vacuity: the scan read no file");
         assert!(clock_in_code, "anti-vacuity: the one allowed platform call is CODE, not prose");
     }
+
+    /// The module's one new export, over the COMMITTED envelope fixture
+    /// (`web/src/wire-script/backup-envelope.json`, emitted and pinned by
+    /// `yokohama_web::backup`'s own test).
+    ///
+    /// **All four verdicts in one file**, so a report that answered one thing
+    /// for everything could not pass — and the whole-file refusal beside them,
+    /// because a version this build does not know must be refused as a WHOLE
+    /// rather than half-read.
+    ///
+    /// This is the native half. `web/src/backup.node.test.ts` runs the same
+    /// fixture through the module COMPILED to wasm, which is what says the
+    /// client's fake answers what this build really gives.
+    #[test]
+    fn restore_read_reports_every_verdict_and_refuses_a_file_it_cannot_read() {
+        let _s = serial();
+        const ENVELOPE: &str = include_str!("../../../web/src/wire-script/backup-envelope.json");
+        let report = restore_read_inner(ENVELOPE).expect("the committed fixture reads");
+        let rows: serde_json::Value = serde_json::from_str(&report).expect("the report is JSON");
+        let kinds: Vec<&str> =
+            rows.as_array().expect("a list").iter().map(|r| r["verdict"]["kind"].as_str().expect("a kind")).collect();
+        assert_eq!(kinds, ["accepted", "dealing", "unplayable", "rejected"]);
+        assert_eq!(rows[0]["id"], "local-242a5429453c593c");
+        assert_eq!(rows[0]["verdict"]["events"], 595);
+
+        let newer = ENVELOPE.replace("\"envelope\": 1", "\"envelope\": 2");
+        assert_ne!(newer, ENVELOPE, "the mutation must actually change the fixture");
+        let err = restore_read_inner(&newer).expect_err("a version this build does not know");
+        assert!(err.contains("envelope"), "{err}");
+    }
+
 }

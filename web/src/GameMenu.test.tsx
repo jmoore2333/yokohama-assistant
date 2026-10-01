@@ -60,8 +60,10 @@ describe("the Game menu", () => {
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
     // And the hash says so, so Back works and a reload lands where the screen
-    // does.
-    expect(window.location.hash).toBe("#/");
+    // does. **`#/lobby` since M6.5b2** (R-6.5b2.1): `#/` is the front door,
+    // which lists the games in this browser, and a control labelled "Lobby"
+    // goes to the lobby.
+    expect(window.location.hash).toBe("#/lobby");
     // A reload in jsdom is a no-op that would pass; the source is the check.
     for (const f of ["App.tsx", "GameMenu.tsx"]) {
       expect(readFileSync(new URL(`./${f}`, here), "utf8")).not.toMatch(/location\.reload/);

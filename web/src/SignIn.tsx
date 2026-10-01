@@ -14,6 +14,7 @@
 
 import { useState } from "react";
 import { setClaimedUser, setDisplayName } from "./api";
+import { Refusal } from "./Refusal";
 
 /** The server's own R-1.1 shape, restated so the refusal happens here rather
  *  than as a 400 on the first request. Deliberately the same crude rule and not
@@ -104,7 +105,7 @@ export function SignIn({
           Sign in
         </button>
       </form>
-      {error && <div className="error">{error}</div>}
+      {error && <Refusal sentence={error} />}
     </div>
   );
 }

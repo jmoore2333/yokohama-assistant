@@ -1,19 +1,33 @@
 // Which screen this is, as the URL (spec §5.1).
 //
-// **The hash, and no router.** Three routes is not a routing problem; what it
-// is, is a SHAREABLE address — M6.2's whole point is that a table has a link
-// somebody else can follow — plus back and forward working for free, because
-// the browser already keeps a history of hashes. A path-based router would need
-// the server to serve `index.html` under every path it does not know, which is
-// a deployment change for three screens.
+// **The hash, and no router.** A handful of routes is not a routing problem;
+// what it is, is a SHAREABLE address — M6.2's whole point is that a table has a
+// link somebody else can follow — plus back and forward working for free,
+// because the browser already keeps a history of hashes. A path-based router
+// would need the server to serve `index.html` under every path it does not
+// know, which is a deployment change for a handful of screens — and since
+// M6.5b2 `/enter` is a real route on that server, which such a fallback would
+// have to be taught to leave alone.
 //
-// **`parseRoute` is total.** Anything it does not recognize is the lobby, so a
+// **`parseRoute` is total.** Anything it does not recognize is the DOOR, so a
 // stale bookmark, a truncated paste and an empty hash all land on a screen a
-// player can act from rather than on a blank one.
+// player can act from rather than on a blank one — and since M6.5b2 that screen
+// is the one that needs no server, which is what makes the fallback true offline
+// as well as on.
 
 import { useEffect, useState } from "react";
+import { isLocal } from "./local/ids";
 
 export type Route =
+  /** The front door at `#/` (R-6.5b2.1): play on this device, or play with
+   *  others. **Everyone sees it, signed in or not** — it is drawn from this
+   *  browser alone, so it is the one screen that renders with the API refused,
+   *  never answering, or not deployed at all. */
+  | { kind: "door" }
+  /** The server's first screen, at its own address since M6.5b2. `/enter` (the
+   *  Access turnstile) redirects here, so it has to BE somewhere: while the
+   *  lobby was `#/` there was no hash a turnstile could send a player to that
+   *  did not first land them on the door they had just come through. */
   | { kind: "lobby" }
   /** The setup form. **`local` says WHICH host the table is opened on**
    *  (M6.5b, R-6.5b.8): `#/new/local` seats you and the bot in this browser
@@ -24,11 +38,13 @@ export type Route =
   | { kind: "new"; local?: true }
   | { kind: "table"; id: string };
 
-/** `#/` the lobby, `#/new` and `#/new/local` the form, `#/t/<id>` a table
- *  (R-2.5). Anything else is the lobby, so a stale or mistyped link lands
- *  somewhere useful. */
+/** `#/` the door, `#/lobby` the lobby, `#/new` and `#/new/local` the form,
+ *  `#/t/<id>` a table (R-2.5, R-6.5b2.1). Anything else is the door, so a stale
+ *  or mistyped link lands somewhere useful — and somewhere that draws without a
+ *  server, which the lobby cannot. */
 export function parseRoute(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (path === "/lobby") return { kind: "lobby" };
   if (path === "/new") return { kind: "new" };
   if (path === "/new/local") return { kind: "new", local: true };
   const m = /^\/t\/([^/]+)$/.exec(path);
@@ -40,16 +56,37 @@ export function parseRoute(hash: string): Route {
     try {
       return { kind: "table", id: decodeURIComponent(m[1]!) };
     } catch {
-      return { kind: "lobby" };
+      return { kind: "door" };
     }
   }
-  return { kind: "lobby" };
+  return { kind: "door" };
+}
+
+/** Which of the two channels a screen belongs to (M6.5b2, R-6.5b2.1).
+ *
+ *  **Single player is a channel now, not a section.** The door, the local
+ *  create and a `local-` table are drawn from this browser alone; everything
+ *  else is the server's. The distinction is what decides who the client talks
+ *  to at all: the LOCAL channel asks the server nothing, which is the whole of
+ *  R-6.5b2.7 — a single-player visitor costs the Worker zero invocations. */
+export type Channel = "local" | "multiplayer";
+
+/** A route's channel. One function, because three effects and one hook ask the
+ *  same question and three copies of the test are three places for the answer
+ *  to drift the next time a route is added. */
+export function channelOf(route: Route): Channel {
+  if (route.kind === "door") return "local";
+  if (route.kind === "new") return route.local ? "local" : "multiplayer";
+  if (route.kind === "table") return isLocal(route.id) ? "local" : "multiplayer";
+  return "multiplayer";
 }
 
 export function hashOf(route: Route): string {
   switch (route.kind) {
-    case "lobby":
+    case "door":
       return "#/";
+    case "lobby":
+      return "#/lobby";
     case "new":
       return route.local ? "#/new/local" : "#/new";
     case "table":

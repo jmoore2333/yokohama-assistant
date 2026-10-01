@@ -229,7 +229,7 @@ along the top, the end-trigger strip beneath it, and the table filling the left 
 tiles laid out as the staggered pyramid — each one the printed area art carrying its
 building-site card, its pieces and its id badge — beside the side column on the right, whose
 answer bar is pinned at its top carrying the phase ladder, the seat to move and the numbered
-moves it is offering](web/public/help/screen.png)
+moves it is offering](web/public/help/screen.webp)
 
 The left is a **table**: the pyramid of area tiles, each one the printed tile with any
 building-site card and pieces on it (the Canal, at three and four players, carries neither), and
@@ -253,7 +253,7 @@ The port and the laboratory draw from that same past position; only the building
 ![The log panel open as a right-hand drawer: the replay track across the top with step arrows, a
 position readout and a "Back to live" button, the numbered move list below it with the current
 stop highlighted, and the table redrawn beside the drawer at that earlier position inside a green
-outline](web/public/help/replay.png)
+outline](web/public/help/replay.webp)
 
 The track has one more stop than there are moves, because the last stop is *now* — a real
 position with no move to name. It is a projection over the record the server already holds:

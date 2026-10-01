@@ -68,6 +68,49 @@ jobs:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-0.2.128
       - run: test -x ~/.cargo/bin/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      # M6.5b2 (R-6.5b2.15): `npm run build:wasm` now runs `wasm-opt` and
+      # REFUSES when it is absent, so this job does not build at all without
+      # binaryen. It is a prerequisite, not a nicety: `--profile release-wasm`
+      # emits 1.78 MB and the pass takes it to 1.17 MB, which is the figure the
+      # release budget and every §0.3 measurement are stated at.
+      #
+      # **Pinned to the upstream release binary rather than apt's package.** The
+      # workstation runs binaryen 132 (`wasm-opt version 132`) and
+      # `ubuntu-latest`'s `binaryen` is several versions behind it, so
+      # `apt-get install binaryen` would optimize with a different compiler than
+      # every recorded byte count was taken on — a size regression CI could not
+      # see and a difference nobody could reproduce locally. The tarball is one
+      # static binary; the cache key carries the version, so a bump here
+      # invalidates the cache rather than restoring the old one.
+      #
+      # **The download is CHECKSUMMED before anything is unpacked.** The URL
+      # promises a name, not bytes, and what comes back is then RUN over the
+      # module this job ships. `sha256sum -c` fails the step loudly on a
+      # mismatch. Measured 2026-09-21 over 117,057,408 bytes, agreed by three
+      # independent downloads; `deploy/Dockerfile` pins the same hash for the
+      # same file, and a binaryen bump changes BOTH.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/wasm-opt
+          key: binaryen-132-x86_64-linux
+      - name: Install binaryen 132 (wasm-opt)
+        run: |
+          mkdir -p ~/.local/bin
+          if [ ! -x ~/.local/bin/wasm-opt ]; then
+            curl -fsSL -o /tmp/binaryen.tar.gz \
+              https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz
+            echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c -
+            # One member out of twenty-two: the release ships the whole suite
+            # and a static `libbinaryen.a`, so `wasm-opt` needs nothing beside
+            # it and unpacking the rest would cost 100 MB of runner disk.
+            tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt
+            cp /tmp/binaryen-version_132/bin/wasm-opt ~/.local/bin/wasm-opt
+            chmod +x ~/.local/bin/wasm-opt
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Printed so the log says which optimizer produced the module, rather than
+      # leaving a reader to infer it from a cache key.
+      - run: wasm-opt --version
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -96,6 +139,46 @@ jobs:
       # platform-call fence is `platform_calls_stay_behind_the_server_feature`,
       # which runs in the line above.
       - run: cargo check -p yokohama-web --no-default-features --target wasm32-unknown-unknown
+      # M6.5b2 (R-6.5b2.3): the REFUSING build shape, which nothing compiled
+      # before this line. `--no-default-features --features server` is what spec
+      # §3.1 calls "the one spelling" a public build uses — the server half kept,
+      # `dev-identity` dropped — and the whole of R-6.5b2.3 is that it compiles
+      # AND refuses `YOKOHAMA_WEB_IDENTITY=claimed` by name. The wasm check above
+      # cannot see it: that shape drops `server` too, so the identity module's
+      # own cells never run there. Five cells, one of which
+      # (`claimed_parses_only_where_the_development_feature_is_compiled_in`)
+      # takes its refusing branch only here; the other four prove the module
+      # still works without the feature.
+      # QUOTED, and it has to be: a plain YAML scalar ending in `:` is read as
+      # a mapping key, so the unquoted form made this WHOLE FILE fail to parse
+      # (confirmed with two independent YAML parsers) and GitHub would have
+      # reported an invalid workflow rather than running anything.
+      #
+      # **The COUNT is asserted, because a filter that matches nothing exits 0**
+      # (whole-branch review, Minor 6; ledger Task 1 L75). A rename of the
+      # module or of a cell would drop R-6.5b2.3's only CI witness behind a
+      # green check — the class this lane keeps finding, a test that never runs.
+      # `set -o pipefail` is not enough on its own here, so the output is
+      # captured, printed, and then read.
+      # NO `set -e` around the capture. Under it a failing `cargo` aborts the
+      # step INSIDE the command substitution, before the `echo` — so the one
+      # reading a person needs, the compiler's error or the cell's own failure,
+      # never reaches the log and the step reports only its exit code. The
+      # status is taken by hand and the output is printed on BOTH paths.
+      - name: the refusing build, and that its five identity cells really ran
+        run: |
+          set -uo pipefail
+          out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
+          status=$?
+          echo "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the refusing build did not pass — R-6.5b2.3's only CI witness; its output is above"
+            exit "$status"
+          fi
+          echo "$out" | grep -q "test result: ok. 5 passed" || {
+            echo "::error::the identity:: filter did not run five cells — R-6.5b2.3's only CI witness"
+            exit 1
+          }
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.
       # It runs AFTER `wire_fixtures`, which is what re-derives the committed
       # corpus and the walk's request script from the real router — a replay

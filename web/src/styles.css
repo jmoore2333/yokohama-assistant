@@ -22,6 +22,58 @@
  * rule with a false premise is how the rule survives three milestones.
  */
 
+/* The two typefaces, in-house since M6.5b2 (R-6.5b2.18).
+ *
+ * They used to come from `fonts.googleapis.com` through two `preconnect`s and a
+ * render-blocking stylesheet in `index.html`. An offline launch silently lost
+ * both and fell back to Georgia and the system monospace — the one part of the
+ * release the service worker could not precache, because it was on somebody
+ * else's origin. Both families are SIL Open Font License 1.1, so self-hosting
+ * is permitted outright; each family's OFL text is committed beside its file,
+ * `NOTICE` names both, and `ASSETS.md` records the grant.
+ *
+ * **These are the exact bytes the page fetched before**, the LATIN subset from
+ * Google's own CSS2 endpoint (Fraunces v38, JetBrains Mono v24), so nothing
+ * about rendering moves — including which characters fall back. Google served
+ * ONE file per family for every weight we asked for, because both are variable
+ * fonts with a `wght` axis; two files replace the five faces the old stylesheet
+ * declared, and the weight RANGE below is what tells the browser to use that
+ * axis rather than synthesise a bold.
+ *
+ * **The `url()` is RELATIVE and the files live under `src/`, which is what puts
+ * them through Vite's hashed pipeline** (spec §2.7). A font is the most
+ * cacheable thing in the release — the same bytes on every visit for a year —
+ * and `assets.rs` grants `immutable` to `/assets/` alone, so a copy served from
+ * `public/` under its own name would be revalidated on every load for want of a
+ * hash in its name. The licence text sits in the same directory as the font it
+ * covers; `dist/` carries the font bytes and `NOTICE`, `ASSETS.md` and these
+ * two directories carry the grant.
+ *
+ * The latin-ext, greek, cyrillic and vietnamese subsets are deliberately not
+ * here. They would add 71 KB to a release that is precached WHOLE on every
+ * version, for characters this instrument shows only if a player types one into
+ * their display name — and a character outside the file falls through to the
+ * next family in the stack, which is exactly what U+25B6 (the mover's ▶) has
+ * always done.
+ *
+ * `font-display: swap` is the old stylesheet's own setting, carried over: text
+ * is readable in the fallback immediately and reflows once, which on a cold
+ * offline start is the difference between a blank screen and a legible one. */
+@font-face {
+  font-family: "Fraunces";
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+  src: url("./fonts/fraunces/fraunces-latin.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("./fonts/jetbrains-mono/jetbrains-mono-latin.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
 
@@ -889,11 +941,12 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    is a real button, and a selector that stopped naming the element would start
    styling the `<summary>`s that deliberately do not carry it (see the banner's
    note above). */
-.lobby .saved li a.row-link {
+.lobby .saved li a.row-link, .front-door .saved li a.row-link {
   background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
 }
-.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
+.lobby .saved li a.row-link:hover,
+.front-door .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
    (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
@@ -903,11 +956,145 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    theirs where they stand alone and flat where they stand here; nothing in
    those components moves for it. */
 .lobby > .setup { max-width: none; margin: 0; padding: 0; }
-/* The games on this device sit above the lobby's own heading, so they need the
-   rhythm `.setup h3`'s top margin gives every other section — the first child
-   has none to inherit. */
-.lobby .on-this-device { margin-top: 0.6rem; }
-.lobby .on-this-device .local-fault { color: var(--fg-dim); }
+/* The games on this device are the door's FIRST section since M6.5b2 (they were
+   the lobby's first child before it), so they need the rhythm `.setup h3`'s top
+   margin gives every other section — a first child has none to inherit, and its
+   own margin collapses out of the box. Unscoped for that reason: the rule is
+   about being first, and the host is no longer fixed. */
+.on-this-device { margin-top: 0.6rem; }
+.on-this-device .local-fault { color: var(--fg-dim); }
+
+/* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
+/* **The minimum that keeps a row from overflowing a phone**, and no more
+   (review M-9). Every one of these blocks is a few controls and a line of
+   text, so the rules are about WRAPPING rather than about layout: the
+   unplayable row puts an id, a reason and two buttons on one line, which is
+   the widest thing on the door and the one that had no wrapping rule at all.
+   `.field` next door gets `flex-wrap` at three call sites for the same reason.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, and the door is
+   outside all of them, so this lands on the headed live review. */
+.backup-controls { margin-top: 0.8rem; }
+.backup-controls .backup-note { margin: 0.3rem 0 0.6rem; }
+.backup-controls .backup-error { display: block; margin: 0.3rem 0; }
+.restore .restore-field { flex-wrap: wrap; }
+/* A file input is as wide as its button plus its "no file chosen" text and
+   does not shrink on its own, which is what pushes a 390px page sideways. */
+.restore .restore-field input[type="file"] { max-width: 100%; font-size: 12px; }
+.restore-report { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+.restore-report li { margin: 0.2rem 0; }
+.restore-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+/* ---- keeping the games (M6.5b2, R-6.5b2.9) ----------------------------- */
+/* The storage line and the install offer sit between the rows and the backup
+   controls, because both are statements ABOUT those rows. The rules here are
+   `.backup-controls`' own: wrapping and rhythm, not layout — a block of two
+   sentences and one control has nothing to lay out.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, and the door is
+   outside all of them, so this lands on the headed live review (the same note
+   the backup block carries). */
+.storage-line { margin: 0.8rem 0 0; }
+/* A real break above it, measured at 390px: the storage line and the two
+   install sentences are all `.muted` at the same size, and at the backup
+   block's 0.8rem they read as one wall of text rather than as two statements
+   about different things. */
+.install-offer { margin-top: 1.4rem; }
+.install-offer p { margin: 0.2rem 0; }
+/* A sentence with no spaces to break on — an id, a long word — must wrap
+   rather than push the page sideways at 390px. */
+.install-offer .install-container-note { overflow-wrap: anywhere; }
+.install-offer button.install { margin-bottom: 0.2rem; }
+/* The dismiss is a control inside a block of prose, so it takes `.linkish`'s
+   treatment and is set at the quiet size the lines above it use. */
+.install-offer .install-dismiss { font-size: 12px; }
+
+.unplayable { margin-top: 0.8rem; }
+.unplayable h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fg-dim); }
+.unplayable ul { margin: 0; padding-left: 1.1rem; }
+/* The row that had to be fixed: four things on one line, wrapping at the
+   width they stop fitting rather than scrolling the page. */
+.unplayable li {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.4rem; margin: 0.3rem 0;
+}
+.unplayable li .meta { overflow-wrap: anywhere; }
+
+/* ---- the outbox (M6.5b2, R-6.5b2.13) ----------------------------------- */
+/* **`.unplayable`'s rules, for `.unplayable`'s reason.** The two blocks are the
+   same shape — a heading over a list whose rows put an id, a sentence and a
+   control on one line — and the sentence here can be the SERVER's own, which
+   is the longest text on the door and has no length rule. So the row wraps at
+   the width it stops fitting rather than scrolling the page at 390px.
+
+   **Unmeasured by any gate, deliberately said out loud**: the browser walk's
+   width cells are on the game screen and the set table, so this lands on the
+   headed live review, exactly as the backup and storage blocks above say. */
+.outbox { margin-top: 0.8rem; }
+.outbox h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--fg-dim); }
+.outbox ul { margin: 0; padding-left: 1.1rem; }
+.outbox li {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.4rem; margin: 0.3rem 0;
+}
+.outbox li .name { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.outbox li .why, .outbox li .remedy { overflow-wrap: anywhere; }
+
+/* The refusal face of the abandon control (R-6.5b2.13): a question and two
+   answers, on a header that is already a row of controls. It wraps for the
+   header's own reason and is set at the quiet size every other sentence beside
+   a control in this client uses. */
+.abandon-ask { overflow-wrap: anywhere; font-size: 12px; }
+
+/* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
+/* Two ways on, and the second is a LINK rather than a button: Access answers a
+   navigation with a redirect to another origin, which a `fetch` follows and
+   then fails opaquely (spec §0.3). So it wears `button.primary`'s box, restated
+   for the element the way `a.row-link` restates `button.ghost`'s — those rules
+   are styled ON the element name and so do not reach an `<a>`. */
+.front-door .with-others a.enter {
+  display: inline-block;
+  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; text-decoration: none;
+}
+.front-door .with-others { margin-top: 1.6rem; }
+
+/* **The product, named once, at the top of the door** (M6.5b2; Task 3 review,
+   Minor 5). The game screen's own `<h1>` is `.banner h1` — 1.05rem, letter-spaced
+   small caps inside a fixed strip — and this one is a landing heading on a
+   `.setup` page, so it is set from `--display` rather than restating the
+   banner's treatment on a screen that has no banner. */
+.front-door .door-banner { margin-bottom: 1.4rem; }
+.front-door .door-banner h1 {
+  font-family: var(--display); font-size: 2rem; font-weight: 600;
+  letter-spacing: 0.02em; margin: 0;
+}
+.front-door .door-banner p { margin: 0.15rem 0 0; }
+
+/* The readiness line and the update offer (spec §4): a report about the shell,
+   so it sits under both entries and is set at the quiet size the other muted
+   lines use. */
+.front-door .offline-state { margin-top: 1.6rem; }
+.front-door .offline-state p { margin: 0.2rem 0; font-size: 12px; }
+/* A control inside a sentence, for `.log-jump`'s reason: it must be reachable
+   by keyboard and named by a role, and it must not look like a button sitting
+   in the middle of a line. */
+.linkish {
+  background: none; border: 0; padding: 0; margin: 0;
+  color: var(--vp); font: inherit; cursor: pointer; text-decoration: underline;
+}
+.linkish:hover { color: var(--fg); }
+/* The way back, for the same reason and in `button.ghost`'s box. */
+.lobby a.to-door {
+  display: inline-block;
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
+  margin-bottom: 0.6rem;
+}
+.lobby a.to-door:hover { color: var(--fg); border-color: var(--line-bright); }
 
 /* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
    is the setup screens' own `.setup` box and the rows are their `.field

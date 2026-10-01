@@ -4,7 +4,12 @@
 // every assertion in this file is one the component suite structurally cannot
 // make. Each is also a defect class this lane has already met once.
 
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { FLOOR_REM, tileWidthFor } from "../src/fit";
 import { act, blame, deadEnd, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";

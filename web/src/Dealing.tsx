@@ -32,6 +32,7 @@ import { useSignal } from "./signal";
 import { holder, seatName } from "./tables";
 import type { SectionKey } from "./sections";
 import type { ArtManifest, DealView, Labels, PlayerColor } from "./types";
+import { Refusal } from "./Refusal";
 
 /** Two face-down order cards: a deal this browser was never sent.
  *
@@ -267,7 +268,7 @@ export function Dealing({
           </div>
         )}
         <h2>Dealing</h2>
-        {error ? <div className="error">{error}</div> : <p className="muted">dealing&hellip;</p>}
+        {error ? <Refusal sentence={error} /> : <p className="muted">dealing&hellip;</p>}
       </div>
     );
   }
@@ -426,7 +427,7 @@ export function Dealing({
               </p>
             </>
           )}
-          {error && <div className="error">{error}</div>}
+          {error && <Refusal sentence={error} />}
         </div>
       </div>
     </div>

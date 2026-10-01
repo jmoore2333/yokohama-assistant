@@ -455,7 +455,9 @@ export interface Health {
   signal: "sse" | "held";
   /** Which archive this deployment writes finished and abandoned games to
    *  (M6.5a): none, a directory beside the store, or (M6.5c) a bucket. Read at
-   *  boot; the Abandon control's label is what reads it. */
+   *  the three points spec §2.2 names since M6.5b2 — entering the multiplayer
+   *  channel, a local game ending, and Abandon being clicked — and remembered
+   *  with the time it was taken. */
   archive: "off" | "dir" | "r2";
   /** Whether the house chat answers (M6.4). Off, this client draws no lobby
    *  panel and asks for nothing. */
@@ -465,6 +467,12 @@ export interface Health {
   /** Characters per message. The input is sized from THIS and never from a
    *  copy here, which would drift the day the server's number changed. */
   chat_text: number;
+  /** Whether this deployment offers multiplayer (M6.5b2). Off, the game, chat
+   *  and stream routes are not served at all, so this is a fact about what
+   *  EXISTS here and not a preference. The browser host reports `false`: it
+   *  serves every game route, because a local game is played through them, and
+   *  there is nobody else at the table. */
+  multiplayer: boolean;
 }
 
 /** Who the server thinks you are, and which header it reads to decide.

@@ -31,11 +31,30 @@
 //    already running.
 // 6. **A trap is answered, and the PAGE starts a fresh Worker** (R5). A
 //    trapped module holds its own mutex and traps again on `init()`, so there
-//    is nothing to recover in place. A STORAGE refusal is not a trap, and a
-//    stored game that no longer rebuilds is not a trap either: both are
-//    ordinary replies.
+//    is nothing to recover in place. A stored game that no longer rebuilds is
+//    not a trap: it is the module's own 500, an ordinary reply. Nor are TWO
+//    storage failures, both answered as ordinary replies: a WRITE the store
+//    refuses (`persist`'s `unsaved`, R4), and a READ that fails inside the
+//    export arm (`pair`, which reads IndexedDB since the PR #37 fix wave — a
+//    restart there would discard the very move the export exists to rescue).
+//    **Every other storage failure still goes the trap's way — named here,
+//    not fixed** (PR #37 fix wave, re-review N-2): a generation or a read that
+//    fails during a hold's acquisition (`takeGeneration`, `rebuild`), during
+//    the startup `ready` runs, or in `adopt` after a restore is answered
+//    `trapped`, and the page restarts the host.
 
-import { deletePair, openDb, readAll, takeGeneration, writeDocs } from "./db";
+import {
+  deletePair,
+  isModuleDoc,
+  openDb,
+  readAll,
+  readGeneration,
+  readPair,
+  retryingStart,
+  takeGeneration,
+  writeDocs,
+} from "./db";
+import { exportPair, StoreUnreadable, unreadableReply, type Pair } from "./exportPair";
 import { drawLocalId, gameIdOf, LOCAL_USER } from "./ids";
 import { TAKEN_OVER_SENTENCE } from "./lost";
 import init, * as wasm from "./wasm/yokohama_wasm.js";
@@ -49,6 +68,11 @@ type Req = { seq: number } & (
   | { kind: "hold"; id: string }
   | { kind: "takeover"; id: string }
   | { kind: "release"; id: string }
+  // **The backup half** (M6.5b2, R-6.5b2.10 – .12). `restore_read` is the
+  // module's one new export; `adopt` is the reconciliation after a restore has
+  // written — see [`adopt`] for why it is not a rebuild.
+  | { kind: "restore_read"; envelope: string }
+  | { kind: "adopt"; ids: string[] }
   // **The e2e build's trap hook, and it is the WORKER's alone** (spec §6.5).
   // It is not in `client.ts`'s mirror of this union because no page code sends
   // it: the browser walk posts it into this Worker itself, so the recovery it
@@ -98,12 +122,24 @@ const serial = <T>(f: () => Promise<T>): Promise<T> => {
 /** The module, IndexedDB, and the store loaded from it — before anything is
  *  answered. Awaited by every message; there is no readiness probe, because
  *  every message already runs after it (R-6.5b.12 leaves `/api/health` with no
- *  local caller in the page). */
-const ready: Promise<void> = (async () => {
+ *  local caller in the page).
+ *
+ *  **A FUNCTION since M6.5b2, and not a promise built at module scope** (spec
+ *  §2.6). The startup was cached whatever it settled as, so one failure was
+ *  this Worker's answer for its whole life — and the failure the storage
+ *  version bump introduces is exactly the recoverable kind: another tab
+ *  holding version 1 open. [`retryingStart`] keeps a start that WORKED and
+ *  lets one that did not be tried again by the next message.
+ *
+ *  **The blocked open is reported and waited out** rather than failed: the
+ *  page is told in one sentence naming the other tab, and this promise settles
+ *  by itself when that tab goes. The notice rides its own unsolicited message,
+ *  so it costs no pending call its answer. */
+const ready = retryingStart(async () => {
   await init();
-  db = await openDb();
+  db = await openDb({ onBlocked: (sentence) => post({ kind: "notice", sentence }) });
   await rebuild();
-})();
+});
 
 /** A FRESH `Games` from the committed documents, and the write cache reseeded
  *  from them.
@@ -118,6 +154,11 @@ async function rebuild(): Promise<void> {
   const rows = await readAll(db);
   const byId = new Map<string, { record?: string; table?: string }>();
   for (const r of rows) {
+    // **Only the module's own kinds** (M6.5b2): `docs` also holds this
+    // browser's compatibility rows, and the module refuses any kind but
+    // `record` and `table` — a `wasm.load("compat", …)` would throw and this
+    // whole rebuild is what every message waits on.
+    if (!isModuleDoc(r.doc)) continue;
     wasm.load(r.doc, r.id, r.text);
     byId.set(r.id, { ...byId.get(r.id), [r.doc]: r.text });
   }
@@ -218,6 +259,35 @@ async function persistCreate(id: string): Promise<Outcome> {
   } catch (e) {
     return { saved: "unsaved", reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Bring games a RESTORE has just written into this Worker's live store
+ * (M6.5b2, spec §2.5: "the Worker loads the new pair into its store and the
+ * listing refreshes").
+ *
+ * **A targeted `load` and deliberately NOT a [`rebuild`].** `rebuild` calls
+ * `wasm.init()`, which throws the store away — and with it any open
+ * `SubPrompt` in another game's `Repl`, which the spec says a restore must not
+ * reset. `load` is a CREATE that refuses a document already there, so the
+ * presence test below is what keeps this from being an exception path: a game
+ * this tab already knows is skipped rather than caught.
+ *
+ * The bytes come from IndexedDB rather than from the message, so a restore's
+ * records do not cross the boundary twice.
+ */
+async function adopt(ids: string[]): Promise<number> {
+  let taken = 0;
+  for (const id of ids) {
+    if (wasm.read("table", id) !== undefined) continue;
+    const pair = await readPair(db, id);
+    if (pair.table === null) continue;
+    wasm.load("table", id, pair.table);
+    if (pair.record !== null) wasm.load("record", id, pair.record);
+    lastWritten.set(id, cacheKey(pair.record ?? undefined, pair.table));
+    taken += 1;
+  }
+  return taken;
 }
 
 const isCreate = (req: Extract<Req, { kind: "call" }>): boolean =>
@@ -447,7 +517,7 @@ const hasLocks = (): boolean =>
  *  queued part is inside [`hold`], where it belongs. */
 async function acquisition(req: Extract<Req, { kind: "hold" | "takeover" }>): Promise<void> {
   try {
-    await ready;
+    await ready();
     post({ seq: req.seq, held: await hold(req.id, req.kind === "takeover") });
   } catch (err) {
     post(trapped(req.seq, err));
@@ -462,23 +532,54 @@ const trapped = (seq: number, err: unknown): Record<string, unknown> => ({
 });
 
 async function handle(req: Req): Promise<void> {
-  await ready;
+  await ready();
   switch (req.kind) {
     case "call":
       post({ seq: req.seq, ...(await call(req)) });
       return;
-    case "pair":
+    case "pair": {
       // **BOTH documents, read inside ONE queued operation** (spec §2.2's
       // "the record and table are read for export as one snapshot"; review
       // finding #6). Two messages would be two operations a move can fall
       // between, and "Send to the archive" would send a table the server finds
       // does not match the record.
-      post({
-        seq: req.seq,
-        record: wasm.read("record", req.id) ?? null,
-        table: wasm.read("table", req.id) ?? null,
-      });
+      //
+      // **And from ONE source, which is this tab's memory only where this tab
+      // OWNS the game** (PR #37 fix wave, R-F1; `exportPair.ts` holds the rule
+      // and its cells). Every export reads through here — both backups, Save
+      // game file, Send to the archive, Abandon and save, and the outbox — so
+      // a tab that booted with a snapshot of another tab's game, or that has
+      // since been stolen from, hands over what IndexedDB COMMITTED rather than
+      // what it was left holding.
+      //
+      // **An IndexedDB read that fails here is NOT a trap** (rule 6; fix round
+      // 1, review I-1). A holder whose generation read fails answers its
+      // memory, and a committed read that fails is answered as `unreadable`,
+      // a reply the page refuses the export with. Letting either escape would
+      // reach the queue's `catch` below, which answers `trapped` — and the
+      // page's restart would throw away this Worker and the one copy of any
+      // move the store has refused to keep. A `wasm.read` that throws is not
+      // caught here and still traps: that one is the module's.
+      const id = req.id;
+      let pair: Pair;
+      try {
+        pair = await exportPair(
+          held.get(id)?.generation,
+          () => readGeneration(db, id),
+          () => ({
+            record: wasm.read("record", id) ?? null,
+            table: wasm.read("table", id) ?? null,
+          }),
+          () => readPair(db, id),
+        );
+      } catch (err) {
+        if (!(err instanceof StoreUnreadable)) throw err;
+        post({ seq: req.seq, ...unreadableReply(err) });
+        return;
+      }
+      post({ seq: req.seq, ...pair });
       return;
+    }
     case "release": {
       // **The page's intent first**, so an acquisition still in flight drops
       // the lock when it lands rather than holding it for ever (see [`hold`]).
@@ -495,6 +596,25 @@ async function handle(req: Req): Promise<void> {
       post({ seq: req.seq, released: true });
       return;
     }
+    // **The module's validator, asked without touching the store** (M6.5b2,
+    // R-6.5b2.10). It reads a FILE and writes nothing, so it does not go near
+    // `GAMES` — but it still runs inside the serial queue, because everything
+    // that awaits `ready` does and a restore has no reason to be the exception.
+    case "restore_read": {
+      try {
+        post({ seq: req.seq, report: wasm.restore_read(req.envelope) });
+      } catch (err) {
+        // **A refusal by the VALIDATOR is an answer, not a trap** — the file is
+        // one this build cannot read, which is exactly what the page shows. A
+        // trap would be a throw from somewhere else, and this arm cannot tell
+        // the two apart, so it says what it knows: the module refused.
+        post({ seq: req.seq, refused: String(err) });
+      }
+      return;
+    }
+    case "adopt":
+      post({ seq: req.seq, adopted: await adopt(req.ids) });
+      return;
     // **A real trap, for the cell that has to survive one** (spec §6.5,
     // §4). `debug_trap` panics inside the module under a held lock, which
     // leaves it trapped: every later call throws and the PAGE starts a fresh

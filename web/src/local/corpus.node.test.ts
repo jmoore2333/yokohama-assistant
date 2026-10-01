@@ -90,7 +90,10 @@ if (!have) {
  * `identity` is which header names the caller and `signal` is how a change
  * reaches a browser — the axum host reads `claimed` and `sse`, the browser host
  * `local` and `none`. `mode` on `/api/me` is the same fact from the client's
- * side.
+ * side. `multiplayer` (M6.5b2) is the third: the axum host the corpus is cut
+ * from offers it and the browser host cannot, there being nobody else at the
+ * table — and it is exactly NOT `serves_games`, which is true on both, since a
+ * local game is played through the game routes.
  *
  * **`archive` is deliberately absent from this list.** Both hosts read `"off"`
  * — the corpus's primary `Api` keeps `NoArchive` and so does the module — so
@@ -98,7 +101,7 @@ if (!have) {
  * is a real thing to notice rather than a deployment difference to allow.
  */
 const HOST_FIELDS: Record<string, string[]> = {
-  health: ["identity", "signal"],
+  health: ["identity", "signal", "multiplayer"],
   me: ["mode"],
   me_signed_out: ["mode"],
 };

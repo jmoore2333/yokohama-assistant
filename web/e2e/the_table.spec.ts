@@ -1,19 +1,15 @@
 // M5's browser cells: the things about the table that jsdom cannot see.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { type Locator, type Page } from "@playwright/test";
+// **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
+// the fixture flags every page in the context so the release's service worker is
+// NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
+// keeps that from being a convention anybody has to remember.
+import { expect, test } from "./sw";
 import { mkdirSync } from "node:fs";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import {
-  act,
-  blame,
-  readOverflow,
-  readScreen,
-  rng,
-  newGameForm,
-  startGame,
-  watchForBreakage,
-} from "./harness";
+import { act, atTheGame, blame, newGameForm, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -647,7 +643,7 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   const pick = page.locator(".deal-seat.human.current button.deal-pick").nth(1);
   const chosen = /keep (O\d\d)/.exec((await pick.getAttribute("aria-label"))!)![1]!;
   await pick.click();
-  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(page)).toBeVisible();
   await readScreen(page);
   await expect(page.locator(".panel", { hasText: /'S HAND|’s hand/i }).first()).toContainText(chosen);
   // **And they come OUT once the card is chosen**, which is the half that makes

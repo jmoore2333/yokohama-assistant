@@ -1,6 +1,6 @@
 // What every browser walk needs: a game, a console watch, and a click policy.
 
-import { expect, type ConsoleMessage, type Page } from "@playwright/test";
+import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
 
 /** A deterministic PRNG, so a failing walk reproduces from its seed alone.
@@ -23,12 +23,17 @@ export function rng(seed: number): () => number {
  * warning that is not a defect would make this a list nobody reads, and React's
  * own development warnings do not reach a production build anyway.
  *
- * **Failed responses are filtered to THIS ORIGIN.** `index.html` pulls two font
- * families from `fonts.googleapis.com`, so an unfiltered watch makes the whole
- * browser gate fail on somebody else's outage or on a machine with no network —
- * a red run that says nothing about this repo. Art 404s are a supported state in
- * the client, which draws its typed fallback, but not in a checkout that has the
- * art committed, which every checkout does; those are same-origin and still
+ * **Failed responses are filtered to THIS ORIGIN.** The reason this was written
+ * has since been REMOVED — `index.html` pulled two font families from
+ * `fonts.googleapis.com`, and an unfiltered watch made the whole browser gate
+ * fail on somebody else's outage or on a machine with no network. M6.5b2
+ * self-hosted both (R-6.5b2.18), so the release fetches nothing off-origin at
+ * all and this filter drops nothing today. It stays as a POLICY rather than a
+ * workaround: a gate that can go red because a third party is down is a gate
+ * that says nothing about this repository, and the next off-origin thing
+ * somebody adds should not be able to do that. Art 404s are a supported state
+ * in the client, which draws its typed fallback, but not in a checkout that has
+ * the art committed, which every checkout does; those are same-origin and still
  * counted.
  */
 /**
@@ -72,6 +77,24 @@ export function watchForBreakage(
   return { failures };
 }
 
+/**
+ * The GAME screen's own heading, and why it is scoped.
+ *
+ * **The front door has an `<h1>Yokohama</h1>` of its own since M6.5b2** — the
+ * product, named on the first screen everyone sees (Task 3 review, Minor 5) —
+ * and Playwright matches an accessible name as a SUBSTRING by default. So a
+ * bare `getByRole("heading", { name: "Yokohama" })` is now satisfied by the
+ * DOOR, and a walk that never reached a game would pass the assertion that says
+ * it did. `header.banner` is the element the door does not draw.
+ *
+ * The deal screen draws one too (`Dealing.tsx`), which is deliberate and
+ * unchanged: every caller below either is already past the deal or is asserting
+ * the move from the deal into the game.
+ */
+export function atTheGame(page: Page): Locator {
+  return page.locator("header.banner").getByRole("heading", { level: 1, name: "Yokohama" });
+}
+
 /** What `startGame` hands back: enough to name a failure.
  *
  *  **The seed is gone, and its absence is the point (M6.1).** It used to ride
@@ -107,8 +130,14 @@ export const WALKER = "walker@e2e.test";
  * waits for the strip that says so. The wait is on EITHER, because `App` draws
  * nothing at all until `/api/me` answers — a bare `count()` would read zero for
  * a player who is signed in perfectly well.
+ *
+ * **The default lands on `#/lobby` since M6.5b2** (R-6.5b2.1). `/` is the front
+ * door, which is drawn from this browser alone and has no sign-in on it at all:
+ * a walk that went there and waited for a form would wait for ever. The server's
+ * own door stands on the lobby, which is where every caller of this helper is
+ * headed anyway.
  */
-export async function signIn(page: Page, email: string = WALKER, url = "/"): Promise<void> {
+export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby"): Promise<void> {
   await page.goto(url);
   const form = page.getByRole("heading", { name: "Sign in" });
   const strip = page.getByText(new RegExp(`^You are ${email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
@@ -241,12 +270,13 @@ export async function startGame(
  * reading it there also says the route was taken.
  */
 async function createLocal(page: Page, signedOut: boolean): Promise<string> {
-  if (signedOut) await page.goto("/");
-  else await signIn(page);
-  // The lobby's own heading, which renders in every one of the server area's
-  // three states — including the one where the API cannot be reached at all,
-  // which is the state `signedOut` exists for.
-  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  if (!signedOut) await signIn(page);
+  // **The FRONT DOOR since M6.5b2** (R-6.5b2.1), whichever arm got here: the
+  // games in this browser and the button that starts one live at `#/`, and
+  // nothing on that screen needs a server — which is the state `signedOut`
+  // exists for, and the reason the signed-in arm comes back here too.
+  await page.goto("/#/");
+  await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
   await page.getByRole("button", { name: "Play the bot here" }).click();
   await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
   await page.getByRole("button", { name: "Deal" }).click();
@@ -299,7 +329,7 @@ async function keepThroughTheDeal(page: Page, players: number): Promise<void> {
   if (kept !== humans) {
     throw new Error(`the deal took ${kept} keeps at ${players} players, expected ${humans}`);
   }
-  await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
+  await expect(atTheGame(page)).toBeVisible();
 }
 
 /**

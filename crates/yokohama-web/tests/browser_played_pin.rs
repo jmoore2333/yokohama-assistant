@@ -46,11 +46,13 @@ const SIDECAR: &str = include_str!("fixtures/browser-played-2p.provenance.json")
 /// at, so it is the caller `why` has to be asked as.
 const LOCAL_USER: &str = "local@browser";
 
-/// The browser host's own two deployment facts (`crates/yokohama-wasm`'s
-/// `HOST`), restated here because the pin drives the layer the way that host
-/// does and a `why` answered under another host's facts would not be the same
-/// call.
-const HOST: Host = Host { identity_name: "local", signal_kind: "none" };
+/// The browser host's own deployment facts (`crates/yokohama-wasm`'s `HOST`),
+/// restated here because the pin drives the layer the way that host does and a
+/// `why` answered under another host's facts would not be the same call —
+/// `serves_games` above all, since with it false there would be no `why` route
+/// to drive (M6.5b2).
+const HOST: Host =
+    Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
 
 /// The layer over a `MemStore` with the browser host's own parts, holding the
 /// committed pair.

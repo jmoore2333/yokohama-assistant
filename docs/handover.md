@@ -6,7 +6,43 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-21 (seventh session, the M6.5b EXECUTION, end to end): the session executed
+**Updated:** 2026-09-22, tenth session: **the PR #37 review's three defects are FIXED, PUSHED, and LIVE as `yokohama-web:0.5.0-m6.5b2.1`** (RUNBOOK §3.16; you authorized the push and the deploy). The Codex review of PR #37
+(`docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-review.md`) found three defects in the live
+M6.5b2, and all three reproduced:
+- "Back up everything" in a tab that did not own a game could omit that game's committed moves;
+- an update taken in one tab stranded the other tab's release files;
+- a successful "Try again" was never adopted.
+
+The session answered them in a fix wave on the same branch. The fix wave's reviews and rounds went as follows:
+- The reviews found three more defects of the same kind, and the wave fixed those too:
+  - the sweep deleted the old tab's files when a waiting release was replaced;
+  - the service worker could swallow the Access login hop at `/cdn-cgi/access/authorized`;
+  - a failed FIRST install could never be retried. This last one was measured in a browser before it was changed.
+- Each task was reviewed by Opus, with fix rounds, then the whole branch by Fable (**SHIP**).
+- The mutation battery read **16 of 16 caught**.
+- Every gate was run in one sequence: npm test 1024/55, e2e 61/11, yokohama-web 289.
+
+**The record is `docs/plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md` §5.** Its §5.8's first two items are DONE, and the M6.5c handover now carries the wave's open items as its §4 items 19–27. **One new item from the deploy is worth your eye:** the edge's JavaScript detections rewrite `index.html` (RUNBOOK §3.16). The service worker's install was measured to succeed regardless, but the zone setting should be read before the Worker joins that zone.
+
+The previous update, 2026-09-22 (ninth session, the M6.5b2 EXECUTION, end to end): the session executed all
+eleven tasks of `docs/plans/2026-09-21-web-frontend-m6.5b2-plan.md` under your ruling that EVERY
+task go subagent-driven with Opus the floor, took the Fable whole-branch review through ONE fix
+wave and a scoped re-review, ran the spec's mutation battery (**22 of 22 caught, 0 survived**),
+deployed, and wrote the close. **M6.5b2 "the front door, installable and offline" is LIVE** as
+`yokohama-web:0.5.0-m6.5b2` at the NAS's new hostname `yokohama-nas.moore.nyc` — the first screen
+is a door that asks the server for nothing, the whole release is precached under a digest of its
+own bytes so the door and a full game against the bot work offline, the app installs to a home
+screen, a game backs up to a file and restores on another device, and a game finished offline is
+queued and uploaded when the connection returns. **The record of record is the close
+`docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`, which is also M6.5c's entry artifact**; its
+§6.3 is the NINE owner items and §7 what the cycle does not claim. **Three of those want your
+eye**: the path-scoped Access door is BUILT and proven locally but NOT deployed (you ruled the
+hostname-wide policy stays through development), so the zero-login single-player claim is not shown
+live; the HEADED walk of the deployed site is owed across TWO releases, because both deploy agents
+found Claude-in-Chrome disconnected; and the phone exit is yours — nothing on a phone was measured
+by this session. **Track 3 carries it.**
+
+The previous update, 2026-09-21 (seventh session, the M6.5b EXECUTION, end to end): the session executed
 all nine tasks of `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` under your ruling (1 and 9
 inline, 2–8 subagent-driven with Opus), took the Fable whole-branch review through ONE fix wave and
 its scoped re-review, ran spec §6.6's battery (19 caught, the one survivor closed by a test
@@ -68,25 +104,27 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   GO/WAIT — still HOLD. **The games are now PLAYED AND SCRIBED (three of them, 370 bot events
   reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
   artifact, then the findings document, then the two rulings together (Track 1).
-- **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
-  Cloudflare Access, now **`yokohama-web:0.5.0-m6.5a`** on the NAS via Portainer (since 2026-09-20
-  14:04:35Z, `deploy/RUNBOOK.md` §3.12). Nothing about it moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
+- **The web client** merged to master 2026-09-11 and is live behind Cloudflare Access, now
+  **`yokohama-web:0.5.0-m6.5b2`** on the NAS via Portainer (since 2026-09-22 19:08:27Z,
+  `deploy/RUNBOOK.md` §3.15) — and since 2026-09-21 at **`yokohama-nas.moore.nyc`**, because
+  `yokohama.moore.nyc` is now HELD for the Cloudflare Worker that has not been deployed.
+  Nothing about it moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
   M6.1 "identity and seats" (live 2026-09-15, `docs/plans/2026-09-15-web-frontend-m6.1-close.md`),
   M6.2 "the lobby" (live 2026-09-16, `docs/plans/2026-09-16-web-frontend-m6.2-close.md`),
   M6.3 "transport and spectating" (live 2026-09-16,
   `docs/plans/2026-09-16-web-frontend-m6.3-close.md`) and **M6.4 "chat" (live 2026-09-17, the
   point release 2026-09-20, `docs/plans/2026-09-19-web-frontend-m6.4-close.md`)**: two players talk
   during a game, a third reads and answers, the lobby talks, and the first HEADED review of the live
-  site found — and the point release fixed — what four headless reviews could not see. **Five pull
-  requests now**: `web-room` is PR #31 against master, `web-room-m6.2` PR #32 against `web-room`,
-  `web-room-m6.3` PR #33 against `web-room-m6.2`, `web-room-m6.4` PR #34 against `web-room-m6.3`,
-  and **PR #35** is `web-room-m6.5` against `web-room-m6.4` — nothing merged, **merge order is yours**. **M6.5 (the hosting move) was
+  site found — and the point release fixed — what four headless reviews could not see. **SEVEN pull
+  requests now**, a stack, nothing merged and **merge order is yours**: `web-room` PR #31 against
+  master, `web-room-m6.2` #32, `web-room-m6.3` #33, `web-room-m6.4` #34, `web-room-m6.5` #35,
+  `web-room-m6.5b` #36 against `web-room-m6.5`, and `web-room-m6.5b2` **#37** against
+  `web-room-m6.5b`. **M6.5 (the hosting move) was
   RE-CHARTERED on 2026-09-19 as WebAssembly + Durable Objects** — its authority is the umbrella spec
   `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` on branch `web-room-m6.5` (stacked on
-  `web-room-m6.4` at `faf1a88`, your call), three sub-cycles a/b/c. **M6.5a "the seam" is CLOSED AND
-  LIVE (2026-09-20, `docs/plans/2026-09-20-web-frontend-m6.5a-close.md`; the table layer builds for
-  `wasm32-unknown-unknown` and finished and abandoned games are archived on the NAS); M6.5b
-  "single-player in the browser" is next** (Track 3).
+  `web-room-m6.4` at `faf1a88`, your call), three sub-cycles a/b/c. **All three of M6.5a "the seam" (2026-09-20), M6.5b
+  "single-player in the browser" (2026-09-21) and M6.5b2 "the front door, installable and offline"
+  (2026-09-22) are CLOSED AND LIVE; M6.5c "the objects" is next** (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -170,7 +208,50 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5b "single-player in the browser" CLOSED AND LIVE 2026-09-21 (`yokohama-web:0.5.0-m6.5b`, close HEAD `e15e369` on `web-room-m6.5b`; RUNBOOK §3.13; its PR open against `web-room-m6.5`); M6.5b2 "installable and offline" next (web lane)
+## Track 3 — The web client: M6.5b2 "the front door, installable and offline" CLOSED AND LIVE 2026-09-22 (`yokohama-web:0.5.0-m6.5b2` from `43d54a5` on `web-room-m6.5b2`, RUNBOOK §3.15, at the NAS's new hostname `yokohama-nas.moore.nyc`; PR #37 open against `web-room-m6.5b`); **M6.5c "the objects" is next, and its entry artifact is [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)**
+
+**The PR #37 fix wave is DONE, PUSHED and LIVE as `0.5.0-m6.5b2.1` (2026-09-22, tenth session; RUNBOOK §3.16).** It is eighteen commits over the close, ending `13dc65f`, with no Rust touched. Its authority and its record are both [the fix-wave document](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md). Four sections matter most:
+- §5.7: what the wave does NOT claim. It carries E2's and R-F6's browser readings, the six unpinned `sw.ts` rules, and the storage reads that still trap. These join the M6.5c opening items below.
+- §5.8: your items. The point release, the deploy and the push are DONE; the browser readings for E2 and R-F6 remain.
+- §5.4: every ruling taken on your behalf.
+- §5.5: the corrections to its own §1.
+
+**M6.5b2 — DONE (2026-09-22).** The record of record is the close
+`docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`: §1 what shipped by task in execution order,
+§2 the counts in one sequence, §3 the corpus diff (ONE key on ONE payload), §4 the reviews (ten
+Opus task reviews with a fix round each where an Important was found, the Fable whole-branch
+review's 0 Critical / 5 Important / 12 Minor and its TWELVE false or stale sentences, the one fix
+wave, the scoped re-review, the battery at 22 of 22, the deploy), **§5 every ruling taken on your
+behalf with its cost** — including the six commits mis-attributed to the orchestrator's model by the
+orchestrator's own dispatch and left unamended, and the interim state the mid-cycle deploy knowingly shipped — §6
+the LEAVE list, the **nine OWNER ITEMS** and the two frozen-spec sentences recorded as amendments,
+§7 what the cycle does NOT claim, and §8 the eight opening items for M6.5c. **The next cycle starts
+from [the M6.5c handover](plans/2026-09-22-web-frontend-m6.5c-handover.md)** (written at this close,
+2026-09-22, on the M6.5b2 handover's shape): what HEAD is, what was measured, the umbrella rulings
+M6.5c inherits with the owner's words quoted, your opening items with their provenance, the
+decisions its spec takes first, and the traps not to re-derive.
+
+**What wants YOU, shortest first.** (1) **The phone**: install to the home screen, airplane mode,
+play, close the browser entirely, reopen, resume, finish, export — then an update and a restore on
+a fresh profile; the Android handset is the second reading. Both are recorded, not gated, and both
+are M6.5c opening items. (2) **The headed walk of the deployed site**, owed across two releases
+now: the door and the lobby's back-link at 390 px, the door's new backup and restore controls
+(which no width gate covers), and the five error strips the Refusal sweep touched mid-flow — the
+deal, the open table, the create form, the unlock screen and the chat panel. jsdom cannot see a
+stylesheet and thirteen screens changed. (3) **Two product calls**: a finished LOCAL game now
+uploads itself to the archive at game over with nobody clicking, and on the first discovery of an
+archive every finished local game on the device goes up — spec-conformant, and a player can notice
+it; and under a single-player build four "Lobby"-labelled controls on local screens lead to a lobby
+whose game routes do not exist. (4) **When the public Worker's configuration is decided**
+(R-6.5b2.6), it decides whether the card art becomes public.
+
+**What is deliberately NOT done, so you are not surprised by it.** The path-scoped Access
+application of spec §3.2 is BUILT and proven locally and is NOT deployed — you ruled the
+hostname-wide policy stays throughout development, so no path on the site is public and the plan's
+"public paths answer 200 with no session" readings were deferred and recorded as the 302s they are.
+`claimed` is still the NAS's identity mode; what changed is that a public build can now refuse it
+by name.
+
 
 **M6.5b — DONE (2026-09-21).** The record of record is the close
 `docs/plans/2026-09-21-web-frontend-m6.5b-close.md`: §1 what shipped by task, §2 the counts in
@@ -185,11 +266,8 @@ ITEMS (the module's 758 KB gzip and no release profile; the first-screen boot in
 module every visit; `walk.json`'s 419 KB pretty-printed; "who starts"; the archive route handing
 an untrusted record to the engine's setup path; the invisible no-Web-Locks fallback; nothing in CI
 building the self-host image), and §7 what it does NOT claim. **Your Web Locks probe on the iOS 27
-simulator is the R-6.5b.5 measurement** (PASS; §1.4). **Next: M6.5b2**, from
-`docs/plans/2026-09-21-web-frontend-m6.5b2-handover.md` — a brainstorm with you first (its §4 lists
-the decisions the spec takes first: the cache key and update lifecycle, the backup/restore
-envelope, the persistent-storage moment, what "installable" means on your phone, whether the
-module's size is budgeted there).
+simulator is the R-6.5b.5 measurement** (PASS; §1.4). **M6.5b2 followed and is CLOSED** (the block above); what it inherited is
+`docs/plans/2026-09-21-web-frontend-m6.5b2-handover.md`.
 
 **The previous state of this track (2026-09-20), kept for the record:** M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" was next.
 
@@ -468,7 +546,9 @@ from `ifconfig` for the context-tarball fetch, and a Cloudflare "Just a moment�
 
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (M6.5's authority — the umbrella;
+- Web lane: **`docs/plans/2026-09-22-web-frontend-m6.5b2-close.md`** (the newest close and M6.5c's
+  entry artifact — §6.3 the owner items, §7 what is not claimed, §8 the eight opening items), then
+  `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (M6.5's authority — the umbrella;
   §0 what is true at HEAD, §1 the rulings, §3 the three sub-cycles), then the handover it supersedes
   `docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md` (§2 the seams as M6.4 left them, §6 the
   process), then the M6.4 close `docs/plans/2026-09-19-web-frontend-m6.4-close.md` (the record of what

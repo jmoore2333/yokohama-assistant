@@ -16,6 +16,11 @@
 import { vi } from "vitest";
 import { wire } from "../wire/contract";
 import type { Req } from "../local/client";
+import { openDb, readPair } from "../local/db";
+import type { UnreadableReply } from "../local/exportPair";
+import type { Envelope, ReportRow } from "../backup";
+import committedEnvelope from "../wire-script/backup-envelope.json";
+import committedReport from "../wire-script/backup-report.json";
 
 /** What a `call` is answered with: the module's two fields. `body` is given
  *  as a VALUE and stringified here, because that is what the Worker does. */
@@ -30,6 +35,19 @@ export interface CallReply {
   trapped?: boolean;
 }
 
+/** One game's two documents as the Worker answers them — BOTH keys, always.
+ *
+ *  **Both required** (fix round 1, review M-2). The page takes this answer
+ *  WHOLE since R-F1, so a half answer would not be completed from the store:
+ *  it would be a pair with a `null` in it, which a cell writing `{ record }`
+ *  alone almost certainly did not mean. The real Worker sends both keys
+ *  whenever it answers with a pair, and this is the one pair shape a cell can
+ *  write. */
+export interface FakePair {
+  record: string | null;
+  table: string | null;
+}
+
 /** What a cell may answer for itself. `undefined` from any of them falls
  *  through to the committed-corpus table below. */
 export interface FakeWorkerHooks {
@@ -40,8 +58,78 @@ export interface FakeWorkerHooks {
    *  window in which a Worker has been asked for a game and does not yet hold
    *  it. */
   hold?: (id: string, steal: boolean) => boolean | "pending";
-  /** Both documents of one game, as the `pair` message answers them. */
-  pair?: (id: string) => { record?: string | null; table?: string | null } | undefined;
+  /** Both documents of one game, as the `pair` message answers them.
+   *
+   *  `undefined` falls through to the COMMITTED pair in this page's
+   *  IndexedDB, where the cell has one — the real Worker's answer for a game
+   *  it does not own (PR #37 fix wave, R-F1).
+   *
+   *  `{ unreadable }` is the Worker's answer when IndexedDB would not be read
+   *  (fix round 1, review I-1): an ordinary reply, never a trap.
+   *
+   *  `"pending"` answers NOTHING and leaves the read in flight — the `call`
+   *  hook's own idiom, and how a cell arranges the OTHER half of "the module
+   *  will not load": a Worker that started and whose module never came up
+   *  answers no message at all (M6.5b2, review M-3). */
+  pair?: (id: string) => FakePair | UnreadableReply | "pending" | undefined;
+  /** What the module's `restore_read` says about a file — the rows, or a
+   *  refusal about the FILE. A cell that is about ONE verdict sets this and
+   *  says so; everything else falls through to [`fakeVerdicts`]. */
+  restore?: (envelope: string) => ReportRow[] | { refused: string } | undefined;
+}
+
+/**
+ * **A FAKE, and not the validator.**
+ *
+ * The real `restore_read` is `crates/yokohama-web/src/backup.rs` compiled into
+ * the module, and it is pinned in three places that are not this one: that
+ * file's own cells, `crates/yokohama-wasm`'s native cell, and
+ * `web/src/backup.node.test.ts`, which runs the COMPILED module over the very
+ * fixture read below. Nothing in jsdom can run it — there is no `Worker` and no
+ * `.wasm` — so what the page cells assert is what the PAGE does with a verdict,
+ * never what the verdict should have been.
+ *
+ * The mapping is DERIVED from the committed pair of files rather than written
+ * out: a game's record text is looked up in the committed envelope and answered
+ * with the verdict the committed report gives for it. So the four arms a cell
+ * can reach are the four arms this build really produces, and a game whose
+ * record this fixture does not carry is `accepted` — the premise most cells
+ * want, and one they can override.
+ */
+function fakeVerdicts(envelope: string): ReportRow[] {
+  const env = JSON.parse(envelope) as Envelope;
+  const committed = committedEnvelope as unknown as Envelope;
+  const rows = committedReport as unknown as ReportRow[];
+  const NONE = "\u0000no record";
+  const byRecord = new Map(
+    committed.games.map((g, i) => [g.record ?? NONE, rows[i]!.verdict] as const),
+  );
+  return env.games.map((g) => ({
+    id: g.id,
+    verdict: byRecord.get(g.record ?? NONE) ?? {
+      kind: "accepted" as const,
+      players: 2,
+      events: 0,
+      over: false,
+    },
+  }));
+}
+
+/** What this page's IndexedDB COMMITTED for `id` — the real Worker's `pair`
+ *  answer for a game it does not own (PR #37 fix wave, R-F1).
+ *
+ *  Two nulls where the cell has no database at all: jsdom has no IndexedDB,
+ *  and a cell that wants one imports `fake-indexeddb`. A read that FAILS is
+ *  left to reject, so it surfaces as the unhandled rejection it is rather than
+ *  as a game that is not there. */
+async function committedPair(id: string): Promise<{ record: string | null; table: string | null }> {
+  if (typeof indexedDB === "undefined") return { record: null, table: null };
+  const db = await openDb();
+  try {
+    return await readPair(db, id);
+  } finally {
+    db.close();
+  }
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
@@ -102,6 +190,8 @@ export class FakeWorker {
    *  restart is counted by. */
   static instances: FakeWorker[] = [];
   static hooks: FakeWorkerHooks = {};
+  /** Every instance dies as soon as it is built (see the constructor). */
+  static broken = false;
 
   readonly posted: Req[] = [];
   terminated = false;
@@ -111,6 +201,11 @@ export class FakeWorker {
 
   constructor(readonly url?: unknown) {
     FakeWorker.instances.push(this);
+    // **The module will not load** ([`breakTheWorker`]). Raised on a
+    // microtask, because `client.ts`'s `start()` assigns `onerror` on the
+    // statement after `new Worker(...)` — a synchronous raise would reach
+    // nobody and the cell would hang instead of failing.
+    if (FakeWorker.broken) queueMicrotask(() => this.raise("the module would not load"));
   }
 
   postMessage(req: Req): void {
@@ -129,15 +224,36 @@ export class FakeWorker {
         reply = {
           status: answer.status,
           body: answer.body === undefined ? "" : JSON.stringify(answer.body),
-          ...(answer.saved ? { saved: answer.saved } : {}),
+          // **`saved` is always present, because the real Worker always sends
+          // it** (`worker.ts:304-322`: every arm of the call path returns an
+          // outcome). Omitting the key left `localCall` reading `undefined`,
+          // which is not `"saved"` — so every corpus-driven local move in this
+          // suite was reported to the page as APPLIED BUT NOT SAVED, and the
+          // default state of the fake was a failure the real host cannot
+          // produce. The field's own doc already said "omitted means saved";
+          // this is what makes that true.
+          saved: answer.saved ?? "saved",
           ...(answer.reason ? { reason: answer.reason } : {}),
           ...(answer.trapped ? { trapped: true } : {}),
         };
         break;
       }
       case "pair": {
-        const both = hooks.pair?.(req.id) ?? {};
-        reply = { record: both.record ?? null, table: both.table ?? null };
+        const both = hooks.pair?.(req.id);
+        if (both === "pending") return;
+        if (both === undefined) {
+          // **The committed pair, by default** (PR #37 fix wave, R-F1). This
+          // fake holds no game at any generation, and the real Worker's answer
+          // for a game it does not own is what IndexedDB committed — so that is
+          // what a cell that says nothing gets, rather than two nulls the page
+          // would now take WHOLE as "no such game".
+          const seq = req.seq;
+          void committedPair(req.id).then((pair) => this.deliver({ seq, ...pair }));
+          return;
+        }
+        // Told apart by the PAIR's key, so this fake never restates the
+        // refusal's: that key is spelled once, in `exportPair.ts`.
+        reply = "record" in both ? { record: both.record, table: both.table } : { ...both };
         break;
       }
       case "hold":
@@ -149,6 +265,16 @@ export class FakeWorker {
       }
       case "release":
         reply = { released: true };
+        break;
+      case "restore_read": {
+        const answer = hooks.restore?.(req.envelope) ?? fakeVerdicts(req.envelope);
+        reply = Array.isArray(answer)
+          ? { report: JSON.stringify(answer) }
+          : { refused: answer.refused };
+        break;
+      }
+      case "adopt":
+        reply = { adopted: req.ids.length };
         break;
     }
     queueMicrotask(() => this.deliver({ seq: req.seq, ...reply }));
@@ -183,8 +309,30 @@ export class FakeWorker {
 export function stubWorker(hooks: FakeWorkerHooks = {}): typeof FakeWorker {
   FakeWorker.instances = [];
   FakeWorker.hooks = hooks;
+  FakeWorker.broken = false;
   vi.stubGlobal("Worker", FakeWorker);
   return FakeWorker;
+}
+
+/** **The module will not load** — every Worker this page starts from now on
+ *  dies at once, which is the state a backup has to work in (spec §2.5).
+ *
+ *  Called after [`stubWorker`], which clears the flag. */
+export function breakTheWorker(): void {
+  FakeWorker.broken = true;
+}
+
+/** What the Worker's `pair` message answers for ONE game — standing for THIS
+ *  tab's Worker's snapshot where it owns the game, which a backup PREFERS over
+ *  the database because a move applied and not yet written is the very move a
+ *  recovery is for. Without it the fake answers the committed pair, which is
+ *  what the real Worker answers for a game it does not own (R-F1). */
+export function workerAnswersWith(id: string, pair: FakePair): void {
+  const previous = FakeWorker.hooks.pair;
+  FakeWorker.hooks = {
+    ...FakeWorker.hooks,
+    pair: (asked) => (asked === id ? pair : previous?.(asked)),
+  };
 }
 
 /** The newest fake built, which is the one the page is talking to. */

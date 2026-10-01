@@ -15,8 +15,10 @@
 // lives here now, and `Abandon.test.tsx` holds it with a double click.
 
 import { useRef, useState } from "react";
-import { api, ApiError, archiveKind, isLocal } from "./api";
+import { api, ApiError, ensureArchiveFact, isLocal, useArchiveFact } from "./api";
+import { backupOne, download } from "./backup";
 import { localPair } from "./local/client";
+import { archiveDisposition } from "./outbox";
 import type { TableView } from "./types";
 
 /** What a local abandon says when the send never reached the server
@@ -24,6 +26,17 @@ import type { TableView } from "./types";
  *  and a sentence of this client's own, because a fetch that did not land has
  *  no sentence to carry. */
 export const UNREACHABLE = "the archive could not be reached — the game was kept";
+
+/** What a player reads when this browser cannot find out whether there is
+ *  anywhere to save the game (M6.5b2, R-6.5b2.13; spec §2.6, §4).
+ *
+ *  **It refuses and offers, rather than choosing for them.** Throwing a game
+ *  away must not happen implicitly when the thing that would have saved it was
+ *  unreachable — and "unknown" is not "off": a browser that has never been told
+ *  anything has no grounds for the claim that this deployment keeps no
+ *  archive. */
+export const CANNOT_ASK =
+  "this browser cannot reach the server, so there is nowhere to save this game yet.";
 
 export function Abandon({
   table,
@@ -51,6 +64,18 @@ export function Abandon({
   onError: (sentence: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  /** This browser could not learn whether there is an archive, and the player
+   *  is being offered the two choices (R-6.5b2.13). A THIRD face, not a mode of
+   *  the confirm one: what it asks is a different question. */
+  const [choices, setChoices] = useState(false);
+  /** What the SERVER keeps, as this browser last heard it — `"unknown"`
+   *  included (M6.5b2).
+   *
+   *  **The hook and not a module read** (review M-9): the fact is filled at
+   *  moments a render has already happened at, so a value read during render
+   *  would leave this label saying whatever it mounted with, and `App`'s own
+   *  copy of the same fact was a second reader kept in step by hand. */
+  const archive = useArchiveFact();
   // The guard against a SECOND DELETE going out while the first is in flight —
   // a ref and not a state, for the reason every other guard in this client is
   // one: React batches, so two clicks in the same tick both read a state flag
@@ -69,7 +94,9 @@ export function Abandon({
    *  rebuilds, where the archive would refuse the record and a control that
    *  said "and save" would promise a copy nobody can make. */
   const saves =
-    archiveKind() !== "off" && table.status === "playing" && (local || !isLocal(table.id));
+    archiveDisposition(archive) === "send" &&
+    table.status === "playing" &&
+    (local || !isLocal(table.id));
 
   /** Send the pair to the SERVER's archive, and say whether the delete may go
    *  ahead (R-6.5b.6, spec §4).
@@ -100,19 +127,90 @@ export function Abandon({
     }
   };
 
+  /** The DELETE, and what follows it. Reached from the confirm face once the
+   *  disposition licenses it, and from "Abandon without saving". */
+  const remove = async () => {
+    await api.remove(table.id);
+    setChoices(false);
+    setConfirming(false);
+    await onDone();
+  };
+
+  /**
+   * The second click (R-6.5b2.13, spec §2.6) — and for a LOCAL game it now asks
+   * the server what it keeps BEFORE doing anything it cannot undo.
+   *
+   * **Three states, and the middle one is the whole finding** (spec §0.3): a
+   * deployment KNOWN to keep no archive deletes as it always has; one known to
+   * keep an archive sends first and keeps the game if the send fails, which is
+   * unchanged; and one this browser has never been told about REFUSES and
+   * offers two named choices.
+   *
+   * **The read is FORCED, however fresh the remembered answer is** (spec §2.2).
+   * A remembered `"off"` is the last thing this deployment said, and a
+   * deployment that turned its archive on since would otherwise have this
+   * browser deleting finished games for an hour. It is bounded, and falls back
+   * to what is remembered only when nothing answers at all.
+   *
+   * **A SERVER table asks nothing**: the server archives it inside its own
+   * delete, so there is no decision here to be wrong about.
+   */
   const abandon = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      if (local && archiveKind() !== "off" && !(await sendFirst())) return;
-      await api.remove(table.id);
-      setConfirming(false);
-      await onDone();
+      if (local) {
+        const disposition = archiveDisposition(await ensureArchiveFact({ force: true }));
+        if (disposition === "ask") {
+          setChoices(true);
+          return;
+        }
+        if (disposition === "send" && !(await sendFirst())) return;
+      }
+      await remove();
     } catch (e) {
-      onError(e instanceof ApiError ? e.message : String(e));
+      onError(e instanceof Error ? e.message : String(e));
     } finally {
       // **Released on failure as well**, so a refusal leaves a control that can
       // be tried again rather than one that has quietly stopped working.
+      inFlight.current = false;
+    }
+  };
+
+  /** Write the game to a file instead — the choice that keeps it (spec §2.5's
+   *  envelope, which is what this app restores). A separate guard from the
+   *  delete's: a backup in flight must not stop the player abandoning, and two
+   *  clicks would otherwise write two identical files. */
+  const saving = useRef(false);
+  const backUp = async () => {
+    if (saving.current) return;
+    saving.current = true;
+    try {
+      // **`.backup.json`, which is `BackUpOne`'s name and not the RECORD's**
+      // (whole-branch review, false sentence 10 / Minor 3). This writes the
+      // ENVELOPE — the file this app restores — and it was named exactly as
+      // "Save game file" names the raw record the terminal loads, so the one
+      // control on the refusal path produced a file a player could not tell
+      // from the other by name and the terminal would have refused.
+      download(`${table.id}.backup.json`, await backupOne(table.id));
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      saving.current = false;
+    }
+  };
+
+  /** The other choice, and it is the one with no undo. **A third deliberate
+   *  click**: the player has already asked to abandon, confirmed it, read a
+   *  refusal naming what could not be reached, and is now saying it anyway. */
+  const abandonAnyway = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    try {
+      await remove();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
       inFlight.current = false;
     }
   };
@@ -133,6 +231,47 @@ export function Abandon({
             one word. */}
         {saves ? "Abandon and save" : "Abandon"}
       </button>
+    );
+  }
+  if (choices) {
+    return (
+      <>
+        {/* The sentence is part of the control and not the host's error strip:
+            it is a QUESTION, and the two answers are the buttons beside it. */}
+        <span className="meta abandon-ask" role="status">
+          {CANNOT_ASK}
+        </span>
+        {/* **Both name the table**, which is this component's own rule: there
+            is no undo, and a confirmation must never be about a row other than
+            the one that opened it. */}
+        <button
+          type="button"
+          className="ghost"
+          aria-label={`back it up to a file: ${named}`}
+          onClick={() => void backUp()}
+        >
+          Back it up to a file
+        </button>
+        <button
+          type="button"
+          className="ghost danger"
+          aria-label={`abandon ${named} without saving`}
+          onClick={() => void abandonAnyway()}
+        >
+          Abandon without saving
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          aria-label={`cancel abandoning ${named}`}
+          onClick={() => {
+            setChoices(false);
+            setConfirming(false);
+          }}
+        >
+          cancel
+        </button>
+      </>
     );
   }
   return (
