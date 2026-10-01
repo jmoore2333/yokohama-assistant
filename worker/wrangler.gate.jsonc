@@ -28,18 +28,24 @@
   // The module is imported as a compiled `WebAssembly.Module`, which the
   // factory instantiates anew on every call (spec §2.2).
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
-  // Spec §2.3, exactly as the spike proved it (§0.3 row 7): no HTML handling,
-  // so `/index.html` answers 200 rather than a redirect the service worker's
-  // install would refuse; no not-found fallback, so a missing file reaches the
-  // Worker and answers 404 rather than `index.html`; and the Worker first for
+  // Spec §2.3, as the spike proved it (§0.3 row 7), with cycle F's not-found
+  // page (spec §2.5): no HTML handling, so `/index.html` answers 200 rather
+  // than a redirect the service worker's install would refuse; `404-page`, so
+  // a browser NAVIGATING to a path no file answers gets `404.html` from the
+  // asset layer instead of a blank — a miss that is not a navigation still
+  // reaches the Worker, which answers 404 and never `index.html` (the
+  // single-page fallback answered a missing script with the shell, which a
+  // precache would store as the script), so the page is a courtesy and the
+  // fence against a scanner is the edge rule; and the Worker first for
   // `/api/*` and `/enter`. `npm run build:assets` assembles the directory and
   // verifies it against the release's precache list. The deploy guard checks
-  // this block, and the pool's copy, against spec §2.3.
+  // this block, and the pool's copy, against spec §2.3, and requires
+  // `404.html` in the tree (its check 11).
   "assets": {
     "directory": "./assets",
     "binding": "ASSETS",
     "html_handling": "none",
-    "not_found_handling": "none",
+    "not_found_handling": "404-page",
     "run_worker_first": ["/api/*", "/enter"]
   },
   // The three object classes (spec §2.4–§2.6), SQLite-backed, in ONE

@@ -117,14 +117,28 @@ fn cache_control(uri_path: &str) -> Option<&'static str> {
     uri_path.starts_with("/assets/").then_some("public, max-age=31536000, immutable")
 }
 
+/// The page a miss with an extension is answered with, relative to the root
+/// (M6.5c2 cycle F, R-F5; spec §2.5): `web/public/404.html`, which the build
+/// copies into `dist`.
+const NOT_FOUND_PAGE: &str = "404.html";
+
 /// Everything the API did not claim.
 ///
 /// A miss falls back to `index.html` so client-side routes deep-link, which is
 /// the standard SPA contract — but **only for paths that could be a route**. A
 /// request for a missing `.js` or `.css` gets a 404, because answering it with
-/// HTML produces the error every SPA developer has debugged at least once: the
-/// browser reports a syntax error at `<!doctype`, and the real fault (a stale
-/// or missing build) is nowhere in the message.
+/// the shell and a 200 produces the error every SPA developer has debugged at
+/// least once: the browser reports a syntax error at `<!doctype`, and the real
+/// fault (a stale or missing build) is nowhere in the message.
+///
+/// **Since cycle F that 404 carries the build's own 404 page** (R-F5; spec
+/// §2.5), for parity with the Worker, whose asset layer answers a browser's
+/// navigation miss with the same file: a person who types a wrong address
+/// sees words and a way home instead of a blank. Still a 404, so a script or
+/// an install that asked for the file fails as honestly as before. A dist
+/// with no `404.html` answers the bare 404 it always did. The page is no
+/// fence against a scanner, and this host needs none: it has no per-request
+/// meter.
 ///
 /// **The root is GIVEN since M6.5b2** (`AppState::dist`, read from
 /// [`dist_dir`] once at construction) rather than read from the environment per
@@ -159,7 +173,14 @@ fn serve_path(root: &Path, uri_path: &str) -> Response {
         return response;
     }
     if path.extension().is_some() {
-        let mut response = (StatusCode::NOT_FOUND, "no such asset").into_response();
+        let page = root.join(NOT_FOUND_PAGE);
+        let mut response = match std::fs::read(&page) {
+            Ok(bytes) => {
+                (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, content_type(&page))], Body::from(bytes))
+                    .into_response()
+            }
+            Err(_) => (StatusCode::NOT_FOUND, "no such asset").into_response(),
+        };
         // **A miss carries the same freshness rule the hit would have**
         // (M6.5b2, Task 1's deferred Minor). Production ships `sw.js`, so the
         // exposure is a deployment that removed it or served it from a root
@@ -320,5 +341,92 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// One GET through the WHOLE router, which is what decides whether a path
+    /// reaches this map at all (`fallback` in `lib.rs` claims `/api/`,
+    /// `/enter` and `/art/` first): status, `content-type`, body.
+    async fn get(router: &axum::Router, path: &str) -> (StatusCode, String, Vec<u8>) {
+        use tower::ServiceExt;
+        let res = router
+            .clone()
+            .oneshot(axum::http::Request::get(path).body(Body::empty()).expect("a request"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let kind = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().expect("an ASCII content type").to_string())
+            .unwrap_or_default();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, kind, body.to_vec())
+    }
+
+    /// A scratch `dist` the ROUTER serves from (`AppState::dist`), holding a
+    /// shell and, when `page` is given, a `404.html` — never written through
+    /// `YOKOHAMA_WEB_DIST`, a process-global the cells beside it read.
+    fn router_over(name: &str, page: Option<&[u8]>) -> (axum::Router, PathBuf) {
+        let root = std::env::temp_dir().join(format!("yokohama-assets-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a dist directory");
+        std::fs::write(root.join("index.html"), SHELL).expect("a shell");
+        if let Some(page) = page {
+            std::fs::write(root.join("404.html"), page).expect("a 404 page");
+        }
+        let state = crate::AppState::in_memory().with_dist(&root);
+        (crate::app(std::sync::Arc::new(state)), root)
+    }
+
+    const SHELL: &[u8] = b"<!doctype html><title>Yokohama</title>";
+
+    /// **A miss with an extension answers the 404 page; a route still answers
+    /// the shell** (M6.5c2 cycle F, R-F5; spec §2.5; Review Focus 5). The
+    /// axum host has no edge, so this is its parity with the Worker's asset
+    /// layer, which answers a browser's navigation miss with the same file
+    /// (`not_found_handling: "404-page"`). The page's BYTES are read from the
+    /// dist — the body here is the scratch file's, which no hard-coded page
+    /// could match — served 404 as `text/html` the way the shell is. The
+    /// extension-less fallback stays the shell, since the client's routes are
+    /// hash-only and an old link or a typed path must still open the app.
+    /// Mutants: the page hard-coded; the page served 200; the miss arm left
+    /// bare; the fallback narrowed so a route answers the page.
+    #[tokio::test]
+    async fn a_miss_with_an_extension_answers_the_404_page_and_a_route_still_the_shell() {
+        let page: &[u8] = b"<!doctype html><title>Nothing here</title><p>the scratch page of the 404 cell</p>";
+        let (router, root) = router_over("404-page", Some(page));
+
+        for path in ["/nope.json", "/wp-login.php", "/.env.php", "/assets/index-gone.js"] {
+            let (status, kind, body) = get(&router, path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path} is a miss");
+            assert_eq!(kind, "text/html; charset=utf-8", "{path} answers the page as HTML");
+            assert_eq!(body, page, "{path} answers the 404 page's own bytes");
+        }
+        for path in ["/", "/t/abc", "/lobby"] {
+            let (status, kind, body) = get(&router, path).await;
+            assert_eq!(status, StatusCode::OK, "{path} is a route");
+            assert_eq!(kind, "text/html; charset=utf-8");
+            assert_eq!(body, SHELL, "{path} still answers the shell");
+        }
+        // The page is a file of the build like any other: asked for by name,
+        // it is answered 200.
+        let (status, _, body) = get(&router, "/404.html").await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, page));
+
+        std::fs::remove_dir_all(&root).expect("the dist is removable");
+    }
+
+    /// **A dist with no `404.html` answers a miss as it did before cycle F**:
+    /// a bare 404 with no HTML in it — a self-host built before the page, or a
+    /// root someone arranged by hand, does not start answering misses with
+    /// the shell. Mutant: the fallback for a missing page made `index.html`.
+    #[tokio::test]
+    async fn without_a_404_page_a_miss_is_the_bare_404_it_was() {
+        let (router, root) = router_over("no-404-page", None);
+        let (status, kind, body) = get(&router, "/wp-login.php").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(kind, "text/plain; charset=utf-8");
+        assert_eq!(body, b"no such asset");
+        std::fs::remove_dir_all(&root).expect("the dist is removable");
     }
 }

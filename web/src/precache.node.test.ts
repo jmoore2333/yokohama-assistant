@@ -20,6 +20,13 @@
 // list read back is the one a release really prints into `sw.js` — read by the
 // ONE reader the Worker's assembly and deploy readings use — and not only the
 // pure half's answer.
+//
+// **Cycle F adds what a build emits and the release does NOT list** (R-F5,
+// R-FP3, R-F12; spec §2.5, §2.7): the 404 page and the build-values stamp are
+// in the tree, and the generator leaves them — and the web presence's three
+// files — out of the list, so the offline count is what it was. And the stamp
+// is read for what it says, through `vite.config.ts`'s own derivation, over
+// three builds with the values set in the environment.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -44,9 +51,30 @@ if (!existsSync(glue) && !optional) {
 }
 
 let built: string | null = null;
+const stamped: string[] = [];
 afterAll(() => {
   if (built) rmSync(built, { recursive: true, force: true });
+  for (const dir of stamped.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+/** The `dist` files the release never lists (cycle F; spec §2.5, §2.7) — the
+ *  generator's exclusion, restated here rather than imported, for the reason
+ *  `walk` is: a shared constant would let both agree wrongly. */
+const NOT_PRECACHED = ["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json"];
+
+/** The stamp's six keys, in the order the build writes them (R-FP3). */
+const STAMP_KEYS = ["project_url", "blurb", "notice", "release_feed", "site_url", "turnstile_sitekey"];
+
+/** Every build value the stamp reports on, so a cell can clear the
+ *  developer's own environment before it sets the ones it means. The site's
+ *  address joins this list when it becomes a build value. */
+const BUILD_VALUE_VARS = [
+  "YOKOHAMA_PROJECT_URL",
+  "YOKOHAMA_SITE_BLURB",
+  "YOKOHAMA_SITE_NOTICE",
+  "YOKOHAMA_RELEASE_FEED",
+  "YOKOHAMA_TURNSTILE_SITEKEY",
+];
 
 /** Every file under `dir`, relative and POSIX-separated — the generator's own
  *  walk, restated here rather than imported, because the SHELL is the thing
@@ -92,7 +120,14 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     });
 
     const artDir = join(web, "..", "crates", "yokohama-web", "assets", "art");
-    const distFiles = walk(built).filter((f) => f !== "sw.js");
+    // **The premise of the exclusion below**: the two files that exist at walk
+    // time ARE in the tree (`public/404.html`, and the stamp the build's plugin
+    // writes), so "not listed" is the generator leaving them out, not a build
+    // that never made them.
+    const emitted = walk(built);
+    expect(emitted, "the build emits the 404 page").toContain("404.html");
+    expect(emitted, "the build emits the stamp").toContain("build-values.json");
+    const distFiles = emitted.filter((f) => f !== "sw.js" && !NOT_PRECACHED.includes(f));
     const { entries } = buildPrecache({
       distFiles,
       artManifest: JSON.parse(readFileSync(join(artDir, "manifest.json"), "utf8")),
@@ -178,5 +213,73 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     // every file the build emitted, the art manifest and its pictures — one
     // entry each, and no more.
     expect(listed.length).toBe(distFiles.length + 1 + 131);
+
+    // **Cycle F: none of the five is an entry, and the count is what it was**
+    // (spec §2.5): the list is the tree LESS the five, so the 404 page and the
+    // stamp in the tree add nothing to an install's download or the offline
+    // count. The 404 page is HTML too, which the edge would rewrite.
+    for (const name of NOT_PRECACHED) {
+      expect(listed.map((e) => e.path), `/${name} is not precached`).not.toContain(`/${name}`);
+    }
+    expect(emitted.length - distFiles.length, "exactly the two cycle-F files the build emits are left out").toBe(2);
+
+    // **The stamp is exactly the six booleans** (R-FP3), in the build's order:
+    // which values were set, never a value.
+    const stamp = JSON.parse(readFileSync(join(built, "build-values.json"), "utf8")) as Record<string, unknown>;
+    expect(Object.keys(stamp)).toEqual(STAMP_KEYS);
+    for (const key of STAMP_KEYS) expect(typeof stamp[key], key).toBe("boolean");
+  }, 180_000);
+
+  // **The stamp read for what it says, through `vite.config.ts`'s DERIVATION**
+  // (R-FP3; Task 2's review: no cell ran through the config's derivation of
+  // the feed from the project link, and a mutant passing `null` as the link
+  // survived every cell). Three real client builds, each with the developer's
+  // own build values cleared and only the cell's set: every value set and the
+  // feed DERIVED from a GitHub link; the same link with the feed `off`; and
+  // nothing. Out of process, so the environment is the build's alone. A
+  // build is under a second (measured). `site_url` is `false` in all three
+  // until the site's address is a build value (Task 5b).
+  // Mutants: `null` as the feed's project link; any boolean read off the raw
+  // environment rather than the checked value; a boolean hard-coded.
+  it("stamps which build values a build carries, derived as its define derives them", () => {
+    const vite = join(web, "node_modules", "vite", "bin", "vite.js");
+    const stampOf = (set: Record<string, string>): Record<string, unknown> => {
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      for (const name of BUILD_VALUE_VARS) delete env[name];
+      Object.assign(env, set);
+      const out = mkdtempSync(join(tmpdir(), "yokohama-stamp-"));
+      stamped.push(out);
+      execFileSync(process.execPath, [vite, "build", "--outDir", out, "--emptyOutDir", "--logLevel", "error"], {
+        cwd: web,
+        env,
+        stdio: "pipe",
+      });
+      const stamp = JSON.parse(readFileSync(join(out, "build-values.json"), "utf8")) as Record<string, unknown>;
+      expect(Object.keys(stamp), "the six keys, in order").toEqual(STAMP_KEYS);
+      return stamp;
+    };
+    const link = "https://github.com/example/yokohama";
+
+    expect(
+      stampOf({
+        YOKOHAMA_PROJECT_URL: link,
+        YOKOHAMA_SITE_BLURB: "A blurb for the stamp cell.",
+        YOKOHAMA_SITE_NOTICE: "A notice for the stamp cell.",
+        YOKOHAMA_TURNSTILE_SITEKEY: "stamp-cell-not-a-real-key",
+      }),
+      "every value set, the feed derived from the GitHub link",
+    ).toEqual({ project_url: true, blurb: true, notice: true, release_feed: true, site_url: false, turnstile_sitekey: true });
+    expect(
+      stampOf({ YOKOHAMA_PROJECT_URL: link, YOKOHAMA_RELEASE_FEED: "off" }),
+      "the same link with the feed off",
+    ).toEqual({ project_url: true, blurb: false, notice: false, release_feed: false, site_url: false, turnstile_sitekey: false });
+    expect(stampOf({}), "nothing set").toEqual({
+      project_url: false,
+      blurb: false,
+      notice: false,
+      release_feed: false,
+      site_url: false,
+      turnstile_sitekey: false,
+    });
   }, 180_000);
 });

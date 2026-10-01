@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { defineConfig } from "vite";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import {
   BUILD_VALUES,
@@ -54,8 +55,41 @@ const { version } = JSON.parse(readFileSync(new URL("./package.json", import.met
   version: string;
 };
 
+// **The build-values stamp** (cycle F, R-FP3; spec §2.6): `dist/build-values.json`,
+// six booleans naming which build values this build carries — never a value —
+// read off the SAME checked locals the `define` block below reads, so the stamp
+// cannot say one thing while the bundle says another. The Worker's deploy guard
+// holds its `YOKOHAMA_TURNSTILE` declaration to `turnstile_sitekey` (its check
+// 12): one client build per door state (R-FP4). Written after the bundle, into
+// the output directory, so it lands in the Worker's assets tree with the rest
+// of `dist`; `scripts/precache.mjs` leaves it out of the release's list. A
+// plain file both hosts serve: it names which values were set, which the
+// bundle shows anyway. `site_url` is `false` until the site's address is a
+// build value.
+const stamp = {
+  project_url: projectUrl !== null,
+  blurb: siteBlurb !== null,
+  notice: siteNotice !== null,
+  release_feed: releaseFeed !== null,
+  site_url: false,
+  turnstile_sitekey: siteKey !== null,
+};
+function stampBuildValues(): Plugin {
+  let outDir = "";
+  return {
+    name: "yokohama-build-values-stamp",
+    apply: "build",
+    configResolved(config) {
+      outDir = resolve(config.root, config.build.outDir);
+    },
+    writeBundle() {
+      writeFileSync(join(outDir, "build-values.json"), `${JSON.stringify(stamp, null, 2)}\n`);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), stampBuildValues()],
   define: {
     __YOKOHAMA_PROJECT_URL__: JSON.stringify(projectUrl),
     __YOKOHAMA_SITE_BLURB__: JSON.stringify(siteBlurb),

@@ -87,6 +87,21 @@ describe("the assembly (spec §2.3)", () => {
     );
     expect(report.unlisted).toEqual(["_headers", "_redirects", "art/manifest.json", "sw.js"]);
   });
+  // Cycle F (R-F5, R-FP3; spec §2.5): the 404 page and the build-values stamp
+  // are in `web/dist` and in no precache list, and the assembler copies the
+  // dist WHOLE — so they land in the tree the deploy uploads, where the asset
+  // layer's `404-page` and the guard's checks 11 and 12 read them, with no
+  // edit here. Read byte for byte, and reported among the files no list names.
+  it("lands the 404 page and the build-values stamp, which no precache list names", () => {
+    const page = "<!doctype html><title>Nothing here</title>\n";
+    const stamp = '{\n  "turnstile_sitekey": false\n}\n';
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "404.html": page, "build-values.json": stamp });
+    const out = join(tree({}), "assets");
+    const report = assemble({ ...sources(dist), out });
+    expect(readFileSync(join(out, "404.html"), "utf8")).toBe(page);
+    expect(readFileSync(join(out, "build-values.json"), "utf8")).toBe(stamp);
+    expect(report.unlisted).toEqual(["404.html", "_headers", "_redirects", "art/manifest.json", "build-values.json", "sw.js"]);
+  });
   it("starts from an empty directory, so nothing from an earlier assembly survives", () => {
     const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES) });
     const out = join(tree({ "assets/stale.js": "old" }), "assets");
