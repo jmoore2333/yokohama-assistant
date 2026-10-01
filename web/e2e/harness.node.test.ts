@@ -8,11 +8,12 @@
 //
 // **The config is a stand-in, and deliberately.** `harness.ts` imports
 // `BASE_URL` from `playwright.config.ts`, and loading the real config REFUSES
-// when no Chromium is installed and EMPTIES the walk's scratch directories —
-// both wrong for a command that CI's `web-server` job runs with no browser,
-// and that may run beside a walk. The stand-in holds the one name the harness
-// reads, computed by the config's own formula, `baseUrlFor` — whose use by the
-// config a cell below reads off the config's source.
+// when no Chromium is installed — wrong for a command that CI's `web-server`
+// job runs with no browser. (It no longer empties the walk's scratch
+// directories at a load: `fresh_dirs.node.test.ts`.) The stand-in holds the
+// one name the harness reads, computed by the config's own formula,
+// `baseUrlFor` — whose use by the config a cell below reads off the config's
+// source.
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -672,8 +673,8 @@ describe("baseUrlFor", () => {
   });
   // The EXPORTED constant is what `watchForBreakage` and `two_browsers` read,
   // so a config that went back to a constant local origin would watch nothing
-  // live. Read from its SOURCE, since loading it empties the walk's scratch
-  // directories.
+  // live. Read from its SOURCE, since loading it refuses where no Chromium is
+  // installed.
   it("is what playwright.config.ts exports as BASE_URL", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const config = readFileSync(join(here, "..", "playwright.config.ts"), "utf8");

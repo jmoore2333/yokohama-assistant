@@ -12,9 +12,8 @@
 
 import { defineConfig, devices } from "@playwright/test";
 import { chromium } from "@playwright/test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { scratchDirs } from "./e2e/fresh_dirs.mjs";
 import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, README_SHOTS, README_SHOTS_SPEC, STATE1_GAME, STATE1_GAME_SPEC, baseUrlFor } from "./e2e/live";
 
 /**
@@ -98,11 +97,19 @@ if (!haveBrowser) {
 // and names any file missing the guard. It declares no browser fixture, so it
 // is the one spec that runs — and therefore checks — in the very configuration
 // this paragraph is about.
-/** A single scratch games directory for the walk, emptied before it starts.
- *  The server persists every applied move as its `GameRecord`, and a walk must
- *  not write into whatever the operator is actually playing. */
+/** A single scratch games directory for the walk. The server persists every
+ *  applied move as its `GameRecord`, and a walk must not write into whatever
+ *  the operator is actually playing.
+ *
+ *  **A NAME, never a maker** (cycle F, E's m-4). This module is loaded by every
+ *  Playwright process — the runner's, each test worker's, `--list`'s — and by
+ *  any cell that reads it, so a load that EMPTIED the directory took a running
+ *  walk's games out from under it. A load now computes the path and nothing
+ *  else; the one place that empties it is `e2e/fresh_dirs.mjs`, which the
+ *  `webServer` command below runs once per run, in the process that starts the
+ *  server (`e2e/fresh_dirs.node.test.ts` pins both halves). */
 function gamesDir(): string {
-  return fresh(join(tmpdir(), `yokohama-e2e-${PORT}`));
+  return scratchDirs(PORT).games;
 }
 
 /** Where the walk's server keeps its ARCHIVE (M6.5b, spec §6.5).
@@ -113,25 +120,11 @@ function gamesDir(): string {
  *  directory beside the games, for the same reason that one is scratch: a walk
  *  must not write into whatever the operator is actually keeping.
  *
- *  **A READER, not a maker.** `gamesDir` empties what it hands back, and this
- *  module is loaded by every Playwright process — the runner's, and each test
- *  worker's. A spec calling an emptying helper to find out where the file is
- *  would delete the file it came to read, so the emptying is left to the `env`
- *  map below and the spec reads this.
- *
- *  **Which happens at each config EVALUATION, not once per run** (whole-branch
- *  review, vacuity #3): every process that loads this module runs `fresh()`
- *  again, the shape `gamesDir` has had since M6.1. Harmless at `workers: 1`
- *  unless a worker restarts mid-run. */
+ *  **A reader and a name, like `gamesDir`**: a spec calling this to find out
+ *  where the file is deletes nothing, and neither does any other load of this
+ *  module. The emptying is `e2e/fresh_dirs.mjs`'s, at the server's launch. */
 export function archiveDir(): string {
-  return join(tmpdir(), `yokohama-e2e-archive-${PORT}`);
-}
-
-/** An empty directory at `dir`. */
-function fresh(dir: string): string {
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  return scratchDirs(PORT).archive;
 }
 
 export default defineConfig({
@@ -239,7 +232,13 @@ export default defineConfig({
           // `npx playwright test` directly is therefore a walk over a STALE or
           // ABSENT build — so the server is asked for its own opinion first,
           // and refuses with the command to run.
-          command: "cargo run --release -p yokohama-web",
+          // **The two scratch directories are emptied HERE and nowhere else**
+          // (cycle F, E's m-4): `e2e/fresh_dirs.mjs` runs once, in the process
+          // that starts the server, before the server reads either directory,
+          // and refuses any path that is not a `yokohama-e2e-*` directory
+          // directly inside the system temp directory. It reads the two paths
+          // from the `env` below. The command runs from the repo root (`cwd`).
+          command: "node web/e2e/fresh_dirs.mjs && cargo run --release -p yokohama-web",
           cwd: "..",
           url: `${BASE_URL}/api/health`,
           // A release build from cold is minutes; a warm one is seconds.
@@ -261,7 +260,8 @@ export default defineConfig({
             // This module is loaded by every Playwright invocation — including
             // `--list` and each worker — so a fresh temp directory per load
             // leaked one per run, and the one holding the walk's records was
-            // whichever load happened to be the server's.
+            // whichever load happened to be the server's. The clearing is the
+            // launch command's (above), not this load's.
             YOKOHAMA_WEB_DIR: gamesDir(),
             // **The archive is ON for the walk** (M6.5b, spec §6.5), because
             // the one thing "Send to the archive" claims is that a copy of the
@@ -269,7 +269,7 @@ export default defineConfig({
             // keeps none answers 404 and claims nothing. It also makes a
             // playing table's Abandon read "Abandon and save" on BOTH hosts,
             // which is the label the archive makes true.
-            YOKOHAMA_WEB_ARCHIVE_DIR: fresh(archiveDir()),
+            YOKOHAMA_WEB_ARCHIVE_DIR: archiveDir(),
           },
         },
       }
