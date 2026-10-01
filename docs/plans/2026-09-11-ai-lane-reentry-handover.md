@@ -188,8 +188,9 @@ trigger it; V2 (PR #20) and V4 (PR #30) did. The V4 game is the one still owed (
     `EVAL_IMPL_VERSION` unmoved — a weights-only V5; the admission is in place since 2026-10-01
     (`GRANDFATHERED_NAMED_IDENTITIES` in `crates/yokohama-cli/src/bot.rs`), and a re-point appends the
     identity it ships there, never removing one; a V5 that moves either refuses V4 games as DRIFT on
-    the web by R-F4's own rule, since no build then reconstructs the exact recorded bot. And a NEW `Contestant` or `NamedIdentity` variant still needs its
-    one-line label in `crates/yokohama-web/src/bots.rs` (`docs/web-lane.md` §7 and §15).
+    the web by R-F4's own rule, since no build then reconstructs the exact recorded bot. And a NEW
+    `Contestant` or `NamedIdentity` variant still needs its one-line label in
+    `crates/yokohama-web/src/bots.rs` (`docs/web-lane.md` §7 and §15).
 
 ## 6. Carried instruments and rules (nobody has to re-derive these)
 

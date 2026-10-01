@@ -104,8 +104,8 @@ and the scribe tooling are parked in `docs/temp/owner-games/ledger/` (README ins
 **The V5 ship's one CLI line is DONE (R-F4; the hotfix, 2026-10-01):** a V5 build plays V4 games
 on the web exactly when it still derives V4's exact descriptor, `LOOKAHEAD_IMPL_VERSION` and
 `EVAL_IMPL_VERSION` unmoved — a weights-only V5; the admission is in place since 2026-10-01
-(`GRANDFATHERED_NAMED_IDENTITIES` in `crates/yokohama-cli/src/bot.rs`). **The re-point's one
-obligation is the append:** the V5 ship adds its identity to that list and never removes one. A V5
+(`GRANDFATHERED_NAMED_IDENTITIES` in `crates/yokohama-cli/src/bot.rs`). **What the re-point owes
+this line is the append:** the V5 ship adds its identity to that list and never removes one. A V5
 that moves either refuses V4 games as DRIFT (the re-entry handover §5, item 12;
 [`web-lane.md`](web-lane.md) §15; [the spec](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md)).
 

@@ -1147,9 +1147,10 @@ mod tests {
             Contestant::LOOKAHEAD_V1_DEFAULT,
             Contestant::LookaheadV1 { b: 2, k: 1, m: 4, cap: Some(200) },
             // The SHIPPED seat since the 2026-08-30 ship commit. It is the arm
-            // this pin most needs: `decide` builds it through `production_agent`
-            // — a cli-side function `suggest` shares — so the construction that
-            // could drift from `Contestant::build` is one this crate authors.
+            // this pin most needs: `decide` builds it through `named_agent` —
+            // the construction `suggest` reaches through `production_agent` —
+            // so the construction that could drift from `Contestant::build` is
+            // one this crate authors.
             Contestant::PRODUCTION,
         ];
         assert!(arms.contains(&PROVISIONAL_DEFAULT_BOT), "the wizard's default must be swept");
@@ -1248,8 +1249,9 @@ mod tests {
     /// cannot drift apart" — and until 2026-08-30 the two were separate
     /// constructions that happened to agree, `suggest` reaching
     /// `LookaheadAgent::new`'s constructor defaults while `decide` spelled the
-    /// knobs out. They now share [`production_agent`], and this is the cell
-    /// that would notice if they stopped.
+    /// knobs out. They now share [`named_agent`] (`suggest` through
+    /// [`production_agent`]), and this is the cell that would notice if they
+    /// stopped.
     ///
     /// Pinned as a DECISION rather than as a shared call site, because the
     /// property is about what the two seats play: at one position and one seed
@@ -1292,22 +1294,26 @@ mod tests {
             finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
                 .unwrap();
 
-        // **THE PRODUCTION ARM IS EXCLUDED, and its exclusion is asserted.**
-        // Since 2026-08-30 one named identity IS the seat this driver ships, so
-        // the refusal narrowed from "every named arm" to "every named arm that
-        // is not the production contestant". The sentence the other arms are
-        // refused with is unchanged: they are still research identities for
-        // arena weight comparisons, and that is still a different fact from a
-        // diagnostic arm.
+        // **THE ADMITTED ARMS ARE EXCLUDED, and their exclusion is asserted.**
+        // Since 2026-08-30 one named identity IS the seat this driver ships,
+        // and since 2026-10-01 every identity that shipped as production is
+        // grandfathered (`GRANDFATHERED_NAMED_IDENTITIES`, the production one
+        // among them), so the refusal narrowed from "every named arm" to "every
+        // named arm this driver neither ships nor has shipped". The sentence
+        // the other arms are refused with is unchanged: they are still research
+        // identities for arena weight comparisons, and that is still a
+        // different fact from a diagnostic arm. Read through `admits_named`, so
+        // a re-point that appends its identity keeps this cell green.
         let research: Vec<NamedIdentity> = NamedIdentity::ALL
             .into_iter()
-            .filter(|arm| Contestant::NamedTable(*arm) != Contestant::PRODUCTION)
+            .filter(|arm| !admits_named(Contestant::PRODUCTION, *arm))
             .collect();
         assert_eq!(
             research.len(),
-            NamedIdentity::ALL.len() - 1,
-            "exactly one named arm is the production contestant",
+            NamedIdentity::ALL.len() - GRANDFATHERED_NAMED_IDENTITIES.len(),
+            "exactly the grandfathered named arms, production among them, are excluded",
         );
+        assert!(!research.is_empty(), "anti-vacuity: some named arm is still a research identity");
         for arm in research {
             let contestant = Contestant::NamedTable(arm);
             let refusal = eligible(contestant).expect_err("a named identity is not a CLI bot seat");
@@ -1337,9 +1343,14 @@ mod tests {
         // ANTI-VACUITY: the eligible arms are still eligible, so this pin
         // narrows the surface rather than closing it — and the production arm
         // is a NAMED arm that IS admitted, which is what stops the refusal from
-        // quietly widening back to every named identity.
+        // quietly widening back to every named identity. So is every
+        // grandfathered one.
         assert_eq!(eligible(PROVISIONAL_DEFAULT_BOT), Ok(PROVISIONAL_DEFAULT_BOT));
         assert_eq!(eligible(Contestant::PRODUCTION), Ok(Contestant::PRODUCTION));
+        for arm in GRANDFATHERED_NAMED_IDENTITIES {
+            let contestant = Contestant::NamedTable(*arm);
+            assert_eq!(eligible(contestant), Ok(contestant), "{} is grandfathered", arm.name());
+        }
         assert!(matches!(Contestant::PRODUCTION, Contestant::NamedTable(_)));
         decide(Contestant::PRODUCTION, &state, &rules, state.current_player, 11)
             .expect("the production seat decides rather than halting");
@@ -1551,6 +1562,14 @@ mod tests {
         assert_eq!(bots.contestant_at(PlayerId::new(0)), Some(v4), "{warnings:?}");
         assert!(warnings.is_empty(), "the exact recorded bot resumes silently: {warnings:?}");
         assert_eq!(bots.seed(), 5);
+
+        // The stand-in production itself resumes, as ever -- the line that
+        // makes this cell see its own `production`: a resume reading the
+        // const instead would refuse the stand-in as a research identity.
+        let (bots, warnings) =
+            BotSeats::from_provenance_under(STAND_IN_PRODUCTION, Some(&run_of(STAND_IN_PRODUCTION)));
+        assert_eq!(bots.contestant_at(PlayerId::new(0)), Some(STAND_IN_PRODUCTION), "{warnings:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
 
         let research = Contestant::NamedTable(NamedIdentity::V2RefitPadded);
         let (bots, warnings) = BotSeats::from_provenance_under(STAND_IN_PRODUCTION, Some(&run_of(research)));
