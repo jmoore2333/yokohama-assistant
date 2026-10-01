@@ -34,10 +34,13 @@
 // the API alone. So after the health line it asks, the same way, for
 // `/sw.js` always and for `/sitemap.xml` exactly when the LOCAL stamp
 // (`assets/build-values.json`) says the build wrote one (`site_url: true`);
-// each must come back WITHOUT a `cf-mitigated` header — the asset layer's
-// answer, not the edge's — or the smoke FAILS naming the path. The stamp is
-// read before any request: with none, nothing says which files the deployed
-// release holds, and the smoke refuses having asked nothing.
+// each must answer 200 with no `cf-mitigated` header — the asset layer
+// serving the release's own file — or the smoke FAILS naming the path and
+// what came back: a `cf-mitigated` header named as the edge's challenge, any
+// other status (a 404 for a sitemap the stamp promises is a deployed tree
+// that is not the local one) as the file not served (the residual fix). The
+// stamp is read before any request: with none, nothing says which files the
+// deployed release holds, and the smoke refuses having asked nothing.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -169,8 +172,8 @@ const LIVE_INIT = { method: "GET", redirect: "manual", headers: { "user-agent": 
  *  `config` (in the package at `root`): the lines saying what it read, or a
  *  throw naming why it fails. Under `on`: the API challenged, then the
  *  release's own `/sw.js` — and `/sitemap.xml` where the local stamp says the
- *  build wrote one — answered with no `cf-mitigated` header. `fetchImpl` is
- *  the network; the cells pass a fake. */
+ *  build wrote one — answered 200 with no `cf-mitigated` header. `fetchImpl`
+ *  is the network; the cells pass a fake. */
 export async function liveSmoke(origin, root, config, fetchImpl = fetch) {
   if (declaration(root, config) === "off") {
     return `smoke-release: ${config} declares YOKOHAMA_TURNSTILE off — no edge line is owed, and no request was made`;
@@ -209,6 +212,12 @@ export async function liveSmoke(origin, root, config, fetchImpl = fetch) {
         `${said}, but a cookie-less GET ${read.url} answered ${answered(read)} — the edge rule ${JSON.stringify(DESCRIPTION)} ` +
           `challenges the release's own ${path}: print it again from the deployed tree and update it by its id ` +
           "(node scripts/edge-rule.mjs; --verify; worker/RUNBOOK.md §3)",
+      );
+    }
+    if (read.status !== 200) {
+      throw new Error(
+        `${said}, but a cookie-less GET ${read.url} answered ${answered(read)} — the release's own ${path} must answer 200: ` +
+          "the deployed release is not the local tree, or the deploy is broken (run the smoke from the tree that was deployed)",
       );
     }
     lines.push(`smoke-release: and a cookie-less GET ${read.url} answered ${answered(read)} — the release's own file is not challenged`);

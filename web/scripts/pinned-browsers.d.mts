@@ -12,7 +12,14 @@ export declare const SENTENCES: Readonly<{
   update: string;
 }>;
 
-export declare function pinnedArgs(argv: string[]): { label: string; origin: string; stateDir: string; secondTab: boolean };
+export declare function pinnedArgs(argv: string[]): {
+  label: string;
+  origin: string;
+  stateDir: string;
+  secondTab: boolean;
+  /** `--go-wait`, or `GO_WAIT_DEFAULT_MINUTES`. */
+  goWaitMinutes: number;
+};
 
 export declare function doorReadiness(lines: string[]): "none" | "installing" | "ready" | "failed" | "unknown";
 
@@ -66,17 +73,21 @@ export interface AfterClick {
 
 export declare function afterClickChecks(reading: AfterClick): Check[];
 
-/** How long phase 2 waits for `<state-dir>/go`, in milliseconds. */
-export declare const GO_WAIT_MS: number;
+/** How long phase 2 waits for `<state-dir>/go` when `--go-wait` is not given, in minutes. */
+export declare const GO_WAIT_DEFAULT_MINUTES: number;
 
-/** The check a `go` that never came fails. */
-export declare const GO_CHECK: string;
+/** The check a `go` that never came within `minutes` fails, naming the bound. */
+export declare function goCheck(minutes: number): string;
 
 /** The check a door that never read ready fails, with no `PINNED` written. */
 export declare const PIN_CHECK: string;
 
 /** Wait for `<stateDir>/go`, at most `boundMs`: `null` when it came, else the failed check. */
-export declare function awaitGo(stateDir: string, boundMs?: number, pollMs?: number): Promise<Check | null>;
+export declare function awaitGo(
+  stateDir: string,
+  minutes?: number,
+  seams?: { pollMs?: number; minuteMs?: number },
+): Promise<Check | null>;
 
 /** Write `PINNED` only over a door that reads ready: `null` when written, else the failed check. */
 export declare function pin(stateDir: string, doorLines: string[], now?: () => Date): Check | null;
@@ -84,6 +95,6 @@ export declare function pin(stateDir: string, doorLines: string[], now?: () => D
 /** Write `verdict.json` over `checks`, under `head`; the verdict. */
 export declare function writeVerdict(
   stateDir: string,
-  head: { label: string; origin: string; secondTab: boolean },
+  head: { label: string; origin: string; secondTab: boolean; goWaitMinutes: number },
   checks: Check[],
 ): { ok: boolean; complete: boolean; summary: string };

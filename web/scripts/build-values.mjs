@@ -31,12 +31,15 @@ export const PROJECT_URL_MAX = 200;
 
 /**
  * `raw` as a refusal may print it (cycle F's fix wave; Task 5b's review): with
- * everything from just after the scheme's `//` — or its first `:`, where no
- * `//` follows it — to the LAST `@` cut to `***`, so no credential a deployer
- * pasted reaches a build log. The LAST `@`, because a URL parser reads the
- * user information up to it; and the cut over-reaches rather than falls short:
- * an `@` later in a path cuts the host too, a password holding a `/` is still
- * cut whole. A value with no `@` is printed as it is.
+ * everything up to the LAST `@` cut to `***` — from just after the scheme's
+ * `//` where the value begins `scheme://`, and from its first character
+ * otherwise — so no credential a deployer pasted reaches a build log. With no
+ * `scheme://` nothing before the `@` is kept (the residual fix): a URL parser
+ * reads `alice:pw@host` as the scheme `alice:`, so a kept "scheme" would be
+ * the user name. The LAST `@`, because a parser reads the user information up
+ * to it; and the cut over-reaches rather than falls short: an `@` later in a
+ * path cuts the host too, a password holding a `/` is still cut whole. A value
+ * with no `@` is printed as it is.
  *
  * @param {string} raw
  * @returns {string}
@@ -44,9 +47,8 @@ export const PROJECT_URL_MAX = 200;
 function withoutCredentials(raw) {
   const at = raw.lastIndexOf("@");
   if (at === -1) return raw;
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:(\/\/)?/.exec(raw);
-  const from = scheme === null ? 0 : scheme[0].length;
-  return at < from ? raw : `${raw.slice(0, from)}***${raw.slice(at)}`;
+  const kept = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(raw)?.[0] ?? "";
+  return `${kept}***${raw.slice(at)}`;
 }
 
 /**

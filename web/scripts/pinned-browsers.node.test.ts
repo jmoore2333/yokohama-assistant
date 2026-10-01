@@ -20,8 +20,8 @@ import {
   afterReloadChecks,
   awaitGo,
   doorReadiness,
-  GO_CHECK,
-  GO_WAIT_MS,
+  goCheck,
+  GO_WAIT_DEFAULT_MINUTES,
   pin,
   PIN_CHECK,
   pinnedArgs,
@@ -46,14 +46,17 @@ describe("the command line", () => {
     expect(run.stdout).toBe("");
   });
   it("says its usage as the plan's commands spell it, the opt-out named", () => {
-    expect(USAGE).toBe("usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]");
+    expect(USAGE).toBe(
+      "usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab] [--go-wait <minutes>]",
+    );
   });
-  it("takes a label, an origin and a state directory, and wants the second tab", () => {
+  it("takes a label, an origin and a state directory, wants the second tab, and waits three hours for go", () => {
     expect(pinnedArgs(["worker", "https://yokohama.moore.nyc", "web/scripts/pinned/worker"])).toEqual({
       label: "worker",
       origin: "https://yokohama.moore.nyc",
       stateDir: "web/scripts/pinned/worker",
       secondTab: true,
+      goWaitMinutes: 180,
     });
     expect(pinnedArgs(["dry", "http://127.0.0.1:8491", "/tmp/x"]).origin, "plain http on loopback, a dry run").toBe(
       "http://127.0.0.1:8491",
@@ -71,11 +74,32 @@ describe("the command line", () => {
     [["worker", "https://yokohama.moore.nyc/", "d"], "origin"],
     [["worker", "https://yokohama.moore.nyc/#/lobby", "d"], "origin"],
     [["worker", "https://yokohama.moore.nyc", ""], "usage"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait"], "usage"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "60", "--go-wait", "60"], "usage"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "0"], "--go-wait takes whole minutes from 1 to 1440"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "1.5"], "--go-wait takes whole minutes from 1 to 1440"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "-5"], "--go-wait takes whole minutes from 1 to 1440"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "180m"], "--go-wait takes whole minutes from 1 to 1440"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "1441"], "--go-wait takes whole minutes from 1 to 1440"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--go-wait", "--no-second-tab"], "--go-wait takes whole minutes from 1 to 1440"],
   ])("refuses %j", (argv, why) => {
     expect(() => pinnedArgs(argv)).toThrow(why);
   });
-  it("takes --no-second-tab, last, as the ONE way to run without the stale-tab half", () => {
+  it("takes --no-second-tab after the three as the ONE way to run without the stale-tab half", () => {
     expect(pinnedArgs(["nas", "https://yokohama-nas.moore.nyc", "d", "--no-second-tab"]).secondTab).toBe(false);
+  });
+  // **The wait for go is an argument** (cycle F's residual fix; the Opus
+  // re-review): E's own pin-to-go gaps were 31.6 minutes (the Worker) and
+  // 35.4 (the NAS), past the thirty minutes the fix wave ruled, so the bound
+  // is `--go-wait <minutes>`, three hours unless given, before or after
+  // `--no-second-tab`. Mutants: the argument unread; the default left at 30.
+  it("takes --go-wait <minutes>, before or after --no-second-tab", () => {
+    const base = ["worker", "https://yokohama.moore.nyc", "d"];
+    expect(pinnedArgs([...base, "--go-wait", "240"])).toMatchObject({ secondTab: true, goWaitMinutes: 240 });
+    expect(pinnedArgs([...base, "--no-second-tab", "--go-wait", "45"])).toMatchObject({ secondTab: false, goWaitMinutes: 45 });
+    expect(pinnedArgs([...base, "--go-wait", "45", "--no-second-tab"])).toMatchObject({ secondTab: false, goWaitMinutes: 45 });
+    expect(pinnedArgs([...base, "--go-wait", "1440"]).goWaitMinutes, "a day at most").toBe(1440);
+    expect(pinnedArgs([...base, "--no-second-tab"]).goWaitMinutes, "the default beside the other flag").toBe(GO_WAIT_DEFAULT_MINUTES);
   });
   it("names no absolute path of anyone's machine: Playwright is found beside it", () => {
     const source = readFileSync(SCRIPT, "utf8");
@@ -232,33 +256,39 @@ describe("the pin and the wait for go", () => {
     expect(readFileSync(join(dir, "PINNED"), "utf8")).toBe("2026-10-01T12:00:00.000Z\n");
   });
 
-  it("waits thirty minutes for go, by default", () => {
-    expect(GO_WAIT_MS).toBe(30 * 60_000);
-    expect(GO_CHECK).toBe("go was touched within 30 minutes of PINNED");
+  it("waits three hours for go by default, and its check names the bound in minutes", () => {
+    expect(GO_WAIT_DEFAULT_MINUTES).toBe(180);
+    expect(goCheck(180)).toBe("go was touched within 180 minutes of PINNED");
+    expect(goCheck(45)).toBe("go was touched within 45 minutes of PINNED");
   });
-  // Mutant: the wait unbounded — this cell then never ends, and vitest's own
-  // timeout fails it.
-  it("gives up on a go that never comes at its bound, answering the failed check", async () => {
+  // A minute made 20 ms long, so three "minutes" are 60 ms. Mutant: the wait
+  // unbounded — this cell then never ends, and vitest's own timeout fails it.
+  it("gives up on a go that never comes at its bound, answering the failed check that names the bound", async () => {
     const dir = stateDir();
-    const late = await awaitGo(dir, 60, 10);
-    expect(late).toEqual({ check: GO_CHECK, ok: false, saw: `no go in ${dir} within 60 ms: the deploy's reading never began` });
+    const late = await awaitGo(dir, 3, { minuteMs: 20, pollMs: 10 });
+    expect(late).toEqual({
+      check: "go was touched within 3 minutes of PINNED",
+      ok: false,
+      saw: `no go in ${dir} within 3 minutes: the deploy's reading never began`,
+    });
   }, 2_000);
   it("answers no check for a go that is there", async () => {
     const dir = stateDir();
     writeFileSync(join(dir, "go"), "");
-    expect(await awaitGo(dir, 60, 10)).toBeNull();
+    expect(await awaitGo(dir, 3, { minuteMs: 20, pollMs: 10 })).toBeNull();
   });
-  // What the run then does with either: `verdict.json` names it, and the
-  // verdict fails — which is the instrument's exit 1.
-  it("writes verdict.json naming the timeout, failed", async () => {
+  // What the run then does with either: `verdict.json` names it and the bound
+  // it used, and the verdict fails — which is the instrument's exit 1.
+  it("writes verdict.json naming the timeout and the bound, failed", async () => {
     const dir = stateDir();
-    const late = await awaitGo(dir, 60, 10);
-    const verdict = writeVerdict(dir, { label: "worker", origin: "https://h.example", secondTab: true }, [late!]);
+    const late = await awaitGo(dir, 3, { minuteMs: 20, pollMs: 10 });
+    const verdict = writeVerdict(dir, { label: "worker", origin: "https://h.example", secondTab: true, goWaitMinutes: 3 }, [late!]);
     expect(verdict.ok, "the instrument exits 1").toBe(false);
     expect(JSON.parse(readFileSync(join(dir, "verdict.json"), "utf8"))).toEqual({
       label: "worker",
       origin: "https://h.example",
       secondTab: true,
+      goWaitMinutes: 3,
       ok: false,
       complete: true,
       summary: "1 checks: 0 held, 1 failed, 0 not run",

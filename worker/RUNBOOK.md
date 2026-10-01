@@ -286,8 +286,9 @@ the whole list; it leaves secrets alone.
 
   A cookie-less `GET /api/health` with a browser User-Agent must answer 403 with
   `cf-mitigated: challenge`. Then, the same way, `GET /sw.js`, and `GET /sitemap.xml` where the local
-  tree's `assets/build-values.json` reads `site_url: true`, must each answer with NO `cf-mitigated`
-  header: the rule must not challenge the release's own files. Exit 0 is those answers, or, under
+  tree's `assets/build-values.json` reads `site_url: true`, must each answer 200 with NO
+  `cf-mitigated` header: the rule must not challenge the release's own files, and the deployed release
+  must serve them. Exit 0 is those answers, or, under
   `off`, no request at all. Exit 1 names what came back instead and the path it came back for, a
   refused argument or declaration, or a local tree with no stamp, which asks nothing. Run it from the
   tree that was deployed, since the stamp it reads is the local one. Its first run in a window is

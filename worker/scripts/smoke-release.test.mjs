@@ -214,6 +214,33 @@ describe("the smoke's live mode: the edge line", () => {
       /^smoke-release: wrangler\.x\.jsonc declares YOKOHAMA_TURNSTILE on, but a cookie-less GET https:\/\/yokohama\.moore\.nyc\/sitemap\.xml answered 403 with cf-mitigated: challenge — the edge rule .* challenges the release's own \/sitemap\.xml: /,
     );
   });
+  // **The control requires a 200** (cycle F's residual fix; the Fable
+  // re-review): an answer with no `cf-mitigated` header is not enough, since a
+  // 404 for a `/sitemap.xml` the local stamp promises is a deployed tree that
+  // is not the local one, and a `/sw.js` that is not 200 is a broken release.
+  // Mutants: any non-mitigated status passed; the status unread on one path.
+  it("FAILS on when the release's own file answers anything but 200, naming the path and the status", async () => {
+    const missing = () => new Response("<!doctype html>", { status: 404 });
+    const { fetch } = routed({ "/api/health": challenge, "/sw.js": served, "/sitemap.xml": missing });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }, true), "wrangler.x.jsonc", fetch)).rejects.toThrow(
+      "smoke-release: wrangler.x.jsonc declares YOKOHAMA_TURNSTILE on, but a cookie-less GET https://yokohama.moore.nyc/sitemap.xml " +
+        "answered 404 with no cf-mitigated header — the release's own /sitemap.xml must answer 200: the deployed release is " +
+        "not the local tree, or the deploy is broken (run the smoke from the tree that was deployed)",
+    );
+    const broken = routed({ "/api/health": challenge, "/sw.js": () => new Response("", { status: 503 }) });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }), "wrangler.x.jsonc", broken.fetch)).rejects.toThrow(
+      /GET https:\/\/yokohama\.moore\.nyc\/sw\.js answered 503 with no cf-mitigated header — the release's own \/sw\.js must answer 200: /,
+    );
+    const moved = routed({ "/api/health": challenge, "/sw.js": () => new Response("", { status: 302, headers: { location: "/" } }) });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }), "wrangler.x.jsonc", moved.fetch)).rejects.toThrow(
+      /\/sw\.js answered 302 with no cf-mitigated header — the release's own \/sw\.js must answer 200/,
+    );
+    // A challenge is still named as a challenge, whatever its status.
+    const odd = routed({ "/api/health": challenge, "/sw.js": () => new Response("", { status: 200, headers: { "cf-mitigated": "challenge" } }) });
+    await expect(liveSmoke(ORIGIN, pkg({ YOKOHAMA_TURNSTILE: "on" }), "wrangler.x.jsonc", odd.fetch)).rejects.toThrow(
+      /\/sw\.js answered 200 with cf-mitigated: challenge — the edge rule .* challenges the release's own \/sw\.js/,
+    );
+  });
   // A reading that cannot say which files the deployed release holds asks
   // nothing: the positive control would otherwise silently shrink.
   it("refuses on with no local stamp, or one that is not the build's, asking nothing", async () => {

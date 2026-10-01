@@ -285,6 +285,9 @@ describe("checkSiteUrl", () => {
     ["a password holding an @", "https://alice:hunter2pw@x@host.example/path"],
     ["a user alone, and a path", "https://alice@host.example/path"],
     ["the bare origin", "https://alice:hunter2pw@host.example"],
+    // The residual fix (the Opus re-review): with no `scheme://`, a URL
+    // parser reads `alice:` as the scheme, so the user name is cut too.
+    ["no scheme at all", "alice:hunter2pw@host.example"],
   ])("refuses an address carrying credentials with %s, naming neither the user nor the password", (_what, raw) => {
     let said = "";
     try {
@@ -308,6 +311,12 @@ describe("checkSiteUrl", () => {
       `${PROJECT_URL_VAR} must begin with https:// or http://: "ftp://***@host.example"`,
     );
     expect(() => checkReleaseFeed("http://alice:hunter2pw@host.example/feed", null)).toThrow(/"http:\/\/\*\*\*@host\.example\/feed"$/);
+    // With no `scheme://` there is nothing to keep before the `@`: the user
+    // name goes with the password (the residual fix).
+    expect(() => checkSiteUrl("alice:hunter2pw@host.example")).toThrow(`${SITE_URL_VAR} must begin with https://: "***@host.example"`);
+    expect(() => checkProjectUrl("alice:pw@github.com/o/r")).toThrow(
+      `${PROJECT_URL_VAR} must begin with https:// or http://: "***@github.com/o/r"`,
+    );
   });
 
   // The value is the origin, parsed: a mixed-case scheme and host come back in

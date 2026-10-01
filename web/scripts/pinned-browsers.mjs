@@ -4,7 +4,7 @@
 // no cell and no implementer runs it. Its cells (`pinned-browsers.node.test.ts`)
 // run the command with no arguments, and read its decisions over fixtures.
 //
-//   node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]
+//   node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab] [--go-wait <minutes>]
 //
 // `<origin>` is the host's `https` origin (plain `http` on a loopback host, for
 // a dry run against the local binary); `<state-dir>` is where everything goes —
@@ -31,8 +31,12 @@
 // Important 2).
 //
 // **Phase 2, on `<state-dir>/go` — after the deploy.** The wait for `go` is
-// thirty minutes at most (cycle F's fix wave): without one the run ends,
-// `verdict.json` naming the wait, exit 1. On `go`: `before-go.json`, then
+// `--go-wait <minutes>` at most — whole minutes, 1 to 1440 — and three hours
+// when it is not given (cycle F's fix wave and its residual fix: E's own
+// pin-to-go gaps were 31.6 minutes on the Worker and 35.4 on the NAS, so
+// thirty would have closed both readings early). Without a `go` in that time
+// the run ends, `verdict.json` naming the wait and its bound, exit 1. On
+// `go`: `before-go.json`, then
 // ONE plain reload of the door. **Touch `go` as soon as the deploy's smoke
 // passes**: from the deploy on, any check either tab makes — a tab coming into
 // view, a navigation, the 15-minute interval (R-F3) — finds the release, and
@@ -71,10 +75,27 @@ import { pathToFileURL } from "node:url";
 /** Playwright, from the web package this file sits in. */
 const require = createRequire(new URL("../package.json", import.meta.url));
 
-export const USAGE = "usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]";
+export const USAGE =
+  "usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab] [--go-wait <minutes>]";
 
-/** The one flag: read the door alone, with no second tab. */
+/** The flag that reads the door alone, with no second tab. */
 const NO_SECOND_TAB = "--no-second-tab";
+/** The option that bounds the wait for `go`, in whole minutes. */
+const GO_WAIT = "--go-wait";
+/** The wait for `go` when `--go-wait` is not given: three hours (cycle F's
+ *  residual fix), well past E's measured pin-to-go gaps of 31.6 and 35.4
+ *  minutes. */
+export const GO_WAIT_DEFAULT_MINUTES = 180;
+/** The longest wait `--go-wait` takes: a day. */
+const GO_WAIT_MAX_MINUTES = 1440;
+
+/** `--go-wait`'s value, checked: whole minutes from 1 to a day. */
+function goWaitOf(raw) {
+  if (!/^[1-9][0-9]*$/.test(raw) || Number(raw) > GO_WAIT_MAX_MINUTES) {
+    throw new Error(`pinned-browsers: ${GO_WAIT} takes whole minutes from 1 to ${GO_WAIT_MAX_MINUTES} — got ${JSON.stringify(raw)}`);
+  }
+  return Number(raw);
+}
 
 /** The door's sentences, exactly as cycle F's door draws them (Task 1's
  *  report): the readiness line's three states, and the update line — the
@@ -97,13 +118,25 @@ const TAB_CLICKS = 12;
 /** The hosts plain `http` is taken for. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** The command line: `<label> <origin> <state-dir> [--no-second-tab]`, each
- *  checked; a state directory that looks like a flag is refused, so the flag in
- *  the wrong place is never taken for one. */
+/** The command line: `<label> <origin> <state-dir>`, each checked, then
+ *  `--no-second-tab` and `--go-wait <minutes>` in either order, each at most
+ *  once. A state directory that looks like a flag is refused, so a flag in the
+ *  wrong place is never taken for one. */
 export function pinnedArgs(argv) {
-  const secondTab = !(argv.length === 4 && argv[3] === NO_SECOND_TAB);
-  const args = secondTab ? argv : argv.slice(0, 3);
+  const args = argv.slice(0, 3);
   if (args.length !== 3 || args.some((a) => a === "") || args[2].startsWith("-")) throw new Error(USAGE);
+  let secondTab = true;
+  let goWaitMinutes;
+  for (let i = 3; i < argv.length; i += 1) {
+    if (argv[i] === NO_SECOND_TAB && secondTab) {
+      secondTab = false;
+    } else if (argv[i] === GO_WAIT && goWaitMinutes === undefined && i + 1 < argv.length) {
+      goWaitMinutes = goWaitOf(argv[i + 1]);
+      i += 1;
+    } else {
+      throw new Error(USAGE);
+    }
+  }
   const [label, raw, stateDir] = args;
   if (!/^[A-Za-z0-9._-]+$/.test(label)) throw new Error(`pinned-browsers: the label is letters, digits, dots, dashes — got ${JSON.stringify(label)}`);
   let url;
@@ -116,7 +149,7 @@ export function pinnedArgs(argv) {
   if (!url || !scheme || url.pathname !== "/" || url.search !== "" || url.hash !== "" || raw.endsWith("/") || url.username !== "") {
     throw new Error(`pinned-browsers: the origin is the host's https origin with no path (plain http on loopback) — got ${JSON.stringify(raw)}`);
   }
-  return { label, origin: url.origin, stateDir, secondTab };
+  return { label, origin: url.origin, stateDir, secondTab, goWaitMinutes: goWaitMinutes ?? GO_WAIT_DEFAULT_MINUTES };
 }
 
 /** Which readiness the door's lines say: one of the three sentences, matched
@@ -262,24 +295,26 @@ async function firstOf(files, boundMs = Infinity, pollMs = 5000) {
   }
 }
 
-/** How long phase 2 waits for `<state-dir>/go` (cycle F's fix wave; Task 8's
- *  review, Minor 1): thirty minutes from `PINNED`. A deploy that failed, or
- *  was never made, then ends the run with a `verdict.json` naming the wait
- *  and exit 1 — never a browser left open that only a kill could close. */
-export const GO_WAIT_MS = 30 * 60_000;
-
-/** The check a `go` that never came fails. */
-export const GO_CHECK = "go was touched within 30 minutes of PINNED";
+/** The check a `go` that never came within `minutes` of `PINNED` fails —
+ *  named with its bound, so `verdict.json` says which wait gave up. */
+export function goCheck(minutes) {
+  return `go was touched within ${minutes} minutes of PINNED`;
+}
 
 /** The check a door that never read ready fails, with no `PINNED` written. */
 export const PIN_CHECK = "the door read Ready to play offline before PINNED";
 
-/** Wait for `<stateDir>/go`, polled every `pollMs`, at most `boundMs`:
- *  `null` once it is there, else the failed check naming the wait. */
-export async function awaitGo(stateDir, boundMs = GO_WAIT_MS, pollMs = 5000) {
-  const found = await firstOf([path.join(stateDir, "go")], boundMs, pollMs);
+/** **Wait for `<stateDir>/go`, at most `minutes`** (cycle F's fix wave; Task
+ *  8's review, Minor 1; the bound an argument since the residual fix,
+ *  `--go-wait`, three hours by default): `null` once it is there, else the
+ *  failed check naming the wait and its bound. A deploy that failed, or was
+ *  never made, then ends the run with a `verdict.json` and exit 1 — never a
+ *  browser left open that only a kill could close. `pollMs` and `minuteMs`
+ *  (how long a minute is) are the cells' seams. */
+export async function awaitGo(stateDir, minutes = GO_WAIT_DEFAULT_MINUTES, { pollMs = 5000, minuteMs = 60_000 } = {}) {
+  const found = await firstOf([path.join(stateDir, "go")], minutes * minuteMs, pollMs);
   if (found !== null) return null;
-  return check(GO_CHECK, false, `no go in ${stateDir} within ${boundMs} ms: the deploy's reading never began`);
+  return check(goCheck(minutes), false, `no go in ${stateDir} within ${minutes} minutes: the deploy's reading never began`);
 }
 
 /** **`PINNED` only over a ready door** (cycle F's fix wave; Task 8's review,
@@ -295,8 +330,9 @@ export function pin(stateDir, doorLines, now = () => new Date()) {
 }
 
 /** Write `verdict.json` in `stateDir` over `checks`, under `head`
- *  (`{ label, origin, secondTab }`): the verdict, whose `ok` is the
- *  instrument's exit. */
+ *  (`{ label, origin, secondTab, goWaitMinutes }`, so the verdict names the
+ *  bound the run waited with): the verdict, whose `ok` is the instrument's
+ *  exit. */
 export function writeVerdict(stateDir, head, checks) {
   const verdict = verdictOf(checks);
   fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ ...head, ...verdict, checks }, null, 2)}\n`);
@@ -433,7 +469,7 @@ async function openLocalGame(tab, origin, log) {
   return { id, url: tab.url(), events: await storedEvents(tab, id) };
 }
 
-async function run({ label, origin, stateDir, secondTab }) {
+async function run({ label, origin, stateDir, secondTab, goWaitMinutes }) {
   const { chromium } = require("playwright");
   fs.mkdirSync(stateDir, { recursive: true });
   const logf = path.join(stateDir, "log.txt");
@@ -547,8 +583,8 @@ async function run({ label, origin, stateDir, secondTab }) {
       throw new Stop();
     }
 
-    log(`phase 2: waiting for go, at most ${GO_WAIT_MS / 60_000} minutes`);
-    const late = await awaitGo(stateDir);
+    log(`phase 2: waiting for go, at most ${goWaitMinutes} minutes`);
+    const late = await awaitGo(stateDir, goWaitMinutes);
     if (late !== null) {
       record([late]);
       log("phase 2: no go — closing with the verdict");
@@ -627,7 +663,7 @@ async function run({ label, origin, stateDir, secondTab }) {
     }
   }
   await context.close();
-  const verdict = writeVerdict(stateDir, { label, origin, secondTab }, checks);
+  const verdict = writeVerdict(stateDir, { label, origin, secondTab, goWaitMinutes }, checks);
   log(`closed: ${verdict.summary}`);
   return verdict.ok;
 }

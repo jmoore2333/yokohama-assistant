@@ -1579,7 +1579,7 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
   <file>`, runs after a deploy instead: under the file's `YOKOHAMA_TURNSTILE` `on`, a cookie-less
   `GET /api/health` must answer 403 with `cf-mitigated: challenge`, the edge rule's answer (RUNBOOK
   §3), and the release's own `/sw.js` — and `/sitemap.xml`, where the local stamp says the build
-  wrote one — must answer with no `cf-mitigated` header; under `off` it makes no request.
+  wrote one — must answer 200 with no `cf-mitigated` header; under `off` it makes no request.
 
 The order matters twice. `web/`'s build comes first, because its browser walk leaves a debug module
 in `web/dist`. And after a release build, `npm run build:module:debug` comes before `npm test` in
