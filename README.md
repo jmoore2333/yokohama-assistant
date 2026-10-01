@@ -253,11 +253,15 @@ cannot drift from them.
 
 ### See it
 
-![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository link, and three cards: You against the bot, Play with friends and On this device; the footer reads Not affiliated with Asmodee](worker/docs/img/door-desktop.png)
+![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository
+link, and three cards: You against the bot, Play with friends and On this device; the footer reads
+Not affiliated with Asmodee](worker/docs/img/door-desktop.png)
 
 *The door, the first screen. It asks the server for nothing.*
 
-![The lobby as Ben sees it: Playing as ben@readme.test in the corner, Your tables empty, one open table Friday game with a password badge and a Take a seat button, and Being played empty](worker/docs/img/lobby-desktop.png)
+![The lobby as Ben sees it: Playing as ben@readme.test in the corner, Your tables empty, one open
+table Friday game with a password badge and a Take a seat button, and Being played
+empty](worker/docs/img/lobby-desktop.png)
 
 *The lobby: the tables you sit at, the open tables and the games being played.*
 
@@ -268,19 +272,18 @@ cannot drift from them.
 
 ### How it plays
 
-**Starting a game.** You sign in first — the server reads one identity header, and which header
-it reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this
-is me, this is *someone@else*, an open seat for anyone with the link, or the bot, which is offered
-at two players only. A table with an open seat waits, **open**, until the last seat is taken; a
-table with every seat filled opens **dealing**. Nothing is dealt onto one screen: each person opens
-the table and keeps from **their own view**. You see your own two cards on the
-**set table** — the areas with their site cards and tokens, the port and the tracks, what the
-rulebook has on the table at the step where the two starting orders are dealt and chosen in
-secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach
-your browser at all. The technologies and the goals go out at the two steps after that one, so
-they are revealed once you have chosen, and a bot seat's own two are face down: it keeps one of
-them, the record knows which, and you never see it. When the last person has kept, the game
-starts.
+**Starting a game.** You sign in first — the server reads one identity header, and which header it
+reads is a deployment's choice (see [Hosting](#hosting)). Then you fill one row per seat: this is
+me, this is *someone@else*, an open seat for anyone who has the link and can pass the deployment's
+door, or the bot, which is offered at two players only. A table with an open seat waits, **open**,
+until the last seat is taken; a table with every seat filled opens **dealing**. Nothing is dealt
+onto one screen: each person opens the table and keeps from **their own view**. You see your own two
+cards on the **set table** — the areas with their site cards and tokens, the port and the tracks,
+what the rulebook has on the table at the step where the two starting orders are dealt and chosen in
+secret — with the built-in bot's Keep score under each of them, and nobody else's cards reach your
+browser at all. The technologies and the goals go out at the two steps after that one, so they are
+revealed once you have chosen, and a bot seat's own two are face down: it keeps one of them, the
+record knows which, and you never see it. When the last person has kept, the game starts.
 
 While it runs, each browser is served **its own seat**: your hand is open, every other seat is a
 count. Your opponent's turn arrives on its own — pushed to each visible tab over one held
@@ -355,8 +358,10 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 **One table layer, three hosts, and a guide and a runbook for each server.**
 
-- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** Set the Worker's two TTL variables there and an hourly sweep ends idle tables, refusing to start without an archive; the sweep, and the by-hand recipe for a server with no TTL, are its §8. One image
-  carries the server and the client.
+- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** Set
+  the Worker's two TTL variables there and an hourly sweep ends idle tables, refusing to start
+  without an archive; the sweep, and the by-hand recipe for a server with no TTL, are its §8. One
+  image carries the server and the client.
   - The guide leads with Access: `cf-access` behind a Cloudflare Access application, this repository's
     default.
   - It gives the open door its own section and trust model, for a home network, a LAN or a VPN with no

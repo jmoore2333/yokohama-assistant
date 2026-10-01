@@ -2194,8 +2194,9 @@ pub struct ArchiveReply {
 /// document parses; it passes [`tables::check_shape`]; it AGREES with the
 /// record; and its id is `is_safe_id`'s, because it becomes a path component.
 /// **The count is stated here once** — an earlier draft said four here, four
-/// again at the call below and five in `CLAUDE.md`, three counts for one
-/// function (whole-branch review, false sentence 4); the order is the one
+/// again at the call below and a third count in an earlier document, three
+/// counts for one function (whole-branch review, false sentence 4); the order
+/// is the one
 /// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`
 /// probes pairwise. Then **the leaf IS the `Why`** — `Over` iff the
 /// replayed state is over, else `Abandoned` — and one put under

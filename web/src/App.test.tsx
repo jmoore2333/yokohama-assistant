@@ -2869,6 +2869,7 @@ describe("the door", () => {
 
   // The scrubber reads the same record every other route does, and it is the
   // one catch site that is an effect rather than a click handler.
+  // 10 s: 5.9-6.1 s under the close sequence's load (E's close); green alone.
   it("a 401 from the replay scrubber returns to sign-in", async () => {
     await renderApp(wire.options, (call) =>
       // The SCRUBBER still asks `/at/{k}` one position at a time (R-6.5b.10
@@ -2882,7 +2883,7 @@ describe("the door", () => {
     await user.click(await screen.findByRole("button", { name: "Previous move" }));
     await screen.findByRole("heading", { name: "Choose a name" }, { timeout: 2000 });
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
-  });
+  }, 10_000);
 
   it("a refusal that is not about identity leaves you in the game", async () => {
     // **What makes the cell above about 401 and not about 4xx.** Not being
