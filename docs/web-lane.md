@@ -326,7 +326,9 @@ Windows, its tests and the `piped_dogfood` gate, then `gh release create` from t
   a label — one line, since the match has no `_` arm;
 - re-pointing `PROVISIONAL_DEFAULT_BOT` fails `wire_fixtures` until `web/src/wire/production_bot.json` is
   regenerated;
-- a V5 build plays V4's unfinished games on the web only under the two conditions §15 names.
+- a V5 build plays V4's unfinished games on the web exactly when it still derives V4's exact descriptor (§15); the
+  admission is in place since 2026-10-01 (`GRANDFATHERED_NAMED_IDENTITIES`), and a re-point appends the identity it
+  ships there, never removing one.
 
 ## 8. The public door's preconditions
 
@@ -825,12 +827,13 @@ These read like gaps and are not; each is the owner's ruling or a stated propert
   life and is kept as an answer for an hour, so it costs one cross-origin request an hour per browser and never
   reaches the Worker. The live harness forgives it, counted (§2, §16): as the 404 a real browser meets, or as the CORS
   refusal the harness's own claimed-user header causes at GitHub's preflight.
-- **A V5 build plays V4 games on the web only under one CLI line** (R-F4, corrected forward). A V5 build plays V4
-  games on the web exactly when the V5 ship (a) admits `v4-step9-draft1` in the CLI's `eligible` AND (b) still derives
-  V4's exact descriptor, `LOOKAHEAD_IMPL_VERSION` and `EVAL_IMPL_VERSION` unmoved — a weights-only V5. A V5 that moves
-  either refuses V4 games as DRIFT on the web by R-F4's own rule, since no build then reconstructs the exact recorded
-  bot; until then the web refuses them with `eligible`'s own sentence, as the CLI does. The line is the AI lane's
-  (`docs/plans/2026-09-11-ai-lane-reentry-handover.md`).
+- **A V5 build plays V4 games on the web exactly when it still derives V4's exact descriptor** (R-F4, corrected
+  forward). A V5 build plays V4 games on the web exactly when it still derives V4's exact descriptor,
+  `LOOKAHEAD_IMPL_VERSION` and `EVAL_IMPL_VERSION` unmoved — a weights-only V5; the admission is in place since
+  2026-10-01 (`GRANDFATHERED_NAMED_IDENTITIES` in `crates/yokohama-cli/src/bot.rs`), and a re-point appends the
+  identity it ships there, never removing one. A V5 that moves either refuses V4 games as DRIFT on the web by R-F4's
+  own rule, since no build then reconstructs the exact recorded bot. The line's record is
+  `docs/plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md`.
 - **No siteverify** (R-F6; F spec §2.6). The widget's token grants nothing the zone's `cf_clearance` cookie does not,
   and a Worker-side check would cost an invocation to protect nothing; so no token is sent, no secret is set, `/enter`
   is the same 302 on both hosts, and the Turnstile dashboard's "no siteverify traffic" banner is expected.
