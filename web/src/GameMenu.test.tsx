@@ -19,6 +19,23 @@ import { wire } from "./wire/contract";
 const here = import.meta.url;
 
 describe("the Game menu", () => {
+  // **What gives, from 1000px to 1200px, is the game's id alone** (cycle E,
+  // straw poll row 71; ruling 4b-2). The banner's one-row rule lets this
+  // summary end in an ellipsis there, and the ellipsis falls on the id's own
+  // element — the mode and "saved", the save state a player reads, stay
+  // whole. `wire.options` is a saved game, so "saved" is really drawn. jsdom
+  // has no layout: the picture at 1024 is the ellipsis; this is its element.
+  it("keeps the game's id in an element of its own, with the mode and the save state outside it", async () => {
+    expect(wire.options.frame.title.autosaved, "the premise: a saved game").toBe(true);
+    await renderApp(wire.options);
+    const id = gameMenu().querySelector(".game-menu-id");
+    expect(id?.textContent).toBe(wire.options.id);
+    // The words are the summary's as they always were, and all of them its title.
+    expect(gameMenu().textContent).toBe(`${wire.options.mode} · ${wire.options.id} · saved`);
+    expect(gameMenu()).toHaveAttribute("title", gameMenu().textContent!);
+    expect(id!.textContent).not.toContain("saved");
+  });
+
   it("lists the other saved games and switches to one", async () => {
     const other = { ...wire.options4p, id: "sim-other" };
     await renderApp(wire.options, (call) => {
@@ -38,7 +55,7 @@ describe("the Game menu", () => {
     // stylesheet for `details`, so a CLOSED menu's buttons are exactly as
     // findable (measured: `display: block`, `getByRole` resolves). Whether it
     // is open is its `open` attribute, which the cell below reads.
-    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    await waitFor(() => expect(gameMenu()).toHaveTextContent(/sim · sim-other/));
     expect(screen.getByRole("button", { name: wire.options.id })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "sim-other" })).toBeNull();
   });
@@ -61,7 +78,7 @@ describe("the Game menu", () => {
     const menu = document.querySelector<HTMLDetailsElement>("details.game-menu")!;
     expect(menu.open, "the premise: the summary click opened it").toBe(true);
     await user.click(await screen.findByRole("button", { name: "sim-other" }));
-    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    await waitFor(() => expect(gameMenu()).toHaveTextContent(/sim · sim-other/));
     await waitFor(() => expect(menu.open, "closed once the switch landed").toBe(false));
   });
 
@@ -172,7 +189,8 @@ describe("the Game menu", () => {
   });
 
   // **The way out lives here on the game screen, and the reason is measured.**
-  // The banner is gated at ONE ROW at 1440 and 1280 (`the_screen_itself.spec.ts`),
+  // The banner is gated at ONE ROW at 1440 and 1280 — and 1024 since cycle E —
+  // (`the_screen_itself.spec.ts`),
   // and M6.1's door put a strip and a button in it: 1325px of children and gaps
   // against a 1240px content box at 1280, which broke the line. The FACT ("You
   // are …") is read at a glance and stays in the banner; the CONTROL joins this
@@ -231,7 +249,7 @@ describe("the Game menu", () => {
       fireEvent.click(row);
     });
     expect(tableReads()).toHaveLength(1);
-    await waitFor(() => expect(screen.getByText(/sim · sim-other/)).toBeInTheDocument());
+    await waitFor(() => expect(gameMenu()).toHaveTextContent(/sim · sim-other/));
     expect(tableReads()).toHaveLength(1);
     expect(gets()).toHaveLength(1);
   });

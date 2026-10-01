@@ -63,25 +63,33 @@ function BandMark() {
  *  **The LAST crumb is the page's heading** (`<h2>`); the ones before it are
  *  the path to it, not headings. So the lobby's band is the lobby's heading,
  *  and a form under "Lobby / New table" is headed "New table" here — a card
- *  below the band titles itself at a lower level. */
+ *  below the band titles itself at a lower level.
+ *
+ *  **The path is an element of its own** (cycle E, straw poll row 60). At
+ *  desktop width it is no box at all (`display: contents`), so the crumbs run
+ *  on after the product's name as they always did; on a phone the product and
+ *  the corner's pill take the first line and the path the line under both —
+ *  it wrapped under the pill, and beside it, before. */
 export function LobbyBand({ crumbs, corner }: { crumbs: string[]; corner: ReactNode }) {
   return (
     <header className="lobby-band">
       <div className="band-brand">
         <BandMark />
         <h1>Yokohama</h1>
-        {crumbs.map((crumb, i) => (
-          <Fragment key={`${i}-${crumb}`}>
-            <span className="crumb-sep" aria-hidden="true">
-              /
-            </span>
-            {i === crumbs.length - 1 ? (
-              <h2 className="crumb">{crumb}</h2>
-            ) : (
-              <span className="crumb">{crumb}</span>
-            )}
-          </Fragment>
-        ))}
+        <div className="band-crumbs">
+          {crumbs.map((crumb, i) => (
+            <Fragment key={`${i}-${crumb}`}>
+              <span className="crumb-sep" aria-hidden="true">
+                /
+              </span>
+              {i === crumbs.length - 1 ? (
+                <h2 className="crumb">{crumb}</h2>
+              ) : (
+                <span className="crumb">{crumb}</span>
+              )}
+            </Fragment>
+          ))}
+        </div>
       </div>
       <div className="band-corner">{corner}</div>
     </header>

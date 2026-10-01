@@ -191,12 +191,17 @@ COPY --from=server /out/wasm ./src/local/wasm
 # `build:client`, not `build`: the module is already here, and running
 # `build:wasm` in this stage is exactly what has no toolchain to run it.
 #
-# The door's project link (M6.5c2, spec §2.3): a BUILD value, because the release
-# is precached under a digest of its own bytes and a server rewriting
-# `index.html` at start-up would fail the service worker's install check. An ARG
-# is in `RUN`'s environment; unset or empty, the door draws no link, and a bad
-# value fails this step naming the variable (`web/scripts/project-url.mjs`).
+# The door's THREE build values (M6.5c2, spec §2.3, R-6.5c2.40): the project
+# link, the blurb under the title and the footer's one-line notice. BUILD
+# values, because the release is precached under a digest of its own bytes and
+# a server rewriting `index.html` at start-up would fail the service worker's
+# install check. An ARG is in `RUN`'s environment; an ARG given no
+# `--build-arg` is unset, and `--build-arg X=` is the empty string, which the
+# checker reads as none: the door draws nothing for that value. A bad value
+# fails this step naming the variable (`web/scripts/build-values.mjs`).
 ARG YOKOHAMA_PROJECT_URL
+ARG YOKOHAMA_SITE_BLURB
+ARG YOKOHAMA_SITE_NOTICE
 RUN npm run build:client
 
 # ---------------------------------------------------------------------------

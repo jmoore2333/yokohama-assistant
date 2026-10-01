@@ -18,7 +18,8 @@ import { Table } from "./table";
  * restore).
  *
  * `METHODS` is the class's method map as it stood before the split (`src/table.ts`
- * at `ff6bdcb1`, read by TypeScript's parser), in that order. The chain must
+ * at `ff6bdcb1`, read by TypeScript's parser), in that order, with each method
+ * added since in its part's place (`waiting`, R-6.5c2.42). The chain must
  * carry EXACTLY these — a method added later is added here, which is what keeps
  * this list the whole map — each ONCE, since a mixin that re-declared a name
  * would silently shadow the one below it.
@@ -60,6 +61,7 @@ const METHODS = [
   "redispatch",
   "expire",
   "expiry",
+  "waiting",
   "unexpired",
   "operate",
   "force",

@@ -1,0 +1,102 @@
+// **The Worker `yokohama-web` with the dev door SHUT** (R-E10) — production's
+// configuration in every respect but one: `YOKOHAMA_DEV_DOOR` is "off", so the
+// worker door is Cloudflare Access alone and no claimed caller reaches the
+// Worker, whatever the `yokohama-worker` credential and `DEV_DOOR_CLIENT_ID`
+// hold. `npm run deploy:gate` ships it (`--var` prints the binding as
+// "(hidden)", so a deploy could not be read back; a committed file can), and
+// the plain `npm run deploy` reverts to production's. The deploy guard judges
+// it like any configuration (`--config wrangler.gate.jsonc`), holds it to
+// production's blocks, and refuses it if the dev door is not "off".
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yokohama-web",
+  "main": "src/index.ts",
+  // Pinned (spec §3.1); on or after 2026-02-24, so `deleteAll()` deletes an
+  // object's alarm too.
+  "compatibility_date": "2026-09-15",
+  // The custom domain (spec §3.1): the deploy creates the hostname's DNS
+  // record, and the `yokohama` Access application, which lists this hostname
+  // among its destinations, stands in front of every request to it.
+  "routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }],
+  // No `workers.dev` URL and no preview (Version) URLs: the Worker answers
+  // only where its own routes put it. Both are set rather than left out,
+  // because absent is not off, and the deploy guard refuses either one that is
+  // not `false`.
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // The module is imported as a compiled `WebAssembly.Module`, which the
+  // factory instantiates anew on every call (spec §2.2).
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // Spec §2.3, exactly as the spike proved it (§0.3 row 7): no HTML handling,
+  // so `/index.html` answers 200 rather than a redirect the service worker's
+  // install would refuse; no not-found fallback, so a missing file reaches the
+  // Worker and answers 404 rather than `index.html`; and the Worker first for
+  // `/api/*` and `/enter`. `npm run build:assets` assembles the directory and
+  // verifies it against the release's precache list. The deploy guard checks
+  // this block, and the pool's copy, against spec §2.3.
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/api/*", "/enter"]
+  },
+  // The three object classes (spec §2.4–§2.6), SQLite-backed, in ONE
+  // migration. The tag is FROZEN from the first deploy on: a class added later
+  // needs a tag of its own (the orchestrator's ruling I-30). The deploy guard
+  // holds the pool's two blocks equal to these.
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      // Not `ARCHIVE`: that is the bucket's binding (spec §3.1).
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The archive's bucket (spec §3.1, §2.6): `yokohama-archive`, private —
+  // no `r2.dev` URL, no custom domain — made on the owner's account on
+  // 2026-09-23. `YOKOHAMA_WEB_ARCHIVE` below decides whether anything is
+  // saved to it. The deploy guard holds the pool's binding equal to this one.
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  // The variables (spec §3.1), none of them a secret; `worker/RUNBOOK.md` §3 says what
+  // each one's absence means. `wrangler deploy` REPLACES the Worker's
+  // variables with these, so this file is the whole list. Four that `Env`
+  // declares are not here: `YOKOHAMA_WEB_COUNT_WAKES`, whose absence means
+  // off; the two SECRETS, `YOKOHAMA_WEB_ADMINS` (the plan's ruling P-1) and
+  // the dev door's `DEV_DOOR_CLIENT_ID` (M6.5c2, R-6.5c2.5), each set as a
+  // Worker secret, which a deploy leaves alone — the deploy guard refuses this
+  // file if its `vars` name either; and the pool's test clock, which never
+  // ships (the deploy guard refuses this file if it so much as names it).
+  "vars": {
+    // The door (M6.5c2, spec §2.1; R-6.5c2.5), with no default: `worker` is
+    // Cloudflare Access, verified by the shell — this repository's
+    // configuration, behind the `yokohama` Access application. `open` is a
+    // deployment with no identity provider, where anyone who reaches the Worker
+    // may play under any name; this repository runs it only for the door window (`wrangler.open.jsonc`).
+    "YOKOHAMA_WEB_IDENTITY": "worker",
+    // The `yokohama` Access application: its team's domain and its audience.
+    "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
+    "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
+    // Shut: the point of this file.
+    "YOKOHAMA_DEV_DOOR": "off",
+    // The receipt archive over the bucket above (spec §2.6). `off` deploys
+    // with no archive — `worker/RUNBOOK.md` §3 says what changes — and needs no change
+    // to the binding.
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
+    // A table expires after 90 days without activity (R-6.5c.15; the owner's
+    // value, 2026-09-23), as its creator's own Abandon, saved first while the
+    // archive is on. Removing the line keeps every table (`worker/RUNBOOK.md` §3).
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    // A table still WAITING for players — its status `open`, a seat unfilled —
+    // expires after 7 days without activity instead (R-6.5c2.42), with a marker
+    // saying it waited. Removing the line reads the default, 7; with no
+    // `YOKOHAMA_WEB_TABLE_TTL_DAYS` no table expires and this line is inert.
+    "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
+    // The NAS's three chat variables, at the NAS's defaults.
+    "YOKOHAMA_WEB_LOBBY_CHAT": "on",
+    "YOKOHAMA_WEB_CHAT_KEEP": "500",
+    "YOKOHAMA_WEB_CHAT_TEXT": "500"
+  }
+}

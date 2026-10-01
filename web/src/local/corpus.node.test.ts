@@ -99,6 +99,11 @@ if (!have) {
  * — the corpus's primary `Api` keeps `NoArchive` and so does the module — so
  * exempting it would hide a browser host that had somehow acquired one, which
  * is a real thing to notice rather than a deployment difference to allow.
+ * **So are `table_ttl_days` and `open_table_ttl_days`** (R-6.5c2.42), for the
+ * same reason: both hosts keep no TTL and read `null`, and the cell below
+ * refuses an exemption the two hosts agree on (measured: listed here, it
+ * fails naming `health.table_ttl_days`). The Worker's replays exempt them,
+ * where the Worker reads 90 and 7 (`worker/scripts/corpus-walk.mjs`).
  */
 const HOST_FIELDS: Record<string, string[]> = {
   health: ["identity", "signal", "multiplayer"],
@@ -126,8 +131,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   were never route payloads: the first is the host's own art directory,
  *   the other three CONTRACTS the client holds itself to (the terminal's
  *   words, the key grammar's verdicts, a seed's verdict).
- * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal` and
- *   `why_refusals` are built in process by `constructed()`, because a router
+ * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal`,
+ *   `why_refusals` and `house_frame` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
  *   this host — the `why` ones are what the committed pair is reconstructed
  *   through — and it is the walk that cannot ask for them.
@@ -157,6 +162,7 @@ const NOT_SERVED = [
   "why_refused",
   "explanation_terminal",
   "why_refusals",
+  "house_frame",
   "events",
   "events_dealing",
   "events_open",

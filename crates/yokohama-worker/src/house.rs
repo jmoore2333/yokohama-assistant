@@ -146,6 +146,7 @@ fn scrub(doc: &mut TableDoc) {
             to_move: _,
             over: _,
             winner: _,
+            has_events: _,
             bot: Some(BotDescriptor { controller: _, version: _, params: _ }) | None,
         })
         | None => {}

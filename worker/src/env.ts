@@ -59,6 +59,10 @@ export interface Env {
   YOKOHAMA_WEB_ARCHIVE?: string;
   /** Whole days, absent = no table ever expires (R-6.5c.15). */
   YOKOHAMA_WEB_TABLE_TTL_DAYS?: string;
+  /** Whole days, absent = 7: how long a table still WAITING for players
+   *  stands without activity (R-6.5c2.42). Inert while
+   *  `YOKOHAMA_WEB_TABLE_TTL_DAYS` is absent. */
+  YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS?: string;
   /** Comma-separated addresses, absent = the operator routes are the layer's
    *  404 (spec §2.9). Set with `wrangler secret put`, never in a committed
    *  file (the plan's ruling P-1). */

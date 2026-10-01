@@ -545,6 +545,78 @@ describe("the two frame modes (R-7.1)", () => {
     expect(asks).toBe(2);
   });
 
+  // **A wake the source's `peek` DECLINES is not re-read** (cycle E, Task 7;
+  // R-E9, ruling T7-a lever c): the lobby's `peek` answers `false` for a house
+  // frame that moved only the chat, whose listings have not changed. Two
+  // frames are read whatever `peek` says, and each is a cell: the FIRST frame
+  // on a connection, since nothing on it has been compared yet (a restarted
+  // Worker counts its `seq` from 0 again, and an outage's missed changes are
+  // owed); and any frame after a re-read that FAILED, since the listings on
+  // screen are then older than the frame, and the next frame is the retry
+  // (the catch below says so).
+  it("does not re-read a frame its peek declines, but reads a connection's first frame whatever peek says", async () => {
+    let asks = 0;
+    const peeked: string[] = [];
+    const { stream } = streamed();
+    renderHook(() =>
+      usePolled<number>(
+        {
+          key: "lobby",
+          once: async () => (asks += 1),
+          stream: "/api/stream",
+          peek: (data) => {
+            peeked.push(data);
+            return false;
+          },
+        },
+        true,
+        () => {},
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("house", { seq: 1, chat: 0 });
+    await settle();
+    expect(asks, "the connection's first frame is read").toBe(1);
+    stream.push("house", { seq: 1, chat: 1 });
+    stream.push("house", { seq: 1, chat: 2 });
+    await settle();
+    expect(asks, "a declined frame is not").toBe(1);
+    expect(peeked, "and every frame was peeked").toHaveLength(3);
+  });
+
+  it("re-reads a declined frame after a re-read that failed, and declines again once one lands", async () => {
+    let asks = 0;
+    let down = true;
+    const { stream } = streamed();
+    renderHook(() =>
+      usePolled<number>(
+        {
+          key: "lobby",
+          once: async () => {
+            asks += 1;
+            if (down) throw new Error("the listings could not be read");
+            return asks;
+          },
+          stream: "/api/stream",
+          peek: () => false,
+        },
+        true,
+        () => {},
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("house", { seq: 1, chat: 0 });
+    await settle();
+    expect(asks, "the first frame's read, which fails").toBe(1);
+    down = false;
+    stream.push("house", { seq: 1, chat: 1 });
+    await settle();
+    expect(asks, "the declined frame after a failure is the retry").toBe(2);
+    stream.push("house", { seq: 1, chat: 2 });
+    await settle();
+    expect(asks, "and once a read has landed, a declined frame is declined").toBe(2);
+  });
+
   it("ends when a woken re-read is refused, and stops reading the stream with it", async () => {
     // The table this stream is about is gone, or is not ours. The frames would
     // go on arriving, so the READER is let go too — a connection kept open to a

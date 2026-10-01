@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { ShellConfig } from "./config";
-import { DAY_MS, expiryDeadline, gameOf, keptOf, markerEnd, markerSentence, ttlDaysOf, type Marker } from "./marker";
+import {
+  DAY_MS,
+  expiryDays,
+  expiryDeadline,
+  expiryReason,
+  gameOf,
+  keptOf,
+  markerEnd,
+  markerSentence,
+  openTtlDaysOf,
+  ttlDaysOf,
+  type Marker,
+} from "./marker";
 
 /** 2026-10-22, 12:00 UTC: a time whose date reads the same in every zone. */
 const NOON = Date.UTC(2026, 9, 22, 12, 0, 0);
@@ -42,6 +54,20 @@ describe("the marker's sentence (spec §2.4 step 5, §4)", () => {
     );
   });
 
+  // R-6.5c2.42's fourth head: a table still WAITING for players when the
+  // alarm closed it — its status `open` — whose game there never was. The
+  // head carries the marker's OWN `ttl_days`; one day is "1 day". Mutants: the
+  // expired head under `waited`; a constant 7; "1 days".
+  it("names a table that waited for players, with the marker's own ttl_days", () => {
+    const waited = (ttl_days: number): Marker => ({ at: NOON, reason: "waited", ttl_days, kept: "nothing" });
+    expect(markerSentence(waited(7))).toBe(
+      "this table waited 7 days for players and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
+    );
+    expect(markerSentence(waited(1))).toBe(
+      "this table waited 1 day for players and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
+    );
+  });
+
   // The date is the UTC date of `at`, written `YYYY-MM-DD`, in EVERY zone the
   // shell could run in. The runner's zone is set to one where the local date
   // differs from the UTC date at these instants, so a mutant reading the
@@ -79,12 +105,14 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
   });
 
   // The orchestrator's ruling I-34: the TTL is read through this ONE reader,
-  // which a pool cell replaces at module scope for "no TTL, no expiry".
-  it("reads the TTL from the configuration, null when unset", () => {
-    const config = (ttlDays: number | null): ShellConfig => ({
+  // which a pool cell replaces at module scope for "no TTL, no expiry" — and
+  // the waiting-table TTL through its own beside it (R-6.5c2.42).
+  it("reads the TTL from the configuration, null when unset, and the waiting-table TTL beside it", () => {
+    const config = (ttlDays: number | null, openTtlDays = 7): ShellConfig => ({
       door: "worker",
       archive: "r2",
       ttlDays,
+      openTtlDays,
       admins: null,
       countWakes: false,
       devDoor: false,
@@ -92,6 +120,49 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
     });
     expect(ttlDaysOf(config(90))).toBe(90);
     expect(ttlDaysOf(config(null))).toBeNull();
+    expect(openTtlDaysOf(config(90, 3))).toBe(3);
+    expect(openTtlDaysOf(config(90))).toBe(7);
+  });
+});
+
+// R-6.5c2.42 (the plan's R-E8): the alarm is ARMED from SQL alone, which
+// cannot read a table's status, so at the SHORTER of the two TTLs — and once
+// the alarm has read the status and found the table not waiting, at the TTL
+// itself. Mutants: the longer of the two; the TTL whatever was read; the
+// waiting TTL whatever was read.
+describe("the days an expiry is due after (R-6.5c2.42)", () => {
+  it("is the shorter TTL while the status is unread or waiting, and the TTL once it is read not waiting", () => {
+    expect(expiryDays(90, 7, undefined), "unread: armed from SQL").toBe(7);
+    expect(expiryDays(90, 7, true), "waiting").toBe(7);
+    expect(expiryDays(90, 7, false), "read, and not waiting").toBe(90);
+    expect(expiryDays(5, 7, undefined), "a TTL shorter than the waiting TTL governs").toBe(5);
+    expect(expiryDays(5, 7, true)).toBe(5);
+  });
+});
+
+// R-6.5c2.42: how the alarm ends a table past the deadline it was armed at —
+// by its STATUS first. A table still waiting for players is closed as one
+// that waited once its waiting TTL is past, whatever else is; any other table
+// expires only once the TTL itself is past. Each boundary is pinned at its
+// millisecond. Mutants: the TTL asked before the status (an open table idle
+// 100 days read `expired`); the status ignored (a playing table closed at 7
+// days); `>` for `>=` at either deadline; the waiting TTL applied where the
+// TTL is shorter.
+describe("how the alarm ends a table (R-6.5c2.42)", () => {
+  const at = (days: number, less = 0) => NOON + days * DAY_MS - less;
+  it("closes a waiting table once its waiting TTL is past, whatever else is", () => {
+    expect(expiryReason(at(7, 1), NOON, 90, 7, true), "a millisecond short").toBeUndefined();
+    expect(expiryReason(at(7), NOON, 90, 7, true)).toEqual({ reason: "waited", ttl_days: 7 });
+    expect(expiryReason(at(100), NOON, 90, 7, true), "past both: its status decides").toEqual({ reason: "waited", ttl_days: 7 });
+  });
+  it("expires any other table only once the TTL itself is past", () => {
+    expect(expiryReason(at(7), NOON, 90, 7, false), "past the waiting TTL, not waiting").toBeUndefined();
+    expect(expiryReason(at(90, 1), NOON, 90, 7, false), "a millisecond short").toBeUndefined();
+    expect(expiryReason(at(90), NOON, 90, 7, false)).toEqual({ reason: "expired", ttl_days: 90 });
+  });
+  it("expires a waiting table under the TTL where the TTL is the shorter", () => {
+    expect(expiryReason(at(5), NOON, 5, 7, true)).toEqual({ reason: "expired", ttl_days: 5 });
+    expect(expiryReason(at(7), NOON, 5, 7, true), "then its waiting TTL passes too").toEqual({ reason: "waited", ttl_days: 7 });
   });
 });
 

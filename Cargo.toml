@@ -28,12 +28,12 @@ authors = ["Jeremy Moore"]
 # version.
 #
 # **The figures in this paragraph are the BROWSER module's**, read at
-# `4212f6a0` (the M6.5c2 cycle D close, §3) under `wasm-opt` 133,
-# `wasm-bindgen`'s output: the release module reads **1,215,865 B** under this
+# `c39da5a1` (the M6.5c2 cycle E close, its Task 10.B, 2026-09-30) under `wasm-opt` 133,
+# `wasm-bindgen`'s output: the release module reads **1,216,429 B** under this
 # profile once `npm run build:wasm` runs `wasm-opt -Oz` over it, from
-# 1,843,940 B before `wasm-opt` (cycle C's close read 1,197,069 B from
-# 1,814,905 B at `ea4f174d`; the +18,796 B is that cycle's layer code). Its
-# `gzip -9` reading at that close: **472,156 B** (M6.5b2's 456,048 B was the
+# 1,844,514 B before `wasm-opt` (cycle D's close read 1,215,865 B from
+# 1,843,940 B at `4212f6a0`; the +564 B is cycle E's layer code). Its
+# `gzip -9` reading at that close: **472,169 B** (M6.5b2's 456,048 B was the
 # last one before it, at a smaller module). The plain-`release` size and the
 # cost of a whole bot turn (M6.5b2's 2,843,070 B, and 28.6 -> 35.2 ms) were
 # not re-read.
@@ -45,16 +45,16 @@ authors = ["Jeremy Moore"]
 # cycle's whole-branch review's false sentence 6.
 #
 # **The WORKER module's figures** (`yokohama-worker`, M6.5c2, spec §2.7),
-# read at `4212f6a0` (the cycle D close, §3; this workstation, Darwin arm64,
-# macOS 27.0), off `worker/gen/yokohama_worker_bg.wasm` after `cd worker && npm
+# read at `c39da5a1` (the cycle E close, its Task 10.B, 2026-09-30; this
+# workstation, Darwin arm64, macOS 27.0), off `worker/gen/yokohama_worker_bg.wasm` after `cd worker && npm
 # run build:module` (this profile, then `wasm-opt -Oz`), by `node
 # worker/scripts/module-figures.mjs worker/gen/yokohama_worker_bg.wasm`:
-# **1,275,056 B** (1,928,529 B before `wasm-opt`; cycle C's close read
-# 1,258,106 B from 1,901,547 B), and 498,330 B gzipped at level 9 (Node's
+# **1,276,830 B** (1,931,148 B before `wasm-opt`; cycle D's close read
+# 1,275,056 B from 1,928,529 B), and 499,614 B gzipped at level 9 (Node's
 # `zlib`, whose header names no file; the `gzip -9` command's names this one,
-# 24 B more). Its linear memory starts at 18 pages (1,152 KiB), 123,648 B of
-# them the module's data, copied in from its 171 data segments (the data
-# SECTION is 125,055 B encoded). A figure here is a READING, not a constant. Every instance pays that memory — a table object's own,
+# 24 B more). Its linear memory starts at 18 pages (1,152 KiB), 123,748 B of
+# them the module's data, copied in from its 172 data segments (the data
+# SECTION is 125,164 B encoded). A figure here is a READING, not a constant. Every instance pays that memory — a table object's own,
 # and the second it builds for one house copy (`copyOf`,
 # `worker/src/table.ts`). **This is the ONE place those figures are
 # measured**: `copyOf`'s doc and `worker/README.md` §6.3 cite it, as the

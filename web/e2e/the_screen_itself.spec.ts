@@ -12,7 +12,7 @@ import { type Page } from "@playwright/test";
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { FLOOR_REM, tileWidthFor } from "../src/fit";
-import { act, blame, deadEnd, readOverflow, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, noticeIsDrawn, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -295,11 +295,24 @@ test("the answer bar is always in view — top of the side column above 1201, bo
   await page.setViewportSize({ width: 1024, height: 844 });
   await settle();
   const bottomOfPage = await page.evaluate(() => document.body.scrollHeight);
+  // **The footer's notice ends the page (R-6.5c2.40)**: the deck sticks to
+  // `.app`'s bottom edge, and the one-line footer sits below `.app`, so at the
+  // very end of the page the deck rests exactly one footer above the viewport's
+  // bottom; at every other scroll it is against the edge. 0 where the build set
+  // no notice.
+  await noticeIsDrawn(page, "the game screen at 1024px");
+  const footerH = await page.evaluate(
+    () => document.querySelector("footer.site-notice")?.getBoundingClientRect().height ?? 0,
+  );
   for (const y of [0, 400, bottomOfPage]) {
     await page.evaluate((to) => window.scrollTo(0, to), y);
     await settle();
     const r = await readDeck();
-    expect(Math.abs(r.bottom - r.innerHeight), `the deck is not against the bottom edge at scrollY ${y}`).toBeLessThanOrEqual(1);
+    const rests = y === bottomOfPage ? footerH : 0;
+    expect(
+      Math.abs(r.bottom - (r.innerHeight - rests)),
+      `the deck is not against the bottom edge (less the footer's ${rests}px) at scrollY ${y}`,
+    ).toBeLessThanOrEqual(1);
     expect(r.top, `the deck runs off the top of the viewport at scrollY ${y}`).toBeGreaterThanOrEqual(0);
     // The same floor Arm 1 takes, and Arm 2 needs it for a second reason: a deck
     // whose every control is outside `.options.scrolls`'s clip reads `[]` here,
@@ -966,15 +979,25 @@ test("a panel really is modal", async ({ page }) => {
 // breaking — `.banner` is `flex-wrap: wrap` too, and at 1280 the nav moved
 // below the title, which is the 101-against-56 reading recorded above. A nav
 // wrapping inside its own box is a different measurement and is not this cell's.
-test("the banner is one row at 1440 and 1280", async ({ page }) => {
+//
+// **And 1024 is ASSERTED since cycle E** (straw poll row 71). Measured at the
+// cycle's head the banner read 101px at 1024 — 1218px of children and gaps
+// against a 984px content box — and 93px at 1280 whenever "reconnecting…"
+// joined the row. Below 1201 the title's tracking, the gaps and the nav's
+// buttons are tighter, and the Game menu's summary (the game's id) is the one
+// child that gives way, ending in an ellipsis rather than breaking the line;
+// the link word left the banner's row for the line under it (a line of its own
+// below 1201px, the end-trigger strip's right-hand end above) — read below.
+test("the banner is one row at 1440, 1280 and 1024", async ({ page }) => {
   const watch = watchForBreakage(page);
 
   // Every width is measured BEFORE anything is asserted, so the record below is
   // printed whole even though the run stops at the first width that wrapped.
   const rows: { width: number; height: number; oneRowBox: number; wrapped: boolean; kids: string }[] = [];
+  let last = "";
   for (const width of [1440, 1280, 1024]) {
     await page.setViewportSize({ width, height: 900 });
-    await startGame(page);
+    last = (await startGame(page)).id;
     const r = await page.evaluate(() => {
       const banner = document.querySelector("header.banner");
       if (!banner) return null;
@@ -1005,12 +1028,95 @@ test("the banner is one row at 1440 and 1280", async ({ page }) => {
   );
   expect(rows.length, "a width was skipped, so the record above is short").toBe(3);
 
-  for (const r of rows.filter((row) => row.width >= 1280)) {
+  for (const r of rows) {
     expect(
       r.wrapped,
       `the banner wrapped at ${r.width}px: ${r.height}px against a one-row box of ${r.oneRowBox}px`,
     ).toBe(false);
   }
+
+  // **And "reconnecting…" leaves the row alone** (cycle E, straw poll row 71):
+  // in the banner's row it broke the line at 1280 (93px against 56). **Two
+  // shapes, by width (ruling 4b-1)**, and each is read here. From 1201 the
+  // word shares the end-trigger strip's line and takes NO height — the table
+  // is fitted to the window's height, and a line that came and went would
+  // refit the board on every reconnect — so at 1280 the banner's height and
+  // every row of `.app`'s grid are the same with the word as without it.
+  // Below 1201 it is a line of its own under the banner, above the end-trigger
+  // strip. The stream here answers the table's current frame and then ENDS
+  // without an end frame — a connection made and lost, which the client calls
+  // "reconnecting".
+  const read = () =>
+    page.evaluate(() => {
+      const box = (e: Element) => {
+        const r = e.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, height: r.height };
+      };
+      const banner = document.querySelector("header.banner")!;
+      const cs = getComputedStyle(banner);
+      const oneRowBox =
+        parseFloat(cs.paddingTop) +
+        parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderTopWidth) +
+        parseFloat(cs.borderBottomWidth) +
+        Math.max(...[...banner.children].map((c) => c.getBoundingClientRect().height));
+      // The word, read ONCE and inside this one script (Task 4b's review,
+      // Minor 4): the routed stream ends on every retry, and a retry that
+      // lands between two reads briefly says "live" and removes it.
+      const word = document.querySelector(".link-strip .link");
+      return {
+        word: word ? { text: word.textContent, ...box(word) } : null,
+        banner: box(banner),
+        oneRowBox,
+        endStrip: box(document.querySelector(".end-strip")!),
+        rows: getComputedStyle(document.querySelector(".app")!).gridTemplateRows,
+      };
+    });
+  /** One read in which the word is on screen, retried until there is one. */
+  const readWithTheWord = async () => {
+    let got: Awaited<ReturnType<typeof read>> | null = null;
+    await expect
+      .poll(
+        async () => {
+          got = await read();
+          return got.word?.text ?? null;
+        },
+        { timeout: 20_000, message: "the page says reconnecting" },
+      )
+      .toBe("reconnecting\u2026");
+    return got!;
+  };
+
+  // Live, at 1280: the rows the word must not move.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const live = await read();
+  expect(live.word, "live says nothing").toBeNull();
+
+  const events = await page.request.get(`/api/games/${last}/events`, { headers: { "x-yokohama-claimed-user": WALKER } });
+  expect(events.status(), await events.text()).toBe(200);
+  const frame = `event: signal\ndata: ${await events.text()}\n\n`;
+  await page.route(`**/api/games/${last}/stream**`, (route) =>
+    route.fulfill({ status: 200, contentType: "text/event-stream", body: frame }),
+  );
+  await page.reload();
+  await expect(page.getByText(/end triggers:/)).toBeVisible();
+
+  const at1280 = await readWithTheWord();
+  // eslint-disable-next-line no-console
+  console.log(`banner reconnecting at 1280px: ${JSON.stringify(at1280)} (live: ${JSON.stringify(live)})`);
+  expect(at1280.banner.height, "the banner is one row at 1280 while reconnecting").toBeLessThanOrEqual(at1280.oneRowBox + 1);
+  expect(Math.round(at1280.banner.height), "the banner's height is unchanged by the word").toBe(Math.round(live.banner.height));
+  expect(at1280.rows, "every row of the page's grid is unchanged by the word").toBe(live.rows);
+  expect(at1280.word!.top, "the word sits under the banner at 1280").toBeGreaterThanOrEqual(at1280.banner.bottom - 1);
+
+  await page.setViewportSize({ width: 1024, height: 900 });
+  const at1024 = await readWithTheWord();
+  // eslint-disable-next-line no-console
+  console.log(`banner reconnecting at 1024px: ${JSON.stringify(at1024)}`);
+  expect(at1024.banner.height, "the banner is one row at 1024 while reconnecting").toBeLessThanOrEqual(at1024.oneRowBox + 1);
+  expect(at1024.word!.top, "the word sits under the banner at 1024").toBeGreaterThanOrEqual(at1024.banner.bottom - 1);
+  expect(at1024.word!.bottom, "on a line of its own, above the end-trigger strip").toBeLessThanOrEqual(at1024.endStrip.top + 1);
+  await page.unroute(`**/api/games/${last}/stream**`);
 
   expect(watch.failures).toEqual([]);
 });

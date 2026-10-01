@@ -426,6 +426,9 @@ impl Api {
             // would be compared against a router serving a different table.
             serves_games: self.state.multiplayer.0,
             multiplayer_offered: self.state.multiplayer.0,
+            // The axum host's own: it keeps no TTL (R-6.5c2.42).
+            table_ttl_days: None,
+            open_table_ttl_days: None,
         };
         let out = yokohama_web::api::dispatch(
             &self.state.games,
@@ -1882,7 +1885,15 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // (finished: it opens, and `why` names its bot). The three payloads are the
     // client's only sources for the refusal it branches on, the lobby row that
     // does not run here, and `why`'s thirteenth refusal shape.
-    let foreign = Api::new();
+    //
+    // **Over a real archive directory** (cycle E, R-E5), so `table_foreign`
+    // reads as a host that keeps an archive serves it: its creator's reading
+    // of a playing game with events and no stamp, the corpus's one table
+    // whose `saves` is TRUE — the primary `Api` keeps `NoArchive`, and every
+    // other table in the corpus reads `false`. No route here writes a game,
+    // so nothing is put and the directory stays empty.
+    let foreign_dir = archive_tempdir();
+    let foreign = Api::with_archive(&foreign_dir);
     for (id, cut) in [("wire-foreign", Some(300)), ("wire-foreign-over", None)] {
         let (record, table) = foreign_pair(id, "v2-padded", cut);
         let games = &foreign.state.games;
@@ -1898,12 +1909,19 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign/table", None).await;
     assert_eq!(status, StatusCode::OK, "{table_foreign}");
     assert_eq!(table_foreign["bot"]["runs_here"], false, "premise: the row says this build does not run it");
+    assert_eq!(table_foreign["saves"], true, "the corpus's one table an abandon would save: {table_foreign}");
     out.push(("table_foreign".to_string(), table_foreign));
     let (status, why_foreign) =
         foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign-over/why", None).await;
     assert_eq!(status, StatusCode::OK, "{why_foreign}");
     assert_eq!(why_foreign["refusal"]["kind"], "foreign_bot", "{why_foreign}");
     out.push(("why_foreign".to_string(), why_foreign));
+    assert_eq!(
+        std::fs::read_dir(&foreign_dir).expect("the foreign archive").count(),
+        0,
+        "no route here put anything"
+    );
+    std::fs::remove_dir_all(&foreign_dir).ok();
 
     let (archived, archive_script) = archive_payloads(api).await;
     out.extend(archived);
@@ -1951,6 +1969,7 @@ fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, Stri
             to_move: state.current_player.0,
             over: false,
             winner: None,
+            has_events: cut > 0,
             bot: mirror.bot.take(),
         };
     }
@@ -2308,7 +2327,19 @@ fn constructed() -> Vec<(String, Value)> {
         ("why_refused".to_string(), why_refused),
         ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
+        ("house_frame".to_string(), house_frame_fixture()),
     ]
+}
+
+/// **The house frame, as the lobby's socket or stream delivers it** (M6.5c2
+/// cycle E, D's leftover): `signal::house_frame`'s own bytes, parsed, for the
+/// house as it stands after the walk's last house POST (`house_chat_post`,
+/// `POST /api/chat`): one message, so `chat` 1, and one revision, so `rev` 1;
+/// `seq` is the frame's own sequence and starts at 0. Built here because the
+/// walk never reads a stream, and a lobby cell that hand-builds this frame
+/// keeps compiling after the server renames a key.
+fn house_frame_fixture() -> Value {
+    serde_json::from_str(&yokohama_web::signal::house_frame(0, 1, 1)).expect("the frame is JSON")
 }
 
 /// **Every refusal `why` can raise, as the browser would receive it.**
@@ -2364,6 +2395,19 @@ async fn corpus() -> Corpus {
     // did not: the binding below reads exactly this prefix.
     let from_the_walk = all.len();
     all.extend(constructed());
+    // **The constructed house frame is the walk's house, at the row it names**:
+    // its `chat` and `rev` are the house chat page's `last` and `rev` (the walk
+    // reads that page right after the house POST), so a moved walk fails here
+    // rather than leaving a fixture that describes another house.
+    {
+        let value_of = |name: &str| all.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone()).expect(name);
+        let (frame, page) = (value_of("house_frame"), value_of("house_chat"));
+        assert_eq!(
+            (&frame["chat"], &frame["rev"]),
+            (&page["last"], &page["rev"]),
+            "house_frame.json no longer matches the house the walk leaves: {frame} against {page}",
+        );
+    }
     all.push((
         "art_manifest".to_string(),
         serde_json::to_value(

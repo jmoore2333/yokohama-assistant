@@ -872,6 +872,47 @@ describe("game over (spec §2.6)", () => {
     expect(await alarmOf(stub), "no retry for a save discharged: the alarm is the table's expiry").toBe(await expiryOf(stub));
   });
 
+  // **Abandoning a FINISHED table** (M6.5c2 cycle E, R-6.5c2.42; the plan's
+  // dossier item 21), the plain case: the game over's save landed ONCE, at
+  // game over, and the layer stamped the table; its creator's Abandon then
+  // deletes it and saves nothing again. The refinish cells below reach the
+  // same Abandon through a race; this is the case with none. A PIN — the rule
+  // is the layer's (`delete_locked` skips its save for a stamped table, held
+  // by `abandoning_an_open_dealing_moveless_or_archived_table_archives_nothing`)
+  // and this cell holds the Worker's host to it. Mutants: the Abandon of a
+  // stamped table saving again (a second `archive-landed`, or anything under
+  // `abandoned/`); the game over's save disturbed; the marker naming anything
+  // but the archive.
+  it("abandoning a finished table archived at game over: 204, no second save, nothing under abandoned/, the marker names the archive", async () => {
+    const id = "finished-abandoned";
+    const stub = await owedGameOver(id);
+    const recordKey = `rev7/over/${id}.json`;
+    const over = await logsDuring(async () => {
+      expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
+      await settle(stub);
+    });
+    expect(archiveLines(over.lines), "archived once, at game over, and stamped").toEqual([
+      overLine("landed", id, recordKey, 0),
+      stampLine(id, recordKey, 1_789_000_000, true, true),
+    ]);
+    expect(archivedAt(await docOf(stub, "table")), "premise: stamped at game over").toBe(1_789_000_000);
+    const record = await docOf(stub, "record");
+    const abandoned = await logsDuring(async () => {
+      const res = await call(stub, LOCAL, "DELETE", `/api/games/${id}`);
+      await settle(stub);
+      return res;
+    });
+    expect(abandoned.result.status).toBe(204);
+    expect(archiveLines(abandoned.lines), "no second save").toEqual([]);
+    expect(await bucketText(`rev7/abandoned/${id}.json`), "nothing under abandoned/").toBeNull();
+    expect(await bucketText(`rev7/abandoned/${id}.table.json`)).toBeNull();
+    expect(await bucketText(recordKey), "the game over's save stands, its record's bytes").toBe(record);
+    expect(await markerOf(stub)).toEqual({ at: expect.any(Number), reason: "abandoned", kept: "archive" });
+    const after = await call(stub, LOCAL, "GET", `/api/games/${id}/table`);
+    expect(after.status).toBe(404);
+    expect((await after.json<{ error: string }>()).error).toMatch(/^this table was abandoned on \d{4}-\d{2}-\d{2} — its game is in the archive$/);
+  });
+
   // **The refinish race, overlapping** (M6.5c2, R-6.5c2.11; spec §2.5; review
   // M3, o2; Review Focus 3). At the one-person table the game ends (completion
   // A) and its upload is held; the one person's two undos land DURING it, and

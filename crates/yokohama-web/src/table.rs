@@ -98,6 +98,27 @@ pub struct TurnMirror {
     /// `Placing.won`, never `standings[0]` (rank order; `outcome.rs:71`).
     #[serde(default)]
     pub winner: Option<u8>,
+    /// Whether the RECORD holds any event (cycle E, R-E5; ruling T5-a): the one
+    /// fact `tables::saves_on_abandon` needs that the document did not carry,
+    /// so a lobby row can say "Abandon and save" without reading the record.
+    /// A cache like the rest of this type — `persist` stamps it beside
+    /// `to_move`, and a swallowed conflict can leave it stale — which is why
+    /// the delete itself asks the RECORD and never this.
+    ///
+    /// **A bit and not a count, and that is the cost rule**: it changes ONCE
+    /// per game, at the first applied move, so `Games::mirror_turn`'s
+    /// equal-skip still leaves every later mid-turn move without a table
+    /// write — and on the Worker without a slot or a House push. A count
+    /// would change on every move.
+    ///
+    /// `#[serde(default)]`: a mirror written before the field reads `false`
+    /// until its next write, and `TABLE_SCHEMA` stays 3. **Absent from the
+    /// document while `false`**, [`TurnMirror::bot`]'s rule: a document written
+    /// before the field round-trips through this type byte for byte — the
+    /// Worker's house copy and its receipt fixtures are built on that round
+    /// trip — and a table at its deal stores what it always stored.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_events: bool,
     /// The RECORD's bot (M6.5c2, R-6.5c2.10): the first non-human seat's
     /// `(controller, version, params)`, so a lobby row can label a dealt
     /// table's bot, and say whether this build runs it, without rebuilding the
@@ -114,6 +135,11 @@ pub struct TurnMirror {
     /// `Copy`: its readers take a reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<crate::bots::BotDescriptor>,
+}
+
+/// `serde`'s `skip_serializing_if` for [`TurnMirror::has_events`].
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The table password, as stored: hex of 16 random bytes and hex of
@@ -406,8 +432,14 @@ impl TableDoc {
     /// (`mine`, each seat's `you` and `invited`, `my_seats`, `can_watch`) is
     /// this caller's answer. See the module doc for what never crosses, and
     /// for the addresses, which cross to their owners alone.
-    pub fn view(&self, user: &User) -> TableView {
+    ///
+    /// `archive_on` is the HOST's fact, handed in by the route
+    /// ([`crate::games::Games::archive_on`]): `saves` is the abandon rule's
+    /// answer over it and the mirror's `has_events` (cycle E, R-E5), and a
+    /// view built with `false` saves nothing.
+    pub fn view(&self, user: &User, archive_on: bool) -> TableView {
         let mine = self.is_creator(user);
+        let has_events = self.turn.as_ref().is_some_and(|t| t.has_events);
         TableView {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -432,6 +464,8 @@ impl TableDoc {
             winner: self.turn.as_ref().and_then(|t| t.winner).map(PlayerId::new),
             can_watch: self.can_watch(user),
             bot: crate::bots::table_bot(self),
+            has_events,
+            saves: crate::tables::saves_on_abandon(self, has_events, archive_on),
         }
     }
 }
@@ -543,6 +577,18 @@ pub struct TableView {
     /// is the record's, read off [`TurnMirror::bot`]; `null` at a table with no
     /// bot seat, and at a dealt one whose mirror predates the field.
     pub bot: Option<crate::bots::TableBot>,
+    /// Whether the game's record holds any event, off
+    /// [`TurnMirror::has_events`]: `false` before the deal, before the first
+    /// move, and at a mirror written before the field (cycle E, R-E5; ruling
+    /// T5-a). What a browser's own rule for a LOCAL game reads. A bit, never
+    /// a count: see the mirror's field for why.
+    pub has_events: bool,
+    /// Whether the creator's Abandon would SAVE this table before deleting it —
+    /// `tables::saves_on_abandon` over the mirror's `has_events` and the
+    /// host's archive switch (cycle E, R-E5): what the client words "Abandon
+    /// and save" from. The delete asks the RECORD instead, so the two part
+    /// only where the mirror is stale.
+    pub saves: bool,
 }
 
 /// What `GET /api/games/{id}/deal` serves: the set table, and the caller's OWN
@@ -640,7 +686,7 @@ mod tests {
         let mut d = doc();
         d.seats[1] = SeatDoc::Bot;
         d.keeps[0] = Some(2);
-        let v = serde_json::to_value(d.view(&User::parse("a@t.test").unwrap())).unwrap();
+        let v = serde_json::to_value(d.view(&User::parse("a@t.test").unwrap(), false)).unwrap();
         assert_eq!(v["chosen"], serde_json::json!([true, true, false]));
         assert_eq!(v["my_seats"], serde_json::json!([0, 2]));
         assert_eq!(v["status"], "dealing");
@@ -832,8 +878,8 @@ mod tests {
         let lock = Lock::new("sesame");
         let (salt, hash) = (lock.salt.clone(), lock.hash.clone());
         d.lock = Some(lock);
-        d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2), bot: None });
-        let v = serde_json::to_value(d.view(&User::parse("red@t.test").unwrap())).unwrap();
+        d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2), has_events: false, bot: None });
+        let v = serde_json::to_value(d.view(&User::parse("red@t.test").unwrap(), false)).unwrap();
         assert_eq!(v["locked"], true);
         assert_eq!(v["winner"], 2);
         let text = v.to_string();
@@ -849,6 +895,44 @@ mod tests {
         assert!(!text.contains(&hash), "the hash reached the view under some key: {text}");
         assert_eq!(v["seats"][1]["kind"], "open");
         assert_eq!(v["seats"][0]["name"], "Red");
+    }
+
+    /// **R-E5 (cycle E; ruling T5-a): the view's `has_events` is the mirror's
+    /// bit and its `saves` the abandon rule's**, asked over the mirror and the
+    /// archive switch the caller hands in. A mirror stored before the field
+    /// reads `false` (`#[serde(default)]`, so `TABLE_SCHEMA` stays 3) and is
+    /// written back as it was stored, and a view built with the archive off
+    /// saves nothing whatever the table holds.
+    #[test]
+    fn a_mirror_without_has_events_reads_false_and_the_view_saves_only_where_the_rule_says() {
+        let json = r#"{"schema":3,"id":"old","name":null,"created_by":"red@t.test",
+            "created_at":1789000000,"players":2,"colors":["Red","Blue"],"start_seat":0,
+            "seats":[{"kind":"human","user":"red@t.test"},{"kind":"human","user":"blue@t.test"}],
+            "keeps":[1,2],"seed":7,"status":"playing","turn":{"to_move":0,"over":false}}"#;
+        let doc: TableDoc = serde_json::from_str(json).expect("a mirror written before the field parses");
+        assert!(!doc.turn.as_ref().expect("a mirror").has_events, "an older mirror reads no events");
+        let stored = |d: &TableDoc| serde_json::to_value(d).unwrap()["turn"].clone();
+        assert_eq!(
+            stored(&doc),
+            serde_json::json!({ "to_move": 0, "over": false, "winner": null }),
+            "absent while false: an older mirror is written back as it was stored"
+        );
+        let red = User::parse("red@t.test").unwrap();
+        let v = doc.view(&red, true);
+        assert_eq!((v.has_events, v.saves), (false, false), "no event, nothing to save");
+        let mut moved = doc.clone();
+        moved.turn.as_mut().expect("a mirror").has_events = true;
+        assert_eq!(stored(&moved)["has_events"], true, "and present once there is one");
+        let v = serde_json::to_value(moved.view(&red, true)).unwrap();
+        assert_eq!((v["has_events"].clone(), v["saves"].clone()), (serde_json::json!(true), serde_json::json!(true)));
+        assert!(v.get("events").is_none(), "a bit on the wire, never a count: {v}");
+        assert!(!moved.view(&red, false).saves, "the archive off saves nothing");
+        let mut stamped = moved.clone();
+        stamped.archived_at = Some(1_789_000_001);
+        assert!(!stamped.view(&red, true).saves, "an archived table is not saved twice");
+        let mut dealing = moved;
+        dealing.status = TableStatus::Dealing;
+        assert!(!dealing.view(&red, true).saves, "only a playing table is saved");
     }
 
     /// [`TableDoc::can_watch`]'s three arms and its refusal, in one cell —
@@ -882,7 +966,7 @@ mod tests {
     fn the_view_names_the_bot_undealt_dealt_foreign_and_before_the_field() {
         use serde_json::{json, Value};
         let reader = User::parse("a@t.test").expect("an email");
-        let bot_of = |d: &TableDoc| serde_json::to_value(d.view(&reader)).expect("a view")["bot"].clone();
+        let bot_of = |d: &TableDoc| serde_json::to_value(d.view(&reader, false)).expect("a view")["bot"].clone();
         let production = crate::bots::production();
         let runs_here = json!({ "label": crate::bots::label(&production), "runs_here": true });
 
@@ -892,7 +976,7 @@ mod tests {
         assert_eq!(bot_of(&undealt), runs_here, "undealt: the bot `finalize` will deal");
 
         let mut dealt = playing_doc();
-        dealt.turn = Some(TurnMirror { to_move: 0, over: false, winner: None, bot: Some(production) });
+        dealt.turn = Some(TurnMirror { to_move: 0, over: false, winner: None, has_events: false, bot: Some(production) });
         assert_eq!(bot_of(&dealt), runs_here, "dealt: the record's, from the mirror");
 
         let mut foreign = dealt.clone();
@@ -967,7 +1051,7 @@ mod tests {
         let red = User::parse("red@wire.test").expect("an email");
         let blue = User::parse("blue@wire.test").expect("an email");
         let grey = User::parse("grey@wire.test").expect("an email");
-        let view = |d: &TableDoc, u: &User| serde_json::to_value(d.view(u)).expect("a view");
+        let view = |d: &TableDoc, u: &User| serde_json::to_value(d.view(u, false)).expect("a view");
         let hits = |v: &Value| {
             let mut hits = Vec::new();
             at_signs(v, &mut Vec::new(), &mut hits);
@@ -1024,9 +1108,9 @@ mod tests {
         let green = User::parse("green@t.test").expect("an email");
         let grey = User::parse("grey@t.test").expect("an email");
 
-        let refused = serde_json::to_value(d.view(&green)).expect("a view");
+        let refused = serde_json::to_value(d.view(&green, false)).expect("a view");
         assert_eq!(refused["can_watch"], false);
-        let admitted = serde_json::to_value(d.view(&grey)).expect("a view");
+        let admitted = serde_json::to_value(d.view(&grey, false)).expect("a view");
         assert_eq!(admitted["can_watch"], true, "two readers, two answers, one table");
 
         // By KEY and by VALUE, the pair the M6.2 password cell above uses: a

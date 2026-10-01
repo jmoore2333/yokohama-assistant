@@ -15,7 +15,7 @@ import { chromium } from "@playwright/test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, baseUrlFor } from "./e2e/live";
+import { EXIT, EXIT_LAUNCH_ARGS, EXIT_SPEC, LIVE, LIVE_SPECS, LOCAL_PORT, README_SHOTS, README_SHOTS_SPEC, STATE1_GAME, STATE1_GAME_SPEC, baseUrlFor } from "./e2e/live";
 
 /**
  * A port of its own, and NEVER a shared one.
@@ -160,17 +160,30 @@ export default defineConfig({
   // from every run unless `YOKOHAMA_WEB_EXIT=1`, and still checked as a file by
   // the two structural specs. With the switch and no live target it is listed
   // and skips itself, saying why.
+  //
+  // **The README's screenshot generator is opt-in the same way**
+  // (`YOKOHAMA_WEB_README_SHOTS=1`, Task 8): it writes into `worker/docs/img/`
+  // (or `YOKOHAMA_WEB_README_SHOTS_DIR`), so a plain run must never collect
+  // it. Unlike the exit's game it runs on the local target too — the dry run.
   testIgnore: [
     "**/*.node.test.ts",
     ...(process.env.YOKOHAMA_WEB_SHOTS === "1" ? [] : ["**/shots.spec.ts"]),
     ...(process.env.YOKOHAMA_WEB_GATES === "1" ? [] : ["**/gates.spec.ts"]),
     ...(EXIT ? [] : [`**/${EXIT_SPEC}`]),
+    ...(README_SHOTS ? [] : [`**/${README_SHOTS_SPEC}`]),
+    // The open door's plain two-person game (`YOKOHAMA_WEB_STATE1_GAME=1`,
+    // Task 10.K): opt-in, and it opens a table on whichever target it runs at.
+    ...(STATE1_GAME ? [] : [`**/${STATE1_GAME_SPEC}`]),
   ],
   // **The live tier is TWO specs** (spec §5.4): the two multiplayer walks —
   // `LIVE_SPECS`, the one list — and the exit's game beside them when it is
   // asked for. Every other spec stays on the local binary, and these keep
   // their local run as well.
-  ...(LIVE ? { testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : [])].map((f) => `**/${f}`) } : {}),
+  ...(LIVE
+    ? {
+        testMatch: [...LIVE_SPECS, ...(EXIT ? [EXIT_SPEC] : []), ...(README_SHOTS ? [README_SHOTS_SPEC] : []), ...(STATE1_GAME ? [STATE1_GAME_SPEC] : [])].map((f) => `**/${f}`),
+      }
+    : {}),
   fullyParallel: false,
   // One at a time, live as locally — which also makes the live run present
   // the credential once per worker process: once per green run, since

@@ -13,6 +13,7 @@
       ],
       "created_at": 1789000000,
       "creator": "Red",
+      "has_events": false,
       "id": "wire",
       "locked": true,
       "mine": true,
@@ -22,6 +23,7 @@
       "name": "wire",
       "over": null,
       "players": 2,
+      "saves": false,
       "seats": [
         {
           "invited": null,
@@ -54,6 +56,7 @@
       ],
       "created_at": 1789000000,
       "creator": null,
+      "has_events": false,
       "id": "wire2",
       "locked": false,
       "mine": true,
@@ -63,6 +66,7 @@
       "name": "wire2",
       "over": null,
       "players": 2,
+      "saves": false,
       "seats": [
         {
           "invited": "red@wire.test",

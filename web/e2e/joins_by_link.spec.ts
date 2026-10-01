@@ -185,23 +185,31 @@ test("a person holding only a link joins a locked open table and plays", async (
 
   // **And a WIDE panel keeps the one-row layout it has always had.** The fix
   // for I-1 is a CONTAINER query, so it opens on the row's own width and not on
-  // the window's: this panel is ~800px inside the `.setup` column at desktop
-  // width, the label costs a fraction of it, and label, clock and text stay on
-  // one line. Read as three tops, which is what says "one row" without naming a
+  // the window's: below 976px this panel is ~790px inside the `.setup` column,
+  // the label costs a fraction of it, and label, clock and text stay on one
+  // line. Read as three tops, which is what says "one row" without naming a
   // pixel — and it is what would fail if the threshold were ever raised far
   // enough to fold the hosts the review did not ask about.
-  const oneRow = await chat
-    .locator("ol.chat-lines li")
-    .first()
-    .evaluate((li) => {
-      const top = (sel: string) => Math.round(li.querySelector(sel)!.getBoundingClientRect().top);
-      return {
-        who: top(".chat-who"),
-        text: top(".chat-text"),
-        row: Math.round(li.getBoundingClientRect().height),
-        line: Math.round(li.querySelector(".chat-who")!.getBoundingClientRect().height),
-      };
-    });
+  //
+  // **Read at 960px since cycle E** (straw poll row 67): from 976px the open
+  // table's chat sits in mock 08's 300px rail, a NARROW host like the side
+  // column, where the same rule stacks the row — read below as the partner.
+  const rowRead = () =>
+    chat
+      .locator("ol.chat-lines li")
+      .first()
+      .evaluate((li) => {
+        const top = (sel: string) => Math.round(li.querySelector(sel)!.getBoundingClientRect().top);
+        return {
+          who: top(".chat-who"),
+          text: top(".chat-text"),
+          row: Math.round(li.getBoundingClientRect().height),
+          line: Math.round(li.querySelector(".chat-who")!.getBoundingClientRect().height),
+        };
+      });
+  const wide = a.viewportSize()!;
+  await a.setViewportSize({ width: 960, height: wide.height });
+  const oneRow = await rowRead();
   // The label and the message share a top — both are 11.5px text on the same
   // baseline, so this is exact. (The clock is not: it is 10px, and `baseline`
   // alignment puts its top 2px lower. Asserting on it would be asserting a
@@ -213,6 +221,12 @@ test("a person holding only a link joins a locked open table and plays", async (
     oneRow.row,
     `the wide panel's row is ${oneRow.row}px against a ${oneRow.line}px line`,
   ).toBeLessThan(2 * oneRow.line);
+  // The rail, at this context's own desktop width: the message takes the line
+  // under its label, as it does in the game's side column.
+  await a.setViewportSize(wide);
+  expect(wide.width, "the premise: a desktop width, where the chat is the rail's").toBeGreaterThanOrEqual(976);
+  const railRow = await rowRead();
+  expect(railRow.text, "in the rail the message is on the line under its label").toBeGreaterThan(railRow.who);
 
   // **And it fits a phone** (live review I-1). This screen is the one place in
   // the client where a row holds a whole URL, and at 390px it pushed the
@@ -330,10 +344,22 @@ test("a person holding only a link joins a locked open table and plays", async (
   b.on("request", (r) => {
     if (new URL(r.url()).pathname.endsWith("/join")) joinsByB.push(r.url());
   });
+  /** What B's page asks of the LOBBY on the way in (cycle E, R-E7): nothing.
+   *  A cold `#/t/<id>` drew the lobby for one round trip while the table was
+   *  read, which fired its three listings and opened the house stream; the
+   *  screen of that window is "opening…" now. Armed before B goes to the
+   *  address, so the whole arrival is inside it. */
+  const lobbyReadsByB: string[] = [];
+  b.on("request", (r) => {
+    const u = new URL(r.url());
+    if ((u.pathname === "/api/games" && u.searchParams.has("scope")) || u.pathname === "/api/stream")
+      lobbyReadsByB.push(`${u.pathname}${u.search}`);
+  });
   await signIn(b, "b@e2e.test", `/#/t/${id}`);
   // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
   // table's name too.
   await expect(b.getByRole("heading", { name: "Link test", exact: true, level: 3 })).toBeVisible();
+  expect(lobbyReadsByB, "arriving by the link read no listing and opened no house stream").toEqual([]);
   // The lock, as its tag, and ONE way in: exactly one seat is free.
   await expect(b.getByRole("img", { name: "password required" })).toBeVisible();
   const join = b.getByRole("button", { name: "Join as Blue" });

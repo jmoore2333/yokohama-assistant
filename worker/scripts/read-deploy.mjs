@@ -14,16 +14,18 @@
 //
 // - `assets` (spec §0.3 row 7): every entry of the DEPLOYED `/sw.js`'s precache
 //   list is fetched and checked — exactly 200, the listed type's essence, the
-//   listed SHA-256 — then `/index.html` must answer 200 (not a redirect the
-//   service worker's install would refuse) and a missing `/assets/x.js` 404
-//   with an empty body. An HTML body the zone's edge rewrote is named for what
-//   it is, and counted byte-exact only when cutting the edge's own scripts away
-//   leaves the release's bytes: the service worker's own fetch is not
-//   rewritten (spec §0.3 row 8), and `install` reads that.
+//   listed SHA-256 — and each is byte-exact or WRONG. **The inventory holds no
+//   HTML** (R-6.5c2.41, spec §10.11): the zone's edge injects a per-request
+//   script into every HTML answer, so the shell is listed as `/shell.bin`, a
+//   name the edge does not rewrite, and nothing listed is excused for a
+//   rewritten body. Then `/index.html` — no entry now, but the page every
+//   navigation to the host is served — must answer 200, never a redirect, and
+//   a missing `/assets/x.js` 404 with an empty body.
 // - `install`: headless Chromium, `web/`'s Playwright, loads `/` in a fresh
 //   profile and waits for the service worker: active, its release cache
-//   holding every precache entry, `/index.html` cached as the release's bytes,
-//   the door reading "Ready to play offline."
+//   holding every precache entry, `/shell.bin` cached as the release's bytes,
+//   the door reading "Ready to play offline" (the door's own sentence, which
+//   carries no period).
 // - `console` (Step 7.6): the same browser, two loads of `/` — the first in a
 //   fresh profile, the second once the service worker controls the page —
 //   recording every console message, and every request hop that failed,
@@ -75,22 +77,6 @@ export function parseHeaderFile(text) {
   return pairs;
 }
 
-/** The two scripts the zone's edge injects into HTML (spec §0.3 row 8): the
- *  JavaScript detections' `challenge-platform`, and the Web Analytics beacon. */
-const INJECTED = ["challenge-platform", "cloudflareinsights"];
-
-/** `html` with every `<script>` element that names an edge injection cut
- *  away, and which injections were found. */
-export function edgeInjections(html) {
-  const found = new Set();
-  const text = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, (element) => {
-    const which = INJECTED.filter((name) => element.includes(name));
-    for (const name of which) found.add(name);
-    return which.length > 0 ? "" : element;
-  });
-  return { text, found: INJECTED.filter((name) => found.has(name)) };
-}
-
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** The credential's headers for a request to `url` — only when it goes to
@@ -103,9 +89,9 @@ export function credentialFor(url, origin, pairs) {
 /**
  * One precache entry against what the deployment answered for it: `ok` when
  * the status is exactly 200, the type's essence is the listed one and the body
- * hashes to the listed digest. A wrong HTML body the edge injected into also
- * carries `edge`: which injections, and whether the release's bytes are what is
- * left once they are cut away.
+ * hashes to the listed digest — and otherwise the reasons. There is no third
+ * verdict: the release lists no HTML (R-6.5c2.41), so no entry is a body the
+ * edge rewrites, and one that is rewritten is wrong.
  */
 export function checkEntry(entry, answer) {
   const reasons = [];
@@ -114,14 +100,7 @@ export function checkEntry(entry, answer) {
   if (type !== entry.type) reasons.push(`answered ${type || "no content type"}, not ${entry.type}`);
   const digest = sha256(answer.body);
   if (digest !== entry.digest) reasons.push(`its body is ${digest}`);
-  const verdict = { ok: reasons.length === 0, reasons };
-  if (digest !== entry.digest && entry.type === "text/html") {
-    const { text, found } = edgeInjections(new TextDecoder().decode(answer.body));
-    if (found.length > 0) {
-      verdict.edge = { found, releaseUnderneath: sha256(new TextEncoder().encode(text)) === entry.digest };
-    }
-  }
-  return verdict;
+  return { ok: reasons.length === 0, reasons };
 }
 
 // ---- the live half ----
@@ -179,7 +158,6 @@ async function assets(base, file) {
   const release = await deployedRelease(base, pairs);
   console.log(`/sw.js: 200, ${release.entries.length} precache entries, ${release.cacheName}, cache-control ${release.cacheControl}`);
   let exact = 0;
-  const rewritten = [];
   const wrong = [];
   for (const entry of release.entries) {
     const res = await get(base, entry.path, pairs);
@@ -189,11 +167,9 @@ async function assets(base, file) {
       body: new Uint8Array(await res.arrayBuffer()),
     });
     if (verdict.ok) exact++;
-    else if (verdict.edge?.releaseUnderneath) rewritten.push(`${entry.path} — the edge injected ${verdict.edge.found.join(" and ")}; cut away, the release's bytes`);
-    else wrong.push(`${entry.path} — ${verdict.reasons.join("; ")}${verdict.edge ? ` (the edge injected ${verdict.edge.found.join(" and ")}, and the rest is NOT the release)` : ""}`);
+    else wrong.push(`${entry.path} — ${verdict.reasons.join("; ")}`);
   }
-  console.log(`entries: ${exact} byte-exact, ${rewritten.length} rewritten by the edge over the release's bytes, ${wrong.length} wrong`);
-  for (const line of rewritten) console.log(`  EDGE   ${line}`);
+  console.log(`entries: ${exact} byte-exact, ${wrong.length} wrong`);
   for (const line of wrong) console.log(`  WRONG  ${line}`);
 
   const index = await get(base, "/index.html", pairs);
@@ -276,38 +252,41 @@ async function install(base, file) {
     });
     await page.goto(new URL("/", base).href, { waitUntil: "load" });
     const active = await page.evaluate(ACTIVATED, 120_000);
+    // The shell is cached at `/shell.bin` (R-6.5c2.41), and the door's sentence
+    // carries no period (`web/src/OnThisDevice.tsx`); `read-deploy.test.mjs`
+    // holds both literals below to what the release and the door say.
     const state = await page.evaluate(
-      async ({ cacheName, paths, indexDigest }) => {
+      async ({ cacheName, paths, shellDigest }) => {
         const names = await caches.keys();
         const cache = cacheName && names.includes(cacheName) ? await caches.open(cacheName) : null;
         const cached = cache ? (await cache.keys()).map((r) => new URL(r.url).pathname) : [];
-        const index = cache ? await cache.match("/index.html") : undefined;
-        const indexBytes = index ? await index.arrayBuffer() : null;
-        const hex = indexBytes
-          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", indexBytes))].map((b) => b.toString(16).padStart(2, "0")).join("")
+        const shell = cache ? await cache.match("/shell.bin") : undefined;
+        const shellBytes = shell ? await shell.arrayBuffer() : null;
+        const hex = shellBytes
+          ? [...new Uint8Array(await crypto.subtle.digest("SHA-256", shellBytes))].map((b) => b.toString(16).padStart(2, "0")).join("")
           : null;
         return {
           caches: names,
           cachedCount: cached.length,
           missing: paths.filter((p) => !cached.includes(p)),
-          indexBytes: indexBytes?.byteLength ?? null,
-          indexClean: hex === indexDigest,
+          shellBytes: shellBytes?.byteLength ?? null,
+          shellClean: hex === shellDigest,
           installFailed: window.__installFailed ?? null,
-          door: document.body.innerText.includes("Ready to play offline."),
+          door: document.body.innerText.includes("Ready to play offline"),
         };
       },
       {
         cacheName: release.cacheName,
         paths: release.entries.map((e) => e.path),
-        indexDigest: release.entries.find((e) => e.path === "/index.html")?.digest,
+        shellDigest: release.entries.find((e) => e.path === "/shell.bin")?.digest,
       },
     );
     console.log(`service worker: ${active ?? "NOT ACTIVE after 120 s"}${state.installFailed ? ` — the install failed: ${state.installFailed}` : ""}`);
     console.log(`caches: ${state.caches.join(", ") || "none"}; ${release.cacheName}: ${state.cachedCount} entries for ${release.entries.length} listed`);
     if (state.missing.length > 0) console.log(`  missing from the cache: ${state.missing.slice(0, 10).join(", ")}${state.missing.length > 10 ? `, and ${state.missing.length - 10} more` : ""}`);
-    console.log(`/index.html cached: ${state.indexBytes ?? "absent"} B, ${state.indexClean ? "the release's bytes" : "NOT the release's bytes"}`);
-    console.log(`the door: ${state.door ? '"Ready to play offline."' : "not ready"}`);
-    const holds = active === "activated" && state.missing.length === 0 && state.indexClean && state.door;
+    console.log(`/shell.bin cached: ${state.shellBytes ?? "absent"} B, ${state.shellClean ? "the release's bytes" : "NOT the release's bytes"}`);
+    console.log(`the door: ${state.door ? '"Ready to play offline"' : "not ready"}`);
+    const holds = active === "activated" && state.missing.length === 0 && state.shellClean && state.door;
     console.log(`read-deploy install: ${holds ? "HOLDS" : "DOES NOT HOLD"}`);
     return holds;
   } finally {

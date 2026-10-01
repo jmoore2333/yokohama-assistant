@@ -310,67 +310,76 @@ export function OpenTable({
   return (
     <div className="band-screen">
       <LobbyBand crumbs={["Lobby", title]} corner={corner} />
-      <div className="setup open-table">
-        {/* The page's own title, a level under the band's crumb — the band's
-            rule for a card under it; mocks 08 and 09 draw both. */}
-        <h3 className="page-title">{title}</h3>
-        <p className="table-status">
-          <span>
-            {seated ? `${waiting} \u00b7 ${table.players} players` : `${owner}'s table \u00b7 ${table.players} players \u00b7 ${left}`}
-          </span>
-          {table.locked && <PasswordTag />}
-        </p>
+      {/* **Three parts, so the chat can take mock 08's rail** (cycle E, straw
+          poll row 67): the table (its title, seats, join and invite), the
+          chat, and the way out. From 976px a seated caller's page is two
+          columns — the table and the way out on the left, the chat beside
+          them on the right, as the lobby's chat is — and below it the three
+          stack in this order, which is the page as it was. `with-rail` is the
+          seated face; a stranger has no chat, and keeps the one column. */}
+      <div className={seated ? "setup open-table with-rail" : "setup open-table"}>
+        <div className="open-table-main">
+          {/* The page's own title, a level under the band's crumb — the band's
+              rule for a card under it; mocks 08 and 09 draw both. */}
+          <h3 className="page-title">{title}</h3>
+          <p className="table-status">
+            <span>
+              {seated ? `${waiting} \u00b7 ${table.players} players` : `${owner}'s table \u00b7 ${table.players} players \u00b7 ${left}`}
+            </span>
+            {table.locked && <PasswordTag />}
+          </p>
 
-        {/* **Above the seats** (spec §2.2): typed once, then the choice — the
-            one button under the seats, or a seat's own "Sit here". Only at a
-            LOCKED table: a password box over a table that needs none is a
-            question with no right answer. */}
-        {!seated && table.locked && free.length > 0 && (
-          <div className="form-field join-password">
-            <label htmlFor="join-password">Table password</label>
-            <input
-              id="join-password"
-              type="password"
-              autoComplete="off"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-        )}
+          {/* **Above the seats** (spec §2.2): typed once, then the choice — the
+              one button under the seats, or a seat's own "Sit here". Only at a
+              LOCKED table: a password box over a table that needs none is a
+              question with no right answer. */}
+          {!seated && table.locked && free.length > 0 && (
+            <div className="form-field join-password">
+              <label htmlFor="join-password">Table password</label>
+              <input
+                id="join-password"
+                type="password"
+                autoComplete="off"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          )}
 
-        <ol className="seat-cards" aria-label="Seats">
-          {table.seats.map((s, i) => (
-            <li key={i}>
-              <SeatCard {...face(s, i)} />
-            </li>
-          ))}
-        </ol>
+          <ol className="seat-cards" aria-label="Seats">
+            {table.seats.map((s, i) => (
+              <li key={i}>
+                <SeatCard {...face(s, i)} />
+              </li>
+            ))}
+          </ol>
 
-        {onlySeat !== null && (
-          <button type="button" className="primary join" onClick={() => void join(onlySeat)}>
-            Join as {colors[onlySeat]}
-          </button>
-        )}
+          {onlySeat !== null && (
+            <button type="button" className="primary join" onClick={() => void join(onlySeat)}>
+              Join as {colors[onlySeat]}
+            </button>
+          )}
 
-        {/* **The join block's refusals sit by the join** (M6.5c2 cycle C,
-            polish 4): directly under the password, the seats and "Join as",
-            which is what a join's and a wrong password's refusals are about —
-            not at the page's foot, under the controls (and, for a seated
-            caller, the chat). A refused copy lands here too, directly above the
-            Invite panel whose button raised it. Abandon's refusal does NOT: it
-            has its own strip under the controls (`abandonError`, below). */}
-        {error && <Refusal sentence={error} />}
+          {/* **The join block's refusals sit by the join** (M6.5c2 cycle C,
+              polish 4): directly under the password, the seats and "Join as",
+              which is what a join's and a wrong password's refusals are about —
+              not at the page's foot, under the controls (and, for a seated
+              caller, the chat). A refused copy lands here too, directly above the
+              Invite panel whose button raised it. Abandon's refusal does NOT: it
+              has its own strip under the controls (`abandonError`, below). */}
+          {error && <Refusal sentence={error} />}
 
-        {seated && (
-          <Invite url={url} locked={table.locked} mine={table.mine} onRefused={setError} />
-        )}
+          {seated && (
+            <Invite url={url} locked={table.locked} mine={table.mine} onRefused={setError} />
+          )}
+        </div>
 
         {/* ONLY for a seated caller (spec §6.2). The table read is the one route
             widened to somebody who is not seated (R-2.7); the chat is NOT — a
             stranger here is 403 at it — so showing them a panel would be
             showing them a box that refuses everything typed into it. Under the
-            invite, in the MAIN column (the spec-gap answer, not mock 08's
-            rail). */}
+            invite below 976px; from 976px in mock 08's rail beside the table
+            (cycle E, row 67 — it was the main column's at every width). */}
         {seated && (
           <Chat
             scope={{ kind: "table", id: game }}
@@ -382,24 +391,26 @@ export function OpenTable({
           />
         )}
 
-        <div className="open-table-controls">
-          {/* The shared control (R-13), so this screen and the lobby's rows
-              cannot drift apart again. `onDone` is the leave: the table is
-              gone, and there is nothing here to go back to. Outlined in the
-              warning colour, the quieter danger (mock 08). */}
-          {/* **The creator's, SEATED** — the layer's rule, `mayAbandon`: its
-              delete refuses a caller who holds no seat ("you are not seated
-              at this table") before it asks who created the table, so a
-              seatless creator is offered nothing a press would refuse. */}
-          {mayAbandon(table) && (
-            <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
-          )}
-          <button type="button" className="quiet-link" onClick={() => leave.current()}>
-            <span aria-hidden="true">&larr; </span>Lobby
-          </button>
+        <div className="open-table-foot">
+          <div className="open-table-controls">
+            {/* The shared control (R-13), so this screen and the lobby's rows
+                cannot drift apart again. `onDone` is the leave: the table is
+                gone, and there is nothing here to go back to. Outlined in the
+                warning colour, the quieter danger (mock 08). */}
+            {/* **The creator's, SEATED** — the layer's rule, `mayAbandon`: its
+                delete refuses a caller who holds no seat ("you are not seated
+                at this table") before it asks who created the table, so a
+                seatless creator is offered nothing a press would refuse. */}
+            {mayAbandon(table) && (
+              <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
+            )}
+            <button type="button" className="quiet-link" onClick={() => leave.current()}>
+              <span aria-hidden="true">&larr; </span>Lobby
+            </button>
+          </div>
+          {/* Abandon's refusal, directly under the button that raised it (R-C24). */}
+          {abandonError && <Refusal sentence={abandonError} className="error abandon-refusal" />}
         </div>
-        {/* Abandon's refusal, directly under the button that raised it (R-C24). */}
-        {abandonError && <Refusal sentence={abandonError} className="error abandon-refusal" />}
       </div>
     </div>
   );
@@ -454,10 +465,19 @@ function Invite({
             browser that has not been granted it, and in a page served over
             plain HTTP. */}
         <input aria-label="Invite link" readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
-        {/* A polite live region, so "Copied" is heard as well as seen. */}
-        <button type="button" className="ghost" aria-live="polite" onClick={() => void copy()}>
-          {copied ? "Copied" : "Copy link"}
-        </button>
+        {/* **"Copied" is said ONCE** (cycle E, straw poll row 68): by the
+            status beside the button, drawn from the first render so its change
+            is announced, and never by the button, whose name stays "Copy link"
+            — it was the live region, and its words were its name. One flex
+            item with the button, so an empty status adds no gap to the row. */}
+        <span className="copy">
+          <button type="button" className="ghost" onClick={() => void copy()}>
+            Copy link
+          </button>
+          <span className="copy-state" role="status">
+            {copied ? "Copied" : ""}
+          </span>
+        </span>
       </div>
       {locked && (
         <p className="note">

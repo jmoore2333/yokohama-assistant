@@ -5,7 +5,8 @@
 // tidiness** (R-6.5b2.7): a single-player visitor is meant to cost zero Worker
 // invocations. Everything it draws comes from the BUILD or from this browser:
 // whether the friends card is drawn (`VITE_MULTIPLAYER`), the project link
-// (`YOKOHAMA_PROJECT_URL`, `projectLink.ts`), the bot's version (the committed
+// and the blurb under the title (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`,
+// `buildValues.ts`), the bot's version (the committed
 // contract file `wire/production_bot.json`, which `wire_fixtures` refuses when
 // it is stale), and the games in this browser (the local host's own listing).
 // The runtime switch (`YOKOHAMA_WEB_MULTIPLAYER`) is what ENFORCES; this only
@@ -27,7 +28,7 @@ import { BoardMark } from "./BoardMark";
 import { VersionTag } from "./Chips";
 import { Help } from "./Help";
 import { OnThisDevice } from "./OnThisDevice";
-import type { ProjectLink } from "./projectLink";
+import { siteBlurb, type ProjectLink } from "./buildValues";
 import { Refusal } from "./Refusal";
 import { navigate } from "./route";
 import type { ReadinessStatus } from "./swRegister";
@@ -76,6 +77,8 @@ export function FrontDoor({
    *  removed element falls to the document's body — the top of the page. */
   const helpToggle = useRef<HTMLButtonElement | null>(null);
   const ids = useId();
+  /** The words under the title, from the build (R-6.5c2.40). */
+  const blurb = siteBlurb();
   // The heading a player lands on when the help opens — focus, and never
   // `scrollIntoView` (ruling R-F11: it scrolls every scrollable ancestor).
   useEffect(() => {
@@ -90,6 +93,7 @@ export function FrontDoor({
         <div className="door-hero-in">
           <div className="door-title">
             <h1>Yokohama</h1>
+            {blurb && <p className="blurb">{blurb}</p>}
             {link && (
               <a className="project-link" href={link.href} target="_blank" rel="noopener noreferrer">
                 {link.text}

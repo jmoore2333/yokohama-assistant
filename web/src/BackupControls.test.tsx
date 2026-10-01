@@ -119,7 +119,7 @@ describe("the backup controls", () => {
   // files and a player reading two buttons has no other way to tell.
   it("names what each file is for, and the two names differ", async () => {
     render(<BackUpEverything />);
-    expect(screen.getByText(/which this app can restore/)).toHaveTextContent(
+    expect(screen.getByText(/one file this app can restore/)).toHaveTextContent(
       "Save game file",
     );
     render(<BackUpOne id="local-2" />);

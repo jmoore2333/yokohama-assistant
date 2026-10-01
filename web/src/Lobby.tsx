@@ -53,6 +53,7 @@ import { api, ApiError, lobbyChat } from "./api";
 import { LobbyBand } from "./Band";
 import { Chat } from "./Chat";
 import { Padlock, PasswordTag, SeatChip } from "./Chips";
+import { projectLink } from "./buildValues";
 import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { hashOf, navigate } from "./route";
@@ -63,6 +64,16 @@ import type { GamesList, TableView } from "./types";
 /** The three listings, one per section. */
 type Scope = "mine" | "open" | "playing";
 const SCOPES: readonly Scope[] = ["mine", "open", "playing"];
+
+/** Each scope's "more", by name (cycle E, fix round 1): three buttons read
+ *  "more" on one screen, and the playing scope's sits under no heading of its
+ *  own, so the NAME says which list it extends. The visible word stays
+ *  "more", which each name contains. */
+const MORE_NAME: Record<Scope, string> = {
+  mine: "More of your tables",
+  open: "More open tables",
+  playing: "More tables being played",
+};
 
 /** One reading of the three listings: each scope's answer or its refusal,
  *  apart (dossier row 4). */
@@ -112,6 +123,36 @@ const houseCounts = (data: string): { chat: number; rev?: number } | null => {
     return null;
   }
 };
+
+/** A house frame's three counters, or `null` for a frame that does not carry
+ *  a numeric `seq` and `chat` — which is then treated as a listing change. */
+const houseFrameOf = (data: string): { seq: number; chat: number; rev?: number } | null => {
+  try {
+    const f = JSON.parse(data) as { seq?: unknown; chat?: unknown; rev?: unknown };
+    if (typeof f.seq !== "number" || typeof f.chat !== "number") return null;
+    return { seq: f.seq, chat: f.chat, ...(typeof f.rev === "number" ? { rev: f.rev } : {}) };
+  } catch {
+    return null;
+  }
+};
+
+/** **A house frame that is a MESSAGE and nothing else** (cycle E, Task 7;
+ *  R-E9, ruling T7-a lever c): its `seq` — the LISTING counter, on both hosts
+ *  — is where the last frame left it, and its `chat` or `rev` moved. The NAS
+ *  moves `seq` on a table's write and on an end and never for a house message
+ *  (`Signals::bump_house_chat` moves `chat` and `rev` alone); the Worker raises
+ *  it per copy or removal the house applies, and a message's frame carries it
+ *  unchanged. So the three listings behind such a frame are what the lobby
+ *  already holds. A frame that moved NOTHING this recognises is not one: it
+ *  re-lists, which is also what a restarted host's frame does. */
+const onlyTheChatMoved = (
+  last: { seq: number; chat: number; rev?: number } | null,
+  now: { seq: number; chat: number; rev?: number } | null,
+): boolean =>
+  last !== null &&
+  now !== null &&
+  now.seq === last.seq &&
+  (now.chat !== last.chat || now.rev !== last.rev);
 
 /** The rows, with a table listed once however many pages it arrived on.
  *
@@ -215,15 +256,18 @@ export function Lobby({
   /** The lobby's own strip, at the foot: a reading where every scope was
    *  refused, the pager's, a copy the browser refused, and Abandon's. */
   const [error, setError] = useState<string | null>(null);
-  /** The pages after the first, and the cursor after THEM.
+  /** Each scope's pages after the first, and the cursor after THEM — one
+   *  pager per scope (cycle E, R-E6; Your tables' alone until then).
    *
    *  **Held apart from `lists`, because the poll replaces `lists`.** A pager
    *  that wrote its cursor back into the polled answer would have it reset three
    *  seconds later, and the next click on "more" would re-fetch the page it
-   *  already has. `null` means the pager has not been used, and the cursor is
-   *  then the polled list's own. */
-  const [paged, setPaged] = useState<{ games: TableView[]; next: string | null } | null>(null);
-  const pageInFlight = useRef(false);
+   *  already has. `null` means that scope's pager has not been used, and its
+   *  cursor is then the polled list's own. */
+  const [paged, setPaged] = useState<Lists>(NOTHING);
+  /** One in-flight guard per scope: a page of Open tables in flight must not
+   *  stop a player paging Your tables. */
+  const pageInFlight = useRef<Record<Scope, boolean>>({ mine: false, open: false, playing: false });
   /** The house chat's newest message number and revision, off the house frame
    *  itself (`Source.peek`; M6.5c2 cycle D, row 130) — the lobby chat's
    *  `count` and `rev`. The frame names no table (M6.3 R-3.4) and is still only
@@ -241,12 +285,17 @@ export function Lobby({
    *  moved: every house frame carries the house chat's count. Until then it
    *  waits, for as long as the house is quiet. And if the next thing is the
    *  reader's OWN post, its 201's number shows the gap and the panel reads
-   *  the page rather than stepping past it (`Chat`'s gap check; the Task 11
-   *  re-review). **The cost that is left, stated** (spec §6.2, §11): a house
-   *  message is one more house wake, and every visible lobby refetches its
-   *  three listings on it. */
+   *  the page rather than stepping past it (`Chat`'s gap check; cycle D's close
+   *  `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 35). **The cost spec §6.2
+   *  and §11 stated is gone since cycle E (R-E9)**: a house message is one more
+   *  house frame, and it re-lists nothing, because its `seq` did not move
+   *  (`onlyTheChatMoved`). */
   const [house, setHouse] = useState<{ chat: number; rev?: number } | null>(null);
-  /** The row whose link was just copied, for the two seconds its button says
+  /** The last house frame's counters, for [`onlyTheChatMoved`]: a frame that
+   *  moved only the chat re-lists nothing (R-E9). A ref, because a frame is
+   *  compared with the frame before it and never drawn. */
+  const lastHouseFrame = useRef<{ seq: number; chat: number; rev?: number } | null>(null);
+  /** The row whose link was just copied, for the two seconds its status says
    *  so. */
   const [copied, setCopied] = useState<string | null>(null);
   /** The two-second timer that puts the word back, held so a lobby that goes
@@ -325,6 +374,8 @@ export function Lobby({
     };
   }, [take, me]);
 
+  /** The repository link, from the build (R-6.5c2.40). */
+  const project = projectLink();
   const link = usePolled<Reading>(
     {
       key: "lobby",
@@ -333,41 +384,51 @@ export function Lobby({
       peek: (data) => {
         const counts = houseCounts(data);
         if (counts) setHouse(counts);
+        // **A message re-lists nothing** (R-E9, ruling T7-a lever c): the
+        // listings behind a frame that moved only the chat are the ones on
+        // screen. `false` declines the wake's re-read — which `usePolled`
+        // still makes for a connection's first frame and after a failed read.
+        const now = houseFrameOf(data);
+        const message = onlyTheChatMoved(lastHouseFrame.current, now);
+        lastHouseFrame.current = now;
+        return !message;
       },
     },
     me !== null,
     take,
   );
 
-  const page = async (cursor: string) => {
+  const page = async (scope: Scope, cursor: string) => {
     // The same guard, and the same reasoning, as `App`'s `inFlight`: React
     // batches, so two clicks in one tick both read a state flag as false and
     // both fetch — and here that appends the same page twice.
-    if (pageInFlight.current) return;
-    pageInFlight.current = true;
+    if (pageInFlight.current[scope]) return;
+    pageInFlight.current[scope] = true;
     try {
-      const p = await api.list("mine", cursor);
-      setPaged((old) => ({ games: [...(old?.games ?? []), ...p.games], next: p.next }));
+      const p = await api.list(scope, cursor);
+      setPaged((old) => ({ ...old, [scope]: { games: [...(old[scope]?.games ?? []), ...p.games], next: p.next } }));
     } catch (e) {
       setError(said(e));
     } finally {
-      pageInFlight.current = false;
+      pageInFlight.current[scope] = false;
     }
   };
 
   /** What follows an abandon: re-read the listings, so the screen agrees with
    *  the store.
    *
-   *  **The pager is dropped too.** Its pages were fetched around a table that no
-   *  longer exists, and a cursor is `<created_at>,<id>` — the id of a row that
-   *  has just gone. The DELETE, its confirmation and its in-flight guard are
-   *  `Abandon`'s; this is only the part that is the lobby's.
+   *  **Every scope's pager is dropped too.** Its pages were fetched around a
+   *  table that no longer exists, and a cursor is `<created_at>,<id>` — the id
+   *  of a row that has just gone, and a table is listed in more than one
+   *  scope (Your tables and Open or Being played answer it both; the lobby
+   *  hides the second). The DELETE, its confirmation and its in-flight guard
+   *  are `Abandon`'s; this is only the part that is the lobby's.
    *
    *  It can THROW, and is meant to: `Abandon` awaits it inside its own attempt,
    *  so a listing that will not read reports in the strip below rather than as
    *  an unhandled rejection. */
   const reread = async () => {
-    setPaged(null);
+    setPaged(NOTHING);
     take(await fetchLists());
   };
 
@@ -436,16 +497,25 @@ export function Lobby({
             </button>
           )}
           {action.kind === "copy" && (
-            <button
-              type="button"
-              className="ghost row-go"
-              aria-label={`${copied === t.id ? "Copied" : "Copy link"}: ${name}`}
-              // A polite live region, so "Copied" is heard as well as seen.
-              aria-live="polite"
-              onClick={() => void copyLink(t)}
-            >
-              {copied === t.id ? "Copied" : "Copy link"}
-            </button>
+            <>
+              {/* **"Copied" is said ONCE** (cycle E, straw poll row 68): by
+                  this status, drawn from the first render so its change is
+                  announced, and never by the button — whose name and words
+                  stay "Copy link". The button was the live region, and its
+                  words and its name both changed, so the copy could be heard
+                  twice. */}
+              <span className="copy-state" role="status">
+                {copied === t.id ? "Copied" : ""}
+              </span>
+              <button
+                type="button"
+                className="ghost row-go"
+                aria-label={`Copy link: ${name}`}
+                onClick={() => void copyLink(t)}
+              >
+                Copy link
+              </button>
+            </>
           )}
           {action.kind === "stranded" && (
             <span
@@ -465,15 +535,43 @@ export function Lobby({
     );
   };
 
-  const mine = lists.mine ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
-  const open = lists.open ? lists.open.games.filter(notMine) : [];
+  /** A scope's rows: its polled first page, then every page its pager has
+   *  fetched, each table once. */
+  const rowsOf = (scope: Scope): TableView[] => {
+    const first = lists[scope];
+    return first ? unique([...first.games, ...(paged[scope]?.games ?? [])]) : [];
+  };
+  const mine = rowsOf("mine");
+  const open = rowsOf("open").filter(notMine);
   /** The `playing` scope, split (R-6.5c2.22): it lists finished games too,
    *  because "over" is not a table STATUS (`tables.rs`), so Being played takes
    *  the games still under way and Finished the rest — in the listing's own
-   *  order, which is newest first. */
-  const playing = lists.playing ? lists.playing.games.filter(notMine).filter((t) => !t.over) : [];
-  const finished = lists.playing ? lists.playing.games.filter(notMine).filter((t) => t.over) : [];
-  const nextCursor = paged ? paged.next : (lists.mine?.next ?? null);
+   *  order, which is newest first. ONE pager serves both (R-E6), and a page's
+   *  rows fall into either list by their own `over`. */
+  const watchable = rowsOf("playing").filter(notMine);
+  const playing = watchable.filter((t) => !t.over);
+  const finished = watchable.filter((t) => t.over);
+  /** A scope's cursor: its pager's once used, else its polled list's own. */
+  const nextCursor = (scope: Scope): string | null => {
+    const p = paged[scope];
+    return p ? p.next : (lists[scope]?.next ?? null);
+  };
+  /** A scope's "more", while the server names a next page for it. */
+  const more = (scope: Scope) => {
+    const cursor = nextCursor(scope);
+    return (
+      cursor && (
+        <button
+          type="button"
+          className="ghost more"
+          aria-label={MORE_NAME[scope]}
+          onClick={() => void page(scope, cursor)}
+        >
+          more
+        </button>
+      )
+    );
+  };
   /** A section's own refusal, drawn under its heading (dossier row 4). */
   const strip = (s: Scope) => {
     const refused = refusals[s];
@@ -519,6 +617,12 @@ export function Lobby({
                 New table
               </button>
               {toDevice}
+              {project && (
+                <a className="quiet-link" href={project.href} target="_blank" rel="noopener">
+                  {project.text}
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </a>
+              )}
               {link !== "live" && (
                 <span className="meta link-word" role="status">
                   {link}&hellip;
@@ -555,11 +659,7 @@ export function Lobby({
                   ) : (
                     <ul className="lobby-rows">{mine.map((t) => row(t, "mine"))}</ul>
                   )}
-                  {nextCursor && (
-                    <button type="button" className="ghost more" onClick={() => void page(nextCursor)}>
-                      more
-                    </button>
-                  )}
+                  {more("mine")}
                 </section>
 
                 {/* Every open table on the server that is not already yours
@@ -576,6 +676,7 @@ export function Lobby({
                   ) : (
                     <ul className="lobby-rows">{open.map((t) => row(t, "open"))}</ul>
                   )}
+                  {more("open")}
                 </section>
 
                 {/* Every game still being played that is not yours, so a
@@ -611,16 +712,27 @@ export function Lobby({
                 {finished.length > 0 && (
                   <section className="lobby-section finished-tables">
                     <details className="fold">
+                      {/* **The heading names the count** (cycle E, straw
+                          poll row 63): "Finished (3)" is what the shut fold
+                          says and what a heading list reads; the marker after
+                          it is drawn at the heading's size (`styles.css`). */}
                       <summary>
-                        <h3>Finished</h3>
-                        <span className="section-hint">
-                          {finished.length === 1 ? "1 game" : `${finished.length} games`}
-                        </span>
+                        <h3>
+                          Finished{" "}
+                          <span className="count">({finished.length})</span>
+                        </h3>
                       </summary>
                       <ul className="lobby-rows">{finished.map((t) => row(t, "finished"))}</ul>
                     </details>
                   </section>
                 )}
+                {/* **The playing scope's "more", after BOTH its lists** (cycle
+                    E, R-E6): Being played and Finished are one listing split
+                    by `over`, so one page of it can add rows to either, and
+                    the control that fetches it sits under the pair. A
+                    `lobby-section` of its own so the section rules (its
+                    spacing, and a thumb's height on a phone) reach it. */}
+                {nextCursor("playing") && <div className="lobby-section playing-more">{more("playing")}</div>}
               </div>
               {/* The house chat (R-6.4.5, R-6.4.6), in the RAIL: folded by
                   default (opening it is entering the lobby chat) and absent

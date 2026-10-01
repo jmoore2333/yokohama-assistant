@@ -72,7 +72,7 @@
     // Cloudflare Access, verified by the shell — this repository's
     // configuration, behind the `yokohama` Access application. `open` is a
     // deployment with no identity provider, where anyone who reaches the Worker
-    // may play under any name; no Worker of this repository runs it.
+    // may play under any name; this repository runs it only for the door window (`wrangler.open.jsonc`).
     "YOKOHAMA_WEB_IDENTITY": "worker",
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
@@ -90,6 +90,11 @@
     // value, 2026-09-23), as its creator's own Abandon, saved first while the
     // archive is on. Removing the line keeps every table (`worker/RUNBOOK.md` §3).
     "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    // A table still WAITING for players — its status `open`, a seat unfilled —
+    // expires after 7 days without activity instead (R-6.5c2.42), with a marker
+    // saying it waited. Removing the line reads the default, 7; with no
+    // `YOKOHAMA_WEB_TABLE_TTL_DAYS` no table expires and this line is inert.
+    "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     // The NAS's three chat variables, at the NAS's defaults.
     "YOKOHAMA_WEB_LOBBY_CHAT": "on",
     "YOKOHAMA_WEB_CHAT_KEEP": "500",

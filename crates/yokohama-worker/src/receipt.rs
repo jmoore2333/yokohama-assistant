@@ -980,11 +980,13 @@ mod tests {
     /// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, under its OWN
     /// id `local-242a5429453c593c` (plan review m12), WITH the record's bot in its
     /// turn mirror — what a persist under the dealing build writes (M6.5c2, P-4),
-    /// read through the layer's `bots::recorded`, the source `mirror_of` reads.
-    /// The two files differ by exactly that field: the cell's premise holds the
-    /// pair's table to a byte-for-byte round trip through `TableDoc`. Without the
-    /// field the rebuild's persist would rewrite the table, and the pool's
-    /// owed-game cells would lose their premises.
+    /// read through the layer's `bots::recorded`, the source `mirror_of` reads —
+    /// and, since cycle E (ruling T5-a), the mirror's `has_events`, which a
+    /// persist under this build stamps from a record that holds any event (the
+    /// cut holds 588). The two files differ by exactly those two fields: the
+    /// cell's premise holds the pair's table to a byte-for-byte round trip
+    /// through `TableDoc`. Without them the rebuild's persist would rewrite the
+    /// table, and the pool's owed-game cells would lose their premises.
     #[test]
     fn the_owed_game_over_fixture_is_the_committed_pair_cut_at_its_last_bot_run() {
         let _s = serial();
@@ -1001,10 +1003,12 @@ mod tests {
         assert_eq!(
             serde_json::to_string_pretty(&owed).unwrap(),
             table,
-            "premise: the pair's table round-trips through `TableDoc` byte for byte, so the owed table differs by its `bot` alone",
+            "premise: the pair's table round-trips through `TableDoc` byte for byte, so the owed table differs by its `bot` and `has_events` alone",
         );
-        owed.turn.as_mut().expect("a finished game's mirror").bot =
-            yokohama_web::bots::recorded(&record).into_iter().next().map(|(_, d)| d);
+        let mirror = owed.turn.as_mut().expect("a finished game's mirror");
+        mirror.bot = yokohama_web::bots::recorded(&record).into_iter().next().map(|(_, d)| d);
+        assert!(!mirror.has_events, "premise: the committed pair's mirror predates the bit");
+        mirror.has_events = true;
         let table = serde_json::to_string_pretty(&owed).unwrap();
         let rules = Rules::standard();
         // Each event's mover: the player to move at the state before it, the
@@ -1037,7 +1041,7 @@ mod tests {
         assert_eq!(
             read(dir.join("owed-game-over.table.json")),
             table,
-            "the committed table is the pair's with the record's bot in its mirror (regenerate with UPDATE_WORKER_FIXTURES=1)",
+            "the committed table is the pair's with the record's bot and has_events in its mirror (regenerate with UPDATE_WORKER_FIXTURES=1)",
         );
     }
 

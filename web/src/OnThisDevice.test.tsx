@@ -204,7 +204,7 @@ describe("On this device", () => {
       expect(within(block as HTMLElement).getByRole("button", { name: "remove local-9" })).toBeInTheDocument();
       // And the read that failed still says so, where it failed — and only
       // there: the module listed this game, so no line says the games could
-      // not be listed (the final review's triage; see the cell below).
+      // not be listed (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45; see the cell below).
       expect(within(block as HTMLElement).getByText(/the games that will not open could not be read/)).toBeInTheDocument();
     });
 
@@ -295,7 +295,7 @@ describe("On this device", () => {
   });
 
   // **Above a listed game, no line says the games could not be listed** (M6.5c2
-  // cycle D, the final review's triage). The
+  // cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45). The
   // module listed them: the rows are drawn and open through it, so "this
   // device's games could not be listed" above them was false, and it named the
   // one failure a second time beside `Unplayable`'s own line — which is the
@@ -541,7 +541,56 @@ describe("keeping the games on this device", () => {
     await draw();
     const withRows = await screen.findByText(/has not promised/i);
     expect(withRows).toHaveTextContent("these games");
-    expect(withRows).toHaveTextContent("Back them up");
+    expect(withRows).toHaveTextContent("back them up");
+  });
+
+  // **One sentence each, and nothing said twice on the card** (cycle E, straw
+  // poll row 62): the storage line ran to three sentences, its last "Back them
+  // up to hold a copy you can restore.", and the foot's note under Back up
+  // began "one file ... which this app can restore." — the same promise twice,
+  // two lines apart. The line now says what the browser keeps and points at
+  // the backup; the note alone says what the backup is.
+  it("says each thing once: one sentence of what the browser keeps, one of what Back up writes", async () => {
+    stubStorage({
+      persisted: vi.fn().mockResolvedValue(false),
+      estimate: vi.fn().mockResolvedValue({ usage: 12_000, quota: 1_200_000_000 }),
+    });
+    await draw();
+    const line = await screen.findByText(/has not promised/i);
+    expect(line.textContent).toBe(
+      "This browser has not promised to keep these games and may clear them to make room (12 KB of 1.2 GB in use), so back them up.",
+    );
+    const note = document.querySelector(".on-this-device .device-foot .backup-note")!;
+    expect(note.textContent).toBe(
+      "Back up writes every game on this device to one file this app can restore \u2014 a game\u2019s own \u201cSave game file\u201d is its record alone, the file the terminal loads.",
+    );
+    // One sentence each: one full stop, and it ends the text.
+    for (const text of [line.textContent!, note.textContent!]) {
+      expect(text.match(/\.(\s|$)/g), text).toHaveLength(1);
+      expect(text.endsWith(".")).toBe(true);
+    }
+    // Said once: the restore is the note's, and the line does not repeat it.
+    expect(line.textContent).not.toMatch(/restore|a copy/i);
+    const card = document.querySelector(".on-this-device")!.textContent!;
+    expect(card.match(/can restore/g), "\"can restore\" once on the card").toHaveLength(1);
+  });
+
+  it("points a promise and a silence at the backup in one sentence too", async () => {
+    stubStorage({
+      persisted: vi.fn().mockResolvedValue(true),
+      estimate: vi.fn().mockResolvedValue({ usage: 54_103, quota: 2_000_000_000 }),
+    });
+    await draw();
+    expect((await screen.findByText(/has promised/i)).textContent).toBe(
+      "This browser has promised to keep these games (54 KB of 2 GB in use); back them up all the same.",
+    );
+    cleanup();
+    resetLocalHostForTests();
+    stubStorage(undefined);
+    await draw();
+    expect((await screen.findByText(/does not say/i)).textContent).toBe(
+      "This browser does not say whether it will keep these games, so back them up.",
+    );
   });
 });
 

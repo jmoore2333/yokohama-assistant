@@ -101,8 +101,17 @@ pub fn content_type(path: &Path) -> &'static str {
 /// with no freshness header at all heuristic caching is exactly what it may do.
 /// `no-store` is the only answer that makes update detection a property of the
 /// release rather than of a cache the server never saw.
+///
+/// **M6.5c2 cycle E puts the shell under the same rule** (R-6.5c2.41). The
+/// worker installs the shell from `/shell.bin`, a byte copy of `index.html`
+/// under a name the zone's edge does not inject its script into — and `.bin` is
+/// on Cloudflare's default cached-extension list, so an answer with no header
+/// stays at the edge for two hours: the previous release's shell for every
+/// install in that window, each failing its digest. The worker's `cache:
+/// "reload"` goes past the browser's cache, not the edge's; `no-store` keeps
+/// either from holding a copy.
 fn cache_control(uri_path: &str) -> Option<&'static str> {
-    if uri_path == "/sw.js" {
+    if uri_path == "/sw.js" || uri_path == "/shell.bin" {
         return Some("no-store");
     }
     uri_path.starts_with("/assets/").then_some("public, max-age=31536000, immutable")
@@ -223,9 +232,10 @@ mod tests {
         assert_eq!(content_type(Path::new("manifest.webmanifest")), "application/manifest+json");
     }
 
-    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8): Vite's hashed output is
-    /// immutable, the service worker is `no-store`, and NOTHING else this map
-    /// serves carries a freshness header.
+    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8) and by M6.5c2 cycle E
+    /// (R-6.5c2.41): Vite's hashed output is immutable, the service worker and
+    /// the shell it installs are `no-store`, and NOTHING else this map serves
+    /// carries a freshness header.
     ///
     /// The `assets/` half is what M6.5b needed — `OnThisDevice` mounts on
     /// every first screen and instantiates the browser host's module, so
@@ -243,12 +253,17 @@ mod tests {
     /// reads from disk (`/art/*`, a manifest that is not built in a test) are
     /// covered without arranging a file for each.
     #[test]
-    fn hashed_assets_are_immutable_the_worker_is_no_store_and_nothing_else_carries_a_header() {
+    fn hashed_assets_are_immutable_the_worker_and_its_shell_are_no_store_and_nothing_else_carries_a_header() {
         assert_eq!(cache_control("/assets/index-abc123.js"), Some("public, max-age=31536000, immutable"));
         // Update detection is a BYTE COMPARISON of this one file, so a browser
         // that heuristically caches it delays every update by the cache window —
         // and with no header at all, heuristic caching is exactly what it may do.
         assert_eq!(cache_control("/sw.js"), Some("no-store"));
+        // The shell the worker installs (R-6.5c2.41). `.bin` is on Cloudflare's
+        // default cached-extension list, so with no header the edge keeps the
+        // PREVIOUS release's copy for two hours after a deploy, and every
+        // install in that window fails its digest.
+        assert_eq!(cache_control("/shell.bin"), Some("no-store"));
         for path in ["/", "/index.html", "/manifest.webmanifest", "/art/manifest.json", "/help/screen.webp"] {
             assert_eq!(cache_control(path), None, "{path} carries no freshness header");
         }
@@ -261,6 +276,7 @@ mod tests {
             .unwrap();
         std::fs::write(root.join("index.html"), b"<!doctype html>").unwrap();
         std::fs::write(root.join("sw.js"), b"// the worker").unwrap();
+        std::fs::write(root.join("shell.bin"), b"<!doctype html>").unwrap();
 
         let cached = |uri: &str| -> Option<String> {
             serve_path(&root, uri)
@@ -275,6 +291,7 @@ mod tests {
             "a hashed asset is immutable by construction"
         );
         assert_eq!(cached("/sw.js").as_deref(), Some("no-store"), "and it reaches the response");
+        assert_eq!(cached("/shell.bin").as_deref(), Some("no-store"), "and so does the shell's");
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");
         assert_eq!(cached("/lobby"), None, "the same document through the SPA fallback");
 

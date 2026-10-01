@@ -75,6 +75,28 @@ export const EXIT_SPEC = "exit_game.spec.ts";
 /** Whether the exit's game was asked for: `YOKOHAMA_WEB_EXIT=1`. */
 export const EXIT = process.env.YOKOHAMA_WEB_EXIT === "1";
 
+/** The README's screenshot generator (Task 8, R-6.5c2.44): an opt-in spec that
+ *  writes the pictures of `worker/README.md` §1.4, collected only under
+ *  [`README_SHOTS`] and, like the exit's game, kept out of every other run
+ *  (`playwright.config.ts`). It runs on whichever target the run names — the
+ *  local binary for a dry run, the Worker for the pictures that are committed —
+ *  and, being a live spec, is read by `live.node.test.ts`'s rules. */
+export const README_SHOTS_SPEC = "readme_shots.spec.ts";
+
+/** Whether the generator was asked for: `YOKOHAMA_WEB_README_SHOTS=1`. */
+export const README_SHOTS = process.env.YOKOHAMA_WEB_README_SHOTS === "1";
+
+/** The open door's plain two-person game (cycle E Task 10.K; the straw-poll
+ *  row 114): an opt-in spec that plays until each of two PLAIN
+ *  contexts has applied ten moves — no credential, no claimed header, each named at
+ *  the client's own name step — and abandons the table. Collected only under [`STATE1_GAME`],
+ *  like the README's generator; it runs on whichever target the run names, and
+ *  is a live spec for `live.node.test.ts`'s rules. */
+export const STATE1_GAME_SPEC = "state1_game.spec.ts";
+
+/** Whether the game was asked for: `YOKOHAMA_WEB_STATE1_GAME=1`. */
+export const STATE1_GAME = process.env.YOKOHAMA_WEB_STATE1_GAME === "1";
+
 /**
  * The two Chromium switches the exit's run launches with (R3's R-N6; ruling
  * I-91), meant to keep its headed windows VISIBLE when one covers another: a

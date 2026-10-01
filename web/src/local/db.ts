@@ -410,7 +410,7 @@ export type RestoreOutcome = "restored" | "already-here" | "clash";
  * `readwrite` transaction** (spec §2.5).
  *
  * **The compatibility row is RE-DERIVED here, at every restore** (M6.5c2 cycle
- * D, straw poll row 16; whole-branch review, Minor 1). A game restored at rev N
+ * D, straw poll row 16; cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §4, the whole-branch review's Minor 1). A game restored at rev N
  * as "unplayable" — its record a rev N+1 one — keeps its row after this device
  * moves to rev N+1, and the row goes on hiding a game the module now opens,
  * under a reason that has stopped being true. The caller hands `compat` only

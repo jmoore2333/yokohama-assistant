@@ -6,6 +6,7 @@ import {
   ApiError,
   bounded,
   BOUND_MS,
+  displayName,
   isLocal,
   isSignedOut,
   LOCAL_USER,
@@ -19,7 +20,7 @@ import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
 import { IdentityCorner, LobbyBand } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
-import { projectLink } from "./projectLink";
+import { projectLink } from "./buildValues";
 import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
@@ -348,6 +349,38 @@ export function App() {
   // instead of clearing them the instant the walk finishes; WHICH marks those
   // are is `heldChanges`, not the last step's own diff.
   const [run, setRun] = useState<Run | null>(null);
+  /** **The live position, off the newest run's LAST frame, and the game it is
+   *  of** (cycle E, Task 7; R-E9, ruling T7-a). A run ends on the live frame
+   *  (`fetchRun`'s `to` is `next + 1`), and that frame carries the port and
+   *  the laboratory `build_ports`/`build_labs` built for the position — the
+   *  same two builders `…/ports` and `…/labs` answer with — so the sections
+   *  draw them from here and ask neither route after a move. Held apart from
+   *  `run`, which the screen clears for its own reasons: a cleared account is
+   *  not a board that moved.
+   *
+   *  **A frame is taken as live only while it is the newest run's for the
+   *  count on screen**, and that is kept on every path that moves the count:
+   *  a run BEGINNING lets go of it (`landed`), so a run that then fails holds
+   *  none; `send`'s refusal re-read lets go of it when the count it read is
+   *  not the one the post started from (a refused or lost post after an undo
+   *  can read the count an undone branch's run ended on); `arrive`'s shrink
+   *  arm lets go of it, because that arm is chosen by the SIGNAL's count and
+   *  its re-read may read any count, the frame's own included; `landed`'s
+   *  shrink arm keeps it — at the SAME count (a picker step's reply) it is
+   *  still this count's, and below it its index is above the count, and every
+   *  way back up passes one of the lets-go above; the hot-seat re-read reads
+   *  the reply's own count, whose run it is; and `show` clears it. **What no
+   *  path can see** is a branch that changed at the same count without this
+   *  screen ever reading another: the count is the position's key (ruling
+   *  T7-a), as it is for the whole state in `arrive`. */
+  const [liveFrame, setLiveFrame] = useState<{ game: string; frame: HistoricalFrame } | null>(null);
+  /** **The count a run is being fetched for, while it is** (R-E9). Set by
+   *  `landed` BEFORE its first `await` — so it lands in the same render as the
+   *  `state` that grew, which every caller sets in the same synchronous block —
+   *  and cleared when the run lands or fails. It is what stops the sections
+   *  asking for two boards in the gap between the new state and its run; a
+   *  run that failed clears it with no live frame, and they ask once. */
+  const [runFor, setRunFor] = useState<{ game: string; events: number } | null>(null);
   const [walk, setWalk] = useState<WalkState | null>(null);
   const [fresh, setFresh] = useState(false);
   const [cadence, setCadence] = useState<Cadence>(() => loadCadence());
@@ -492,15 +525,32 @@ export function App() {
         setWalk(null);
         return;
       }
-      const r = await fetchRun(game, prev, next);
-      // The same rule the reply itself is judged by: a run for a game the
-      // player has left is dropped, never shown over the game they are on.
-      if (gameId.current !== game) return;
-      const plays =
-        arrival.via === "reply" ? hasBotStep(r) : hasOpponentStep(r.steps, arrival.viewer);
-      setRun(r);
-      setFresh(true);
-      setWalk(plays ? { at: 0, playing: true } : null);
+      // **Marked before the first `await`** (R-E9): see `runFor`. The mark is
+      // this call's own object, so the `finally` clears it only if no later
+      // run has replaced it.
+      const mark = { game, events: next };
+      setRunFor(mark);
+      // **And the held frame let go** (Task 7 review, Important 1): after an
+      // undo, a DIFFERENT move can bring the count back to the number an
+      // undone branch's run ended on, and if this run then fails, that frame
+      // would pass for the live one — a port that is not on the table, and no
+      // read. With no frame held, a failed run asks each board once.
+      setLiveFrame(null);
+      try {
+        const r = await fetchRun(game, prev, next);
+        // The same rule the reply itself is judged by: a run for a game the
+        // player has left is dropped, never shown over the game they are on.
+        if (gameId.current !== game) return;
+        const plays =
+          arrival.via === "reply" ? hasBotStep(r) : hasOpponentStep(r.steps, arrival.viewer);
+        setRun(r);
+        setFresh(true);
+        setWalk(plays ? { at: 0, playing: true } : null);
+        // The live frame, and with it the port and the laboratory (R-E9).
+        setLiveFrame({ game, frame: r.steps[r.steps.length - 1]!.after });
+      } finally {
+        setRunFor((f) => (f === mark ? null : f));
+      }
     },
     [],
   );
@@ -533,6 +583,9 @@ export function App() {
       setBroken(null);
       setTable(null);
       setRun(null);
+      // A game put on screen afresh draws its boards from its own reads, never
+      // from a frame this screen held for it before (R-E9).
+      setLiveFrame(null);
       setWalk(null);
       setFresh(false);
       // **The message count goes with the game too** (final review, minor 7).
@@ -750,7 +803,7 @@ export function App() {
         if (!here()) return;
         // The game that was on screen stays, and so does its address — with no
         // history entry left pointing at the table that refused. **The cost,
-        // stated** (the Task 11 review's m-2): the switch pushed an entry and
+        // stated** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §1, the Task 11 row: m-2): the switch pushed an entry and
         // this REPLACES it, so the history holds the game twice, and the first
         // Back changes nothing a player can see. `history.back()` would pop it,
         // but it arrives as a queued `popstate` racing the route effect; one
@@ -1183,6 +1236,13 @@ export function App() {
               setRun(null);
               setWalk(null);
               setFresh(false);
+              // **The held frame goes too** (Task 7 re-review 2): this arm is
+              // chosen by the SIGNAL's count, but the state above is the
+              // RE-READ's, and the re-read may read ANY count — an undo's
+              // signal read after another branch moved on reads the count the
+              // undone branch's run ended on, whose frame would pass for the
+              // live one. With none held, the sections ask each board once.
+              setLiveFrame(null);
             }
           } catch (err) {
             if (gameId.current === game)
@@ -1302,7 +1362,20 @@ export function App() {
         // with the server.
         try {
           const fresh = await api.get(game);
-          if (fresh.id === gameId.current) setState(fresh);
+          if (fresh.id === gameId.current) {
+            setState(fresh);
+            // **A count this re-read moved has no run behind it** (Task 7
+            // re-review, Important 1's second path): after an undo, a refused
+            // or lost post can read the count an undone branch's run ended
+            // on, and the frame that run left would pass for the live one.
+            // Let go of it, and the sections ask each board once. The guard
+            // compares with the count the POST started from: a stale click's
+            // refusal re-reads that count and keeps the frame, which is still
+            // its own; the one road where the screen had already moved — a
+            // hot-seat re-read that failed after its reply landed — lets go of
+            // a valid frame and costs one read per board, the board right.
+            if (fresh.events !== state.events) setLiveFrame(null);
+          }
         } catch {
           // The re-read failed too. Keep the original refusal on screen: it is
           // the more useful of the two, and a second error would replace the
@@ -1491,13 +1564,20 @@ export function App() {
     (route.kind === "new" && route.local) ||
     (broken !== null && isLocal(broken.id)) ||
     lockId !== null;
+  // **The name the player's seats are labelled with, where this browser keeps
+  // one** (cycle E; the owner's first game read "You are ben" over a seat card
+  // reading "Ben"). A seat card notes the name its seat was TYPED as — what
+  // this browser sent with the create, the join or the keep, `displayName()` —
+  // while this strip read the parsed KEY, which `User::parse` lowercases. The
+  // key stays the answer where there is no name: it is still who you are.
+  const shownAs = displayName()?.trim() || signedIn;
   const whoStrip = (
     <span className="meta who">
       {spectating
         ? "You are spectating"
         : onThisDevice || !signedIn
           ? "On this device"
-          : `You are ${signedIn}`}
+          : `You are ${shownAs}`}
     </span>
   );
   const who = (
@@ -1551,6 +1631,31 @@ export function App() {
       onRetry={retry}
     />
   );
+
+  /** **A table route's screen while its table is being read** (cycle E,
+   *  R-E7; the M6.3 close's own fix, §6.2): a cold `#/t/<id>` — a link, a
+   *  reload — drew the LOBBY for one round trip while `open(id)` awaited
+   *  `GET …/table`, which mounted `<Lobby>` and so fired its three listings
+   *  and opened the house stream, all thrown away. The lists load only where
+   *  the lobby is the screen. Drawn while the door is still asking who this
+   *  is, too: a signed-out caller is answered by the lobby's door content
+   *  once the door has said so. In the table's own crumb, by its id — the
+   *  name is what is being read. */
+  const openingScreen = (id: string) => {
+    const local = isLocal(id);
+    return (
+      <div className="band-screen">
+        <LobbyBand crumbs={local ? ["On this device", id] : ["Lobby", id]} corner={local ? undefined : serverCorner} />
+        <div className="setup opening-table">
+          <p className="muted" role="status">
+            opening&hellip;
+          </p>
+        </div>
+      </div>
+    );
+  };
+  /** The door has not answered yet: neither a caller nor a refusal. */
+  const doorAsking = door.me === null && door.error === null;
 
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
   // and the game must agree about which boards are on, and a second
@@ -1652,9 +1757,19 @@ export function App() {
                     archives it (R-6.5a.11). A local game lands on the door, where
                     the rest of this browser's games are listed; a server game on
                     the lobby. */}
+                {/* **The foreign screen FORCES the bit** (cycle E, ruling T5-c):
+                    it exists for a record this build cannot drive, whose moves
+                    are exactly what makes it worth saving, and its stored
+                    mirror never heals here — the host refuses the game before
+                    anything is persisted — so a game stored before the bit
+                    would read no event for ever and be deleted without a copy.
+                    A foreign game dealt a moment ago then sends a zero-move
+                    copy, which is what every local Abandon did before cycle E.
+                    Not the record's own count: that would be this client's
+                    first parse of a record (`local/client.ts`, `local/db.ts`). */}
                 {abandonable && (
                   <Abandon
-                    table={broken.table}
+                    table={broken.foreign ? { ...broken.table, has_events: true } : broken.table}
                     local={local && broken.foreign}
                     onDone={() => (local ? toDoor() : toLobby())}
                     onError={setError}
@@ -1718,8 +1833,13 @@ export function App() {
     // behind it** (R-6.5b2.1). Below this line every screen is the SERVER's.
     if (route.kind === "door") return doorScreen(error);
     // The door the server owns stands in front of those, as content on the
-    // lobby rather than as a gate.
-    if (!signedIn) return lobbyScreen(error);
+    // lobby rather than as a gate — once it has answered. A table route waits
+    // for that answer on its own screen (R-E7), and a LOCAL table needs no
+    // door at all: its read is the lock's and the module's.
+    if (!signedIn)
+      return route.kind === "table" && (doorAsking || isLocal(route.id))
+        ? openingScreen(route.id)
+        : lobbyScreen(error);
     if (route.kind === "new")
       return (
         <NewGame
@@ -1807,6 +1927,11 @@ export function App() {
           who={serverCorner}
         />
       );
+    // **A table route with no screen yet is a table being read** (R-E7): the
+    // route effect's `open(id)` is in flight, or a local game's lock has not
+    // answered. A refused read navigates to the lobby or the door with the
+    // sentence, so this never stands in for a refusal.
+    if (route.kind === "table") return openingScreen(route.id);
     return lobbyScreen(error);
   }
 
@@ -2034,7 +2159,7 @@ export function App() {
           savedFrom={multiplayerOffered() && !isLocal(state.id) ? undefined : "local"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
-            The banner is one row at 1440 and 1280 by a gate that measures it
+            The banner is one row at 1440, 1280 and 1024 by a gate that measures it
             (`the_screen_itself.spec.ts`), and the door's two controls together
             cost 269px of a 1240px content box at 1280 — enough to break the
             line, measured: 1325px of children and gaps against 1240. The strip
@@ -2043,19 +2168,6 @@ export function App() {
             controls live (which game, which other game, back to the form). The
             screens with no Game menu — the form and the deal — keep both. */}
         {whoStrip}
-        {/* **What the poll can say for itself, and `live` says nothing.**
-            A permanent "connected" mark is a thing people stop seeing, and the
-            banner is GATED at one row at 1440 and 1280 with 22px of room
-            measured — so the resting state costs no width at all. The words
-            that do appear are the ones a player would otherwise have to guess
-            at: the board is as old as the tab was hidden ("refreshing"), or
-            this browser cannot reach the server ("connecting" before its first
-            connection, "reconnecting" once one is lost). */}
-        {link !== "live" && (
-          <span className="meta link" role="status">
-            {link}&hellip;
-          </span>
-        )}
         {/* Four surfaces inline, the five card references behind a disclosure,
             so the banner stays ONE ROW at every laptop width: measured 93 → 56px
             at 1440 and 174 → 93 at 1024, with the nav's bottom edge at 43px
@@ -2201,12 +2313,39 @@ export function App() {
         ) : null}
         {/* **The abandon lives on a LOCAL game's own screen** (P-6), where this
             tab holds its lock — the lobby's rows withhold it. It reads "Abandon
-            and save" when the SERVER keeps an archive, because that is where
-            the copy goes. */}
+            and save" when the SERVER keeps an archive and the game has a move
+            in it, because that is where the copy goes. **Whether it has one
+            is the game's own fact** (cycle E, R-E5): `table` was read once, at
+            open, and a game opened at its deal would go on reading no events
+            after every move since; `state.events` is the record's length now. */}
         {isLocal(state.id) && table && lockState !== "lost" ? (
-          <Abandon table={table} local onDone={() => toDoor()} onError={setError} />
+          <Abandon
+            table={{ ...table, has_events: state.events > 0 }}
+            local
+            onDone={() => toDoor()}
+            onError={setError}
+          />
         ) : null}
       </header>
+
+      {/* **What the poll can say for itself, and `live` says nothing** — on the
+          line UNDER the banner, never in its row (cycle E, straw poll row 71).
+          A permanent "connected" mark is a thing people stop seeing, so the
+          resting state draws nothing. The words that do appear are the ones a
+          player would otherwise have to guess at: the board is as old as the
+          tab was hidden ("refreshing"), or this browser cannot reach the
+          server ("connecting" before its first connection, "reconnecting" once
+          one is lost). In the banner's row the word was one more child of a
+          row GATED at one line (`the_screen_itself.spec.ts`), and measured at
+          1280 it broke the line: 93px against a 56px one-row box. **The strip
+          is the live region, mounted whatever the word** (Task 4b's review,
+          Minor 5): a region inserted with its text is announced unreliably —
+          the end-trigger strip's own reason below — so the words arrive in a
+          region that was already there. `styles.css` says where it is drawn at
+          each width (ruling 4b-1). */}
+      <div className="link-strip" role="status">
+        {link !== "live" && <span className="meta link">{link}&hellip;</span>}
+      </div>
 
       {/* How close the game is to ending, in the CLI's own words. Without it a
           player cannot see the game ending, which is not a polish issue.
@@ -2283,6 +2422,8 @@ export function App() {
             labels={labels}
             colors={colors}
             changedSlots={highlights?.slots}
+            live={liveFrame?.game === state.id ? liveFrame.frame : null}
+            runFor={runFor?.game === state.id ? runFor.events : null}
           />
         </div>
       </main>

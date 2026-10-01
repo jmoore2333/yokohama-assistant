@@ -104,15 +104,29 @@ export function Abandon({
    *
    *  **Who does the saving differs by host, and so does the answer.** A server
    *  table is archived by the SERVER inside its own delete, so the label reads
-   *  the deployment's archive and nothing else. A game in this browser is
-   *  archived by this control, which only happens under `local` — the one
-   *  caller that withholds it is the screen for a save that no longer
+   *  the server's own answer, `TableView.saves` — the rule that delete applies
+   *  (cycle E, R-E5) — and nothing this browser remembers. A game in this
+   *  browser is archived by this control, which only happens under `local` —
+   *  the one caller that withholds it is the screen for a save that no longer
    *  rebuilds, where the archive would refuse the record and a control that
-   *  said "and save" would promise a copy nobody can make. */
-  const saves =
-    archiveDisposition(archive) === "send" &&
-    table.status === "playing" &&
-    (local || !isLocal(table.id));
+   *  said "and save" would promise a copy nobody can make — and its rule is
+   *  the server's, asked here: the deployment keeps an archive, the game is
+   *  playing, and it has at least one event (`has_events`, ruling T5-a).
+   *
+   *  **The bit is the table's as this caller was handed it**, so a host whose
+   *  table was read before the first move hands the live fact in (App's game
+   *  screen does), and the foreign-bot screen forces it (ruling T5-c). What
+   *  agrees by construction: a hosted label and the layer's delete, by ONE
+   *  rule; a local label and the local send, by ONE bit (ruling T5-b;
+   *  `abandon` below). What may still differ is the ARCHIVE fact: the label
+   *  reads what this browser remembers, and the click forces a fresh read. */
+  const saves = isLocal(table.id)
+    ? local && archiveDisposition(archive) === "send" && table.status === "playing" && table.has_events
+    : table.saves;
+  /** The words, on the trigger and at the confirm (ruling 4a-1): the lobby row
+   *  draws the trigger as a cross on a phone, so its NAME carries them, and
+   *  the confirm is where the decision is made. */
+  const verb = saves ? "abandon and save" : "abandon";
 
   /** Send the pair to the SERVER's archive, and say whether the delete may go
    *  ahead (R-6.5b.6, spec §4).
@@ -176,12 +190,21 @@ export function Abandon({
    *
    * **A SERVER table asks nothing**: the server archives it inside its own
    * delete, so there is no decision here to be wrong about.
+   *
+   * **Nor does a local game with no event in it** (cycle E, ruling T5-b): the
+   * layer's own delete saves nothing from a moveless playing table, and the
+   * label above already said "Abandon", on the same bit. Nothing to save is
+   * nothing to ask about — no forced read, no refusal face, no send. A game
+   * stored before the bit existed reads `false` until its next write; ruling
+   * T5-c's cost is that the foreign-bot screen, where that write never comes,
+   * hands this control `true`, so a foreign game dealt a moment ago sends a
+   * zero-move copy.
    */
   const abandon = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      if (local) {
+      if (local && table.has_events) {
         const disposition = archiveDisposition(await ensureArchiveFact({ force: true }));
         if (disposition === "ask") {
           setChoices(true);
@@ -245,15 +268,13 @@ export function Abandon({
       <button
         type="button"
         className="ghost danger"
-        aria-label={`abandon ${named}`}
+        aria-label={`${verb} ${named}`}
         onClick={() => setConfirming(true)}
       >
-        {/* **"and save" is the near truth** (M6.5a, R-6.5a.13): the server
-            archives a PLAYING table with at least one event when its archive is
-            on, and `TableView` carries no event count — so a table dealt a
-            moment ago reads "and save" and saves nothing. The server's rule is
-            the truth; adding a count to the view would move eight fixtures for
-            one word. */}
+        {/* **"and save" is the truth** (cycle E, R-E5; it was the near truth
+            from M6.5a, R-6.5a.13, while `TableView` carried no event count and
+            a table dealt a moment ago read "and save" over a delete that saved
+            nothing): `saves` above. */}
         {saves ? "Abandon and save" : "Abandon"}
       </button>
     );
@@ -304,10 +325,10 @@ export function Abandon({
       <button
         type="button"
         className="ghost danger"
-        aria-label={`confirm abandon ${named}`}
+        aria-label={`confirm ${verb} ${named}`}
         onClick={() => void abandon()}
       >
-        confirm abandon
+        confirm {verb}
       </button>
       {/* **After a refused send only** (`refused`): the first answer stands —
           the game is kept, the server's sentence is on the host's strip, and

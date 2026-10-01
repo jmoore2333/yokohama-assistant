@@ -137,6 +137,10 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
         to_move: repl.session.state().current_player.0,
         over,
         winner: over.then(|| repl.session.final_result().winner.0),
+        // What `saves_on_abandon` reads off the view (cycle E, R-E5; ruling
+        // T5-a): a bit, so it changes once per game and the equal-skip in
+        // `mirror_turn` still spares every later mid-turn move a write.
+        has_events: !repl.session.record().events.is_empty(),
         // The record's first bot seat (M6.5c2, R-6.5c2.10). Every bot a web
         // table deals is one contestant (`tables::contestants_of`), so the
         // first names them all.
@@ -475,6 +479,13 @@ impl Games {
         }
     }
 
+    /// Whether this host keeps an archive — `archive::is_on` over the one it
+    /// was built with. Handed to every [`TableDoc::view`] a route builds, so a
+    /// view's `saves` is this host's answer (cycle E, R-E5).
+    pub fn archive_on(&self) -> bool {
+        crate::archive::is_on(&self.archive)
+    }
+
     /// This `Games` with a different [`Archive`] — the builder step a cell
     /// that watches a put reaches for, as [`Games::with_clock`] is for a stamp.
     pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
@@ -661,8 +672,8 @@ impl Games {
         let record: GameRecord =
             serde_json::from_str(&json).map_err(|e| GameError::Server(e.to_string()))?;
         // **A pair whose table and record disagree about which seats are bots
-        // is refused before anything is replayed** (M6.5c2 cycle D, the review
-        // of Task 4), on every host, for every rebuild, finished or not — a
+        // is refused before anything is replayed** (M6.5c2 cycle D, Task 4
+        // row of the close `2026-09-29-web-frontend-m6.5c2d-close.md` §1), on every host, for every rebuild, finished or not — a
         // 409 naming the lowest such seat, in `check_pair`'s words for a pair
         // that does not agree. Every pair this layer writes agrees
         // (`finalize` stamps the run seats from the table's own seats, and has
@@ -1303,7 +1314,7 @@ mod tests {
         let (mut doc, version) = games.read_table("vsbot").unwrap().unwrap();
         doc.turn.as_mut().expect("a mirror").bot = None;
         games.write_table(&doc, Some(version)).unwrap();
-        assert_eq!(games.table("vsbot", &red).unwrap().view(&red).bot, None, "premise: no version to name");
+        assert_eq!(games.table("vsbot", &red).unwrap().view(&red, false).bot, None, "premise: no version to name");
 
         // Red's next move is persisted, and the persist puts the bot back.
         {
@@ -1439,6 +1450,8 @@ mod tests {
             signal_kind: "none",
             serves_games: true,
             multiplayer_offered: false,
+            table_ttl_days: None,
+            open_table_ttl_days: None,
         };
         let ask = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, serde_json::Value) {
             let user = who("local@browser");
@@ -2509,13 +2522,15 @@ mod tests {
         let running = games().with_archive(archive.clone());
         one_move_in(&running, "mid");
         // No eviction here, and none is needed: `both_seats_as_bots` stamps
-        // both seats as PEOPLE on every record it persists (M6.5c2 cycle D, the
-        // review of Task 4), so a rebuild reads the seats human/human and pumps
-        // nothing — the re-review measured 200 events before a rebuild and 200
-        // after. Before that re-stamp the record named both seats bots, and a
-        // rebuild's `bring_alive` played the remaining 157 moves to game over
-        // (357 events) and archived the game from its own persist (re-review
-        // N3), which is why this half evicted nothing then.
+        // both seats as PEOPLE on every record it persists (M6.5c2 cycle D,
+        // Task 4; the close `2026-09-29-web-frontend-m6.5c2d-close.md`
+        // §1) so a rebuild reads the seats human/human and pumps nothing — the
+        // re-review measured 200 events before a rebuild and 200 after (the review's own
+        // measurement, not in the close). Before that re-stamp the record named
+        // both seats bots, and a rebuild's `bring_alive` played the remaining
+        // 157 moves to game over (357 events) and archived the game from its
+        // own persist (re-review N3, likewise), which is why this half evicted
+        // nothing then.
         running.archive_over_retry("mid").expect("an unfinished game is not an error");
         assert!(archive.puts.lock().unwrap().is_empty(), "nothing is owed for a game still running");
 
@@ -3232,9 +3247,9 @@ pub(crate) mod test_support {
     /// compares record identity by SEED, so this one persists in its place.
     ///
     /// **Its RECORD then names the two people the table seats** (M6.5c2 cycle
-    /// D, the review of Task 4): a rebuild refuses a pair whose record and
-    /// table disagree about which seats are bots (`bots::seat_disagreement`),
-    /// and this pair is two people at the table. The re-stamp comes AFTER
+    /// D; the Task 4 row of the close `2026-09-29-web-frontend-m6.5c2d-close.md`
+    /// §1): a rebuild refuses a pair whose record and table disagree about
+    /// which seats are bots (`bots::seat_disagreement`), and this pair is two people at the table. The re-stamp comes AFTER
     /// `Repl::new`, which reads the bots once, so the pump still drives both
     /// seats while every persist writes a record the table agrees with.
     fn both_seats_as_bots(games: &Games, id: &str) -> Repl {
@@ -3363,6 +3378,7 @@ pub(crate) mod test_support {
                 to_move: state.current_player.0,
                 over: false,
                 winner: None,
+                has_events: cut > 0,
                 bot: mirror.bot.take(),
             };
         }
@@ -3391,7 +3407,8 @@ pub(crate) mod test_support {
     pub(crate) const BGA_SEAT_HOLDER: &str = "ada@t.test";
 
     /// The committed pair as a game whose seat 1 a PERSON played on BGA, and
-    /// CONSISTENT (M6.5c2 cycle D, the review of Task 4): the record names seat
+    /// CONSISTENT (M6.5c2 cycle D; the Task 4 row of the close
+    /// `2026-09-29-web-frontend-m6.5c2d-close.md` §1): the record names seat
     /// 1 `bga-human` ([`foreign_pair`]'s re-seat), and the table seats a person
     /// there — [`BGA_SEAT_HOLDER`], keeping the card the record says seat 1
     /// kept — with no bot on the mirror, as a persist would write it. `cut` as

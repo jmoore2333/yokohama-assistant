@@ -11,6 +11,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Lobby } from "./Lobby";
+import * as values from "./buildValues";
 import { setLobbyChat, setSignalKind } from "./api";
 import { BACKOFF_MS } from "./signal";
 import { FakeSocket } from "./test/fakeSocket";
@@ -219,7 +220,7 @@ describe("the lobby", () => {
     });
     const mine = section("Your tables");
     await within(mine).findByRole("link", { name: "wire" });
-    await user.click(within(mine).getByRole("button", { name: "more" }));
+    await user.click(within(mine).getByRole("button", { name: "More of your tables" }));
     await within(mine).findByRole("link", { name: "older" });
 
     const paged = stub.calls.filter((c) => isGamesList(c, "mine") && c.path.includes("before="));
@@ -231,20 +232,150 @@ describe("the lobby", () => {
     // The first page is still there, above the one just fetched.
     expect(within(mine).getByRole("link", { name: "wire" })).toBeInTheDocument();
     // And the control is gone, because the page it fetched named no successor.
-    expect(within(mine).queryByRole("button", { name: "more" })).toBeNull();
+    expect(within(mine).queryByRole("button", { name: "More of your tables" })).toBeNull();
+  });
+
+  // **Open tables and Being played page as Your tables does** (cycle E, R-E6;
+  // straw poll row 84): a cursor per scope, a "more" per scope while its
+  // `next` is non-null, and the poll replacing PAGE ONE only — so a wake
+  // re-reads the first page and the page the pager fetched stays under it.
+  // The first page is the corpus's listing carrying the corpus's own cursor
+  // (`games_next.json`'s); the page it names is a corpus row with its id moved.
+  it("pages Open tables with the open scope's own cursor, once, and a wake keeps the page it fetched", async () => {
+    const stream = fakeStream();
+    const cursor = wire.gamesNext.next!;
+    const older: TableView = { ...wire.gamesOpen.games[1]!, id: "older-open", name: null };
+    let firstPages = 0;
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (!isGamesList(call, "open")) return undefined;
+        if (call.path.includes("before=")) return { ...wire.gamesOpen, games: [older], next: null };
+        firstPages += 1;
+        return { ...wire.gamesOpen, next: cursor };
+      });
+      const open = () => section("Open tables");
+      await until(() => within(open()).queryByRole("link", { name: "wire2" }) !== null, "the first page");
+      // Your tables' first page is its last: the one "more" is Open's.
+      expect(within(section("Your tables")).queryByRole("button", { name: "More of your tables" })).toBeNull();
+      fireEvent.click(within(open()).getByRole("button", { name: "More open tables" }));
+      await until(() => within(open()).queryByRole("link", { name: "older-open" }) !== null, "the page it names");
+      const pagedCalls = () => stub.calls.filter((c) => c.path.includes("before="));
+      expect(pagedCalls().map((c) => isGamesList(c, "open"))).toEqual([true]);
+      expect(pagedCalls()[0]!.path).toContain(`before=${encodeURIComponent(cursor)}`);
+      expect(within(open()).queryByRole("button", { name: "More open tables" }), "the page named no successor").toBeNull();
+
+      await until(() => stream.opens() > 0, "the house stream is open");
+      const read = firstPages;
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: 0 });
+      await until(() => firstPages > read, "a wake read page one again");
+      await flush(4);
+      expect(within(open()).getByRole("link", { name: "wire2" })).toBeInTheDocument();
+      expect(within(open()).getByRole("link", { name: "older-open" }), "the fetched page survives the poll").toBeInTheDocument();
+      expect(within(open()).queryByRole("button", { name: "More open tables" }), "and so does its cursor").toBeNull();
+      expect(pagedCalls(), "nothing was paged twice").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // **The playing scope is ONE pager for two lists** (R-E6; Review Focus 3):
+  // Being played and Finished split one listing by `over`, so its "more" sits
+  // after the Finished fold, and the rows a page brings fall into either list
+  // by their own `over`.
+  it("pages the playing scope once, after the Finished fold, and sorts the page into Being played and Finished", async () => {
+    const stream = fakeStream();
+    const cursor = wire.gamesNext.next!;
+    const playing = wire.gamesPlaying.games[0]!;
+    const done: TableView = { ...playing, id: "done-first", name: null, over: true };
+    const underWay: TableView = { ...playing, id: "older-under-way", name: null };
+    const olderDone: TableView = { ...playing, id: "older-done", name: null, over: true };
+    let firstPages = 0;
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return stream.reply(call);
+        if (!isGamesList(call, "playing")) return undefined;
+        if (call.path.includes("before=")) return { ...wire.gamesPlaying, games: [underWay, olderDone], next: null };
+        firstPages += 1;
+        return { ...wire.gamesPlaying, games: [playing, done], next: cursor };
+      });
+      const beingPlayed = () => section("Being played");
+      const finished = () =>
+        [...document.querySelectorAll("section.finished-tables a.row-link")].map((a) => a.textContent);
+      await until(() => within(beingPlayed()).queryByRole("link", { name: "wire" }) !== null, "the first page");
+      expect(finished()).toEqual(["done-first"]);
+      const more = document.querySelector<HTMLButtonElement>(".lobby-lists > .playing-more > button.more");
+      expect(more, "the playing scope's more").not.toBeNull();
+      expect(screen.getByRole("button", { name: "More tables being played" }), "named for its list").toBe(more);
+      expect(more).toHaveTextContent(/^more$/);
+      const fold = document.querySelector("section.finished-tables")!;
+      expect(
+        fold.compareDocumentPosition(more!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "placed after the Finished fold",
+      ).toBeTruthy();
+      expect(within(beingPlayed()).queryByRole("button", { name: "More tables being played" }), "not inside Being played").toBeNull();
+      fireEvent.click(more!);
+      await until(() => within(beingPlayed()).queryByRole("link", { name: "older-under-way" }) !== null, "the page");
+      expect(finished(), "the finished row of the page is under Finished").toEqual(["done-first", "older-done"]);
+      expect(within(beingPlayed()).queryByRole("link", { name: "older-done" })).toBeNull();
+      const pagedCalls = () => stub.calls.filter((c) => c.path.includes("before="));
+      expect(pagedCalls().map((c) => isGamesList(c, "playing"))).toEqual([true]);
+      expect(pagedCalls()[0]!.path).toContain(`before=${encodeURIComponent(cursor)}`);
+      expect(document.querySelector(".playing-more"), "the page named no successor").toBeNull();
+
+      // **A wake keeps the page, in both lists** (fix round 1, Minor 4): the
+      // poll replaces page one alone, as it does for the other two scopes.
+      await until(() => stream.opens() > 0, "the house stream is open");
+      const read = firstPages;
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: 0 });
+      await until(() => firstPages > read, "a wake read page one again");
+      await flush(4);
+      expect(within(beingPlayed()).getByRole("link", { name: "wire" })).toBeInTheDocument();
+      expect(
+        within(beingPlayed()).getByRole("link", { name: "older-under-way" }),
+        "the fetched page survives the poll under Being played",
+      ).toBeInTheDocument();
+      expect(finished(), "and under Finished").toEqual(["done-first", "older-done"]);
+      expect(document.querySelector(".playing-more"), "and so does its cursor").toBeNull();
+      expect(pagedCalls(), "nothing was paged twice").toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers no more when the first page is the last", async () => {
     show();
-    await screen.findByRole("heading", { name: "Your tables" });
+    // The LISTING, not the heading, which is drawn before any list lands.
+    await within(section("Your tables")).findByRole("link", { name: "wire" });
     expect(wire.games.next).toBeNull();
-    expect(screen.queryByRole("button", { name: "more" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^More (of your tables|open tables|tables being played)$/ })).toBeNull();
   });
 
   it("says so when you sit at no table, and when nobody is waiting", async () => {
     show((call) => (isGamesList(call) ? { ...wire.games, games: [] } : undefined));
     expect(await screen.findByText(/none yet/)).toBeInTheDocument();
     expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
+  });
+
+  // **The repository link** (R-6.5c2.40): a quiet link among the actions where
+  // the build names one, in a new tab, and absent where it does not.
+  it("draws the project link among the actions only where the build names one", async () => {
+    vi.spyOn(values, "projectLink").mockReturnValue(values.linkFor("https://github.com/you/yokohama-assistant"));
+    show();
+    await screen.findByRole("heading", { name: "Your tables" });
+    const link = document.querySelector(".lobby-actions a.quiet-link");
+    expect(link).not.toBeNull();
+    expect(link).toHaveAttribute("href", "https://github.com/you/yokohama-assistant");
+    expect(link?.textContent).toContain("github.com/you/yokohama-assistant");
+    expect(link).toHaveAttribute("rel", "noopener");
+    expect(link).toHaveAttribute("target", "_blank");
+    cleanup();
+    vi.spyOn(values, "projectLink").mockReturnValue(null);
+    show();
+    await screen.findByRole("heading", { name: "Your tables" });
+    expect(document.querySelector("a.quiet-link")).toBeNull();
   });
 
   // **The row is a LINK, and the hash is what it sets** (spec §5.1, R-14).
@@ -349,7 +480,9 @@ describe("the lobby", () => {
     expect(row(foreign.id)).toHaveTextContent("can\u2019t continue here");
     expect(row(foreign.id).querySelector("span.stranded")).not.toBeNull();
     expect(within(row(foreign.id)).queryByRole("button", { name: /^(Play|View):/ })).toBeNull();
-    expect(within(row(foreign.id)).getByRole("button", { name: `abandon ${foreign.id}` })).toBeInTheDocument();
+    // "and save", in its NAME (ruling 4a-1): the server says its delete saves
+    // this game — playing, moves in it, an archive (cycle E, R-E5).
+    expect(within(row(foreign.id)).getByRole("button", { name: `abandon and save ${foreign.id}` })).toBeInTheDocument();
     cleanup();
     // Finished, it opens as ever (spec section 2.4). One field moved, `over`.
     show((call) =>
@@ -360,16 +493,30 @@ describe("the lobby", () => {
     expect(done).not.toHaveTextContent("can\u2019t continue here");
   });
 
-  it("copies a table's address, and says it did", async () => {
+  // **"Copied" is said ONCE** (cycle E, straw poll row 68): the button was
+  // itself the live region and both its words and its name changed, so a
+  // screen reader could announce the copy twice. The button's name stays what
+  // it was, and ONE status beside it — in the row from the first render, so
+  // its change is announced — carries the word.
+  it("copies a table's address, and says so once: one status in the row, the button's name unchanged", async () => {
     const { user } = show();
     const mine = section("Your tables");
-    await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
+    const button = await within(mine).findByRole("button", { name: "Copy link: wire2" });
+    const row = button.closest("li")!;
+    const statuses = () => within(row).getAllByRole("status");
+    expect(statuses(), "the status is in the row before anything is copied").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^$/);
+    await user.click(button);
     // `userEvent.setup()` installs the clipboard this reads back.
     expect(await navigator.clipboard.readText()).toBe(new URL("#/t/wire2", window.location.href).href);
-    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
-    // Heard as well as seen: the button is a polite live region, so the word's
-    // change is announced (the whole-branch review's triage, Task 5 M7).
-    expect(within(mine).getByRole("button", { name: "Copied: wire2" })).toHaveAttribute("aria-live", "polite");
+    expect(statuses(), "exactly one status in the row").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^Copied$/);
+    expect(button.contains(statuses()[0]!), "the status is beside the button, not in it").toBe(false);
+    // The button: its name and its words unchanged, and no live region of its own.
+    expect(button).toHaveAttribute("aria-label", "Copy link: wire2");
+    expect(button).toHaveTextContent(/^Copy link$/);
+    expect(button).not.toHaveAttribute("aria-live");
+    expect(row.querySelectorAll("[aria-live]"), "no other live region in the row").toHaveLength(0);
   });
 
   // **A copy that lands takes the refusal away** (M6.5c2 cycle C; the Opus
@@ -386,8 +533,9 @@ describe("the lobby", () => {
       .mockRejectedValueOnce(new DOMException("Write permission denied.", "NotAllowedError"));
     await user.click(await within(mine).findByRole("button", { name: "Copy link: wire2" }));
     expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
-    await user.click(within(mine).getByRole("button", { name: "Copy link: wire2" }));
-    expect(await within(mine).findByRole("button", { name: "Copied: wire2" })).toBeInTheDocument();
+    const again = within(mine).getByRole("button", { name: "Copy link: wire2" });
+    await user.click(again);
+    expect(await within(again.closest("li")!).findByRole("status")).toHaveTextContent(/^Copied$/);
     expect(write).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
   });
@@ -400,8 +548,9 @@ describe("the lobby", () => {
     const cleared = vi.spyOn(globalThis, "clearTimeout");
     try {
       const { user } = show();
-      await user.click(await within(section("Your tables")).findByRole("button", { name: "Copy link: wire2" }));
-      await within(section("Your tables")).findByRole("button", { name: "Copied: wire2" });
+      const button = await within(section("Your tables")).findByRole("button", { name: "Copy link: wire2" });
+      await user.click(button);
+      await waitFor(() => expect(within(button.closest("li")!).getByRole("status")).toHaveTextContent(/^Copied$/));
       const twoSeconds = set.mock.calls.flatMap((c, i) => (c[1] === 2000 ? [set.mock.results[i]!.value] : []));
       expect(twoSeconds, "the premise: one two-second timer was set").toHaveLength(1);
       cleanup();
@@ -474,7 +623,7 @@ describe("the lobby", () => {
     });
 
     // **The creator's, SEATED — the layer's rule** (R-13; `mayAbandon`, as
-    // ruled after the Task 11 review's I-1). The layer's delete refuses a
+    // ruled after cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 34). The layer's delete refuses a
     // caller who holds no seat before it asks who created the table —
     // `delete_locked`: "you are not seated at this table" — so a creator's
     // SEATLESS reading carries no control, and a seated one does. A table you
@@ -583,7 +732,7 @@ describe("the lobby", () => {
       expect(within(open()).getAllByRole("listitem")).toHaveLength(openRows);
       await until(() => stream.opens() > 0, "the house stream is open");
 
-      stream.push("house", { seq: 1, chat: 0 });
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: 0 });
       await until(() => within(mine()).queryAllByRole("listitem").length === 1, "Your tables was refreshed");
       expect(within(open()).getAllByRole("listitem"), "the refused section keeps its rows").toHaveLength(openRows);
       expect(within(open()).getByText(wire.error.error)).toBeInTheDocument();
@@ -615,8 +764,8 @@ describe("the Finished group", () => {
     (...games: TableView[]) =>
     (call: ApiCall): Reply | undefined =>
       isGamesList(call, "playing") ? { ...wire.gamesPlaying, games } : undefined;
-  /** The summary's heading, once the lists have landed. */
-  const finishedHeading = () => screen.findByRole("heading", { level: 3, name: "Finished" });
+  /** The summary's heading, once the lists have landed: "Finished (N)". */
+  const finishedHeading = () => screen.findByRole("heading", { level: 3, name: /^Finished \(\d+\)$/ });
 
   it("folds a finished game you do not sit at under Finished, closed, and not under Being played", async () => {
     expect(playing.my_seats).toEqual([]);
@@ -626,7 +775,7 @@ describe("the Finished group", () => {
     expect(heading.closest("summary")?.parentElement, "the heading is the fold's summary").toBe(f);
     expect(f.open, "folded by default").toBe(false);
     expect(f).not.toHaveAttribute("open");
-    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^1 game$/);
+    expect(f.querySelector(":scope > summary")).toHaveTextContent(/^Finished \(1\)$/);
     expect([...f.querySelectorAll("a.row-link")].map((a) => a.getAttribute("href"))).toEqual(["#/t/wire"]);
     // Not under Being played: that list is the games still under way, and it
     // has none, so it says so.
@@ -669,8 +818,28 @@ describe("the Finished group", () => {
     show(listing(done, older));
     await finishedHeading();
     const f = fold()!;
-    expect(f.querySelector(":scope > summary > .section-hint")).toHaveTextContent(/^2 games$/);
+    expect(f.querySelector(":scope > summary")).toHaveTextContent(/^Finished \(2\)$/);
     expect([...f.querySelectorAll("a.row-link")].map((a) => a.textContent)).toEqual(["wire", "older"]);
+  });
+
+  // **The shut fold names its count in its own words** (cycle E, straw poll
+  // row 63): at 1x a closed Finished read as a heading with a stray glyph,
+  // "2 games" set apart in the hint's grey. The count is now the heading's —
+  // "Finished (3)" is what the summary says and what a screen reader's heading
+  // list reads — over the corpus's playing listing with `over` moved, three
+  // tables named apart.
+  it("names the count in the summary's own text: Finished (3)", async () => {
+    const two: TableView = { ...done, id: "two", name: null, created_at: done.created_at - 60 };
+    const three: TableView = { ...done, id: "three", name: null, created_at: done.created_at - 120 };
+    show(listing(done, two, three));
+    const heading = await finishedHeading();
+    expect(heading).toHaveTextContent(/^Finished \(3\)$/);
+    expect(heading).toHaveAccessibleName("Finished (3)");
+    const summary = fold()!.querySelector(":scope > summary")!;
+    expect(summary.textContent).toBe("Finished (3)");
+    // Folded, and the count is still read: the rows are in the fold.
+    expect(fold()!.open).toBe(false);
+    expect(fold()!.querySelectorAll("li.lobby-row")).toHaveLength(3);
   });
 
   // **R-C6: an empty fold is clutter.** The group is absent, not empty, while
@@ -681,7 +850,7 @@ describe("the Finished group", () => {
     show(listing(playing));
     await within(section("Being played")).findByRole("button", { name: "Spectate: wire" });
     expect(document.querySelector("section.finished-tables")).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Finished" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^Finished/ })).toBeNull();
     cleanup();
 
     const yours: TableView = { ...wire.table, over: true }; // one field moved, `over`
@@ -766,13 +935,13 @@ describe("the lobby's chat", () => {
   // the mount read is the only read until then. The panel is OPEN, because a
   // folded count host reads nothing whatever the count says.
   //
-  // **Where the house frames come from**: no corpus fixture carries one — a
-  // frame is a stream's, not a route's payload — so each is built in the shape
-  // the layer pins (`signal.rs`'s `house_frame`, `{"seq":…,"chat":…,"rev":…}`,
-  // the same on the Worker) from the corpus's own numbers: `house_chat.json`'s
-  // `last` and `rev`, and one past each for the message that moves them. The
-  // page behind that message is `house_chat.json` with its first message
-  // renumbered to it.
+  // **Where the house frames come from**: the corpus. `house_frame.json` is
+  // `signal.rs`'s `house_frame` for the house as the walk leaves it (one message,
+  // one revision), emitted by `wire_fixtures.rs` and typed by `contract.ts`, so
+  // a key the server renames fails here and not silently. Each cell derives its
+  // moved frame from it (`chat` and `rev` one past for the message that moves
+  // them); the page behind that message is `house_chat.json` with its first
+  // message renumbered to it.
   it("reads the lobby chat once at mount, not on a table's move, and again when the house chat moves", async () => {
     setLobbyChat(true);
     localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
@@ -791,11 +960,11 @@ describe("the lobby's chat", () => {
       await flush();
       expect(stub.matching("GET", "/api/chat"), "one read at mount, the lists' landing none").toHaveLength(1);
       // A table moved: the sequence moves and the house chat does not.
-      stream.push("house", { seq: 1, chat: wire.houseChat.last, rev: wire.houseChat.rev });
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "a table's move asks the chat nothing").toHaveLength(1);
       page = { ...wire.houseChat, messages: [...wire.houseChat.messages, next], last: next.seq, rev: wire.houseChat.rev + 1 };
-      stream.push("house", { seq: 2, chat: next.seq, rev: wire.houseChat.rev + 1 });
+      stream.push("house", { ...wire.houseFrame, seq: 2, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
       await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
       await flush();
       expect(stub.matching("GET", "/api/chat"), "one read for the one message").toHaveLength(2);
@@ -804,8 +973,8 @@ describe("the lobby's chat", () => {
     }
   });
 
-  // **A restarted server's first frame is read** (M6.5c2 cycle D, the final
-  // review's C1; the reviewer's probe, kept). The rule this panel reads by — a
+  // **A restarted server's first frame is read** (M6.5c2 cycle D; the close
+  // `2026-09-29-web-frontend-m6.5c2d-close.md` §4 and §5, ruling 46; the reviewer's probe, kept). The rule this panel reads by — a
   // frame's `chat` above the `last` of the page it holds — trusts the frame's
   // numbers to be the house chat DOCUMENT's. On the Worker they are read off
   // the document. On the NAS they were a count the process kept from 0, so
@@ -842,11 +1011,11 @@ describe("the lobby's chat", () => {
       expect(within(panel()).getAllByRole("listitem"), "premise: the room at 57").toHaveLength(1);
       page = { ...page, messages: [held, next], last: 58, rev: 58 };
       // The frame a restarted NAS sent before the seed: a count from 0.
-      stream.push("house", { seq: 0, chat: 1, rev: 1 });
+      stream.push("house", { ...wire.houseFrame });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "a count below what the panel holds is not news").toHaveLength(1);
       // The frame it sends now: the document's numbers.
-      stream.push("house", { seq: 0, chat: 58, rev: 58 });
+      stream.push("house", { ...wire.houseFrame, chat: 58, rev: 58 });
       await until(() => stub.matching("GET", "/api/chat").length === 2, "the chat delta was asked for");
       await flush();
       expect(within(panel()).getAllByRole("listitem"), "the 58th message is drawn").toHaveLength(2);
@@ -856,8 +1025,8 @@ describe("the lobby's chat", () => {
   });
 
   // **A house message its socket's reconnect missed is read once the reader's
-  // own post shows the gap** (the Task 11 re-review's lost-message finding;
-  // the production path of `Chat.test.tsx`'s "reads the messages its own
+  // own post shows the gap** (cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md`
+  // §5, ruling 35: the lost-message finding; the production path of `Chat.test.tsx`'s "reads the messages its own
   // post's number shows it missed"). On the socket arm, a close this client did
   // not make is followed by ONE probe, and the lobby's probe reads the
   // listings, which carry no chat count; the house says nothing on connect. So
@@ -917,7 +1086,7 @@ describe("the lobby's chat", () => {
       });
       await until(() => FakeSocket.made.length === 2, "the house socket reopened");
       act(() => FakeSocket.made[1]!.accept());
-      act(() => FakeSocket.made[1]!.frame("house", { seq: 2, chat: post.seq, rev: post.seq }));
+      act(() => FakeSocket.made[1]!.frame("house", { ...wire.houseFrame, seq: 2, chat: post.seq, rev: post.seq }));
       await flush();
       expect(within(panel()).getAllByRole("listitem"), "the missed message is drawn").toHaveLength(all.length);
     } finally {
@@ -952,7 +1121,7 @@ describe("the lobby's chat", () => {
       await flush();
       const before = stub.matching("GET", "/api/chat").length;
       expect(before, "the mount read").toBe(1);
-      stream.push("house", { seq: 1, chat: wire.houseChatPost.seq, rev: wire.houseChatPost.seq });
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: wire.houseChatPost.seq, rev: wire.houseChatPost.seq });
       await flush();
       expect(stub.matching("GET", "/api/chat"), "the frame counts the post the 201 drew").toHaveLength(before);
       expect(screen.getByText(wire.houseChatPost.text)).toBeInTheDocument();
@@ -1105,5 +1274,67 @@ describe("the server area", () => {
     });
     render(<Lobby me={ME} serverUp={false} onReached={onReached} />);
     await waitFor(() => expect(onReached).toHaveBeenCalled());
+  });
+});
+
+// ---- what a house frame costs the listings (cycle E, Task 7; R-E9, ruling
+// T7-a, lever c) ---------------------------------------------------------------
+//
+// The house frame is `{seq, chat, rev}` on both hosts, and its `seq` is the
+// LISTING counter: the NAS moves it on a table's write and on an end, and never
+// for a house message (`Signals::bump_house_chat` moves `chat` and `rev`
+// alone); the Worker raises it per copy or removal the house applies, and a
+// message's frame carries it unchanged. So a frame whose `seq` stayed and whose
+// chat moved is a MESSAGE, and the three listings behind it have not changed —
+// before this, every visible lobby re-listed all three on every house message
+// (the M6.4 close's recorded LEAVE, spec §6.2's "cost that is left"). The
+// frames are the corpus's `house_frame.json` with its numbers moved, the rule
+// every house cell in this file follows.
+
+describe("what a house frame costs the listings (R-E9)", () => {
+  /** Every listing read, of any scope. */
+  const listings = (stub: { calls: ApiCall[] }) => stub.calls.filter((c) => isGamesList(c));
+
+  it("re-lists nothing on a frame that moved only the house chat", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? stream.reply(call) : undefined));
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => listings(stub).length === 3, "the opening read");
+      // A table moved: the connection's first frame, and a listing change.
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
+      await until(() => listings(stub).length === 6, "a table's move re-lists");
+      await flush();
+      // A house message: `seq` stayed, `chat` and `rev` one on.
+      stream.push("house", { ...wire.houseFrame, seq: 1, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
+      await flush();
+      expect(listings(stub), "a message asks no scope").toHaveLength(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-lists the three scopes once on a frame whose seq moved", async () => {
+    const stream = fakeStream();
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? stream.reply(call) : undefined));
+      await until(() => stream.opens() > 0, "the house stream is open");
+      await until(() => listings(stub).length === 3, "the opening read");
+      stream.push("house", { ...wire.houseFrame, seq: 1 });
+      await until(() => listings(stub).length === 6, "the first frame re-lists");
+      await flush();
+      // A table moved AND a message landed between two frames: `seq` moved, so
+      // it is a listing change whatever the chat did.
+      stream.push("house", { ...wire.houseFrame, seq: 2, chat: wire.houseFrame.chat + 1, rev: wire.houseFrame.rev + 1 });
+      await until(() => listings(stub).length === 9, "a moved seq re-lists");
+      await flush();
+      const last = listings(stub).slice(6);
+      expect(last.map((c) => new URLSearchParams(c.path.split("?")[1]).get("scope")).sort()).toEqual(["mine", "open", "playing"]);
+      expect(listings(stub), "once").toHaveLength(9);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

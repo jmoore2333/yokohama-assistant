@@ -105,9 +105,16 @@ extern "C" {
 /// by calling `/api/games/…` through this very layer, so the routes must be
 /// served — while there is nobody else at the table, so `/api/health` reports
 /// no multiplayer. A single field would have made single player stop working
-/// the moment this host told the truth about itself.
-const HOST: Host =
-    Host { identity_name: "local", signal_kind: "none", serves_games: true, multiplayer_offered: false };
+/// the moment this host told the truth about itself. No table expires here, so
+/// it reports no TTL (R-6.5c2.42).
+const HOST: Host = Host {
+    identity_name: "local",
+    signal_kind: "none",
+    serves_games: true,
+    multiplayer_offered: false,
+    table_ttl_days: None,
+    open_table_ttl_days: None,
+};
 
 /// Build a FRESH `Games` over a fresh `MemStore`, whose log is the console
 /// (M6.5c2), replacing any earlier one.

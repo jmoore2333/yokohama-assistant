@@ -222,59 +222,72 @@ that cannot finish at once. §7 takes each part in turn.
 
 ### 1.4 What a player sees
 
-These screenshots were taken on the live Worker on 2026-09-26 with three test identities, before
-M6.5c2 redesigned the door, the lobby and the forms; they are recaptured in cycle D. Alice
+These screenshots were recaptured in cycle E of M6.5c2 (2026-09-30) from the release that cycle
+built, after the cleanup redesigned the door, the lobby and the forms, with three test identities. Alice
 (`alice@readme.test`) opens a table named "Friday game" with a password, Ben (`ben@readme.test`)
 joins it, and Carol (`carol@readme.test`) watches. The client is the same program on every host;
 only where its answers come from differs.
 
-![The first screen on a desktop browser: the title Yokohama over the line "The board game, played in this browser"; under "On this device", a Play the bot here button, a note that no game is on this device yet, a sentence on how much of the browser's storage is in use, a Back up everything button and a Restore from a backup file picker; then a Play with others button and the line "Preparing to play offline…"](docs/img/door-desktop.png)
+![The first screen on a desktop browser: the title Yokohama, the project's blurb and repository link, a ten-tile pyramid of area tiles at the top right, and three cards: You against the bot with a New game button, Play with friends with a Go to the lobby button, and On this device with its storage note, Back up and Restore; the footer reads Not affiliated with Asmodee](docs/img/door-desktop.png)
 
-*The door, the first screen. It asks the server for nothing. "Play the bot here" starts a game that
-runs entirely in the browser; "Play with others" leads to the lobby; "Preparing to play offline…"
-is the service worker installing the release.*
+*The door, the first screen, which asks the server for nothing. It carries the title, the project's
+one-paragraph blurb and the repository link, and a small pyramid of ten area tiles at the top right. Three
+cards follow: "You against the bot" (2 players, V4, a New game button), "Play with friends" (2 to 4
+players, a Go to the lobby button) and "On this device" (no game yet, the storage note, Back up and
+Restore). The footer reads "Not affiliated with Asmodee".*
 
-<img src="docs/img/door-phone.png" width="320" alt="The same first screen at a phone's width of 390 pixels, its buttons and notes in a single column">
+<img src="docs/img/door-phone.png" width="320" alt="The same first screen at a phone's width of 390 pixels: the tile pyramid, the title, the blurb and the repository link, then the cards stacked in one column">
 
-*The door at 390 px, a phone's width.*
+*The door at 390 px, a phone's width: the tiles above the title, then the blurb, the repository link
+and the cards stacked in one column.*
 
-![The lobby as Ben sees it: under Open tables, one row reads Friday game, 2P, open, 1 of 2 seated, alice@readme.test and an open seat, with a lock symbol; Your games and Games in progress are empty, and the lobby chat is folded](docs/img/lobby-desktop.png)
+![The lobby as Ben sees it: Playing as ben@readme.test in the top corner; Your tables is empty; under Open tables, Friday game with a password badge, an invited chip, an open seat and a Take a seat button; Being played is empty and the lobby chat is folded](docs/img/lobby-desktop.png)
 
-*The lobby, which the house object answers from its scrubbed copies of every table (§7.4). "Friday
-game" is listed as an open table, locked with a password.*
+*The lobby, which the house object answers from its scrubbed copies of every table (§7.4), as Ben
+sees it: "Playing as" his address in the top corner. "Your tables" is empty; under "Open tables",
+"Friday game" is listed with its password badge, an "invited" chip, an open seat and a Take a seat
+button; "Being played" is empty and the lobby chat is folded. No finished game is shown, because the
+house that served this picture held none.*
 
-![Alice's view of her open table: Friday game, waiting for 1 more player, password required; Seat 0 Red is alice@readme.test and Seat 1 Blue is an open seat; below them the table's link with a copy button, a folded chat, and Abandon and Lobby buttons](docs/img/open-table-desktop.png)
+![Alice's view of her open table: Friday game, waiting for 1 more player, password badge; the Red seat reads You and the Blue seat is open; below them the invitation link with a Copy link button, and Abandon and Lobby; a folded chat sits in the right column](docs/img/open-table-desktop.png)
 
-*The creator's view of the open table: the seats, the link to share, and the table's chat.*
+*The creator's view of the open table: "Waiting for 1 more player", the Red seat as "You" and the Blue
+seat open, the invitation link with a Copy link button, a folded chat, and Abandon and Lobby.*
 
-![Ben's view of the same table: take a seat, password required, with fields for his name and the password, Alice in Seat 0 Red, and a sit here button on Seat 1 Blue](docs/img/join-desktop.png)
+![Ben's view of the same table: a table password field, the Red seat marked invited, the Blue seat open, and a Join as Blue button above a Lobby link](docs/img/join-desktop.png)
 
-*A stranger at the locked table. The table document keeps only a salted hash of the password, and
-the lobby's copy keeps not even that (§7.4).*
+*A stranger at the locked table: the password field, the Red seat as "invited" and the Blue seat open,
+and a Join as Blue button. The table document keeps only a salted hash of the password, and the
+lobby's copy keeps not even that (§7.4).*
 
-![Alice choosing her starting card: the ten area tiles of the board laid out as a staggered pyramid on the left, and on the right the heading Choose your card over two order cards, 024 English with a Keep score of 41 and 023 French with a Keep score of 57, while Blue, Ben, is waiting](docs/img/deal-desktop.webp)
+![Alice choosing her starting card: the ten area tiles laid out as a staggered pyramid on the left, and on the right the heading Choose your card over two order cards, 019 Dutch with a Keep score of 60 and 022 American with a Keep score of 48, while Blue, ben@readme.test, is waiting](docs/img/deal-desktop.webp)
 
-*The deal. Each seat is shown its own two cards and no one else's; the Keep score under each is
-what the built-in bot would prefer.*
+*The deal. Alice, at Red, is shown her own two cards with their Keep scores (019 Dutch, 60; 022
+American, 48), which are what the built-in bot would prefer, and no one else's; Blue reads "waiting".
+The technologies and the goals are withheld until she has chosen.*
 
-![Alice's turn: the board on the left; on the right the phase ladder for turn 1, the prompt Seat 0 — Additional actions (before) with its one option, End additional-action phase, an Apply the only option button and an Undo button, and both players' dashboards below](docs/img/game-desktop-player.webp)
+![Alice's turn: the board on the left; on the right the phase ladder for turn 1, the prompt Seat 0 — Additional actions (before) with two numbered moves, an Undo button, and both players' dashboards below](docs/img/game-desktop-player.webp)
 
-*A player's turn. The move goes to the table object as a POST, and the other screens learn of it
-over their sockets (§8).*
+*A player's turn: the phase ladder for turn 1, the prompt "Seat 0 — Additional actions (before)." with
+two numbered moves, and an Undo button. The move goes to the table object as a POST, and the other
+screens learn of it over their sockets (§8).*
 
-![The same moment for Carol, the watcher: the banner reads You are watching, there is no Suggest button, and the side column reads Seat 0 is deciding, Waiting on seat 0, Nothing here is yours to answer](docs/img/game-desktop-watcher.webp)
+![The same moment for the watcher: the banner reads You are spectating and has no Suggest button, and the side column reads Seat 0 is deciding, Waiting on seat 0, Nothing here is yours to answer, with both players' dashboards below](docs/img/game-desktop-watcher.webp)
 
-*The watcher's view. Every hand is a count and there is no hand panel, and nothing a watcher's
-socket sends can reach the game (§7.3).*
+*The watcher's view: the banner reads "You are spectating", there is no Suggest button, and the side
+column reads "Seat 0 is deciding" and "Nothing here is yours to answer". Every hand is a count, and
+nothing a watcher's socket sends can reach the game (§7.3).*
 
-<img src="docs/img/game-phone.webp" width="320" alt="The game at a phone's width of 390 pixels: the banner wraps onto several lines, the board's tiles scroll sideways, and the prompt with its Apply the only option button sits below the board">
+<img src="docs/img/game-phone.webp" width="320" alt="The game at a phone's width of 390 pixels: the banner wraps onto several lines, the board's tiles run off the right edge, and the prompt with its two numbered moves and an Undo button sits below the board">
 
-*The game at 390 px.*
+*The game at 390 px: the banner wraps onto several lines, the board's tiles scroll sideways, and the
+prompt with its numbered moves sits below the board.*
 
-![Ben's lobby after the table was abandoned: an orange line reads "this table was abandoned on 2026-09-26 — no move had been made, so there was nothing to keep", and Open tables now reads "no table is waiting for players"](docs/img/marker-404.png)
+![Ben's lobby after a table was abandoned: an orange line reads this table was abandoned above the New table button; Your tables is empty, Open tables reads no table is waiting for players, and Being played is empty](docs/img/marker-404.png)
 
-*After Alice abandoned the table, on which no move had been made, Ben's screen shows the marker's
-sentence (§7.7), over a lobby that no longer lists the table.*
+*After Alice abandoned a second table, a scratch one opened before Friday game and with no move made,
+Ben's lobby shows the marker's line, "this table was abandoned", above a lobby that no longer lists
+it (§7.7).*
 
 ### 1.5 The two doors: Access, or an open door
 
@@ -337,9 +350,28 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   judge it, and that object's `init` answers a 500 carrying the layer's own sentence where the NAS
   answers its 401. The client's name step never sends such a claim.
 
-**No open-door Worker is deployed by this project.** The owner's Worker is Access. The open door is
-proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells are
-`test/open/`), where the shell runs in workerd with real sockets.
+**The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
+`RUNBOOK.md` §19). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
+open door and no Access values or dev door. The recipe: delete the two Worker secrets first
+(`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
+list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
+--config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on) and
+then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first screen and the
+lobby with no login and a name of their own choosing, and the operator surface answers 404. The revert
+is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
+the state in between come from `node scripts/access-paths.mjs`, derived from the routers.
+`wrangler.gate.jsonc` is production with the dev door shut (`npm run deploy:gate`), for a window where
+the door must be Access alone. The open door is also proven in the test pool's second project
+(`wrangler.open.test.jsonc`, whose cells are `test/open/`), where the shell runs in workerd with real
+sockets.
+
+**Both doors show the same three build values**, read by `cd web && npm run build` when they are set
+(R-6.5c2.40; `web/scripts/build-values.mjs` checks them and a bad one fails the build naming it):
+`YOKOHAMA_PROJECT_URL` (a link to the repository, on the first screen and the lobby; at most 200
+characters), `YOKOHAMA_SITE_BLURB` (a paragraph under the first screen's title; at most 400) and
+`YOKOHAMA_SITE_NOTICE` (one line at the foot of every screen; at most 200). Unset or empty draws
+nothing. They are baked into the release, not read at run time, because the release is precached under
+a digest of its own bytes.
 
 ---
 
@@ -1317,7 +1349,8 @@ caller (§1.5), narrowed to one secret, and it never grants an operator's rights
 4. The slot's push, or the alarm, delivers the removal to the house.
 5. **For 90 days the marker answers EVERY request 404** with a sentence made of a head and a tail.
    The heads are `this table was abandoned on <date>`, `this table expired on <date> after 90 days
-   without activity` and `this table was removed by an operator on <date>`, the date in UTC. The
+   without activity`, `this table waited 7 days for players and was closed on <date>` (R-6.5c2.42)
+   and `this table was removed by an operator on <date>`, the date in UTC. The
    tails come from `kept`: `— its game is in the archive`, `— no move had been made, so there was
    nothing to keep`, and `— this server keeps no archive, so its game was not kept`. It is a 404
    rather than a 410 because the client already ends a source on a 404 and shows the server's
@@ -1335,6 +1368,15 @@ expires. A table's last activity is the newest `written_at` of its record, table
 alarm finds `last activity + TTL` has passed, the table expires as its creator: saved first while
 the archive is on, then deleted, behind its marker. Finished games expire on the same clock, their
 save made at game over. Open and dealing tables expire with nothing to save.
+
+**A table still waiting for players** (M6.5c2 cycle E, R-6.5c2.42) — its status `open` — is closed
+sooner, after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
+`this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
+so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
+by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
+scratch module. An `open` table is closed; any other is re-armed to its last activity plus the TTL.
+`/api/health` reports both, `table_ttl_days` and `open_table_ttl_days`, `null` while no table
+expires.
 
 - A save that fails leaves the table in place, and the alarm retries it on the backoff, logged
   `expiry-failed`. So no game with moves is lost to expiry while the archive is on.
@@ -1591,7 +1633,8 @@ list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its ab
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
 `ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `on` for the live tiers;
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
-`YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90`; the NAS's three chat variables keep the NAS's defaults;
+`YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
+chat variables keep the NAS's defaults;
 `YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
 two files. A bad value answers the API's requests 500, naming the variable, and leaves the static
 release alone; RUNBOOK §3 lists the few answers that come before the configuration is read, and the
@@ -1732,8 +1775,9 @@ What a run leaves on the account:
 - saves under the bucket's `test/` root for every `.test` identity's finished and abandoned games,
   which the lifecycle rule `expire-test-after-30-days` removes 30 days after they were written
   (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
-- the replay's own first-send saves under `test/browser/red_at_wire.test/`, kept for good by the
-  owner's direction;
+- the replay's own first-send saves under `test/browser/red_at_wire.test/`, which expire after 30
+  days like every `.test` identity's archive (the `test/` prefix's lifecycle rule,
+  `RUNBOOK.md` §15);
 - no lobby chat post: each replay run deletes the house post it made ("anyone up for a second
   table?", from `red@wire.test`), and each exit run the two its players made, before it ends
   (M6.5c2 cycle D). A deleted post stays in the house chat as a "message removed" tombstone
@@ -1828,9 +1872,9 @@ the credential, which is never an operator.
   what shipped task by task, every deployment and its readings, the live tiers and the exit, every
   ruling taken in execution with its cost, the corrections to the spec, and what the cycle does NOT
   claim.
-- **The next cycle's entry**,
-  [`docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md`](../docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md):
-  the cleanup cycle that reconciles this host with the NAS.
+- **The cleanup cycle's records**: the lane document's list of records of record,
+  [`docs/web-lane.md` §11](../docs/web-lane.md#11-the-records-of-record), names each cycle's record of
+  record, M6.5c2's five cycles included.
 - **The plan**,
   [`docs/plans/2026-09-23-web-frontend-m6.5c-plan.md`](../docs/plans/2026-09-23-web-frontend-m6.5c-plan.md),
   and the hosting umbrella,
@@ -1841,8 +1885,8 @@ the credential, which is never an operator.
   §8 on. It was the NAS runbook's sixth section until M6.5c2, and that runbook's map still resolves
   the older citations; [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) is the NAS host's, beside the
   self-host guide, [`deploy/README.md`](../deploy/README.md).
-- **[`CLAUDE.md`](../CLAUDE.md)**: the gate commands, the fences every cycle of the web lane keeps,
-  and the lane's standing rules.
+- **[`docs/web-lane.md`](../docs/web-lane.md)**: the web lane's suites and gates, its standing rules,
+  every variable, the API map and what is by design; [`CLAUDE.md`](../CLAUDE.md) points into it.
 - **Cloudflare's own pages**, listed with their dates in §3.1.
 - **The code's own documents**, which are written to be read: the module comment at the top of each
   file in `worker/src/` and `worker/scripts/`, and `crates/yokohama-worker/src/lib.rs`.

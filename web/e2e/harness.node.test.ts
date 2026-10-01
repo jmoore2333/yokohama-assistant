@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine } from "./harness";
+import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, tally } from "./harness";
 import {
   EXIT_LAUNCH_ARGS,
   LIVE_ORIGIN,
@@ -532,7 +532,7 @@ describe("awaitCreate and abandonOpened — a live table is taken away whether o
     };
     const made = await reasonOf((f) => f.land(201, { id: "sim-00000000000000aa" }));
     expect(made).toEqual({ reason: null, thrown: "named sim-00000000000000aa" });
-    // Access's answer when WARP's device login has expired (CLAUDE.md).
+    // Access's answer when WARP's device login has expired (`docs/web-lane.md` §10; `worker/RUNBOOK.md` §7).
     const moved = await reasonOf((f) => f.land(302, null));
     expect(moved.reason).toBe("it answered 302, not 201");
     expect(moved.thrown).toBe("no table id came back from the create: it answered 302, not 201");
@@ -1060,5 +1060,109 @@ describe("capSentence — a walk that reached its cap says so (M6.5c2, spec §2.
     expect(text).toContain("no turn on screen");
     expect(text).toContain("no end-trigger strip drawn");
     expect(labels(text)).toBe(1);
+  });
+});
+
+// ---- the request tally (cycle E, Task 7) ------------------------------------
+//
+// `tally` driven through a page that emits what the cell tells it to, into a
+// scratch file, with BASE_URL the stand-in's local origin.
+
+describe("tally — one line per request a browser makes", () => {
+  let dir = "";
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "yokohama-tally-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A page emitting `request`, `response`, `requestfailed` and `websocket`
+   *  for requests the cell makes. */
+  function tallyPage() {
+    const handlers = new Map<string, Handler[]>();
+    const page = {
+      on(event: string, handler: Handler) {
+        handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+        return page;
+      },
+    };
+    const emit = (event: string, arg: unknown) => (handlers.get(event) ?? []).forEach((h) => h(arg));
+    const request = (url: string, method = "GET") => {
+      const r = { url: () => url, method: () => method };
+      emit("request", r);
+      return {
+        answer: (status: number) => emit("response", { status: () => status, request: () => r }),
+        fail: () => emit("requestfailed", r),
+      };
+    };
+    return { page: page as unknown as Page, request, socket: (url: string) => emit("websocket", { url: () => url }) };
+  }
+
+  const read = (path: string) =>
+    readFileSync(path, "utf8")
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as { t: number; page: string; method: string; route: string; status: number });
+
+  it("names the route by the report's regex, drops the query, and writes the page, method and status", () => {
+    const path = join(dir, "t.jsonl");
+    const origin = baseUrlFor(false);
+    const fake = tallyPage();
+    tally(fake.page, "watcher", path);
+    fake.request(`${origin}/api/games/sim-abc/join?x=1`, "POST").answer(409);
+    fake.request(`${origin}/api/games`).answer(200);
+    const lines = read(path);
+    expect(lines.map(({ page, method, route, status }) => ({ page, method, route, status }))).toEqual([
+      { page: "watcher", method: "POST", route: "/api/games/<id>/join", status: 409 },
+      { page: "watcher", method: "GET", route: "/api/games", status: 200 },
+    ]);
+    expect(lines.every((l) => typeof l.t === "number" && l.t >= 0)).toBe(true);
+  });
+
+  it("writes a request once, a failed one as status 0, a socket as 101, and an off-origin one with its origin", () => {
+    const path = join(dir, "t.jsonl");
+    const origin = baseUrlFor(false);
+    const fake = tallyPage();
+    tally(fake.page, "a", path);
+    const stream = fake.request(`${origin}/api/games/sim-abc/stream`);
+    stream.answer(200);
+    stream.fail(); // aborted after its headers: still ONE request
+    fake.request(`${origin}/api/games/sim-abc/events`).fail();
+    fake.socket(`${origin.replace(/^http/, "ws")}/api/games/sim-abc/stream`);
+    fake.request("https://elsewhere.example/api/games/x/join").answer(200);
+    fake.request("data:image/png;base64,AAAA").answer(200);
+    expect(read(path).map(({ method, route, status }) => [method, route, status])).toEqual([
+      ["GET", "/api/games/<id>/stream", 200],
+      ["GET", "/api/games/<id>/events", 0],
+      ["GET", "/api/games/<id>/stream", 101],
+      ["GET", "https://elsewhere.example/api/games/<id>/join", 200],
+    ]);
+  });
+
+  it("truncates the file at its first tally and appends every page after, on one clock", () => {
+    const path = join(dir, "t.jsonl");
+    writeFileSync(path, '{"left":"by an earlier run"}\n');
+    const origin = baseUrlFor(false);
+    const a = tallyPage();
+    const b = tallyPage();
+    tally(a.page, "a", path);
+    tally(b.page, "b", path);
+    a.request(`${origin}/api/me`).answer(200);
+    b.request(`${origin}/api/me`).answer(200);
+    expect(read(path).map((l) => l.page)).toEqual(["a", "b"]);
+  });
+
+  it("installs nothing when no file is named", () => {
+    vi.stubEnv("YOKOHAMA_WEB_TALLY", "");
+    try {
+      const fake = tallyPage();
+      const on = vi.spyOn(fake.page, "on");
+      tally(fake.page, "a");
+      tally(fake.page, "a", "");
+      expect(on).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

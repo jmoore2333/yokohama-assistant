@@ -623,6 +623,14 @@ describe("the durable slot (spec §2.5)", () => {
   // re-armed to the new last activity would move only by milliseconds — so a
   // write that touched it is seen. Mutants: a slot written on every request;
   // the alarm set, or deleted, by every write.
+  //
+  // **Red's SECOND mid-turn move, since cycle E** (ruling T5-a): the table's
+  // mirror carries `has_events`, which the FIRST applied move of a game flips
+  // — the one table write, and so the one copy pushed to the house, that the
+  // bit costs per game. The opening move is asserted as exactly that; the
+  // move after it, with seat 0 still to move, is the one that must leave
+  // everything alone. A count in its place (a write per move) is the mutant
+  // this second half catches.
   it("a move that leaves the copy alone writes no slot and leaves the alarm where it was", async () => {
     const id = "slot-g";
     const stub = tableStub(id);
@@ -631,15 +639,29 @@ describe("the durable slot (spec §2.5)", () => {
     expect((await call(stub, RED, "POST", `/api/games/${id}/keep`, '{"seat":0,"card":1}')).status).toBe(200);
     expect((await call(stub, BLUE, "POST", `/api/games/${id}/keep`, '{"seat":1,"card":1}')).status).toBe(200);
     await settle(stub);
+    const dealt = await metaOf(stub);
+    expect(dealt.slot, "premise: delivered").toBeUndefined();
+    const unmoved = await tableText(stub);
+    const opening = await call(stub, RED, "POST", `/api/games/${id}/input`, '{"line":"1"}');
+    const opened = await opening.json<{ events: number; to_move: number }>();
+    expect([opening.status, opened.events, opened.to_move], "premise: red's opening move applies").toEqual([200, 1, 0]);
+    await settle(stub);
+    const first = await tableText(stub);
+    expect(first, "the opening move flips the mirror's has_events: the one write per game").not.toBe(unmoved);
+    expect(JSON.parse(first).turn.has_events).toBe(true);
+    expect((await metaOf(stub)).revision, "and the one copy it pushes").toBe(dealt.revision + 1);
+
     const a = Date.now() + 3_600_000;
     await runInDurableObject(stub, (_t, state) => state.storage.setAlarm(a));
     const before = await metaOf(stub);
-    expect(before.slot, "premise: delivered").toBeUndefined();
-    const table = await tableText(stub);
-    const moved = await call(stub, RED, "POST", `/api/games/${id}/input`, '{"line":"1"}');
-    expect([moved.status, (await moved.json<{ events: number }>()).events], "premise: red's opening move applies").toEqual([200, 1]);
+    expect(before.slot, "premise: the opening move's copy was delivered").toBeUndefined();
+    // "3" is "Place no assistants": a move with no picker, after which red
+    // is still to move (the movement phase).
+    const moved = await call(stub, RED, "POST", `/api/games/${id}/input`, '{"line":"3"}');
+    const second = await moved.json<{ events: number; to_move: number }>();
+    expect([moved.status, second.events, second.to_move], "premise: red's second move applies, and red is still to move").toEqual([200, 2, 0]);
     await settle(stub);
-    expect(await tableText(stub), "premise: seat 0 is still to move, so the table document is unchanged").toBe(table);
+    expect(await tableText(stub), "premise: seat 0 is still to move, so the table document is unchanged").toBe(first);
     const after = await metaOf(stub);
     expect([after.slot, after.revision]).toEqual([undefined, before.revision]);
     expect(await alarmOf(stub)).toBe(a);

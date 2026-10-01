@@ -97,6 +97,8 @@ jobs:
           push: false
           build-args: |
             YOKOHAMA_PROJECT_URL=https://example.test/yokohama-ci
+            YOKOHAMA_SITE_BLURB=A blurb for the CI build. It has two sentences.
+            YOKOHAMA_SITE_NOTICE=A notice for the CI build
           cache-from: type=gha,scope=yokohama-web
       # The negative arm wants grep's exit 1 EXACTLY (it ran, and found no
       # match): 0 is a link where none was asked for, and anything else — grep's
@@ -107,6 +109,10 @@ jobs:
           set -euo pipefail
           docker run --rm --entrypoint sh yokohama-web:ci-link -c \
             'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'
+          docker run --rm --entrypoint sh yokohama-web:ci-link -c \
+            'grep -l "A blurb for the CI build" /srv/web/dist/assets/*.js'
+          docker run --rm --entrypoint sh yokohama-web:ci-link -c \
+            'grep -l "A notice for the CI build" /srv/web/dist/assets/*.js'
           set +e
           docker run --rm --entrypoint sh yokohama-web:ci -c \
             'grep -l "example.test/yokohama-ci" /srv/web/dist/assets/*.js'

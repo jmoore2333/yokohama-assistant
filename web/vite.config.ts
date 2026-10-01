@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { checkProjectUrl } from "./scripts/project-url.mjs";
+import { BUILD_VALUES, checkProjectUrl, checkText } from "./scripts/build-values.mjs";
 
 // The client is served from the SAME origin as the API in production (the Rust
 // binary serves `dist/`), so there is no CORS story and no base URL to
@@ -21,19 +21,27 @@ import { checkProjectUrl } from "./scripts/project-url.mjs";
 // door's "Go to the lobby" link lands back on the front door — the one
 // control on that screen whose whole job is to leave it.
 //
-// **`define` carries ONE build value, the door's project link** (M6.5c2,
-// R-6.5c2.6; spec §2.3). Vite hands only `VITE_`-prefixed variables to
-// `import.meta.env`, so `YOKOHAMA_PROJECT_URL` — the name both hosts will
-// document, and `deploy/Dockerfile`'s `ARG` today — reaches the bundle here,
-// CHECKED: `checkProjectUrl` throws on a bad value, and a throw in this file
-// fails `vite build` naming the variable. Unset or empty is `null`, and the
-// door draws no link. `vitest.config.ts` merges this file, so the component
-// suite reads the same value — as a global there (measured).
+// **`define` carries THREE build values, one checker** (M6.5c2, R-6.5c2.6 and
+// R-6.5c2.40; spec §2.3): the door's project link, the blurb under its title
+// and the one-line notice in the footer. Vite hands only `VITE_`-prefixed
+// variables to `import.meta.env`, so `YOKOHAMA_PROJECT_URL`,
+// `YOKOHAMA_SITE_BLURB` and `YOKOHAMA_SITE_NOTICE` — the names both hosts
+// document, and `deploy/Dockerfile`'s `ARG`s — reach the bundle here, CHECKED
+// by `scripts/build-values.mjs`: a throw in this file fails `vite build`
+// naming the variable. Unset or empty is `null`, and nothing is drawn.
+// `vitest.config.ts` merges this file, so the component suite reads the same
+// values — as globals there (measured).
 const projectUrl = checkProjectUrl(process.env.YOKOHAMA_PROJECT_URL);
+const siteBlurb = checkText("YOKOHAMA_SITE_BLURB", process.env.YOKOHAMA_SITE_BLURB, BUILD_VALUES.YOKOHAMA_SITE_BLURB);
+const siteNotice = checkText("YOKOHAMA_SITE_NOTICE", process.env.YOKOHAMA_SITE_NOTICE, BUILD_VALUES.YOKOHAMA_SITE_NOTICE);
 
 export default defineConfig({
   plugins: [react()],
-  define: { __YOKOHAMA_PROJECT_URL__: JSON.stringify(projectUrl) },
+  define: {
+    __YOKOHAMA_PROJECT_URL__: JSON.stringify(projectUrl),
+    __YOKOHAMA_SITE_BLURB__: JSON.stringify(siteBlurb),
+    __YOKOHAMA_SITE_NOTICE__: JSON.stringify(siteNotice),
+  },
   build: { outDir: "dist", emptyOutDir: true },
   server: {
     proxy: {

@@ -183,6 +183,49 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * to the pre-W5b banner and no longer couples the banner's height to which
  * control is first in the row. */
 .banner > .views { align-self: center; }
+/* **The banner is one row at 1024 too** (cycle E, straw poll row 71; the gate
+ * is `the_screen_itself.spec.ts`'s banner cell). Measured at 1024 it read 101px:
+ * 161 + 250 + 162 + 488 + 77 of children and four 20px gaps, 1218px against a
+ * 984px content box. Below 1201 the title's tracking, the gaps and the nav's
+ * buttons are tighter; and from 1000px the Game menu (its summary is the
+ * game's mode, id and "saved") is the one child that gives way. Its basis is
+ * 5rem, so the line breaks as though it were that narrow; it grows back to its
+ * own width wherever the row has room (`max-width: max-content`), which above
+ * 1201 is always, and its game id ends in an ellipsis where it has not — the
+ * whole summary is its title. Below 1000px no one row holds these children, the banner wraps
+ * as it always has, and the summary keeps its words. */
+/* What gives is the game's ID alone (ruling 4b-2): the mode and "saved" — the
+ * save state — keep their words, and the summary never breaks a line. */
+.game-menu > summary { white-space: nowrap; }
+.game-menu-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (min-width: 1000px) {
+  .banner > .game-menu { flex: 1 1 5rem; min-width: 0; max-width: max-content; }
+  .banner > .game-menu > summary { max-width: 100%; }
+}
+@media (max-width: 1200px) {
+  .banner { column-gap: 0.75rem; }
+  .banner h1 { letter-spacing: 0.12em; }
+  .banner .views button.ghost { padding-inline: 0.4rem; }
+}
+/* **The link word's line, under the banner** (cycle E, straw poll row 71):
+ * "connecting…", "refreshing…" or "reconnecting…", and nothing while live —
+ * `App.tsx` mounts the strip empty then. **Two shapes, by width (ruling
+ * 4b-1):** below 1201 the page is a column and the strip is a line of its own
+ * under the banner, as the row asked. From 1201 the table is fitted to the
+ * window's height (the fit rule reads `.table`'s), so a line that came and
+ * went would take its height and refit the board on every reconnect and every
+ * return to the tab; there the word is drawn at the right-hand end of the
+ * end-trigger strip's line (the same grid row, below) and takes no height —
+ * `the_screen_itself.spec.ts` reads both. The strip is the live region, so it
+ * stays in the page while empty: no padding and no rule, not `display: none`. */
+.link-strip:empty { padding: 0; border-bottom: 0; }
+/* The end-trigger strip's own metrics, on the strip and not only its word:
+ * its line box takes the strip's font size, so a word on a larger strut would
+ * make the strip taller than the row it shares from 1201. */
+.link-strip {
+  padding: 0.3rem 1.25rem; text-align: right; font-size: 11.5px; letter-spacing: 0.02em;
+  background: var(--bg-sunken); border-bottom: 1px solid var(--line);
+}
 
 /* ---- the end-trigger strip --------------------------------------------- */
 .end-strip {
@@ -225,7 +268,24 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   .side { flex: 1 1 auto; }
 }
 
+/* The footer's notice (R-6.5c2.40): one text line at the foot of every screen,
+   mounted after `.app` (`main.tsx`), whose height the wide game screen takes off. */
+/* The footer's box, from its own parts: two .4rem paddings and one .78rem line at 1.3. */
+:root { --notice-h: calc(.8rem + .78rem * 1.3); }
+.has-notice .app { min-height: calc(100vh - var(--notice-h)); }
+.has-notice .lobby { min-height: calc(100vh - var(--notice-h)); }
+/* The door and every band screen too (cycle E; Task 3's review M-9): under
+   short content the footer floated mid-window, ~260px above the foot of a
+   1440x900 door. Each root keeps the window's height less the footer's. */
+.has-notice .front-door, .has-notice .band-screen { min-height: calc(100vh - var(--notice-h)); }
+.site-notice {
+  box-sizing: border-box; height: var(--notice-h);
+  padding: .4rem 16px; font-size: .78rem; line-height: 1.3; color: var(--fg-dim);
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 @media (min-width: 1201px) {
+  .has-notice .app { height: calc(100vh - var(--notice-h)); }
   .app {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--side);
@@ -237,6 +297,15 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
     --side: 24rem;
   }
   .banner, .end-strip { grid-column: 1 / -1; }
+  /* Placed, not flowed: the link strip shares the end-trigger strip's row
+   * (above), so both are given it — an auto-placed pair would push the
+   * end-trigger strip below the table. */
+  .banner { grid-row: 1; }
+  .end-strip, .link-strip { grid-row: 2; }
+  .link-strip {
+    grid-column: 1 / -1; justify-self: end; align-self: start; z-index: 1;
+    background: none; border-bottom: 0;
+  }
   .table {
     grid-column: 1; grid-row: 3 / 5;
     overflow: auto; min-height: 0;
@@ -919,10 +988,15 @@ ol.log li.at .num { color: var(--reachable); }
   background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 0.3rem 0.5rem; font: inherit;
 }
-button.primary {
+/* The filled control's BOX, for the button and for the link drawn in it for a
+   navigation (`a.primary-link`, the door's `/enter`): ONE block (cycle E, straw
+   poll row 58), because the link's own padding drew it ~1.6px taller and
+   narrower than the button beside it. The link's layout stays its own rule. */
+button.primary, a.primary-link {
   background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
-  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; cursor: pointer;
+  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700;
 }
+button.primary { cursor: pointer; }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 
 .on-this-device .local-fault { color: var(--fg-dim); }
@@ -1045,22 +1119,23 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    — which takes `margin-left: auto` and so stays at the far end of the row.
 
    **Capped, because the banner is GATED at one row** (`the_screen_itself.spec.ts`,
-   1440 and 1280). Measured at 1280: 161 + 250 + 162 + 488 + 77 of children and
-   four 20px gaps = 1218 against a 1240px content box — 22px of room, and an
-   address longer than this one would spend it. The cap is on the strip rather
+   1440, 1280 and — since cycle E — 1024). Measured at 1280: 161 + 250 + 162 +
+   488 + 77 of children and four 20px gaps = 1218 against a 1240px content box
+   — 22px of room, and an address longer than this one would spend it. The cap is on the strip rather
    than on the banner because the strip is the part that grows with the player. */
 .banner .who {
   white-space: nowrap; max-width: 12rem; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* What the poll can say for itself (M6.1 §6). Present ONLY while it is not
-   live, so the resting state costs the banner no width at all — which matters,
-   because the banner is gated at one row and 22px of room was what the measure
-   at 1280 left. `nowrap` for the same reason the "You are …" strip has it: this
-   is a two-word fact, and a fact that breaks the line is worse than a fact
-   that is slightly cramped. `--warn` rather than the faint grey: "reconnecting"
+   live, so the resting state costs no width at all. On the game screen it is
+   no longer in the banner's row but on the line under it (`.link-strip`,
+   cycle E, row 71): in the row it broke the line at 1280. The deal's banner
+   still carries it. `nowrap` for the same reason the "You are …" strip has
+   it: this is a two-word fact, and a fact that breaks the line is worse than a
+   fact that is slightly cramped. `--warn` rather than the faint grey: "reconnecting"
    is the one thing here a player should notice without looking for it. */
-.banner .link, .who-strip .link { white-space: nowrap; color: var(--warn); }
+.banner .link, .link-strip .link, .who-strip .link { white-space: nowrap; color: var(--warn); }
 .who-strip .link { font-size: 11px; letter-spacing: 0.04em; margin-right: auto; }
 
 /* The door's way out, at the foot of the Game menu — see `GameMenu`'s prop. */
@@ -1479,9 +1554,12 @@ ol.account .mover { font-weight: 700; }
  * a width gate.
  *
  * **34rem is chosen to leave the WIDE hosts alone**: the side column is 322px
- * of row at 1280 and 514px at 1900, so it is always narrow; the open table's
- * and the lobby's panels are ~800px, so they keep the one-row layout they have
- * today, at every viewport above the phone.
+ * of row at 1280 and 514px at 1900, so it is always narrow. The lobby's chat
+ * and the open table's are wide where they sit under their page's content
+ * (below 860px and 976px, above the phone; the open table's ~790px), and keep
+ * the one-row layout there; above those widths each is a 300px rail beside
+ * the content (the open table's since cycle E, straw poll row 67) — narrow,
+ * and stacked, as the side column is.
  *
  * **34rem is COUPLED to `--side: 36rem` at >= 1900px, above**: the side
  * column's chat row (514px there) must stay under it. Change either and read
@@ -1503,14 +1581,17 @@ ol.account .mover { font-weight: 700; }
 .chat form input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 11.5px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.2rem 0.4rem; }
 .chat form .ghost { font-size: 10px; padding: 0 0.5rem; letter-spacing: 0; text-transform: none; }
 
-/* **On a phone the strip wraps rather than breaking its words** (live review,
- * M-1): a `flex` row with no `flex-wrap` broke a long address across three
- * lines and "sign out" across two. The lobby's name field that forced it is
- * gone (M6.5c2 — the band's corner is its successor); the screens that still
- * draw the strip keep the wrap. */
-@media (max-width: 480px) {
-  .who-strip { flex-wrap: wrap; }
-}
+/* **The strip wraps rather than breaking its words, at every width** (live
+ * review, M-1; cycle E, straw poll row 72): a `flex` row with no `flex-wrap`
+ * broke a long address across lines and "sign out" across two. The wrap was
+ * phone-only (480px and under), which left M6.4's band: measured at 500px on
+ * the deal's waiting face, a 38-character address took two lines of its own
+ * box and "sign out" two more. The deal is the one screen that still draws the
+ * strip. An item that fits a line keeps its words whole there; an address
+ * longer than the window breaks anywhere rather than widen the page. */
+.who-strip { flex-wrap: wrap; }
+.who-strip .who { overflow-wrap: anywhere; }
+.who-strip button { white-space: nowrap; }
 
 /* ---- M5: the strips on the table ---------------------------------------- */
 .table-sections {
@@ -1805,12 +1886,11 @@ ol.account .mover { font-weight: 700; }
 }
 
 /* The two filled controls: the yen gold one is the bot's and this device's,
-   and a LINK in `button.primary`'s box for a navigation (`/enter`). */
+   and a LINK in `button.primary`'s box for a navigation (`/enter`) — the box is
+   the one block both share (above); this is only how the link lays out. */
 button.primary.yen { background: var(--yen); color: var(--bg); }
 a.primary-link {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
-  background: var(--vp); color: var(--bg); border: 0; border-radius: var(--radius);
-  padding: 0.5rem 1.05rem; font: inherit; font-weight: 700; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; text-decoration: none;
 }
 
 /* The board mark: the door's drawing (`BoardMark.tsx`). One class per trade. */
@@ -1846,6 +1926,9 @@ a.primary-link {
 .band-brand .crumb, .band-brand .crumb-sep {
   font-family: var(--display); font-size: 18px; font-weight: 500; color: var(--fg-dim); margin: 0;
 }
+/* The path to the page: no box of its own above 600px (its crumbs are the
+   brand row's items, as they always were); its own line on a phone, below. */
+.band-crumbs { display: contents; }
 .band-corner {
   display: flex; align-items: center; gap: 0.6rem; flex: 0 1 auto;
   font-size: 12px; color: var(--fg-dim);
@@ -1898,6 +1981,11 @@ a.primary-link {
   font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.5; color: var(--yen);
   border: 1px solid color-mix(in oklab, var(--yen) 45%, transparent); border-radius: 3px; padding: 0 5px;
 }
+/* **Inside a seat's name on the Players panel, the door's muted outline**
+   (cycle E, straw poll row 61): the `¥` chip in the same row is the yen's gold,
+   and a gold box beside it read as a second amount. The tag keeps its face and
+   size; only its colours step back. */
+.seat-name .version-tag { color: var(--fg-dim); border-color: var(--line-bright); }
 
 /* The seat card: the card's own colour is its seat's (`seatClass`), so the band
    and the caption read it from `currentColor`. */
@@ -1919,9 +2007,32 @@ a.primary-link {
 .seat-card.open .seat-card-band { opacity: 0.45; }
 .seat-card.open .seat-card-who { color: var(--fg-dim); }
 
-/* The phone (mock 11): the corner becomes a pill whose menu drops below it. */
+/* The phone (mock 11): the corner becomes a pill whose menu drops below it.
+   **The product and the pill share the first line, and the path to the page
+   takes the line under both** (cycle E, straw poll row 60): the crumbs wrapped
+   under the pill and beside it — "Yokohama / Lobby" then "/ Thumb check" at
+   the pill's foot, measured at 390. The band is a grid here, `.band-brand` no
+   box (`display: contents`), so its title and its path are the grid's own
+   items; the path's leading "/" goes, since nothing precedes it on its line.
+   **Only a band whose corner holds something** (Task 4b's review, Important
+   1): the three screens that pass no corner — the form for a game on this
+   device, the lock screen and the broken store — have no pill to be beside,
+   and their one crumb stays on the title's line as it always did. The grid is
+   scoped by `:has()`, so a browser without it keeps that line for every
+   band. */
 @media (max-width: 600px) {
   .lobby-band { padding: 0.55rem 1rem; }
+  .lobby-band:has(> .band-corner:not(:empty)) {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.15rem 1rem;
+  }
+  .lobby-band:has(> .band-corner:not(:empty)) > .band-brand { display: contents; }
+  .lobby-band:has(> .band-corner:not(:empty)) h1 { grid-column: 1; grid-row: 1; }
+  .lobby-band:has(> .band-corner:not(:empty)) > .band-corner { grid-column: 2; grid-row: 1; justify-self: end; }
+  .lobby-band:has(> .band-corner:not(:empty)) .band-crumbs {
+    grid-column: 1 / -1; grid-row: 2; min-width: 0;
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 0.55rem;
+  }
+  .lobby-band:has(> .band-corner:not(:empty)) .band-crumbs > .crumb-sep:first-child { display: none; }
   .band-brand .band-mark { display: none; }
   .band-brand h1 { font-size: 19px; }
   .band-brand .crumb, .band-brand .crumb-sep { font-size: 16px; }
@@ -1963,6 +2074,10 @@ a.primary-link {
   overflow-wrap: anywhere;
 }
 .project-link:hover { color: var(--fg); }
+.blurb { max-width: 60ch; color: var(--fg-dim); margin: .25rem 0 .5rem; font-size: .95rem; }
+/* Scoped: `.quiet-link` already names the Cancel/Leave controls, whose global rule
+   comes later; this one is the lobby's repository link alone. */
+.lobby-actions .quiet-link { font-size: .8rem; text-decoration-style: dotted; }
 /* The mock sets the board 34px inside the cards' right edge. */
 .door-hero .board-mark { flex: 0 1 360px; margin-right: 2.125rem; }
 .door-main { position: relative; max-width: 86rem; margin: -2.75rem auto 0; padding: 0 3.5rem 2rem; }
@@ -1971,7 +2086,9 @@ a.primary-link {
   border: 1px solid var(--line-bright); border-radius: 6px;
 }
 .door-cards { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 18px; }
-.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 61rem; }
+/* Two cards (`VITE_MULTIPLAYER=false`, state E) at mock 06's width, ~868px
+   (cycle E, straw poll row 59; it drew 976px at 61rem). */
+.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 54.25rem; }
 
 /* The device card: this browser's games as rows, the install offer, then a
    foot of ONE line — the release's readiness, Back up, Restore — whose notes
@@ -2214,21 +2331,33 @@ a.primary-link {
 .row-abandon button.ghost:hover { color: var(--fg); border-color: var(--line-bright); }
 .row-abandon button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
 .row-abandon .abandon-ask { max-width: 16rem; text-align: right; }
+/* "Copied" (straw poll row 68): the status beside Copy link, which says it
+   once while the button's words and name stay as they were. Empty, it takes no
+   room; said, it stands before the button in the reachable colour. */
+.copy-state { font-size: 11.5px; color: var(--reachable); white-space: nowrap; }
+.row-action .copy-state:not(:empty) { margin-right: 0.6rem; }
 .row-action .row-go .padlock { color: var(--warn); }
 .row-action .stranded { font-size: 11.5px; color: var(--warn); }
 @media (max-width: 860px) {
   .lobby-cols { grid-template-columns: minmax(0, 1fr); }
 }
-/* The phone (mock 11): the title beside the action, the creator's Abandon
-   under the action, the seats wrapping under all of them; the row's action
-   thumb-sized. The rows are spaced by margins, not a row gap, so a row with no
-   Abandon carries no empty track's gap. */
+/* The phone (mock 11): the title, the action and the creator's Abandon on one
+   line, the seats wrapping under all of them; the row's action thumb-sized.
+   **The Abandon is a 44px square at the row's end** (cycle E, straw poll row
+   64): stacked under the action it stood a creator's row ~146px tall. Its
+   confirm step's controls take a line of their own under the seats. The
+   tracks are spaced by margins, not a column gap, so a row with no Abandon
+   carries no empty track's gap and its action keeps the row's edge. */
 @media (max-width: 600px) {
-  .lobby-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0 0.75rem; padding: 0.7rem 0.75rem; }
-  .row-title { grid-column: 1; grid-row: 1 / span 2; }
-  .row-action { grid-column: 2; grid-row: 1; }
-  .row-abandon { grid-column: 2; grid-row: 2; margin-top: 0.3rem; }
-  .row-seats { grid-column: 1 / -1; grid-row: 3; margin-top: 0.5rem; }
+  .lobby-row { grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 0; padding: 0.7rem 0.75rem; }
+  .row-title { grid-column: 1; grid-row: 1; }
+  .row-action { grid-column: 2; grid-row: 1; margin-left: 0.75rem; }
+  .row-abandon { grid-column: 3; grid-row: 1; margin-left: 0.5rem; }
+  .row-seats { grid-column: 1 / -1; grid-row: 2; margin-top: 0.5rem; }
+  .row-abandon:has(> :nth-child(2)) {
+    grid-column: 1 / -1; grid-row: 3; flex-direction: row; flex-wrap: wrap; justify-content: flex-end;
+    align-items: center; margin: 0.5rem 0 0;
+  }
   .row-action .row-go { min-height: 44px; }
 }
 
@@ -2444,15 +2573,47 @@ details.fold #seed { max-width: 23rem; }
 .invite .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .invite .row input { flex: 1 1 14rem; min-width: 0; }
 .invite .row button.ghost { color: var(--fg); border-color: var(--line-bright); }
+/* Copy link and its status, one item of the row (row 68). */
+.invite .copy { display: inline-flex; align-items: center; }
+.invite .copy-state:not(:empty) { margin-left: 0.6rem; }
 .invite .note { color: var(--fg-faint); font-size: 11.5px; margin: 0.55rem 0 0; }
 .open-table .open-table-controls {
   display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem;
 }
 /* The join block's refusal, under the block it is about (cycle C, polish 4):
  * spaced as the blocks around it are, a rem above what follows. Abandon's has
- * its own strip under the controls (R-C24), set off from them above. */
-.open-table > .error { margin: 0 0 1rem; overflow-wrap: anywhere; }
-.open-table > .error.abandon-refusal { margin: 0.6rem 0 0; }
+ * its own strip under the controls (R-C24), set off from them above.
+ * `.open-table > .error` is the one other place a refusal lands: the screen's
+ * face before it has a table (`OpenTable.tsx`'s `!table` arm, its opening read
+ * refused), a direct child of the page. `App` always hands the screen the table
+ * it read, so App never draws that face; the component still does, when it is
+ * handed none (Task 4b's review, Minor 7). */
+.open-table > .error, .open-table-main > .error { margin: 0 0 1rem; overflow-wrap: anywhere; }
+.open-table-foot > .error.abandon-refusal { margin: 0.6rem 0 0; overflow-wrap: anywhere; }
+/* **The chat in mock 08's rail, from 976px** (cycle E, straw poll row 67). A
+ * seated caller's page is two columns there: the table and the way out on the
+ * left, the chat on the right at the lobby rail's width, and the whole as wide
+ * as the band's content (68rem, plus the column's own 1.25rem a side), so the
+ * rail's edge is the corner's. The chat spans both rows and the second is the
+ * flexible one, so a tall chat grows the page below the way out, never the gap
+ * between the table and it. Below 976px nothing here is a grid: the three parts
+ * stack as the page always did, the chat under the invite. */
+@media (min-width: 976px) {
+  /* The right margin is the left one's floor: below 1152px the band's side
+   * padding is its 2rem floor, and the column's 1.25rem plus this 0.75rem end
+   * where the band's content does (measured 12px past it at 976 without). */
+  .band-screen > .setup.open-table.with-rail {
+    max-width: 70.5rem; margin-right: 0.75rem;
+    display: grid; grid-template-columns: minmax(0, 1fr) 18.75rem; grid-template-rows: auto 1fr;
+    grid-template-areas: "main rail" "foot rail"; column-gap: 1.4rem; align-items: start;
+  }
+  .open-table.with-rail > .open-table-main { grid-area: main; min-width: 0; }
+  .open-table.with-rail > .chat { grid-area: rail; min-width: 0; margin: 0; }
+  .open-table.with-rail > .open-table-foot { grid-area: foot; min-width: 0; }
+  /* A grid item's margins stay inside it, so the invite's rem under the table
+   * already spaces the way out: the controls' own step would double it. */
+  .open-table.with-rail .open-table-controls { margin-top: 0; }
+}
 /* Abandon, the quieter danger (mock 08): outlined in the warning colour — on
  * the open table and in a notice card (a game that will not open). */
 .open-table .open-table-controls button.ghost.danger, .notice-actions button.ghost.danger {
@@ -2507,17 +2668,27 @@ details.fold #seed { max-width: 23rem; }
   /* A text link: its line centred in a 44px box by padding of half the
    * difference (`1lh` is its own line), and still INLINE content, so the space
    * after a drawn arrow and one unbroken underline stay as they were — as flex
-   * items the two parts were underlined apart. */
-  .quiet-link, .lobby-actions .to-door, .band-corner .to-door, .lobby-row a.row-link,
+   * items the two parts were underlined apart.
+   * **Each `1lh` has its fallback on the line above** (cycle E, straw poll row
+   * 66; `styles.test.ts` holds it): a Safari before 16.4 has no `lh`, drops the
+   * whole declaration and keeps the one before it — the same box in `em`, from
+   * the line-height these controls inherit (the body's 1.5). Without it that
+   * Safari drew them with no padding at all. */
+  .quiet-link, .lobby-actions .to-door, .band-corner .to-door,
   .door-foot .linkish, .install-offer .install-dismiss, .offline-state .linkish,
   .device-foot button.back-up-all, .device-foot .restore-field {
-    display: inline-block; min-height: 44px; padding-block: max(0px, calc((44px - 1lh) / 2));
+    display: inline-block; min-height: 44px;
+    padding-block: max(0px, calc((44px - 1.5em) / 2));
+    padding-block: max(0px, calc((44px - 1lh) / 2));
   }
   /* A control INSIDE a sentence ("... Try again") keeps the sentence's line: the
    * negative margins give the padding back, leaving a margin box one line tall,
    * so no gap opens above the line it ends — which a 44px inline box did,
    * measured at 390px. */
-  .offline-state .linkish { margin-block: min(0px, calc((1lh - 44px) / 2)); }
+  .offline-state .linkish {
+    margin-block: min(0px, calc((1.5em - 44px) / 2));
+    margin-block: min(0px, calc((1lh - 44px) / 2));
+  }
   .identity-pill { min-height: 44px; }
   /* The door's project link: a flex row already (its arrow is its own item). */
   .project-link { min-height: 44px; align-items: center; }
@@ -2533,12 +2704,24 @@ details.fold #seed { max-width: 23rem; }
   .lobby-chat .chat button.ghost, .open-table > .chat button.ghost {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 0.9rem;
   }
-  /* The row's Abandon keeps its narrow sides: it is the quiet control under
-   * the row's action, and only its height is a thumb's. */
+  /* The row's Abandon keeps its narrow sides: it is the quiet control beside
+   * the row's action, and only its height is a thumb's. Asked for (its one
+   * button, `:only-child`), it is a 44px square with a cross for a face — the
+   * word is its name, `abandon <table>`, which it keeps (row 64). */
   .row-abandon button.ghost {
     display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 0.6rem;
   }
+  .row-abandon > button.ghost:only-child { width: 44px; height: 44px; padding: 0; font-size: 0; }
+  .row-abandon > button.ghost:only-child::before { content: "\2715"; font-size: 15px; line-height: 1; }
   .notice-actions button.primary { min-height: 44px; }
+  /* **A row is its link's hit box** (cycle E, straw poll row 64): the name's
+   * link covers the lobby row, as the device card's does its row, so the whole
+   * row is thumb-sized without its name padding to 44px of its own; the row's
+   * buttons stand above the cover. The device row reaches 44px. */
+  .lobby-row { position: relative; }
+  .lobby-row a.row-link::after { content: ""; position: absolute; inset: 0; }
+  .row-action, .row-abandon { position: relative; z-index: 1; }
+  .device-row { min-height: 44px; align-items: center; }
 }
 
 /* ---- M6.5c2 cycle C: the Finished group (R-6.5c2.22; spec section 2.2 as
@@ -2549,8 +2732,8 @@ details.fold #seed { max-width: 23rem; }
  * marker and its pointer are the idiom's own, the marker a step brighter
  * (below). What this block adds is the
  * summary as a SECTION HEAD, so the group reads as a fourth list that is shut
- * rather than as a widget: the `h3` takes `.lobby-section h3`'s size and the
- * count `.section-hint`'s muted colour, both unrestated. Every rule is scoped
+ * rather than as a widget: the `h3` takes `.lobby-section h3`'s size, unrestated,
+ * and carries the count (below). Every rule is scoped
  * to `.finished-tables`, so the form's Advanced fold and the game screen's
  * folds (buttons, not `details`) are untouched. Its rows are `.lobby-rows`'.
  *
@@ -2573,15 +2756,22 @@ details.fold #seed { max-width: 23rem; }
   margin-inline: -0.5rem; padding-inline: 0.5rem;
 }
 /* The marker is the group's one cue that it opens, and the group is shut by
- * default, so it takes `--fg-dim`, one step above the idiom's `--fg-faint`:
- * in the faint colour a shut group read as a heading with a stray glyph
- * (Task 10's M1; the whole-branch review's m-3). The glyphs, their swap and
- * the size stay the idiom's. */
-.finished-tables > details.fold > summary::before { order: 1; color: var(--fg-dim); }
+ * default, so it takes `--fg-dim`, one step above the idiom's `--fg-faint`
+ * (Task 10's M1; the whole-branch review's m-3) — and since cycle E (straw
+ * poll row 63) drawn large, one glyph turned a quarter when the fold is open:
+ * at the idiom's 12px, after a count in the hint's grey, a shut group still
+ * read at 1x as a heading with a stray glyph (a 4px triangle, measured; at
+ * 24px it is ~9px, a cue the heading's own height). The count is the
+ * heading's own words, "Finished (3)", in its face and a step quieter. */
+.finished-tables > details.fold > summary::before {
+  order: 1; color: var(--fg-dim); content: "\25B8"; display: inline-block; font-size: 24px; line-height: 1;
+}
+.finished-tables > details.fold[open] > summary::before { content: "\25B8"; transform: rotate(90deg); }
+.finished-tables > details.fold > summary > h3 > .count { color: var(--fg-dim); font-weight: 400; }
 /* Pointed at, the count and its marker brighten together, as the rows' quiet
  * Abandon does: a colour, no motion. Only where a pointer can rest (Task 10's
  * M5): after a tap a phone keeps `:hover` until the next touch elsewhere. */
 @media (hover: hover) {
-  .finished-tables > details.fold > summary:hover > .section-hint,
+  .finished-tables > details.fold > summary:hover > h3 > .count,
   .finished-tables > details.fold > summary:hover::before { color: var(--fg); }
 }

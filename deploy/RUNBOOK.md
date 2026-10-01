@@ -529,7 +529,7 @@ checks left three saves on the volume (`sim-5c3b4e596bb8cf97`,
 `sim-7d949b884ebb2adb`, `sim-fa6b6bb5049a3929`), the owner's to delete. **Six
 tags now sit on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`,
 `0.5.0-m5.5.1`, `0.5.0-m5.5.2` — each a rollback point (§5). The live build is
-`fb92c17`; the milestone's close commit follows it.
+`fb92c17` (a record of 2026-09-05; the live build is §3.19's); the milestone's close commit follows it.
 
 **Addendum, 2026-09-06: the owner's first-run corrections — `yokohama-web:0.5.0-m5.5.3`
 (13:07Z), then `0.5.0-m5.5.4` (13:48Z).** The correction wave
@@ -560,7 +560,7 @@ laboratory and the goals read their line until the pick. **Eight tags now sit
 on the NAS** — `0.5.0`, `0.5.0-m5`, `0.5.0-m5.1`, `0.5.0-m5.5`, `0.5.0-m5.5.1`,
 `0.5.0-m5.5.2`, `0.5.0-m5.5.3`, `0.5.0-m5.5.4` — each a rollback point (§5).
 The checks' own saves were erased the same day at the owner's word; the owner's
-five remain. The live build is `fb6cec7`; the wave's record commit follows it.
+five remain. The live build is `fb6cec7` (a record of 2026-09-06; the live build is §3.19's); the wave's record commit follows it.
 
 ### 3.7 M6.1 is live — the fourth deployment, 2026-09-15 (a record, not a plan)
 
@@ -2375,6 +2375,19 @@ rollback today meets no tombstone; the first delete on this host changes that. `
 - **The edge's `index.html` rewrite (§3.16's finding) was not re-read**; nothing changed on the zone.
 
 ---
+
+### 3.19 The sixteenth deployment — `yokohama-web:0.6.0-m6.5c2e`, 2026-09-30 (cycle E's release; a record, not a plan)
+
+The same build as the Worker's twenty-fifth deployment (`worker/RUNBOOK.md` §19): the code head `c39da5a1` of `web-room-m6.5c2e`, built ONCE in `web/` with the three site values (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_NOTICE='Not affiliated with Asmodee'`, the 226-character `YOKOHAMA_SITE_BLURB`) at 11:32Z — the release `yokohama-release-50ee8137624586b2`, 153 precache entries, 10,044,462 B, the browser module 1,216,429 B (`gzip -9` 472,169 B; §1's `wasm-opt 133`), `debug_trap` 0, `dist/shell.bin` 2,387 B byte-equal to `index.html` (R-6.5c2.41: the shell precached from `/shell.bin`, served `no-store` by this binary). What changed for this host since §3.18: `/shell.bin` and its `no-store`, the `waited` marker reason (Task 6), `TurnMirror.has_events` in the table document (Task 5; an older binary ignores the key), the two TTL fields on `/api/health` (`null` here — the NAS runs no sweep), lobby paging and the requests-per-move work (Task 7), the site blurb and link on the door.
+
+- **The build** (§3.4's path, 11:36:33–11:36:48Z): the musl binary rebuilt per §1 with `rust-lld` (`RUSTFLAGS="-C linker=$LLD -C link-self-contained=yes"`; 5 s; 6,816,280 B, static-pie); the context cut with `COPYFILE_DISABLE=1` — 11,377,088 B, 175 entries, zero `._` entries, `.dev.vars` absent (404 from the context's file server), the listing `ctx.tar.gz` alone; `POST /build … t=yokohama-web:0.6.0-m6.5c2e` through Portainer's Docker proxy, HTTP 200 in 14 s; the image `sha256:c5e04e73…`, 24,777,478 B, 6 layers; 23 `yokohama-web:` tags on the NAS afterwards. The scratch file server that serves the context survived its `kill` once and was stopped by port (`lsof -ti :8899`) — a build script stops it by port now.
+- **The swap as ONE script** (11:37:16–11:37:18Z; the scope read first: 2 playing tables, neither being played): `yokohama-web:0.6.0-m6.5c2d` (`5672839f`) stopped 204, deleted 204; the new container `47d374654e0d` created 201 with the same body (`YOKOHAMA_WEB_IDENTITY=cf-access`, the archive at `/data/archive`, the `cf-internal` network, the `yokohama-web-data` volume), started 204; `listening on http://0.0.0.0:8080` at 11:37:17.68Z — **1.6 s stop→listening** (§3.18: 1.50 s).
+- **§3.2 readings** (11:37:22Z, over WARP): `/api/health` `{"server_version":"0.6.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"cf-access","signal":"sse","archive":"dir",…,"table_ttl_days":null,"open_table_ttl_days":null}`; **`/api/me` names the owner under `cf-access` — no STOP**; `/sw.js` names `yokohama-release-50ee8137624586b2`; **`/shell.bin` 200 `application/octet-stream`, `cache-control: no-store`, `cf-cache-status: BYPASS` on two reads a minute apart, 2,387 B, its digest equal to the inventory's** — the zone honours the origin's `no-store` (the risk that `.bin` is edge-cached: CLOSED here, never a HIT); `/index.html` 200, 3,325 B with the edge's JavaScript Detections snippet, `DYNAMIC`.
+- **THE UPDATE READING on this host** (Review Focus 1 — the reason for R-6.5c2.41; the plan's 10.E): a headless persistent Chromium context prepared BEFORE the swap at D's release with its `cf_clearance` cookie cleared (the state that pinned every returning browser on 2026-09-29), reloaded ONCE after the swap → `/sw.js` (no-store, BYPASS) → the install fetched `/shell.bin` and NO HTML → the new worker `installed` beside D's `activated`, two caches → "A new version is ready. Reload to use it" → the click → E's worker active, the door **"Ready to play offline"**, no "Try again", the navigation answered by the worker as `text/html`, D's cache RETAINED beside E's. **A fresh profile inside the two-hour window installed ONE cache, `activated`, "Ready to play offline"** — the window-of-two-releases reading. The same reading PASSED on the Worker (its §19).
+- **The first game on this release** was not played on this host (the day's games are the Worker's); the NAS's playing tables stayed intact across the swap.
+- **Rollback**: `yokohama-web:0.6.0-m6.5c2d` is on the NAS; §5's chat-tombstone caveat stands; a table document written by E carries `has_events` (ignored by D) and a `waited` marker head D renders as `undefined — …`.
+
+**What this deployment does NOT claim:** the update reading was taken in a headless persistent context on the workstation, not on the owner's Edge (the owner's own browser is the last reading); the NAS's pinned reading covered one returning browser and one fresh profile, not a phone; nothing about the NAS's own request cost per move was measured this cycle (Task 7's figures are the Worker's).
 
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 

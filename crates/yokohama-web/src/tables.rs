@@ -754,6 +754,24 @@ pub const UNLOCKED_CAP: usize = 256;
 pub const LIST_LIMIT_DEFAULT: usize = 20;
 pub const LIST_LIMIT_MAX: usize = 100;
 
+/// **Whether the creator's Abandon SAVES this table before deleting it** (the
+/// M6.5a rule, R-6.5a.11, factored out in cycle E for R-E5): the host keeps an
+/// archive, the table is `Playing` (dealt; over is a playing table whose
+/// session says so), it carries no `archived_at` stamp (a game archived at
+/// its end is not put twice), and the game has at least one event.
+///
+/// ONE function with two callers that hand it the event fact from different
+/// places, on purpose (ruling P-3, as amended by T5-a): [`Games::delete`]
+/// passes whether the RECORD it reads holds an event — the truth, because the
+/// decision to file a save must never rest on a cache — and
+/// [`TableDoc::view`] passes [`crate::table::TurnMirror::has_events`], the
+/// cache a lobby row can read without the record. They part only where the
+/// mirror is stale (`mirror_turn` swallows a conflict), and then the view is
+/// the one that is wrong.
+pub(crate) fn saves_on_abandon(doc: &TableDoc, has_events: bool, archive_on: bool) -> bool {
+    archive_on && doc.status == TableStatus::Playing && doc.archived_at.is_none() && has_events
+}
+
 /// The cursor naming this row: `<created_at>,<id>`.
 ///
 /// Both halves, because `created_at` is unix SECONDS and twenty tables made in
@@ -856,7 +874,7 @@ impl Games {
                 // cleared a few lines above.
                 self.chat_counts.lock().expect("games lock").remove(&doc.id);
                 self.signal.bump(&doc.id);
-                Ok(doc.view(creator))
+                Ok(doc.view(creator, self.archive_on()))
             }
             Err(WriteError::Conflict { .. }) => {
                 Err(GameError::BadRequest(format!("a game named {:?} already exists", doc.id)))
@@ -1152,7 +1170,8 @@ impl Games {
 
     /// The house chat document's `last` and `rev` ([`ChatCounts`]), read as
     /// [`Games::house_page`] reads them — what the NAS SEEDS its house frame's
-    /// counters from when it starts (M6.5c2 cycle D, the final review's C1;
+    /// counters from when it starts (M6.5c2 cycle D; the close
+    /// `2026-09-29-web-frontend-m6.5c2d-close.md` §4 and §5, ruling 46;
     /// `AppState::with_store_chat_and_archive`).
     ///
     /// An absent document is an empty one, `0` and `0`, as every read of it
@@ -1183,8 +1202,8 @@ impl Games {
     /// number back.
     ///
     /// **Exactly THREE things fill the entry, and keeping what is there is
-    /// never the older answer under any** (re-review of the fix wave; the
-    /// delete since M6.5c2 cycle D): an append and a delete, each of which
+    /// never the older answer under any** (re-review of the fix wave, `docs/plans/2026-09-19-web-frontend-m6.4-close.md` §4.6;
+    /// the delete since M6.5c2 cycle D): an append and a delete, each of which
     /// writes its own counts with a plain `insert` after the document is
     /// written and under the table's lock — so they land in the order the
     /// writes did, and know numbers no read of this kind can have missed; and
@@ -1211,7 +1230,7 @@ impl Games {
         // out loud.
         //
         // **That 0 is CACHED like any other** (re-review of the fix wave,
-        // out-of-scope note), so an unparseable document makes this table
+        // `docs/plans/2026-09-19-web-frontend-m6.4-close.md` §4.6, out-of-scope note), so an unparseable document makes this table
         // report 0 for the life of the process — until an append re-inserts a
         // real number, which it cannot do while the document will not parse.
         // Pre-existing and deliberate: the alternative is re-reading and
@@ -1317,7 +1336,7 @@ impl Games {
             TableStatus::Playing => {}
         }
         if doc.lock.is_none() || doc.can_watch(user) {
-            return Ok(doc.view(user));
+            return Ok(doc.view(user, self.archive_on()));
         }
         if !doc.check_password(password.trim()) {
             return Err(GameError::Forbidden("wrong password for this table".to_string()));
@@ -1329,7 +1348,7 @@ impl Games {
         }
         doc.unlocked.push(user.as_str().to_string());
         match self.write_table(&doc, Some(version)) {
-            Ok(_) => Ok(doc.view(user)),
+            Ok(_) => Ok(doc.view(user, self.archive_on())),
             Err(WriteError::Conflict { .. }) => {
                 Err(GameError::Conflict(format!("{id:?} changed while this unlock was in flight")))
             }
@@ -1490,7 +1509,7 @@ impl Games {
         )
         .map_err(GameError::Server)?;
         Ok(DealView {
-            table: doc.view(user),
+            table: doc.view(user, self.archive_on()),
             seat,
             // **The caller's seat, and no other index into `deals`.** This is
             // the whole of R-C1 on this route: a payload that carried every
@@ -1591,7 +1610,7 @@ impl Games {
                 // changed, and a join that FILLED the table is a row that left
                 // it — the same write, so the same bump.
                 self.signal.bump(id);
-                Ok(doc.view(user))
+                Ok(doc.view(user, self.archive_on()))
             }
             // Somebody took this seat between the read and here. The stored
             // table is the table — `create`'s rule and `finalize`'s — so the
@@ -1695,9 +1714,9 @@ impl Games {
         self.signal.bump_table(id);
         if doc.all_humans_kept() {
             let (doc, _) = self.finalize(doc)?;
-            return Ok(doc.view(user));
+            return Ok(doc.view(user, self.archive_on()));
         }
-        Ok(doc.view(user))
+        Ok(doc.view(user, self.archive_on()))
     }
 
     /// **One page of the lobby**, in the scope the caller asked for (§3.3).
@@ -1801,7 +1820,7 @@ impl Games {
         }
         let next = (rows.len() > limit).then(|| cursor_of(&rows[limit - 1]));
         rows.truncate(limit);
-        Ok((rows.iter().map(|doc| doc.view(user)).collect(), next))
+        Ok((rows.iter().map(|doc| doc.view(user, self.archive_on())).collect(), next))
     }
 
     /// Every table this user sits at, newest first — [`Games::list`] at the
@@ -1880,25 +1899,30 @@ impl Games {
         if !doc.is_creator(user) {
             return Err(GameError::Forbidden("only the table's creator can delete this table".to_string()));
         }
-        // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): a playing
-        // table with at least one event and no archive stamp is archived
-        // BEFORE anything is unlinked — and if the put fails the delete is
-        // REFUSED, nothing tombstoned, nothing removed, because the save is the
-        // point of the control and the creator can simply try again. A table
-        // already stamped (at game over, or by an earlier failed delete whose
-        // put landed) is deleted without a second put; an open or dealing
-        // table, or a playing one with no events, deletes as before. Since
-        // M6.5b (R-6.5b.13) a FINISHED game with no stamp lands under `over/`.
-        if crate::archive::is_on(&self.archive)
-            && doc.status == TableStatus::Playing
-            && doc.archived_at.is_none()
-        {
+        // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): the rule
+        // is [`saves_on_abandon`], asked here of the RECORD — the truth, never
+        // the mirror's cache (cycle E, ruling P-3 as amended by T5-a) — and
+        // asked of every `TableView` over the mirror's bit, so the lobby words
+        // "Abandon and save" from the rule this applies. A saved table is
+        // archived BEFORE anything is unlinked — and if the put fails the
+        // delete is REFUSED, nothing tombstoned, nothing removed, because the
+        // save is the point of the control and the creator can simply try
+        // again. A table already stamped (at game over, or by an earlier
+        // failed delete whose put landed) is deleted without a second put; an
+        // open or dealing table, or a playing one with no events, deletes as
+        // before. Since M6.5b (R-6.5b.13) a FINISHED game with no stamp lands
+        // under `over/`. The rule is asked FIRST as if the game had moved, so
+        // the record is read — and must parse — only where the rest of it
+        // could still say yes, exactly as before the factoring: a delete at an
+        // open table, or with the archive off, reads no record.
+        let archive_on = self.archive_on();
+        if saves_on_abandon(&doc, true, archive_on) {
             let record = self.store.read(Doc::Record, id).map_err(GameError::Server)?;
             if let Some((record_json, _)) = record {
                 let events = serde_json::from_str::<GameRecord>(&record_json)
                     .map(|r| r.events.len())
                     .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
-                if events > 0 {
+                if saves_on_abandon(&doc, events > 0, archive_on) {
                     // R-6.5b.13: the leaf follows the MIRROR's truth. `turn` is a
                     // cache `mirror_turn` may leave one move stale when its write
                     // FAILS OR CONFLICTS — it swallows both — so in exactly that
@@ -3006,6 +3030,110 @@ mod tests {
         assert!(games.read_table("done").unwrap().is_none(), "and it was deleted");
     }
 
+    /// **R-E5 (cycle E): `TableView.saves` is the delete's own rule, asked of
+    /// the view** (ruling P-3). Six tables, each read through the ROUTE
+    /// (`api::get_table`, so the archive switch the route hands the view is
+    /// what is read) and through the creator's `mine` LISTING (`Games::list`,
+    /// which builds the lobby row's view in a call of its own), and then
+    /// deleted by its creator: the view's `saves`, the listing row's, the
+    /// rule over whether the RECORD holds an event (what `delete_locked`
+    /// reads) and the delete's own put count agree on every one. The view
+    /// reads the MIRROR's bit, which `persist` stamps, so `has_events` is the
+    /// record's here — the mirror is fresh at every one of these tables.
+    ///
+    /// **The `Playing` conjunct is NOT caught here**: a dealing table reached
+    /// through the route holds no event, so its `saves` reads false with that
+    /// conjunct dropped. Its catcher is `table.rs`'s
+    /// `a_mirror_without_has_events_reads_false_and_the_view_saves_only_where_the_rule_says`,
+    /// which sets the bit on a dealing document ("only a playing table is
+    /// saved"). Here the moveless playing table catches a `saves` that drops
+    /// the `has_events` conjunct, and the dealing table one that drops it and
+    /// the status together; the archive-off table's put count is a COUNT (an
+    /// archive that records and says `off`), not a premise.
+    #[test]
+    fn the_view_saves_exactly_where_the_delete_files_a_save() {
+        /// A recording archive that reports itself OFF.
+        struct Off(Arc<RecordingArchive>);
+        impl crate::archive::Archive for Off {
+            fn put(
+                &self,
+                prefix: &str,
+                why: crate::archive::Why,
+                id: &str,
+                r: &str,
+                t: &str,
+            ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+                self.0.put(prefix, why, id, r, t)
+            }
+            fn kind(&self) -> &'static str {
+                "off"
+            }
+        }
+        /// A playing two-person table with exactly ONE applied move persisted.
+        fn one_event_in(games: &Games, id: &str) {
+            let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+            let mut repl = handle.lock().unwrap();
+            repl.step("1");
+            assert_eq!(repl.session.record().events.len(), 1, "premise: one event");
+            games.persist(id, &repl).expect("a persist");
+        }
+        let red = who("red@t.test");
+        let check = |games: &Games, archive: &Arc<RecordingArchive>, id: &str, saves: bool| {
+            let view = crate::api::get_table(games, &red, id).unwrap_or_else(|_| panic!("{id}: the table"));
+            let record_events = games
+                .store()
+                .read(Doc::Record, id)
+                .unwrap()
+                .map_or(0, |(json, _)| serde_json::from_str::<GameRecord>(&json).unwrap().events.len());
+            assert_eq!(view.has_events, record_events > 0, "{id}: the mirror's bit is the record's");
+            assert_eq!(view.saves, saves, "{id}: the view");
+            // **The LOBBY's row, too** (fix round 1, Important 1): the listing
+            // builds its views in its own call, and the lobby row's Abandon is
+            // what ruling 4a-1 words. Every listing file in the corpus comes
+            // from an `Api` that keeps no archive, so this is the one place a
+            // listing that dropped the host's switch is seen.
+            let (rows, _) = games.list(&red, Scope::Mine, LIST_LIMIT_MAX, None).expect("the creator's listing");
+            let row = rows.iter().find(|t| t.id == id).unwrap_or_else(|| panic!("{id}: listed under mine"));
+            assert_eq!((row.has_events, row.saves), (view.has_events, saves), "{id}: the lobby row");
+            let (doc, _) = games.read_table(id).unwrap().unwrap();
+            assert_eq!(saves_on_abandon(&doc, record_events > 0, games.archive_on()), saves, "{id}: the rule");
+            let before = archive.puts.lock().unwrap().len();
+            games.delete(id, &red).expect("the creator's delete");
+            let filed = archive.puts.lock().unwrap().len() - before;
+            assert_eq!(filed, usize::from(saves), "{id}: the delete filed what the view said");
+        };
+        let on = RecordingArchive::recording();
+        let with_on = games().with_archive(on.clone());
+        // Dealing: nothing to save.
+        with_on.create(&two_people("dealing", CORPUS_SEED), &red).unwrap();
+        check(&with_on, &on, "dealing", false);
+        // Playing with no move yet: nothing to save.
+        drop(playing(&with_on, &two_people("fresh", CORPUS_SEED), &["red@t.test", "blue@t.test"]));
+        check(&with_on, &on, "fresh", false);
+        // Playing with one event and the archive on: saved.
+        one_event_in(&with_on, "one");
+        check(&with_on, &on, "one", true);
+        // Finished and archived at game over: not saved twice.
+        play_to_the_end(&with_on, "done");
+        assert_eq!(on.puts.lock().unwrap().len(), 2, "premise: the game-over put landed");
+        check(&with_on, &on, "done", false);
+        // The same one-event table with the archive off: nothing to save.
+        let off = RecordingArchive::recording();
+        let with_off = games().with_archive(Arc::new(Off(off.clone())));
+        one_event_in(&with_off, "one-off");
+        check(&with_off, &off, "one-off", false);
+        // Finished while the archive was off, abandoned once it is on: saved,
+        // under `over/`.
+        let late = RecordingArchive::recording();
+        let with_late = {
+            let g = games();
+            play_to_the_end(&g, "late");
+            g.with_archive(late.clone())
+        };
+        check(&with_late, &late, "late", true);
+        assert_eq!(late.puts.lock().unwrap()[0].why, crate::archive::Why::Over);
+    }
+
     /// The second failure rule: an abandon whose put fails is REFUSED, with a
     /// sentence naming the archive, and the table stays exactly as it was.
     #[test]
@@ -3121,7 +3249,7 @@ mod tests {
         let winner_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2), bot: None });
+            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2), has_events: false, bot: None });
             d
         };
         // The other half of the mirror, and the one with the wider blast
@@ -3132,7 +3260,7 @@ mod tests {
         let to_move_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None, bot: None });
+            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None, has_events: false, bot: None });
             d
         };
 
@@ -4375,7 +4503,7 @@ mod tests {
         let stranger = who("nobody@t.test");
         open_two(&games, "o", None);
         let doc = games.table_for_anyone("o", &stranger).expect("an open table reads");
-        assert!(doc.view(&stranger).my_seats.is_empty());
+        assert!(doc.view(&stranger, false).my_seats.is_empty());
         games.create(&two_people("d", CORPUS_SEED), &who("red@t.test")).unwrap();
         assert!(matches!(games.table_for_anyone("d", &stranger), Err(GameError::Forbidden(_))));
         assert!(matches!(games.table_for_anyone("nope", &stranger), Err(GameError::NotFound(_))));
@@ -5772,7 +5900,7 @@ mod tests {
         playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         playing(&games, &two_people("overt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         let (mut doc, version) = games.read_table("overt").unwrap().unwrap();
-        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1), bot: None });
+        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1), has_events: false, bot: None });
         games.write_table(&doc, Some(version)).expect("a finished mirror");
 
         let (rows, next) = games

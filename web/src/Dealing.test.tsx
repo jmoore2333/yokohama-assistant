@@ -565,7 +565,7 @@ describe("the dealing screen, following the other seats", () => {
   // and more the line went on naming a seat that had chosen.
   //
   // **The connection's own frame comes FIRST, as on both real hosts** (the
-  // Task 11 review's I-3): the NAS stream writes the current `Events` on
+  // cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §1, the Task 11 row: I-3): the NAS stream writes the current `Events` on
   // connect and the Worker's `admit` sends one. The keep's frame is the
   // SECOND, so a screen that re-read on the first frame alone — which drops
   // every later keep, row 1's defect as production shows it — fails here.

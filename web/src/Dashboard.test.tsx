@@ -120,7 +120,7 @@ describe("the walk's marks on a seat", () => {
     expect(container.querySelectorAll(".seat.changed")).toHaveLength(1);
     // Named by the seat it belongs to, not by its position: a mark keyed on the
     // row's index would pass a `toHaveLength(1)` while lighting the wrong player.
-    expect(container.querySelector(".seat.changed .seat-name")?.textContent).toBe(lit.color);
+    expect(container.querySelector(".seat.changed .seat-name .seat-color")?.textContent).toBe(lit.color);
   });
 
   it("marks no seat row when the walk is not running", () => {
@@ -500,10 +500,40 @@ describe("the bot's version on the Players panel", () => {
       />,
     );
     const seat = document.querySelectorAll(".panel .seat")[0]!;
-    expect(seat.querySelector(".tag .version-tag")).toHaveTextContent("V4");
+    expect(seat.querySelector(".version-tag")).toHaveTextContent("V4");
     expect(seat.querySelector(".tag")).toHaveTextContent("the bot");
     // The other seat is a person: no tag of either kind.
     expect(document.querySelectorAll(".panel .seat")[1]!.querySelector(".version-tag")).toBeNull();
+  });
+
+  // **The version is part of the seat's NAME, not one more tag in the row**
+  // (cycle E, straw poll row 61). In the row it stood beside the `¥` chip, gold
+  // box against gold chip, and read as a second amount. Inside the name it
+  // reads "Red V4" — which bot — and the chips after it are the seat's money
+  // and points alone. The colour half (the door's muted outline, never the
+  // yen's gold) is `styles.test.ts`'s, since jsdom loads no stylesheet.
+  it("carries the version inside the seat's name, not among the tags beside the chips", () => {
+    render(
+      <Dashboard
+        panels={wire.watching.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+        bots={wire.watching.bots}
+      />,
+    );
+    const head = document.querySelectorAll(".panel .seat")[0]!.querySelector(".seat-head")!;
+    const name = head.querySelector(".seat-name")!;
+    expect(name.querySelector(".version-tag"), "the tag is inside the name").toHaveTextContent("V4");
+    // "Red V4", with the space a reader hears between the two words — and the
+    // colour its own element, which is what a reader of the seat's colour reads.
+    expect(name.textContent).toBe("Red V4");
+    expect(name.querySelector(".seat-color")?.textContent).toBe("Red");
+    // Anti-vacuity: no second copy among the tags, and the word stays a tag.
+    expect(head.querySelectorAll(".version-tag")).toHaveLength(1);
+    expect(head.querySelector(".tag .version-tag")).toBeNull();
+    expect([...head.querySelectorAll(".tag")].map((t) => t.textContent)).toEqual(["the bot", "seat 0"]);
   });
 
   it("keeps the bare word where the state names no version for the seat", () => {

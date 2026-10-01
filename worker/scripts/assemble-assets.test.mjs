@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { assemble, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
 
@@ -140,5 +141,69 @@ describe("the assembly (spec §2.3)", () => {
     const out = join(tree({ "assets/stale.js": "old", "assets/sw.js": swWith(ENTRIES) }), "assets");
     expect(() => assemble({ ...sources(tree(distFiles())), out })).toThrow(refusal);
     expect(existsSync(out)).toBe(false);
+  });
+});
+
+// **The committed `worker/static/_headers`, read** (M6.5c2 cycle E, Task 1's
+// review). It is this host's restatement of the axum host's cache policy
+// (`assets.rs`'s `cache_control`), and nothing above reads what it SAYS: the
+// cells use synthetic trees, and the deploy guard's check 9 compares two copies
+// of this one file. The worker and the shell it installs must be `no-store`
+// here as they are there (R-6.5c2.41): `.bin` is on Cloudflare's default
+// cached-extension list, and a `/shell.bin` served bare would be the previous
+// release's at the edge for two hours after a deploy, failing every install's
+// digest in that window.
+describe("the committed static headers", () => {
+  const committed = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+  /** `_headers`' rules as `path → { header name, lowercased → value }`: each
+   *  unindented line is a path, each indented `Name: value` line a header of
+   *  the path above it, and `#` lines and blank lines are skipped. */
+  function rules(text) {
+    const out = new Map();
+    let current = null;
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+      if (!/^\s/.test(line)) {
+        current = {};
+        out.set(line.trim(), current);
+        continue;
+      }
+      const m = /^\s+([A-Za-z0-9-]+):\s*(.*?)\s*$/.exec(line);
+      if (!m || current === null) throw new Error(`_headers: a line that is neither a path nor a header: ${line}`);
+      current[m[1].toLowerCase()] = m[2];
+    }
+    return out;
+  }
+
+  it("serves the worker and its shell no-store, as the axum host's cache_control does", () => {
+    const headers = rules(committed("../static/_headers"));
+    expect(headers.get("/sw.js")?.["cache-control"], "/sw.js").toBe("no-store");
+    expect(headers.get("/shell.bin")?.["cache-control"], "/shell.bin").toBe("no-store");
+
+    // **Mirrored from the Rust, arm by arm**, so a path the axum host serves
+    // `no-store` that this file does not — or the reverse — fails here rather
+    // than at a live `cache-control` read after a deploy.
+    const rust = committed("../../crates/yokohama-web/src/assets.rs");
+    const start = rust.indexOf("fn cache_control(");
+    expect(start, "assets.rs no longer declares `fn cache_control`").toBeGreaterThan(0);
+    const body = rust.slice(start, rust.indexOf("\n}\n", start));
+    const rustNoStore = [...body.matchAll(/uri_path == "([^"]+)"/g)].map((m) => m[1]).sort();
+    // The premise: the parse really found the two arms, so the equality below
+    // is not two empty lists agreeing.
+    expect(rustNoStore).toEqual(["/shell.bin", "/sw.js"]);
+    const hereNoStore = [...headers]
+      .filter(([, h]) => h["cache-control"] === "no-store")
+      .map(([path]) => path)
+      .sort();
+    expect(hereNoStore).toEqual(rustNoStore);
+    const immutable = /starts_with\("\/assets\/"\)\.then_some\("([^"]+)"\)/.exec(body)?.[1];
+    expect(immutable, "assets.rs's immutable rule for /assets/").toBeDefined();
+    expect(headers.get("/assets/*")?.["cache-control"]).toBe(immutable);
+
+    // And nothing else carries a rule, as the Rust cell's "nothing else"
+    // clause says of the axum host — the art's hour is `art.rs`'s.
+    expect([...headers.keys()].sort()).toEqual(["/art/*", "/assets/*", "/shell.bin", "/sw.js"]);
+    expect(headers.get("/art/*")?.["cache-control"]).toBe("public, max-age=3600");
   });
 });

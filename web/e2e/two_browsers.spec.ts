@@ -39,7 +39,7 @@ import { type Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, tally, TALLY_VAR, watchForBreakage } from "./harness";
 import type { Affordance, Screen } from "./harness";
 import { CAP } from "./caps";
 import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
@@ -121,6 +121,10 @@ test("two people at two browsers play to a winner and neither sees the other's h
    *  than two zeroes agreeing. */
   const streamOpens = { a: 0, b: 0 };
   for (const [k, p] of [["a", a], ["b", b]] as const) {
+    // **The request tally, when `YOKOHAMA_WEB_TALLY` names a file** (cycle E,
+    // Task 7): every request this page makes, from its first, for
+    // `scripts/tally-report.mjs`. Nothing is installed when it is unset.
+    tally(p, k);
     p.on("request", (r) => {
       if (new URL(r.url()).pathname === streamPath) streamOpens[k] += 1;
     });
@@ -183,6 +187,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // is the link somebody would have sent.
   const c = await (await newContextWithoutWorker(browser, await liveContextOptions(WATCHER))).newPage();
   const watchC = watchForBreakage(c);
+  // The watcher's tally from its FIRST request — the sign-in and the unlock
+  // included, since a burst on arrival is part of what a rate limit meets.
+  tally(c, "watcher");
   await signIn(c, WATCHER);
   await c.goto(`/#/t/${id}`);
   // The unlock face, and it is the SERVER's answer that puts it there: a
@@ -433,6 +440,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
     await a.waitForTimeout(400);
   }
 
+  // The game's applied events, read once more of the SERVER at the end rather
+  // than taken from the last checkpoint: it is the tally report's `--moves`.
+  const appliedAtEnd = await appliedEvents(a, id, "a@e2e.test");
   // eslint-disable-next-line no-console
   console.log(
     `two-browser game ${id} finished in ${moves} moves, ${waits} idle looks, ` +
@@ -442,7 +452,12 @@ test("two people at two browsers play to a winner and neither sees the other's h
       `(${streamReads.join(",") || "no checkpoint"} at the checkpoints); ` +
       `the players opened this table's stream a ${streamOpens.a}, b ` +
       `${streamOpens.b} times (a ${streamsAtStart.a}, b ${streamsAtStart.b} ` +
-      `before the first move)` +
+      `before the first move); ${appliedAtEnd} events applied` +
+      // The tally's report, ready to run: `--moves` is the game's applied
+      // events, which only the server's count says.
+      (process.env[TALLY_VAR]
+        ? `; tally: node scripts/tally-report.mjs ${process.env[TALLY_VAR]} --moves ${appliedAtEnd}`
+        : "") +
       // The dealing screen's designed 409, forgiven in both modes (`harness.ts`,
       // `isDealAnswer`): two lines per 409, the response and Chromium's own.
       `; the deal's designed 409 forgiven a ${watchA.dealAnswers}, b ${watchB.dealAnswers}, ` +

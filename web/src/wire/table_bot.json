@@ -14,6 +14,7 @@
   ],
   "created_at": 1789000000,
   "creator": null,
+  "has_events": false,
   "id": "wire-bot",
   "locked": false,
   "mine": true,
@@ -23,6 +24,7 @@
   "name": "wire-bot",
   "over": null,
   "players": 2,
+  "saves": false,
   "seats": [
     {
       "invited": "red@wire.test",

@@ -11,12 +11,28 @@
 /**
  * The fields a HOST is entitled to differ on (spec §4's second class): which
  * header names the caller (`identity`, and `mode` on `/api/me`), how a change
- * reaches a browser (`signal`), and where its archive is kept (`archive`).
- * This host reads `cf-access`, `ws` and `r2`; the axum host the corpus was cut
- * from, `open`, `sse` and `off` — its primary `Api` keeps no archive.
- * `multiplayer` is NOT here: both hosts offer it.
+ * reaches a browser (`signal`), where its archive is kept (`archive`), and how
+ * long an idle table, and one still waiting for players, stands
+ * (`table_ttl_days`, `open_table_ttl_days`; R-6.5c2.42). This host reads
+ * `cf-access`, `ws`, `r2`, 90 and 7; the axum host the corpus was cut from,
+ * `open`, `sse`, `off` — its primary `Api` keeps no archive — and `null` twice,
+ * since it keeps no TTL. `multiplayer` is NOT here: both hosts offer it.
+ *
+ * **`saves` is a host field in waiting** (cycle E's final review, Minor 2). A
+ * table view's `saves` — a table read or a lobby row — is the abandon rule
+ * asked of the view, and the rule reads the host's archive: a playing table
+ * with an applied move, not archived at its end, reads `true` here (`r2`) and
+ * `false` in the corpus (`off`). Every table payload these scripts replay
+ * reads `has_events: false` today, so the two hosts agree; the corpus's one
+ * `saves: true`, `table_foreign.json`, comes from an emitter `Api` no script
+ * replays. A row added that reads a table AFTER its first applied move exempts
+ * `saves` here, under that row's name, or says why the two hosts agree on it.
  */
-export const HOST_FIELDS = { health: ["identity", "signal", "archive"], me: ["mode"], me_signed_out: ["mode"] };
+export const HOST_FIELDS = {
+  health: ["identity", "signal", "archive", "table_ttl_days", "open_table_ttl_days"],
+  me: ["mode"],
+  me_signed_out: ["mode"],
+};
 
 /**
  * The rows in the order they run, each with its script's name and its index

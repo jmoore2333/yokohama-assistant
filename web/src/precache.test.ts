@@ -108,7 +108,7 @@ describe("the precache list", () => {
   it("lists the art manifest beside the art", () => {
     const paths = buildPrecache(fixture).entries.map((e) => e.path);
     expect(paths).toContain("/art/manifest.json");
-    expect(paths).toContain("/index.html");
+    expect(paths).toContain("/shell.bin");
     expect(paths).toContain("/manifest.webmanifest");
   });
 
@@ -125,17 +125,41 @@ describe("the precache list", () => {
   it("carries the media type the server will answer with", () => {
     const by = new Map(buildPrecache(fixture).entries.map((e) => [e.path, e.type]));
     expect(by.get("/assets/yokohama_wasm_bg-ghi.wasm")).toBe("application/wasm");
-    expect(by.get("/index.html")).toBe("text/html");
+    expect(by.get("/shell.bin")).toBe("application/octet-stream");
     expect(by.get("/art/orders/a.webp")).toBe("image/webp");
     expect(by.get("/manifest.webmanifest")).toBe("application/manifest+json");
+  });
+
+  // **R-6.5c2.41: the release lists no HTML at all** (spec §10.11). The zone's
+  // JavaScript Detections inject a per-request `<script>` into every HTML
+  // answer at the edge, so an install that digested `/index.html` refused every
+  // browser whose clearance had gone stale — every returning one. The shell is
+  // listed as `/shell.bin`, `index.html`'s bytes under a non-HTML name the edge
+  // does not touch, and the worker sets the HTML type itself when it answers a
+  // navigation. The catcher for the inventory listing `/index.html` again.
+  it("lists the shell as /shell.bin, index.html's bytes, and no HTML entry at all", () => {
+    const { entries } = buildPrecache(fixture);
+    const shell = entries.find((e) => e.path === "/shell.bin");
+    expect(shell, "the shell is listed as /shell.bin").toBeDefined();
+    expect(shell!.type).toBe("application/octet-stream");
+    // Its bytes are index.html's: the fixture's reader answers each path with
+    // its own name, so the digest says which file was read.
+    expect(shell!.digest).toBe(sha256Hex("the bytes of /index.html"));
+    expect(entries.map((e) => e.path), "no entry is /index.html").not.toContain("/index.html");
+    expect(
+      entries.filter((e) => e.type.startsWith("text/html")).map((e) => e.path),
+      "no entry is HTML, which the edge would rewrite",
+    ).toEqual([]);
   });
 
   // The budget the generator PRINTS, so the line it writes on every build is
   // computed from the same walk rather than restated.
   it("reports the total, the module and the composition", () => {
     const out = buildPrecache(fixture);
+    // `/shell.bin` is `index.html`'s bytes, so it is that file the reader read.
+    const source = (path: string) => (path === "/shell.bin" ? "/index.html" : path);
     expect(out.totalBytes).toBe(
-      out.entries.reduce((n, e) => n + `the bytes of ${e.path}`.length, 0),
+      out.entries.reduce((n, e) => n + `the bytes of ${source(e.path)}`.length, 0),
     );
     expect(out.modulePath).toBe("/assets/yokohama_wasm_bg-ghi.wasm");
     expect(Object.values(out.byClass).reduce((a, b) => a + b, 0)).toBe(out.totalBytes);
@@ -183,6 +207,13 @@ describe("what a release may not be", () => {
     expect(() =>
       buildPrecache({ ...fixture, distFiles: [...fixture.distFiles, "index.html"] }),
     ).toThrow(/listed twice/);
+    // **And a walk that kept the generator's own `shell.bin`**: `index.html` is
+    // listed AS `/shell.bin`, so a `dist` the generator already ran over (the
+    // e2e re-runs it over its own output) lists the shell twice unless the walk
+    // skips the copy, as `scripts/precache.mjs` does.
+    expect(() =>
+      buildPrecache({ ...fixture, distFiles: [...fixture.distFiles, "shell.bin"] }),
+    ).toThrow(/\/shell\.bin is listed twice/);
   });
 });
 
@@ -270,21 +301,22 @@ describe("which ceilings a build is judged by", () => {
 // **Whether the built worker really carries the release** (review, Important 2).
 //
 // The first version of this guard looked for the cache name and for the literal
-// `"/index.html"` — and `sw.ts` contains `"/index.html"` in its own source, at
-// `fromCache("/index.html", request)`. So a RENAMED `__PRECACHE__` passed it and
-// shipped a worker whose top-level `ENTRIES = __PRECACHE__` throws a
-// `ReferenceError` before a single handler is registered.
+// `"/index.html"` — and `sw.ts` carried `"/index.html"` in its own source, at
+// `fromCache("/index.html", request)`, as it carries the shell's `"/shell.bin"`
+// since R-6.5c2.41. So a RENAMED `__PRECACHE__` passed it and shipped a worker
+// whose top-level `ENTRIES = __PRECACHE__` throws a `ReferenceError` before a
+// single handler is registered.
 describe("the substitution check", () => {
   const release = buildPrecache(fixture);
   /** What esbuild really emits: the define banner, the substituted list, and
-   *  `sw.ts`'s own `"/index.html"`. */
+   *  `sw.ts`'s own shell path, bundled in from `precache.ts`. */
   const built =
     `// <define:__PRECACHE__>\n` +
     `var define_PRECACHE_default = [${release.entries
       .map((e) => `{ path: ${JSON.stringify(e.path)}, digest: ${JSON.stringify(e.digest)}, type: ${JSON.stringify(e.type)} }`)
       .join(", ")}];\n` +
     `var CACHE_NAME = ${JSON.stringify(release.cacheName)};\n` +
-    `fromCache("/index.html", request);\n`;
+    `var SHELL_PATH = "/shell.bin";\n`;
 
   it("accepts a worker the define really wrote the release into", () => {
     expect(checkSubstitution(built, release)).toBeNull();
@@ -299,11 +331,12 @@ describe("the substitution check", () => {
   });
 
   // **The defect itself**, and the anti-vacuity half is what makes it a
-  // finding: the text the check now refuses is one the OLD check accepted,
-  // because both of its needles are still in it.
+  // finding: the text the check now refuses is one the OLD check's shape
+  // accepted, because both of its needles — the worker's own shell path and
+  // the name — are still in it.
   it("refuses a worker whose list was never substituted", () => {
     const renamed = built.replace(/var define_PRECACHE_default = \[.*\];/s, "");
-    expect(renamed).toContain('"/index.html"');
+    expect(renamed).toContain('"/shell.bin"');
     expect(renamed).toContain(JSON.stringify(release.cacheName));
     expect(checkSubstitution(renamed, release)).toMatch(/digests/);
   });

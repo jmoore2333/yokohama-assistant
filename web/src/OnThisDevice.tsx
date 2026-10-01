@@ -135,7 +135,7 @@ export function OnThisDevice({
       ) : games.length === 0 ? (
         unlisted !== null ? (
           /* **In place of "no game on this device yet", and only there**
-             (M6.5c2 cycle D, the final review's triage): the module listed
+             (M6.5c2 cycle D, cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 45): the module listed
              nothing, and with this browser's store unread that is not an empty
              device. Above a list the module DID draw, its rows open through
              the Worker and are the truth; the read that failed is the one that
@@ -325,21 +325,22 @@ function StorageLine({ hasGames }: { hasGames: boolean }): React.ReactNode {
   // names nothing on screen and "back them up" instructs about nothing. The
   // line is still worth drawing — it says what this browser will do with the
   // game a visitor is about to start.
+  //
+  // **ONE sentence** (cycle E, straw poll row 62), in the door's voice: what
+  // the browser keeps, the sizes in brackets, and — with games to back up — the
+  // pointer at Back up, whose note below alone says what a backup is. The line
+  // said "Back them up to hold a copy you can restore." two lines above a note
+  // that said the file "this app can restore": the same promise twice.
   const them = hasGames ? "these games" : "games played here";
   const sizes =
-    report !== null && report.quota > 0
-      ? ` ${humanBytes(report.usage)} of ${humanBytes(report.quota)} is in use.`
-      : "";
-  return (
-    <p className="muted storage-line">
-      {report === null
-        ? `This browser does not say whether it will keep ${them}.`
-        : report.persisted
-          ? `This browser has promised to keep ${them}.${sizes}`
-          : `This browser has not promised to keep ${them} and may clear them to make room.${sizes}`}
-      {hasGames ? " Back them up to hold a copy you can restore." : ""}
-    </p>
-  );
+    report !== null && report.quota > 0 ? ` (${humanBytes(report.usage)} of ${humanBytes(report.quota)} in use)` : "";
+  const sentence =
+    report === null
+      ? `This browser does not say whether it will keep ${them}${hasGames ? ", so back them up" : ""}.`
+      : report.persisted
+        ? `This browser has promised to keep ${them}${sizes}${hasGames ? "; back them up all the same" : ""}.`
+        : `This browser has not promised to keep ${them} and may clear them to make room${sizes}${hasGames ? ", so back them up" : ""}.`;
+  return <p className="muted storage-line">{sentence}</p>;
 }
 
 /**

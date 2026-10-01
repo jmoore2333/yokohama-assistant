@@ -121,11 +121,12 @@ export function BackUpEverything({
       {/* **The two files, told apart in one line** (R-6.5b2.10). They are not
           the same file and a player has no way to know that from the button
           names alone: one is a record the terminal reads, the other is an
-          envelope this app restores. */}
+          envelope this app restores. ONE sentence, in the door's voice (cycle
+          E, straw poll row 62): the only place the device card says what a
+          backup is. */}
       <p className="muted backup-note">
-        one file with every game on this device, which this app can restore.
-        &ldquo;Save game file&rdquo; on a game is the record alone &mdash; the file the terminal
-        loads.
+        Back up writes every game on this device to one file this app can restore &mdash; a
+        game&rsquo;s own &ldquo;Save game file&rdquo; is its record alone, the file the terminal loads.
       </p>
       {error !== null && <p className="error backup-error">{error}</p>}
     </>

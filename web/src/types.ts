@@ -407,6 +407,16 @@ export interface Events {
   chat_rev: number;
 }
 
+/** The house frame (M6.5c2 cycle E): what the lobby's stream or socket
+ *  delivers as each `house` event's data, `signal::house_frame`'s own bytes.
+ *  `seq` is the frame's own sequence and names nothing stored; `chat` and
+ *  `rev` are the house chat document's `last` and `rev`. */
+export interface HouseFrame {
+  seq: number;
+  chat: number;
+  rev: number;
+}
+
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.
  *
@@ -507,6 +517,12 @@ export interface Health {
    *  serves every game route, because a local game is played through them, and
    *  there is nobody else at the table. */
   multiplayer: boolean;
+  /** How many days an idle table stands before it expires, and how many a
+   *  table still waiting for players does (M6.5c2 cycle E, R-6.5c2.42): the
+   *  Worker's two TTLs. `null` where no table expires — the NAS keeps no TTL,
+   *  and the browser host has no tables to expire. */
+  table_ttl_days: number | null;
+  open_table_ttl_days: number | null;
 }
 
 /** Who the server thinks you are, and which header it reads to decide.
@@ -610,6 +626,18 @@ export interface TableView {
   /** The table's bot, or `null`: no bot seat, or a table dealt before the
    *  field existed (its row says "the bot" with no version). */
   bot: TableBot | null;
+  /** Whether the game's record holds any event, off the table's own mirror
+   *  of it: `false` before the first move, and at a table whose mirror was
+   *  last written before the field (cycle E, R-E5; ruling T5-a). A bit and
+   *  never a count — a count would cost the server a write per move. What
+   *  this client's rule for a LOCAL game reads, since that game's save is
+   *  this client's own upload. */
+  has_events: boolean;
+  /** Whether the creator's Abandon would SAVE this table before deleting it
+   *  — the server's own rule, the one its delete applies (cycle E, R-E5):
+   *  what "Abandon and save" is worded from for a hosted table. The server
+   *  answers `false` for a local one (its host keeps no archive). */
+  saves: boolean;
 }
 
 /** What `GET …/deal` serves: the set table, and the CALLER's own two cards.

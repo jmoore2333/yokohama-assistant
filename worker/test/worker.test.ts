@@ -690,6 +690,19 @@ describe("the house, first cut (spec §2.5)", () => {
     }
   });
 
+  // R-6.5c2.42: the two TTLs this Worker reads — `wrangler.test.jsonc`'s,
+  // production's values — through the house's module, which `init` handed
+  // them (`moduleConfig`). Health carries no seed, so it may be parsed. The
+  // NAS reports both `null` (the layer's own cell). Mutants: either TTL
+  // missing from the module's configuration, or from the host's facts; the
+  // two swapped.
+  it("answers /api/health with the two TTLs this Worker reads: 90 days, and 7 for a table waiting for players", async () => {
+    const res = await worker("/api/health");
+    expect(res.status).toBe(200);
+    const health = JSON.parse(res.text) as Record<string, unknown>;
+    expect([health.table_ttl_days, health.open_table_ttl_days]).toEqual([90, 7]);
+  });
+
   // Mutants: the chat never stored; stored but not loaded on the next wake.
   it("keeps the house chat across an eviction, as ONE docs row of kind house", async () => {
     const text = `kept ${crypto.randomUUID()}`;

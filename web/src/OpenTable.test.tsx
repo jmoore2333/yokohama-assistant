@@ -456,14 +456,27 @@ describe("the open table, to somebody sitting at it", () => {
   // **`userEvent.setup()` installs its own clipboard on `navigator`** (and
   // puts it back after every cell), so the copy is read back through it — a
   // stub defined before `show` is replaced by the setup and never called.
-  it("says Copied once the link has been copied", async () => {
+  // **"Copied" is said ONCE** (cycle E, straw poll row 68): the button was
+  // itself the live region and its words — which were its name — changed, so
+  // a screen reader could announce the copy twice. The button's name stays
+  // "Copy link", and ONE status beside it, there from the first render,
+  // carries the word.
+  it("says Copied once the link has been copied: one status beside the button, whose name does not change", async () => {
     const { user } = showSeated(tableIs(seated()));
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const button = await screen.findByRole("button", { name: "Copy link" });
+    const invite = screen.getByRole("region", { name: "Invite people" });
+    const statuses = () => within(invite).getAllByRole("status");
+    expect(statuses(), "the status is in the invite before anything is copied").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^$/);
+    await user.click(button);
     expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/#/t/wire2`);
-    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
-    // Heard as well as seen: the button is a polite live region, so the word's
-    // change is announced (the whole-branch review's triage, Task 5 M7).
-    expect(screen.getByRole("button", { name: "Copied" })).toHaveAttribute("aria-live", "polite");
+    expect(statuses(), "exactly one status in the invite").toHaveLength(1);
+    expect(statuses()[0]).toHaveTextContent(/^Copied$/);
+    expect(button.contains(statuses()[0]!), "the status is beside the button, not in it").toBe(false);
+    expect(button).toHaveAccessibleName("Copy link");
+    expect(button).toHaveTextContent(/^Copy link$/);
+    expect(button).not.toHaveAttribute("aria-live");
+    expect(invite.querySelectorAll("[aria-live]"), "no other live region in the invite").toHaveLength(0);
   });
 
   // **A refused clipboard is said, and the button claims no copy** (the
@@ -483,10 +496,11 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(copy);
     const url = `${window.location.origin}/#/t/wire2`;
     expect(refused).toHaveBeenCalledWith(url);
-    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed before an answer").toBeNull();
+    const said = within(screen.getByRole("region", { name: "Invite people" })).getByRole("status");
+    expect(said, "no copy is claimed before an answer").toHaveTextContent(/^$/);
     await act(async () => refuse(new DOMException("Write permission denied.", "NotAllowedError")));
     expect(await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed after a refusal").toBeNull();
+    expect(said, "no copy is claimed after a refusal").toHaveTextContent(/^$/);
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
@@ -504,7 +518,9 @@ describe("the open table, to somebody sitting at it", () => {
     await user.click(await screen.findByRole("button", { name: "Copy link" }));
     expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy link" }));
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole("region", { name: "Invite people" })).findByText("Copied"),
+    ).toHaveAttribute("role", "status");
     expect(write).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
   });
@@ -532,7 +548,7 @@ describe("the open table, to somebody sitting at it", () => {
   });
 
   // **A PIN: the table's creator who holds no seat is offered NO Abandon**
-  // (dossier row 17, as ruled after the Task 11 review's I-1). The layer's
+  // (dossier row 17, as ruled after cycle D's close `2026-09-29-web-frontend-m6.5c2d-close.md` §5, ruling 34). The layer's
   // delete refuses a caller who holds no seat before it asks who created the
   // table — `delete_locked`: "you are not seated at this table" — so a control
   // here would be drawn over a guaranteed refusal; the rule is `mayAbandon`,
@@ -591,7 +607,9 @@ describe("the open table, to somebody sitting at it", () => {
     // And not in the upper strip: nothing between the seats and the controls
     // carries it.
     const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    const upper = [...document.querySelectorAll(".open-table > .error")].filter(
+    // The join block's strip lives in the table's own part (`.open-table-main`)
+    // since the chat took mock 08's rail (cycle E, row 67).
+    const upper = [...document.querySelectorAll(".open-table-main > .error")].filter(
       (e) => after(document.querySelector("ol.seat-cards")!, e) && after(e, controls),
     );
     expect(upper.map((e) => e.textContent), "the join block's strip does not carry it").toEqual([]);
@@ -745,8 +763,9 @@ describe("the open table's chat", () => {
     const panel = document.querySelector("section.panel.chat")!;
     expect(panel).not.toBeNull();
     expect(panel).toHaveClass("folded");
-    // UNDER the invite, in document order and in the MAIN column — the place
-    // the spec names (not mock 08's side rail).
+    // UNDER the invite, in document order — the place the spec names below
+    // 976px; from 976px the stylesheet puts it in mock 08's rail (cycle E, row
+    // 67), and the cell below is the structure that rests on.
     expect(link.closest(".invite")!.compareDocumentPosition(panel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -758,6 +777,32 @@ describe("the open table's chat", () => {
     expect(screen.queryByText("Chat")).toBeNull();
     expect(document.querySelector("section.panel.chat")).toBeNull();
     expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);
+  });
+
+  // **Three parts, so the chat can take mock 08's rail** (cycle E, straw poll
+  // row 67): the table, the chat and the way out, in that order — the page as
+  // it always read below 976px — with `with-rail` on a seated caller's page for
+  // the stylesheet's two columns from 976px. A stranger has no chat and no
+  // rail. jsdom has no layout; `setup_screens.spec.ts` reads the columns.
+  it("draws a seated caller's page in three parts, the chat between the table and the way out", async () => {
+    showSeated(tableIs(seated()));
+    await screen.findByLabelText("Invite link");
+    const page = document.querySelector(".setup.open-table")!;
+    expect(page).toHaveClass("with-rail");
+    expect([...page.children].map((c) => c.className)).toEqual([
+      "open-table-main",
+      expect.stringMatching(/(^| )chat( |$)/),
+      "open-table-foot",
+    ]);
+    expect(page.querySelector(".open-table-main .invite"), "the invite is the table's").not.toBeNull();
+    expect(page.querySelector(".open-table-foot .open-table-controls"), "the controls are the way out").not.toBeNull();
+    cleanup();
+
+    show(tableIs(wire.tableOpen));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const strangers = document.querySelector(".setup.open-table")!;
+    expect(strangers).not.toHaveClass("with-rail");
+    expect([...strangers.children].map((c) => c.className)).toEqual(["open-table-main", "open-table-foot"]);
   });
 
   // **One chat read at mount** (M6.5c2 cycle D, row 130). The panel was handed

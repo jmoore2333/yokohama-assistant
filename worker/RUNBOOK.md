@@ -64,7 +64,9 @@ What answers what:
     answers **404** with a sentence of a head and a tail, an upgrade included, answered unupgraded so
     the client's probe reads it. The heads: `this table was abandoned on 2026-10-22`, `this table
     expired on 2026-10-22 after 90 days without activity` (one day of TTL reads `1 day`), `this
-    table was removed by an operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
+    table waited 7 days for players and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
+    table still waiting for players when its alarm closed it), `this table was removed by an
+    operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
     game is in the archive` where its game was saved — stamped at game over, or saved by the delete
     itself, which with the switch at `r2` saves every game before it deletes it — whatever the
     switch reads now (the orchestrator's ruling I-71); `— no move had been made, so there was
@@ -94,7 +96,10 @@ Prerequisites: the pinned toolchain with its `wasm32-unknown-unknown` target, `w
 `web/` and `worker/`.
 
 ```sh
-cd web && npm run build          # the RELEASE browser module, and web/dist
+# the RELEASE browser module, and web/dist; the door's three build values are read
+# here when set (checked by web/scripts/build-values.mjs, a bad one fails the build
+# naming it; at most 200, 400 and 200 characters; unset or empty draws nothing)
+cd web && YOKOHAMA_PROJECT_URL=https://example.org/yokohama YOKOHAMA_SITE_BLURB="A few words." YOKOHAMA_SITE_NOTICE="A notice." npm run build
 cd ../worker && npm run build    # build:module → build:assets → smoke:release
 ```
 
@@ -169,13 +174,14 @@ the whole list; it leaves secrets alone.
 
 | Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
-| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door, which no Worker of this repository runs | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
+| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it outside a door WINDOW (`wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | *not a variable at the seventeenth; added 2026-09-30 (M6.5c2 cycle E, R-6.5c2.42):* `7` in `wrangler.jsonc` — how long a table still waiting for players stands (below) | 7 days; and with `YOKOHAMA_WEB_TABLE_TTL_DAYS` absent it is inert, since no table expires |
 | `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown — a refusal names an entry by its position, never its value; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset — the exit's window sets it for one deploy, and the next deploy unsets it (§7) | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
@@ -185,7 +191,7 @@ the whole list; it leaves secrets alone.
 
 - **A bad value answers 500 naming its variable** (spec §2.6), the Worker's form of the NAS refusing
   to start: a switch other than `on` or `off`, an archive other than `r2` or `off`, `r2` with no
-  bucket bound, a TTL that is not a whole number of days, an operator entry that is not an address,
+  bucket bound, a TTL — either — that is not a whole number of days, an operator entry that is not an address,
   or any value written without quotes. The static release is unaffected, and so are a few `/api/*`
   answers, which is where the rule is not "every `/api/*`":
   - two answers come before any configuration is read: 405 for any method but GET or HEAD on
@@ -242,9 +248,24 @@ the whole list; it leaves secrets alone.
   table expires then, or sooner if an alarm runs for other work, since every run re-reads the TTL. A
   RAISED TTL needs nothing: the alarm at the old deadline re-reads it, finds nothing due, and
   re-arms.
+- **The waiting-table TTL** (M6.5c2 cycle E, R-6.5c2.42): a table still WAITING for players — its
+  status `open`, a seat unfilled — is closed after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` days without
+  activity, `7` in `wrangler.jsonc` and by default, with the marker head `this table waited 7 days
+  for players and was closed on …` and the tail `— no move had been made, so there was nothing to
+  keep`; its `expired` line reads `reason: "waited"`. No write can read a table's status (the
+  shell never parses a table document), so **every table's alarm is armed at its last activity
+  plus the SHORTER of the two TTLs** — 7 days — and the alarm decides by the status its house copy
+  reads: an `open` table is closed; any other is re-armed to its last activity plus
+  `YOKOHAMA_WEB_TABLE_TTL_DAYS`, and expires there as above. So a dealing or playing table idle for 7
+  days costs one alarm run more than before — its house copy made once more, on a module of its
+  own, to read the status — and the alarm set again. A table
+  already waiting when this is first deployed keeps the deadline armed before it, its last activity
+  plus 90 days, until a delivery to the lobby or an alarm for other work re-arms it — as with a
+  lowered TTL, above. `/api/health` reports both TTLs, `table_ttl_days` and `open_table_ttl_days`
+  (both `null` while no table expires; the NAS reports `null` for both, since it keeps no TTL).
 - **To keep every table** (R-6.5c.15): remove `YOKOHAMA_WEB_TABLE_TTL_DAYS` from `wrangler.jsonc`'s
-  `vars` and deploy (§2). With it absent no table expires and no expiry deadline is armed; the
-  markers and the operator surface work as before.
+  `vars` and deploy (§2). With it absent no table expires and no expiry deadline is armed, whatever
+  `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` reads; the markers and the operator surface work as before.
 
 ### The operator — `YOKOHAMA_WEB_ADMINS` and the curl playbook (spec §2.9)
 
@@ -598,6 +619,9 @@ expires in 2031 (spec §0.5).
   (`deploy/RUNBOOK.md` §5); the module runs that layer, and no Worker version was rolled back to
   see it. *(Added 2026-09-29, M6.5c2 cycle D.)*
 
+*(Added 2026-09-30, cycle E — §19.)*
+- **A rollback across cycle E is a MARKER rollback too:** the twenty-fifth deployment (E) writes the `waited` marker reason (Task 6) and `TurnMirror.has_events` (Task 5). A version before it (`974e0a93…`, D, or earlier) renders a `waited` marker's head as `undefined — …` for as long as the marker lives (up to 90 days) and ignores `has_events` (a table's abandon then asks as before). The chat-tombstone caveat of cycle D stands beside it.
+
 ## 7. The live tiers and the quota guard
 
 Two tiers read the DEPLOYED Worker, and neither is a gate: CI runs neither, and each plays on the
@@ -769,6 +793,12 @@ npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/re
 
 The walk's own game-over pair under `test/rev7/over/` blocks nothing, since no payload reads it; a
 later game over at that id with other bytes meets it and logs `archive-conflict`.
+
+*(Added 2026-09-30, cycle E — the window's readings, §19.)*
+- **The GraphQL forms:** the `date` form and the `datetime_geq/datetime_leq` form return the SAME figures (read side by side 2026-09-30 12:37Z: 29,211 / 205,709 / 20,839). Through the Cloudflare MCP the response is `{success, status, result}` and the figures are under `result.viewer` — a reader that looks for `data.viewer` reads an EMPTY list with no error, which is what an earlier session mistook for "the `date` form returns nothing today". **What does lag is the periodic rollup**: `durableObjectsPeriodicGroups` for a window minutes old reads empty; read a day's rows the day after, or a window hours old.
+- **The Workers Observability query API** (`POST /accounts/{id}/workers/observability/telemetry/query`) is the per-window instrument the GraphQL rollup is not: every ad-hoc body needs a `queryId` (a 400 without one), `dry: true`, `view: "calculations"`, `chartType: "aggregate"`, a `timeframe {from, to}` in milliseconds and `parameters {datasets: ["cloudflare-workers"], filters, calculations: [{operator: "count"}], groupBys}`. The filters that split this host: `$metadata.service eq yokohama-web`; `$metadata.type eq cf-worker-event` (invocations, not log lines); `$workers.durableObjectId is_null` = the stateless Worker's requests, `exists` = the objects' invocations, `$workers.entrypoint` as a `groupBy` names the class (`Table`, `House`, `Archive`); `$workers.event.request.method` / `url` for the request's shape; a `needle {value}` finds a log line (`archive-landed`, `picker-dropped`, `object-failed`, `wake`). A calculation's aggregates are `[{groups, value}]`.
+- **The rate-limit rule's language:** `ends_with(http.request.uri.path, "/join")` — a FUNCTION; the infix spelling `http.request.uri.path ends_with "/join"` is refused by the PUT. The zone's one rule after cycle E: `(http.request.uri.path eq "/") or (http.host eq "yokohama.moore.nyc" and (ends_with(http.request.uri.path, "/join") or ends_with(http.request.uri.path, "/unlock") or http.request.uri.path eq "/api/archive"))`, block, 20 per 10 s (the live replay's archive rows peak at 8; doubled and rounded to the Free plan's period). A run of the live replay under it HOLDS; a burst of 25 reads 20 × 403 then 5 × 429 (1015), clear again after the period.
+- **The Bot Fight Mode reading from a bare client:** a `curl` without WARP meets a `text/html` 403 of about 5 KB on `/` and `/shell.bin` too, BEFORE Access — a negative reading of the door takes a real browser (the challenge runs there; `/sw.js` and the bundle are not challenged).
 
 ## 8. M6.5c's skeleton is live — the fourteenth deployment, 2026-09-23 (a record, not a plan)
 
@@ -1851,5 +1881,44 @@ left two deleted messages in the live HOUSE chat (§7's corrected bullet), so th
 500 on every lobby chat read and post until the roll forward. What a rollback LOSES besides: the R2
 backoff, the roster off the wire, the tombstones' own reading, the client's count hosts and the
 door's link; and it drops every picker this version stored (§6's bullet). The secrets stay put.
+
+---
+
+## 19. M6.5c2 cycle E is live, and the door window — the twenty-fifth to twenty-eighth deployments, 2026-09-30 (a record, not a plan)
+
+Cycle E's release on the Worker (the code head `c39da5a1` — the plan `docs/plans/2026-09-29-web-frontend-m6.5c2e-plan.md`, its Task 10.C), deployed with the dev door ON and the worker door, then read as §5 says. The same build serves the NAS (`deploy/RUNBOOK.md` §3.19, the sixteenth). What changed for this host since §18: the shell precached from `/shell.bin` (R-6.5c2.41), served `no-store` by `worker/static/_headers`; the three build values in the bundle; `TableView.has_events` and `saves`; the lobby's three pagers; the waiting-table expiry with its second TTL and both TTLs on `/api/health`; a frame that fetches only what moved; `wrangler.open.jsonc` and `wrangler.gate.jsonc` beside `wrangler.jsonc` under the guard's `--config`.
+
+- **Build, ONCE, for both hosts** (§1): `cd web && YOKOHAMA_PROJECT_URL=… YOKOHAMA_SITE_NOTICE='Not affiliated with Asmodee' YOKOHAMA_SITE_BLURB='…' npm run build` at 11:32Z — `debug_trap` 0; `wasm-opt 133`: **1,844,514 → 1,216,429 B (−34.1%)**; the precache's four lines: **153 entries, 10,044,462 B**, the module 1,216,429 B at `/assets/yokohama_wasm_bg-Cg7pVPYL.wasm`, `module 1,216,429 · bundle 478,907 · fonts 98,728 · shell 11,873 · icons 19,456 · help 764,742 · art 7,454,327`, **the release `yokohama-release-50ee8137624586b2`**, `sw.js` 29,296 B, 131 art files; `dist/shell.bin` 2,387 B, byte-equal to `dist/index.html`; the blurb, the notice and the link each once in the bundle; the browser module's `gzip -9` **472,169 B**. `cd worker && npm run build`: the module **1,931,148 → 1,276,830 B (−33.9%)**; `factory-glue: 16 exports`; `assemble-assets: 153 precache entries verified` (157 files, 10,076,558 B; `_headers`, `_redirects`, `index.html` and `sw.js` are not in the list — `shell.bin` is); `smoke-release … 200`; `module-figures.mjs`: `{bytes 1,276,830, gzip9 499,614, pages 18, segments 172, dataBytes 123,748, dataSection 125,164}` (the root `Cargo.toml`'s `release-wasm` comment carries both modules' figures).
+- **The quota guard before the deploy** (§7; 11:33Z): 0 Worker requests, 0 rows written, 0 rows read for the UTC day (the figures lag by minutes; the day was fresh).
+- **The deploy** (§2), `npm run deploy` in `worker/` at 11:34:24Z with a fresh tail listening (`wrangler tail --format json`, its `.err` read for "Reconnecting": 0): the guard's door line `wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell`, every check passed, among them the two new: the open and gate files equal production but for their door; **7 assets uploaded** — `/index.html`, `/sw.js`, the module, **`/shell.bin`**, the stylesheet, the Worker chunk, the bundle (148 already there) — 1,414.57 KiB / gzip 536.67 KiB in 2.11 s; startup 2 ms; the bindings the three objects, the bucket, the assets, and **TEN plain-text vars**: the nine of §18 plus `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS ("7")`; both secrets inherited (`wrangler secret list` names `DEV_DOOR_CLIENT_ID` and `YOKOHAMA_WEB_ADMINS`); **version `e0ac38e7-d50e-4041-95b3-e0b948fde980`**, 10 s wall.
+- **Reading 1 — health and the owner** (11:34:56Z, over WARP, a browser User-Agent): `/api/health` 200 `{"server_version":"0.6.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"cf-access","signal":"ws","archive":"r2","lobby_chat":true,"chat_keep":500,"chat_text":500,"multiplayer":true,"table_ttl_days":90,"open_table_ttl_days":7}` — the two TTLs new; `/api/me` names the owner.
+- **Reading 2 — the served release and the shell asset**: `/sw.js` names `yokohama-release-50ee8137624586b2`; **`/shell.bin` 200, `content-type: application/octet-stream`, `cache-control: no-store`, 2,387 B, sha256 `0c403d5c6de594c3b184ed8a0832dfee07fe7fc67bc108d4f10e7697f3b5900e` — equal to the inventory's digest — read twice a minute apart, `cf-cache-status: HIT` both times.** On Workers Assets a HIT is the platform's content-addressed asset cache serving the NEW release's bytes, as the digest shows a minute after the deploy; it is not the zone cache the NAS host sits behind, whose reading is `deploy/RUNBOOK.md` §3.19's (`BYPASS`). `/index.html` 200, 3,325 B against the release's 2,387: the edge's JavaScript Detections snippet, unchanged by design; `cf-cache-status: MISS`.
+- **Reading 3 — THE UPDATE READING (Review Focus 1; R-6.5c2.41's proof; the plan's 10.D):** a headless persistent Chromium context over WARP, prepared BEFORE the deploy at D's release — `/` opened until "Ready to play offline", the worker `activated`, one cache `yokohama-release-d97c124af854a3ff`, then its `cf_clearance` cookie CLEARED (the state that failed on 2026-09-29: only `CF_Authorization` left). After the deploy, ONE plain reload at 11:34:54Z: the page's `/sw.js` re-fetched (no-store); the new worker's install fetched **`/shell.bin`** (200, `application/octet-stream`, no-store) and **no `/index.html`**; the new worker reached `installed` (waiting) beside D's `activated`; **two caches, `yokohama-release-d97c124af854a3ff` retained and `yokohama-release-50ee8137624586b2` new**; the door read "Ready to play offline" and **"A new version is ready. Reload to use it"**. The click at 11:37:13Z: the new worker `activated`, the controller E's, the door "Ready to play offline" with nothing saying "Try again", the navigation answered by the worker as `text/html; charset=utf-8` from the cached shell bytes. The instrument and its snapshots: the plan's ledger (`pinned-browsers.mjs`, `pinned/worker/{pinned,after-1,after-2}.json`).
+- **The live corpus replay, twice, sequentially** (§7): run 1 at 11:39:49Z (138 s) and run 2 at 11:42:23Z (136 s), each **HOLDS** — the forces 3×204 before and after; 2,213 rows run, 90 named rows compared, 16 exemptions spent, among them the two new `HOST_FIELDS` **`health.table_ttl_days: null → 90` and `health.open_table_ttl_days: null → 7`**, `normalizeHouseChat` (the house chat taken back by 14 then 15, rev by 4 then 6), `houseDeleteRow` (`/api/chat/1` sent as `/api/chat/15`), and `firstSendAccepts` on both archive posts (200, "identical": true); mismatches none; no reset owed (Task 5's `has_events` in the walk's stored tables changed no committed record).
+- **The live Playwright tier on this version** (§7; 11:45:02–11:53:40Z, 8.6 min): **2 passed** — `joins_by_link` (a table of 6 moves, 5.1 s; the deal's designed 409 and the beacon's CORS error forgiven, counted) and **`two_browsers`: game `sim-bd144e78340da0df` finished in 2,034 moves, 511 s, 0 idle looks; the watcher held to 1,465 applied moves, asked `/events` 0 times and opened `/stream` once.** The Workers Observability query API over the window (every ad-hoc query needs a `queryId`; `dry: true`; `$workers.durableObjectId is_null` splits the Worker's stateless requests from the objects' invocations; `$workers.entrypoint` names the object class): `yokohama-web` 36,003 invocations — the stateless requests 17,818 (200 ×17,780, 201 ×7, 204 ×3, 403 ×1, 409 ×1), the objects Table 16,230 · House 1,955; **the game's own stateless requests 16,082 = 7.9 per move (§18's reading was ~13)**; the needles `archive-landed` 2, `picker-dropped` 0, `object-failed` 0; the two `exception` outcomes read belonged to another service. Rows per move for the tier are NOT separable: the periodic rollup lags the window by hours, and the day's totals fold the four replays and the window in (the day's figures below).
+- **The screenshots** (the plan's 10.G; 11:54:24Z, 9.3 s): `YOKOHAMA_WEB_README_SHOTS=1 YOKOHAMA_WEB_E2E_TARGET=live npx playwright test readme_shots` wrote the ten pictures into `worker/docs/img/` (the door at 1280 and at 390, the lobby, the open table, the join, the deal, the game as a player and as a watcher, the game on a phone, the 404 marker), each LOOKED AT; the lobby picture had masked the spec's own row (its mask was by text) — fixed at `4c39f603` (masked by table id) and re-shot. The spec's tables are abandoned in its `afterEach`.
+- **The phones** (R-6.5c2.33; the plan's 10.H; the iPhone 17 Pro on iOS 26.4 and the iPad Pro 13-inch on iOS 27.0 through the mobile bridge, the Android emulator `Medium_Phone`): the socket WAKES after 60 s on the Home screen on all three (the bot's turn walked on return); a lock is untestable on the iOS simulators (the bridge has no lock press) and correct on Android after 58 s; NO keep-storage prompt on any (the door says the browser has not promised to keep games); the local game stays listed after a reload; **an iOS Home Screen app opens with its OWN empty storage** (iOS partitions it from Safari's); the Android emulator refuses the PWA install (Play services), and its returning Chrome was served its OLDER release until "Reload to use it" was tapped — the update path on Android Chrome too. Owner's-eye readings recorded, not fixed: the game header takes about 45% of the iPhone's portrait height; the iPad's tiles do not grow to the room; on Android the chat input sits under the keyboard and landscape leaves about 100 px of board.
+- **The quota guard after day 1 and the window** (§7, GraphQL at 12:37Z; the `date` and the `datetime_geq/leq` forms agree): the UTC day — `yokohama-web` **29,211 requests** (the account 42,139), **rows read 205,709, rows written 20,839** — day 1's tier, the four live replays, the phones, the plain game and the window, all in; the day before (D's) 116,137 read / 10,806 written. Under the owner's line of 80,000.
+
+### The door window (R-6.5c2.39, .43, .44; run on day 1 by the plan's ruling 10-a, 12:12–12:37Z)
+
+Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wrangler`; no secret value appears here; the PUT bodies carry the application's read-back fields with only the hostname lists changed.
+
+- **The rate-limit rule (10.J; the zone's ONE rule, kept by its id; `ends_with(...)` is a FUNCTION in the rules language — the infix spelling is refused):** the expression now `(http.request.uri.path eq "/") or (http.host eq "yokohama.moore.nyc" and (ends_with(http.request.uri.path, "/join") or ends_with(http.request.uri.path, "/unlock") or http.request.uri.path eq "/api/archive"))`, action block, **20 requests per 10 s** (the live replay's archive rows peak at 8 in a window; doubled, then to the Free plan's minimum period); the burst — 25 wrong-password joins from the workstation through the dev door in 2.74 s, and again from a clean context under state 1 in 2.22 s — reads **20 × 403 then 5 × 429 (error 1015)** both times, 403 again after 11 s; the live replay under the rule HOLDS; **the rule STAYS.**
+- **State 1 — no door but the name step (12:18–12:24Z):** the operator secret DELETED through the API (`DELETE …/scripts/yokohama-web/secrets/YOKOHAMA_WEB_ADMINS`; the `open` shell refuses to start beside it); `npm run deploy:open` (the guard's door line `wrangler.open.jsonc deploys the open door — no identity service…`; version `7b12ab22`); the Access application's `self_hosted_domains`/`destinations` PUT to `yokohama-nas.moore.nyc` + `yokohama-cli.moore.nyc` (the `aud` unchanged). Read from clean contexts: `/` 200 with the door and the blurb, `/api/health` `identity: open`, the name step, `GET /api/admin/tables` → the layer's 404 for any typed name — the owner's own address typed as a name INCLUDED (the open door's trust model: the name IS the person, and there is no operator); the burst from a clean context blocked at 20; a plain two-person game (`web/e2e/state1_game.spec.ts`, opt-in) of 17 events, its archive landing under the bucket's `test/` prefix (`archive-landed` 1); its stateless requests 147 = 8.6 per event with the setup in.
+- **State 2 — the door on the API paths alone (12:24–12:31Z):** `npm run deploy:gate` FIRST (`wrangler.gate.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("off")`; version `d95668f0`), THEN the secret put back from `git config user.email` through stdin; the PUT with the two hostnames + the NINE paths (`yokohama.moore.nyc/api/admin`, `/api/archive`, `/api/art`, `/api/chat`, `/api/games`, `/api/labels`, `/api/me`, `/api/stream`, `/enter`). Read over WARP from a clean context: `/` 200 with zero `/api/` calls; **a local bot game of five acts with ZERO Worker invocations** (the query API); the owner's "Go to the lobby" → `/enter` → the lobby with no login page, a table created, both sockets opened, `/api/me` naming the owner, the operator listing 200. Read from a HEADED browser WITHOUT WARP: `/` 200 and `/shell.bin` 200 (public), an `X-Requested-With` fetch of `/api/me` and `/api/games` → **401 `WWW-Authenticate: Cloudflare-Access resource_metadata="https://yokohama.moore.nyc/.well-known/cloudflare-access-protected-resource/api/me"`**, a navigation to `/enter`, `/api/games` or `/api/admin/tables` → Access's login page. (curl from a bare client meets Bot Fight Mode's 403 before Access; a browser is the instrument.)
+- **The revert (12:31:37–12:32:32Z):** `npm run deploy` (`wrangler.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("on")`; version `eb8c7839`, the twenty-eighth deployment — 26 and 27 were the window's); the PUT back to the three hostnames (`yokohama`, `yokohama-cli`, `yokohama-nas`), the `aud` unchanged; `wrangler secret list` names both secrets. After-check: `/api/me` over WARP names the owner; **a clean headed browser without WARP at `/` meets Access's login** (12:43Z; the door not drawn); the credential + a claimed header names its caller; a claimed header WITHOUT the credential names the owner, not the claim; the live replay ONCE HOLDS; the quota above.
+- **The three PUT bodies** (`PUT /accounts/{account}/access/apps/11cbcf68-96cd-4310-baee-f2ade812155d`; the MCP or `curl` with an API token that manages Access) carry the application's read-back fields unchanged — `name: yokohama`, `type: self_hosted`, `session_duration: 730h`, `app_launcher_visible: true`, `allowed_idps` (the one identity provider's id), `auto_redirect_to_identity: true`, `http_only_cookie_attribute: true`, `policies` as `[{id, precedence}]` for the three (`sbaitso-friendly` 1, `yokohama-players` 2, `yokohama ST bypass` 3) — and differ ONLY in `domain`, `self_hosted_domains` and `destinations` (`[{type: "public", uri}]`, one per entry): the REVERT lists the three hostnames with `domain: yokohama.moore.nyc`; STATE 1 lists `yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` with `domain: yokohama-nas.moore.nyc`; STATE 2 adds the nine `yokohama.moore.nyc/<path>` entries to state 1's list. Read the application back after every PUT: the `aud` must not change (it did not, three times), and a changed `aud` would orphan every `ACCESS_AUD` the Workers carry.
+- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games.
+
+### What this deployment does NOT claim
+- The live half of RF1 (the update path) on each host was read ONCE, in a headless persistent context on the workstation — not on the owner's Edge, whose pinned state is the one that failed on 2026-09-29; the owner's own browser is the last reading.
+- `cf-cache-status: HIT` on `/shell.bin` from Workers Assets is INTERPRETED (content-addressed) from one deploy's read, not measured across a second deploy of a changed shell.
+- Row 108's single-audience reading was taken as the owner's WARP identity, not as a second signed-in address; row 119's refusal of an UNLISTED signed-in person was not read (it needs a second identity only the owner can create).
+- Rows written and read per move for the tier were not separable from the day's totals (the rollup lag); §18's ~2 / ~52 stand as the last per-move reading.
+- A lock (as against the Home screen) is unread on iOS; the plain game's spec printed a wrong applied count on its live run (fixed after; the figures here are from the archived record's 17 events).
+
+### Rollback
+- `wrangler rollback` to `974e0a93…` (§18) restores D's release: **an older Worker version renders a `waited` marker's head as `undefined — …`** for up to 90 days (Task 6's marker reason is unknown to it); a table document with `has_events` reads as before (the older module ignores the key); the chat tombstone caveat of §6 stands; open pickers drop (`picker-dropped`).
 
 ---

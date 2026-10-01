@@ -33,5 +33,11 @@ interface ImportMeta {
 
 /** The door's project link (M6.5c2, spec §2.3): the checked
  *  `YOKOHAMA_PROJECT_URL`, or `null` where the build set none — a `define` in
- *  `vite.config.ts`, read by `projectLink.ts` alone. */
+ *  `vite.config.ts`, read by `buildValues.ts` alone. */
 declare const __YOKOHAMA_PROJECT_URL__: string | null;
+/** The blurb under the door's title: the checked `YOKOHAMA_SITE_BLURB`, or
+ *  `null` — read by `buildValues.ts` alone. */
+declare const __YOKOHAMA_SITE_BLURB__: string | null;
+/** The footer's one-line notice: the checked `YOKOHAMA_SITE_NOTICE`, or
+ *  `null` — read by `buildValues.ts` alone. */
+declare const __YOKOHAMA_SITE_NOTICE__: string | null;

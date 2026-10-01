@@ -74,7 +74,8 @@ export interface PrecacheInputs {
   readonly artManifest: unknown;
   /** Bytes for a URL PATH — `/art/...` is the server's art directory and
    *  everything else is `dist`. Keyed by the path rather than by a source
-   *  location so this module needs to know about neither directory. */
+   *  location so this module needs to know about neither directory. The shell
+   *  is read at `/index.html`, its source, and listed at [`SHELL_PATH`]. */
   readonly readFile: (path: string) => Uint8Array | string;
   /** SHA-256 as lowercase hex. Injected; see the header. */
   readonly sha256Hex: (data: Uint8Array | string) => string;
@@ -103,6 +104,32 @@ export const CACHE_PREFIX = "yokohama-release-";
  *  server serves, so it can never shadow a real entry, and the fetch handler
  *  never serves it from a retained generation. */
 export const META_PATH = "/__release__";
+
+/** The path the release's SHELL is listed under, and the one entry the worker
+ *  answers every navigation from (R-6.5c2.41; spec §10.11).
+ *
+ *  **Not `/index.html`, and that is the defect it fixes.** The zone's
+ *  JavaScript Detections inject a per-request `<script>` into every HTML answer
+ *  at the edge, on both hosts — a different body, so a different digest, every
+ *  time. An install that fetched `/index.html` digested the edge's copy and
+ *  refused it for any browser whose `cf_clearance` had gone stale, which is
+ *  every browser a release controls: its navigations never reach the edge as
+ *  HTML again. `/shell.bin` is `index.html`'s bytes under a name the edge does
+ *  not rewrite, typed by [`expectedType`]'s default arm as both hosts serve it;
+ *  the worker gives a navigation the HTML type itself.
+ *
+ *  `scripts/precache.mjs` writes it into `dist` as a byte copy of
+ *  [`SHELL_SOURCE`], and both hosts serve it `no-store`, as `/sw.js` is: `.bin`
+ *  is on Cloudflare's default cached-extension list, and a 200 with no
+ *  `cache-control` stays at the edge for two hours — the previous release's
+ *  shell for every install inside that window. `/index.html` is still the page
+ *  every host serves a navigation, byte for byte as before; only the install
+ *  stopped fetching it. */
+export const SHELL_PATH = "/shell.bin";
+
+/** The `dist` file whose bytes [`SHELL_PATH`] carries, relative as a walk of
+ *  `dist` names it. */
+export const SHELL_SOURCE = "index.html";
 
 /** The string a DEBUG module carries and a release one does not.
  *
@@ -282,7 +309,9 @@ function classOf(path: string): string {
  * It REFUSES rather than reports on six things, because each of them is a
  * release that would install cleanly and be wrong:
  *
- * - no `index.html` — a shell-less release answers every navigation with a miss;
+ * - no `index.html` — the shell's source, listed as [`SHELL_PATH`] and never
+ *   under its own name (R-6.5c2.41); a shell-less release answers every
+ *   navigation with a miss;
  * - no `.wasm` — **this is the catcher for the spec's own named mutation**
  *   ("the precache list taken from Vite's manifest instead of the tree, so the
  *   module is silently absent"): that swap makes the BUILD stop rather than ship
@@ -297,11 +326,19 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
   const { distFiles, artManifest, readFile, sha256Hex, moduleCeiling, totalCeiling } = inputs;
 
   const artFiles = artFilesFrom(artManifest);
-  const paths = [
+  const sources = [
     ...distFiles.map((f) => "/" + f.replace(/^\/+/, "")),
     "/art/manifest.json",
     ...artFiles.map((f) => "/art/" + f.replace(/^\/+/, "")),
-  ].sort();
+  ];
+  // Each entry is listed at its own path and read from its own file — except
+  // the shell, listed at `SHELL_PATH` and read from `index.html`. Sorted by the
+  // LISTED path, which is what the name below digests.
+  const shellSource = "/" + SHELL_SOURCE;
+  const listing = sources
+    .map((source) => ({ path: source === shellSource ? SHELL_PATH : source, source }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const paths = listing.map((l) => l.path);
 
   const seen = new Set<string>();
   for (const path of paths) {
@@ -316,14 +353,14 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
   }
 
   const need = (what: string, ok: (p: string) => boolean) => {
-    if (!paths.some(ok)) {
+    if (!sources.some(ok)) {
       throw new Error(
         `precache: this release names no ${what}. The inventory is the finished dist TREE plus ` +
           `the art manifest (spec §2.3) — a list that lost one of these is not a release.`,
       );
     }
   };
-  need("index.html", (p) => p === "/index.html");
+  need(SHELL_SOURCE, (p) => p === shellSource);
   need("WebAssembly module", (p) => p.endsWith(".wasm"));
   need("script", (p) => p.endsWith(".js"));
   need("stylesheet", (p) => p.endsWith(".css"));
@@ -334,8 +371,8 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
   let totalBytes = 0;
   let moduleBytes = 0;
   let modulePath = "";
-  for (const path of paths) {
-    const body = readFile(path);
+  for (const { path, source } of listing) {
+    const body = readFile(source);
     const bytes = byteLength(body);
     totalBytes += bytes;
     const cls = classOf(path);
@@ -377,8 +414,9 @@ export function buildPrecache(inputs: PrecacheInputs): Precache {
  *
  * **The first version of this check was half-vacuous and that is the point of
  * the shape here** (review, Important 2). It looked for the cache name and for
- * the literal `"/index.html"` — but `sw.ts` contains `"/index.html"` in its own
- * source, at `fromCache("/index.html", request)`, so a RENAMED `__PRECACHE__`
+ * the literal `"/index.html"` — but `sw.ts` carried `"/index.html"` in its own
+ * source, at `fromCache("/index.html", request)` (as it carries
+ * [`SHELL_PATH`]'s `"/shell.bin"` today), so a RENAMED `__PRECACHE__`
  * passed it and shipped a worker whose top-level `ENTRIES = __PRECACHE__`
  * throws `ReferenceError` before a single handler is registered.
  *
