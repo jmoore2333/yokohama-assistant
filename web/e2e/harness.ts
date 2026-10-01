@@ -66,10 +66,12 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
  *
- * **Under `LIVE`, and only there, ONE more error is forgiven** — the Web
- * Analytics beacon's CORS block ([`isBeaconCorsError`]) — and COUNTED in
- * `forgiven`, so a live run says how often the allow-list was spent. Locally
- * the switch is off and the line below it never runs.
+ * **Under `LIVE`, and only there, TWO more errors are forgiven** — the Web
+ * Analytics beacon's CORS block ([`isBeaconCorsError`]) and, since cycle F, the
+ * release feed's failure while the repository is private
+ * ([`isReleaseFeedError`]) — each COUNTED in `forgiven`, so a live run says how
+ * often the allow-list was spent. Locally the switch is off and the line below
+ * it never runs.
  *
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
@@ -97,7 +99,7 @@ export function watchForBreakage(
     // The CONSOLE arm is the only one the beacon reaches: its load fails
     // cross-origin, so nothing under `BASE_URL` answers it and the response
     // arm below never sees it.
-    if (LIVE && isBeaconCorsError(text, m.location().url)) {
+    if (LIVE && (isBeaconCorsError(text, m.location().url) || isReleaseFeedError(text, m.location().url))) {
       watch.forgiven += 1;
       return;
     }
@@ -212,6 +214,45 @@ export function isBeaconCorsError(text: string, url: string): boolean {
 
 function fromTheBeacon(url: string): boolean {
   return url === BEACON_PREFIX || url.startsWith(`${BEACON_PREFIX}/`) || url.startsWith(`${BEACON_PREFIX}?`);
+}
+
+/**
+ * The release feed's address as a production build derives it from a GitHub
+ * project link (`web/scripts/build-values.mjs`'s `defaultFeedFor`):
+ * `https://api.github.com/repos/<owner>/<repo>/releases/latest`, exactly — no
+ * query, nothing after it, no other host.
+ */
+const RELEASE_FEED = /^https:\/\/api\.github\.com\/repos\/[^/?#]+\/[^/?#]+\/releases\/latest$/;
+
+/** Chromium's line for a 404, its reason phrase empty over HTTP/2. */
+const FEED_404_LINE = /^Failed to load resource: the server responded with a status of 404 \([^)]*\)$/;
+
+/**
+ * **Whether a console error is the live tier's second known error** (cycle F;
+ * the owner's rule — allow-list the known error, never switch the feature
+ * off): the release feed's failure while the repository is PRIVATE, which
+ * GitHub answers 404 (cycle F's Task 2). The client reads the failure as
+ * "nothing to say" and asks again after an hour (`web/src/releaseFeed.ts`);
+ * Chromium logs it anyway.
+ *
+ * MEASURED (pinned Chromium, a local page and a local "feed"; GitHub's own
+ * preflight answer read 2026-10-01), it takes one of two shapes:
+ *
+ *   1. a plain browser: `Failed to load resource: the server responded with a
+ *      status of 404 (…)`, located at the feed;
+ *   2. a LIVE context, whose claimed header rides every request — the
+ *      beacon's reason: GitHub's preflight does not allow the header, so the
+ *      fetch is refused before it is sent, logging the CORS sentence (located
+ *      at the page, naming the feed as BLOCKED) and then `net::ERR_FAILED`,
+ *      located at the feed.
+ *
+ * Nothing else from the feed — another status, another failure — and nothing
+ * at any other address. Pure, so its cells are node cells.
+ */
+export function isReleaseFeedError(text: string, url: string): boolean {
+  const blocked = CORS_BLOCKED.exec(text)?.[1];
+  if (blocked !== undefined) return RELEASE_FEED.test(blocked);
+  return (FEED_404_LINE.test(text) || text === LOAD_FAILED) && RELEASE_FEED.test(url);
 }
 
 /**

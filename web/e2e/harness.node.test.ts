@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, tally } from "./harness";
+import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, isReleaseFeedError, tally } from "./harness";
 import {
   EXIT_LAUNCH_ARGS,
   LIVE_ORIGIN,
@@ -101,6 +101,67 @@ describe("isBeaconCorsError — the one console error the live tier forgives", (
   });
 });
 
+// ---- the release feed's failure: the live tier's second known error --------
+//
+// MEASURED (pinned Chromium, Playwright 1.62.1; a local page fetching a local
+// "feed" that answers 404 with `Access-Control-Allow-Origin: *` and a
+// preflight allowing GitHub's own header list, which does not name the claimed
+// header — GitHub's API answered a preflight with exactly that list on
+// 2026-10-01). WITHOUT a custom header the fetch logs ONE error, the 404 line,
+// located at the feed. WITH the live contexts' context-wide claimed header it
+// is preflighted and refused: TWO errors, the CORS sentence located at the
+// PAGE and naming the feed as blocked, then `net::ERR_FAILED` located at the
+// feed — the beacon's shape. The hosts below are the live ones; the sentences
+// are the measured ones (the 404's reason is empty over HTTP/2).
+
+/** The feed a production build derives from its GitHub project link. */
+const FEED = "https://api.github.com/repos/jmoore2333/yokohama-assistant/releases/latest";
+const FEED_404 = "Failed to load resource: the server responded with a status of 404 ()";
+const FEED_CORS = `Access to fetch at '${FEED}' from origin '${LIVE_ORIGIN}' has been blocked by CORS policy: Request header field x-yokohama-claimed-user is not allowed by Access-Control-Allow-Headers in preflight response.`;
+
+describe("isReleaseFeedError — the release feed's failure while the repository is private", () => {
+  it("matches the feed's 404, located at the feed, whatever its reason phrase", () => {
+    expect(isReleaseFeedError(FEED_404, FEED)).toBe(true);
+    expect(isReleaseFeedError("Failed to load resource: the server responded with a status of 404 (Not Found)", FEED)).toBe(true);
+  });
+  it("matches the feed's CORS refusal and the load's failure located at the feed", () => {
+    expect(isReleaseFeedError(FEED_CORS, PAGE)).toBe(true);
+    expect(isReleaseFeedError(ECHO, FEED)).toBe(true);
+  });
+  it("matches any repository's feed, as any build derives it", () => {
+    expect(isReleaseFeedError(FEED_404, "https://api.github.com/repos/someone/fork/releases/latest")).toBe(true);
+  });
+  it("matches no other status from the feed", () => {
+    expect(isReleaseFeedError(FEED_404.replace("404", "403"), FEED)).toBe(false);
+    expect(isReleaseFeedError(FEED_404.replace("404", "500"), FEED)).toBe(false);
+    expect(isReleaseFeedError("Failed to load resource: net::ERR_NAME_NOT_RESOLVED", FEED)).toBe(false);
+  });
+  it("matches no other address: another API path, another host, a lookalike, a query, the Worker's own origin", () => {
+    for (const url of [
+      "https://api.github.com/repos/jmoore2333/yokohama-assistant/releases",
+      "https://api.github.com/repos/jmoore2333/yokohama-assistant/releases/latest/x",
+      "https://api.github.com/repos/jmoore2333/releases/latest",
+      "https://api.github.com.evil.example/repos/a/b/releases/latest",
+      "http://api.github.com/repos/a/b/releases/latest",
+      `${FEED}?x=1`,
+      `${LIVE_ORIGIN}/api/health`,
+      `${LIVE_ORIGIN}/repos/a/b/releases/latest`,
+    ]) {
+      expect(isReleaseFeedError(FEED_404, url), url).toBe(false);
+      expect(isReleaseFeedError(ECHO, url), url).toBe(false);
+      expect(isReleaseFeedError(FEED_CORS.replace(FEED, url), PAGE), url).toBe(false);
+    }
+  });
+  it("matches no error that merely quotes the feed's sentence", () => {
+    expect(isReleaseFeedError(`Uncaught Error: ${FEED_CORS}`, PAGE)).toBe(false);
+    expect(isReleaseFeedError(` ${FEED_404}`, FEED)).toBe(false);
+  });
+  it("is not the beacon's, and the beacon's is not it", () => {
+    expect(isReleaseFeedError(CORS_HEADER, PAGE)).toBe(false);
+    expect(isBeaconCorsError(FEED_CORS, PAGE)).toBe(false);
+  });
+});
+
 // ---- the switch, through the real `watchForBreakage` ------------------------
 
 type Handler = (arg: unknown) => void;
@@ -151,6 +212,35 @@ describe("watchForBreakage — the allow-list is the live tier's alone", () => {
     fake.error(ECHO, BEACON);
     expect(watch.failures).toEqual([`console.error: ${CORS_HEADER}`, `console.error: ${ECHO}`]);
     expect(watch.forgiven).toBe(0);
+  });
+
+  it("is inert locally for the feed too: its 404 and its CORS refusal are breakage", async () => {
+    const { watchForBreakage } = await harnessAt(false);
+    const fake = fakePage();
+    const watch = watchForBreakage(fake.page);
+    fake.error(FEED_404, FEED);
+    fake.error(FEED_CORS, PAGE);
+    fake.error(ECHO, FEED);
+    expect(watch.failures).toEqual([`console.error: ${FEED_404}`, `console.error: ${FEED_CORS}`, `console.error: ${ECHO}`]);
+    expect(watch.forgiven).toBe(0);
+  });
+
+  it("forgives the feed's failure live in both its shapes, counted with the beacon's, and nothing beside it", async () => {
+    const { watchForBreakage } = await harnessAt(true);
+    const fake = fakePage();
+    const watch = watchForBreakage(fake.page);
+    fake.error(FEED_404, FEED);
+    fake.error(FEED_CORS, PAGE);
+    fake.error(ECHO, FEED);
+    expect(watch.failures, "the feed's failure is forgiven").toEqual([]);
+    expect(watch.forgiven).toBe(3);
+    fake.error(FEED_404.replace("404", "500"), FEED);
+    fake.error(FEED_404, `${LIVE_ORIGIN}/api/health`);
+    expect(watch.failures).toEqual([
+      `console.error: ${FEED_404.replace("404", "500")}`,
+      `console.error: ${FEED_404}`,
+    ]);
+    expect(watch.forgiven).toBe(3);
   });
 
   it("forgives both halves live, and counts them, while everything else still fails", async () => {

@@ -83,6 +83,12 @@ docs/tools/__pycache__/
 # step longer.
 web/help-shots/
 
+# Cycle F: the pinned-browser instrument's state (`web/scripts/pinned-browsers.mjs`,
+# the orchestrator's): one persistent Chromium profile per host, its snapshots,
+# its log and its trigger files. A browser profile holds cookies, so it is never
+# committed; the instrument writes no cookie VALUE into its own files.
+web/scripts/pinned/
+
 # M6.5c: the Worker package's generated trees. `gen/` is the module build's
 # output (`npm run build:module` or `build:module:debug`: the glue, the factory,
 # the module), `assets/` the asset assembly's (`npm run build:assets`), and

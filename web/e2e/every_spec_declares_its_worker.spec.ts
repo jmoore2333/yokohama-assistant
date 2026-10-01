@@ -16,10 +16,15 @@
 // **A spec may opt out, but it has to SAY which way.** One marker, two values:
 //
 //   @yokohama-service-worker: on    — this spec registers the worker on purpose
-//                                     (the offline spec, M6.5b2 Task 10)
+//                                     (the offline spec, M6.5b2 Task 10; and
+//                                     the door-unmetered fence, cycle F Task 8)
 //   @yokohama-service-worker: none  — this spec opens no browser page at all
 //
-// Anything else must import `test` from `./sw`.
+// Anything else must import `test` from `./sw`. **The `on` specs are NAMED
+// below** ([`WORKER_ON`]) since cycle F added the second: a spec that turns the
+// worker on costs a ten-megabyte install per context and changes what its
+// reloads are about, so a third is a decision written down here, never a
+// marker anybody can add in passing.
 //
 // **And the second half is checked too**, because it was the easier one to get
 // wrong: a context a spec builds with `browser.newContext()` never passes
@@ -43,6 +48,10 @@ const FIXTURE = /import\s*\{[^}]*\btest\b[^}]*\}\s*from\s*"\.\/sw"/;
 
 /** …or an explicit declaration that this spec does something else. */
 const MARKER = /@yokohama-service-worker:\s*(on|none)\b/;
+
+/** The specs that register the worker ON PURPOSE: the offline cells, and the
+ *  door's fence, which reads what a real visitor's browser asks. */
+const WORKER_ON = ["door_unmetered.spec.ts", "offline.spec.ts"];
 
 /** A context built by the spec itself, which the fixture cannot reach.
  *  `browser.newPage(` builds one implicitly, so it is flagged the same way.
@@ -81,6 +90,12 @@ test("every browser spec says what it does about the service worker", () => {
       .filter((f) => f !== basename(self))
       .map((f) => [f, readFileSync(join(here, f), "utf8")] as const),
   );
+
+  const on = [...sources]
+    .filter(([, src]) => MARKER.exec(src)?.[1] === "on")
+    .map(([f]) => f)
+    .sort();
+  expect(on, "the specs that turn the worker on are exactly the ones WORKER_ON names").toEqual(WORKER_ON);
 
   const checked = [...sources].filter(([, src]) => !MARKER.test(src));
   // The other half of the anti-vacuity: if every spec carried a marker there
