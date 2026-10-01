@@ -4,7 +4,7 @@
 // no cell and no implementer runs it. Its cells (`pinned-browsers.node.test.ts`)
 // run the command with no arguments, and read its decisions over fixtures.
 //
-//   node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir>
+//   node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]
 //
 // `<origin>` is the host's `https` origin (plain `http` on a loopback host, for
 // a dry run against the local binary); `<state-dir>` is where everything goes —
@@ -20,7 +20,12 @@
 // clears the `cf_clearance` cookie and snapshots `pinned.json`. Then it opens a
 // SECOND TAB on the door, starts a local game against the bot, keeps through
 // the deal and makes a few moves (`tab.json`), and writes `PINNED`. Both tabs
-// stay open.
+// stay open. **The second tab is the reading's stale-tab half, so a tab that
+// does not open FAILS the verdict** ("the second tab holds a local game"), its
+// three checks not run — unless the run was started with `--no-second-tab`,
+// the one way to read the door alone: its three checks are then NOT RUN, none
+// fails, and the verdict never says every check held (Task 8's review,
+// Important 2).
 //
 // **Phase 2, on `<state-dir>/go` — after the deploy.** `before-go.json`, then
 // ONE plain reload of the door. **Touch `go` as soon as the deploy's smoke
@@ -42,8 +47,11 @@
 // game at the same move, one more move made, and the checks (`afterClickChecks`).
 //
 // **Phase 3, on `<state-dir>/done`.** The context closes, `verdict.json` holds
-// every check, and the exit is 0 when every check held, 1 when any did not or
-// the run broke, 2 for arguments it refuses.
+// every check and its one sentence (`verdictOf`): "N checks, every check held"
+// only when every check ran and held, else "N checks: H held, F failed, R not
+// run (why)". The exit is 0 when no check failed — a `--no-second-tab` run
+// included, whose sentence still names what did not run — 1 when one did or the
+// run broke, 2 for arguments it refuses.
 //
 // **No cookie VALUE is ever written**: a snapshot keeps cookie NAMES and
 // domains. `log.txt` is the run's narrative, `net.jsonl` one line per request
@@ -58,7 +66,10 @@ import { pathToFileURL } from "node:url";
 /** Playwright, from the web package this file sits in. */
 const require = createRequire(new URL("../package.json", import.meta.url));
 
-export const USAGE = "usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir>";
+export const USAGE = "usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]";
+
+/** The one flag: read the door alone, with no second tab. */
+const NO_SECOND_TAB = "--no-second-tab";
 
 /** The door's sentences, exactly as cycle F's door draws them (Task 1's
  *  report): the readiness line's three states, and the update line — the
@@ -81,10 +92,14 @@ const TAB_CLICKS = 12;
 /** The hosts plain `http` is taken for. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** The command line: `<label> <origin> <state-dir>`, each checked. */
+/** The command line: `<label> <origin> <state-dir> [--no-second-tab]`, each
+ *  checked; a state directory that looks like a flag is refused, so the flag in
+ *  the wrong place is never taken for one. */
 export function pinnedArgs(argv) {
-  if (argv.length !== 3 || argv.some((a) => a === "")) throw new Error(USAGE);
-  const [label, raw, stateDir] = argv;
+  const secondTab = !(argv.length === 4 && argv[3] === NO_SECOND_TAB);
+  const args = secondTab ? argv : argv.slice(0, 3);
+  if (args.length !== 3 || args.some((a) => a === "") || args[2].startsWith("-")) throw new Error(USAGE);
+  const [label, raw, stateDir] = args;
   if (!/^[A-Za-z0-9._-]+$/.test(label)) throw new Error(`pinned-browsers: the label is letters, digits, dots, dashes — got ${JSON.stringify(label)}`);
   let url;
   try {
@@ -96,7 +111,7 @@ export function pinnedArgs(argv) {
   if (!url || !scheme || url.pathname !== "/" || url.search !== "" || url.hash !== "" || raw.endsWith("/") || url.username !== "") {
     throw new Error(`pinned-browsers: the origin is the host's https origin with no path (plain http on loopback) — got ${JSON.stringify(raw)}`);
   }
-  return { label, origin: url.origin, stateDir };
+  return { label, origin: url.origin, stateDir, secondTab };
 }
 
 /** Which readiness the door's lines say: one of the three sentences, matched
@@ -114,6 +129,41 @@ export function doorReadiness(lines) {
 }
 
 const check = (name, ok, saw) => ({ check: name, ok: Boolean(ok), saw });
+
+/** A check that did not run, and why: `ok` is `null`, never a pass. */
+const notRun = (name, why) => ({ check: name, ok: null, saw: why });
+
+/** The game tab's three checks after the reload, by name. */
+const TAB_CHECKS = ["the game tab draws the update line", "the game tab did not reload", "the game tab's game is unchanged"];
+
+/** The click's four checks, by name — not run when there is no tab to click. */
+export const CLICK_CHECKS = [
+  "the game tab reloaded once",
+  "the game tab draws no update line",
+  "the same game, at the same move",
+  "the game goes on",
+];
+
+/**
+ * The run's one sentence over its checks: `ok` when none FAILED, `complete`
+ * when every one RAN, and "every check held" only when both — so a run that
+ * skipped a half never reads as a whole pass. No check at all is a failure.
+ */
+export function verdictOf(checks) {
+  if (checks.length === 0) return { ok: false, complete: false, summary: "no check ran" };
+  const held = checks.filter((c) => c.ok === true).length;
+  const failed = checks.filter((c) => c.ok === false).length;
+  const skipped = checks.filter((c) => c.ok === null);
+  const ok = failed === 0;
+  const complete = skipped.length === 0;
+  if (ok && complete) return { ok, complete, summary: `${checks.length} checks, every check held` };
+  const why = [...new Set(skipped.map((c) => String(c.saw)))].join("; ");
+  return {
+    ok,
+    complete,
+    summary: `${checks.length} checks: ${held} held, ${failed} failed, ${skipped.length} not run${why ? ` (${why})` : ""}`,
+  };
+}
 
 /**
  * The checks over `after-1.json`'s reading (Task 11.D): nothing had moved
@@ -155,13 +205,19 @@ export function afterReloadChecks(r) {
   ];
   if (r.tab !== null && r.tabBefore !== null) {
     out.push(
-      check("the game tab draws the update line", r.tab.lines.includes(SENTENCES.update), r.tab.lines),
-      check("the game tab did not reload", r.tab.loads === 0, { loads: r.tab.loads }),
-      check("the game tab's game is unchanged", r.tab.url === r.tabBefore.url && r.tab.events === r.tabBefore.events, {
+      check(TAB_CHECKS[0], r.tab.lines.includes(SENTENCES.update), r.tab.lines),
+      check(TAB_CHECKS[1], r.tab.loads === 0, { loads: r.tab.loads }),
+      check(TAB_CHECKS[2], r.tab.url === r.tabBefore.url && r.tab.events === r.tabBefore.events, {
         before: r.tabBefore,
         now: { url: r.tab.url, events: r.tab.events },
       }),
     );
+  } else if (r.secondTab) {
+    // Wanted and not there: the stale-tab half is MISSING, which is a failure.
+    out.push(check("the second tab holds a local game", false, "the second tab did not open a local game"));
+    out.push(...TAB_CHECKS.map((name) => notRun(name, "the second tab did not open")));
+  } else {
+    out.push(...TAB_CHECKS.map((name) => notRun(name, "no second tab, by --no-second-tab")));
   }
   return out;
 }
@@ -171,13 +227,13 @@ export function afterReloadChecks(r) {
  *  move commits. */
 export function afterClickChecks(r) {
   return [
-    check("the game tab reloaded once", r.tab.loads === 1, { loads: r.tab.loads }),
-    check("the game tab draws no update line", !r.tab.lines.includes(SENTENCES.update), r.tab.lines),
-    check("the same game, at the same move", r.tab.url === r.before.url && r.tab.events === r.before.events, {
+    check(CLICK_CHECKS[0], r.tab.loads === 1, { loads: r.tab.loads }),
+    check(CLICK_CHECKS[1], !r.tab.lines.includes(SENTENCES.update), r.tab.lines),
+    check(CLICK_CHECKS[2], r.tab.url === r.before.url && r.tab.events === r.before.events, {
       before: r.before,
       now: { url: r.tab.url, events: r.tab.events },
     }),
-    check("the game goes on", r.eventsAfterAMove !== null && r.eventsAfterAMove > r.tab.events, {
+    check(CLICK_CHECKS[3], r.eventsAfterAMove !== null && r.eventsAfterAMove > r.tab.events, {
       at: r.tab.events,
       afterAMove: r.eventsAfterAMove,
     }),
@@ -323,7 +379,7 @@ async function openLocalGame(tab, origin, log) {
   return { id, url: tab.url(), events: await storedEvents(tab, id) };
 }
 
-async function run({ label, origin, stateDir }) {
+async function run({ label, origin, stateDir, secondTab }) {
   const { chromium } = require("playwright");
   fs.mkdirSync(stateDir, { recursive: true });
   const logf = path.join(stateDir, "log.txt");
@@ -399,7 +455,7 @@ async function run({ label, origin, stateDir }) {
   const record = (list) => {
     for (const c of list) {
       checks.push(c);
-      log(`CHECK ${c.ok ? "ok  " : "FAIL"} ${c.check} — saw ${JSON.stringify(c.saw)}`);
+      log(`CHECK ${c.ok === null ? "NOT RUN" : c.ok ? "ok  " : "FAIL"} ${c.check} — saw ${JSON.stringify(c.saw)}`);
     }
     return list;
   };
@@ -416,13 +472,17 @@ async function run({ label, origin, stateDir }) {
     log(`phase 1: cf_clearance cleared; cookies now: ${(await context.cookies()).map((c) => c.name).join(",") || "(none)"}`);
     const pinned = await snapshot("pinned.json");
 
-    tab = await context.newPage();
-    tabLoads = loadCounter(tab);
-    try {
-      game = await openLocalGame(tab, origin, log);
-    } catch (e) {
-      log(`phase 1: NO game tab — ${e instanceof Error ? e.message : String(e)}`);
-      game = null;
+    if (secondTab) {
+      tab = await context.newPage();
+      tabLoads = loadCounter(tab);
+      try {
+        game = await openLocalGame(tab, origin, log);
+      } catch (e) {
+        log(`phase 1: NO game tab — the verdict will fail — ${e instanceof Error ? e.message : String(e)}`);
+        game = null;
+      }
+    } else {
+      log("phase 1: no second tab, by --no-second-tab — its checks will read NOT RUN");
     }
     await snapshot("tab.json", { game });
     fs.writeFileSync(path.join(stateDir, "PINNED"), `${new Date().toISOString()}\n`);
@@ -432,7 +492,7 @@ async function run({ label, origin, stateDir }) {
     const beforeGo = await snapshot("before-go.json");
     netMark = netLines().length;
     doorLoads.mark();
-    tabLoads.mark();
+    tabLoads?.mark();
     const tabBefore = game === null ? null : { url: tab.url(), events: await storedEvents(tab, game.id) };
     log("phase 2: go — ONE plain reload of the door");
     await door.reload({ waitUntil: "domcontentloaded" });
@@ -442,6 +502,7 @@ async function run({ label, origin, stateDir }) {
     const s1 = await snapshot("after-1.json");
     const swPaths = s1.netSinceMark.filter((l) => l.kind === "request" && l.sw).map((l) => new URL(l.url).pathname);
     const reading = {
+      secondTab,
       pinnedRelease: pinned.releaseInSwJs,
       release: s1.releaseInSwJs,
       caches: s1.sw.caches ?? [],
@@ -460,7 +521,9 @@ async function run({ label, origin, stateDir }) {
     const next = await firstOf([path.join(stateDir, "click"), path.join(stateDir, "done")]);
     if (next.endsWith("click")) {
       if (game === null) {
-        log("phase 2: click asked, but there is NO game tab");
+        const why = secondTab ? "the second tab did not open" : "no second tab, by --no-second-tab";
+        log(`phase 2: click asked, but there is NO game tab (${why})`);
+        record(CLICK_CHECKS.map((name) => notRun(name, why)));
       } else {
         const before = { url: tab.url(), events: await storedEvents(tab, game.id) };
         netMark = netLines().length;
@@ -496,10 +559,10 @@ async function run({ label, origin, stateDir }) {
     log(`BROKE: ${e instanceof Error ? e.stack : String(e)}`);
   }
   await context.close();
-  const ok = checks.length > 0 && checks.every((c) => c.ok);
-  fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ label, origin, ok, checks }, null, 2)}\n`);
-  log(`closed: ${ok ? "every check held" : "a check FAILED — verdict.json"}`);
-  return ok;
+  const verdict = verdictOf(checks);
+  fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ label, origin, secondTab, ...verdict, checks }, null, 2)}\n`);
+  log(`closed: ${verdict.summary}`);
+  return verdict.ok;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

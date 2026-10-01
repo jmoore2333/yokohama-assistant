@@ -66,12 +66,13 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
  *
- * **Under `LIVE`, and only there, TWO more errors are forgiven** — the Web
- * Analytics beacon's CORS block ([`isBeaconCorsError`]) and, since cycle F, the
- * release feed's failure while the repository is private
- * ([`isReleaseFeedError`]) — each COUNTED in `forgiven`, so a live run says how
- * often the allow-list was spent. Locally the switch is off and the line below
- * it never runs.
+ * **Under `LIVE`, and only there, TWO more errors are forgiven**, each COUNTED
+ * apart so a live run says which allow-list it spent: the Web Analytics
+ * beacon's CORS block ([`isBeaconCorsError`]) in `forgiven`, and, since cycle
+ * F, the release feed's failure while the repository is private
+ * ([`isReleaseFeedError`]) in `feedForgiven` — its own counter, because the live
+ * specs print `forgiven` as the beacon's (Task 8's review, Important 1).
+ * Locally the switch is off and the lines below it never run.
  *
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
@@ -82,9 +83,9 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
 export function watchForBreakage(
   page: Page,
   expected: { status: number; urlIncludes: string }[] = [],
-): { failures: string[]; forgiven: number; dealAnswers: number } {
+): { failures: string[]; forgiven: number; feedForgiven: number; dealAnswers: number } {
   const failures: string[] = [];
-  const watch = { failures, forgiven: 0, dealAnswers: 0 };
+  const watch = { failures, forgiven: 0, feedForgiven: 0, dealAnswers: 0 };
   /** The deal's designed 409s this page has spent, arm by arm. */
   const dealt = { response: 0, console: 0 };
   const allowed = (status: number, url: string) =>
@@ -99,8 +100,12 @@ export function watchForBreakage(
     // The CONSOLE arm is the only one the beacon reaches: its load fails
     // cross-origin, so nothing under `BASE_URL` answers it and the response
     // arm below never sees it.
-    if (LIVE && (isBeaconCorsError(text, m.location().url) || isReleaseFeedError(text, m.location().url))) {
+    if (LIVE && isBeaconCorsError(text, m.location().url)) {
       watch.forgiven += 1;
+      return;
+    }
+    if (LIVE && isReleaseFeedError(text, m.location().url)) {
+      watch.feedForgiven += 1;
       return;
     }
     if (isDealAnswerLine(text, m.location().url, BASE_URL) && dealt.console < DEAL_ANSWERS_PER_PAGE) {

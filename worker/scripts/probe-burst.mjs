@@ -1,17 +1,35 @@
 // **The probe burst — ORCHESTRATOR-ONLY** (M6.5c2 cycle F, R-F5; spec §2.5,
 // Review Focus 5): scanner-shaped requests at a deployment, one TSV row per
 // answer, read against the Workers Observability query API's stateless count
-// for the probe's own minute (`worker/RUNBOOK.md` §7). With the edge rule ON
-// (`scripts/edge-rule.mjs`) every row should read 403 `cf-mitigated:
-// challenge` and the minute ZERO invocations; that zero is the pass, and a
-// control read in its own minute — one `/api/health` from a cleared browser,
-// which must count one — proves the count counts.
+// for the probe's own minute (`worker/RUNBOOK.md` §7). **Two modes, two
+// readings, each in its own named minute — never mixed** (Task 8's review,
+// Important 3):
 //
-//   node scripts/probe-burst.mjs <origin> [--count N] [--pace ms] [--paths a,b,c]
+//   - **the default, the scanner's paths** (below). With the edge rule ON
+//     (`scripts/edge-rule.mjs`) THE PASS is every row 403 `cf-mitigated:
+//     challenge` and the minute's invocations ZERO; a control read in its own
+//     minute — one `/api/health` from a cleared browser, which must count one —
+//     proves the count counts;
+//   - **`--under-prefix`, the residual**: misses UNDER the rule's allowed
+//     prefixes, `/assets/<hex>.js` and `/art/<hex>.png`. The rule lets an allowed
+//     prefix through by design, so the expected reading is NOT zero: every row
+//     404 with no `cf-mitigated`, the Worker's own miss answer, and the minute's
+//     invocations EQUAL the request count — save that a `navigate` row may be
+//     answered by the asset layer's 404 page instead (`text/html`, the page's
+//     bytes) with no invocation, which is the open question spec §2.5 leaves to
+//     this very reading: each such row is one fewer. The window READS this
+//     cost; it is the prefix allow-list's residual, not a failure.
 //
-// The window's command (Task 11.G.a), from `worker/`:
+//   node scripts/probe-burst.mjs <origin> [--under-prefix | --paths a,b,c] [--count N] [--pace ms]
+//
+// The window's two commands (Task 11.G.a), from `worker/`, each in its own
+// minute:
 //
 //   node scripts/probe-burst.mjs https://yokohama.moore.nyc --count 200 --pace 500 > probe/burst.tsv
+//   node scripts/probe-burst.mjs https://yokohama.moore.nyc --under-prefix --count 30 --pace 500 > probe/under-prefix.tsv
+//
+// `--paths` names paths of the caller's own, for which no reading is stated;
+// it does not mix with `--under-prefix`.
 //
 // **What it costs**: `--count` requests, one at a time, `--pace` milliseconds
 // apart — the window's 200 at two a second take about 100 s. Each request the
@@ -32,11 +50,11 @@
 // The User-Agent is `smoke-release.mjs`'s `BROWSER_UA`, one string for both.
 //
 // **The default paths** are the scanner's five — `/.env`, `/wp-login.php`,
-// `/admin`, `/xmlrpc.php`, a random `/<hex>.json` — and two misses UNDER the
-// rule's allowed prefixes, `/assets/<hex>.js` and `/art/<hex>.png`: a miss
-// there passes the rule and invokes the Worker's own miss answer (Task 7's
-// review), so the window reads what that residual costs. `<hex>` is sixteen
-// random hex digits, one per run, printed on stderr with the paths.
+// `/admin`, `/xmlrpc.php` and a random `/<hex>.json` — none under an allowed
+// prefix; **`--under-prefix`'s** are the two prefix misses alone (Task 7's
+// review: a miss there passes the rule and invokes the Worker's own miss
+// answer). `<hex>` is sixteen random hex digits, one per run, printed on stderr
+// with the paths.
 //
 // **`node:http`, never `fetch`, and no redirect is ever followed.** MEASURED
 // (Node 26.10, a loopback server): Node's `fetch` sends `sec-fetch-mode: cors`
@@ -52,8 +70,8 @@
 // body's length as received; no `Accept-Encoding` is sent, so it is not
 // compressed), a `-` for an absent header, and `error` in the status column
 // for a request that got no answer — and on stderr the run's first and last
-// moments (UTC, for the query API's minute), its paths, and a count of answers
-// by status and shape. Exit 0 when every request was answered, 1 when any was
+// moments (UTC, for the query API's minute), its mode and that mode's stated
+// reading, its paths, and a count of answers by status and shape. Exit 0 when every request was answered, 1 when any was
 // not, 2 for arguments it refuses.
 
 import { randomBytes } from "node:crypto";
@@ -62,7 +80,17 @@ import { request as httpsRequest } from "node:https";
 import { pathToFileURL } from "node:url";
 import { BROWSER_UA } from "./smoke-release.mjs";
 
-export const USAGE = "usage: node scripts/probe-burst.mjs <origin> [--count N] [--pace ms] [--paths a,b,c]";
+export const USAGE = "usage: node scripts/probe-burst.mjs <origin> [--under-prefix | --paths a,b,c] [--count N] [--pace ms]";
+
+/** What each mode's run should read, said on stderr at its start. */
+const READING = {
+  scanner: "the pass: every row 403 cf-mitigated: challenge, and the minute's invocations ZERO",
+  "under-prefix":
+    "the residual's reading: every row 404 with no cf-mitigated, the Worker's own miss answer; the minute's " +
+    "invocations equal the request count, one fewer for each navigate row the asset layer's 404 page answers " +
+    "(text/html) — the open question spec §2.5 leaves to this reading",
+  paths: "the caller's own paths: no reading is stated",
+};
 
 /** The three shapes, by name, in the order each path is asked in. */
 export const SHAPES = Object.freeze({
@@ -91,11 +119,23 @@ export function requestHeaders(shape) {
   return { ...SHAPES[shape] };
 }
 
-/** The default paths for one run, the random ones from `hex`: sixteen
- *  lowercase hex digits. */
-export function defaultPaths(hex) {
+/** `hex`, checked: sixteen lowercase hex digits. */
+function hexOf(hex) {
   if (!/^[0-9a-f]{16}$/.test(hex)) throw new Error(`probe-burst: the random path's hex is sixteen lowercase hex digits — got ${JSON.stringify(hex)}`);
-  return ["/.env", "/wp-login.php", "/admin", "/xmlrpc.php", `/${hex}.json`, `/assets/${hex}.js`, `/art/${hex}.png`];
+  return hex;
+}
+
+/** The default mode's paths: the scanner's five, the random one from `hex`.
+ *  None is under an allowed prefix — the reading whose pass is zero. */
+export function defaultPaths(hex) {
+  return ["/.env", "/wp-login.php", "/admin", "/xmlrpc.php", `/${hexOf(hex)}.json`];
+}
+
+/** `--under-prefix`'s paths: the two misses under the rule's allowed
+ *  prefixes, from `hex` — the residual's reading, never mixed with the
+ *  scanner's. */
+export function underPrefixPaths(hex) {
+  return [`/assets/${hexOf(hex)}.js`, `/art/${hexOf(hex)}.png`];
 }
 
 /** A whole number in `[lo, hi]` from the flag's value, or a refusal naming
@@ -127,9 +167,11 @@ function originOf(raw) {
 }
 
 /**
- * The command line: `<origin> [--count N] [--pace ms] [--paths a,b,c]`.
- * `hex` names the run's random paths when `--paths` is not given. Every flag
- * at most once; anything else is refused rather than ignored.
+ * The command line: `<origin> [--under-prefix | --paths a,b,c] [--count N]
+ * [--pace ms]`, as `{ origin, mode, count, pace, paths }` — `mode` is
+ * `scanner` (the default), `under-prefix` or `paths`. `hex` names the run's
+ * random paths. Every flag at most once, `--under-prefix` and `--paths` never
+ * together; anything else is refused rather than ignored.
  */
 export function probeArgs(argv, hex) {
   if (argv.length === 0) throw new Error(USAGE);
@@ -140,11 +182,15 @@ export function probeArgs(argv, hex) {
   let paths;
   for (let i = 1; i < argv.length; i += 1) {
     const flag = argv[i];
-    if (flag !== "--count" && flag !== "--pace" && flag !== "--paths") {
+    if (flag !== "--count" && flag !== "--pace" && flag !== "--paths" && flag !== "--under-prefix") {
       throw new Error(`probe-burst: unexpected argument ${JSON.stringify(flag)} — ${USAGE}`);
     }
     if (seen.has(flag)) throw new Error(`probe-burst: ${flag} given twice`);
     seen.add(flag);
+    if (seen.has("--under-prefix") && seen.has("--paths")) {
+      throw new Error("probe-burst: --under-prefix does not mix with --paths — each is its own reading, in its own minute");
+    }
+    if (flag === "--under-prefix") continue;
     const raw = argv[i + 1];
     i += 1;
     if (flag === "--count") count = whole("--count", raw, 1, MAX_COUNT, "the requests to make");
@@ -157,8 +203,10 @@ export function probeArgs(argv, hex) {
       paths = list;
     }
   }
+  const mode = seen.has("--under-prefix") ? "under-prefix" : paths ? "paths" : "scanner";
+  if (mode === "under-prefix") paths = underPrefixPaths(hex);
   paths ??= defaultPaths(hex);
-  return { origin, count: count ?? paths.length * Object.keys(SHAPES).length, pace, paths };
+  return { origin, mode, count: count ?? paths.length * Object.keys(SHAPES).length, pace, paths };
 }
 
 /** Which path and shape each of `count` requests is: every shape of a path,
@@ -219,9 +267,10 @@ export function send(url, headers, request = new URL(url).protocol === "http:" ?
  * many got no answer. `io` is the outside world — `request`, `sleep`, `now`,
  * `out`, `err` — so the cells run it over fakes.
  */
-export async function probeBurst({ origin, count, pace, paths }, io) {
+export async function probeBurst({ origin, mode, count, pace, paths }, io) {
   const { request, sleep, now, out, err } = io;
   const steps = plan(paths, count);
+  err(`probe-burst: mode ${mode} — ${READING[mode]}`);
   err(`probe-burst: ${count} requests to ${origin}, ${pace} ms apart, over ${paths.join(" ")}`);
   err(`probe-burst: started ${new Date(now()).toISOString()}`);
   out(COLUMNS.join("\t"));

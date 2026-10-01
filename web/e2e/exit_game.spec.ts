@@ -37,8 +37,8 @@
 // y reading x's line in the lobby's chat; the abandon — the marker saying the
 // game is in the archive, the lobby listing it no more, y and w told; and the
 // three consoles clean under the specs' rules (`watchForBreakage`: the
-// beacon's CORS error and the deal's designed 409, each forgiven and
-// counted). PRINTED: the round trip of the move's own request after each long
+// beacon's CORS error, the release feed's failure and the deal's designed 409,
+// each forgiven and counted apart). PRINTED: the round trip of the move's own request after each long
 // pause — normally the first request the table hears after it, and the line
 // names the first when it is not — which is the wake's cost as a page sees it,
 // beside the median of the other moves'; and what the three pages asked the
@@ -647,7 +647,8 @@ test("two people and a watcher play a paced game across four hibernations, and i
         .join(", ") +
       ` (awake median ${median ?? "n/a"} ms); chat — table x ${said.x} / y ${said.y} (the watcher's panel ` +
       `${watcherLines}), lobby x 1 / y 1, both deleted; forgiven — the beacon's CORS error x ${watchX.forgiven}, ` +
-      `y ${watchY.forgiven}, w ${watchW.forgiven}; the deal's 409 x ${watchX.dealAnswers}, ` +
+      `y ${watchY.forgiven}, w ${watchW.forgiven}; the release feed's failure x ${watchX.feedForgiven}, ` +
+      `y ${watchY.feedForgiven}, w ${watchW.feedForgiven}; the deal's 409 x ${watchX.dealAnswers}, ` +
       `y ${watchY.dealAnswers}, w ${watchW.dealAnswers}; console — x ${consoleOf(watchX.failures)}, ` +
       `y ${consoleOf(watchY.failures)}, w ${consoleOf(watchW.failures)}; ` +
       `${Math.round((Date.now() - started) / 1000)}s`,

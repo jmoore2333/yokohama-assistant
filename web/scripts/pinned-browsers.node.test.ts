@@ -21,6 +21,8 @@ import {
   pinnedArgs,
   SENTENCES,
   USAGE,
+  verdictOf,
+  type Check,
   type AfterClick,
   type AfterReload,
   type TabReading,
@@ -36,14 +38,15 @@ describe("the command line", () => {
     expect(run.stderr).toBe(`${USAGE}\n`);
     expect(run.stdout).toBe("");
   });
-  it("says its usage as the plan's commands spell it", () => {
-    expect(USAGE).toBe("usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir>");
+  it("says its usage as the plan's commands spell it, the opt-out named", () => {
+    expect(USAGE).toBe("usage: node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab]");
   });
-  it("takes a label, an origin and a state directory", () => {
+  it("takes a label, an origin and a state directory, and wants the second tab", () => {
     expect(pinnedArgs(["worker", "https://yokohama.moore.nyc", "web/scripts/pinned/worker"])).toEqual({
       label: "worker",
       origin: "https://yokohama.moore.nyc",
       stateDir: "web/scripts/pinned/worker",
+      secondTab: true,
     });
     expect(pinnedArgs(["dry", "http://127.0.0.1:8491", "/tmp/x"]).origin, "plain http on loopback, a dry run").toBe(
       "http://127.0.0.1:8491",
@@ -53,6 +56,8 @@ describe("the command line", () => {
     [[], "usage"],
     [["worker", "https://yokohama.moore.nyc"], "usage"],
     [["worker", "https://yokohama.moore.nyc", "d", "extra"], "usage"],
+    [["worker", "https://yokohama.moore.nyc", "d", "--no-second-tab", "--no-second-tab"], "usage"],
+    [["worker", "https://yokohama.moore.nyc", "--no-second-tab"], "usage"],
     [["a label", "https://yokohama.moore.nyc", "d"], "label"],
     [["worker", "yokohama.moore.nyc", "d"], "origin"],
     [["worker", "http://yokohama.moore.nyc", "d"], "origin"],
@@ -61,6 +66,9 @@ describe("the command line", () => {
     [["worker", "https://yokohama.moore.nyc", ""], "usage"],
   ])("refuses %j", (argv, why) => {
     expect(() => pinnedArgs(argv)).toThrow(why);
+  });
+  it("takes --no-second-tab, last, as the ONE way to run without the stale-tab half", () => {
+    expect(pinnedArgs(["nas", "https://yokohama-nas.moore.nyc", "d", "--no-second-tab"]).secondTab).toBe(false);
   });
   it("names no absolute path of anyone's machine: Playwright is found beside it", () => {
     const source = readFileSync(SCRIPT, "utf8");
@@ -93,6 +101,7 @@ const GOOD_TAB: TabReading = { lines: [SENTENCES.update], loads: 0, url: "https:
 
 /** A good reading after the door's plain reload, which each cell spoils once. */
 const GOOD_RELOAD: AfterReload = {
+  secondTab: true,
   pinnedRelease: "yokohama-release-1111111111111111",
   cachesBeforeGo: ["yokohama-release-1111111111111111"],
   release: "yokohama-release-2222222222222222",
@@ -106,7 +115,9 @@ const GOOD_RELOAD: AfterReload = {
   tabBefore: { url: "https://h.example/#/t/local-1", events: 9 },
 };
 
-const failed = (r: AfterReload) => afterReloadChecks(r).filter((c) => !c.ok).map((c) => c.check);
+const failed = (r: AfterReload) => afterReloadChecks(r).filter((c) => c.ok === false).map((c) => c.check);
+const notRun = (r: AfterReload) => afterReloadChecks(r).filter((c) => c.ok === null).map((c) => c.check);
+const TAB_CHECKS = ["the game tab draws the update line", "the game tab did not reload", "the game tab's game is unchanged"];
 
 describe("after the plain reload: the door takes the release by itself, the game tab says so", () => {
   it("passes a reading where every fact holds", () => {
@@ -139,9 +150,37 @@ describe("after the plain reload: the door takes the release by itself, the game
   ])("fails %s", (_what, spoil, check) => {
     expect(failed({ ...GOOD_RELOAD, tab: { ...GOOD_TAB, ...spoil } })).toEqual([check]);
   });
-  it("reads no game tab where none was opened", () => {
-    const checks = afterReloadChecks({ ...GOOD_RELOAD, tab: null, tabBefore: null }).map((c) => c.check);
-    expect(checks.some((c) => c.startsWith("the game tab"))).toBe(false);
+  it("FAILS a second tab that was wanted and did not open, its three checks not run (Task 8 review, Important 2)", () => {
+    const r = { ...GOOD_RELOAD, tab: null, tabBefore: null };
+    expect(failed(r)).toEqual(["the second tab holds a local game"]);
+    expect(notRun(r)).toEqual(TAB_CHECKS);
+    expect(verdictOf(afterReloadChecks(r)).ok, "the verdict fails").toBe(false);
+  });
+  it("runs without the second tab only when told: its three checks NOT RUN, none failed, and no claim that every check held", () => {
+    const r = { ...GOOD_RELOAD, secondTab: false, tab: null, tabBefore: null };
+    expect(failed(r)).toEqual([]);
+    expect(notRun(r)).toEqual(TAB_CHECKS);
+    const v = verdictOf(afterReloadChecks(r));
+    expect(v).toEqual({
+      ok: true,
+      complete: false,
+      summary: "11 checks: 8 held, 0 failed, 3 not run (no second tab, by --no-second-tab)",
+    });
+    expect(v.summary).not.toContain("every check held");
+  });
+});
+
+describe("verdictOf — the run's one sentence", () => {
+  const held = (n: string): Check => ({ check: n, ok: true, saw: null });
+  it("says every check held only when every check ran and held", () => {
+    expect(verdictOf(afterReloadChecks(GOOD_RELOAD))).toEqual({ ok: true, complete: true, summary: "11 checks, every check held" });
+  });
+  it("fails on any failed check, naming the counts", () => {
+    const v = verdictOf([held("a"), { check: "b", ok: false, saw: 1 }, { check: "c", ok: null, saw: "why" }]);
+    expect(v).toEqual({ ok: false, complete: false, summary: "3 checks: 1 held, 1 failed, 1 not run (why)" });
+  });
+  it("fails a run with no check at all", () => {
+    expect(verdictOf([])).toEqual({ ok: false, complete: false, summary: "no check ran" });
   });
 });
 

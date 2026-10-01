@@ -223,9 +223,10 @@ describe("watchForBreakage — the allow-list is the live tier's alone", () => {
     fake.error(ECHO, FEED);
     expect(watch.failures).toEqual([`console.error: ${FEED_404}`, `console.error: ${FEED_CORS}`, `console.error: ${ECHO}`]);
     expect(watch.forgiven).toBe(0);
+    expect(watch.feedForgiven).toBe(0);
   });
 
-  it("forgives the feed's failure live in both its shapes, counted with the beacon's, and nothing beside it", async () => {
+  it("forgives the feed's failure live in both its shapes, counted in its OWN counter, and nothing beside it", async () => {
     const { watchForBreakage } = await harnessAt(true);
     const fake = fakePage();
     const watch = watchForBreakage(fake.page);
@@ -233,14 +234,33 @@ describe("watchForBreakage — the allow-list is the live tier's alone", () => {
     fake.error(FEED_CORS, PAGE);
     fake.error(ECHO, FEED);
     expect(watch.failures, "the feed's failure is forgiven").toEqual([]);
-    expect(watch.forgiven).toBe(3);
+    expect(watch.feedForgiven, "and counted as the feed's").toBe(3);
+    expect(watch.forgiven, "never as the beacon's, which the live specs print as the beacon's").toBe(0);
     fake.error(FEED_404.replace("404", "500"), FEED);
     fake.error(FEED_404, `${LIVE_ORIGIN}/api/health`);
     expect(watch.failures).toEqual([
       `console.error: ${FEED_404.replace("404", "500")}`,
       `console.error: ${FEED_404}`,
     ]);
-    expect(watch.forgiven).toBe(3);
+    expect([watch.forgiven, watch.feedForgiven]).toEqual([0, 3]);
+  });
+
+  it("keeps the beacon's count and the feed's apart: each moves only with its own error", async () => {
+    const { watchForBreakage } = await harnessAt(true);
+    const fake = fakePage();
+    const watch = watchForBreakage(fake.page);
+    fake.error(CORS_HEADER, PAGE);
+    fake.error(ECHO, BEACON);
+    expect([watch.forgiven, watch.feedForgiven], "the beacon's two lines").toEqual([2, 0]);
+    fake.error(FEED_CORS, PAGE);
+    fake.error(ECHO, FEED);
+    expect([watch.forgiven, watch.feedForgiven], "then the feed's two").toEqual([2, 2]);
+    fake.error(FEED_404, FEED);
+    expect([watch.forgiven, watch.feedForgiven], "then the feed's 404").toEqual([2, 3]);
+    fake.error(CORS_HEADER, PAGE);
+    expect([watch.forgiven, watch.feedForgiven], "then the beacon's again").toEqual([3, 3]);
+    expect(watch.failures).toEqual([]);
+    expect(watch.dealAnswers, "and neither is the deal's").toBe(0);
   });
 
   it("forgives both halves live, and counts them, while everything else still fails", async () => {

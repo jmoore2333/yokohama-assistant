@@ -12,15 +12,22 @@ export declare const SENTENCES: Readonly<{
   update: string;
 }>;
 
-export declare function pinnedArgs(argv: string[]): { label: string; origin: string; stateDir: string };
+export declare function pinnedArgs(argv: string[]): { label: string; origin: string; stateDir: string; secondTab: boolean };
 
 export declare function doorReadiness(lines: string[]): "none" | "installing" | "ready" | "failed" | "unknown";
 
+/** One check: `ok` true held, false FAILED, null NOT RUN (with why in `saw`). */
 export interface Check {
   check: string;
-  ok: boolean;
+  ok: boolean | null;
   saw: unknown;
 }
+
+/** The click's four checks, by name. */
+export declare const CLICK_CHECKS: readonly string[];
+
+/** The run's one sentence: `ok` none failed, `complete` every one ran. */
+export declare function verdictOf(checks: Check[]): { ok: boolean; complete: boolean; summary: string };
 
 /** A game tab, as a snapshot reads it. */
 export interface TabReading {
@@ -31,6 +38,8 @@ export interface TabReading {
 }
 
 export interface AfterReload {
+  /** Whether the run wanted the second tab (no `--no-second-tab`). */
+  secondTab: boolean;
   pinnedRelease: string | null;
   /** The door's caches in `before-go.json`: the pinned generation alone, or
    *  the release moved before the reload. */

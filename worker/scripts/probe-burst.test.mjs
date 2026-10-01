@@ -17,6 +17,7 @@ import {
   send,
   SHAPES,
   tsvRow,
+  underPrefixPaths,
   USAGE,
 } from "./probe-burst.mjs";
 import { BROWSER_UA } from "./smoke-release.mjs";
@@ -24,13 +25,24 @@ import { BROWSER_UA } from "./smoke-release.mjs";
 const HEX = "0123456789abcdef";
 
 describe("probeArgs — the command line", () => {
-  it("takes an https origin alone, with the defaults: one request per path and shape, at two a second", () => {
+  it("takes an https origin alone, with the defaults: the scanner's paths, one request per path and shape, at two a second", () => {
     expect(probeArgs(["https://yokohama.moore.nyc"], HEX)).toEqual({
       origin: "https://yokohama.moore.nyc",
-      count: 7 * 3,
+      mode: "scanner",
+      count: 5 * 3,
       pace: 500,
       paths: defaultPaths(HEX),
     });
+  });
+  it("takes --under-prefix as its own mode: the two prefix misses alone (Task 8 review, Important 3)", () => {
+    expect(probeArgs(["https://yokohama.moore.nyc", "--under-prefix"], HEX)).toEqual({
+      origin: "https://yokohama.moore.nyc",
+      mode: "under-prefix",
+      count: 2 * 3,
+      pace: 500,
+      paths: underPrefixPaths(HEX),
+    });
+    expect(probeArgs(["https://x.example", "--under-prefix", "--count", "40"], HEX).count).toBe(40);
   });
   it("takes the window's command exactly: --count 200 --pace 500", () => {
     const a = probeArgs(["https://yokohama.moore.nyc", "--count", "200", "--pace", "500"], HEX);
@@ -63,31 +75,35 @@ describe("probeArgs — the command line", () => {
     [["https://x.example", "--paths", "/a b"], /--paths takes/],
     [["https://x.example", "--paths", "/a#b"], /--paths takes/],
     [["https://x.example", "--count", "2", "--count", "3"], /twice/],
+    [["https://x.example", "--under-prefix", "--under-prefix"], /twice/],
+    [["https://x.example", "--under-prefix", "--paths", "/a"], /does not mix/],
+    [["https://x.example", "--paths", "/a", "--under-prefix"], /does not mix/],
     [["https://x.example", "--follow"], /unexpected argument/],
     [["https://x.example", "https://y.example"], /unexpected argument/],
   ])("refuses %j, naming why", (argv, why) => {
     expect(() => probeArgs(argv, HEX)).toThrow(why);
   });
   it("says its usage in one line", () => {
-    expect(USAGE).toBe("usage: node scripts/probe-burst.mjs <origin> [--count N] [--pace ms] [--paths a,b,c]");
+    expect(USAGE).toBe("usage: node scripts/probe-burst.mjs <origin> [--under-prefix | --paths a,b,c] [--count N] [--pace ms]");
   });
 });
 
-describe("the default paths", () => {
-  it("are the scanner's five and the two under-prefix misses, the random ones from one hex", () => {
-    expect(defaultPaths(HEX)).toEqual([
-      "/.env",
-      "/wp-login.php",
-      "/admin",
-      "/xmlrpc.php",
-      `/${HEX}.json`,
-      `/assets/${HEX}.js`,
-      `/art/${HEX}.png`,
-    ]);
+describe("the two modes' paths, never mixed", () => {
+  it("the default is the scanner's five, the random one from the run's hex", () => {
+    expect(defaultPaths(HEX)).toEqual(["/.env", "/wp-login.php", "/admin", "/xmlrpc.php", `/${HEX}.json`]);
+  });
+  it("--under-prefix is the two misses under the rule's allowed prefixes, from the same hex", () => {
+    expect(underPrefixPaths(HEX)).toEqual([`/assets/${HEX}.js`, `/art/${HEX}.png`]);
+  });
+  it("neither list holds the other's: no allowed prefix among the scanner's, nothing else among the prefix misses", () => {
+    const prefixed = (p) => p.startsWith("/assets/") || p.startsWith("/art/");
+    expect(defaultPaths(HEX).filter(prefixed)).toEqual([]);
+    expect(underPrefixPaths(HEX).filter((p) => !prefixed(p))).toEqual([]);
+    expect(probeArgs(["https://x.example", "--count", "200"], HEX).paths.filter(prefixed)).toEqual([]);
   });
   it("refuses a hex that is not sixteen lowercase digits", () => {
     expect(() => defaultPaths("0123")).toThrow(/sixteen/);
-    expect(() => defaultPaths("0123456789ABCDEF")).toThrow(/sixteen/);
+    expect(() => underPrefixPaths("0123456789ABCDEF")).toThrow(/sixteen/);
   });
 });
 
@@ -126,9 +142,9 @@ describe("plan — which path and shape each request is", () => {
       ["/a", "bare"],
     ]);
   });
-  it("covers every pair of the default paths and shapes within the window's 200", () => {
-    const pairs = new Set(plan(defaultPaths(HEX), 200).map(([p, s]) => `${s} ${p}`));
-    expect(pairs.size).toBe(7 * 3);
+  it("covers every pair of either mode's paths and shapes within the window's 200", () => {
+    expect(new Set(plan(defaultPaths(HEX), 200).map(([p, s]) => `${s} ${p}`)).size).toBe(5 * 3);
+    expect(new Set(plan(underPrefixPaths(HEX), 200).map(([p, s]) => `${s} ${p}`)).size).toBe(2 * 3);
   });
 });
 
@@ -232,7 +248,7 @@ describe("probeBurst — the whole run, over a fake transport", () => {
     const out = [];
     const said = [];
     const failed = await probeBurst(
-      { origin: "https://yokohama.moore.nyc", count: 4, pace: 500, paths: ["/.env", "/admin"] },
+      { origin: "https://yokohama.moore.nyc", mode: "scanner", count: 4, pace: 500, paths: ["/.env", "/admin"] },
       {
         request: fake.request,
         sleep: async (ms) => void slept.push(ms),
@@ -258,13 +274,27 @@ describe("probeBurst — the whole run, over a fake transport", () => {
     // Paced between requests, never after the last one.
     expect(slept).toEqual([500, 500, 500]);
     expect(said.join("\n")).toMatch(/4 requests/);
+    expect(said.join("\n"), "the stderr states the scanner mode's pass").toContain(
+      "the pass: every row 403 cf-mitigated: challenge, and the minute's invocations ZERO",
+    );
+  });
+  it("states the under-prefix mode's own reading, never the zero", async () => {
+    const fake = fakeRequest(() => ({ status: 404, headers: {}, body: "" }));
+    const said = [];
+    await probeBurst(
+      { origin: "https://x.example", mode: "under-prefix", count: 2, pace: 0, paths: underPrefixPaths(HEX) },
+      { request: fake.request, sleep: async () => {}, now: () => 0, out: () => {}, err: (l) => said.push(l) },
+    );
+    const text = said.join("\n");
+    expect(text).toContain("the residual's reading: every row 404 with no cf-mitigated");
+    expect(text).not.toContain("invocations ZERO");
   });
   it("prints a failed request as an error row, names it on stderr, and counts it", async () => {
     const fake = fakeRequest(() => new Error("getaddrinfo ENOTFOUND"));
     const out = [];
     const said = [];
     const failed = await probeBurst(
-      { origin: "https://x.example", count: 1, pace: 0, paths: ["/a"] },
+      { origin: "https://x.example", mode: "scanner", count: 1, pace: 0, paths: ["/a"] },
       { request: fake.request, sleep: async () => {}, now: () => 0, out: (l) => out.push(l), err: (l) => said.push(l) },
     );
     expect(failed).toBe(1);
