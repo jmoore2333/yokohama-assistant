@@ -31,11 +31,15 @@
 //   node scripts/edge-rule.mjs                   print the rule's JSON; 0
 //   node scripts/edge-rule.mjs --verify < r.json compare the zone's rule; 0 equal, 1 different
 //
-// and 2 for a run that cannot judge: another argument, a tree that is not
-// assembled, or input that is not JSON. `--verify` compares `expression`,
-// `action` and `description`, and ignores every key the zone adds (`id`,
-// `version`, `last_updated`, `ref`) and `enabled`, which the operator flips by
-// the rule's id. This file imports nothing local, so a cell can run a copy of
+// and 2 for a run that cannot judge: another argument, input that is not
+// JSON, or a tree that is not assembled — absent, or without `index.html` or
+// `sw.js`, the two files no assembled release is without (Task 7 fix round 1:
+// over an empty tree the script once printed a rule that challenged the
+// door's own files, at exit 0), and `--verify` refuses such a tree before it
+// compares anything. `--verify` compares `expression`, `action` and
+// `description`, and ignores every key the zone adds (`id`, `version`,
+// `last_updated`, `ref`) and `enabled`, which the operator flips by the
+// rule's id. This file imports nothing local, so a cell can run a copy of
 // it beside a fixture tree.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -61,11 +65,24 @@ const NEVER_LISTED = new Set(["_headers", "_redirects"]);
 /** A name the rules language takes inside a string literal as it is. */
 const PLAIN = /^[A-Za-z0-9._~-]+$/;
 
+/** The two FILES no assembled release is without: the shell and the service
+ *  worker. A tree missing either is not the release, whatever else it holds. */
+const RELEASE = ["index.html", "sw.js"];
+
 /** The allow-list of the tree at `tree`: `{ files, prefixes }` in the rule's
- *  order. Refuses a tree that is not there, and a top-level name the rule
- *  could not carry in a string literal unescaped. */
+ *  order. Refuses a tree that is not there, one that is not an assembled
+ *  release (no `index.html` or no `sw.js` as a file — a rule printed from it
+ *  would challenge the door's own files), and a top-level name the rule could
+ *  not carry in a string literal unescaped. */
 export function allowList(tree) {
   if (!existsSync(tree)) throw new Error(`edge-rule: ${tree} is absent — assemble the assets: npm run build:assets`);
+  const missing = RELEASE.filter((name) => statSync(join(tree, name), { throwIfNoEntry: false })?.isFile() !== true);
+  if (missing.length > 0) {
+    throw new Error(
+      `edge-rule: ${tree} is not an assembled release — it holds no ${missing.join(" and no ")}: ` +
+        "assemble the assets: npm run build:assets",
+    );
+  }
   const files = [];
   const prefixes = [];
   for (const name of readdirSync(tree)) {

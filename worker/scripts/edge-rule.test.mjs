@@ -88,22 +88,51 @@ describe("the allow-list, read off the tree's top level", () => {
       prefixes: ["/art/", "/assets/", "/fonts/", "/help/", "/icons/", "/cdn-cgi/"],
     });
   });
-  it("adds /cdn-cgi/ to a tree with no directory, and `/` only beside index.html", () => {
-    expect(allowList(tree({ "a.txt": "a" }))).toEqual({ files: ["/a.txt"], prefixes: ["/cdn-cgi/"] });
+  it("adds /cdn-cgi/ to a tree with no directory, and `/` beside index.html", () => {
+    expect(allowList(tree({ "index.html": "", "sw.js": "" }))).toEqual({ files: ["/", "/index.html", "/sw.js"], prefixes: ["/cdn-cgi/"] });
   });
   // Cloudflare's own prefix is listed once, last, whatever the tree holds.
   it("lists /cdn-cgi/ once, last, even beside a directory of that name", () => {
-    expect(allowList(tree({ "index.html": "", "cdn-cgi/x": "", "zeta/y": "" })).prefixes).toEqual(["/zeta/", "/cdn-cgi/"]);
+    expect(allowList(tree({ "index.html": "", "sw.js": "", "cdn-cgi/x": "", "zeta/y": "" })).prefixes).toEqual(["/zeta/", "/cdn-cgi/"]);
   });
   // The expression is the zone's: a name the rules language would need to
   // escape is refused rather than written into a string literal.
   it("refuses a name it cannot write into the rule, naming it", () => {
-    expect(() => allowList(tree({ 'a"b.txt': "" }))).toThrow('edge-rule: the tree\'s top-level name "a\\"b.txt" is not one the rule can carry');
-    expect(() => allowList(tree({ "a b.txt": "" }))).toThrow(/top-level name "a b\.txt" is not one the rule can carry/);
+    const release = { "index.html": "", "sw.js": "" };
+    expect(() => allowList(tree({ ...release, 'a"b.txt': "" }))).toThrow('edge-rule: the tree\'s top-level name "a\\"b.txt" is not one the rule can carry');
+    expect(() => allowList(tree({ ...release, "a b.txt": "" }))).toThrow(/top-level name "a b\.txt" is not one the rule can carry/);
   });
   it("refuses a tree that is not there, naming it", () => {
     const gone = join(tree({}), "assets");
     expect(() => allowList(gone)).toThrow(`edge-rule: ${gone} is absent — assemble the assets: npm run build:assets`);
+  });
+  // **Task 7 fix round 1 (the review's Important 1; the orchestrator's
+  // ruling)**: a directory that EXISTS is not yet a release. Over an empty
+  // tree the script once printed a rule challenging everything but
+  // `/cdn-cgi/` — `/`, `/sw.js` and `/assets/*` included — at exit 0, and a
+  // tree with no `index.html` dropped `/` the same way; neither `--verify`
+  // (the same tree) nor the smoke (`/api/health` only) could see it. So a tree
+  // without `index.html` or without `sw.js` — the two names no assembled
+  // release is without — is refused, naming the tree and each missing name.
+  // Read as FILES: a directory of either name is not one. Mutants: the check
+  // missing; `existsSync` in place of a file check; one name not asked.
+  const unassembled = (root, missing) =>
+    `edge-rule: ${root} is not an assembled release — it holds no ${missing.join(" and no ")}: assemble the assets: npm run build:assets`;
+  it("refuses an empty tree, naming it and both missing names", () => {
+    const empty = tree({});
+    expect(() => allowList(empty)).toThrow(unassembled(empty, ["index.html", "sw.js"]));
+  });
+  it("refuses a tree with index.html but no sw.js, naming sw.js", () => {
+    const root = tree({ "index.html": "<!doctype html>", "assets/a.js": "" });
+    expect(() => allowList(root)).toThrow(unassembled(root, ["sw.js"]));
+    const dir = tree({ "index.html": "<!doctype html>", "sw.js/x": "" });
+    expect(() => allowList(dir), "a directory named sw.js").toThrow(unassembled(dir, ["sw.js"]));
+  });
+  it("refuses a tree with sw.js but no index.html, naming index.html", () => {
+    const root = tree({ "sw.js": "// the worker\n", "assets/a.js": "" });
+    expect(() => allowList(root)).toThrow(unassembled(root, ["index.html"]));
+    const dir = tree({ "sw.js": "// the worker\n", "index.html/x": "" });
+    expect(() => allowList(dir), "a directory named index.html").toThrow(unassembled(dir, ["index.html"]));
   });
 });
 
@@ -165,12 +194,34 @@ describe("the expression, the rule and the comparison", () => {
  *  fixture tree, since it reads `../assets/` from where it sits. */
 function cli(files, args = [], input = undefined) {
   const root = tree(Object.fromEntries(Object.entries(files).map(([p, t]) => [`assets/${p}`, t])));
+  mkdirSync(join(root, "assets"), { recursive: true });
   mkdirSync(join(root, "scripts"));
   copyFileSync(join(worker, "scripts", "edge-rule.mjs"), join(root, "scripts", "edge-rule.mjs"));
   return spawnSync(process.execPath, [join(root, "scripts", "edge-rule.mjs"), ...args], { input, encoding: "utf8" });
 }
 
 describe("the command line (Task 11.G.4's two commands)", () => {
+  // Task 7 fix round 1: an unassembled tree is a run that cannot judge — exit
+  // 2, nothing printed, for the print AND for `--verify`, which refuses before
+  // comparing (comparing the zone's rule with an empty tree's would only say
+  // "different"). Mutant: the CLI printing whatever `allowList` returns.
+  it("exits 2 over an unassembled tree, printing nothing, and --verify refuses it before comparing", () => {
+    const sentence = (missing) =>
+      new RegExp(`^edge-rule: \\S*/assets is not an assembled release — it holds no ${missing}: assemble the assets: npm run build:assets\\n$`);
+    const empty = cli({});
+    expect([empty.status, empty.stdout]).toEqual([2, ""]);
+    expect(empty.stderr).toMatch(sentence("index\\.html and no sw\\.js"));
+    const rule = cli(PRODUCTION_TREE).stdout;
+    const verifying = cli({}, ["--verify"], rule);
+    expect([verifying.status, verifying.stdout]).toEqual([2, ""]);
+    expect(verifying.stderr).toMatch(sentence("index\\.html and no sw\\.js"));
+    const noWorker = cli({ "index.html": "<!doctype html>" }, ["--verify"], rule);
+    expect([noWorker.status, noWorker.stdout]).toEqual([2, ""]);
+    expect(noWorker.stderr).toMatch(sentence("sw\\.js"));
+    const noShell = cli({ "sw.js": "" });
+    expect([noShell.status, noShell.stdout]).toEqual([2, ""]);
+    expect(noShell.stderr).toMatch(sentence("index\\.html"));
+  });
   it("prints the rule's JSON for the tree beside it and exits 0", () => {
     const run = cli(PRODUCTION_TREE);
     expect(run.stderr).toBe("");
