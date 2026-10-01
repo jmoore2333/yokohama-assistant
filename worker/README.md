@@ -142,6 +142,14 @@ The client is ONE static release, `web/dist`, with its service worker. The NAS s
 own binary, and Cloudflare serves it from its asset layer. Single player runs from that release on
 either hostname and makes no server call until a game ends.
 
+The table's fifth column is how a game's changes reach a screen. **A new release reaches a browser the same
+way from every host**, because the client is the same code (`docs/web-lane.md` §4 and §15). The page asks for
+`/sw.js` on every navigation, when a tab comes back into view and every 15 minutes, and a new release installs
+in the background from `/shell.bin` beside the previous cache. Since cycle F the door applies a waiting
+release itself and reloads once, with no click, and a lobby or a game screen draws "A new version is ready.
+Reload to use it" and waits for the click, so nothing reloads while someone plays. At the no-Access door that
+install can fail until the visitor is cleared again (the window's W-3, `docs/web-lane.md` §15).
+
 In one picture, with the crates each host is built from:
 
 ```mermaid
@@ -796,10 +804,16 @@ two committed files in `worker/static/`. Every one of the spike's findings is in
 - `"html_handling": "none"`. The default redirects `/index.html` to `/`, and the service worker's
   install fetches `/index.html` with `redirect: "error"`, so under the default the install fails.
 - `"not_found_handling": "404-page"` *(cycle F, R-F5; spec §2.5. It was `none` from M6.5c until
-  cycle F.)* A browser's NAVIGATION miss is answered by the asset layer with the static `404.html`
-  instead of a blank. A miss that is not a navigation still invokes the Worker whatever this says,
-  so the page is a courtesy. The fence against a scanner is the zone's edge rule
-  (`scripts/edge-rule.mjs`, RUNBOOK §3), never this. The single-page-application fallback stays
+  cycle F.)* The asset layer answers a miss with the static `404.html` instead of a blank. **Read on
+  2026-10-01, in cycle F's public window (RUNBOOK §20):** under the array form of `run_worker_first`
+  below, a miss under a prefix the edge rule allows (`/assets/<miss>`, `/art/<miss>`) is answered by the
+  asset layer's cached 404 page in EVERY request shape, bare, navigation and no-cors, with zero Worker
+  invocations in each of two bursts of 200 requests. A miss outside the allowed set is the
+  zone's edge rule's to refuse (`scripts/edge-rule.mjs`, RUNBOOK §3). **Without the rule** it is routed
+  by the same array, and the design's expectation, from Cloudflare's routing page, that a request that
+  is not a navigation then invokes the Worker is EXPECTED, not read: cycle F counted neither shape, and
+  a navigation-shaped `/wp-login.php` read the 404 page at the deploy, under Access. So the page is
+  never the fence against a scanner; the edge rule is. The single-page-application fallback stays
   refused: it answered `index.html` with a 200 for a missing script, which a precache would store as
   the script.
 - `worker/static/_redirects` holds one line, `/ /index.html 200`, which serves the root as
